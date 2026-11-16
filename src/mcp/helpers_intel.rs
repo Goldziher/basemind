@@ -150,6 +150,31 @@ pub(super) fn resolve_pass_complete(store: &crate::store::Store) -> bool {
     crate::store::read_status_sidecar(&store.basemind_dir).is_none_or(|status| !status.is_degraded())
 }
 
+/// A definition the daemon resolved, kept only when it belongs to the snapshot this session reads:
+/// the daemon's resolve pass is settled and its index holds the landing file with the content the
+/// session's does. An edge from another snapshot would put the agent on a line of other content,
+/// so it is refused like an unresolved use, and the agent falls back to the name-based answer.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn in_snapshot(
+    store: &crate::store::Store,
+    definition: Option<crate::comms::resolved_proto::ResolvedDefinition>,
+) -> Option<(RelPath, u32)> {
+    let definition = definition?;
+    let session_hash = store.lookup(&definition.path).map(|entry| entry.hash_hex.as_str());
+    let refused = (definition.landing_hash.as_deref() != session_hash || !definition.settled).then(|| {
+        (
+            definition.path.clone(),
+            definition.landing_hash.clone(),
+            definition.settled,
+        )
+    });
+    let kept = definition.for_snapshot(session_hash);
+    if let Some((path, daemon_hash, settled)) = refused {
+        tracing::debug!(%path, ?daemon_hash, ?session_hash, settled, "goto_definition: the daemon's edge is from another snapshot; refused");
+    }
+    kept
+}
+
 /// The definition the use at `(use_path, use_start)` binds to. A `daemon_writer` serve has no open
 /// index, so the cross-file hop (`refs_by_path`) forwards to the machine daemon — the sole fjall
 /// writer, which holds it; every other serve reads its open index or the intra-file `.rref` blob
@@ -176,7 +201,7 @@ async fn resolve_definition(
             use_start,
         };
         return match tokio::task::spawn_blocking(move || host.host_resolved_refs(&root, query)).await {
-            Ok(Ok(ResolvedRefResult::Definition(definition))) => definition,
+            Ok(Ok(ResolvedRefResult::Definition(definition))) => in_snapshot(store, definition),
             Ok(Ok(_)) => None,
             Ok(Err(error)) => {
                 tracing::debug!(%error, "goto_definition: host resolved-refs failed; no cross-file binding");
@@ -208,7 +233,7 @@ async fn resolve_definition(
             .resolved_refs(state.shared.root.clone(), query)
             .await
         {
-            Ok(ResolvedRefResult::Definition(definition)) => definition,
+            Ok(ResolvedRefResult::Definition(definition)) => in_snapshot(store, definition),
             Ok(_) => None,
             Err(error) => {
                 tracing::debug!(%error, "goto_definition: daemon resolved-refs forward failed; no cross-file binding");

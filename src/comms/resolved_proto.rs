@@ -32,6 +32,93 @@ pub enum ResolvedRefQuery {
 pub enum ResolvedRefResult {
     /// Reply to [`ResolvedRefQuery::ReferencesTo`]: each resolved `(use_path, use_start)`.
     References(Vec<(RelPath, u32)>),
-    /// Reply to [`ResolvedRefQuery::DefinitionOf`]: the resolved `(def_path, def_start)`, if any.
-    Definition(Option<(RelPath, u32)>),
+    /// Reply to [`ResolvedRefQuery::DefinitionOf`]: the resolved definition, if any.
+    Definition(Option<ResolvedDefinition>),
+}
+
+/// A definition the daemon resolved, with what the asking session needs to tell whether the edge
+/// belongs to the snapshot it reads: the daemon reads its read-write index, which a rescan updates
+/// file by file before its resolve pass rewrites the cross-file edges.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedDefinition {
+    /// The file the definition is in.
+    pub path: RelPath,
+    /// The definition's start byte in that file.
+    pub start: u32,
+    /// The content hash the daemon's index holds for `path`, when it holds the file.
+    pub landing_hash: Option<String>,
+    /// Whether the daemon's last resolve pass committed every edge. While one runs, an edge can
+    /// still point into the content a file had before the rescan.
+    pub settled: bool,
+}
+
+impl ResolvedDefinition {
+    /// The definition as `(path, start)` when it belongs to a snapshot whose index holds
+    /// `session_hash` for the landing file: the daemon's pass is settled and both name one
+    /// content. Anything else is an edge from another snapshot, refused rather than served.
+    pub fn for_snapshot(self, session_hash: Option<&str>) -> Option<(RelPath, u32)> {
+        let same_content = self.landing_hash.is_some() && self.landing_hash.as_deref() == session_hash;
+        (self.settled && same_content).then_some((self.path, self.start))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn definition(landing_hash: Option<&str>, settled: bool) -> ResolvedDefinition {
+        ResolvedDefinition {
+            path: RelPath::from("src/lib.rs"),
+            start: 42,
+            landing_hash: landing_hash.map(str::to_owned),
+            settled,
+        }
+    }
+
+    #[test]
+    fn an_edge_of_the_sessions_snapshot_is_served() {
+        assert_eq!(
+            definition(Some("abc"), true).for_snapshot(Some("abc")),
+            Some((RelPath::from("src/lib.rs"), 42))
+        );
+    }
+
+    #[test]
+    fn an_edge_into_other_content_is_refused() {
+        assert_eq!(
+            definition(Some("old"), true).for_snapshot(Some("new")),
+            None,
+            "the session rescanned first"
+        );
+        assert_eq!(
+            definition(Some("new"), true).for_snapshot(Some("old")),
+            None,
+            "the daemon rescanned first"
+        );
+        assert_eq!(
+            definition(None, true).for_snapshot(Some("abc")),
+            None,
+            "the daemon no longer holds the file"
+        );
+        assert_eq!(
+            definition(Some("abc"), true).for_snapshot(None),
+            None,
+            "the session does not hold it"
+        );
+    }
+
+    #[test]
+    fn an_edge_read_while_the_resolve_pass_runs_is_refused() {
+        assert_eq!(definition(Some("abc"), false).for_snapshot(Some("abc")), None);
+    }
+
+    #[test]
+    fn a_definition_crosses_the_wire_whole() {
+        let reply = ResolvedRefResult::Definition(Some(definition(Some("abc"), true)));
+        let bytes = rmp_serde::to_vec_named(&reply).expect("encode");
+        assert_eq!(
+            rmp_serde::from_slice::<ResolvedRefResult>(&bytes).expect("decode"),
+            reply
+        );
+    }
 }

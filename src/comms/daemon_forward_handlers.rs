@@ -216,9 +216,17 @@ pub(crate) fn resolve_refs_against(
         ResolvedRefQuery::ReferencesTo { def_path, def_start } => {
             ResolvedRefResult::References(crate::query::resolved_references(store, def_path, *def_start))
         }
-        ResolvedRefQuery::DefinitionOf { use_path, use_start } => {
-            ResolvedRefResult::Definition(crate::query::definition_of(store, use_path, *use_start))
-        }
+        ResolvedRefQuery::DefinitionOf { use_path, use_start } => ResolvedRefResult::Definition(
+            crate::query::definition_of(store, use_path, *use_start).map(|(path, start)| {
+                crate::comms::resolved_proto::ResolvedDefinition {
+                    landing_hash: store.lookup(&path).map(|entry| entry.hash_hex.clone()),
+                    settled: crate::store::read_status_sidecar(&store.basemind_dir)
+                        .is_none_or(|status| !status.is_degraded()),
+                    path,
+                    start,
+                }
+            }),
+        ),
     }
 }
 
