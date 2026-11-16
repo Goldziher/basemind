@@ -112,6 +112,25 @@ fn a_live_host_whose_start_matches_is_live_whatever_its_boot_reads() {
     assert!(pair.iter().all(|workspace| !blobs_need_verifying(workspace)));
 }
 
+/// A Linux start counts clock ticks from the boot, so after a power loss a process can hold the
+/// host's pid with the host's start. Two boot ids that differ settle it: the host went down with
+/// the machine, and its evidence is not overwritten as a live host's.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_matching_start_under_another_boot_id_is_a_dead_host() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let hosting = dir.path().join("hosting");
+    let (workspaces, pair) = two_workspaces(dir.path());
+    let pid = std::process::id();
+    let started = crate::boot_identity::process_start(pid).expect("own start");
+    let earlier = plant_host(&hosting, pid, Some(EARLIER_BOOT_ID), Some(started));
+
+    assert!(settle_dead_hosts_in(&hosting, &workspaces, this_boot()));
+
+    assert!(!earlier.exists(), "the marker of an earlier boot is reported");
+    assert!(pair.iter().all(|workspace| blobs_need_verifying(workspace)));
+}
+
 /// A live pid whose process started after the host did is another process given the number.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]

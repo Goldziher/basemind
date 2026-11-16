@@ -24,8 +24,8 @@ struct HostRecord {
     /// process across a restart of the machine: another process gets the number.
     #[serde(default)]
     boot: Option<String>,
-    /// The host's [`crate::boot_identity::process_start`]. The pid alive with this start is the
-    /// host itself, whatever the boots say.
+    /// The host's [`crate::boot_identity::process_start`]. The pid alive with this start in the
+    /// boot named above is the host itself.
     #[serde(default)]
     started: Option<u64>,
 }
@@ -51,10 +51,10 @@ enum HostFate {
     DiedWithTheMachine,
 }
 
-/// Judge a marker. `same_process` says whether the process now at the marker's pid started when
-/// the host did, and `same_boot` whether the marker is of this boot; `None` where it cannot be
-/// told. The host's own process still running is `Live` whatever the boots say: a boot reading
-/// that moved is not a restart. With the boot unknown and the host gone, the worse case is read.
+/// Judge a marker. `same_process` says whether the process now at the marker's pid is the host
+/// ([`crate::boot_identity::is_recorded_process`], never so across two boot ids), and `same_boot`
+/// whether the marker is of this boot; `None` where it cannot be told. The host's own process still
+/// running is `Live` whatever the boot times say: a boot time that moved is not a restart. With the boot unknown and the host gone, the worse case is read.
 fn host_fate(pid_live: bool, same_process: Option<bool>, same_boot: Option<bool>) -> HostFate {
     if pid_live && same_process == Some(true) {
         return HostFate::Live;
@@ -115,10 +115,8 @@ fn settle_dead_hosts_with(
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        let same_process = record
-            .started
-            .zip(crate::boot_identity::process_start(pid))
-            .map(|(then, now)| then == now);
+        let same_process =
+            crate::boot_identity::is_recorded_process(pid, record.started, record.boot.as_deref(), this_boot.id);
         let fate = host_fate(
             crate::daemon_lock::pid_is_live(pid),
             same_process,

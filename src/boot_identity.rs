@@ -82,8 +82,9 @@ pub(crate) fn boot_time() -> Option<SystemTime> {
 }
 
 /// When the process holding `pid` started, as a value that is the same at every reading for one
-/// process and differs for the next process given that pid. `None` when there is no such process
-/// or it cannot be read. Not comparable across platforms or with wall-clock time.
+/// process and differs for the next process given that pid in the same boot. `None` when there is
+/// no such process or it cannot be read. Not comparable across platforms or with wall-clock time,
+/// and on Linux repeated across boots (it counts from the boot): see [`is_recorded_process`].
 pub(crate) fn process_start(pid: u32) -> Option<u64> {
     let pid = valid_pid(pid)?;
     #[cfg(target_os = "linux")]
@@ -141,6 +142,33 @@ pub(crate) fn process_started_unix(pid: u32) -> Option<i64> {
         let _ = pid;
         None
     }
+}
+
+/// Whether the process now running as `pid` is the one that recorded `start` (its
+/// [`process_start`]) in the boot `boot` names, `this_boot` being [`current`]. `Some(false)` when
+/// two opaque boot ids differ, whatever the starts say: no process outlives its boot, and a Linux
+/// start counts clock ticks from the boot, so a later boot can repeat it. `None` when it cannot be
+/// told: no start recorded, or none readable now.
+pub(crate) fn is_recorded_process(
+    pid: u32,
+    start: Option<u64>,
+    boot: Option<&str>,
+    this_boot: Option<&str>,
+) -> Option<bool> {
+    if boot
+        .zip(this_boot)
+        .is_some_and(|(then, now)| other_boot_by_id(then, now))
+    {
+        return Some(false);
+    }
+    let start = start?;
+    Some(process_start(pid)? == start)
+}
+
+/// Whether `a` and `b` are two different opaque boot ids. Boot times are never told apart here: a
+/// clock step moves them.
+fn other_boot_by_id(a: &str, b: &str) -> bool {
+    a.starts_with(ID_PREFIX) && b.starts_with(ID_PREFIX) && a != b
 }
 
 /// `pid` as the platform's signed pid, or `None` for one no process can have: `0` names the caller's
@@ -443,6 +471,33 @@ mod tests {
         assert!(!pid_is_live(u32::MAX), "-1 is every process");
         assert!(!pid_is_live(u32::MAX - 11), "a negative pid is a process group");
         assert!(!pid_is_live(0x8000_0000), "past i32::MAX");
+    }
+
+    /// A Linux start counts ticks from the boot, so a process of a later boot can carry the start
+    /// a record holds. Two boot ids that differ settle it; boot times, which a clock step moves,
+    /// do not.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn a_recorded_process_is_the_one_running_only_within_its_boot() {
+        let pid = std::process::id();
+        let own = process_start(pid);
+        assert_eq!(is_recorded_process(pid, own, Some("id:a"), Some("id:a")), Some(true));
+        assert_eq!(
+            is_recorded_process(pid, own, Some("id:earlier"), Some("id:this")),
+            Some(false),
+            "a start of an earlier boot is not this process"
+        );
+        assert_eq!(
+            is_recorded_process(pid, own, Some("t:1000"), Some("t:5000")),
+            Some(true),
+            "a boot time that moved is not a restart"
+        );
+        assert_eq!(
+            is_recorded_process(pid, own.map(|start| start + 1), None, None),
+            Some(false)
+        );
+        assert_eq!(is_recorded_process(pid, None, None, Some("id:a")), None);
+        assert_eq!(is_recorded_process(UNUSED_PID, own, None, None), None);
     }
 
     #[cfg(target_os = "linux")]
