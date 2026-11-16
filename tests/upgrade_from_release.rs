@@ -3,8 +3,9 @@
 //!
 //! The old binary comes from the plugin launcher's per-version cache
 //! (`$XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind`) or from `BASEMIND_UPGRADE_FROM_BIN`.
-//! When none is present the test skips cleanly (CI has no cached releases), so it is a developer /
-//! release-gate check, not a hermetic one. Per old binary it asserts that:
+//! When none is present the test checks nothing and says so in a `SKIP:` line on stderr that the
+//! harness does not capture; a `BASEMIND_UPGRADE_FROM_BIN` that names no file fails it. It is a
+//! developer / release-gate check, not a hermetic one. Per old binary it asserts that:
 //!
 //! - prose, data and config files left the code map and live only in the document tier;
 //! - symbol signatures are the short, header-only form;
@@ -16,6 +17,7 @@
 #![cfg(feature = "documents")]
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -32,10 +34,18 @@ const NON_CODE: &[&str] = &[
     "Cargo.toml",
 ];
 
+/// Env var naming one old release binary to upgrade from, instead of the launcher's cache.
+const PIN_ENV: &str = "BASEMIND_UPGRADE_FROM_BIN";
+
 fn old_binaries() -> Vec<PathBuf> {
-    if let Some(pin) = std::env::var_os("BASEMIND_UPGRADE_FROM_BIN") {
+    if let Some(pin) = std::env::var_os(PIN_ENV) {
         let pin = PathBuf::from(pin);
-        return if pin.is_file() { vec![pin] } else { Vec::new() };
+        assert!(
+            pin.is_file(),
+            "{PIN_ENV}={} is not a file: the upgrade it asks for cannot be exercised",
+            pin.display()
+        );
+        return vec![pin];
     }
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -279,7 +289,13 @@ fn upgrade_from(old: &Path) {
 fn upgrading_from_cached_releases_migrates_cleans_and_converges() {
     let olds = old_binaries();
     if olds.is_empty() {
-        eprintln!("skipping: no cached release under ~/.cache/basemind/bin and no BASEMIND_UPGRADE_FROM_BIN");
+        // ~keep Written to the stream itself: the harness captures `eprintln!` of a passing test.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "SKIP: upgrading_from_cached_releases_migrates_cleans_and_converges checked nothing: no \
+             release 0.27 to 0.32 under $XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind and \
+             {PIN_ENV} is unset. Set {PIN_ENV} to the `basemind` binary of such a release to run it."
+        );
         return;
     }
     for old in olds {
