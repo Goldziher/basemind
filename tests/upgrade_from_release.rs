@@ -180,7 +180,21 @@ impl Env {
         for bin in [old, new] {
             let _ = self.run(bin, &["comms", "stop"], None);
         }
-        self.ok(new, &["scan"], Some("0"))
+        // A writer can outlive the stop for a moment: a daemon still draining, or a rescan an old
+        // release started in the background. `scan` names that writer and exits; wait it out.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let out = self.run(new, &["scan"], Some("0"));
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            if out.status.success() {
+                return String::from_utf8_lossy(&out.stdout).into_owned();
+            }
+            assert!(
+                stderr.contains("already running against this repo") && std::time::Instant::now() < deadline,
+                "scan failed: {stderr}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
     }
 
     fn blob_names(&self) -> Vec<String> {
