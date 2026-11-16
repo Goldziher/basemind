@@ -45,7 +45,12 @@ pub fn tools_list() -> Value {
 }
 
 fn tool_list() -> ListToolsResult {
-    let tools = if lean::lean_mode_enabled() {
+    tool_list_for(lean::lean_mode_enabled())
+}
+
+/// [`tool_list`] for the lean surface or the full one.
+fn tool_list_for(lean: bool) -> ListToolsResult {
+    let tools = if lean {
         lean::lean_list_tools().tools
     } else {
         router_cache::cached_tool_router().list_all()
@@ -94,14 +99,16 @@ mod tests {
         assert_eq!(error["code"], -32602, "{error}");
     }
 
+    /// Independent of `BASEMIND_MCP_LEAN` in the environment the tests run in: the full surface
+    /// is asked for by name, and the answer sent is the list for the surface the switch selects.
     #[test]
     fn the_tool_list_is_the_advertised_one_without_cache_hints() {
-        let listed = tool_list();
+        let listed = tool_list_for(false);
         assert!(listed.ttl_ms.is_none() && listed.cache_scope.is_none());
         let names: Vec<&str> = listed.tools.iter().map(|tool| tool.name.as_ref()).collect();
         for tool in crate::mcp::params::VERB_TOOLS {
             assert!(names.contains(tool), "`{tool}` is missing from {names:?}");
         }
-        assert_eq!(tools_list()["tools"].as_array().map(Vec::len), Some(names.len()));
+        assert_eq!(tools_list(), as_json(&tool_list_for(lean::lean_mode_enabled())));
     }
 }
