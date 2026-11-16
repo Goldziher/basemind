@@ -63,10 +63,19 @@ async fn git_log_matches_author_terms_against_the_author_only() {
 
     assert_author_scoping(&client).await;
     // Before the git-history index has caught up the search is a bounded walk over subjects and
-    // authors, which is a cut the caller did not ask for.
-    let live = call(&client, "git_log", json!({ "query": "parser" })).await;
-    if live.get("truncated").is_some() {
-        assert_eq!(live["truncated_reason"], "live_walk", "{live}");
+    // authors, which is a cut the caller did not ask for; once it has, the answer is whole. Which of
+    // the two this call meets is a race, so each is held to its own contract.
+    let first = call(&client, "git_log", json!({ "query": "parser" })).await;
+    assert_eq!(summaries(&first), ["fix the parser"], "{first}");
+    match first.get("truncated") {
+        Some(truncated) => {
+            assert_eq!(truncated, true, "{first}");
+            assert_eq!(first["truncated_reason"], "live_walk", "{first}");
+        }
+        None => assert!(
+            first.get("truncated_reason").is_none(),
+            "an index answer is whole: {first}"
+        ),
     }
 
     let deadline = Instant::now() + Duration::from_secs(20);
