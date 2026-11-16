@@ -9,7 +9,7 @@
 //! the open without holding a blocking thread either.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use ahash::AHashMap;
@@ -36,13 +36,13 @@ const LOCKED_STORE_PATIENCE: Duration = Duration::from_secs(120);
 const LOCKED_STORE_MAX_PAUSE: Duration = Duration::from_secs(2);
 
 /// Open the store in `dir`, trying again with a growing pause while another process holds it, for
-/// up to [`LOCKED_STORE_PATIENCE`]. Any other failure is final at once.
-fn open_waiting_for_lock(dir: &Path) -> Result<FjallAgents, CommsError> {
+/// up to `patience`. Any other failure is final at once.
+fn open_waiting_for_lock(dir: &Path, patience: Duration) -> Result<FjallAgents, CommsError> {
     let started = std::time::Instant::now();
     let mut pause = Duration::from_millis(50);
     loop {
         match FjallAgents::open(dir) {
-            Err(error) if is_locked(&error) && started.elapsed() < LOCKED_STORE_PATIENCE => {
+            Err(error) if is_locked(&error) && started.elapsed() < patience => {
                 tracing::info!(%error, "comms: the agent store is held by another process; trying again");
                 std::thread::sleep(pause);
                 pause = (pause * 2).min(LOCKED_STORE_MAX_PAUSE);
@@ -109,36 +109,87 @@ type WaitResult = watch::Receiver<Published>;
 
 /// The store, or why it did not open, once its open has finished.
 struct StoreSlot {
-    value: OnceLock<Result<Arc<FjallAgents>, CommsError>>,
+    value: Mutex<Option<Result<Arc<FjallAgents>, CommsError>>>,
     ready: watch::Sender<bool>,
-}
-
-impl Default for StoreSlot {
-    fn default() -> Self {
-        Self {
-            value: OnceLock::new(),
-            ready: watch::Sender::new(false),
-        }
-    }
+    /// The generation directory to open the store in again when another process held it past
+    /// `patience`; `None` for a store opened elsewhere.
+    dir: Option<PathBuf>,
+    patience: Duration,
 }
 
 impl StoreSlot {
+    fn new(dir: Option<PathBuf>, patience: Duration) -> Self {
+        Self {
+            value: Mutex::new(None),
+            ready: watch::Sender::new(false),
+            dir,
+            patience,
+        }
+    }
+
     fn set(&self, value: Result<Arc<FjallAgents>, CommsError>) {
-        let _ = self.value.set(value);
+        let mut slot = lock(&self.value);
+        *slot = Some(value);
         self.ready.send_replace(true);
     }
 
+    /// Open the store on a thread of its own after `delay`.
+    fn start_open(self: &Arc<Self>, delay: Duration) {
+        let Some(dir) = self.dir.clone() else {
+            return;
+        };
+        let slot = Arc::clone(self);
+        let opener = std::thread::Builder::new()
+            .name("agent-store-open".to_string())
+            .spawn(move || {
+                std::thread::sleep(delay);
+                let store = open_waiting_for_lock(&dir, slot.patience).map(Arc::new);
+                if let Err(error) = &store {
+                    tracing::error!(%error, "comms: the agent store did not open; agent tools will refuse until it is fixed");
+                }
+                slot.set(store);
+            });
+        if let Err(error) = opener {
+            self.set(Err(CommsError::Backend {
+                detail: format!("could not start opening the agent store: {error}"),
+            }));
+        }
+    }
+
+    /// Open again a store another process held for longer than the open waited: it may be free now.
+    fn reopen_if_held(self: &Arc<Self>) {
+        if self.dir.is_none() {
+            return;
+        }
+        {
+            let mut slot = lock(&self.value);
+            if !matches!(&*slot, Some(Err(error)) if is_locked(error)) {
+                return;
+            }
+            *slot = None;
+            self.ready.send_replace(false);
+        }
+        tracing::info!("comms: trying the held agent store again");
+        self.start_open(Duration::ZERO);
+    }
+
     /// The store, once its open has finished. Holds no thread while it waits.
-    async fn opened(&self) -> Result<Arc<FjallAgents>, CommsError> {
+    async fn opened(self: &Arc<Self>) -> Result<Arc<FjallAgents>, CommsError> {
+        self.reopen_if_held();
         let mut ready = self.ready.subscribe();
         // The sender lives as long as the slot, so the wait ends only when the open has.
         let _ = ready.wait_for(|opened| *opened).await;
         self.get()
     }
 
+    /// The open's result, or `None` while it runs.
+    fn current(&self) -> Option<Result<Arc<FjallAgents>, CommsError>> {
+        lock(&self.value).clone()
+    }
+
     /// The store, or a refusal while it is still opening. Callers await [`Self::opened`] first.
     fn get(&self) -> Result<Arc<FjallAgents>, CommsError> {
-        self.value.get().cloned().unwrap_or_else(|| {
+        self.current().unwrap_or_else(|| {
             Err(CommsError::Backend {
                 detail: "the agent store is still opening; try again in a moment".to_string(),
             })
@@ -246,37 +297,28 @@ impl AgentHub {
     /// [`AgentHub::open`], starting the open after `delay`: the daemon's test hook for a slow
     /// store.
     pub fn open_after(generation_dir: &Path, delay: Duration) -> Self {
-        let hub = Self::empty(generation_dir.join(STORE_DIR));
-        let (slot, dir) = (Arc::clone(&hub.store), generation_dir.to_path_buf());
-        let opener = std::thread::Builder::new()
-            .name("agent-store-open".to_string())
-            .spawn(move || {
-                std::thread::sleep(delay);
-                let store = open_waiting_for_lock(&dir).map(Arc::new);
-                if let Err(error) = &store {
-                    tracing::error!(%error, "comms: the agent store did not open; agent tools will refuse until it is fixed");
-                }
-                slot.set(store);
-            });
-        if let Err(error) = opener {
-            hub.store.set(Err(CommsError::Backend {
-                detail: format!("could not start opening the agent store: {error}"),
-            }));
-        }
+        Self::open_patiently(generation_dir, delay, LOCKED_STORE_PATIENCE)
+    }
+
+    /// [`AgentHub::open_after`], waiting `patience` for a store another process holds.
+    fn open_patiently(generation_dir: &Path, delay: Duration, patience: Duration) -> Self {
+        let slot = StoreSlot::new(Some(generation_dir.to_path_buf()), patience);
+        let hub = Self::empty(generation_dir.join(STORE_DIR), slot);
+        hub.store.start_open(delay);
         hub
     }
 
     /// A hub over a store opened elsewhere (tests open one with their own clock).
     pub fn with_store(dir: PathBuf, store: Result<Arc<FjallAgents>, CommsError>) -> Self {
-        let hub = Self::empty(dir);
+        let hub = Self::empty(dir, StoreSlot::new(None, Duration::ZERO));
         hub.store.set(store);
         hub
     }
 
-    fn empty(dir: PathBuf) -> Self {
+    fn empty(dir: PathBuf, slot: StoreSlot) -> Self {
         Self {
             dir,
-            store: Arc::new(StoreSlot::default()),
+            store: Arc::new(slot),
             arrivals: watch::Sender::new(0),
             waits: Mutex::new(AHashMap::new()),
             repos: Mutex::new(AHashMap::new()),
@@ -580,7 +622,7 @@ impl AgentHub {
     /// The store's state, for `basemind agent status`.
     pub fn status(&self, principal: Option<&str>, repo: Option<RepoKey>) -> AgentStoreStatus {
         let sessions = principal.map_or(0, |principal| self.sessions_of(principal));
-        match self.store.value.get() {
+        match self.store.current() {
             None => AgentStoreStatus {
                 dir: self.dir.clone(),
                 state: "opening".to_string(),
@@ -645,7 +687,7 @@ impl AgentHub {
 
     /// The periodic sweep and the flush to disk: the daemon's maintenance tick and its shutdown.
     pub async fn maintain(self: &Arc<Self>) {
-        let Some(Ok(store)) = self.store.value.get().cloned() else {
+        let Some(Ok(store)) = self.store.current() else {
             return;
         };
         let swept = tokio::task::spawn_blocking(move || {

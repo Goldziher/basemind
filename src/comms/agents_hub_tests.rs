@@ -579,3 +579,23 @@ async fn a_replay_of_a_read_whose_first_request_was_dropped_waits_on_its_own() {
     assert_eq!(replay.messages.len(), 1);
     assert_eq!(replay.messages[0].body, "after");
 }
+
+#[tokio::test]
+async fn a_store_held_past_the_opens_patience_is_tried_again_on_the_next_request() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let holder = FjallAgents::open(dir.path()).expect("the first opener holds the store");
+    let hub = Arc::new(AgentHub::open_patiently(
+        dir.path(),
+        Duration::ZERO,
+        Duration::from_millis(200),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), hub.opened())
+        .await
+        .expect("the open gave up");
+    assert_eq!(hub.status(None, None).state, "unreadable");
+    drop(holder);
+    hub.post(caller("a"), new_thread(&["b"]))
+        .await
+        .expect("the next request opens the released store");
+    assert_eq!(hub.status(None, None).state, "open");
+}
