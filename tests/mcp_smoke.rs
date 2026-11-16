@@ -1438,9 +1438,30 @@ async fn git_touching_paginates_with_stable_cursor() {
     let _ = service.cancel().await;
 }
 
+/// Wait (bounded) until `git_log` answers from the git-history index, which the server builds after
+/// it starts. A symbol-history cursor counts in the list it was issued on, and one issued on the live
+/// walk is refused once the index answers, so a test of stable paging pages after that point.
+async fn wait_for_git_history(service: &rmcp::service::RunningService<rmcp::RoleClient, ()>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        let probe = decode_text(
+            &service
+                .call_tool(call_params("git_log", json!({ "query": "step" })))
+                .await
+                .expect("git_log query"),
+        );
+        if probe.get("truncated").is_none() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    eprintln!("NOTE: the git-history index did not come up; paging the live walk only");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_symbol_history_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;
+    wait_for_git_history(&service).await;
     let history_shas = |body: &Value| -> Vec<String> {
         body.get("history")
             .and_then(Value::as_array)
