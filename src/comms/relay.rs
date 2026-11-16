@@ -188,11 +188,52 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     decode_io(&body)
 }
 
+/// The one field every relay hello carries, read from a hello whose other fields are another
+/// version's.
+#[derive(Deserialize)]
+struct HelloVersion {
+    relay_proto_ver: u32,
+}
+
+/// A relay hello written for another relay protocol version, whose fields this binary cannot read:
+/// the daemon answers it with [`decline::PROTO_SKEW`] instead of dropping the link.
+#[derive(Debug)]
+pub struct SkewedHello {
+    /// The version the client speaks.
+    pub relay_proto_ver: u32,
+}
+
+impl std::fmt::Display for SkewedHello {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "relay hello of protocol {}, this daemon speaks {RELAY_PROTO_VER}",
+            self.relay_proto_ver
+        )
+    }
+}
+
+impl std::error::Error for SkewedHello {}
+
+/// Decode a [`RelayHello`]. A body that does not decode but names another protocol version is a
+/// [`SkewedHello`] inside the `InvalidData` error, for the caller to decline.
+fn decode_hello(body: &[u8]) -> std::io::Result<RelayHello> {
+    decode_io(body).map_err(|error| match decode::<HelloVersion>(body) {
+        Ok(version) if version.relay_proto_ver != RELAY_PROTO_VER => std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            SkewedHello {
+                relay_proto_ver: version.relay_proto_ver,
+            },
+        ),
+        _ => error,
+    })
+}
+
 /// Daemon side, phase 1 — read the [`RelayHello`] frame. Called by the accept loop AFTER it has
 /// already consumed the 8-byte [`RELAY_MAGIC`] preamble it peeked to route the connection here.
 pub async fn read_hello<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<RelayHello> {
     let body = read_frame(reader).await?;
-    decode_io(&body)
+    decode_hello(&body)
 }
 
 /// Daemon side, phase 1 — consume the [`RELAY_MAGIC`] preamble the accept loop peeked and read
@@ -227,6 +268,33 @@ pub async fn write_welcome<W: AsyncWrite + Unpin>(writer: &mut W, welcome: &Rela
 mod tests {
     use super::super::transport::MAX_FRAME_BYTES;
     use super::*;
+
+    /// A relay of protocol 1 named an `agent_id` and no principal; its hello must still be read as
+    /// far as its version, so the daemon can decline it as skewed.
+    #[test]
+    fn an_older_relays_hello_is_recognised_as_skewed() {
+        #[derive(Serialize)]
+        struct HelloV1 {
+            relay_proto_ver: u32,
+            root: std::path::PathBuf,
+            view: String,
+            agent_id: String,
+        }
+        let body = encode(&HelloV1 {
+            relay_proto_ver: 1,
+            root: "/repo".into(),
+            view: "working".to_string(),
+            agent_id: "a".to_string(),
+        })
+        .expect("encode");
+        let error = decode_hello(&body).expect_err("a v1 hello does not decode");
+        let skewed = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<SkewedHello>())
+            .expect("recognised as skewed");
+        assert_eq!(skewed.relay_proto_ver, 1);
+        assert!(decode_hello(b"\x01garbage").is_err());
+    }
 
     #[test]
     fn relay_hello_round_trips_through_msgpack() {

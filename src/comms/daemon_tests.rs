@@ -217,3 +217,28 @@ async fn status_names_the_store_and_the_links_repository() {
         .await;
     assert!(matches!(listed, CommsResponse::AgentThreads(_)), "{listed:?}");
 }
+
+#[tokio::test]
+async fn a_second_hello_on_a_link_is_refused_and_keeps_the_first_identity() {
+    let (dir, broker) = temp_broker();
+    let mut session = hello(&broker, "alice", dir.path()).await;
+    let other = tempfile::tempdir().expect("tempdir");
+    let again = broker
+        .handle(
+            CommsRequest::Hello {
+                proto_ver: PROTO_VER,
+                principal: Some(Principal::parse("mallory").expect("principal")),
+                root: Some(other.path().to_path_buf()),
+                host: None,
+            },
+            &mut session,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert!(
+        matches!(again, CommsResponse::Error { ref code, .. } if code == "hello_repeated"),
+        "{again:?}"
+    );
+    assert_eq!(session.principal.as_ref().map(Principal::as_str), Some("alice"));
+    assert_eq!(session.root.as_deref(), Some(dir.path()));
+}

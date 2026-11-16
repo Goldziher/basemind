@@ -46,12 +46,22 @@ impl Broker {
                 message: format!("daemon speaks proto {PROTO_VER}, client sent {proto_ver}"),
             };
         }
+        if session.greeted {
+            return CommsResponse::Error {
+                code: "hello_repeated".to_string(),
+                message: "this connection already said hello; its identity is fixed for its lifetime: open a new \
+                          connection to act as another agent"
+                    .to_string(),
+            };
+        }
+        session.greeted = true;
         if let Some(root) = &root {
             let (hub, at) = (Arc::clone(&self.agents), root.clone());
-            session.repo = tokio::task::spawn_blocking(move || hub.repo_for(&at))
-                .await
-                .ok()
-                .and_then(Result::ok);
+            match tokio::task::spawn_blocking(move || hub.repo_for(&at)).await {
+                Ok(Ok(repo)) => session.repo = Some(repo),
+                Ok(Err(error)) => session.repo_error = Some(error.to_string()),
+                Err(join) => session.repo_error = Some(join.to_string()),
+            }
             let target = root.clone();
             if let Err(error) = self.registry_blocking(move |reg| reg.register_workspace(&target)).await {
                 tracing::warn!(%error, root = %root.display(), "comms: registry auto-register failed");
@@ -68,6 +78,14 @@ impl Broker {
 
     /// The caller of an agent request on this link, acting as `sub` when one is given.
     fn link_caller(session: &Session, sub: Option<SubName>) -> Result<Caller, CommsError> {
+        if let (Some(_), Some(root), Some(error)) = (&session.principal, &session.root, &session.repo_error) {
+            return Err(CommsError::Backend {
+                detail: format!(
+                    "the repository of {} could not be determined ({error}): agent requests need it",
+                    root.display()
+                ),
+            });
+        }
         let (Some(principal), Some(repo)) = (&session.principal, &session.repo) else {
             return Err(anonymous_link());
         };

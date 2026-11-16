@@ -313,14 +313,6 @@ impl Broker {
 
         let handshake = self.begin_relay_handshake();
         self.mark_active().await;
-        let hello = match relay::accept_hello(&mut stream).await {
-            Ok(hello) => hello,
-            Err(error) => {
-                tracing::warn!(%error, "relay: reading the preamble and hello failed; dropping the link");
-                return;
-            }
-        };
-
         let daemon_version = env!("CARGO_PKG_VERSION").to_string();
         let decline = |code: &str, detail: Option<String>| relay::RelayWelcome {
             relay_proto_ver: relay::RELAY_PROTO_VER,
@@ -328,6 +320,21 @@ impl Broker {
             accepted: false,
             code: Some(code.to_string()),
             detail,
+        };
+        let hello = match relay::accept_hello(&mut stream).await {
+            Ok(hello) => hello,
+            Err(error) => {
+                if let Some(skewed) = error
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<relay::SkewedHello>())
+                {
+                    let detail = Some(skewed.to_string());
+                    let _ = relay::write_welcome(&mut stream, &decline(relay::decline::PROTO_SKEW, detail)).await;
+                    return;
+                }
+                tracing::warn!(%error, "relay: reading the preamble and hello failed; dropping the link");
+                return;
+            }
         };
 
         if hello.relay_proto_ver != relay::RELAY_PROTO_VER {
@@ -719,6 +726,10 @@ pub struct Session {
     pub host: Option<String>,
     /// The repository of `root`.
     pub repo: Option<RepoKey>,
+    /// Why the repository of `root` could not be derived, when it could not.
+    pub repo_error: Option<String>,
+    /// Whether the link has said `Hello`; a second one is refused (ADR-0021, rule 3).
+    pub greeted: bool,
 }
 
 #[path = "daemon_workspace_handlers.rs"]
