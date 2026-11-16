@@ -184,51 +184,7 @@ fn machine_registry_path_in(machine_dir: &Path, kind: DaemonKind, dir: &Path) ->
     machine_dir.join(format!("{}-{}.pid", kind.as_str(), workspace_key(dir)))
 }
 
-/// Whether a process id is still live. Unix: `kill(pid, 0)` — `0` (signalable) or `EPERM` (exists,
-/// not ours) both mean alive; `ESRCH` means gone. Windows: a process `OpenProcess` refuses with
-/// `ERROR_ACCESS_DENIED` (exists, not ours: the `EPERM` above) is alive; one it opens is alive until
-/// it exits, because a handle anyone still holds keeps an exited process openable.
-#[cfg(unix)]
-pub fn pid_is_live(pid: u32) -> bool {
-    // SAFETY: `kill` with signal 0 performs only an existence/permission check and sends no signal.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    if rc == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(windows)]
-pub fn pid_is_live(pid: u32) -> bool {
-    /// `OpenProcess` access mask: query basic info only.
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const ERROR_ACCESS_DENIED: i32 = 5;
-    /// The exit code `GetExitCodeProcess` reports for a process that has not exited.
-    const STILL_ACTIVE: u32 = 259;
-    // SAFETY: `OpenProcess` and `CloseHandle` take only values; `GetExitCodeProcess` writes the
-    // `u32` it is given, which lives until it returns.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 {
-            return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
-        }
-        let mut code = 0;
-        let read = GetExitCodeProcess(handle, &raw mut code);
-        CloseHandle(handle);
-        read == 0 || code == STILL_ACTIVE
-    }
-}
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    /// Win32 `OpenProcess` — returns a process handle (0 on failure).
-    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-    /// Win32 `CloseHandle`.
-    fn CloseHandle(handle: isize) -> i32;
-    /// Win32 `GetExitCodeProcess` — `STILL_ACTIVE` until the process exits (0 on failure).
-    fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
-}
+pub use crate::boot_identity::pid_is_live;
 
 /// Read a daemon record from a pidfile, or `None` when absent/corrupt. A `None` here deregisters the
 /// holder (the caller reaps the file), which is why [`DaemonRecord`]'s shape only ever grows in

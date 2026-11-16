@@ -12,7 +12,6 @@ use std::time::{Duration, SystemTime};
 /// Prefix of an identity that is a boot time in unix seconds.
 const TIME_PREFIX: &str = "t:";
 /// Prefix of an identity that is an opaque id.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", windows))]
 const ID_PREFIX: &str = "id:";
 /// How far apart two boot-time readings of one boot may be.
 const BOOT_TIME_SLACK_SECS: u64 = 10;
@@ -86,21 +85,115 @@ pub(crate) fn boot_time() -> Option<SystemTime> {
 /// process and differs for the next process given that pid. `None` when there is no such process
 /// or it cannot be read. Not comparable across platforms or with wall-clock time.
 pub(crate) fn process_start(pid: u32) -> Option<u64> {
+    let pid = valid_pid(pid)?;
     #[cfg(target_os = "linux")]
     {
-        // Field 22, `starttime`, in clock ticks since boot; the command name before it may hold
-        // spaces and parentheses, so fields are counted from the last `)`.
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let after_name = &stat[stat.rfind(')')? + 1..];
-        after_name.split_whitespace().nth(19)?.parse().ok()
+        u64::try_from(linux::start_ticks(pid)?).ok()
     }
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        let pid = libc::c_int::try_from(pid).ok()?;
+        let (secs, micros) = mac::start(pid)?;
+        Some(secs.wrapping_mul(1_000_000).wrapping_add(micros))
+    }
+    #[cfg(windows)]
+    {
+        win::creation_time(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios", windows)))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Unix seconds at which the process now running as `pid` started, by the wall clock. `None` when
+/// there is no such process, it may not be inspected, or the platform gives no start time. On
+/// Linux it is derived from the boot time, so it moves with every clock step: prefer
+/// [`process_start`] wherever a recorded value can be compared.
+pub(crate) fn process_started_unix(pid: u32) -> Option<i64> {
+    let pid = valid_pid(pid)?;
+    #[cfg(target_os = "linux")]
+    {
+        let ticks = linux::start_ticks(pid)?;
+        let boot = boot_time()?.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
+        // SAFETY: `sysconf` only reads a constant of the running system.
+        let per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if per_second <= 0 {
+            return None;
+        }
+        Some(i64::try_from(boot).ok()? + ticks / i64::from(per_second))
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        i64::try_from(mac::start(pid)?.0).ok()
+    }
+    #[cfg(windows)]
+    {
+        /// `FILETIME` intervals (100 ns) per second.
+        const INTERVALS_PER_SECOND: u64 = 10_000_000;
+        /// Seconds from the `FILETIME` epoch (1601-01-01) to the unix epoch.
+        const SECONDS_FROM_1601_TO_1970: i64 = 11_644_473_600;
+        let intervals = win::creation_time(pid)?;
+        Some(i64::try_from(intervals / INTERVALS_PER_SECOND).ok()? - SECONDS_FROM_1601_TO_1970)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios", windows)))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// `pid` as the platform's signed pid.
+fn valid_pid(pid: u32) -> Option<i32> {
+    i32::try_from(pid).ok()
+}
+
+/// Whether a process id is still live. Unix: `kill(pid, 0)`, where `0` (signalable) and `EPERM`
+/// (exists, not ours) both mean alive and `ESRCH` means gone. Windows: `OpenProcess` succeeds for a
+/// live pid.
+#[cfg(any(unix, windows))]
+pub fn pid_is_live(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: `kill` with signal 0 performs only an existence/permission check and sends no signal.
+        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(windows)]
+    {
+        win::is_live(pid)
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    /// Field 22 of `/proc/<pid>/stat`, `starttime`: clock ticks from the boot to the start.
+    pub(super) fn start_ticks(pid: i32) -> Option<i64> {
+        start_ticks_in(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+    }
+
+    /// [`start_ticks`] of a `stat` line. The command in field 2 may hold spaces and parentheses, so
+    /// the fields are counted from its closing one.
+    pub(super) fn start_ticks_in(stat: &str) -> Option<i64> {
+        const FIELDS_AFTER_COMMAND_BEFORE_START: usize = 19;
+        let (_, after_command) = stat.rsplit_once(')')?;
+        after_command
+            .split_ascii_whitespace()
+            .nth(FIELDS_AFTER_COMMAND_BEFORE_START)?
+            .parse()
+            .ok()
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod mac {
+    /// The start of the process `pid`: unix seconds and the microseconds past them.
+    pub(super) fn start(pid: i32) -> Option<(u64, u64)> {
         // SAFETY: `proc_bsdinfo` is plain old data, so all zeroes is a valid value.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
-        // SAFETY: `PROC_PIDTBSDINFO` writes at most `size` bytes of a `proc_bsdinfo` into `info`.
+        // SAFETY: `info` is a live `proc_bsdinfo` and `size` its size, which is all
+        // `PROC_PIDTBSDINFO` writes into it.
         let written = unsafe {
             libc::proc_pidinfo(
                 pid,
@@ -110,37 +203,7 @@ pub(crate) fn process_start(pid: u32) -> Option<u64> {
                 size,
             )
         };
-        (written == size).then(|| {
-            info.pbi_start_tvsec
-                .wrapping_mul(1_000_000)
-                .wrapping_add(info.pbi_start_tvusec)
-        })
-    }
-    #[cfg(windows)]
-    {
-        /// `OpenProcess` access mask: query basic info only.
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-        let mut created = win::FileTime::default();
-        let mut exited = win::FileTime::default();
-        let mut kernel = win::FileTime::default();
-        let mut user = win::FileTime::default();
-        // SAFETY: `OpenProcess`/`CloseHandle` take only primitive arguments; `GetProcessTimes`
-        // writes one `FILETIME` into each of the four out-pointers, which outlive the call.
-        let ok = unsafe {
-            let handle = win::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle == 0 {
-                return None;
-            }
-            let ok = win::GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
-            win::CloseHandle(handle);
-            ok
-        };
-        (ok != 0).then(|| (u64::from(created.high) << 32) | u64::from(created.low))
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios", windows)))]
-    {
-        let _ = pid;
-        None
+        (written == size).then_some((info.pbi_start_tvsec, info.pbi_start_tvusec))
     }
 }
 
@@ -205,12 +268,63 @@ fn boot_id() -> Option<String> {
 
 #[cfg(windows)]
 mod win {
+    /// `OpenProcess` access mask: query basic info only.
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
     /// Win32 `FILETIME`: 100 ns intervals since 1601, split in two halves.
     #[repr(C)]
     #[derive(Default)]
-    pub(super) struct FileTime {
-        pub(super) low: u32,
-        pub(super) high: u32,
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    /// An open process handle, closed on drop.
+    pub(super) struct Process(isize);
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is a handle `OpenProcess` returned and nothing else closes.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// A handle to the live process `pid`, or `None` when there is none or it may not be queried.
+    pub(super) fn open_process(pid: u32) -> Option<Process> {
+        // SAFETY: `OpenProcess` takes only values and reads no caller memory.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        (handle != 0).then_some(Process(handle))
+    }
+
+    /// Whether `pid` names a process that has not exited. One `OpenProcess` refuses with
+    /// `ERROR_ACCESS_DENIED` exists and is not ours (the `EPERM` of `kill`), so it is live; one it
+    /// opens is live only until it exits, because a handle anyone still holds keeps an exited
+    /// process openable.
+    pub(super) fn is_live(pid: u32) -> bool {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        /// The exit code `GetExitCodeProcess` reports for a process that has not exited.
+        const STILL_ACTIVE: u32 = 259;
+        let Some(process) = open_process(pid) else {
+            return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+        };
+        let mut code = 0;
+        // SAFETY: `process` holds an open handle, and `GetExitCodeProcess` writes the `u32` it is
+        // given, which lives until it returns.
+        let read = unsafe { GetExitCodeProcess(process.0, &raw mut code) };
+        read == 0 || code == STILL_ACTIVE
+    }
+
+    /// When the process `pid` was created, in `FILETIME` intervals.
+    pub(super) fn creation_time(pid: i32) -> Option<u64> {
+        let process = open_process(pid.unsigned_abs())?;
+        let mut created = FileTime::default();
+        let mut exited = FileTime::default();
+        let mut kernel = FileTime::default();
+        let mut user = FileTime::default();
+        // SAFETY: `process` holds an open handle, and `GetProcessTimes` writes one `FILETIME` into
+        // each of the four out-pointers, which outlive the call.
+        let ok = unsafe { GetProcessTimes(process.0, &mut created, &mut exited, &mut kernel, &mut user) };
+        (ok != 0).then(|| (u64::from(created.high) << 32) | u64::from(created.low))
     }
 
     #[link(name = "kernel32")]
@@ -218,16 +332,18 @@ mod win {
         /// Milliseconds since the system started.
         pub(super) fn GetTickCount64() -> u64;
         /// Returns a process handle (0 on failure).
-        pub(super) fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
         /// Nonzero on success.
-        pub(super) fn GetProcessTimes(
+        fn GetProcessTimes(
             handle: isize,
             creation: *mut FileTime,
             exit: *mut FileTime,
             kernel: *mut FileTime,
             user: *mut FileTime,
         ) -> i32;
-        pub(super) fn CloseHandle(handle: isize) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+        /// `STILL_ACTIVE` until the process exits (0 on failure).
+        fn GetExitCodeProcess(process: isize, code: *mut u32) -> i32;
     }
 
     #[link(name = "advapi32")]
@@ -249,15 +365,25 @@ mod win {
 mod tests {
     use super::*;
 
+    /// A pid no process has, and that every platform's pid type can carry.
+    const UNUSED_PID: u32 = 0x7FFF_FFFE;
+
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
-    fn the_running_boot_has_an_id_that_does_not_change() {
+    fn the_running_boot_has_an_identity_that_does_not_change() {
         let first = current().expect("this platform names its boot");
         let second = current().expect("still");
-        assert!(
-            first.starts_with(ID_PREFIX),
-            "{first} is a per-boot id, not a time the clock moves"
-        );
+        // Windows keeps its boot id in the registry, where a server edition may not have it; the
+        // identity is then the boot time. Elsewhere the id is always there. ~keep
+        let id_expected = !cfg!(windows) || boot_id().is_some();
+        if id_expected {
+            assert!(
+                first.starts_with(ID_PREFIX),
+                "{first} is a per-boot id, not a time the clock moves"
+            );
+        } else {
+            assert!(first.starts_with(TIME_PREFIX), "{first} falls back to the boot time");
+        }
         assert_eq!(
             same_boot(&first, &second),
             Some(true),
@@ -265,17 +391,47 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn a_process_start_is_stable_and_absent_for_a_pid_no_process_has() {
+        let own = process_start(std::process::id()).expect("this process has a start");
+        assert_eq!(process_start(std::process::id()), Some(own), "stable across readings");
+        assert_eq!(process_start(UNUSED_PID), None, "no process has that pid");
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_process_start_names_one_process() {
         let own = process_start(std::process::id()).expect("this process has a start");
-        assert_eq!(process_start(std::process::id()), Some(own), "stable across readings");
-        assert_eq!(process_start(u32::MAX - 11), None, "no process has that pid");
         let mut child = std::process::Command::new("sleep").arg("30").spawn().expect("spawn");
         let other = process_start(child.id());
         let _ = child.kill();
         let _ = child.wait();
         assert!(other.is_some_and(|other| other != own), "{other:?} vs {own}");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn this_process_started_before_now_and_not_long_ago() {
+        const A_DAY: i64 = 24 * 3600;
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("a clock after 1970")
+                .as_secs(),
+        )
+        .expect("seconds fit");
+        let started = process_started_unix(std::process::id()).expect("this process has a start time");
+        assert!(started <= now && started > now - A_DAY, "{started} against {now}");
+        assert_eq!(process_started_unix(UNUSED_PID), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_start_field_is_found_behind_a_command_with_spaces_and_parentheses() {
+        let stat = "4242 (a (odd) name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654 20 21";
+        assert_eq!(linux::start_ticks_in(stat), Some(987_654));
+        assert_eq!(linux::start_ticks_in("4242 (short) S 1 2"), None);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
