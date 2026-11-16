@@ -263,14 +263,19 @@ fn lost_rows_are_repaired_when_the_generation_fell_behind_and_only_then() {
     assert_eq!(indexed_symbol_paths(&behind, "alpha"), vec!["alpha.rs".to_string()]);
 }
 
-/// A file map written before the generation existed decodes to generation 0, which claims nothing
-/// about the index: it opens as before, and the next flush starts stamping.
+/// A file map without a generation decodes to generation 0, which claims nothing about the index:
+/// it opens as before, and the next flush starts stamping.
+///
+/// The map carries the current blob layout. A real map from before generations also predates the
+/// blob layout field and is discarded whole for it (`store_tests`), which says nothing about how
+/// generation 0 is read.
 #[test]
 fn a_file_map_without_a_generation_opens_as_before() {
     #[derive(serde::Serialize)]
     struct PreGenerationIndex<'a> {
         schema_ver: u16,
         files: &'a ahash::AHashMap<basemind::path::RelPath, basemind::store::FileEntry>,
+        blob_layout: u8,
     }
 
     basemind::store::init_isolated_cache();
@@ -281,6 +286,7 @@ fn a_file_map_without_a_generation_opens_as_before() {
     let old = rmp_serde::to_vec_named(&PreGenerationIndex {
         schema_ver: store.index.schema_ver,
         files: &store.index.files,
+        blob_layout: basemind::store_layout::BLOB_LAYOUT,
     })
     .unwrap();
     drop(store);
@@ -478,32 +484,44 @@ fn a_writer_open_persists_the_emptied_file_map_before_any_scan() {
 }
 
 /// A process killed between the open that wrote the emptied file map and the rebuild scan leaves an
-/// empty map over an empty index. The next open has no rebuild flag to go on, so the store itself
-/// must say an incremental scan would index only the paths it is handed.
+/// empty map over an empty index. The emptied map records the pending rebuild itself, so the next
+/// open still owes it, and the store says an incremental scan would index only the paths it is
+/// handed.
 #[test]
 fn a_rebuild_that_never_ran_still_asks_for_a_full_scan() {
     basemind::store::init_isolated_cache();
     let dir = TempDir::new().unwrap();
     let root = dir.path();
-    scanned_store_with_an_index_behind(root);
+    let (view_dir, _) = scanned_store_with_an_index_behind(root);
 
     drop(Store::open(root, VIEW_WORKING).expect("the open that empties the file map"));
+    assert!(
+        file_map_on_disk(&view_dir).rebuild_pending,
+        "the emptied file map on disk records the rebuild it owes"
+    );
 
     let mut killed_before_the_scan = Store::open(root, VIEW_WORKING).expect("reopen");
     assert!(
-        !killed_before_the_scan.index_rebuild_needed,
-        "an empty file map over an empty index carries no rebuild flag"
+        killed_before_the_scan.index_rebuild_needed,
+        "the pending rebuild outlives the process that never ran it"
     );
     assert!(killed_before_the_scan.needs_full_scan(), "nothing is indexed");
 
     let report = rescan(root, &mut killed_before_the_scan);
     assert_eq!(report.stats.updated, 3);
     assert!(!killed_before_the_scan.needs_full_scan(), "the tree is indexed again");
+    assert!(
+        !file_map_on_disk(&view_dir).rebuild_pending,
+        "the full pass that rebuilt the index clears the record"
+    );
 }
 
 /// The restarted count can reach the old file map's generation while the rebuild is still partial:
 /// each flush seals the index first, so a flush whose file-map write fails advances it anyway. The
-/// old file map would then match an index holding one file's rows and skip the other two for good.
+/// old file map would then match an index missing rows and skip their files for good.
+///
+/// The rebuilt index is left empty by flushing alone: any scan of a store owing a rebuild runs the
+/// full pass, which indexes every file before its flush can fail.
 #[test]
 fn an_interrupted_rebuild_is_not_adopted_by_the_file_map_it_replaces() {
     basemind::store::init_isolated_cache();
@@ -515,16 +533,11 @@ fn an_interrupted_rebuild_is_not_adopted_by_the_file_map_it_replaces() {
     let blocker = view_dir.join(format!("{INDEX_FILE}.tmp"));
     fs::create_dir(&blocker).unwrap();
     while rebuilding.index_db.as_ref().unwrap().scan_generation().unwrap() < sealed {
-        basemind::scanner::scan_paths(
-            root,
-            &mut rebuilding,
-            &ConfigV1::with_defaults(),
-            &[root.join("alpha.rs")],
-            EmbedMode::Deferred,
-        )
-        .expect_err("the file map cannot be written over a directory");
+        rebuilding
+            .flush()
+            .expect_err("the file map cannot be written over a directory");
     }
-    assert_eq!(indexed_symbol_paths(&rebuilding, "alpha"), vec!["alpha.rs".to_string()]);
+    assert!(indexed_symbol_paths(&rebuilding, "alpha").is_empty(), "a partial index");
     assert!(indexed_symbol_paths(&rebuilding, "beta").is_empty(), "a partial index");
     drop(rebuilding);
     fs::remove_dir(&blocker).unwrap();
