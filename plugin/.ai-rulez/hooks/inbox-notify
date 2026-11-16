@@ -23,32 +23,37 @@ command -v jq >/dev/null 2>&1 || exit 0
 STDIN_JSON="$(cat 2>/dev/null || true)"
 
 # Run "$@" for at most $1 seconds. Uses `timeout` where installed; macOS has none by default, so a
-# watchdog kills the command and its children there. Standard input is passed through.
-run_bounded() {
-  local secs="$1"
+# watchdog stops the command there. The command runs in a process group of its own and the watchdog
+# signals that group: a helper it left holding stdout goes too, while the daemon its CLI may have
+# started, in a session of its own, is outside the group and keeps running. Standard input is passed
+# through.
+run_bounded() (
+  secs="$1"
   shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@"
-    return
+    exec timeout "$secs" "$@"
   fi
-  "$@" <&0 &
-  local pid=$!
+  # Job control gives a background job its own process group. The shell's job reports would go to
+  # its stderr, so that is discarded and the command gets the caller's stderr from fd 3.
+  exec 3>&2 2>/dev/null
+  set -m
+  "$@" <&0 2>&3 3>&- &
+  pid=$!
   (
-    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    nap=""
+    trap '[ -z "$nap" ] || kill "$nap"; exit 0' TERM
     sleep "$secs" &
     nap=$!
     wait "$nap" || exit 0
-    # Its children too: one left holding stdout would keep the caller waiting. ~keep
-    command -v pkill >/dev/null 2>&1 && pkill -TERM -P "$pid" 2>/dev/null
-    kill -TERM "$pid" 2>/dev/null
-  ) &
-  local watchdog=$!
+    kill -TERM -- "-$pid"
+  ) >/dev/null 3>&- &
+  watchdog=$!
   wait "$pid"
-  local rc=$?
-  kill "$watchdog" 2>/dev/null
-  wait "$watchdog" 2>/dev/null
-  return "$rc"
-}
+  rc=$?
+  kill "$watchdog"
+  wait "$watchdog"
+  exit "$rc"
+)
 
 run_launcher() {
   run_bounded 6 "$LAUNCHER" "$@" 2>/dev/null

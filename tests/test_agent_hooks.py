@@ -4,7 +4,9 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -37,11 +39,29 @@ INBOX = {
     "notices": [],
 }
 
+# The CLI starting the daemon the way `comms daemon` is started (a session of its own, stdio
+# detached), then hanging. Until the CLI exits, the daemon is a direct child of the command the hook
+# runs.
+DAEMON_SPAWNING_CLI = """import os, sys, time
+if os.fork() == 0:
+    os.setsid()
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    with open(sys.argv[1] + ".tmp", "w") as out:
+        out.write(str(os.getpid()))
+    os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+    time.sleep(60)
+    os._exit(0)
+time.sleep(60)
+"""
+
 # Records its arguments and stdin, then answers like the CLI: `hook name`, `hook pre-tool-use` or `inbox`.
-LAUNCHER = """printf '%s\\n' "$@" > "$HOME/launcher-args"
+LAUNCHER = """[ -n "${SPAWN_DAEMON:-}" ] && exec "$PYTHON" -c "$DAEMON_SPAWNING_CLI" "$HOME/daemon-pid"
+printf '%s\\n' "$@" > "$HOME/launcher-args"
 cat > "$HOME/launcher-stdin"
 case "$1 $2 $3" in
-"agent hook name") printf '%s' "${NAME_RESULT-session-1a2b3c4d}" ;;
+"agent hook name") printf '%s' "${NAME_RESULT-session-1a2b3c4d}"; exit "${NAME_EXIT:-0}" ;;
 "agent hook pre-tool-use") sleep "${LAUNCHER_SLEEP:-0}"; printf '%s' "$HOOK_RESULT"; exit "${LAUNCHER_EXIT:-0}" ;;
 "agent inbox "*) printf '%s' "$INBOX_RESULT"; exit "${LAUNCHER_EXIT:-0}" ;;
 esac
@@ -124,6 +144,27 @@ class AgentHookTests(unittest.TestCase):
         result = self.run_hook("agent-as", {"tool_name": "x"}, HOOK_RESULT="late", LAUNCHER_SLEEP="30")
         self.assertLess(time.monotonic() - started, 12)
         self.assertEqual(result.stdout, "")
+
+    def assert_the_watchdog_spares_the_daemon(self, hook: str) -> None:
+        started = time.monotonic()
+        result = self.run_hook(
+            hook,
+            {"session_id": "s1", "tool_name": "x", "prompt": "go"},
+            SPAWN_DAEMON="1",
+            PYTHON=sys.executable,
+            DAEMON_SPAWNING_CLI=DAEMON_SPAWNING_CLI,
+        )
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertEqual(result.stdout, "")
+        daemon = int((self.root / "daemon-pid").read_text())
+        self.addCleanup(os.kill, daemon, signal.SIGKILL)
+        os.kill(daemon, 0)
+
+    def test_agent_as_watchdog_leaves_a_daemon_the_cli_started_running(self) -> None:
+        self.assert_the_watchdog_spares_the_daemon("agent-as")
+
+    def test_inbox_notify_watchdog_leaves_a_daemon_the_cli_started_running(self) -> None:
+        self.assert_the_watchdog_spares_the_daemon("inbox-notify")
 
     def test_agent_as_is_time_boxed_when_timeout_exists(self) -> None:
         (self.bin / "timeout").write_text('#!/bin/bash\nprintf "%s\\n" "$1" > "$HOME/timeout-arg"\nshift\nexec "$@"\n')
@@ -216,7 +257,13 @@ class AgentAsManifestTests(unittest.TestCase):
                 self.assertIsNone(matcher.fullmatch(f"mcp__plugin_basemind_basemind__{tool}"), (manifest, tool))
 
     def test_agent_as_ships_wherever_the_hook_scripts_do(self) -> None:
-        for directory in ("plugin/.ai-rulez/hooks", "plugin/hooks", "hooks", ".codex-plugin/hooks", ".cursor-plugin/hooks"):
+        for directory in (
+            "plugin/.ai-rulez/hooks",
+            "plugin/hooks",
+            "hooks",
+            ".codex-plugin/hooks",
+            ".cursor-plugin/hooks",
+        ):
             self.assertTrue((ROOT / directory / "agent-as").is_file(), directory)
             self.assertTrue(os.access(ROOT / directory / "agent-as", os.X_OK), directory)
 

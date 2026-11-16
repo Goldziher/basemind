@@ -4,10 +4,15 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+
+from test_agent_hooks import DAEMON_SPAWNING_CLI
 
 ROOT = Path(__file__).resolve().parent.parent
 HOOK = ROOT / "plugin/.ai-rulez/hooks/session-start"
@@ -61,6 +66,7 @@ class SessionStartTests(unittest.TestCase):
             scripts / "mcp-launch.sh",
             """case "$1" in
 agent)
+  [ -n "${SPAWN_DAEMON:-}" ] && exec "$PYTHON" -c "$DAEMON_SPAWNING_CLI" "$HOME/daemon-pid"
   if [ "$2" = hook ]; then
     cat > "$HOME/hook-stdin"
     printf '%s' "${NAME_RESULT-session-1a2b3c4d}"
@@ -193,6 +199,20 @@ esac""",
         self.invoke(status, inbox=inbox, NAME_RESULT="")
         args = (self.root / "inbox-args").read_text().splitlines()
         self.assertNotIn("--as", args, "a host that injects no name reads as the principal")
+
+    def test_the_watchdog_leaves_a_daemon_the_cli_started_running(self) -> None:
+        started = time.monotonic()
+        result = self.invoke(
+            '{"file_count":5,"schema_version":33}',
+            SPAWN_DAEMON="1",
+            PYTHON=sys.executable,
+            DAEMON_SPAWNING_CLI=DAEMON_SPAWNING_CLI,
+        )
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertIn("basemind verified", result)
+        daemon = int((self.root / "daemon-pid").read_text())
+        self.addCleanup(os.kill, daemon, signal.SIGKILL)
+        os.kill(daemon, 0)
 
     def test_a_build_without_agent_messaging_names_no_agent_tool(self) -> None:
         result = self.invoke('{"file_count":5,"schema_version":33}', AGENT_EXIT="2")
