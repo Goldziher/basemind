@@ -1,0 +1,199 @@
+"""Exercise the agent-as PreToolUse hook and the announcing inbox-notify hook against a stub launcher."""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+HOOKS = ROOT / "plugin/.ai-rulez/hooks"
+NAME = "session-1a2b3c4d"
+
+INBOX = {
+    "messages": [
+        {
+            "id": "t-abcdef.3",
+            "subject": "auth refactor",
+            "from": "claude-basemind-0a1b2c",
+            "ts_micros": 1,
+            "body": "",
+            "body_bytes": 120,
+        },
+        {
+            "id": "t-abcdef.4",
+            "subject": "auth refactor",
+            "from": "cursor-basemind-9f8e7d.perf",
+            "ts_micros": 2,
+            "body": "",
+            "body_bytes": 7,
+        },
+    ],
+    "more": False,
+    "notices": [],
+}
+
+# Records its arguments and stdin, then answers like the CLI: `hook name`, `hook pre-tool-use` or `inbox`.
+LAUNCHER = """printf '%s\\n' "$@" > "$HOME/launcher-args"
+cat > "$HOME/launcher-stdin"
+case "$1 $2 $3" in
+"agent hook name") printf '%s' "${NAME_RESULT-session-1a2b3c4d}" ;;
+"agent hook pre-tool-use") printf '%s' "$HOOK_RESULT"; exit "${LAUNCHER_EXIT:-0}" ;;
+"agent inbox "*) printf '%s' "$INBOX_RESULT"; exit "${LAUNCHER_EXIT:-0}" ;;
+esac
+"""
+
+
+class AgentHookTests(unittest.TestCase):
+    def setUp(self) -> None:
+        if shutil.which("jq") is None:
+            self.skipTest("jq is required")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        for command in ("jq", "dirname", "cat", "tr", "sed", "grep"):
+            (self.bin / command).symlink_to(shutil.which(command))
+        hooks = self.root / "hooks"
+        hooks.mkdir()
+        for name in ("agent-as", "inbox-notify"):
+            shutil.copyfile(HOOKS / name, hooks / name)
+        scripts = self.root / "scripts"
+        scripts.mkdir()
+        launcher = scripts / "mcp-launch.sh"
+        launcher.write_text(f"#!/bin/bash\n{LAUNCHER}")
+        launcher.chmod(0o755)
+        self.hooks = hooks
+
+    def run_hook(self, name: str, event: dict | str, **extra: str) -> subprocess.CompletedProcess:
+        env = {**os.environ, "HOME": str(self.root), "PATH": str(self.bin), "HOOK_RESULT": "", "INBOX_RESULT": ""}
+        for variable in ("CURSOR_PLUGIN_ROOT", "COPILOT_CLI", "CLAUDE_PLUGIN_ROOT"):
+            env.pop(variable, None)
+        env.update(extra)
+        payload = event if isinstance(event, str) else json.dumps(event)
+        return subprocess.run(
+            ["/bin/bash", str(self.hooks / name)],
+            input=payload,
+            env=env,
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+
+    def launcher_args(self) -> list[str]:
+        return (self.root / "launcher-args").read_text().splitlines()
+
+    def test_agent_as_pipes_the_event_to_the_cli_and_prints_its_answer(self) -> None:
+        answer = json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": {"body": "hi", "subject": "s", "as": NAME},
+                }
+            }
+        )
+        event = {
+            "session_id": "s1",
+            "tool_name": "mcp__plugin_basemind_basemind__agent_post",
+            "tool_input": {"body": "hi"},
+        }
+        result = self.run_hook("agent-as", event, HOOK_RESULT=answer)
+        self.assertEqual(self.launcher_args(), ["agent", "hook", "pre-tool-use"])
+        self.assertEqual(json.loads((self.root / "launcher-stdin").read_text()), event)
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["updatedInput"]["as"], NAME)
+
+    def test_agent_as_is_silent_when_the_cli_has_nothing_to_say(self) -> None:
+        result = self.run_hook("agent-as", {"tool_name": "x"}, HOOK_RESULT="")
+        self.assertEqual(result.stdout, "")
+
+    def test_agent_as_fails_open(self) -> None:
+        self.assertEqual(
+            self.run_hook("agent-as", {"tool_name": "x"}, HOOK_RESULT="partial", LAUNCHER_EXIT="1").stdout, ""
+        )
+        self.assertEqual(self.run_hook("agent-as", "", HOOK_RESULT="ignored").stdout, "")
+
+    def test_agent_as_is_time_boxed_when_timeout_exists(self) -> None:
+        (self.bin / "timeout").write_text('#!/bin/bash\nprintf "%s\\n" "$1" > "$HOME/timeout-arg"\nshift\nexec "$@"\n')
+        (self.bin / "timeout").chmod(0o755)
+        self.run_hook("agent-as", {"tool_name": "x"}, HOOK_RESULT="{}")
+        self.assertEqual((self.root / "timeout-arg").read_text().strip(), "6")
+
+    def announce(self, inbox: dict | str, **extra: str) -> subprocess.CompletedProcess:
+        text = inbox if isinstance(inbox, str) else json.dumps(inbox)
+        return self.run_hook("inbox-notify", {"session_id": "s1", "prompt": "go"}, INBOX_RESULT=text, **extra)
+
+    def test_inbox_notify_announces_under_the_session_name_and_lists_each_message(self) -> None:
+        result = self.announce(INBOX, CLAUDE_PLUGIN_ROOT=str(self.root))
+        args = self.launcher_args()
+        self.assertEqual(args[:2], ["agent", "inbox"])
+        for flag in ("--announce", "--json"):
+            self.assertIn(flag, args)
+        self.assertEqual(args[args.index("--as") + 1], NAME)
+        self.assertEqual(args[args.index("--limit") + 1], "10")
+        self.assertEqual(Path(args[args.index("--root") + 1]).resolve(), self.root.resolve())
+        payload = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(payload["hookEventName"], "UserPromptSubmit")
+        context = payload["additionalContext"]
+        self.assertIn("from claude-basemind-0a1b2c in auth refactor (t-abcdef.3, 120 bytes)", context)
+        self.assertIn("from cursor-basemind-9f8e7d.perf in auth refactor (t-abcdef.4, 7 bytes)", context)
+        self.assertIn("agent_inbox", context)
+        self.assertNotIn("more unread than listed", context)
+
+    def test_inbox_notify_says_when_more_is_unread_than_listed(self) -> None:
+        context = json.loads(self.announce({**INBOX, "more": True}, CLAUDE_PLUGIN_ROOT=str(self.root)).stdout)
+        self.assertIn("more unread than listed", context["hookSpecificOutput"]["additionalContext"])
+
+    def test_inbox_notify_keeps_no_state_between_turns(self) -> None:
+        first = self.announce(INBOX).stdout
+        second = self.announce(INBOX).stdout
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, "")
+        self.assertEqual(list(self.root.glob("**/*hwm*")), [])
+
+    def test_inbox_notify_is_silent_without_messages_or_a_name(self) -> None:
+        self.assertEqual(self.announce({"messages": [], "more": False}).stdout, "")
+        self.assertEqual(self.announce("not JSON").stdout, "")
+        self.assertEqual(self.announce("").stdout, "")
+        self.assertEqual(self.announce(INBOX, NAME_RESULT="").stdout, "")
+        self.assertEqual(self.announce(INBOX, LAUNCHER_EXIT="1").stdout, "")
+
+    def test_inbox_notify_emits_the_harness_shape(self) -> None:
+        cursor = json.loads(self.announce(INBOX, CURSOR_PLUGIN_ROOT="/p").stdout)
+        self.assertIn("additional_context", cursor)
+        plain = json.loads(self.announce(INBOX).stdout)
+        self.assertIn("additionalContext", plain)
+
+
+class AgentAsManifestTests(unittest.TestCase):
+    MANIFESTS = ("plugin/.ai-rulez/hooks/hooks.json", "plugin/hooks/hooks.json", "hooks/hooks.json")
+
+    def entries(self, manifest: str) -> list[dict]:
+        return json.loads((ROOT / manifest).read_text())["hooks"]["PreToolUse"]
+
+    def test_the_agent_tools_have_an_agent_as_entry_and_the_guard_keeps_its_own(self) -> None:
+        for manifest in self.MANIFESTS:
+            entries = self.entries(manifest)
+            by_command = {hook["command"].rsplit(" ", 1)[1]: entry for entry in entries for hook in entry["hooks"]}
+            self.assertEqual(set(by_command), {"pre-tool-guard", "agent-as"}, manifest)
+            self.assertEqual(by_command["pre-tool-guard"]["matcher"], "Grep|Glob|Bash", manifest)
+            matcher = re.compile(by_command["agent-as"]["matcher"])
+            for tool in ("agent_post", "agent_inbox", "agent_threads"):
+                self.assertTrue(matcher.fullmatch(f"mcp__plugin_basemind_basemind__{tool}"), (manifest, tool))
+                self.assertTrue(matcher.fullmatch(f"mcp__basemind__{tool}"), (manifest, tool))
+            for tool in ("code_outline", "memory_save", "agent_other"):
+                self.assertIsNone(matcher.fullmatch(f"mcp__plugin_basemind_basemind__{tool}"), (manifest, tool))
+
+    def test_agent_as_ships_wherever_the_hook_scripts_do(self) -> None:
+        for directory in ("plugin/.ai-rulez/hooks", "plugin/hooks", "hooks"):
+            self.assertTrue((ROOT / directory / "agent-as").is_file(), directory)
+            self.assertTrue(os.access(ROOT / directory / "agent-as", os.X_OK), directory)
+
+
+if __name__ == "__main__":
+    unittest.main()

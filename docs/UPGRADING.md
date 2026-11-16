@@ -10,8 +10,8 @@ is cleaned up.
 
 The release after 0.33 replaces the mode-dispatched MCP tools `code`, `git`, `memory` and `admin`
 with 15 tools, one per job ([ADR-0018](adr/0018-mcp-verb-tools.md)). The change is breaking and has
-no aliases: a call to an old tool name fails, and no tool takes a `mode` argument any more. `agents`
-is unchanged; the `workspace` tool is removed (see below). The plugin's skills, commands, hooks and rules ship in the same
+no aliases: a call to an old tool name fails, and no tool takes a `mode` argument any more. The
+`agents` tool is replaced by three deferred tools (see "Upgrading to agent comms v2"); the `workspace` tool is removed (see below). The plugin's skills, commands, hooks and rules ship in the same
 release and the plugin downloads the matching binary, so update both together.
 
 The tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`): a host that defers MCP tools
@@ -230,6 +230,43 @@ bare `truncated` on a listing.
 | `git_log {path: "dir/"}` | `truncated` at a fixed 200-commit window | `truncated_reason: "window"`, `next_cursor` past the window, `unmatched` |
 | `git_log {query}` | `partial` | `truncated`, `truncated_reason` (`live_walk`, `scan_cap`) |
 
+## Upgrading to agent comms v2 (ADR-0021)
+
+The `agents` MCP tool and the `basemind agents` CLI group are removed in the same release, with no
+aliases ([`comms-v2.md`](comms-v2.md) is the spec). Three deferred tools replace them: `agent_post`,
+`agent_inbox` and `agent_threads`; the CLI is `basemind agent post|inbox|threads`, plus
+`basemind agent status` and `basemind agent cleanup`.
+
+- **Restart every session.** The comms protocol goes from 6 to 7 and the relay protocol from 1 to 2.
+  A client and a daemon of different versions refuse each other at connect, and a session that
+  still runs an older binary has no messaging until it restarts. Run `basemind comms stop` after the
+  upgrade so the old daemon is replaced; update the plugin and the binary together.
+- **Old threads and messages are not imported.** The agent store is now `agents.fjall` in the
+  protocol generation's directory (`comms/g1/`) and starts empty. The previous `store.fjall` is
+  never read and is left where it is; `basemind comms cleanup` removes the pre-generation one once
+  no daemon holds its lock. Agents on a 0.33 binary and agents on this release do not see each
+  other's threads.
+- **Rename in scripts and prompts:**
+
+| Old | New |
+| --- | --- |
+| `as_agent` (field, `--as-agent`) | `as` (`--as`), `[a-z0-9_-]{1,32}`, acts as `<principal>.<name>` |
+| `basemind agents <verb>` | `basemind agent post\|inbox\|threads\|status\|cleanup` |
+| `agents` `thread_start` / `post` / `inbox` / `message` / `ack` / `wait` | `agent_post {subject, body}` / `agent_post {body, thread}` / `agent_inbox {}` / `agent_inbox {id}` / reading marks read / `agent_inbox {wait_secs}` |
+| `idempotency_key`, `since_hours`, `mark_read`, `message_ref` | gone; the relay replays with its own key, `unread: false` reads history |
+
+The full mode mapping is in the CHANGELOG.
+
+- **Identity ids.** `BASEMIND_AGENT_ID` and `comms.agent_id` must match `[A-Za-z0-9_:-]{1,128}`; a
+  `.` is now forbidden because it separates a principal from its `as` name. A value that fails is
+  skipped with a notice, and the id falls back to `<host>-<repo>-<6 hex>`. `BASEMIND_HOST` names the
+  harness and is set by the plugin launchers; set it yourself for a harness that is not launched
+  through them.
+- **Behaviour.** Reading marks messages read (`peek: true` does not). Idle threads no longer
+  archive after three days; messages and idle threads are removed after 30 days. A thread is
+  addressed by a subject and open to its repository, or invitation-only with `to`. `basemind agent
+  cleanup --archive <thread>` archives any thread.
+
 ## Running two basemind versions side by side
 
 The release after 0.33 moves the daemon's socket, lock, log and comms store from the comms directory
@@ -403,7 +440,7 @@ Also check scripts for these behaviour changes:
   interrupted. `scan` and `rescan` exit `3` (not `0`) when another process holds the lock.
 - The timing footer is on stderr; stdout carries only the answer. Human output no longer truncates
   values to 200 characters.
-- `agents` and `workspace` `--json` now use the MCP response shapes.
+- `agents` and `workspace` `--json` now use the MCP response shapes
 - MCP logging is gone, and the `memory` tool no longer accepts the `documents.*` / `llm.*` override fields.
 
 ## What changes on upgrade, and how it migrates

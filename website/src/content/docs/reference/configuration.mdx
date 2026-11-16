@@ -283,7 +283,7 @@ agent_id = "my-agent"
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | bool | `true` | Reserved: the `comms` cargo feature alone decides whether comms runs. |
-| `agent_id` | string | auto | Stable identity presented to the broker. Falls back to `BASEMIND_AGENT_ID`, then a generated per-session id. |
+| `agent_id` | string | auto | Stable identity (the principal) presented to the broker, used when `BASEMIND_AGENT_ID` is unset or invalid; otherwise the id is derived as `<host>-<repo>-<6 hex>`. Must match `[A-Za-z0-9_:-]{1,128}`; `.` is forbidden. |
 | `idle_timeout_secs` | integer | `1800` | Reserved: idle window before the broker sheds caches. |
 | `max_messages_per_room` | integer | `1000` | Reserved: per-thread front-matter retention cap. |
 | `retention_secs` | integer | `604800` | Reserved: message retention window; older messages become prune-eligible. |

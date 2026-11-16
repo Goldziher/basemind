@@ -34,7 +34,8 @@ async function resolveLatestVersion() {
 }
 
 function launchEnvironment(version) {
-  return version ? { ...process.env, BASEMIND_FORCE_VERSION: version } : process.env;
+  const environment = { ...process.env, BASEMIND_HOST: process.env.BASEMIND_HOST || "codex" };
+  return version ? { ...environment, BASEMIND_FORCE_VERSION: version } : environment;
 }
 
 export async function run(serverArgs) {

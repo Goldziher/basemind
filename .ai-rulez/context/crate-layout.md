@@ -31,12 +31,11 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
   - `overrides.rs` — `DocumentsCliOverrides` (backs clap `#[command(flatten)]` + MCP `#[serde(flatten)]`).
   - `layered.rs` — `merge_layers` (Mcp > Cli > Env > File > Default).
   - `source.rs` — `ConfigSource` + `ProvenanceMap` ledger.
-- `mcp/` — MCP server: fifteen verb tools, one per job with an exact schema (ADR-0018), plus the mode-dispatched `agents` tool in a `comms` build.
+- `mcp/` — MCP server: fifteen verb tools, one per job with an exact schema (ADR-0018), plus the three deferred agent tools (`agent_post`, `agent_inbox`, `agent_threads`) in a `comms` build (ADR-0021).
   - `mod.rs` — server bootstrap.
   - `types_tools.rs` — one `deny_unknown_fields` params struct per verb tool, and the `tool_args!` table that names each tool and builds `VERB_TOOLS`.
   - `strict.rs`, `tool_contract.rs` — `Strict<T>` argument validation (unknown field → did-you-mean + accepted list), `answer` (failures become `isError` results), `not_indexed` / `feature_missing`, the default token budget, and `finalize_router` (always-load marker, schema compaction).
-  - `tools.rs` (`code_*`, `find_files`) + `tools_git.rs` (`git_*`) / `tools_memory.rs` (`docs_search`, `memory_*`) / `tools_admin.rs` (`index_*`) — one thin `#[tool]` shim per tool plus the `<tool>_call` method the CLI also runs (1000-line cap each). `tools_comms.rs` holds the mode-dispatched `agents` tool.
-  - `mode.rs` — `define_mode!`, `reject_unsupported` and `domain_modes()`: the `mode` vocabulary of `agents` only.
+  - `tools.rs` (`code_*`, `find_files`) + `tools_git.rs` (`git_*`) / `tools_memory.rs` (`docs_search`, `memory_*`) / `tools_admin.rs` (`index_*`) — one thin `#[tool]` shim per tool plus the `<tool>_call` method the CLI also runs (1000-line cap each). `tools_comms.rs` holds the agent tools.
   - `helpers.rs` + `helpers_<area>.rs` (`helpers_calls.rs` / `helpers_code.rs` / `helpers_code_search.rs` / `helpers_documents.rs` / `helpers_expand.rs` / `helpers_git.rs` / `helpers_grep.rs` / `helpers_impls.rs` / `helpers_memory.rs` / `helpers_admin.rs`, and more) — the tool bodies.
   - `memory.rs` — the `run_memory_*` and `run_search_documents` bodies behind `memory_save`, `memory_search` and `docs_search`, over LanceDB.
   - `types.rs` + `types_<area>.rs` — response structs and the internal params the helpers take, `JsonSchema`-derived.

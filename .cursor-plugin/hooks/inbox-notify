@@ -1,61 +1,53 @@
 #!/usr/bin/env bash
-# basemind UserPromptSubmit hook: surface NEW agent-comms messages to the model.
+# basemind UserPromptSubmit hook: tell the model about unread agent messages.
 #
-# Reads this agent's inbox (front-matter ONLY — never message bodies) from the broker daemon
-# and injects any messages newer than the last turn as additionalContext. A per-session
-# high-water timestamp (keyed by the host's session_id) makes it idempotent: each message is
-# injected once, and the first turn only baselines (SessionStart already showed recent history).
+# Names this session (`basemind agent hook name`, the same name the agent-as hook gives its tool
+# calls), then asks the daemon for an announcing read of that actor's inbox: front matter only,
+# never a body, and it never marks anything read. A message is announced once; it stays unread
+# until the agent reads it with agent_inbox. The daemon keeps the announcement mark, so this hook
+# holds no state of its own.
 #
 # Hard rule: this must NEVER block or fail the user's turn. Every step is time-boxed and
-# fail-open — any error (no daemon, no jq, no messages) exits 0 with no output.
+# fail-open: any error (no daemon, no jq, no messages) exits 0 with no output.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LAUNCHER="${PLUGIN_ROOT}/scripts/mcp-launch.sh"
 
 # jq is required to parse the inbox JSON; without it, stay silent.
 command -v jq >/dev/null 2>&1 || exit 0
 
 STDIN_JSON="$(cat 2>/dev/null || true)"
-SID="$(printf '%s' "$STDIN_JSON" | jq -r '.session_id // "default"' 2>/dev/null | tr -c 'A-Za-z0-9._-' '_')"
-[ -n "$SID" ] || SID="default"
-HWM_FILE="${TMPDIR:-/tmp}/basemind-comms-hwm-${SID}"
 
-# Pull recent inbox front-matter (across the agent's threads). mark_read stays false so the hook
-# never consumes the agent's own inbox state — its own cursor is the hwm file below.
 # macOS has no coreutils `timeout` by default; run unbounded there rather than failing every turn.
-if command -v timeout >/dev/null 2>&1; then
-  INBOX_JSON="$(timeout 6 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agents inbox --root "$PWD" --json --limit 30 2>/dev/null)" || exit 0
-else
-  INBOX_JSON="$("${PLUGIN_ROOT}/scripts/mcp-launch.sh" agents inbox --root "$PWD" --json --limit 30 2>/dev/null)" || exit 0
-fi
+run_launcher() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 6 "$LAUNCHER" "$@" 2>/dev/null
+  else
+    "$LAUNCHER" "$@" 2>/dev/null
+  fi
+}
+
+NAME="$(printf '%s' "$STDIN_JSON" | run_launcher agent hook name | tr -cd 'a-z0-9_-')" || exit 0
+[ -n "$NAME" ] || exit 0
+
+INBOX_JSON="$(run_launcher agent inbox --announce --as "$NAME" --json --limit 10 --root "$PWD")" || exit 0
 [ -n "$INBOX_JSON" ] || exit 0
 
-MAXTS="$(printf '%s' "$INBOX_JSON" | jq -r '[.messages[].ts_micros] | max // 0' 2>/dev/null | tr -cd '0-9')"
-[ -n "$MAXTS" ] || MAXTS=0
+LINES="$(printf '%s' "$INBOX_JSON" |
+  jq -r '.messages[]? | "  - from \(.from) in \(.subject) (\(.id), \(.body_bytes // 0) bytes)"' 2>/dev/null)"
+[ -n "$LINES" ] || exit 0
 
-# First turn this session: baseline the high-water mark, do not replay history.
-if [ ! -f "$HWM_FILE" ]; then
-  printf '%s' "$MAXTS" >"$HWM_FILE" 2>/dev/null || true
-  exit 0
+MORE=""
+if [ "$(printf '%s' "$INBOX_JSON" | jq -r '.more // false' 2>/dev/null)" = "true" ]; then
+  MORE=$'\n'"There is more unread than listed."
 fi
 
-HWM="$(tr -cd '0-9' <"$HWM_FILE" 2>/dev/null)"
-[ -n "$HWM" ] || HWM=0
-
-NEW_LINES="$(printf '%s' "$INBOX_JSON" |
-  jq -r --argjson hwm "$HWM" \
-    '.messages[] | select(.ts_micros > $hwm) | "  • [\(.subject)] from \(.from) (ref: \(.message_ref // .id))"' \
-    2>/dev/null)"
-[ -n "$NEW_LINES" ] || exit 0
-
-# Advance the high-water mark so these messages are not re-injected next turn.
-printf '%s' "$MAXTS" >"$HWM_FILE" 2>/dev/null || true
-
-CONTEXT="New basemind agent-comms message(s) since your last turn (front-matter only — call agents mode message with the ref to read a body):
-${NEW_LINES}
-Reply with agents {mode: \"post\", thread: \"…\", subject: \"…\", body: \"…\", reply_to: \"<id>\"} if warranted."
+CONTEXT="Unread basemind agent messages (announced once, not yet read):
+${LINES}${MORE}
+Read them with agent_inbox (bodies inline; {\"id\":\"<id>\"} reads one whole message). The agent tools are deferred: find agent_post, agent_inbox and agent_threads by tool search. Reply with agent_post if warranted."
 
 # Escape for JSON embedding (single-pass parameter substitutions; mirrors session-start).
 escape_for_json() {

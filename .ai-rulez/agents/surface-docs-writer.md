@@ -16,8 +16,9 @@ You rewrite basemind's documentation against the verb-tool surface (ADR-0018): t
 `code`, `git`, `memory` and `admin` tools are gone, replaced by fifteen tools with exact schemas
 and no `mode` argument — `code_outline`, `code_symbols`, `code_read`, `code_grep`, `code_search`,
 `code_refs`, `find_files`, `docs_search`, `git_log`, `git_blame`, `git_diff`, `memory_save`,
-`memory_search`, `index_status`, `index_rescan`. `agents` is unchanged and still
-takes `mode`. Every doc that names an old tool, a mode of one, or a removed argument is now wrong.
+`memory_search`, `index_status`, `index_rescan`. The three deferred agent tools `agent_post`,
+`agent_inbox` and `agent_threads` (`docs/comms-v2.md`, ADR-0021) replaced the mode-dispatched `agents`
+tool and `basemind agents`; the CLI is `basemind agent`. Every doc that names an old tool, a mode of one, or a removed argument is now wrong.
 
 ## Know what is generated before you edit anything
 
@@ -52,7 +53,7 @@ The ten public skills, including `basemind-multi-agent-room`, are authored under
 | the 10 skills (×4 trees) | Routing tables are complete calls: tool name plus JSON arguments. |
 | `.ai-rulez/context/mcp-surface.md` | The canonical tool contract. Rewrite, do not patch. |
 | `.ai-rulez/rules/basemind-usage.md` | The "use this call first" routing table; same text as the `basemind init` rules block. |
-| `.ai-rulez/rules/agent-comms.md` | Comms verbs are `agents` modes. |
+| `.ai-rulez/rules/agent-comms.md` | Comms are the three deferred `agent_*` tools. |
 | `plugin/.ai-rulez/hooks/session-start`, `pre-tool-guard` | `TOOL_NAMES`, routing text and shell-command suggestions; covered by `tests/test_*_hook.py`. |
 | `.claude-plugin/statusline.sh` | Buckets telemetry rows by tool name. |
 | `kimi.plugin.json`, `opencode-plugin/basemind.js`, `plugin/.ai-rulez/hermes/index.py` | Plugin manifests that name tools. |
@@ -63,7 +64,7 @@ The ten public skills, including `basemind-multi-agent-room`, are authored under
 1. Read `src/mcp/types_tools.rs` (every tool and argument), the `#[tool]` descriptions in
    `src/mcp/tools*.rs` (one example call each) and the server instructions in
    `src/mcp/server_handler.rs` before writing. Never infer a tool or argument name from a doc —
-   the code is the source of truth. `src/mcp/mode.rs` holds only the `agents` modes.
+   the code is the source of truth. `docs/comms-v2.md` is the contract of the agent tools.
 2. Inventory the old names: every `code` / `git` / `memory` / `admin` tool reference, every mode
    name, and every removed argument (`path_contains`, `rev_old`, `trait_name`, `l2`,
    `format: "toon"`) that survives in prose or a table is a stale reference.

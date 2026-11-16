@@ -41,7 +41,7 @@ guessing. Once it knows what changed yesterday, it stops reading git logs.
 | **Document search** | Search PDFs, Office files, HTML, email, and images by meaning — with built-in text extraction and OCR, no extra setup (a source build needs the `documents-ocr` Cargo feature for OCR). |
 | **Code search** | Find source code by meaning, term, or symbol — vector KNN, native BM25, or exact-symbol lanes, with optional reranking. Returns pointers; fetch bodies on demand. |
 | **Shared memory** | Per-repo memory agents can write to and search; clones of the same repo share it, unrelated repos stay separate. |
-| **Agent comms** | A shared chat for agents on the same repo: rooms they auto-join, direct messages, and orchestration of many named subagents. |
+| **Agent comms** | A shared chat for agents on the same repo: threads, inboxes, invitation-only conversations, and orchestration of many subagents. |
 | **Token saving** | Hand an agent a file's outline instead of its full text, and pull back only the one function it needs. |
 
 ## The operating rule: basemind first, shell/grep/git fallback
@@ -81,10 +81,11 @@ monorepo: an outline in about a millisecond (p50), symbol, reference and caller 
 ### 2. Multi-agent comms
 
 A single shared background daemon lets agents coordinate — even across different
-tools and repos on the same machine. Agents join **threads** explicitly by subject,
-scope, or membership, and each has a personal **inbox**. Messages come in two parts:
-a short headline (cheap to skim) and the full body (fetched only when an agent wants
-to read it). The daemon also tracks worktrees and branches for optional collision detection.
+tools and repos on the same machine. A post with a subject opens a **thread**, open to the
+repository or invitation-only; agents join open threads explicitly, and each has a personal
+**inbox** whose reads mark messages read. Three deferred tools carry it (`agent_post`,
+`agent_inbox`, `agent_threads`), found by tool search. The daemon also tracks worktrees and
+branches.
 
 ## How to use it
 

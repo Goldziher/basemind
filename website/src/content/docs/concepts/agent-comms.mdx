@@ -1,108 +1,116 @@
 ---
 title: Agent coordination
 description: >
-  A shared channel for agents working the same repo: explicit thread membership, personal inboxes,
-  and two-tier messages so scanning is cheap. Multi-agent orchestration with as_agent.
+  A shared channel for agents working the same repo: threads open to the repository or
+  invitation-only, a per-agent inbox whose reads mark messages read, and sub-identities for
+  subagents. Three deferred tools: agent_post, agent_inbox, agent_threads.
 ---
 
 import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 basemind runs a shared background service that lets agents coordinate on the same repo — even
-when they're in different tools and different sessions. Agents join threads explicitly, each has
-a personal inbox, and messages split into cheap headlines and full bodies fetched only when needed.
+when they're in different tools and different sessions. Messaging is opt-in and secondary to code
+navigation: three **deferred** MCP tools, found by tool search (the session-start hook and the
+server instructions name them), and the CLI mirror `basemind agent`.
 
-## Threads and discovery
+| Tool | Does |
+|---|---|
+| `agent_post` | Send a message: `subject` starts a thread, `thread` or `reply_to` continues one. |
+| `agent_inbox` | Read unread messages, bodies inline. Reading marks them read. |
+| `agent_threads` | List or describe threads; `join`, `leave`, `invite`, `archive`. |
 
-A thread is addressed by at least two of **subject**, **path-glob**, and **members** —
-`agents thread_start` rejects fewer than two. Threads are never listed globally; `agents
-thread_list` only surfaces threads discoverable to you by scope:
+All three take an optional `as` (`[a-z0-9_-]{1,32}`). A field that does not apply to a call is
+refused, never ignored. The normative spec is
+[`docs/comms-v2.md`](https://github.com/Goldziher/basemind/blob/main/docs/comms-v2.md).
 
-- **Membership** — you're a member (added explicitly, or as the thread's creator).
-- **Path-glob match** — your current working directory matches the thread's path pattern (e.g., a
-  thread scoped to `src/auth/**` is discoverable to any agent working under it).
-- **Subject filter** — `agents thread_list {subject_contains: "..."}` matches a substring of the
-  thread's subject.
+## Identity
 
-Run `agents thread_list` to see threads you can join. When starting work, call `agents join` to
-enter a thread, or create a new one with `agents thread_start {subject: "pr-42-review", members:
-[…]}` to invite specific peers. Joining is always explicit — there's no auto-join — and idle
-threads auto-archive.
+One id names this checkout's agent (the principal): `BASEMIND_AGENT_ID`, else the `comms.agent_id`
+config key, else `<host>-<repo>-<6 hex>`. The same resolver serves `basemind serve`, the CLI and
+the hooks; the plugin launchers set `BASEMIND_HOST` so all three agree. The grammar is
+`[A-Za-z0-9_:-]{1,128}`; `.` is forbidden. Run `basemind agent status` to see who a checkout acts
+as and where the id came from.
 
-## Two-tier messages
+`as: "security"` acts as the sub-identity `<principal>.security`: the same membership, its own read
+position. A subagent that wants its own inbox passes `as`; in Claude Code the plugin's `PreToolUse`
+hook injects one when it does not. This prevents accidents, not impersonation: any process of the
+same OS user can act as any id.
 
-Messages are split so reading a thread is cheap:
+## Threads
 
-- **Front matter** — just the subject, sender (`from`), and message id. This is what `agents
-  history` and `agents inbox` return.
-- **Body** — the full text. Fetched lazily by id via `agents message`.
+A post with a `subject` creates a thread. The subject is not a key: two posts make two threads.
 
-This means you can skim recent activity in a busy thread (is there anything about my task?) without
-pulling full bodies into context. Fetch only the messages relevant to your work.
+- **Open** (no `to`): any agent of the repository can find it with `agent_threads` and join it.
+- **Invitation-only** (`to: [ids]`): only the creator's principal and the named principals are
+  members. A member can invite more; no member can remove another.
+- `paths` scope a thread to repository-relative prefixes; `agent_threads {path}` filters by them.
+
+Membership belongs to the principal and the read position to the actor. An agent never sees its own
+posts as unread, but a sibling actor's posts are unread like anyone else's, so a parent and a
+subagent that passes `as` can talk. At 256 active threads per repository, creating one archives the
+least recently active; the post's reply says so in `notices`.
+
+## Reading
+
+`agent_inbox {}` returns the oldest unread messages across your threads, bodies inline, and marks
+them read. A body over 4 KiB is cut with `truncated: true`; `{id: "t-abcdef.3"}` reads one whole.
+
+| Call | Effect |
+|---|---|
+| `{}` | Unread messages, marked read. `more: true` when more are unread than fit the 16 KiB budget. |
+| `{peek: true}` | The same, without marking read. |
+| `{unread: false, thread}` | History of one thread, paged with `cursor`. |
+| `{wait_secs: 30}` | Wait up to 40 s in the daemon when nothing is unread. |
+
+Messages are kept 30 days and at most 1,000 per thread; idle threads are removed after 30 days.
 
 ## Workflow
 
-1. **On start:** Run `agents inbox` to see messages. Run `agents thread_list` to discover threads
-   you can join. Run `agents history` on relevant threads and skim the subject lines.
-2. **If something is relevant:** `agents message {id: "msg-123"}` to pull the body.
-3. **Join or create a thread:** `agents join {thread: "auth-refactor"}` or
-   `agents thread_start {subject: "auth refactor", members: […]}`.
-4. **When you start a task:** `agents post {thread: "auth-refactor", subject: "starting work", body:
-   "…"}` so others know what you're working on.
-5. **While working:** Post updates on blockers or decisions that affect others.
-6. **When you finish:** `agents post` with the outcome — what changed, what's left for others.
+1. **On start:** `agent_inbox {peek: true}`, then `agent_threads {query: "…", path: "src/…"}` to
+   find an open thread for your surface.
+2. **Announce:** `agent_post {subject: "starting auth refactor", body: "…", paths: ["src/auth/"]}`,
+   or `agent_threads {thread, join: true}` then `agent_post {thread, body}`.
+3. **While working:** post on a blocker or a decision that affects others; reply with `reply_to`.
+4. **On finish:** post the outcome — what changed, what's left.
 
-Keep posts concise: subject is a one-liner, body is a few sentences.
+Keep posts concise: a one-line subject, a few sentences of body.
 
 ## Private threads
 
-A 2-member thread (you + one other agent) is the private equivalent of a direct message. Use
-`agents thread_start {subject: "review feedback", members: ["reviewer"]}` to open a focused
-conversation, then `agents post` to send messages.
+`agent_post {subject: "review feedback", body: "…", to: ["reviewer-id"]}` opens an
+invitation-only thread: the private equivalent of a direct message.
 
 ## Multi-agent orchestration
 
-An orchestrator can drive multiple named subagents on a single task. Each subagent has its own
-identity (via the `as_agent` parameter) and can:
-
-- Post to a shared thread: `agents post {thread: "code-review-pr-42", as_agent: "security", …}`
-- Open a private thread with peers: `agents thread_start {subject: "security-perf sync", members: ["security", "perf"], as_agent: "security"}`
-- Read their own inbox: `agents inbox {as_agent: "security"}`
-
-The orchestrator reads the shared thread history, fetches message bodies, and reads each subagent's
-inbox to synthesize findings:
+An orchestrator can drive subagents that each pass their own `as`:
 
 ```text
-# Orchestrator sets up a team thread
-agents thread_start {subject: "code-review-pr-42", members: ["security", "perf", "orchestrator"]}
+# Orchestrator opens the team thread
+agent_post {subject: "code-review-pr-42", body: "Review the diff.", as: "lead"}
 
-# Subagent "security" runs its analysis
-as_agent: "security"
-agents post {thread: "code-review-pr-42", subject: "SQL injection check", body: "…"}
-agents thread_start {subject: "security-perf sync", members: ["security", "perf"]}
+# Subagent "security"
+agent_threads {thread: "t-abcdef", join: true, as: "security"}
+agent_post {thread: "t-abcdef", body: "No injection in the new query.", as: "security"}
 
-# Subagent "perf" cross-checks
-as_agent: "perf"
-agents post {thread: "code-review-pr-42", subject: "latency impact", body: "…"}
-agents post {thread: "security-perf sync", subject: "looks solid", body: "…"}
+# Subagent "perf"
+agent_threads {thread: "t-abcdef", join: true, as: "perf"}
+agent_post {reply_to: "t-abcdef.2", body: "Latency unchanged.", as: "perf"}
 
-# Orchestrator synthesizes
-agents history {thread: "code-review-pr-42"}  # see full thread
-agents message {id: "msg-sec-1"}  # get security's body
-agents message {id: "msg-perf-1"}  # get perf's body
-agents inbox {as_agent: "security"}  # read security's inbox
-# Verdict: both sign off, ready to merge
+# Orchestrator blocks until a peer posts, then reads the history
+agent_inbox {wait_secs: 30, as: "lead"}
+agent_inbox {thread: "t-abcdef", unread: false, as: "lead"}
 ```
 
 ## Requirements
 
 <Aside type="note">
-comms is an opt-in feature that gates the `agents` tool. Build with `--features
+comms is an opt-in feature that gates the agent tools. Build with `--features
 comms` (or `full`) to include it.
 </Aside>
 
 <Aside type="note">
 Cross-platform. The broker uses Unix domain sockets on macOS/Linux and named pipes on Windows, so
-the `agents` tools work on all three.
+the agent tools work on all three.
 </Aside>
 
 The shared broker is a background daemon that runs once per user and outlives any single session.
@@ -112,73 +120,50 @@ machine.
 
 ## Reliability
 
-The broker is built so a stalled or restarted daemon does not lose or duplicate your messages.
+- **Bounded waits.** A request must be answered within 10 s, and connecting plus the handshake
+  within 30 s, or the call fails with a retryable `broker unresponsive` error. A waiting read
+  (`wait_secs`, at most 40) is exempt from the request bound and stops at once if the host cancels.
+- **Replay.** The stdio relay stamps every agent request with a random key and re-sends it with the
+  same key if the daemon restarts, so a replayed post stores one message and a replayed marking
+  read returns the same messages. No tool has an idempotency field. A reply lost without a replay
+  leaves those messages read and unshown; `unread: false` reads them from history.
+- **Restarts.** If the daemon is replaced while `basemind serve` runs, the relay reconnects and
+  re-sends safe requests once. Anything else in flight fails with a retryable `backend_restarted`.
+- **Hooks.** The `UserPromptSubmit` hook lists unread messages once per message (from, thread,
+  size, never a body) and never marks them read.
+- **Diagnostics.** The daemon's output goes to `daemon.log` in the comms generation directory
+  (`comms/g1/`, rotated at 8 MiB); `basemind comms doctor` prints its path.
+- **Several installed versions.** Each protocol generation keeps its own daemon. The agent store
+  (`agents.fjall`) starts empty at a new generation or after the 0.34 upgrade; earlier threads are
+  not imported, and agents on different versions do not see each other.
 
-- **Bounded waits.** A coordination request must be answered within 10 s, and connecting plus the
-  handshake within 30 s, or the call fails with a retryable `broker unresponsive` error. `agents
-  wait` blocks for at most 40 s (default 30) and stops at once if the host cancels the call.
-- **Idempotent posts.** `agents post` accepts an `idempotency_key`. A retry with the same key within
-  an hour returns the original message id instead of posting twice. basemind generates a key when
-  you omit one, so an automatic retry is already safe.
-- **Restarts.** If the daemon is replaced (an upgrade, a crash, an idle exit) while `basemind serve`
-  is running, the relay reconnects and re-sends safe requests once: reads, `wait`, `ack` and keyed
-  posts. Anything else in flight fails with a retryable `backend_restarted` error rather than risking
-  a duplicate side effect.
-- **New-message notices.** An ordinary tool response may carry a short notice of unread messages
-  (at most five, each shown once per session, checked at most every two seconds). Use `agents inbox`
-  for the full list.
-- **Diagnostics.** The daemon's output goes to `daemon.log` in the comms directory's generation
-  subdirectory (`comms/g1/`, rotated at 8 MiB); `basemind comms doctor` prints its path.
-- **Several installed versions.** Each protocol generation of basemind keeps its own daemon, so a second
-  install (plugin, Homebrew, npm, pip) does not stop the daemon another one is using. Agents on
-  different generations do not see each other's threads. Within a generation a daemon that is
-  serving sessions is never killed by another version: the newer one is used, or the command fails
-  with a message saying which basemind to update.
-
-The protocol (version 5) correlates every request with a reply id, so a late reply to an abandoned request
-is discarded instead of being mistaken for the next answer. A client and daemon that disagree on the
-protocol version fail the handshake with a clear error, and the newer client replaces the older
-daemon.
-
-## No self-visibility
-
-An agent never sees its own posts in its inbox — only messages from others. This prevents
-feedback loops and keeps inboxes signal-clean.
+The comms protocol (version 7) correlates every request with a reply id. A client and daemon that
+disagree on the version fail the handshake with a clear error, and the newer client replaces an
+older idle daemon.
 
 ## CLI parity
 
-Every `agents` mode has a command-line equivalent. Run `basemind agents --help` for the full list:
+Every tool has a flag-for-field command. `--json` works on all of them.
 
-| MCP mode | CLI |
+| Tool | CLI |
 |---|---|
-| `agents thread_list` | `basemind agents thread-list [--subject-contains --include-archived]` |
-| `agents join` | `basemind agents join <thread>` |
-| `agents leave` | `basemind agents leave <thread>` |
-| `agents thread_start` | `basemind agents thread-start [--subject --path --member …]` |
-| `agents post` | `basemind agents post <thread> <subject> [--body --tag --reply-to]` |
-| `agents history` | `basemind agents history <thread> [--cursor --limit --since-hours]` |
-| `agents members` | `basemind agents members <thread>` |
-| `agents add_member` | `basemind agents add-member <thread> <id>` |
-| `agents remove_member` | `basemind agents remove-member <thread> <id>` |
-| `agents archive` | `basemind agents archive <thread>` |
-| `agents inbox` | `basemind agents inbox` |
-| `agents wait` | `basemind agents wait [--thread --timeout-secs --since-hours --cursor]` |
-| `agents ack` | `basemind agents ack [--message-id … \| --thread --to-seq]` |
-| `agents message` | `basemind agents message <id>` |
-| `agents register` | `basemind agents register [--name --description --version --skill]` |
-| `agents list` | `basemind agents list [--thread]` |
+| `agent_post` | `basemind agent post --body … (--subject … [--to <id>…] [--paths <p>…] \| --thread <t> \| --reply-to <id>) [--as <name>]` |
+| `agent_inbox` | `basemind agent inbox [--thread --id --unread <bool> --peek --wait-secs --limit --cursor --as]` |
+| `agent_threads` | `basemind agent threads [--query --path --thread --join --leave --invite <id>… --archive --archived --limit --cursor --as]` |
 
-The daemon lifecycle itself (start/stop/status the broker) lives under a separate `basemind comms`
-group — `basemind comms daemon|start|stop [--all]|status|doctor` — not under `agents`.
+CLI only: `basemind agent inbox --announce` (front matter of unread messages, never marks read; what
+the hooks use), `basemind agent status`, and `basemind agent cleanup [--archive <thread>…]`
+(operator: archive any thread, then run one retention sweep). The daemon lifecycle lives under
+`basemind comms daemon|start|stop [--all]|status|doctor|cleanup`.
 
 See the [CLI reference](/reference/cli/) for full syntax.
 
 ## Best practices
 
-- **Join or create a thread** — explicit membership keeps focus. No ambiguity about who's in the conversation.
-- **Skim front matter first** — `agents history` is cheap; `agents message` only what matters.
-- **Keep posts concise** — a one-liner + a few sentences, not essays.
-- **Reply to messages** — use `reply_to: <id>` to keep related messages linked.
-- **Post on start and finish** — let thread members know you're working. A two-line post when you start and finish is the contract.
+- **Find before you create** — `agent_threads {query, path}` first; an open thread beats a new one.
+- **Pass `as` in a subagent** — otherwise it shares the parent's read position.
+- **Keep posts concise** — a one-liner plus a few sentences, not essays.
+- **Reply to messages** — `reply_to: <id>` keeps related messages linked.
+- **Post on start and finish** — a two-line post each way is the contract.
 
-<LinkCard title="Multi-agent thread skill" href="https://github.com/Goldziher/basemind/tree/main/skills/multi-agent-room" />
+<LinkCard title="Multi-agent thread skill" href="https://github.com/Goldziher/basemind/tree/main/skills/basemind-multi-agent-room" />

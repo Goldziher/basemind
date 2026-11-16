@@ -434,5 +434,68 @@ class CachePathWithBackslashTests(OtherVersionsTests):
         pass
 
 
+@unittest.skipIf(sys.platform == "win32", "the launcher runs under bash")
+class HostDetectionTests(unittest.TestCase):
+    """The launcher names the harness in BASEMIND_HOST before it execs the binary."""
+
+    HARNESS_VARIABLES = (
+        "BASEMIND_HOST",
+        "CURSOR_PLUGIN_ROOT",
+        "COPILOT_CLI",
+        "CLAUDECODE",
+        "CLAUDE_PLUGIN_ROOT",
+        "GEMINI_CLI",
+    )
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        plugin = self.root / "plugin"
+        (plugin / ".claude-plugin").mkdir(parents=True)
+        (plugin / ".claude-plugin/plugin.json").write_text(json.dumps({"version": CURRENT}))
+        (plugin / "scripts").mkdir()
+        shutil.copyfile(LAUNCHER, plugin / "scripts/mcp-launch.sh")
+        self.launcher = plugin / "scripts/mcp-launch.sh"
+        self.binary = self.root / "basemind"
+        self.binary.write_text(
+            f'#!/bin/sh\n[ "$1" = --version ] && echo "basemind {CURRENT}" && exit 0\nprintf "%s" "${{BASEMIND_HOST-unset}}"\n'
+        )
+        self.binary.chmod(0o755)
+
+    def host(self, **harness: str) -> str:
+        """The BASEMIND_HOST the binary sees when the launcher runs with only `harness` set."""
+        env = {key: value for key, value in os.environ.items() if key not in self.HARNESS_VARIABLES}
+        env.update(
+            HOME=str(self.root), XDG_CACHE_HOME=str(self.root / "cache"), BASEMIND_BIN=str(self.binary), **harness
+        )
+        return subprocess.run(
+            ["/bin/bash", str(self.launcher), "serve"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout
+
+    def test_each_harness_is_named(self) -> None:
+        self.assertEqual(self.host(CURSOR_PLUGIN_ROOT="/p"), "cursor")
+        self.assertEqual(self.host(COPILOT_CLI="1"), "copilot")
+        self.assertEqual(self.host(CLAUDECODE="1"), "claude")
+        self.assertEqual(self.host(CLAUDE_PLUGIN_ROOT=str(self.root / "plugin")), "claude")
+        self.assertEqual(self.host(GEMINI_CLI="1"), "gemini")
+
+    def test_a_harness_that_shares_claudes_variable_is_named_for_itself(self) -> None:
+        plugin = str(self.root / "plugin")
+        self.assertEqual(self.host(CLAUDE_PLUGIN_ROOT=plugin, CURSOR_PLUGIN_ROOT="/p"), "cursor")
+        self.assertEqual(self.host(CLAUDE_PLUGIN_ROOT=plugin, COPILOT_CLI="1"), "copilot")
+
+    def test_no_harness_leaves_the_host_unset(self) -> None:
+        self.assertEqual(self.host(), "unset")
+
+    def test_an_explicit_host_wins(self) -> None:
+        self.assertEqual(self.host(BASEMIND_HOST="mine", CLAUDECODE="1", CURSOR_PLUGIN_ROOT="/p"), "mine")
+
+
 if __name__ == "__main__":
     unittest.main()

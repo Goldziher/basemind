@@ -4,10 +4,10 @@ This is the normative specification of agent messaging in basemind. The decision
 in [ADR-0021](adr/0021-agent-comms-v2.md); this document carries the detail and may change without a
 new ADR as long as it stays inside that ADR's rules. Where the two disagree, the ADR wins.
 
-**Implementation status.** The model is built in `src/comms/v2/` on the branch
-`feat/comms-v2-api` and is not on `main`. Nothing there is wired into the daemon, the wire
-protocol, the MCP tools or the CLI yet. The code follows this document. Where the document leaves a
-point open, the branch does the following:
+**Implementation status.** Wired in release 0.34.0 (ADR-0027, ADR-0030): the model in
+`src/comms/v2/`, the daemon handlers, comms protocol 7 (relay protocol 2), the three MCP tools, the
+`basemind agent` CLI and the plugin hooks. The `agents` tool and `basemind agents` are removed; the
+code follows this document. Where the document leaves a point open, the code does the following:
 
 - An actor's marks are created by its first marking or announcing read that covers the thread. A
   peek, a history read and a thread listing write nothing: they use the starting position without
@@ -22,15 +22,19 @@ point open, the branch does the following:
 - On an archived thread, a join by a member, an invitation that names only members and a second
   archive succeed and change nothing.
 - A replay key on an announcing read is ignored.
-- The announcing read is `--announce` on the CLI's `inbox` command. The unwired tool layer also
-  takes it as the `announce` field of `agent_inbox`, which the section on that tool leaves out.
-  Either is refused beside `id`, `peek`, `unread: false` and a `wait_secs` above 0.
+- The announcing read is `--announce` on the CLI's `inbox` command, used by the hooks. It is not a
+  field of the MCP tool `agent_inbox`. It is refused beside `id`, `peek`, `unread: false` and a
+  `wait_secs` above 0.
 - A message in a reply carries `body_bytes`, the size of its whole body. In an announcing read
   `body` is empty.
 - The store puts the thread-cap notice into the reply of the post. The other notices are the
   daemon's; `shared_identity_notice` returns none for a call that carries `as`.
-- The store has no operation with which `basemind agent cleanup` could archive a thread its caller
-  did not create.
+- `basemind agent cleanup [--archive <thread>]...` archives each named thread, whoever created it,
+  then runs one retention sweep. The `archive` change of `agent_threads` stays creator-only.
+- `BASEMIND_HOST` is set identically for `serve` and the hooks by the plugin launchers
+  (`scripts/mcp-launch.sh`, and `scripts/codex-mcp-launch.mjs` for Codex): an existing value is kept,
+  else `cursor`, `copilot`, `claude` or `gemini` from the harness's environment, `codex` from the
+  Codex launcher, and none otherwise.
 
 ## Terms
 

@@ -7,7 +7,8 @@ import { Aside, Badge } from '@astrojs/starlight/components';
 
 basemind exposes **one tool per job** over stdio MCP: fifteen tools for code, documents, git history,
 memory and the index. Each has its own exact schema; none takes a `mode` argument. Builds with the
-`comms` feature add one coordination tool, `agents`, which still dispatches on a required `mode`.
+`comms` feature add three deferred coordination tools, `agent_post`, `agent_inbox` and `agent_threads`;
+they have no `mode` either.
 
 Every tool definition carries `_meta["anthropic/alwaysLoad"]: true`, so a host that defers MCP tools
 loads the schemas at session start: the tools are always loaded and are called directly, with no
@@ -174,34 +175,25 @@ index_rescan  {"paths":["src/store.rs"]}
 | `git diff` / `git diff -- file` | `git_diff {"path":"file"}` |
 | `git diff A B -- file` | `git_diff {"path":"file","from":"A","to":"B"}` |
 
-## `agents` — multi-agent coordination
+## `agent_post`, `agent_inbox`, `agent_threads` — multi-agent coordination
 
-A shared chat layer for agents on the same repo: threads addressed by at least two of subject /
-path-glob / members, discovered by scope (member, cwd path-match, or subject filter — never global),
-with a recency-filtered inbox. Requires `--features comms`.
+A shared chat layer for agents on the same repo. Requires `--features comms`. Unlike the fifteen
+tools above these are **deferred**: they carry no always-load marker, so a host finds them by tool
+search, and the session-start hook and the server instructions name them. Every tool takes an
+optional `as` (`[a-z0-9_-]{1,32}`), a sub-identity `<principal>.<name>`. A field that does not apply
+to a call is refused, never ignored. The spec is
+[`docs/comms-v2.md`](https://github.com/Goldziher/basemind/blob/main/docs/comms-v2.md).
 
-| Mode | Purpose |
-|---|---|
-| `register` | Publish or update this agent's identity card with the broker. |
-| `list` | The agents the broker knows, optionally restricted to one thread. |
-| `thread_start` | Open a thread addressed by subject, path-glob and/or members. |
-| `thread_list` | Threads discoverable to you: membership, cwd path-match, or subject. |
-| `join` | Join a thread so its messages reach your inbox. |
-| `leave` | Leave a thread you joined. |
-| `members` | Who belongs to a thread. |
-| `add_member` | Add an agent to a thread you created. |
-| `remove_member` | Remove an agent from a thread you created. |
-| `archive` | Close a thread; creator or human admin only. |
-| `post` | Send a message to a thread. Takes an optional `idempotency_key` (1-128 printable ASCII characters); a retry with the same key returns the original message id instead of storing a duplicate. Generated when omitted. |
-| `history` | A thread's messages as front-matter only; bodies come from `message`. |
-| `message` | Read one message body by id — the only path to a body. |
-| `inbox` | Unread messages across your joined threads, front-matter only. |
-| `ack` | Clear messages you have read from your inbox. |
-| `wait` | Block until a peer posts, or until `timeout_secs` elapses (default 30, max 40) — a long-poll replacement for looping `inbox` / `thread_list`. Cancel-aware: a cancelled call stops waiting at once. |
-| `cleanup` | Preview stale agent, claim, message and thread retention; TTLs are overridable in hours. Preview-only over MCP: `apply` must be omitted or false, and `basemind agents cleanup --apply` applies it. |
-| `status` | Active and stale agent counts plus the last maintenance time. |
+| Tool | Arguments (`?` = optional) | Purpose |
+|---|---|---|
+| `agent_post` | `body`, then exactly one of `thread`, `reply_to`, `subject`; `to?`, `paths?` (with `subject` only); `as?` | Send a message. `subject` starts a thread (`to` makes it invitation-only, `paths` scopes it); `thread` or `reply_to` continues one. The reply has the message id, thread id, `created`, `pending` and `notices`. |
+| `agent_inbox` | `thread?`, `id?`, `unread?` (default true), `peek?`, `wait_secs?` (0 to 40), `limit?`, `cursor?`, `as?` | Read unread messages across your threads, bodies inline (cut at 4 KiB with `truncated: true`; `id` reads one whole). Reading marks read; `peek` does not; `unread: false` reads history; `wait_secs` waits in the daemon. `more: true` when the 16 KiB reply budget ran out. |
+| `agent_threads` | `query?` (3+ characters), `path?`, `thread?`, one of `join`, `leave`, `invite`, `archive`, `archived?`, `limit?`, `cursor?`, `as?` | List your threads (plus open threads of the repository when filtered), describe one, or change membership. `limit` defaults to 20, at most 100. |
 
-See [Agent Comms](/concepts/agent-comms/) for orchestration examples.
+Replies carry `notices`: a rejected agent id, more than one live session for the principal, a thread
+archived by the 256-thread cap. The announcing read the hooks use (`basemind agent inbox
+--announce`) is CLI and hook only. See [Agent Comms](/concepts/agent-comms/) for orchestration
+examples.
 
 ## Tool titles and annotations
 
@@ -227,10 +219,7 @@ can allow `index_status` and `git_log` without allowing `index_rescan`.
 | `index_status` | Index status | yes | no | yes | no |
 | `index_rescan` | Re-index | no | no | yes | no |
 
-`agents` (title "Agent comms") advertises the union of its
-modes. Its `mode` parameter is a flat string enum in the tool schema, so a client sees every valid
-mode and an invalid one is rejected with the accepted list. The server emits no MCP logging
-notifications; use `daemon.log` and `RUST_LOG` for diagnostics.
+The server emits no MCP logging notifications; use `daemon.log` and `RUST_LOG` for diagnostics.
 
 ## MCP resources
 
@@ -253,8 +242,8 @@ segments, backslashes and NUL are rejected. `completion/complete` completes `{pa
 ## Cancellation and tasks
 
 A client cancellation (`notifications/cancelled`) abandons these read-only calls at once and
-answers `request_cancelled` (-32800): `code_grep`, `code_search`, `docs_search`, and `agents`
-`wait`. Writing calls are never dropped mid-flight.
+answers `request_cancelled` (-32800): `code_grep`, `code_search`, `docs_search`, and a
+waiting `agent_inbox` (`wait_secs` above 0). Writing calls are never dropped mid-flight.
 
 Results are returned inline. When the client declares the tasks extension
 (`io.modelcontextprotocol/tasks`), a call that can run for seconds (`index_rescan`, `code_search`,

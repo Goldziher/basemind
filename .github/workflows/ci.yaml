@@ -261,7 +261,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v jq
-          uv run --no-project --with pytest python -m pytest -v tests/test_mcp_launch_prune.py tests/test_session_start_hook.py
+          uv run --no-project --with pytest python -m pytest -v tests/test_mcp_launch_prune.py tests/test_session_start_hook.py tests/test_agent_hooks.py
 
   hermes:
     name: hermes plugin package

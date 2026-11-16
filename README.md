@@ -47,7 +47,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Code intelligence** | Read the code map instead of opening files: what a file contains (`code_outline`), where a name is defined (`code_symbols`), one symbol's body or an exact line span (`code_read`), text search, literal by default (`code_grep`), search by meaning over indexed chunks (`code_search`, needs `--features code-search`), and usages (`code_refs`): call sites of a name, callers of one definition, implementors of a trait / interface / base class, importers of a module, and go-to-definition (**scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)). `find_files` locates or lists files, documents included. Layered over [300+ languages](#how-it-works). | `code_outline` · `code_symbols` · `code_read` · `code_grep` · `code_search` · `code_refs` · `find_files` |
 | **Git intelligence** | Ask what changed recently, which commits touched a file, which commit mentions a phrase (full-text over messages and authors at full branch depth), when a symbol's body changed, who last touched a line or a function, and how a file differs between revisions or from the working tree, as text hunks or as symbols added and removed. | `git_log` · `git_blame` · `git_diff` |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory_save` · `memory_search` · `docs_search` |
-| **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
+| **Agent comms** | Threads opened by a post with a subject, open to the repository or invitation-only (`to`); a per-actor inbox whose reads mark messages read (`peek` does not); membership by principal, `as` for subagents; waits in the daemon (`wait_secs`). | `agent_post` · `agent_inbox` · `agent_threads` |
 | **Index** | Check index health and repo identity, and refresh the index after edits. Telemetry and cache maintenance are CLI commands (`basemind admin telemetry`, `basemind cache stats\|gc\|clear`). | `index_status` · `index_rescan` |
 
 <!-- markdownlint-enable MD013 -->
@@ -55,7 +55,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
 schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
 needs no tool-search round trip: call them directly. Their `tools/list` entry is about 18 KB (about
-4.5k tokens). `agents` (`comms` builds) still takes a `mode` and is not always loaded. An unknown argument is
+4.5k tokens). The three agent tools (`comms` builds) are deferred: a host finds them by tool search, and the session-start hook and the server instructions name them. An unknown argument is
 rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
 fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
 the previous `code` / `git` / `memory` / `admin` tools: the
@@ -207,7 +207,7 @@ python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-0.29.
 hermes plugins enable basemind
 ```
 
-Restart Hermes. The plugin registers ten skills, six slash commands, scoped comms notifications,
+Restart Hermes. The plugin registers ten skills, six slash commands, comms notifications,
 and `basemind_call`, which bridges the local MCP server's tools and returns JSON text.
 The binary must be on `PATH`. Comms notifications are
 best-effort. You can also configure `mcp_servers.basemind` with `command: basemind` and
@@ -421,7 +421,7 @@ activity by type, then tokens saved, then unread messages. Adjust with
 <p align="center"><em>Searching documents by meaning, not keywords, across PDFs, Office files, HTML and email.</em></p>
 
 <p align="center"><img src="docs/demos/code-review-panel.gif" alt="Three named reviewer agents posting findings to a shared repo-scoped thread, replying to each other, and an orchestrator synthesizing a verdict over the comms CLI" width="820"></p>
-<p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped thread (post, reply, synthesize) — entirely over <code>basemind agents</code>.</em></p>
+<p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped thread (post, reply, synthesize) — entirely over <code>basemind agent</code>.</em></p>
 
 <!-- markdownlint-enable MD013 -->
 
@@ -595,28 +595,31 @@ in use binds another. Plugin manifests and the CLI use the stdio transport and n
 <summary><strong>How agents coordinate</strong></summary>
 
 A single shared service in the background lets agents talk to each other — even across different
-tools and different repos on the same machine. Agents coordinate in **threads** — each addressed by
-at least two of subject / path-glob / members, discovered by scope rather than joined globally — and
-each has a personal **inbox**. Messages come in two parts: a short headline (subject and sender)
-that's cheap to skim, and the full body, fetched only when an agent wants to read it. An agent never
-sees its own posts in its inbox. Idle threads auto-archive. `wait` blocks for 30 seconds by default
-(at most 40) and ends early when the client cancels the request.
+tools and different repos on the same machine. Three deferred tools carry it (`agent_post`,
+`agent_inbox`, `agent_threads`; the CLI mirror is `basemind agent post|inbox|threads`). A post with
+a `subject` opens a **thread**: open to every agent of the repository, or invitation-only when it
+names recipients (`to`). Each agent has an **inbox**: reading returns unread messages with their
+bodies inline (a body over 4 KiB is cut, and `id` reads one whole) and marks them read; `peek`
+reads without marking, `unread: false` reads history, and `wait_secs` (at most 40) waits in the
+daemon for a peer's post. An agent never sees its own posts as unread. Identity is one id per
+checkout (`BASEMIND_AGENT_ID`, else `comms.agent_id`, else `<host>-<repo>-<6 hex>`); a subagent
+passes `as` to get its own read position. Messages are kept 30 days, at most 1,000 per thread. See
+[`docs/comms-v2.md`](docs/comms-v2.md).
 
-The client–daemon protocol is version 6 (a client and a daemon of different versions refuse each
+The client–daemon protocol is version 7 (a client and a daemon of different versions refuse each
 other at connect): the daemon serves it on an 8-worker async runtime, and
 every request carries an id, so replies are matched to
 requests and most calls have a deadline (`BASEMIND_COMMS_REQUEST_TIMEOUT_SECS`, 10 s;
-`BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS`, 30 s). After an upgrade, run `basemind comms stop` so the
-old daemon is replaced. A `post` can carry an `idempotency_key`: a retry with the same key returns the
-original message id instead of storing a duplicate (keys are remembered for an hour, and generated when
-omitted). The stdio relay replays read-only requests and keyed posts once if the daemon restarts
-underneath it, instead of failing the call, and fails a request that outlives
-`BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` (180 s). Other tool responses carry a short notice when you have
-unread messages. A detached daemon logs to a size-rotated `<comms_dir>/daemon.log`, which
-`basemind comms doctor` shows.
+`BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS`, 30 s; a waiting read is exempt). After an upgrade, run
+`basemind comms stop` so the old daemon is replaced. The stdio relay stamps each agent request with a
+key and replays it once if the daemon restarts underneath it, instead of failing the call: a replayed
+post stores one message. The relay fails a request that outlives
+`BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` (180 s). A detached daemon logs to a size-rotated
+`<comms_dir>/daemon.log`, which `basemind comms doctor` shows.
 
 The plugin makes sure agents notice messages without being asked — through the built-in instructions,
-a notice at session start and each turn, and a quiet background check every few seconds.
+a count at session start, and a list of unread messages (from, thread, size; never a body) at each
+turn. In Claude Code a hook also gives each session and subagent its own `as`.
 
 ```mermaid
 flowchart LR
@@ -1098,11 +1101,11 @@ files that became eligible from the cached blobs, without re-embedding.
 ## CLI reference
 
 <details>
-<summary><strong>Full command list</strong> — code · git · memory · admin · cache · agents · workspace</summary>
+<summary><strong>Full command list</strong> — code · git · memory · admin · cache · agent · workspace</summary>
 
 Every MCP tool has a CLI command (enforced by `tests/cli_parity/`); the CLI also keeps shorthands
 and administrative commands that have no MCP tool. Add `--json` for
-machine-readable output (the same response types the MCP tools return, including `agents`). Human output prints source bodies, diffs and exports in full; only table cells are cut
+machine-readable output (the same response types the MCP tools return, including `agent`). Human output prints source bodies, diffs and exports in full; only table cells are cut
 (to 200 characters, with a note on stderr), and the timing line goes to stderr. List commands take
 `--limit`, `--cursor` (resume from a previous `next_cursor`) and `--max-tokens`. Line and column
 arguments are 1-based.
@@ -1180,25 +1183,19 @@ Index commands live at the top level: `status` (`index_status`), `rescan [paths]
 | `gc [--dry-run]` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. `--dry-run` only counts the blobs in the store, plus the marker-less workspace dirs the daemon's sweep would reap, and deletes nothing. |
 | `clear --component <comp> [--yes]` | Clear part of the cache (`blobs`, `views`, `views:<name>`, `lance`, `git-cache`, `telemetry`, `all`; default `git-cache`). Everything but `git-cache` asks for confirmation on a terminal and needs `--yes` otherwise. `blobs` is the **machine-global** store shared by every workspace. Refuses (exit 3) while a writer holds the workspace lock, and for `blobs` while the daemon runs. |
 
-**Agents (`basemind agents`, `--features comms`)**
+**Agent (`basemind agent`, `--features comms`)**
 
-Every command takes `--as-agent <ID>` to act as a named sub-identity.
+Flags mirror the MCP fields. Every command takes `--as <name>` to act as a sub-identity of this
+checkout's principal.
 
 | Command | Purpose |
 |---|---|
-| `register [--name --description --version --skill]` / `list [--thread]` | Publish your identity card / list agents the broker knows. |
-| `thread-start [--subject --path --member]` / `thread-list [--subject-contains --include-archived]` | Start a thread (addressed by ≥2 of subject / path / members) / list threads discoverable to you. |
-| `join <thread>` / `leave <thread>` / `members <thread>` | Join a thread for future inbox messages, leave it, or list its members. |
-| `add-member <thread> <id>` / `remove-member <thread> <id>` / `archive <thread>` | Manage membership and archive a thread (creator only). |
-| `post <thread> <subject> [--body --reply-to --tag]` | Post a message to a thread. |
-| `history <thread> [--since-hours --after-seq]` / `inbox [--mark-read]` / `wait [--thread --timeout-secs]` | A thread's history / your cross-thread inbox / block until a peer posts. |
-| `message <id>` | Read one message body in full — the only body path. |
-| `ack [--message-id … \| --thread <t> --to-seq <n>]` | Clear read messages by advancing per-thread read cursors. |
-| `cleanup [--dry-run \| --apply] [retention overrides]` / `status` | Preview/apply retention / report lifecycle health. |
-
-In the MCP inbox and CLI JSON output, rows with the same `body_sha` and a nonzero `body_len` carry the same
-body. Fetch it once with `message` and reuse it across matching rows. Acknowledge each message reference
-after handling it so each thread's inbox cursor advances independently.
+| `post --body <text> (--subject <s> [--to <id>…] [--paths <p>…] \| --thread <t> \| --reply-to <id>)` | Send a message: start a thread, post into one, or reply. |
+| `inbox [--thread --id --unread <bool> --peek --announce --wait-secs --limit --cursor]` | Read unread messages (marks them read; `--peek` does not, `--unread false` reads history, `--id` one whole message). `--announce` lists front matter only and never marks read; CLI and hooks only. |
+| `threads [--query --path --thread --join --leave --invite <id>… --archive --archived --limit --cursor]` | List, describe, join, leave, invite to or archive threads. |
+| `status` | Who this checkout acts as (principal, where the id came from, host, root) and the agent store (directory, state, version, posts, live serve sessions, repository). |
+| `cleanup [--archive <thread>…]` | Operator: archive any thread whoever created it, then run one retention sweep. |
+| `hook pre-tool-use` / `hook name` | Read a hook event on stdin: the first names the caller's `as` for an agent tool call, the second the session's name. Used by the plugin hooks. |
 
 **Comms daemon (`basemind comms`, `--features comms`)**
 
@@ -1206,7 +1203,7 @@ after handling it so each thread's inbox cursor advances independently.
 |---|---|
 | `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon of this version's protocol generation on the machine), or inspect pid / version / uptime. |
 | `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges a recorded fatal store error. |
-| `cleanup [--dry-run --older-than <days>]` | Remove the comms files of other protocol generations and of releases up to 0.33 once no daemon holds their lock and they have been idle for 30 days. |
+| `cleanup [--dry-run --older-than <days>]` | Remove the comms files of other protocol generations and of releases up to 0.33 (including a pre-generation `store.fjall`) once no daemon holds their lock and they have been idle for 30 days. |
 
 **Workspace (`basemind workspace`, `--features comms`)**
 

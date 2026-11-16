@@ -29,8 +29,8 @@ VERB_TOOLS = (
     "index_status",
     "index_rescan",
 )
-# Still mode-dispatched, and advertised only by a build with agent coordination.
-COORDINATION_TOOLS = ("agents",)
+# Deferred: a host finds them by tool search, so the hook names them without listing them as loaded.
+DEFERRED_AGENT_TOOLS = ("agent_post", "agent_inbox", "agent_threads")
 # A routed call: a tool name followed by its JSON arguments.
 ROUTED_CALL = re.compile(r"\b([a-z]+_[a-z]+) (\{[^{}]*\})")
 # The surface ADR-0018 removed: the mode-dispatched `code` / `git` / `memory` / `admin` tools.
@@ -60,7 +60,10 @@ class SessionStartTests(unittest.TestCase):
         self.executable(
             scripts / "mcp-launch.sh",
             """case "$1" in
-agents) printf '%s' "$INBOX_RESULT" ;;
+agent)
+  printf '%s\\n' "$@" > "$HOME/inbox-args"
+  printf '%s' "$INBOX_RESULT"
+  ;;
 status)
   printf '%s\\n' "$@" > "$HOME/status-args"
   printf '%s' "$STATUS_RESULT"
@@ -104,7 +107,7 @@ esac""",
         result = self.invoke('{"file_count":631,"schema_version":33}')
         self.assertIn("basemind verified: 631 files indexed (schema 33).", result)
         self.assertIn("always loaded, so call them directly with no tool search", result)
-        self.assertIn(", ".join((*VERB_TOOLS, *COORDINATION_TOOLS)), result)
+        self.assertIn(", ".join(VERB_TOOLS), result)
         self.assertIn("mcp__plugin_basemind_basemind__<tool>", result)
         self.assertNotIn("ToolSearch", result)
         self.assertIn('code_grep {"pattern":"cache_root("}', result)
@@ -128,7 +131,7 @@ esac""",
     def test_tool_names_are_exactly_the_advertised_surface(self) -> None:
         declared = re.search(r'^TOOL_NAMES="([^"]*)"$', HOOK.read_text(), re.MULTILINE)
         self.assertIsNotNone(declared, "the hook must declare TOOL_NAMES")
-        self.assertEqual(declared.group(1).split(), [*VERB_TOOLS, *COORDINATION_TOOLS])
+        self.assertEqual(declared.group(1).split(), list(VERB_TOOLS))
 
     def test_routing_names_only_verb_tools(self) -> None:
         result = self.invoke('{"file_count":631,"schema_version":33}')
@@ -148,6 +151,30 @@ esac""",
         context = self.invoke('{"file_count":5,"schema_version":33}', inbox="not JSON")
         self.assertIn("basemind verified", context)
         self.assertNotIn("No messages in your inbox", context)
+
+    def test_agent_tools_are_named_as_deferred_and_not_as_loaded(self) -> None:
+        result = self.invoke('{"file_count":5,"schema_version":33}')
+        self.assertIn("opt-in through the deferred tools agent_post, agent_inbox and agent_threads", result)
+        self.assertIn("find them by tool search", result)
+        self.assertIn("passes `as`", result)
+        loaded = result.split("Its tools are always loaded")[1].split(".")[0]
+        for tool in DEFERRED_AGENT_TOOLS:
+            self.assertNotIn(tool, loaded)
+        self.assertNotIn("THREADS", result)
+        self.assertNotIn("agents", result)
+
+    def test_unread_messages_are_counted_with_a_peek(self) -> None:
+        self.executable(self.bin / "timeout", 'shift; exec "$@"')
+        status = '{"file_count":5,"schema_version":33}'
+        none = self.invoke(status, inbox='{"messages":[],"more":false}')
+        self.assertNotIn("unread agent message", none)
+        some = self.invoke(status, inbox='{"messages":[{"id":"t-abcdef.1"},{"id":"t-abcdef.2"}],"more":false}')
+        self.assertIn("You have 2 unread agent message(s); read them with agent_inbox.", some)
+        args = (self.root / "inbox-args").read_text().splitlines()
+        self.assertEqual(args[:3], ["agent", "inbox", "--peek"])
+        self.assertIn("--json", args)
+        more = self.invoke(status, inbox='{"messages":[{"id":"t-abcdef.1"}],"more":true}')
+        self.assertIn("You have at least 1 unread agent message(s)", more)
 
     def test_session_start_hook_runs_on_resume(self) -> None:
         manifest = json.loads((ROOT / "plugin/hooks/hooks.json").read_text())

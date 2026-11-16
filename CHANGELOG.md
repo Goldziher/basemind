@@ -38,8 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools are replaced by 15 tools with exact schemas (ADR-0018, superseding ADR-0011): `code_outline`,
   `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,
   `git_log`, `git_blame`, `git_diff`, `memory_save`, `memory_search`, `index_status` and `index_rescan`.
-  There are no aliases: the old tool names and the `mode` argument are gone. `agents` is unchanged.
-  The plugin's skills, commands, hooks and rules are updated in the same release.
+  There are no aliases: the old tool names and the `mode` argument are gone. The mode-dispatched
+  `agents` tool is replaced separately (below). The plugin's skills, commands, hooks and rules are
+  updated in the same release.
   [`docs/UPGRADING.md`](docs/UPGRADING.md) lists the renamed arguments and CLI flags.
 
   <!-- markdownlint-disable MD013 -->
@@ -87,8 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Contract changes:
 
   - The 15 tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`), so a host that defers MCP
-    tools needs no tool-search round trip; `agents` is not marked and stays deferred
-    (ADR-0020). `tools/list` for the 15 is about 18 KB (about 4.5k tokens), down from about 25 KB (about
+    tools needs no tool-search round trip; the agent tools are not marked and stay deferred
+    (ADR-0021). `tools/list` for the 15 is about 18 KB (about 4.5k tokens), down from about 25 KB (about
     6.3k tokens) for the four tools they replace; a test enforces a 20,000-byte ceiling. No tool declares
     an output schema.
   - Required arguments are required in the schema, and an unknown argument is rejected with a did-you-mean
@@ -226,6 +227,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   129.3 MB to 122.0 MB, and it no longer links `libheif` dynamically.
 - `xberg` 1.4.0 is now consumed from crates.io instead of a git revision. The lockfile package
   count is unchanged (1137); `xberg` was the last git dependency in the manifest.
+- **BREAKING: agent comms v2 (ADR-0021).** The mode-dispatched `agents` MCP tool (18 modes) and the
+  `basemind agents` CLI group are removed, with no aliases. Three deferred tools replace them (found by
+  tool search; the session-start hook and the server instructions name them): `agent_post`,
+  `agent_inbox` and `agent_threads`, each with an optional `as` for a sub-identity. The CLI is
+  `basemind agent post|inbox|threads`, plus `basemind agent status` and `basemind agent cleanup`.
+  Reading now marks read (`peek: true` does not), bodies come inline (4 KiB, `id` reads one whole),
+  a thread is open to its repository or invitation-only, and membership belongs to the principal.
+  The comms protocol version goes from 6 to 7 and the relay protocol from 1 to 2: a client and a
+  daemon of different versions refuse each other at connect, so restart every session and run
+  `basemind comms stop`. The agent store moves to `agents.fjall` in the protocol generation's
+  directory and starts empty: threads and messages of earlier releases are not carried over. The
+  legacy `store.fjall` is left in place and never read; `basemind comms cleanup` removes the
+  pre-generation one. Messages are kept 30 days (at most 1,000 per thread) where idle threads used to
+  archive after three days. The plugin launchers set `BASEMIND_HOST` (`claude`, `cursor`, `copilot`,
+  `gemini`, `codex`), the `inbox-notify` hook announces unread messages with the daemon's own mark
+  instead of a per-session file, and a new `PreToolUse` hook gives each session and subagent its own
+  `as`. [`docs/UPGRADING.md`](docs/UPGRADING.md) has the upgrade steps; the spec is
+  [`docs/comms-v2.md`](docs/comms-v2.md).
+
+  <!-- markdownlint-disable MD013 -->
+
+  | Old `agents` mode | New |
+  |---|---|
+  | `register`, `list` | removed: identity is resolved, not registered; `basemind agent status` shows yours |
+  | `thread_start` | `agent_post {subject, body, to?, paths?}` |
+  | `thread_list` | `agent_threads {query?, path?}` |
+  | `join` / `leave` | `agent_threads {thread, join: true}` / `{thread, leave: true}` |
+  | `members` | `agent_threads {thread}` |
+  | `add_member` | `agent_threads {thread, invite: [ids]}` |
+  | `remove_member` | removed: no member can remove another; a member can `leave` |
+  | `archive` | `agent_threads {thread, archive: true}` (creator; `basemind agent cleanup --archive` for an operator) |
+  | `post` | `agent_post {body, thread}` / `{body, reply_to}` |
+  | `history` | `agent_inbox {thread, unread: false}` |
+  | `message` | `agent_inbox {id}` |
+  | `inbox` | `agent_inbox {}` (`peek: true` to read without marking) |
+  | `ack` | removed: reading marks read |
+  | `wait` | `agent_inbox {wait_secs}` (0 to 40) |
+  | `status`, `cleanup` | CLI only: `basemind agent status`, `basemind agent cleanup` |
+
+  <!-- markdownlint-enable MD013 -->
+
+  Removed arguments: `as_agent` (now `as`, `[a-z0-9_-]{1,32}`, acting as `<principal>.<name>`),
+  `idempotency_key` (the relay replays with its own key), `since_hours`, `mark_read` and `message_ref`.
+  A `BASEMIND_AGENT_ID` or `comms.agent_id` containing `.` is no longer valid and falls through with a
+  notice. A thread needs a `subject`, not two of subject, path-glob and members.
 
 ### Removed
 

@@ -161,7 +161,7 @@ src/
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
 ├── mcp/                    — MCP server: 15 tools, one per job, each with its own exact
-│                             schema (ADR-0018), plus the mode-dispatched `agents` tool
+│                             schema (ADR-0018), plus the three deferred agent tools
 │                             in `comms` builds — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
 │   ├── types_tools.rs      — wire arguments: one deny_unknown_fields struct per tool, and
@@ -173,14 +173,12 @@ src/
 │   │                         name the fix (not indexed, empty index, feature compiled out),
 │   │                         the default max_tokens budget, the alwaysLoad meta and schema
 │   │                         compaction applied to every advertised definition
-│   ├── mode.rs             — define_mode!: the `mode` vocabulary and per-mode field
-│   │                         validator of `agents` only
 │   ├── tools.rs            — #[tool] shims of code_outline, code_symbols, code_read,
 │   │                         code_grep, code_search, code_refs, find_files (thin wrappers;
 │   │                         1000-line cap)
 │   ├── tools_<area>.rs     — the remaining shims: git (git_log, git_blame, git_diff),
 │   │                         memory (docs_search, memory_save, memory_search), admin
-│   │                         (index_status, index_rescan), comms (→ `agents`)
+│   │                         (index_status, index_rescan), comms (→ `agent_post`, `agent_inbox`, `agent_threads`)
 │   ├── tasks.rs            — Tasks extension: results are inline; index_rescan, code_search
 │   │                         and docs_search become a task only if still running after 3 s
 │   ├── term_index.rs       — resident term index (symbol names + import strings) behind
@@ -211,8 +209,8 @@ src/
 │       shaping, request leniency, daemon-forward plumbing for Seam B
 ├── stdio_relay.rs          — protocol-aware stdio relay behind `basemind serve`; survives a
 │                             daemon replacement without closing the host's pipes
-├── comms/                  — agent-comms daemon: broker, thread registry, memory,
-│                             worktree registry (see "Agent comms" below); workspace_pool.rs is
+├── comms/                  — agent-comms daemon: broker, memory, worktree registry; `comms/v2/` is
+│                             the agent store and its rules (see "Agent comms" below); workspace_pool.rs is
 │                             the daemon's hot-workspace + warm-read-stack pool, index_read_proto.rs
 │                             the wire types of the forwarded index reads;
 │                             http_auth.rs is the BASEMIND_ALLOW_HTTP opt-in + the bearer
@@ -229,7 +227,7 @@ src/
 ├── search/                 — BM25 / exact / RRF keyword search over code chunks
 │                             (feature code-search)
 ├── registry/                — daemon-side workspace/worktree/branch registry
-├── cli/                     — CLI subcommand groups: admin, agents (daemon-agent verbs),
+├── cli/                     — CLI subcommand groups: admin, agent (`post`/`inbox`/`threads`, plus `status`, `cleanup` and the hook readers),
 │                             code, git, memory, registry (the CLI-only `workspace` listings). Every
 │                             MCP tool has a command; shorthands and administrative
 │                             commands have no tool;
@@ -618,17 +616,17 @@ The surface is **one tool per job**, each with its own exact schema
 | Git | `git_log`, `git_blame`, `git_diff` | always |
 | Memory | `memory_save`, `memory_search` | always¹ |
 | Index | `index_status`, `index_rescan` | always |
-| Agents | `agents` (mode-dispatched: register, list, thread_start, thread_list, join, leave, members, add_member, remove_member, archive, post, history, message, inbox, ack, wait, cleanup, status) | `comms` |
+| Agents (deferred) | `agent_post`, `agent_inbox`, `agent_threads` | `comms` |
 
 ¹ Advertised always, body-gated on the `memory` / `documents` features: a build without the feature
 answers with an `isError` result naming it.
 ² Body-gated on `code-search` the same way.
 
-`agents` keeps the ADR-0011 domain shape until its own redesign; `src/mcp/mode.rs`
-holds its `mode` vocabulary and nothing else. Churn, changed-path regex search, chunk fetch, memory
+The three agent tools replaced the mode-dispatched `agents` tool ([ADR-0021](adr/0021-agent-comms-v2.md),
+[`comms-v2.md`](comms-v2.md)); they take an optional `as` and no `mode`. Churn, changed-path regex search, chunk fetch, memory
 deletion, cache maintenance and telemetry are CLI commands with no tool.
 
-Contract of the 15 tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
+Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
 
 - **Exact arguments.** Each tool has its own `deny_unknown_fields` struct with required fields
   required in the schema. Arguments are deserialized through `Strict<T>`, which never fails at the
@@ -654,8 +652,8 @@ Contract of the 15 tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
   answer is an ordinary `tools/call` result.
 - **Always loaded.** Every verb-tool definition carries `_meta["anthropic/alwaysLoad"]: true`, so a
   host that defers MCP tools loads the schemas at session start and no tool-search round trip is
-  needed. `agents` is not marked and stays deferred
-  ([ADR-0020](adr/0020-verb-tool-contract-amendments.md)).
+  needed. The agent tools are not marked and stay deferred
+  ([ADR-0021](adr/0021-agent-comms-v2.md)); the session-start hook and the server instructions name them.
 - **Cursors.** A `next_cursor` is bound to the query that issued it (`src/mcp/cursor_bind.rs`): the
   tool name and the arguments that select the list, hashed. Passed to another query, or used after
   the index or HEAD moved, it is an `isError` result saying to call again without `cursor`.
@@ -862,18 +860,16 @@ flowchart TB
   subgraph agents["Agents (same machine, multiple repos)"]
     A1["Agent A — repo X"]
     A2["Agent B — repo Y (same workspace)"]
-    HK["SessionStart hook\n(boot-subscribe + inject)"]
+    HK["Hooks\n(session name, announce unread)"]
   end
   subgraph serve["basemind serve (per session: stdio relay to the daemon-hosted MCP router)"]
-    MT["MCP tools: memory + agents"]
+    MT["MCP tools: memory + agent_*"]
     CC["CommsClient (proxy)"]
-    PEER["rmcp Peer (push, best-effort)"]
   end
   subgraph daemon["basemind daemon (singleton, user-global)"]
     FE["Front-ends: UDS"]
-    THREADS["Thread registry\n(scope: repo | path-glob | subject)"]
-    BR["Broker: explicit join, fan-out, refcount"]
-    CS["CommsStore (Fjall):\nthreads · members · messages_by_thread(front-matter)\n· message_body · subs · cursors · agents · registry"]
+    RULES["Agent rules\n(identity, membership, read positions, wait)"]
+    CS["Agent store (agents.fjall, per protocol generation):\nthreads · members · messages · read marks · seen · replay"]
   end
   subgraph cache["Global cache\n~/.local/share/basemind"]
     MEM["memory_by_key (scope, visibility, owner)"]
@@ -881,9 +877,8 @@ flowchart TB
   end
   A1 --> serve
   A2 -->|own serve| daemon
-  HK -->|discover threads| daemon
-  CC -->|len-prefixed msgpack / JSON-RPC over UDS| FE --> BR --> THREADS --> CS
-  BR -. push .-> CC -. notify .-> PEER
+  HK -->|announcing read| daemon
+  CC -->|len-prefixed msgpack / JSON-RPC over UDS| FE --> RULES --> CS
   MT --> cache
 ```
 
@@ -906,7 +901,8 @@ comms/
     comms.sock        Unix socket; on Windows the pipe \\.\pipe\basemind-comms-<USER>-<hash of this dir>
     daemon.lock       single-owner flock, held for the daemon's lifetime
     daemon.pid        the holder's record
-    store.fjall/      threads, messages, agent roster
+    agents.fjall/     threads, messages, read marks, seen records (0.34 and later)
+    store.fjall/      the agent store of earlier releases: no longer read, left in place
     daemon.log  http.addr  last-fatal.json
   comms.sock ...      releases up to 0.33: the same files, unscoped
 ```
@@ -1028,38 +1024,26 @@ On Unix the singleton socket is accepted before the store has finished opening (
 `ensure_daemon` sees a healthy daemon. Every other request, and relay connections, park until the
 broker exists and are then served as if they had arrived afterwards; nothing is dropped.
 
-### Idempotent posts and relay replay
+### Relay replay
 
-`agents` `post` accepts an `idempotency_key` (1-128 printable ASCII characters; the MCP layer
-generates one when the caller omits it). The store records `(from, thread, key) -> message id` in the
-`meta` keyspace in the same batch as the message, so rows survive a daemon restart. A repeat within
-the one-hour window (`IDEMPOTENCY_TTL`) returns the original id and appends nothing; older rows are
-pruned.
+No agent tool has an idempotency field. The stdio relay (`src/stdio_relay.rs`) stamps every agent-tool
+request with a random key and re-sends the same key when it replays the request after a daemon
+restart; the daemon deduplicates a post on `(actor, thread, key)`, a thread-creating post on
+`(actor, key)`, and stores the ranges a marking read delivered against the key so a replay returns
+them again. Entries live one hour. CLI and hook calls have no relay and no key. Details:
+[`comms-v2.md`](comms-v2.md) "Replay".
 
-The stdio relay (`src/stdio_relay.rs`) uses this to survive a backend restart without closing the
-host's pipes. It reconnects with a 250 ms to 5 s backoff and re-sends each in-flight request at most
-once (5 s replay timeout), but only when re-sending is safe:
+The relay reconnects with a 250 ms to 5 s backoff and re-sends each in-flight request at most once
+(5 s replay timeout), but only when re-sending is safe:
 
 - the read methods `ping`, `tools/list`, `resources/list`, `resources/read`,
   `resources/templates/list`, `prompts/list`, `prompts/get` and `completion/complete`;
 - every call to a read-only code or git tool;
-- `agents` modes `list`, `thread_list`, `members`, `history`, `message`, `ack`, `wait` and
-  `status`, and `inbox` unless it sets `mark_read`;
-- `agents` `post`, which the relay stamps with a `relay-` key when the caller gave none.
+- every call to an agent tool, which carries the relay's key.
 
 Every other in-flight request is answered with a retryable `-32001 backend_restarted` rather than
 guessed at, and a request the backend never answered within the relay deadline gets `-32002
 backend_timeout`.
-
-### Delivery probe
-
-An ordinary MCP tool response can carry a short notice of unread agent messages. Each tool call may
-run a probe (`take_delivery_notice` in `src/mcp/helpers_comms.rs`) over a dedicated broker
-connection so it never contends with the session's interactive client. It is rate-limited to one per
-2 s per session, has a 200 ms read budget and a 2 s connect budget, scans at most 200 inbox rows
-(the broker bounds its own scan, so the cost does not grow with the backlog), and lists up to five
-messages, each at most once per session. Failure and contention are silent, so mailbox delivery
-cannot make another tool slow or unavailable.
 
 ### Evidence a killed process leaves behind
 
@@ -1078,20 +1062,27 @@ every 200 ms and each line also carries `window_peak_mb` (the maximum since the 
 `process_peak_rss_mb`; a gibibyte jump above anything already logged writes a `spike=true` line at once,
 so a transient shorter than the 5 s line interval is still visible.
 
-### Thread model
+### Identity, threads and messages
 
-Threads are registered in a central registry owned by the daemon. Each thread has explicit membership
-(list of agents) and at least one of: a subject, a scope (repo remote or path-glob), or named members.
-Agents join threads explicitly via `agents` mode `join` or mode `thread_start`; no auto-join. Group scopes
-(path-glob, repo) help agents discover relevant threads, but joining is always explicit.
+One resolver names the principal for `serve`, the CLI and the hooks: `BASEMIND_AGENT_ID`, then
+`comms.agent_id`, then `<host>-<repo>-<6 hex of blake3(root)>` with the host from `BASEMIND_HOST`,
+which the plugin launchers set. A call may carry `as` to act as the sub-identity
+`<principal>.<name>`. The principal and root are fixed per connection by the `Hello`; nothing in a
+request body names the sender.
 
-### Condensed two-tier messages
+A thread is created by a post with a `subject`, belongs to the creator's repository, and is open to
+it unless created with `to` (invitation-only). Membership belongs to the principal; a read position
+belongs to the actor, and reading marks read (`peek` does not). Messages are `<thread>.<seq>`;
+bodies are stored with the message and returned inline, cut at 4 KiB in a listing and whole by `id`.
+The daemon owns the wait (`wait_secs`, 0 to 40): the store never blocks. The announcing read the
+hooks use returns front matter only and advances a separate announcement mark. The sweep alone
+deletes: messages after 30 days or past 1,000 per thread, threads idle 30 days. Normative detail:
+[`comms-v2.md`](comms-v2.md); decision: [ADR-0021](adr/0021-agent-comms-v2.md).
 
-A message is a front-matter envelope (`id, thread, from, ts_micros, subject, reply_to, body_len, body_sha`)
-stored in `messages_by_thread`, plus a separately-stored body in `message_body` keyed by message id.
-`agents` modes `history` and `inbox` scan front-matter ONLY — never the body — to stay token-frugal;
-the body is fetched on demand by mode `message {message_id}`. Poster supplies a required short `subject`
-plus an optional long body.
+The agent store is `agents.fjall` in the protocol generation's directory
+(`<comms dir>/g<N>/agents.fjall`), versioned by `COMMS_STORE_VER` independently of the release. A
+new generation starts empty; the previous generation's store is not imported and the legacy
+`store.fjall` is left in place.
 
 ### Split memory
 

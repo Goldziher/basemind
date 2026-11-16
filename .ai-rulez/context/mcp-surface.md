@@ -15,8 +15,7 @@ x-ai-rulez:
 The surface is **one tool per job** (ADR-0018): fifteen verb tools, each with its own exact
 schema and no `mode` argument. `src/mcp/types_tools.rs` is the authoritative list of tools
 (`VERB_TOOLS`) and of every argument; read it before writing about a tool, never infer an argument
-from prose. A `comms` build adds one tool that is still mode-dispatched, `agents`,
-until its own redesign.
+from prose. A `comms` build adds three deferred agent tools (ADR-0021, `docs/comms-v2.md`).
 
 ## Verb tools
 
@@ -55,10 +54,10 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   are reported in one message. A field is optional only when the tool runs without it. "Exactly
   one of" constraints cannot be stated in the flat schema subset and are checked in the body; each
   is also a clause on the field's doc.
-- **Paths and positions.** `path` is a `RelPath` (repo-relative, forward slashes); do not accept an
-  arbitrary `String` path. `RelPath` does not normalise, so a body that reads the working tree goes
-  through `tool_contract::working_file` / `indexed_file`, which refuse an absolute path, a `..`
-  component and a symlink leaving the repository, and consults the index before reading. `line`,
+- **Paths and positions.** `path` is a `RelPath` (repo-relative, forward slashes), never an arbitrary
+  `String`. `RelPath` does not normalise, so a body that reads the working tree goes through
+  `tool_contract::working_file` / `indexed_file`, which refuse an absolute path, a `..` component and
+  a symlink leaving the repository, and consult the index first. `line`,
   `end_line` and `column` are 1-based; a position the index does not hold is omitted, never 0.
 - **Lists.** Every list takes `limit` and `cursor` and returns `next_cursor`. A list is trimmed to
   a default budget of 6000 tokens (`DEFAULT_MAX_TOKENS`) and then sets `budgeted`. `limit: 0` is
@@ -66,67 +65,62 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
 - **Cuts.** A `limit` cut is paging: `next_cursor` alone. A cut the caller did not ask for sets
   `truncated` + `truncated_reason` (+ `omitted`, items); the token budget sets `budgeted`. Add no
   other name. A filter no file passes is an error (`helpers_filters`).
-- **Files changed since the scan.** Load through `freshness::load`: re-extract and set `stale`,
-  else return `freshness::edited`; a deleted file gets `freshness::unloadable`.
-- **Cursors are bound to their query.** Every paginated `*_call` runs its body through
-  `cursor_bind::bound`, which prefixes `next_cursor` with a hash of the tool name and the
-  list-selecting arguments. A cursor passed to another query, or one that outlived its index or
-  HEAD, is an `isError` result telling the agent to call again without `cursor`; no tool answers a
-  stale cursor with an empty page.
+- **Files changed since the scan.** Load through `freshness::load` (re-extract and set `stale`, else
+  `freshness::edited`; a deleted file is `freshness::unloadable`).
+- **Cursors are bound to their query.** Every paginated `*_call` runs through `cursor_bind::bound`,
+  which prefixes `next_cursor` with a hash of the tool name and list-selecting arguments. A cursor
+  used on another query, or after its index or HEAD moved, is an `isError` result saying to call
+  again without `cursor`; never an empty page.
 - **Pinned symbols.** `code_refs` with `path`, `code_read`, `git_blame` and `git_log` with `symbol`
-  resolve the name through `helpers_pick::pick_symbol`: a missing file or symbol is an error, and a
-  name several definitions share is an error listing each with its line span until `line` picks one.
+  resolve through `helpers_pick::pick_symbol`: a missing file or symbol is an error, and a name
+  several definitions share is an error listing each until `line` picks one.
 - **Failures are results.** `BasemindServer::answer` (`src/mcp/tool_contract.rs`) turns an `McpError`
-  returned by a tool body into a tool result with `isError: true` whose text names the fix. An
-  overloaded server answers the same way (`server_busy`, retry). JSON-RPC errors are left to the
-  protocol layer.
-- **Notices.** An empty index is never a plain empty result: the response carries a `notice`
-  (`empty_index`, `warming_up`, `building_index`, `rescanning`).
-- **Inline results.** A server-side Task is used only for a call still running after the threshold
-  (`tasks::SLOW_CALLS`: `index_rescan`, `code_search`, `docs_search`).
+  into an `isError: true` result whose text names the fix; an overloaded server answers the same way
+  (`server_busy`, retry).
+- **Notices.** An empty index is never a plain empty result: a `notice` (`empty_index`,
+  `warming_up`, `building_index`, `rescanning`) says why.
+- **Inline results.** A Task only for a call still running past `tasks::SLOW_CALLS`
+  (`index_rescan`, `code_search`, `docs_search`).
 - **Always loaded.** `finalize_router` stamps `_meta["anthropic/alwaysLoad"]: true` on the verb
-  tools, so a host that defers MCP tools still loads their schemas at session start. `agents` is
-  not marked and stays deferred (ADR-0020).
-- **Descriptions.** Each opens with "Use …", states the contract, and ends with one
-  `Example: {…}` call. Field docs are one clause each.
+  tools, so a host that defers MCP tools still loads their schemas at session start. The agent
+  tools are not marked and stay deferred (ADR-0021).
+- **Descriptions.** Open with "Use …", state the contract, end with one `Example: {…}` call.
 - **Annotations are exact per tool.** Everything is read-only except `memory_save` and
   `index_rescan`; nothing is destructive.
-- **No `output_schema`.** The response structs nest, schemars emits nested structs as `$ref` into
-  `$defs` (the construct that dropped the whole registry in GH #50), and inlining them would break
-  the byte ceiling. `tests/mcp_smoke.rs` asserts the absence.
-- **Byte ceiling.** The verb tools serialize to at most 20,000 bytes in `tools/list`, and the server
-  instructions to at most 4,096 characters (`tests/mcp_schema_wire.rs`). Shorten a description;
-  never raise the ceiling.
-- **Telemetry keys are the tool names.** `src/mcp/savings.rs` maps the keys older binaries wrote
-  (`code:outline`) onto them.
+- **No `output_schema`.** Nested response structs emit `$ref` into `$defs` (the construct that
+  dropped the whole registry in GH #50) and inlining them breaks the byte ceiling;
+  `tests/mcp_smoke.rs` asserts the absence.
+- **Byte ceiling.** The verb tools serialize to at most 20,000 bytes in `tools/list`, the server
+  instructions to 4,096 characters (`tests/mcp_schema_wire.rs`); never raise either.
+- **Telemetry keys are the tool names;** `src/mcp/savings.rs` maps older keys onto them.
 
 ## Layout
 
 - `src/mcp/types_tools.rs` — one params struct per tool, plus the `tool_args!` table that binds
   each struct to its tool name and builds `VERB_TOOLS`.
-- `src/mcp/tools.rs` (code tools and `find_files`), `tools_git.rs`, `tools_memory.rs`
-  (`docs_search`, `memory_save`, `memory_search`), `tools_admin.rs` (`index_status`,
-  `index_rescan`) — one thin `#[tool]` shim per tool, and beside it the `<tool>_call` method that
-  both the shim and the CLI run.
+- `src/mcp/tools.rs` (code tools, `find_files`), `tools_git.rs`, `tools_memory.rs`, `tools_admin.rs` —
+  one thin `#[tool]` shim per tool, beside the `<tool>_call` method the shim and the CLI both run.
 - `src/mcp/helpers_*.rs` — the bodies.
 - `src/cli/` — every MCP tool has a CLI command that calls the same `<tool>_call`
-  (`tests/cli_parity/` enforces it; the mapping is injective, and the CLI may keep shorthands and
-  CLI-only administrative commands, each a row in `tests/cli_parity/capabilities.rs`).
+  (`tests/cli_parity/` enforces it; the CLI may keep shorthands and CLI-only administrative commands,
+  each a row in `tests/cli_parity/capabilities.rs`).
 
-## Mode-dispatched tool (`--features comms`)
+## Agent tools (`--features comms`)
 
-`agents` dispatches on a required `mode`. Its vocabulary lives in `src/mcp/mode.rs`
-(`define_mode!`), with per-mode fields as optional siblings validated by `reject_unsupported`.
+`agent_post`, `agent_inbox`, `agent_threads` (ADR-0021; normative: `docs/comms-v2.md`) replace the
+`agents` tool and `basemind agents`. Deferred (no always-load marker; found by tool search), no
+`mode`, each with an optional `as` (`[a-z0-9_-]{1,32}`, sub-identity `<principal>.<name>`); a field
+that does not apply is refused.
 
-### `agents`
+| Tool | Arguments (`?` = optional) | Job |
+|---|---|---|
+| `agent_post` | `body`, one of `thread` / `reply_to` / `subject`; `to?`, `paths?` (with `subject`) | send; `subject` starts a thread, `to` makes it invitation-only |
+| `agent_inbox` | `thread?`, `id?`, `unread?`, `peek?`, `wait_secs?` (0..40), `limit?`, `cursor?` | read; bodies inline (4 KiB; `id` reads one whole), reading marks read, `peek` does not |
+| `agent_threads` | `query?` (3+), `path?`, `thread?`, one of `join` / `leave` / `invite` / `archive`, `archived?`, `limit?`, `cursor?` | list, describe or change threads |
 
-`register` / `list` (identity card, roster), `thread_start` / `thread_list` (open / discover
-threads addressed by subject, path-glob, and/or members), `join` / `leave` / `members` (explicit
-membership — no auto-join), `add_member` / `remove_member` / `archive` (creator/admin-only
-thread management), `post` (send a message), `history` / `inbox` (front-matter only — subject /
-from / id), `message` (read one body by id — the only path to a body), `ack` (clear read
-messages), `wait` (block until a peer posts or the timeout elapses), `cleanup` (preview or apply
-stale-record retention), `status` (active and stale agent counts).
+Principal: `BASEMIND_AGENT_ID`, else `comms.agent_id`, else `<host>-<repo>-<6 hex>`. `inbox
+--announce` (front matter, never marks read) is CLI and hook only. CLI: `basemind agent
+post|inbox|threads|status|cleanup`.
 
 ### Machine registry (CLI only)
 

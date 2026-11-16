@@ -37,12 +37,13 @@ if [ "${STATUS_RC}" -eq 0 ] && [ -n "${STATUS_JSON}" ] && command -v jq >/dev/nu
   SCHEMA_VER="$(printf '%s' "${STATUS_JSON}" | jq -r '.schema_version | numbers' 2>/dev/null || true)"
 fi
 
-# The MCP tools this plugin's server advertises: the verb tools, plus the coordination tool a
-# `comms` build adds. Every definition carries `_meta["anthropic/alwaysLoad"]`, so a host that defers
-# MCP tools still loads these at session start and no tool search is needed. Claude Code namespaces
-# plugin MCP tools as mcp__plugin_<plugin>_<server>__<tool>.
+# The always-loaded MCP tools this plugin's server advertises: the verb tools. Every definition
+# carries `_meta["anthropic/alwaysLoad"]`, so a host that defers MCP tools still loads these at
+# session start and no tool search is needed. The three agent tools of a `comms` build are deferred
+# and named separately below. Claude Code namespaces plugin MCP tools as
+# mcp__plugin_<plugin>_<server>__<tool>.
 TOOL_PREFIX="mcp__plugin_basemind_basemind__"
-TOOL_NAMES="code_outline code_symbols code_read code_grep code_search code_refs find_files docs_search git_log git_blame git_diff memory_save memory_search index_status index_rescan agents"
+TOOL_NAMES="code_outline code_symbols code_read code_grep code_search code_refs find_files docs_search git_log git_blame git_diff memory_save memory_search index_status index_rescan"
 TOOL_LIST=""
 for t in ${TOOL_NAMES}; do
   TOOL_LIST="${TOOL_LIST:+${TOOL_LIST}, }${t}"
@@ -68,7 +69,7 @@ else
   STATUS_LINE="basemind verified: ${FILE_COUNT} files indexed (schema ${SCHEMA_VER:-unknown}).${CALL_TOOLS}"
 fi
 
-ROUTING="Use basemind before shell rg, grep, find and git, and before reading whole files. What a file contains: code_outline {\"path\":\"src/store.rs\"}, then code_read {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for the one body you need. Where a name is defined: code_symbols {\"name\":\"open_store\"}. What calls, implements or imports it: code_refs {\"name\":\"open_store\"}. A string or comment in indexed code: code_grep {\"pattern\":\"cache_root(\"} (literal text; add \"regex\":true for a regex). Code by what it does: code_search {\"query\":\"retry a failed upload\"}. A file by name: find_files {\"query\":\"readme\"}. History: git_log {} for recent commits (add path, query, author, symbol or rev), git_blame {\"path\":\"src/store.rs\"}, git_diff {} for the working-tree status (add path, from, to). Documents, which the code tools do not cover (markdown, config, PDFs, Jupyter notebooks): docs_search {\"query\":\"how releases are versioned\"}. Notes shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"} and memory_search {\"query\":\"…\"}. Lines are 1-based, an unknown argument is rejected, and a failure is a tool result that names the fix. For exact literals or regex outside the code map, search the files directly; a semantic miss does not establish absence. Fall back to ordinary tools when basemind cannot cover the task, and run index_rescan {} after editing indexed files. Use agents for thread communication when that tool is available."
+ROUTING="Use basemind before shell rg, grep, find and git, and before reading whole files. What a file contains: code_outline {\"path\":\"src/store.rs\"}, then code_read {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for the one body you need. Where a name is defined: code_symbols {\"name\":\"open_store\"}. What calls, implements or imports it: code_refs {\"name\":\"open_store\"}. A string or comment in indexed code: code_grep {\"pattern\":\"cache_root(\"} (literal text; add \"regex\":true for a regex). Code by what it does: code_search {\"query\":\"retry a failed upload\"}. A file by name: find_files {\"query\":\"readme\"}. History: git_log {} for recent commits (add path, query, author, symbol or rev), git_blame {\"path\":\"src/store.rs\"}, git_diff {} for the working-tree status (add path, from, to). Documents, which the code tools do not cover (markdown, config, PDFs, Jupyter notebooks): docs_search {\"query\":\"how releases are versioned\"}. Notes shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"} and memory_search {\"query\":\"…\"}. Lines are 1-based, an unknown argument is rejected, and a failure is a tool result that names the fix. For exact literals or regex outside the code map, search the files directly; a semantic miss does not establish absence. Fall back to ordinary tools when basemind cannot cover the task, and run index_rescan {} after editing indexed files."
 CONTEXT="${STATUS_LINE} ${ROUTING}"
 
 # 2. Append the status-line nudge only when a basemind status line isn't wired yet.
@@ -93,22 +94,17 @@ if ! statusline_wired; then
   CONTEXT="${CONTEXT} The basemind status line is not enabled in the user's Claude Code settings; if the user asks about the status line or basemind activity, tell them they can enable a live status line (indexed files, scan age, tool calls, tokens saved) by running the /bm-statusline command once."
 fi
 
-# 3. Agent-comms boot: connect to the broker (starting it if needed) and surface a CONDENSED view
-#    of the agent's inbox — front-matter only, never bodies — so the agent knows the conversation
-#    state and the levers to participate. Threads are scope-discovered and explicit-join (no
-#    auto-join). Best-effort + time-boxed; comms never blocks or fails session startup. Requires jq
+# 3. Agent messaging is opt-in and secondary to code navigation: name the deferred tools and, when
+#    the daemon already holds unread messages for this actor, say how many. A peek moves no read
+#    position. Best-effort and time-boxed; comms never blocks or fails session startup. Requires jq
 #    to parse the inbox JSON.
+CONTEXT="${CONTEXT} Agent messaging is opt-in through the deferred tools agent_post, agent_inbox and agent_threads (find them by tool search); a subagent that wants a separate inbox passes \`as\`."
 if command -v jq >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-  INBOX_JSON="$(timeout 8 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agents inbox --root "${WORKSPACE}" --json --limit 8 2>/dev/null || true)"
+  INBOX_JSON="$(timeout 8 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agent inbox --peek --json --limit 5 --root "${WORKSPACE}" 2>/dev/null || true)"
   MSG_COUNT="$(printf '%s' "${INBOX_JSON}" | jq -er '.messages | arrays | length' 2>/dev/null || true)"
-  if [ -n "${MSG_COUNT}" ]; then
-    COMMS_TOOLS="You are connected to basemind agent-comms — a shared multi-agent chat built on THREADS scoped by at least two of subject, path_glob, and members. Threads are discovered by membership, cwd path match, or subject filter; there is no auto-join. Use agents with a required mode: thread_list to find threads, join to participate, thread_start to open one, post to send, history or inbox to scan front-matter, message with message_ref to read a body, and ack to clear read messages. Prefer posting a concise status/question over staying silent when collaborating."
-    if [ "${MSG_COUNT}" -gt 0 ]; then
-      RECENT="$(printf '%s' "${INBOX_JSON}" | jq -r '.messages[] | "  • [\(.subject)] from \(.from) (ref: \(.message_ref // .id))"' 2>/dev/null || true)"
-      CONTEXT="${CONTEXT} ${COMMS_TOOLS}"$'\n'"Recent messages (front-matter only; call agents mode message with message_ref to read a body):"$'\n'"${RECENT}"
-    else
-      CONTEXT="${CONTEXT} ${COMMS_TOOLS} No messages in your inbox yet — start or join a thread to kick things off."
-    fi
+  if [ -n "${MSG_COUNT}" ] && [ "${MSG_COUNT}" -gt 0 ]; then
+    MORE="$(printf '%s' "${INBOX_JSON}" | jq -r 'if .more == true then "at least " else "" end' 2>/dev/null || true)"
+    CONTEXT="${CONTEXT} You have ${MORE}${MSG_COUNT} unread agent message(s); read them with agent_inbox."
   fi
 fi
 

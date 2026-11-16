@@ -24,7 +24,7 @@
     },
     "basemind-comms": {
       "name": "basemind-comms",
-      "description": "Coordinate with other agents working the same repo via basemind's broker — scoped threads, a per-agent inbox, and two-tier messages. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change."
+      "description": "Coordinate with other agents working the same repo through basemind's deferred agent_post, agent_inbox and agent_threads tools — threads, a per-actor read position, bodies inline. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change."
     },
     "basemind-doctor": {
       "name": "basemind-doctor",
@@ -40,7 +40,7 @@
     },
     "basemind-multi-agent-room": {
       "name": "basemind-multi-agent-room",
-      "description": "Orchestrate a team of named subagents in shared threads. One orchestrator drives multiple peers with distinct identities; each subagent sees its own inbox and can cross-check findings by posting to a thread the peer is a member of."
+      "description": "Orchestrate a team of subagents in shared threads. Each subagent acts under its own sub-identity (`as`), reads its own inbox, and cross-checks peers by posting to threads they are members of."
     },
     "basemind-scan": {
       "name": "basemind-scan",

@@ -4,8 +4,10 @@
  * OpenCode loads this entrypoint from the package's `./tui` export into the
  * terminal client. It restores the V1 plugin's proactive agent-comms
  * notifications: when a session starts and after each successful tool call it
- * reads the basemind agent-comms inbox and surfaces any new messages as a
- * toast, tracking a high-water mark so a message is announced once.
+ * asks the basemind daemon for an announcing read of the agent inbox and
+ * surfaces any unread messages as a toast. The daemon records what it has
+ * announced, so a message is announced once and stays unread until the agent
+ * reads it with agent_inbox.
  *
  * This half imports `@opencode/plugin/tui` (TUI context) and therefore must
  * NOT be loaded by the server-side half in `basemind.js`.
@@ -31,15 +33,14 @@ const command = fs.existsSync(bundledLauncher)
     ? repoLauncher
     : "basemind";
 
-let commsHighWaterMicros = 0;
-
-/// Read the agent-comms inbox by re-execing the basemind CLI. Resolves to the
-/// parsed JSON, or `null` when the CLI is unavailable or returns nothing.
-function readCommsInbox(directory, limit) {
+/// Announce unread agent-comms messages by re-execing the basemind CLI: front
+/// matter only, nothing marked read. Resolves to the parsed JSON, or `null`
+/// when the CLI is unavailable or returns nothing.
+function announceCommsInbox(directory, limit) {
   return new Promise((resolve) => {
     const child = execFile(
       command,
-      ["agents", "inbox", "--root", directory, "--json", "--limit", String(limit)],
+      ["agent", "inbox", "--announce", "--root", directory, "--json", "--limit", String(limit)],
       { timeout: 6000, cwd: directory },
       (error, stdout) => {
         if (error || !stdout) {
@@ -58,7 +59,11 @@ function readCommsInbox(directory, limit) {
 }
 
 function formatMessages(messages) {
-  return messages.map((message) => `  • [${message.subject}] from ${message.from} (id: ${message.id})`).join("\n");
+  return messages
+    .map(
+      (message) => `  - from ${message.from} in ${message.subject} (${message.id}, ${message.body_bytes ?? 0} bytes)`,
+    )
+    .join("\n");
 }
 
 export default Plugin.define({
@@ -71,36 +76,20 @@ export default Plugin.define({
       context.ui.toast.show({ title: "basemind", message, variant: "info" });
     };
 
-    const announce = (messages) => {
+    const announce = async () => {
+      const inbox = await announceCommsInbox(directory, 10);
+      const messages = inbox?.messages ?? [];
       if (messages.length === 0) {
-        return false;
+        return;
       }
-      commsHighWaterMicros = Math.max(commsHighWaterMicros, ...messages.map((message) => message.ts_micros ?? 0));
-      return true;
+      const more = inbox?.more ? "\nThere is more unread than listed." : "";
+      surface(
+        `agent-comms: ${messages.length} unread message(s). Read them with agent_inbox (bodies inline; {"id":"<id>"} reads one whole message); reply with agent_post. The agent tools are deferred: find them by tool search.\n${formatMessages(messages)}${more}`,
+      );
     };
 
-    const onSessionCreated = context.data.on("session.created", async () => {
-      const inbox = await readCommsInbox(directory, 8);
-      const messages = inbox?.messages ?? [];
-      if (!announce(messages)) {
-        return;
-      }
-      surface(
-        `agent-comms: ${messages.length} recent message(s). Use agents mode message with message_id to read a body, or mode post with thread, subject, and body to reply.\n${formatMessages(messages)}`,
-      );
-    });
-
-    const onToolSuccess = context.data.on("session.tool.success", async () => {
-      const inbox = await readCommsInbox(directory, 30);
-      const messages = inbox?.messages ?? [];
-      const fresh = messages.filter((message) => (message.ts_micros ?? 0) > commsHighWaterMicros);
-      if (!announce(fresh)) {
-        return;
-      }
-      surface(
-        `agent-comms: ${fresh.length} new message(s) since last turn. Reply with agents {mode:"post", thread, subject, body, reply_to:<id>} if warranted.\n${formatMessages(fresh)}`,
-      );
-    });
+    const onSessionCreated = context.data.on("session.created", announce);
+    const onToolSuccess = context.data.on("session.tool.success", announce);
 
     return () => {
       onSessionCreated();

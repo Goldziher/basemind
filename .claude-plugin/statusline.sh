@@ -94,9 +94,9 @@ comms_state() {
     fi
   fi
 
-  json="$(timeout 2 basemind agents inbox --root "$cwd" --json --limit 1 2>/dev/null || true)"
+  json="$(timeout 2 basemind agent inbox --peek --root "$cwd" --json --limit 1 2>/dev/null || true)"
   [[ -n "$json" ]] || return 1
-  unread="$(printf '%s' "$json" | jq -r '((.messages | length) + (.unread // 0))' 2>/dev/null | tr -cd '0-9' || true)"
+  unread="$(printf '%s' "$json" | jq -r '(.messages | length)' 2>/dev/null | tr -cd '0-9' || true)"
   [[ -n "$unread" ]] || unread=0
   agent="${BASEMIND_AGENT_ID:-}"
   [[ -z "$agent" ]] && agent="$(tr -d '[:space:]' <"${bm_dir}/agent-id" 2>/dev/null || true)"

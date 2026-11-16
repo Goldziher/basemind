@@ -14,7 +14,7 @@ shared by every workspace. The next scan migrates what changed and cleans up wha
 
 The mode-dispatched MCP tools `code`, `git`, `memory` and `admin` are replaced by one tool per job.
 This is a breaking change with no aliases: a call to an old tool name fails. No tool below takes a
-`mode` argument. `agents` is unchanged; the `workspace` tool is removed. The plugin's skills, commands, hooks and
+`mode` argument. The `agents` tool is replaced by three deferred tools (see below); the `workspace` tool is removed. The plugin's skills, commands, hooks and
 rules ship in the same release, and the plugin downloads the version-matched binary; update any MCP
 calls, permission allow-lists and scripts of your own. The tools are always loaded
 (`_meta["anthropic/alwaysLoad"]: true`), so an agent calls them directly, with no tool-search round
@@ -152,6 +152,27 @@ The command groups keep their names, and the old subcommands stay as shorthands 
   search) are gone, and `code_read` counts bytes in `omitted_bytes`. The full table is in
   [`docs/UPGRADING.md`](https://github.com/Goldziher/basemind/blob/main/docs/UPGRADING.md).
 - **Telemetry keys are the tool names.**
+
+## Upgrading to agent comms v2 (ADR-0021)
+
+The `agents` MCP tool and `basemind agents` are removed, with no aliases. Three deferred tools replace
+them (`agent_post`, `agent_inbox`, `agent_threads`); the CLI is `basemind agent post|inbox|threads`,
+plus `status` and `cleanup`.
+
+1. **Restart every session.** The comms protocol goes from 6 to 7 and the relay protocol from 1 to 2;
+   a client and a daemon of different versions refuse each other. Run `basemind comms stop` after the
+   upgrade so the old daemon is replaced.
+2. **Old threads and messages are not imported.** The agent store is now `agents.fjall` in the
+   protocol generation's directory and starts empty; the previous `store.fjall` is never read and
+   `basemind comms cleanup` removes the pre-generation one.
+3. **Renames.** `as_agent` is now `as` (`--as-agent` is `--as`); `idempotency_key`, `since_hours`,
+   `mark_read` and `message_ref` are gone; `ack` is gone because reading marks read.
+4. **Ids.** `BASEMIND_AGENT_ID` and `comms.agent_id` may no longer contain `.`. The plugin launchers
+   set `BASEMIND_HOST` so the server, the CLI and the hooks resolve the same id.
+
+The full mode-by-mode mapping is in the
+[changelog](https://github.com/Goldziher/basemind/blob/main/CHANGELOG.md) and
+[`docs/UPGRADING.md`](https://github.com/Goldziher/basemind/blob/main/docs/UPGRADING.md).
 
 ## Running two basemind versions side by side
 

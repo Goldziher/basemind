@@ -24,4 +24,4 @@ The surface is one tool per job (ADR-0018): fifteen verb tools, each with an exa
 
 Descriptions state the contract honestly: matching semantics (literal vs regex, exact vs fragment), what is resolved (scope-aware vs name-only), and what is capped. Do not declare an `output_schema`: nested response structs emit `$ref`, and inlining them breaks the byte ceiling; `tests/mcp_smoke.rs` asserts the absence. Annotations are exact per tool: a tool that writes sets `read_only_hint = false`, so a host that auto-approves read-only tools cannot trigger it.
 
-`agents` (`--features comms`) remains mode-dispatched until its own redesign: its vocabulary stays in `src/mcp/mode.rs` (`define_mode!`, `reject_unsupported`), and a new mode there still needs its `pair(tool, mode, cli)` row in `tests/cli_parity/capabilities.rs`.
+`agent_post`, `agent_inbox` and `agent_threads` (`--features comms`) follow the same rules but are deferred (no always-load marker), take an optional `as`, and have no `mode`. Their contract is `docs/comms-v2.md` (ADR-0021); the CLI mirror is `basemind agent post|inbox|threads`.

@@ -22,6 +22,20 @@ if [ -z "$PLUGIN_ROOT" ]; then
   PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
+# Name the harness once, for `serve` and for the hooks (which run through this launcher), so both ~keep
+# derive the same agent id. An explicit BASEMIND_HOST wins; none is set when no harness is found. ~keep
+if [ -z "${BASEMIND_HOST:-}" ]; then
+  if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+    export BASEMIND_HOST=cursor
+  elif [ -n "${COPILOT_CLI:-}" ]; then
+    export BASEMIND_HOST=copilot
+  elif [ -n "${CLAUDECODE:-}" ] || [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    export BASEMIND_HOST=claude
+  elif [ -n "${GEMINI_CLI:-}" ]; then
+    export BASEMIND_HOST=gemini
+  fi
+fi
+
 BINARY_NAME="basemind"
 # Set on Git Bash, MSYS2 and Cygwin, whose ps and paths differ from every Unix. ~keep
 MSYS_SHELL=""

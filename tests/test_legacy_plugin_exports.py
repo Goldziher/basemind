@@ -34,3 +34,16 @@ class LegacyExportsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 EXPORTS.sync_files(root, {"target": source}, check=False)
             self.assertEqual(outside.read_bytes(), b"preserved")
+
+    def test_every_hook_script_is_exported_to_the_root_hooks_directory(self) -> None:
+        files = EXPORTS.expected_files(ROOT)
+        for source in (ROOT / "plugin/.ai-rulez/hooks").iterdir():
+            self.assertEqual(files[f"hooks/{source.name}"], source)
+        self.assertIn("hooks/agent-as", files)
+
+    def test_the_launcher_and_the_notifying_hooks_reach_every_harness_tree(self) -> None:
+        files = EXPORTS.expected_files(ROOT)
+        self.assertEqual(files["scripts/mcp-launch.sh"], ROOT / "plugin/.ai-rulez/scripts/mcp-launch.sh")
+        for tree in (".codex-plugin", ".cursor-plugin"):
+            for name in ("session-start", "inbox-notify", "run-hook.cmd"):
+                self.assertIn(f"{tree}/hooks/{name}", files)

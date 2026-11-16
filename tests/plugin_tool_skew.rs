@@ -65,7 +65,9 @@ fn minimal_call(tool: &str) -> Option<Value> {
         "memory_search" => json!({"query": "probe"}),
         "index_status" => json!({}),
         "index_rescan" => json!({}),
-        "agents" => json!({"mode": "list"}),
+        "agent_post" => json!({"subject": "skew probe", "body": "the gate's call"}),
+        "agent_inbox" => json!({}),
+        "agent_threads" => json!({}),
         _ => return None,
     })
 }
@@ -110,24 +112,24 @@ fn collect_files(path: &Path, out: &mut Vec<PathBuf>) {
 /// - `mcp__<server>__<tool>`, the host-namespaced form;
 /// - the `TOOL_NAMES="…"` list a hook prints to the model;
 /// - a snake_case name from the verb-tool families (`code_`, `git_`, `docs_`, `memory_`, `index_`,
-///   `find_`), the shape every verb tool has;
-/// - `agents`, the one coordination tool, named as a call (`agents {`, `agents mode`, `` `agents` ``).
+///   `find_`), the shape every verb tool has, and the three agent tools (`agent_post`,
+///   `agent_inbox`, `agent_threads`);
+/// - `agents`, the removed coordination tool, named as a call (`agents {`, `agents mode`,
+///   `` `agents` ``), so content still teaching it fails.
 ///
-/// A mode of `agents` named in a call (`agents { mode: "post" }`, `` `agents` mode `post` ``) is
-/// recorded as `agents:<mode>`, because the plugin can be wrong about a mode as well as a tool. An
-/// argument in a JSON call example (`code_grep {"pattern":"x","regex":true}`) is recorded as
-/// `<tool>.<argument>`, for the same reason.
+/// An argument in a JSON call example (`code_grep {"pattern":"x","regex":true}`) is recorded as
+/// `<tool>.<argument>`, because the plugin can be wrong about an argument as well as a tool.
 fn names_in(text: &str) -> BTreeSet<String> {
     let namespaced = Regex::new(r"mcp__(?:plugin_basemind_basemind|basemind)__([a-z][a-z0-9_]*)").unwrap();
     let list = Regex::new(r#"TOOL_NAMES="([^"]*)""#).unwrap();
-    let family = Regex::new(r"\b((?:code|git|docs|memory|index|find)_[a-z][a-z_]*)\b").unwrap();
+    let family =
+        Regex::new(r"\b((?:code|git|docs|memory|index|find)_[a-z][a-z_]*|agent_(?:post|inbox|threads))\b").unwrap();
     let agents = Regex::new(r"`agents`|\bagents\s*\{|\bagents mode\b").unwrap();
-    let call = Regex::new(r"\b((?:code|git|docs|memory|index|find)_[a-z][a-z_]*)\s*\{([^{}]*)\}").unwrap();
-    let key = Regex::new(r#"\\?"([a-z_]+)\\?"\s*:"#).unwrap();
-    let agents_mode = Regex::new(
-        r#"agents\s*\{\s*\\?"?mode\\?"?:\s*\\?"([a-z_]+)|`agents` mode `([a-z_]+)`|\bagents mode ([a-z_]+)"#,
+    let call = Regex::new(
+        r"\b((?:code|git|docs|memory|index|find)_[a-z][a-z_]*|agent_(?:post|inbox|threads))\s*\{([^{}]*)\}",
     )
     .unwrap();
+    let key = Regex::new(r#"\\?"([a-z_]+)\\?"\s*:"#).unwrap();
 
     let mut names = BTreeSet::new();
     for caps in namespaced.captures_iter(text) {
@@ -145,11 +147,6 @@ fn names_in(text: &str) -> BTreeSet<String> {
     for caps in call.captures_iter(text) {
         for arg in key.captures_iter(&caps[2]) {
             names.insert(format!("{}.{}", &caps[1], &arg[1]));
-        }
-    }
-    for caps in agents_mode.captures_iter(text) {
-        if let Some(mode) = (1..=3).find_map(|i| caps.get(i)) {
-            names.insert(format!("agents:{}", mode.as_str()));
         }
     }
     names
@@ -403,16 +400,6 @@ fn stop_daemons(fx: &Fixture) {
         .output();
 }
 
-/// The `mode` enum of `tool`'s input schema, empty when the tool or the enum is absent.
-fn mode_enum(tools: &[Value], tool: &str) -> Vec<String> {
-    tools
-        .iter()
-        .find(|t| t["name"] == tool)
-        .and_then(|t| t["inputSchema"]["properties"]["mode"]["enum"].as_array())
-        .map(|modes| modes.iter().filter_map(|m| m.as_str().map(String::from)).collect())
-        .unwrap_or_default()
-}
-
 fn result_text(result: &Value) -> String {
     result["content"]
         .as_array()
@@ -436,8 +423,6 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
         .filter_map(|t| t["name"].as_str().map(String::from))
         .collect();
     let tool_count = advertised.len();
-    let agents_modes = mode_enum(&tools, "agents");
-    advertised.extend(agents_modes.iter().map(|m| format!("agents:{m}")));
     for tool in &tools {
         let name = tool["name"].as_str().unwrap_or_default();
         if let Some(props) = tool["inputSchema"]["properties"].as_object() {
@@ -449,23 +434,23 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
     let out = &mut std::io::stderr().lock();
     let _ = writeln!(
         out,
-        "plugin-skew: launched via {how}; server {} advertises {tool_count} tools and {} agents modes (plus their argument names): {:?}",
+        "plugin-skew: launched via {how}; server {} advertises {tool_count} tools (plus their argument names): {:?}",
         init["serverInfo"]["version"],
-        agents_modes.len(),
         advertised.iter().filter(|n| !n.contains('.')).collect::<Vec<_>>()
     );
     let _ = writeln!(
         out,
-        "plugin-skew: {files_read} plugin files read, {} distinct tool, agents-mode and call-argument names referenced: {:?}",
+        "plugin-skew: {files_read} plugin files read, {} distinct tool and call-argument names referenced: {:?}",
         refs.len(),
         refs.keys().collect::<Vec<_>>()
     );
 
     assert!(tool_count > 0, "the server advertised no tools");
-    assert!(
-        !agents_modes.is_empty(),
-        "the agents tool advertised no `mode` enum to compare against"
-    );
+    if cfg!(feature = "comms") {
+        for tool in ["agent_post", "agent_inbox", "agent_threads"] {
+            assert!(advertised.contains(tool), "a comms build advertises `{tool}`");
+        }
+    }
     assert!(
         refs.len() >= 10,
         "only {} tool names extracted: the extraction is broken",
@@ -570,8 +555,9 @@ fn extracting_no_names_is_an_error_not_a_pass() {
 #[test]
 fn every_spelling_of_a_tool_name_is_recognised() {
     let text = "call mcp__plugin_basemind_basemind__code_outline; TOOL_NAMES=\"find_files agents zzz_odd\"; \
-                use git_log {} and `agents` mode `post`; mcp__basemind__docs_search; agents { mode: \"inbox\" } git_log {\"rev\":\"x\"} code_grep {\"pattern\":\"a\",\"regex\":true} \
-                agents {mode: \"wait\"}; call agents mode message";
+                use git_log {} and `agents` mode `post`; mcp__basemind__docs_search; git_log {\"rev\":\"x\"} \
+                code_grep {\"pattern\":\"a\",\"regex\":true} agent_post {\"subject\":\"s\",\"body\":\"b\"} \
+                read with agent_inbox; mcp__plugin_basemind_basemind__agent_threads; comms.agent_id";
     let names = names_in(text);
     for want in [
         "code_outline",
@@ -580,13 +566,14 @@ fn every_spelling_of_a_tool_name_is_recognised() {
         "zzz_odd",
         "git_log",
         "docs_search",
-        "agents:post",
-        "agents:inbox",
-        "agents:wait",
-        "agents:message",
         "git_log.rev",
         "code_grep.regex",
+        "agent_post",
+        "agent_post.subject",
+        "agent_inbox",
+        "agent_threads",
     ] {
         assert!(names.contains(want), "{want} missing from {names:?}");
     }
+    assert!(!names.contains("agent_id"), "a config key is not a tool: {names:?}");
 }
