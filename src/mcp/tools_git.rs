@@ -22,8 +22,8 @@ impl BasemindServer {
         description = "Use instead of `git log`/`git show` for \"what changed recently\", \"what \
         touched this file\", \"which commit mentions X\" or \"when did this function change\". No \
         arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow \
-        it. A symbol's history is read one window of commits per page: follow `next_cursor`, even \
-        from an empty page (`truncated_reason` `window`). \
+        it. A symbol's or a directory's history is read one window of commits per page: follow \
+        `next_cursor`, even from an empty page (`truncated_reason` `window`). \
         Example: {\"path\":\"src/store.rs\",\"limit\":5}",
         annotations(
             read_only_hint = true,
@@ -63,7 +63,7 @@ impl BasemindServer {
         title = "Diff and status",
         description = "Use instead of `git status`/`git diff`. No arguments returns the working-tree \
         status (staged, modified, untracked; 200 paths per list, a `path` ending in `/` narrows it \
-        to that directory); `path` alone diffs that file's working tree against HEAD; `from`/`to` \
+        to that directory); a file `path` alone diffs its working tree against HEAD; `from`/`to` \
         pick revisions; `structural` lists the symbols added and removed, and counts the `common` \
         ones, instead of text hunks. A diff over 200 hunks or 128 KiB is cut and flagged \
         `truncated`. \

@@ -55,7 +55,7 @@ const STATUS_VOLATILE: &[&str] = &["warm_ms", "root"];
 
 /// Whether a commit search was answered by the live walk: the server has the git-history index
 /// warm, a one-shot CLI call may not.
-const SEARCH_VOLATILE: &[&str] = &["partial"];
+const SEARCH_VOLATILE: &[&str] = &["truncated", "truncated_reason"];
 
 /// Write timestamps of a memory note: the two transports write it one after the other.
 const NOTE_VOLATILE: &[&str] = &["created_at", "updated_at"];

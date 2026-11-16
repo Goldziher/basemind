@@ -158,6 +158,16 @@ impl Repo {
         ))
     }
 
+    /// Whether `rel` names a directory (a tree) at `rev`. `false` for a revision that cannot be
+    /// resolved or a path it does not have.
+    pub fn is_directory_at(&self, rev: &str, rel: &Path) -> bool {
+        let local = self.local();
+        resolve_tree(&local, rev)
+            .ok()
+            .and_then(|tree| tree.lookup_entry_by_path(rel).ok().flatten())
+            .is_some_and(|entry| entry.mode().is_tree())
+    }
+
     /// The blob for `rel` at `rev`. Its size is read from the object header first, so a blob over
     /// the ceiling is never inflated into memory.
     fn diff_side_at_rev(&self, rev: &str, rel: &Path) -> Result<Side, GitError> {

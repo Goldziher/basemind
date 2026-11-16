@@ -341,12 +341,10 @@ pub(super) struct SearchHitView {
 pub(super) struct SearchResponse {
     /// Matching symbols in the corpus, across every page.
     pub total: usize,
-    /// True when a fuzzy sweep stopped at its candidate cap, so `total` is a lower bound.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub total_is_partial: bool,
-    /// True when more results exist than this page carries; `next_cursor` continues.
+    /// True when a fuzzy sweep stopped at its candidate cap, so `total` is a lower bound. Never
+    /// true because `limit` cut the page: that is paging, and `next_cursor` says it.
     pub truncated: bool,
-    /// `limit` whenever `truncated` is true.
+    /// `scan_cap` whenever `truncated` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// True when a `max_tokens` budget dropped trailing results. The kept prefix is
@@ -382,13 +380,9 @@ pub(super) struct ListFilesEntry {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ListFilesResponse {
+    /// Files that pass the filters, across every page; `next_cursor` continues past this one.
     pub total: usize,
     pub returned: usize,
-    /// True when more files exist than this page carries; `next_cursor` continues.
-    pub truncated: bool,
-    /// `limit` whenever `truncated` is true.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub truncated_reason: Option<&'static str>,
     /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
     /// was clamped down to it. Surfaced so callers know the page size was reduced (bug #17).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -428,13 +422,9 @@ pub(super) struct FindFilesEntry {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindFilesResponse {
+    /// Files that match, across every page; `next_cursor` continues past this one.
     pub total: usize,
     pub returned: usize,
-    /// True when more files exist than this page carries; `next_cursor` continues.
-    pub truncated: bool,
-    /// `limit` whenever `truncated` is true.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub truncated_reason: Option<&'static str>,
     /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
     /// was clamped down to it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -612,9 +602,13 @@ pub(super) struct FindReferencesResponse {
     #[serde(rename = "match")]
     pub matching: &'static str,
     pub total: u32,
-    /// True when `total` was capped at `limit` and more matches exist on disk.
+    /// True when the scan stopped at its cap before the end of the matches: `total` is then a
+    /// lower bound, and `next_cursor` resumes the scan.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub total_is_partial: bool,
+    pub truncated: bool,
+    /// `scan_cap` whenever `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
@@ -651,8 +645,11 @@ pub(super) struct FindCallersResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_total: Option<u32>,
     pub total: u32,
+    /// As on a `code_refs` name scan: the scan stopped at its cap, so `total` is a lower bound.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub total_is_partial: bool,
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     pub hits: Vec<ReferenceHit>,
@@ -788,14 +785,14 @@ pub(super) struct GrepSymbol {
     pub kind: &'static str,
 }
 
+/// `truncated_reason` of a scan that stopped at its cap before the end of the matches.
+pub(super) const SCAN_CAP: &str = "scan_cap";
+
 /// Why a `workspace_grep` result was cut short. Present only when `truncated` is true — a grep that
 /// returned every match carries no reason, so an agent can tell a complete zero from a bounded one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum GrepTruncation {
-    /// More matches exist than `limit` allowed. Raise `limit` or page with `next_cursor`;
-    /// `total_matches` is the exact count that was available.
-    Limit,
     /// The corpus was larger than one call may read. Narrow with `path_contains` / `language`, or
     /// page with `next_cursor`. Only reachable on workspaces of multiple gigabytes of source.
     ByteBudget,
@@ -810,18 +807,16 @@ pub(super) struct WorkspaceGrepResponse {
     /// Number of files that had at least one match. Exact: every candidate file is scanned.
     pub total_files_matched: usize,
     /// Exact hit count across the whole scanned corpus — not just the returned page. Exceeds
-    /// `hits.len()` when `limit` truncated the result, which is what makes `truncated` actionable.
+    /// `hits.len()` when `limit` or the token budget cut the page; `next_cursor` continues.
     pub total_matches: u32,
-    /// True when matches exist that this response does not carry. Never true merely because the
-    /// corpus is large: grep scans every candidate file.
+    /// True when files were left unread, so `total_matches` does not cover them. Never true
+    /// because `limit` cut the page or because the corpus is large: grep scans every candidate
+    /// file it may read.
     pub truncated: bool,
-    /// Which bound cut the result, when `truncated` is true.
+    /// `byte_budget` whenever `truncated` is true. There is no `omitted`: the matches in the
+    /// unread files were never counted. `next_cursor` continues with those files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<GrepTruncation>,
-    /// Matches in the scanned files that this response does not carry, when `limit` or the token
-    /// budget cut it; `next_cursor` continues with them.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub omitted: usize,
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,

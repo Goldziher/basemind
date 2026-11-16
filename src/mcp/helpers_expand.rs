@@ -87,7 +87,7 @@ async fn read_span(
         line,
         end_line: last,
         total_lines,
-        omitted: span.bytes.saturating_sub(body.len()),
+        omitted_bytes: span.bytes.saturating_sub(body.len()),
         body,
         bytes: span.bytes,
         truncated,
@@ -211,7 +211,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         let live = freshness::load(&file, (&entry).into(), max_bytes)
             .map_err(|reason| freshness::unloadable("code_read", &params.path, reason, max_bytes))?;
         let l1 = if live.fresh {
-            indexed
+            std::sync::Arc::new(indexed)
         } else {
             freshness::reparse(state, "code_read", &params.path, &live.bytes)?
         };
@@ -242,7 +242,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         kind: kind_to_str(symbol.kind).to_string(),
         line: symbol.start_row + 1,
         end_line,
-        omitted: full_bytes.saturating_sub(body.len()),
+        omitted_bytes: full_bytes.saturating_sub(body.len()),
         body,
         bytes: full_bytes,
         truncated,

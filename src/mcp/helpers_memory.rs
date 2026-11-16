@@ -117,26 +117,34 @@ pub(super) async fn memory_delete(_state: &ServerState, _p: MemoryDeleteParams) 
 /// `docs_search`: semantic search over indexed documents.
 #[cfg(feature = "documents")]
 pub(super) async fn docs_search(state: &ServerState, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
-    use super::helpers_page::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset};
+    use super::helpers_page::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval};
 
     let generation = state.shared.cache_generation.load(std::sync::atomic::Ordering::Relaxed);
     let offset = ranked_offset("docs_search", p.cursor.as_ref(), generation)?;
     let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
-    let result = super::memory::run_search_documents(
-        state,
-        super::types::SearchDocumentsParams {
-            query: p.query,
-            limit: Some(RANKED_FETCH),
-            max_tokens: None,
-            // The page is cut out of the structured response, which only the JSON encoding has, so
-            // `[documents.output] format = "toon"` does not apply to this tool.
-            format: Some("json".to_string()),
-            mime_type: p.mime_type,
-            scope: p.scope,
-            entity_category: p.entity,
-            keywords_contains: p.keywords,
-        },
-    )
+    let ranking = serde_json::json!({
+        "query": &p.query,
+        "mime_type": &p.mime_type,
+        "scope": &p.scope,
+        "entity": &p.entity,
+        "keywords": &p.keywords,
+    });
+    let search = super::types::SearchDocumentsParams {
+        query: p.query,
+        limit: Some(RANKED_FETCH),
+        max_tokens: None,
+        // The page is cut out of the structured response, which only the JSON encoding has, so
+        // `[documents.output] format = "toon"` does not apply to this tool.
+        format: Some("json".to_string()),
+        mime_type: p.mime_type,
+        scope: p.scope,
+        entity_category: p.entity,
+        keywords_contains: p.keywords,
+    };
+    let cache = &state.shared.ranked;
+    let result = ranked_retrieval(cache, "docs_search", &ranking, "hits", generation, || {
+        super::memory::run_search_documents(state, search)
+    })
     .await?;
     page_ranked(
         result,

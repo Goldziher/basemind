@@ -94,7 +94,7 @@ async fn call(service: &Session, args: Value) -> (Value, usize) {
     (decode(&result), size)
 }
 
-/// Search until the git-history index answers (`partial` unset): bodies exist only there.
+/// Search until the git-history index answers (`truncated` unset): bodies exist only there.
 async fn indexed_search(service: &Session, extra: Value) -> (Value, usize) {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
@@ -103,7 +103,7 @@ async fn indexed_search(service: &Session, extra: Value) -> (Value, usize) {
             .expect("object")
             .extend(extra.as_object().expect("object").clone());
         let (value, size) = call(service, args).await;
-        let indexed = !value.get("partial").and_then(Value::as_bool).unwrap_or(false);
+        let indexed = !value.get("truncated").and_then(Value::as_bool).unwrap_or(false);
         if indexed
             && value
                 .get("commits")

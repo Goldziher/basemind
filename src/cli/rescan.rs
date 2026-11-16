@@ -28,7 +28,8 @@ pub fn resolve_paths(root: &Path, raw: &[String]) -> Result<Vec<PathBuf>> {
     for spelling in raw {
         let Some(rel) = normalize_query_path(spelling, root) else {
             problems.push(format!(
-                "{spelling:?} is outside the repository root or names the root itself (pass no path to rescan everything)"
+                "{spelling:?} is outside the repository root or names the root itself (pass no path to rescan \
+                 everything)"
             ));
             continue;
         };

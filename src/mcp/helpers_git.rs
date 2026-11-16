@@ -103,8 +103,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
     }
     match p.path {
         Some(path) if path.as_bytes().ends_with(b"/") => {
-            let first_page = p.cursor.is_none();
-            let result = run_by_path(
+            let mut page = by_path(
                 state,
                 FindCommitsByPathParams {
                     pattern: format!("^{}", regex::escape(&path.to_str_lossy())),
@@ -115,18 +114,21 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 },
             )?;
             // A directory is held to what a file is: no commit in the whole history and nothing on
-            // disk means the path is wrong. A window that was used up has not seen the whole history.
-            let whole_and_empty = result
-                .structured_content
-                .as_ref()
-                .is_some_and(|body| body["commits"].as_array().is_some_and(Vec::is_empty) && body["truncated"] != true);
-            if first_page && whole_and_empty {
+            // disk means the path is wrong. The last page says so as an error; a page before it
+            // has not seen the whole history, and says why it is empty.
+            if !page.matched {
                 let repo = require_git_repo(state)?;
                 if !repo.is_shallow() && !on_disk(repo, &path) {
-                    return Err(no_such_path(&path));
+                    if page.response.next_cursor.is_none() {
+                        return Err(no_such_path(&path));
+                    }
+                    page.response.unmatched = Some(format!(
+                        "no commit inspected so far touches `{path}` and no such directory exists; `next_cursor` \
+                         looks further back. If the path is mistyped, locate it with `find_files`."
+                    ));
                 }
             }
-            Ok(result)
+            json_result(&page.response)
         }
         Some(path) => run_touching(
             state,
@@ -237,6 +239,9 @@ pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<Ca
         }
         return blocking(|| run_status(state, Some(path)));
     }
+    if let Some(refusal) = blocking(|| directory_without_slash(state, &path, p.from.as_deref(), p.to.as_deref())) {
+        return Err(refusal);
+    }
     if structural {
         if p.to.is_some() {
             return Err(shape_error(
@@ -254,6 +259,33 @@ pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<Ca
                 rev_new: p.to,
                 path,
             },
+        )
+    })
+}
+
+/// The refusal for a `git_diff` `path` that names a directory and does not end with `/`: on disk,
+/// or in either revision compared. A diff is of one file, and a directory's status is its own
+/// shape, so the message names it.
+fn directory_without_slash(
+    state: &ServerState,
+    path: &RelPath,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Option<McpError> {
+    let repo = require_git_repo(state).ok()?;
+    let on_disk = crate::path::contained_file(repo.workdir(), path).is_ok_and(|file| file.is_dir());
+    let in_a_revision = [from.unwrap_or("HEAD")]
+        .into_iter()
+        .chain(to)
+        .any(|rev| repo.is_directory_at(rev, path.as_ref()));
+    (on_disk || in_a_revision).then(|| {
+        McpError::invalid_params(
+            format!(
+                "`git_diff`: `{path}` is a directory and a diff is of one file. Pass `{path}/` (with the \
+                 trailing slash, and no `from`, `to` or `structural`) for the working-tree status under it, \
+                 or the path of a file in it."
+            ),
+            None,
         )
     })
 }
@@ -283,9 +315,13 @@ const STATUS_PATHS_MAX: usize = 200;
 fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
-    let s = repo
-        .status_porcelain()
-        .map_err(|e| McpError::internal_error(format!("git status: {e}"), None))?;
+    // A narrowed status lists every untracked file: a wholly untracked directory collapsed into one
+    // entry is an ancestor of the paths asked about, or hides them behind its own name.
+    let s = match within {
+        Some(_) => repo.status_per_file(),
+        None => repo.status_porcelain(),
+    }
+    .map_err(|e| McpError::internal_error(format!("git status: {e}"), None))?;
     let mut omitted = 0;
     let mut any = false;
     let mut bucket = |mut paths: Vec<RelPath>| {
@@ -306,6 +342,18 @@ fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolRe
         bucket(s.modified),
         bucket(s.untracked),
     );
+    if let Some(directory) = within.as_ref()
+        && !any
+        && !crate::path::contained_file(repo.workdir(), directory).is_ok_and(|on_disk| on_disk.is_dir())
+    {
+        return Err(McpError::invalid_params(
+            format!(
+                "`git_diff`: no directory `{directory}` exists and no changed path is under it. `path` is \
+                 repo-relative; a directory ends with `/`. Locate it with `find_files`."
+            ),
+            None,
+        ));
+    }
     json_result(&WorkingTreeStatusView {
         staged_added,
         staged_modified,
@@ -488,89 +536,124 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
     })
 }
 
+/// Set in a paged window's cursor offset when a commit on an earlier page matched.
+pub(super) const MATCHED_EARLIER: u64 = 1 << 63;
+
+/// One page of [`by_path`].
+struct ByPathPage {
+    response: FindCommitsByPathResponse,
+    /// A commit on this page or an earlier one matched.
+    matched: bool,
+}
+
 /// The `by_path` operation: a cheap pickaxe — regex over the changed **paths** of a bounded
-/// recent window, never over patch text.
+/// window of commits, never over patch text.
 pub(super) fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) -> Result<CallToolResult, McpError> {
+    json_result(&by_path(state, params)?.response)
+}
+
+/// One page inspects a window of commits, newest first, starting at the commit offset its cursor
+/// carries. A window that ends before the history does hands back a cursor to the commit after it,
+/// so every match is reachable however far back it lies; a page can then be short, or empty, and
+/// still not be the last.
+fn by_path(state: &ServerState, params: FindCommitsByPathParams) -> Result<ByPathPage, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let re = regex::Regex::new(&params.pattern)
         .map_err(|e| McpError::invalid_params(format!("invalid regex: {e}"), None))?;
-    let window = params.window.unwrap_or(200).min(1000);
+    let window = params.window.unwrap_or(200).min(1000) as usize;
     let limit = params.limit.unwrap_or(50).min(500) as usize;
 
     let head = head_sha(repo)?;
     let snapshot = head_snapshot_id(&head);
 
-    let skip = match params.cursor.as_ref() {
+    let (start, matched_earlier) = match params.cursor.as_ref() {
         Some(c) => {
-            let (offset, snapshot_id) = c.decode_in_memory()?;
+            let (packed, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != snapshot {
-                return json_result(&FindCommitsByPathResponse {
-                    pattern: params.pattern,
-                    window_inspected: window,
-                    truncated: false,
-                    truncated_reason: None,
-                    commits: Vec::new(),
-                    next_cursor: None,
-                    budgeted: false,
-                    cursor_invalidated: true,
-                    elapsed_us: elapsed_us(started),
+                return Ok(ByPathPage {
+                    response: FindCommitsByPathResponse {
+                        pattern: params.pattern,
+                        window_inspected: 0,
+                        unmatched: None,
+                        truncated: false,
+                        truncated_reason: None,
+                        commits: Vec::new(),
+                        next_cursor: None,
+                        budgeted: false,
+                        cursor_invalidated: true,
+                        elapsed_us: elapsed_us(started),
+                    },
+                    matched: true,
                 });
             }
-            offset as usize
+            (
+                usize::try_from(packed & !MATCHED_EARLIER).unwrap_or(usize::MAX),
+                packed & MATCHED_EARLIER != 0,
+            )
         }
-        None => 0,
+        None => (0, false),
     };
 
     // One commit past the window is asked for, only to learn whether history continues beyond it.
-    let probe = window.saturating_add(1);
+    let fetch = window + 1;
     let mut commits = indexed_or_live(
-        git_history_if_fresh(state, &head).map(|index| index.window_commits(probe as usize)),
+        git_history_if_fresh(state, &head).map(|index| index.recent_commits(start, fetch, true)),
         || {
+            let depth = u32::try_from(start.saturating_add(fetch)).unwrap_or(u32::MAX);
             let walked = state
                 .shared
                 .git_cache
-                .log(repo, &head, None, probe, true)
+                .log(repo, &head, None, depth, true)
                 .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
-            Ok(walked.as_ref().clone())
+            Ok(walked.iter().skip(start).cloned().collect())
         },
     )?;
-    // History older than the window was never inspected: "no more commits" then only describes the
-    // window, and the response has to say so. A history that ends exactly at the window is whole.
-    let window_exhausted = commits.len() > window as usize;
-    commits.truncate(window as usize);
+    // A history that ends exactly at the window is whole.
+    let window_exhausted = commits.len() > window;
+    commits.truncate(window);
 
+    // Each hit with its commit's offset in the newest-first list, and the first hit `limit` left out.
+    let mut offsets: Vec<usize> = Vec::new();
     let mut hits: Vec<CommitView> = Vec::new();
-    let mut seen: usize = 0;
-    let mut has_more = false;
-    for c in commits.iter() {
+    let mut left_out: Option<usize> = None;
+    for (index, c) in commits.iter().enumerate() {
         if !c.files.iter().any(|(p, _)| re.is_match(&p.to_str_lossy())) {
             continue;
         }
-        if seen < skip {
-            seen += 1;
-            continue;
-        }
         if hits.len() >= limit {
-            has_more = true;
+            left_out = Some(start + index);
             break;
         }
-        seen += 1;
+        offsets.push(start + index);
         hits.push(commit_to_view(c.clone(), true));
     }
+    let matched = matched_earlier || !offsets.is_empty();
     let (hits, budgeted) = budget_commits(hits, params.max_tokens);
-    let has_more = has_more || budgeted;
-    let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot));
-    json_result(&FindCommitsByPathResponse {
-        pattern: params.pattern,
-        window_inspected: window,
-        truncated: window_exhausted,
-        truncated_reason: window_exhausted.then_some("window"),
-        commits: hits,
-        budgeted,
-        next_cursor,
-        cursor_invalidated: false,
-        elapsed_us: elapsed_us(started),
+    // The next page starts at the first hit this one left out, or past the window when the window
+    // held no more hits and the history goes on.
+    let next_offset = offsets
+        .get(hits.len())
+        .copied()
+        .or(left_out)
+        .or(window_exhausted.then_some(start + window));
+    let window_edge = window_exhausted && left_out.is_none() && hits.len() == offsets.len();
+    let carried = if matched { MATCHED_EARLIER } else { 0 };
+    Ok(ByPathPage {
+        response: FindCommitsByPathResponse {
+            pattern: params.pattern,
+            window_inspected: u32::try_from(commits.len()).unwrap_or(u32::MAX),
+            unmatched: None,
+            truncated: window_edge,
+            truncated_reason: window_edge.then_some("window"),
+            commits: hits,
+            budgeted,
+            next_cursor: next_offset
+                .map(|offset| super::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)),
+            cursor_invalidated: false,
+            elapsed_us: elapsed_us(started),
+        },
+        matched,
     })
 }
 
@@ -669,8 +752,8 @@ fn by_author(
 
 /// The `search` operation: full-text search over git history. Uses the git-history inverted
 /// index when it is fresh (`last_indexed_head == HEAD`), searching author name + email + summary +
-/// full body; otherwise degrades to a bounded live walk over the recent window, flagged `partial`
-/// (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
+/// full body; otherwise degrades to a bounded live walk over the recent window, flagged
+/// `truncated` with reason `live_walk` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
 fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
@@ -685,7 +768,8 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
             if snapshot_id != snapshot {
                 return json_result(&SearchGitHistoryResponse {
                     commits: Vec::new(),
-                    partial: false,
+                    truncated: false,
+                    truncated_reason: None,
                     next_cursor: None,
                     budgeted: false,
                     cursor_invalidated: true,
@@ -703,15 +787,18 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
         fts::tokenize(author, &mut terms);
         terms
     });
-    let (mut hits, partial) = match git_history_if_fresh(state, &head) {
+    let (mut hits, truncated_reason) = match git_history_if_fresh(state, &head) {
         Some(index) => match author_terms.as_ref() {
-            None => (index.search_commits(&params.pattern, scope, skip, want), false),
-            Some(author_terms) => by_author(
-                |offset, chunk| index.search_commits(&params.pattern, scope, offset, chunk),
-                author_terms,
-                skip,
-                want,
-            ),
+            None => (index.search_commits(&params.pattern, scope, skip, want), None),
+            Some(author_terms) => {
+                let (hits, capped) = by_author(
+                    |offset, chunk| index.search_commits(&params.pattern, scope, offset, chunk),
+                    author_terms,
+                    skip,
+                    want,
+                );
+                (hits, capped.then_some(super::types::SCAN_CAP))
+            }
         },
         None => {
             let mut query_terms = ahash::AHashSet::new();
@@ -734,7 +821,7 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
                 .take(want)
                 .cloned()
                 .collect();
-            (matched, true)
+            (matched, Some("live_walk"))
         }
     };
 
@@ -750,7 +837,8 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
     json_result(&SearchGitHistoryResponse {
         commits,
         budgeted,
-        partial,
+        truncated: truncated_reason.is_some(),
+        truncated_reason,
         next_cursor,
         cursor_invalidated: false,
         elapsed_us: elapsed_us(started),

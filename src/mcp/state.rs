@@ -448,6 +448,13 @@ impl MapCache {
         self.l1.load(&meta.hash_hex)
     }
 
+    /// The decoded outline of the content `hash_hex`, whichever path holds it. Outlines are keyed
+    /// by content, so this is the outline of an index entry however old this snapshot's file view
+    /// is next to the store the entry came from.
+    pub(crate) fn outline_of_content(&self, hash_hex: &str) -> Option<Arc<FileMapL1>> {
+        self.l1.load(hash_hex)
+    }
+
     /// The term index, building it from one corpus stream on first use. Later calls (and the
     /// snapshots derived by [`with_delta`](Self::with_delta)) reuse it.
     pub(crate) fn terms(&self) -> &super::term_index::TermIndex {

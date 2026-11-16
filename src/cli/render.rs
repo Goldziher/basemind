@@ -275,27 +275,28 @@ fn write_raw(out: &mut impl Write, text: &str) -> Result<()> {
 
 /// Warn, in prose, when a grep result is not the whole truth.
 ///
-/// A bare `truncated: true` row in the generic key/value dump is a signal nobody reads — and for
-/// grep, a partial result is indistinguishable from a complete one at a glance, which is how a
-/// truncated grep gets mistaken for "no such symbol in the repo". So the bound gets its own line,
-/// naming the count that was withheld and the way to get it.
+/// A `next_cursor` or `truncated: true` row in the generic key/value dump is a signal nobody
+/// reads — and for grep, a partial result is indistinguishable from a complete one at a glance,
+/// which is how a cut grep gets mistaken for "no such symbol in the repo". So a page that is not
+/// the whole answer gets its own line, naming the count that was withheld and the way to get it.
 fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>, out: &mut impl Write) -> Result<()> {
-    if tool_name != "code_grep" || map.get("truncated").and_then(Value::as_bool) != Some(true) {
+    if tool_name != "code_grep" {
         return Ok(());
     }
     let shown = map.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
     let total = map.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
-    match map.get("truncated_reason").and_then(Value::as_str) {
-        Some("byte_budget") => writeln!(
+    if map.get("truncated").and_then(Value::as_bool) == Some(true) {
+        writeln!(
             out,
             "\nwarning: TRUNCATED — the corpus exceeds what one grep may read, so files were left \
              unscanned. Narrow with --path / --language."
-        )?,
-        _ => writeln!(
+        )?;
+    } else if map.get("next_cursor").is_some_and(|cursor| !cursor.is_null()) {
+        writeln!(
             out,
-            "\nwarning: TRUNCATED — showing {shown} of {total} matches. Raise --limit, or narrow \
-             with --path / --language."
-        )?,
+            "\nwarning: MORE MATCHES — showing {shown} of {total}. Raise --limit, or narrow with --path / \
+             --language."
+        )?;
     }
     Ok(())
 }
@@ -454,22 +455,29 @@ mod tests {
     }
 
     #[test]
-    fn warns_in_prose_when_a_grep_result_is_truncated_by_the_limit() {
+    fn warns_in_prose_when_a_grep_page_is_not_every_match() {
         let out = render_grep(&json!({
             "pattern": "OptimizationStatus",
             "total_matches": 101,
-            "truncated": true,
-            "truncated_reason": "limit",
+            "truncated": false,
+            "next_cursor": "b3BhcXVl",
             "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
         }));
         assert!(
-            out.contains("TRUNCATED"),
-            "truncation must be shouted, not buried: {out}"
-        );
-        assert!(
-            out.contains("showing 1 of 101 matches"),
+            out.contains("MORE MATCHES — showing 1 of 101"),
             "must name the withheld count: {out}"
         );
+        assert!(!out.contains("TRUNCATED"), "a `limit` cut is paging: {out}");
+
+        let unread = render_grep(&json!({
+            "pattern": "OptimizationStatus",
+            "total_matches": 1,
+            "truncated": true,
+            "truncated_reason": "byte_budget",
+            "next_cursor": "b3BhcXVl",
+            "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
+        }));
+        assert!(unread.contains("TRUNCATED"), "unread files must be shouted: {unread}");
     }
 
     #[test]
@@ -480,7 +488,10 @@ mod tests {
             "truncated": false,
             "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
         }));
-        assert!(!out.contains("TRUNCATED"), "a complete result must not cry wolf: {out}");
+        assert!(
+            !out.contains("TRUNCATED") && !out.contains("MORE MATCHES"),
+            "a complete result must not cry wolf: {out}"
+        );
     }
 
     fn emit_capture(tool: &str, result: &rmcp::model::CallToolResult, json: bool) -> (String, String) {

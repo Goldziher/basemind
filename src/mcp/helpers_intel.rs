@@ -26,6 +26,10 @@ use crate::path::RelPath;
 ///
 /// Resolution edges are byte offsets into the content that was indexed, so the file is read once,
 /// bounded, and must still be that content; the same holds for the file a cross-file edge lands in.
+///
+/// The store is read-locked for the whole call: the stamp each file is judged against, the
+/// resolution blob and the cross-file edge then come from one scan, never from either side of a
+/// rescan that landed in between.
 pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
@@ -34,23 +38,18 @@ pub(super) async fn run_goto_definition(
     let max_bytes = state.shared.config.scan.max_file_bytes;
     // The index is consulted before the file is read, so a path that is not indexed cannot be
     // probed for existence or contents through the errors below.
-    let (file, entry) = {
-        let store = state.shared.store.read().await;
-        let Some(entry) = store.lookup(&params.path).cloned() else {
-            return Err(super::tool_contract::not_indexed_in(
-                &store,
-                &state.shared.root,
-                "code_refs",
-                &params.path,
-            ));
-        };
-        (
-            super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?,
-            entry,
-        )
+    let store = state.shared.store.read().await;
+    let Some(entry) = store.lookup(&params.path) else {
+        return Err(super::tool_contract::not_indexed_in(
+            &store,
+            &state.shared.root,
+            "code_refs",
+            &params.path,
+        ));
     };
+    let file = super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?;
     let source = super::index_route::blocking(|| {
-        super::freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), max_bytes)
+        super::freshness::load_fresh("code_refs", &params.path, &file, entry.into(), max_bytes)
     })?;
     let column = match params.column {
         Some(column) => column,
@@ -69,43 +68,33 @@ pub(super) async fn run_goto_definition(
         )
     })?;
 
-    let resolution_ran;
-    let pass_complete;
-    let language: Option<String>;
-    let resolved: Option<(RelPath, u32)> = {
-        let store = state.shared.store.read().await;
-        let Some(entry) = store.lookup(&params.path) else {
-            return Err(super::tool_contract::not_indexed(state, "code_refs", &params.path));
-        };
-        language = Some(entry.language.clone());
-        let refs = store.read_resolved_by_hex(&entry.hash_hex).unwrap_or_else(|error| {
-            tracing::debug!(path = %params.path, %error, "goto_definition: resolution blob unreadable — treating as no in-file edge");
-            None
-        });
-        resolution_ran = refs.is_some();
-        pass_complete = resolution_ran || resolve_pass_complete(&store);
-        let intra_def = refs
-            .as_ref()
-            .and_then(|r| containing_edge(&r.intra, pos))
-            .map(|e| e.def_start);
-        match intra_def {
-            Some(def_start) => Some(
-                resolve_definition(state, &store, &params.path, def_start)
-                    .await
-                    .unwrap_or((params.path.clone(), def_start)),
-            ),
-            None => resolve_definition(state, &store, &params.path, pos).await,
-        }
+    let refs = store.read_resolved_by_hex(&entry.hash_hex).unwrap_or_else(|error| {
+        tracing::debug!(path = %params.path, %error, "goto_definition: resolution blob unreadable — treating as no in-file edge");
+        None
+    });
+    let resolution_ran = refs.is_some();
+    let pass_complete = resolution_ran || resolve_pass_complete(&store);
+    let intra_def = refs
+        .as_ref()
+        .and_then(|r| containing_edge(&r.intra, pos))
+        .map(|e| e.def_start);
+    let resolved: Option<(RelPath, u32)> = match intra_def {
+        Some(def_start) => Some(
+            resolve_definition(state, &store, &params.path, def_start)
+                .await
+                .unwrap_or((params.path.clone(), def_start)),
+        ),
+        None => resolve_definition(state, &store, &params.path, pos).await,
     };
 
     let definition = match resolved {
-        Some((def_path, def_start)) => definition_location(state, &params.path, &source, def_path, def_start).await?,
+        Some((def_path, def_start)) => definition_location(state, &store, &params.path, &source, def_path, def_start)?,
         None => None,
     };
 
     let (line, column) = offset_to_line_col(&source, pos);
     let resolution = if definition.is_none() && !resolution_ran {
-        resolution_gap(language.as_deref(), pass_complete)
+        resolution_gap(Some(&entry.language), pass_complete)
     } else {
         None
     };
@@ -254,8 +243,10 @@ fn column_of(source: &[u8], path: &RelPath, line: u32, name: &str) -> Result<u32
 ///
 /// `None` when a cross-file target is not an indexed file of this repository. A target that was
 /// edited or deleted since the scan is an error: `def_start` is an offset into the indexed bytes.
-async fn definition_location(
+/// `store` is the guard the edge was resolved under, so the target's stamp is of the same scan.
+fn definition_location(
     state: &ServerState,
+    store: &crate::store::Store,
     query_path: &RelPath,
     query_source: &[u8],
     def_path: RelPath,
@@ -273,19 +264,16 @@ async fn definition_location(
     if &def_path == query_path {
         return Ok(Some(located(query_source, def_path)));
     }
-    let target = {
-        let store = state.shared.store.read().await;
-        store.lookup(&def_path).cloned().and_then(|entry| {
-            let file = super::tool_contract::IndexedFiles::of(state).indexed_path(&def_path)?;
-            Some((file, entry))
-        })
-    };
+    let target = store.lookup(&def_path).and_then(|entry| {
+        let file = super::tool_contract::IndexedFiles::of(state).indexed_path(&def_path)?;
+        Some((file, entry))
+    });
     let Some((file, entry)) = target else {
         return Ok(None);
     };
     let max_bytes = state.shared.config.scan.max_file_bytes;
     let def_source = super::index_route::blocking(|| {
-        super::freshness::load_fresh("code_refs", &def_path, &file, (&entry).into(), max_bytes)
+        super::freshness::load_fresh("code_refs", &def_path, &file, entry.into(), max_bytes)
     })?;
     Ok(Some(located(&def_source, def_path)))
 }

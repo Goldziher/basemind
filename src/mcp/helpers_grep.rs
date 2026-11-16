@@ -62,7 +62,6 @@ pub(super) async fn run_workspace_grep(
                         total_matches: 0,
                         truncated: false,
                         truncated_reason: None,
-                        omitted: 0,
                         budgeted: false,
                         hits: Vec::new(),
                         next_cursor: None,
@@ -158,9 +157,9 @@ pub(super) async fn run_workspace_grep(
     let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
 
     let (selected, limit_resume) = select_hits(&counts, limit, skip_files, skip_hits);
-    let is_fresh = |file_idx: usize, bytes: &[u8]| {
-        let (path, meta) = scanned[file_idx];
-        super::freshness::matches_index(meta.into(), &root.join(path), bytes)
+    // Judged against the file the bytes were read from: an external path is not under `root`.
+    let is_fresh = |file_idx: usize, file: &std::path::Path, bytes: &[u8]| {
+        super::freshness::matches_index(scanned[file_idx].1.into(), file, bytes)
     };
     let (mut hits, hit_cursors) = blocking(|| {
         materialize(
@@ -175,21 +174,15 @@ pub(super) async fn run_workspace_grep(
     });
     annotate_symbols(&cache, &mut hits);
 
-    let (truncated, truncated_reason, next_cursor) = match (limit_resume, byte_budget_hit) {
-        (Some(offset), _) => (
-            true,
-            Some(GrepTruncation::Limit),
-            Some(Cursor::encode_in_memory(offset, generation)),
-        ),
-        (None, true) => (
-            true,
-            Some(GrepTruncation::ByteBudget),
-            Some(Cursor::encode_in_memory(
-                pack_cursor(skip_files + scanned.len(), 0),
-                generation,
-            )),
-        ),
-        (None, false) => (false, None, None),
+    // A page cut by `limit` is paging and says so with its cursor alone. Files the byte budget
+    // left unread are a cut the caller did not ask for, on whichever page it shows.
+    let next_cursor = match (limit_resume, byte_budget_hit) {
+        (Some(offset), _) => Some(Cursor::encode_in_memory(offset, generation)),
+        (None, true) => Some(Cursor::encode_in_memory(
+            pack_cursor(skip_files + scanned.len(), 0),
+            generation,
+        )),
+        (None, false) => None,
     };
 
     let budget = super::budget::apply_budget(hits, params.max_tokens);
@@ -209,13 +202,8 @@ pub(super) async fn run_workspace_grep(
             regex: !params.literal,
             total_files_matched,
             total_matches,
-            truncated,
-            truncated_reason,
-            omitted: if limit_resume.is_some() || budgeted {
-                (total_matches as usize).saturating_sub(hits.len())
-            } else {
-                0
-            },
+            truncated: byte_budget_hit,
+            truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
             budgeted,
             hits,
             next_cursor,
@@ -360,7 +348,37 @@ fn count_matches(bytes: &[u8], re: &Regex, literal: Option<&Finder<'static>>) ->
         return Some(0);
     }
     let source = std::str::from_utf8(bytes).ok()?;
-    Some(line_matches(re, source).count().min(u32::MAX as usize) as u32)
+    let text = lines_end_at_lf(re, source);
+    Some(line_matches(re, &text).count().min(u32::MAX as usize) as u32)
+}
+
+/// A byte that is whitespace to the regex engine, matches `.` and ends no line.
+const LONE_CR_STAND_IN: u8 = 0x0B;
+
+/// `source` as the text `re` is matched against, with the same offsets.
+///
+/// A line ends at `\n`, and a `\r` right before it belongs to the ending: the rule `code_read`,
+/// the outline and `git_blame` number lines by, and the one hit lines are computed with here. The
+/// CRLF-aware regex also anchors `^` and `$` at a `\r` that no `\n` follows, which would report a
+/// line start or end in the middle of a line. Such a `\r` is text inside its line, so it is
+/// swapped for a byte that ends no line before matching. Only a file that has one pays for the
+/// copy, and a pattern that itself names `\r` is matched against the bytes as they are.
+fn lines_end_at_lf<'s>(re: &Regex, source: &'s str) -> std::borrow::Cow<'s, str> {
+    let bytes = source.as_bytes();
+    let lone = |at: &usize| bytes.get(at + 1) != Some(&b'\n');
+    if !memchr::memchr_iter(b'\r', bytes).any(|at| lone(&at)) {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    let pattern = re.as_str();
+    if pattern.contains('\r') || pattern.contains("\\r") {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    let mut masked = bytes.to_vec();
+    for at in memchr::memchr_iter(b'\r', bytes).filter(lone) {
+        masked[at] = LONE_CR_STAND_IN;
+    }
+    // One ASCII byte replaced by another: still UTF-8.
+    std::borrow::Cow::Owned(String::from_utf8(masked).unwrap_or_else(|_| source.to_string()))
 }
 
 /// The matches of `re` that lie on a line of `source`.
@@ -421,13 +439,13 @@ fn select_hits(counts: &[u32], limit: usize, skip_files: usize, skip_hits: u32) 
 /// Returns the hits alongside, for each hit, the packed cursor that resumes AT that hit — the token
 /// budget uses it to page a dropped tail exactly.
 ///
-/// `is_fresh(file_idx, bytes)` says whether the bytes just read are the content the index holds
-/// for that file; only then may a hit be laid over the indexed outline.
+/// `is_fresh(file_idx, file, bytes)` says whether the bytes just read from `file` are the content
+/// the index holds for it; only then may a hit be laid over the indexed outline.
 fn materialize(
     files: IndexedFiles<'_>,
     scanned: &[&RelPath],
     selected: &[Selection],
-    is_fresh: &(dyn Fn(usize, &[u8]) -> bool + Sync),
+    is_fresh: &(dyn Fn(usize, &std::path::Path, &[u8]) -> bool + Sync),
     re: &Regex,
     include_context: bool,
     skip_files: usize,
@@ -436,11 +454,12 @@ fn materialize(
         .par_iter()
         .map(|sel| {
             let path = scanned[sel.file_idx];
-            with_indexed_bytes(files.indexed_path(path), files.max_file_bytes, |bytes| {
+            let file = files.indexed_path(path);
+            with_indexed_bytes(file.clone(), files.max_file_bytes, |bytes| {
                 let Ok(source) = std::str::from_utf8(bytes) else {
                     return Vec::new();
                 };
-                let fresh = is_fresh(sel.file_idx, bytes);
+                let fresh = file.as_deref().is_some_and(|file| is_fresh(sel.file_idx, file, bytes));
                 collect_hits(path, source, fresh, re, sel, include_context, skip_files + sel.file_idx)
             })
             .unwrap_or_default()
@@ -473,7 +492,8 @@ fn collect_hits(
         .collect();
 
     let mut out = Vec::with_capacity(sel.take);
-    for (ordinal, mat) in line_matches(re, source).enumerate().skip(sel.hit_skip as usize) {
+    let text = lines_end_at_lf(re, source);
+    for (ordinal, mat) in line_matches(re, &text).enumerate().skip(sel.hit_skip as usize) {
         if out.len() >= sel.take {
             break;
         }

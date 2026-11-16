@@ -16,7 +16,7 @@ use super::helpers::{
     run_find_files, run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
 };
 use super::index_route::IndexRoute;
-use super::tool_contract::{budget, not_indexed};
+use super::tool_contract::{budget, not_indexed_in};
 use super::types::{
     DependentsResponse, FindCallersParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
     ListFilesParams, OutlineResponse, OutlineSymbol, SearchSymbolsParams, WorkspaceGrepParams,
@@ -82,11 +82,12 @@ pub(super) async fn code_symbols(state: &ServerState, p: CodeSymbolsParams) -> R
 pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Result<CallToolResult, McpError> {
     #[cfg(feature = "code-search")]
     {
-        use super::helpers_page::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset};
+        use super::helpers_page::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval};
 
         let generation = state.shared.cache_generation.load(std::sync::atomic::Ordering::Relaxed);
         let offset = ranked_offset("code_search", p.cursor.as_ref(), generation)?;
         let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
+        let ranking = serde_json::json!({ "query": &p.query, "lane": &p.lane });
         let search = super::types_code::SearchCodeParams {
             query: p.query,
             limit: Some(RANKED_FETCH),
@@ -99,7 +100,11 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
             reranker_preset: None,
             reranker_top_k: None,
         };
-        let result = super::helpers_code_search::run_search_code(state, search).await?;
+        let cache = &state.shared.ranked;
+        let result = ranked_retrieval(cache, "code_search", &ranking, "hits", generation, || {
+            super::helpers_code_search::run_search_code(state, search)
+        })
+        .await?;
         page_ranked(result, "hits", offset, limit, budget(p.max_tokens), generation)
     }
     #[cfg(not(feature = "code-search"))]
@@ -355,14 +360,15 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
     // Path-keyed: served from the in-RAM map when it is warm, else from the one blob. Waiting for
     // the map here would make a one-shot CLI call decode the whole corpus to outline one file.
     let cache = state.shared.cache.load_full();
-    let l1 = match cache.get(&p.path) {
-        Some(l1) => l1,
-        None => {
-            let store = state.shared.store.read().await;
-            std::sync::Arc::new(
-                crate::query::file_outline(&store, &p.path).map_err(|_| not_indexed(state, "code_outline", &p.path))?,
-            )
-        }
+    let (file, entry, l1) = {
+        let store = state.shared.store.read().await;
+        let (entry, l1) = super::freshness::indexed_outline(&store, &cache, &p.path)
+            .ok_or_else(|| not_indexed_in(&store, &state.shared.root, "code_outline", &p.path))?;
+        (
+            super::tool_contract::indexed_file(state, &store, "code_outline", &p.path)?,
+            entry,
+            l1,
+        )
     };
 
     let skip = match p.cursor.as_ref() {
@@ -382,24 +388,13 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
     let limit = p.limit.unwrap_or(OUTLINE_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
 
     let max_bytes = state.shared.config.scan.max_file_bytes;
-    let (file, entry) = {
-        let store = state.shared.store.read().await;
-        let entry = store
-            .lookup(&p.path)
-            .cloned()
-            .ok_or_else(|| super::tool_contract::not_indexed_in(&store, &state.shared.root, "code_outline", &p.path))?;
-        (
-            super::tool_contract::indexed_file(state, &store, "code_outline", &p.path)?,
-            entry,
-        )
-    };
     let (l1, source, stale) = super::index_route::blocking(|| {
         let live = super::freshness::load(&file, (&entry).into(), max_bytes)
             .map_err(|reason| super::freshness::unloadable("code_outline", &p.path, reason, max_bytes))?;
         let l1 = if live.fresh {
             l1
         } else {
-            std::sync::Arc::new(super::freshness::reparse(state, "code_outline", &p.path, &live.bytes)?)
+            super::freshness::reparse(state, "code_outline", &p.path, &live.bytes)?
         };
         Ok::<_, McpError>((l1, live.bytes, !live.fresh))
     })?;

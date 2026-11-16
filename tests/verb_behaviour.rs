@@ -174,6 +174,14 @@ async fn call(client: &Client, tool: &'static str, arguments: Value) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("{tool}: non-JSON payload ({error}): {text}"))
 }
 
+/// A call's tool result, error or not.
+async fn call_raw(client: &Client, tool: &'static str, arguments: Value) -> CallToolResult {
+    client
+        .call_tool(CallToolRequestParams::new(tool).with_arguments(arguments.as_object().cloned().expect("object")))
+        .await
+        .unwrap_or_else(|error| panic!("{tool}: protocol error instead of a tool result: {error}"))
+}
+
 /// The message of a call that must come back as an `isError` tool result (never a protocol error).
 async fn call_err(client: &Client, tool: &'static str, arguments: Value) -> String {
     let result = client

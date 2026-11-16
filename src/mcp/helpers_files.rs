@@ -33,8 +33,6 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
                     &ListFilesResponse {
                         total: 0,
                         returned: 0,
-                        truncated: false,
-                        truncated_reason: None,
                         limit_clamped,
                         budgeted: false,
                         files: Vec::new(),
@@ -124,7 +122,6 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
             return Err(refusal);
         }
     }
-    let truncated = total > limit;
     let budget = super::budget::apply_budget(files, params.max_tokens);
     let files = budget.items;
     let budgeted = budget.budgeted;
@@ -141,8 +138,6 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
         &ListFilesResponse {
             total,
             returned: files.len(),
-            truncated,
-            truncated_reason: truncated.then_some("limit"),
             limit_clamped,
             budgeted,
             files,
@@ -176,8 +171,6 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
                     &FindFilesResponse {
                         total: 0,
                         returned: 0,
-                        truncated: false,
-                        truncated_reason: None,
                         limit_clamped,
                         budgeted: false,
                         files: Vec::new(),
@@ -304,8 +297,6 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         }
         page
     };
-    let truncated = total > limit;
-
     let budget = super::budget::apply_budget(page, params.max_tokens);
     let files = budget.items;
     let budgeted = budget.budgeted;
@@ -322,8 +313,6 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         &FindFilesResponse {
             total,
             returned: files.len(),
-            truncated,
-            truncated_reason: truncated.then_some("limit"),
             limit_clamped,
             budgeted,
             files,
@@ -364,6 +353,14 @@ fn language_of_doc(path: &crate::path::RelPath) -> String {
     path.as_str().map_or_else(|| "document".to_string(), doc_language)
 }
 
+/// Whether `notice` says files may be missing from the listing, so that "no file passes the
+/// filter" proves nothing yet: an index that is warming, building, rebuilding or empty. Those are
+/// the notices that ask for a retry. A rescan in progress and capped reference projections leave
+/// the file listing whole, and the second lasts for the session.
+fn listing_incomplete(notice: &super::types::LifecycleNotice) -> bool {
+    notice.retry
+}
+
 /// The refusal for filters that selected none of the files a tool lists, or `None` when there is
 /// nothing to refuse: no filter, an empty index, or an index still being built, whose page carries
 /// the lifecycle `notice` instead. `listed` tallies the files the tool lists, from the source it
@@ -374,7 +371,7 @@ pub(super) fn selects_no_file(
     listed: impl FnOnce() -> Tally,
     unlisted_documents: Option<&dyn Fn() -> Tally>,
 ) -> Option<McpError> {
-    if filters.is_empty() || state.lifecycle_notice().is_some() {
+    if filters.is_empty() || state.lifecycle_notice().as_ref().is_some_and(listing_incomplete) {
         return None;
     }
     let documents = unlisted_documents.map(|tally| tally());
@@ -419,6 +416,24 @@ pub(super) fn doc_language(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::Lifecycle;
+    use crate::mcp::types::LifecycleNotice;
+
+    #[test]
+    fn a_filter_refusal_is_held_back_only_while_files_may_be_missing() {
+        let of = |state| LifecycleNotice::for_state(state).expect("notice");
+        for incomplete in [
+            of(Lifecycle::WarmingUp),
+            of(Lifecycle::BuildingIndex),
+            LifecycleNotice::index_rebuilding(),
+            LifecycleNotice::empty_index(),
+        ] {
+            assert!(listing_incomplete(&incomplete), "{}", incomplete.state);
+        }
+        for whole in [of(Lifecycle::Rescanning), LifecycleNotice::projections_capped()] {
+            assert!(!listing_incomplete(&whole), "{}", whole.state);
+        }
+    }
 
     fn entry(path: &str, score: u32) -> (u32, FindFilesEntry) {
         (

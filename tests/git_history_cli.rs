@@ -13,7 +13,7 @@
 //!   lock-retry penalty at startup.
 //! * **no daemon** (standalone / non-`comms` build): the CLI opens the index locally, as before.
 //!
-//! The observable is `search_git_history`'s `partial` flag: it is set exactly when the tool fell back
+//! The observable is `git_log {query}`'s `truncated` flag: it is set exactly when the tool fell back
 //! to walking git live (a bounded window, no posting lists), and omitted — `false` — when the answer
 //! came from the index. It is both the honest degradation signal the tools already ship and the only
 //! thing that separates the two data sources on a repo small enough for the live window to cover.
@@ -25,7 +25,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 /// A token carried by exactly one commit (in its message body), so the query has a single, stable
-/// expected hit whichever data source answered it. Which source that was is read off `partial`.
+/// expected hit whichever data source answered it. Which source that was is read off `truncated`.
 const BODY_ONLY_TOKEN: &str = "zzqqxclionlytoken";
 
 fn git(repo: &Path, args: &[&str]) {
@@ -96,17 +96,17 @@ fn cli_search(root: &Path, envs: &[(&str, &str)]) -> Value {
         .unwrap_or_else(|e| panic!("CLI did not emit JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)))
 }
 
-/// Whether the response was live-walked. `partial` is skipped when false, so an absent field means
+/// Whether the response was live-walked. `truncated` is skipped when false, so an absent field means
 /// "index-backed" — the same reading the MCP smoke tests use.
 fn is_partial(response: &Value) -> bool {
-    response.get("partial").and_then(Value::as_bool).unwrap_or(false)
+    response.get("truncated").and_then(Value::as_bool).unwrap_or(false)
 }
 
 /// The one token-carrying commit, served from the index. Panics with the whole response otherwise.
 fn assert_index_backed(response: &Value, context: &str) {
     assert!(
         !is_partial(response),
-        "{context}: `partial: true` means the CLI live-walked instead of reading the index: {response}"
+        "{context}: `truncated: true` means the CLI live-walked instead of reading the index: {response}"
     );
     let commits = response
         .get("commits")
@@ -264,7 +264,8 @@ mod with_daemon {
     }
 
     /// The honest fallback survives: a repo the daemon has never indexed has no index to read, so the
-    /// CLI live-walks — and SAYS SO (`partial: true`) rather than pretending the answer is complete.
+    /// CLI live-walks — and SAYS SO (`truncated`, reason `live_walk`) rather than pretending the answer is
+    /// complete.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn cli_reports_partial_when_the_daemon_has_no_index_for_the_repo() {
         let dir = build_repo();

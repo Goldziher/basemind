@@ -172,37 +172,99 @@ async fn git_diff_reports_a_file_too_large_to_diff() {
     assert!(small.get("too_large").is_none(), "{small}");
 }
 
-/// A directory history inspects a bounded window of recent commits. A window that was used up is
-/// reported, so "no more commits" is not mistaken for the whole history.
+/// A directory history inspects a bounded window of recent commits per page. A window that ends
+/// before the history does hands back a cursor to the commit after it, so a commit older than the
+/// first window is reached by following it, and the last page is the whole history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn git_log_of_a_directory_says_when_its_window_was_exhausted() {
-    let (dir, client) = started().await;
+async fn git_log_of_a_directory_pages_past_its_window() {
+    let (dir, client) = started_with(&[("lib/old.rs", "pub fn old() {}\n")]).await;
     let root = dir.path();
 
     let recent = call(&client, "git_log", json!({ "path": "src/" })).await;
     assert!(
-        recent.get("truncated").is_none(),
+        recent.get("truncated").is_none() && recent.get("next_cursor").is_none(),
         "one commit fits the window: {recent}"
     );
 
     for round in 0..199 {
         std::fs::write(root.join("src/churn.rs"), format!("pub const ROUND: u32 = {round};\n")).unwrap();
         git(root, &["add", "-A"]);
-        git(root, &["commit", "-qm", "churn"]);
+        git(root, &["commit", "-qm", &format!("churn {round}")]);
     }
-    let exact = call(&client, "git_log", json!({ "path": "src/", "limit": 5 })).await;
+    let exact = call(&client, "git_log", json!({ "path": "lib/" })).await;
+    assert_eq!(exact["commits"][0]["summary"], "init", "{exact}");
     assert!(
-        exact.get("truncated").is_none(),
+        exact.get("truncated").is_none() && exact.get("next_cursor").is_none(),
         "200 commits fill the window exactly and nothing lies beyond it: {exact}"
     );
 
     std::fs::write(root.join("src/churn.rs"), "pub const ROUND: u32 = 1000;\n").unwrap();
     git(root, &["commit", "-qam", "one past the window"]);
 
-    let windowed = call(&client, "git_log", json!({ "path": "src/", "limit": 5 })).await;
+    let filled = call(&client, "git_log", json!({ "path": "src/", "limit": 5 })).await;
+    assert_eq!(filled["commits"].as_array().map(Vec::len), Some(5), "{filled}");
+    assert!(filled["next_cursor"].is_string(), "{filled}");
+    assert!(
+        filled.get("truncated").is_none(),
+        "a full page is an ordinary page, whatever lies past the window: {filled}"
+    );
+
+    let windowed = call(&client, "git_log", json!({ "path": "lib/" })).await;
+    assert_eq!(windowed["commits"], json!([]), "{windowed}");
     assert_eq!(windowed["truncated"], true, "{windowed}");
     assert_eq!(windowed["truncated_reason"], "window", "{windowed}");
     assert_eq!(windowed["window_inspected"], 200, "{windowed}");
+    let older = call(
+        &client,
+        "git_log",
+        json!({ "path": "lib/", "cursor": windowed["next_cursor"] }),
+    )
+    .await;
+    assert_eq!(older["commits"][0]["summary"], "init", "{older}");
+    assert_eq!(older["window_inspected"], 1, "{older}");
+    assert!(
+        older.get("truncated").is_none() && older.get("next_cursor").is_none(),
+        "the last window is the end of the history: {older}"
+    );
+
+    // A mistyped directory never pages silently: the empty page says why, the last one is the error.
+    let mistyped = call(&client, "git_log", json!({ "path": "scr/" })).await;
+    assert_eq!(mistyped["commits"], json!([]), "{mistyped}");
+    assert!(
+        mistyped["unmatched"]
+            .as_str()
+            .is_some_and(|why| why.contains("no such directory")),
+        "{mistyped}"
+    );
+    let refused = call_err(
+        &client,
+        "git_log",
+        json!({ "path": "scr/", "cursor": mistyped["next_cursor"] }),
+    )
+    .await;
+    assert!(
+        refused.contains("no commit reachable from HEAD touches `scr/`"),
+        "{refused}"
+    );
+
+    // Every commit touching the directory, once, across pages cut by `limit` and by the window.
+    let mut summaries: Vec<String> = Vec::new();
+    let mut arguments = json!({ "path": "src/", "limit": 100 });
+    for _ in 0..10 {
+        let page = call(&client, "git_log", arguments.clone()).await;
+        for commit in page["commits"].as_array().expect("commits") {
+            summaries.push(commit["summary"].as_str().unwrap().to_string());
+        }
+        match page.get("next_cursor") {
+            Some(cursor) => arguments["cursor"] = cursor.clone(),
+            None => break,
+        }
+    }
+    assert_eq!(summaries.len(), 201, "{summaries:?}");
+    assert_eq!(summaries.first().map(String::as_str), Some("one past the window"));
+    assert_eq!(summaries.last().map(String::as_str), Some("init"));
+    summaries.dedup();
+    assert_eq!(summaries.len(), 201, "no commit twice");
 }
 
 /// A hit on a long line carries the text around the match, not the first bytes of the line, and the
@@ -386,8 +448,6 @@ async fn git_status_lists_are_bounded_with_a_count_of_the_rest() {
         narrowed.get("truncated").is_none() && narrowed.get("omitted").is_none(),
         "{narrowed}"
     );
-    let elsewhere = call(&client, "git_diff", json!({ "path": "docs/" })).await;
-    assert_eq!(elsewhere["is_clean"], true, "nothing changed under it: {elsewhere}");
     let refused = call_err(&client, "git_diff", json!({ "path": "src/", "from": "HEAD" })).await;
     assert!(
         refused.contains("a directory `path` narrows the working-tree status"),
@@ -396,6 +456,8 @@ async fn git_status_lists_are_bounded_with_a_count_of_the_rest() {
     for name in ["a.txt", "b.txt"] {
         std::fs::remove_file(root.join("src").join(name)).unwrap();
     }
+    let unchanged = call(&client, "git_diff", json!({ "path": "src/" })).await;
+    assert_eq!(unchanged["is_clean"], true, "nothing changed under it: {unchanged}");
 
     for index in 0..600 {
         std::fs::remove_file(root.join(format!("untracked_{index:03}.txt"))).unwrap();
@@ -406,6 +468,65 @@ async fn git_status_lists_are_bounded_with_a_count_of_the_rest() {
         "{clean}"
     );
     assert_eq!(clean["is_clean"], true, "{clean}");
+}
+
+/// A directory nothing tracks is listed file by file when the status is narrowed to it or to a
+/// directory inside it, whatever `status.showUntrackedFiles` collapses in the whole-tree status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_status_under_an_untracked_directory_lists_its_files() {
+    let (dir, client) = started().await;
+    let root = dir.path();
+    git(root, &["config", "status.showUntrackedFiles", "normal"]);
+    std::fs::create_dir_all(root.join("new/sub")).unwrap();
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(root.join("new/sub").join(name), "x\n").unwrap();
+    }
+    std::fs::write(root.join("new/top.txt"), "x\n").unwrap();
+
+    let whole = call(&client, "git_diff", json!({})).await;
+    assert_eq!(whole["is_clean"], false, "{whole}");
+
+    let nested = call(&client, "git_diff", json!({ "path": "new/sub/" })).await;
+    assert_eq!(
+        nested["untracked"],
+        json!(["new/sub/a.txt", "new/sub/b.txt"]),
+        "{nested}"
+    );
+    assert_eq!(nested["is_clean"], false, "{nested}");
+
+    let outer = call(&client, "git_diff", json!({ "path": "new/" })).await;
+    assert_eq!(
+        outer["untracked"],
+        json!(["new/sub/a.txt", "new/sub/b.txt", "new/top.txt"]),
+        "{outer}"
+    );
+}
+
+/// A directory that is not on disk and has no changed path under it is a mistake in the call, not
+/// a clean directory; so is a directory given where a file's diff is asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_refuses_a_directory_that_does_not_exist_or_lacks_its_slash() {
+    let (dir, client) = started_with(&[("tests/it.rs", "pub fn it() {}\n")]).await;
+    let root = dir.path();
+
+    let mistyped = call_err(&client, "git_diff", json!({ "path": "scr/" })).await;
+    assert!(mistyped.contains("no directory `scr/`"), "{mistyped}");
+    let a_file = call_err(&client, "git_diff", json!({ "path": "tools.py/" })).await;
+    assert!(a_file.contains("no directory `tools.py/`"), "{a_file}");
+
+    for path in ["src", "tests"] {
+        let bare = call_err(&client, "git_diff", json!({ "path": path })).await;
+        assert!(bare.contains(&format!("`{path}/`")), "{bare}");
+        let structural = call_err(&client, "git_diff", json!({ "path": path, "structural": true })).await;
+        assert!(structural.contains(&format!("`{path}/`")), "{structural}");
+    }
+
+    // A directory deleted from the working tree is gone from disk and still has a status.
+    std::fs::remove_dir_all(root.join("tests")).unwrap();
+    let deleted = call(&client, "git_diff", json!({ "path": "tests/" })).await;
+    assert_eq!(deleted["modified"], json!(["tests/it.rs"]), "{deleted}");
+    let bare = call_err(&client, "git_diff", json!({ "path": "tests" })).await;
+    assert!(bare.contains("`tests/`"), "a tree at HEAD: {bare}");
 }
 
 /// A read over the size cap ends at the end of a line and reports the line it really ends on.
@@ -444,9 +565,14 @@ async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
             "the last line returned, not the last line asked for"
         );
         assert_eq!(
-            read["omitted"].as_u64(),
+            read["omitted_bytes"].as_u64(),
             Some((big.len() - 1 - body.len()) as u64),
             "the bytes left out"
+        );
+        assert!(
+            read.get("omitted").is_none(),
+            "`omitted` counts items: {}",
+            read["bytes"]
         );
 
         // The cut names where to go on: the line after `end_line`.
@@ -471,7 +597,7 @@ async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
     assert_eq!(small["total_lines"], 4002, "{small}");
     assert_eq!(small["truncated"], false, "{small}");
     assert!(
-        small.get("truncated_reason").is_none() && small.get("omitted").is_none(),
+        small.get("truncated_reason").is_none() && small.get("omitted_bytes").is_none(),
         "{small}"
     );
 }

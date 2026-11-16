@@ -79,6 +79,7 @@ pub mod mode;
 mod notifications;
 pub mod offline;
 mod prompts;
+mod ranked_cache;
 pub mod replay;
 mod resources;
 mod router_cache;

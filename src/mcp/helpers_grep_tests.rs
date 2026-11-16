@@ -268,7 +268,7 @@ fn the_optimised_sweep_is_byte_identical_to_the_original_over_a_generated_corpus
                             IndexedFiles::contained(dir.path()),
                             window,
                             &sel,
-                            &|_, _| true,
+                            &|_, _, _| true,
                             &re,
                             ctx,
                             skip_files,
@@ -419,7 +419,7 @@ fn the_bloom_prefilter_never_changes_a_result_even_after_edits_deletes_and_new_f
                     IndexedFiles::contained(dir.path()),
                     &refs,
                     &sel_f,
-                    &|_, _| true,
+                    &|_, _, _| true,
                     &re,
                     true,
                     0,
@@ -550,5 +550,36 @@ fn an_anchor_does_not_match_past_the_last_line() {
         positions,
         [0, 2],
         "the page is built from the same matches as the count"
+    );
+}
+
+/// A `\r` with no `\n` after it ends no line: it is hidden from the anchors, at the same offset,
+/// unless the pattern itself asks for a `\r`.
+#[test]
+fn a_lone_carriage_return_is_not_a_line_end_for_the_anchors() {
+    let anchored = |pattern: &str| {
+        regex::RegexBuilder::new(pattern)
+            .multi_line(true)
+            .crlf(true)
+            .build()
+            .expect("regex")
+    };
+    let source = "a\rb\r\nc\n";
+    let starts = |pattern: &str| {
+        let re = anchored(pattern);
+        let text = lines_end_at_lf(&re, source);
+        assert_eq!(text.len(), source.len(), "offsets are those of the file");
+        line_matches(&re, &text).map(|found| found.start()).collect::<Vec<_>>()
+    };
+    assert_eq!(starts("^b"), Vec::<usize>::new(), "`b` is in the middle of line 1");
+    assert_eq!(starts("^."), [0, 5], "two lines start");
+    assert_eq!(starts("$"), [3, 6], "and two end, the first before its `\\r\\n`");
+    assert_eq!(starts("a.b"), [0], "the lone `\\r` is a character of its line");
+    assert_eq!(starts("a\\rb"), [0], "a pattern that names `\\r` sees it");
+
+    let re = anchored("^c");
+    assert!(
+        matches!(lines_end_at_lf(&re, "a\r\nc\n"), std::borrow::Cow::Borrowed(_)),
+        "a file with only `\\r\\n` endings is searched as it is"
     );
 }

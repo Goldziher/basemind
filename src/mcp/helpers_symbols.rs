@@ -61,7 +61,6 @@ pub(super) async fn run_search_symbols(
 
     let empty = |cursor_invalidated: bool| SearchResponse {
         total: 0,
-        total_is_partial: false,
         truncated: false,
         truncated_reason: None,
         budgeted: false,
@@ -183,9 +182,8 @@ pub(super) async fn run_search_symbols(
     super::toon::format_result(
         &SearchResponse {
             total,
-            total_is_partial,
-            truncated: total > returned_through,
-            truncated_reason: (total > returned_through).then_some("limit"),
+            truncated: total_is_partial,
+            truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
             budgeted: budget.budgeted,
             results,
             next_cursor,

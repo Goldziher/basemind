@@ -264,10 +264,11 @@ pub(super) fn server_config() -> ServerConfig {
          Index: index_status {} when a result is unexpectedly empty; index_rescan {} after edits or \
          when a tool says the index is empty.\n\
          Conventions: paths are repository-relative with forward slashes; line and end_line are \
-         1-based and inclusive; lists take limit and cursor and return next_cursor; a list trimmed \
-         to its token budget sets budgeted (raise max_tokens or follow next_cursor); a result cut \
-         by a hard bound sets truncated and truncated_reason, with omitted counting what was left \
-         out (follow next_cursor or narrow the call); a failure is a \
+         1-based and inclusive; lists take limit and cursor, and next_cursor alone says a list \
+         goes on (a limit cut is paging, not truncation); a list trimmed to its token budget also \
+         sets budgeted; a cut the caller did not ask for sets truncated and truncated_reason, with \
+         omitted counting the items left out where known (follow next_cursor if there is one, else \
+         narrow the call); a failure is a \
          tool result with isError naming the fix; a notice field means the result is incomplete \
          and says why. An unknown argument is rejected, never ignored.\n\
          Only when collaborating with other agents in this repository: the agents tool (mode inbox, \

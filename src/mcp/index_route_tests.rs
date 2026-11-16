@@ -296,7 +296,7 @@ fn references_are_identical_on_every_route_including_cursors() {
     let fx = fixture();
     let capped = references_page(&fx.local, &fx.cache, "get_arg", 250, None, None);
     assert_eq!(
-        capped["total_is_partial"], true,
+        capped["truncated_reason"], "scan_cap",
         "the corpus must really cross the scan cap, or the partial path goes untested: {capped}"
     );
     // Common name past the scan cap, rare names, a substring name, and an absent one.
@@ -319,7 +319,7 @@ fn a_forwarded_total_is_the_complete_count_not_a_capped_lower_bound() {
         page["total"], FILES as u64,
         "the total counts every file's call: {page}"
     );
-    assert!(!page["total_is_partial"].as_bool().unwrap_or(false), "{page}");
+    assert!(page.get("truncated").is_none(), "{page}");
     assert!(
         page["next_cursor"].is_string(),
         "more pages remain past the first five: {page}"

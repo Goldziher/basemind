@@ -261,11 +261,14 @@ pub(in crate::mcp) struct GitShowResponse {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct SearchGitHistoryResponse {
     pub commits: Vec<GitCommitHit>,
-    /// `true` when served from the bounded live-walk fallback (the git-history index wasn't fresh),
-    /// so results cover only the recent window and may omit body/email matches. Rescan to get the
-    /// full indexed search.
+    /// True when the search did not cover the whole history.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub partial: bool,
+    pub truncated: bool,
+    /// `live_walk`: the git-history index was not ready, so only the subjects and authors of the
+    /// newest 10,000 commits were searched, no message bodies; retry shortly. `scan_cap`: an
+    /// `author` filter stopped after 20,000 commits matching `query`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
     /// resumes at the first dropped one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -303,6 +306,8 @@ pub(in crate::mcp) struct WorkingTreeStatusView {
     /// Paths left out, over all five lists.
     #[serde(skip_serializing_if = "super::types::is_zero")]
     pub omitted: usize,
+    /// Nothing is staged, modified or untracked: in the whole working tree, or under `path` when
+    /// the status was narrowed to a directory.
     pub is_clean: bool,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
     /// index lookup + response construction), excluding MCP transport, argument deserialization,
@@ -476,18 +481,25 @@ pub(in crate::mcp) struct BlameSymbolResponse {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct FindCommitsByPathResponse {
     pub pattern: String,
+    /// Commits this page inspected, newest first from where its cursor starts.
     pub window_inspected: u32,
-    /// True when the whole window was used up, so older commits were not inspected.
+    /// Why `commits` is empty so far: no commit inspected up to this page touches the directory
+    /// and it is not on disk either. The last page is then an error instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unmatched: Option<String>,
+    /// True when this page used up its window before filling: older commits were not inspected,
+    /// and `next_cursor` continues with them, even from an empty page.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// `window` whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     pub commits: Vec<CommitView>,
-    /// Opaque cursor to pass back on the next call when more matches are available.
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
     /// resumes at the first dropped one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// Continues with older commits: the matches this page left out, or the next window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
@@ -592,6 +604,11 @@ pub(in crate::mcp) struct SymbolHistoryResponse {
     /// `"structural"`, or `"structural_loose"`. Clients can use this to confirm the mode
     /// they got matches the mode they asked for.
     pub hash_mode: &'static str,
+    /// Why `history` is empty so far: the working tree does not define `name` (the text lists what
+    /// the file does define) and no commit inspected up to this page does either. The last page is
+    /// then an error instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unmatched: Option<String>,
     /// Entries were dropped to fit `max_tokens`; `next_cursor` continues with them.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,

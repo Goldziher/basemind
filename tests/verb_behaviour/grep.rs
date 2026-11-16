@@ -185,28 +185,31 @@ fn code_grep_says_when_its_filters_match_only_documents() {
     });
 }
 
-/// A cut page names what cut it and how many matches it left out, in the words every tool uses:
-/// `truncated` + `truncated_reason` for a hard bound, `budgeted` for the token budget, `omitted`
-/// for the count.
+/// A page cut by `limit` or by the token budget is paging: `next_cursor` says there is more, and
+/// `truncated` stays for a cut the caller did not ask for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_grep_names_what_cut_a_page_and_how_much_it_left_out() {
+async fn a_limit_cut_is_paging_and_not_truncation() {
     let (_dir, client) = started().await;
+    let cut_names = ["truncated_reason", "omitted", "truncation_reason"];
+    let assert_paged = |page: &serde_json::Value| {
+        assert!(page["next_cursor"].is_string(), "{page}");
+        assert!(
+            page.get("truncated").is_none_or(|truncated| truncated == false),
+            "{page}"
+        );
+        for name in cut_names {
+            assert!(page.get(name).is_none(), "`{name}`: {page}");
+        }
+    };
 
     let whole = call(&client, "code_grep", json!({ "pattern": "file_outline" })).await;
     let total = whole["total_matches"].as_u64().expect("total_matches");
     assert!(total > 3, "{whole}");
-    assert_eq!(whole["truncated"], false, "{whole}");
-    assert!(
-        whole.get("truncated_reason").is_none() && whole.get("omitted").is_none(),
-        "{whole}"
-    );
+    assert!(whole.get("next_cursor").is_none(), "{whole}");
 
     let limited = call(&client, "code_grep", json!({ "pattern": "file_outline", "limit": 2 })).await;
-    assert_eq!(limited["truncated"], true, "{limited}");
-    assert_eq!(limited["truncated_reason"], "limit", "{limited}");
-    assert_eq!(limited["omitted"].as_u64(), Some(total - 2), "{limited}");
-    assert!(limited["next_cursor"].is_string(), "{limited}");
-    assert!(limited.get("truncation_reason").is_none(), "{limited}");
+    assert_eq!(limited["total_matches"].as_u64(), Some(total), "{limited}");
+    assert_paged(&limited);
 
     let budgeted = call(
         &client,
@@ -215,12 +218,18 @@ async fn code_grep_names_what_cut_a_page_and_how_much_it_left_out() {
     )
     .await;
     assert_eq!(budgeted["budgeted"], true, "{budgeted}");
-    assert_eq!(
-        budgeted["truncated"], false,
-        "the budget is not a hard bound: {budgeted}"
-    );
-    assert_eq!(budgeted["omitted"].as_u64(), Some(total - 1), "{budgeted}");
-    assert!(budgeted["next_cursor"].is_string(), "{budgeted}");
+    assert_paged(&budgeted);
+
+    let symbols = call(&client, "code_symbols", json!({ "name": "outline", "limit": 1 })).await;
+    assert!(symbols["total"].as_u64().is_some_and(|total| total > 1), "{symbols}");
+    assert_paged(&symbols);
+
+    let listed = call(&client, "find_files", json!({ "limit": 1 })).await;
+    assert!(listed["total"].as_u64().is_some_and(|total| total > 1), "{listed}");
+    assert_paged(&listed);
+    let found = call(&client, "find_files", json!({ "query": "rs", "limit": 1 })).await;
+    assert!(found["total"].as_u64().is_some_and(|total| total > 1), "{found}");
+    assert_paged(&found);
 }
 
 /// Every hit is on a line the file has. An anchor also matches at the end of the text, which after
@@ -257,4 +266,59 @@ async fn code_grep_reports_no_hit_past_the_last_line() {
     for line in lines {
         call(&client, "code_read", json!({ "path": "tools.py", "line": line })).await;
     }
+}
+
+const LONE_CR_PY: &str = "a = 1\rb = 2\nc = 3\r\nd = 4\n";
+
+/// A line ends at `\n`, with a `\r` before it counted as part of the ending, in `code_grep` as in
+/// `code_read`. A `\r` on its own is text inside its line: no anchor matches at it, so no hit is
+/// counted on a line that does not exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_and_code_read_agree_that_a_lone_carriage_return_ends_no_line() {
+    let (_dir, client) = started_with(&[("cr.py", LONE_CR_PY)]).await;
+
+    let read = call(&client, "code_read", json!({ "path": "cr.py", "line": 1 })).await;
+    assert_eq!(read["total_lines"], 3, "{read}");
+    assert_eq!(read["body"], "a = 1\rb = 2", "{read}");
+
+    let ends = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "$", "regex": true, "path": "cr.py" }),
+    )
+    .await;
+    let lines: Vec<u64> = ends["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .map(|hit| hit["line"].as_u64().expect("line"))
+        .collect();
+    assert_eq!(lines, [1, 2, 3], "one end per line: {ends}");
+
+    let starts = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "^b", "regex": true, "path": "cr.py" }),
+    )
+    .await;
+    assert_eq!(starts["total_matches"], 0, "`b` does not start a line: {starts}");
+    let after_crlf = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "^d = 4$", "regex": true, "path": "cr.py" }),
+    )
+    .await;
+    assert_eq!(after_crlf["hits"][0]["line"], 3, "{after_crlf}");
+    let before_crlf = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "c = 3$", "regex": true, "path": "cr.py" }),
+    )
+    .await;
+    assert_eq!(
+        before_crlf["total_matches"], 1,
+        "`$` matches before `\\r\\n`: {before_crlf}"
+    );
+    let inside = call(&client, "code_grep", json!({ "pattern": "1\rb" , "path": "cr.py" })).await;
+    assert_eq!(inside["total_matches"], 1, "a literal still finds the byte: {inside}");
 }

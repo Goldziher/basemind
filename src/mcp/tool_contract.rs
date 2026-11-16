@@ -217,17 +217,8 @@ pub(super) fn indexed_file(
 ///
 /// "Not indexed" has three different fixes, and an agent that is only told the first word guesses:
 /// a document is searched with `docs_search`, a file that exists needs `index_rescan`, and a path
-/// that does not exist needs `find_files`.
-pub(super) fn not_indexed(state: &ServerState, tool: &str, path: &RelPath) -> McpError {
-    // Judged on the store's file map: the in-RAM map is also empty before a lazy build.
-    let facts = match state.shared.store.try_read() {
-        Ok(store) => index_facts(&store, path),
-        Err(_) => IndexFacts::default(),
-    };
-    not_indexed_because(&state.shared.root, tool, path, facts)
-}
-
-/// [`not_indexed`] for a body that already holds the store.
+/// that does not exist needs `find_files`. Judged on the store's file map: the in-RAM map is also
+/// empty before a lazy build.
 pub(super) fn not_indexed_in(
     store: &crate::store::Store,
     root: &std::path::Path,
@@ -410,7 +401,10 @@ mod tests {
         let notice = crate::mcp::types::LifecycleNotice::empty_index();
         for text in [EMPTY_INDEX_FIX, notice.message] {
             assert!(text.contains("`index_rescan {}`"), "{text}");
-            assert!(!text.contains("full"), "`index_rescan` takes no such argument: {text}");
+            assert!(
+                !text.contains("`full`") && !text.contains("\"full\""),
+                "`index_rescan` takes no such argument: {text}"
+            );
         }
     }
 

@@ -14,7 +14,7 @@ use super::helpers::{
     git_history_if_fresh, head_sha, head_snapshot_id, json_result, kind_to_str, outline_entry_for_blob,
     paginate_blame_hunks, parse_hash_mode, parse_kind, require_git_repo, symbol_fingerprint,
 };
-use super::helpers_git::reject_external_path;
+use super::helpers_git::{MATCHED_EARLIER, reject_external_path};
 use super::helpers_pick::pick_symbol;
 use super::types::{
     BlameFileParams, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams, DiffFileResponse,
@@ -138,22 +138,6 @@ fn clip_to_whole_lines(text: &mut String, cap: usize) {
     text.truncate(cut);
 }
 
-/// The working-tree bytes of an indexed file, when they are still the bytes that were indexed (the
-/// outline's byte spans only line up with those).
-fn indexed_source(state: &ServerState, path: &crate::path::RelPath) -> Option<Vec<u8>> {
-    let (file, entry) = {
-        let store = state.shared.store.try_read().ok()?;
-        (
-            super::tool_contract::IndexedFiles::of(state).file(&store, path).ok()?,
-            store.lookup(path)?.clone(),
-        )
-    };
-    super::freshness::load(&file, (&entry).into(), state.shared.config.scan.max_file_bytes)
-        .ok()
-        .filter(|live| live.fresh)
-        .map(|live| live.bytes)
-}
-
 /// Clamp a 1-based inclusive blame span to the file as it is at `rev`, or explain why it does not
 /// fit. gix reports an out-of-range span as an opaque internal error.
 fn span_in_file(
@@ -184,8 +168,9 @@ fn span_in_file(
 /// Grammar for `path`, honouring the workspace's `[languages]` overrides so git-side tools agree
 /// with what the scanner indexed.
 pub(super) fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>) -> Option<crate::lang::LangId> {
-    crate::lang_rules::LangRules::from_config(&state.shared.config.languages)
-        .unwrap_or_default()
+    state
+        .shared
+        .lang_rules()
         .detect(std::path::Path::new(path.as_ref()))
         .lang()
 }
@@ -454,6 +439,9 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
     })
 }
 
+/// Set in a symbol-history cursor's snapshot when its offset counts in the live walk's list.
+const LIVE_WALK: u32 = 1;
+
 /// The `symbol_history` operation: tree-sitter × git — the commits where a named symbol's
 /// body fingerprint actually changed (or where it was introduced / removed).
 ///
@@ -478,16 +466,27 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     // A file that is no longer indexed (deleted, renamed) has no outline to choose from and keeps
     // the first. So does a symbol the working tree no longer defines: its history is still there
     // to read, and only a name no inspected commit defines either is a mistake in the call.
-    let outline = state.shared.cache.load_full().get(&params.path).or_else(|| {
-        let store = state.shared.store.try_read().ok()?;
-        crate::query::file_outline(&store, &params.path)
-            .ok()
-            .map(std::sync::Arc::new)
-    });
+    // The outline and the bytes its spans are laid over follow one index entry; with the store
+    // busy, the in-RAM outline is used without spans.
+    let cache = state.shared.cache.load_full();
+    let outline = match state.shared.store.try_read() {
+        Ok(store) => super::freshness::indexed_outline(&store, &cache, &params.path).map(|(entry, l1)| {
+            let file = super::tool_contract::IndexedFiles::of(state)
+                .file(&store, &params.path)
+                .ok();
+            (l1, file.map(|file| (file, entry)))
+        }),
+        Err(_) => cache.get(&params.path).map(|l1| (l1, None)),
+    };
     let mut absent_now: Option<McpError> = None;
     let occurrence = match outline {
-        Some(l1) => {
-            let source = indexed_source(state, &params.path);
+        Some((l1, indexed)) => {
+            let source = indexed.and_then(|(file, entry)| {
+                super::freshness::load(&file, (&entry).into(), state.shared.config.scan.max_file_bytes)
+                    .ok()
+                    .filter(|live| live.fresh)
+                    .map(|live| live.bytes)
+            });
             let defined_now = l1
                 .symbols
                 .iter()
@@ -514,31 +513,43 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     };
 
     let head = head_sha(repo)?;
-    let snapshot = head_snapshot_id(&head);
+    // The low bit of a cursor's snapshot says which list its offset counts in. The live walk
+    // simplifies history where the index keeps every commit touching the file, so an offset into
+    // one is not an offset into the other, and the index can become fresh between two pages.
+    let snapshot_of = |live: bool| (head_snapshot_id(&head) & !LIVE_WALK) | u32::from(live);
+    let invalidated = |params: SymbolHistoryParams| {
+        json_result(&SymbolHistoryResponse {
+            path: params.path,
+            name: params.name,
+            kind: kind.map(|k| kind_to_str(k).to_string()),
+            commits_inspected: 0,
+            history: Vec::new(),
+            hash_mode: hash_mode.as_str(),
+            unmatched: None,
+            budgeted: false,
+            truncated: false,
+            truncated_reason: None,
+            next_cursor: None,
+            cursor_invalidated: true,
+            elapsed_us: elapsed_us(started),
+        })
+    };
 
-    // The cursor is an offset into the commits touching the file, newest first.
-    let start = match params.cursor.as_ref() {
+    // The cursor is an offset into the commits touching the file, newest first, and whether a
+    // commit on an earlier page defined the name.
+    let (start, defined_earlier, cursor_snapshot) = match params.cursor.as_ref() {
         Some(c) => {
-            let (offset, snapshot_id) = c.decode_in_memory()?;
-            if snapshot_id != snapshot {
-                return json_result(&SymbolHistoryResponse {
-                    path: params.path,
-                    name: params.name,
-                    kind: kind.map(|k| kind_to_str(k).to_string()),
-                    commits_inspected: 0,
-                    history: Vec::new(),
-                    hash_mode: hash_mode.as_str(),
-                    budgeted: false,
-                    truncated: false,
-                    truncated_reason: None,
-                    next_cursor: None,
-                    cursor_invalidated: true,
-                    elapsed_us: elapsed_us(started),
-                });
+            let (packed, snapshot_id) = c.decode_in_memory()?;
+            if snapshot_id & !LIVE_WALK != snapshot_of(false) {
+                return invalidated(params);
             }
-            usize::try_from(offset).unwrap_or(usize::MAX)
+            (
+                usize::try_from(packed & !MATCHED_EARLIER).unwrap_or(usize::MAX),
+                packed & MATCHED_EARLIER != 0,
+                Some(snapshot_id),
+            )
         }
-        None => 0,
+        None => (0, false, None),
     };
 
     let window = limit.saturating_add(1).saturating_mul(4).min(LOG_WALK_MAX);
@@ -548,6 +559,10 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     let indexed = git_history_if_fresh(state, &head)
         .map(|index| index.commits_touching(&params.path, start, fetch))
         .filter(|commits| !commits.is_empty());
+    let snapshot = snapshot_of(indexed.is_none());
+    if cursor_snapshot.is_some_and(|issued| issued != snapshot) {
+        return invalidated(params);
+    }
     let mut commits: Vec<CommitInfo> = match indexed {
         Some(commits) => commits,
         // Also the answer to an empty indexed lookup, which a failed forward returns as well.
@@ -585,10 +600,12 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     // Oldest first, each change tagged with its commit's offset in the newest-first list.
     let mut history: Vec<(usize, SymbolHistoryEntry)> = Vec::new();
     let mut prev_existed = seed.is_some();
+    let mut defined = defined_earlier || seed.is_some();
     let mut prev_fp: Option<Vec<u8>> = seed;
     let inspected = commits.len();
     for (index, c) in commits.iter().enumerate().rev() {
         let fingerprint = fingerprint_at(&c.sha)?;
+        defined |= fingerprint.is_some();
         let change = match (prev_existed, fingerprint.as_ref()) {
             (false, Some(_)) => Some("introduced"),
             (true, None) => Some("removed"),
@@ -613,14 +630,6 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     }
     history.reverse();
 
-    if let Some(error) = absent_now
-        && start == 0
-        && history.is_empty()
-        && !window_exhausted
-    {
-        return Err(error);
-    }
-
     let offsets: Vec<usize> = history.iter().map(|(offset, _)| *offset).collect();
     let page: Vec<SymbolHistoryEntry> = history.into_iter().map(|(_, entry)| entry).take(limit).collect();
     let budget = super::budget::apply_budget(page, params.max_tokens);
@@ -630,6 +639,16 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     let next_offset = match offsets.get(page.len()) {
         Some(left_out) => Some(*left_out),
         None => window_exhausted.then_some(start + window),
+    };
+    // A name the working tree does not define and no commit inspected so far defines either: the
+    // last page says it is a mistake in the call, and every page before it says why it is empty.
+    let unmatched = match absent_now.filter(|_| !defined) {
+        Some(error) if next_offset.is_none() => return Err(error),
+        Some(error) => Some(format!(
+            "{}. No commit inspected so far defines it either; `next_cursor` looks further back.",
+            error.message
+        )),
+        None => None,
     };
     let window_edge = window_exhausted && offsets.len() <= page.len();
     let truncated_reason = if window_edge {
@@ -646,10 +665,14 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         commits_inspected: u32::try_from(inspected).unwrap_or(u32::MAX),
         history: page,
         hash_mode: hash_mode.as_str(),
+        unmatched,
         budgeted,
         truncated: truncated_reason.is_some(),
         truncated_reason,
-        next_cursor: next_offset.map(|offset| super::cursor::Cursor::encode_in_memory(offset as u64, snapshot)),
+        next_cursor: next_offset.map(|offset| {
+            let carried = if defined { MATCHED_EARLIER } else { 0 };
+            super::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)
+        }),
         cursor_invalidated: false,
         elapsed_us: elapsed_us(started),
     })

@@ -628,10 +628,6 @@ pub(super) fn observe_semantic_route<T>(
     Ok(hits)
 }
 
-/// Hits retrieved when a `keywords` / `entity` filter is set, before the filter cuts them down.
-#[cfg(feature = "documents")]
-const FILTERED_FETCH_DEPTH: usize = 400;
-
 #[cfg(feature = "documents")]
 pub(super) async fn run_search_documents(
     state: &ServerState,
@@ -658,7 +654,7 @@ pub(super) async fn run_search_documents(
     // page: a matching document ranked past `limit` would otherwise never be seen.
     let filtered = params.entity_category.is_some() || params.keywords_contains.is_some();
     let fetch = if filtered {
-        limit.max(FILTERED_FETCH_DEPTH)
+        super::helpers_page::filtered_fetch(limit)
     } else {
         limit
     };
@@ -668,7 +664,7 @@ pub(super) async fn run_search_documents(
     let mime = params.mime_type.clone();
     let lane = crate::lance::shared_store::SharedLane::Documents;
     let routing = shared_lance_route(state, lane).await;
-    let hits_raw = tokio::task::spawn_blocking(move || {
+    let mut hits_raw = tokio::task::spawn_blocking(move || {
         let requested_shared = crate::lance::shared_snapshot::enabled();
         let shared = routing.and_then(|(group, generation)| {
             crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
@@ -682,9 +678,9 @@ pub(super) async fn run_search_documents(
     .await
     .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("search_documents: {e}"), None))?;
-    // A filter that was handed every chunk the retrieval allows has not seen the whole ranking: a
+    // A filter whose ranking goes on past the depth it was handed has not seen all of it: a
     // matching document below that depth was never looked at, so the result is not "no match".
-    let filter_depth_used = filtered && hits_raw.len() >= fetch;
+    let filter_depth_used = filtered && super::helpers_page::cut_at_filter_depth(&mut hits_raw, fetch);
     let mut hits: Vec<DocumentSearchHit> = hits_raw
         .into_iter()
         .map(|h| DocumentSearchHit {
@@ -768,13 +764,7 @@ pub(super) async fn run_search_documents(
         _ => output_format,
     };
 
-    let truncated_reason = if filter_depth_used {
-        Some("filter_depth")
-    } else if hits.len() < candidates {
-        Some("rerank_top_k")
-    } else {
-        None
-    };
+    let truncated_reason = super::helpers_page::retrieval_cut(filter_depth_used, hits.len() < candidates);
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_response(
         &SearchDocumentsResponse {
@@ -794,8 +784,9 @@ pub(super) async fn run_search_documents(
 type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
 
 /// Documents whose blobs are read under one hold of the store lock. A filtered search attaches
-/// metadata to up to [`FILTERED_FETCH_DEPTH`] hits; read in one go that is hundreds of blob reads
-/// with every writer queued behind them and no point at which a cancelled call stops.
+/// metadata to up to [`FILTER_DEPTH`](super::helpers_page::FILTER_DEPTH) hits; read in one go that
+/// is hundreds of blob reads with every writer queued behind them and no point at which a cancelled
+/// call stops.
 #[cfg(feature = "documents")]
 const DOC_METADATA_BATCH: usize = 16;
 

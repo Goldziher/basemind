@@ -179,8 +179,24 @@ async fn exact_code_refs_are_not_starved_by_substring_only_callees() {
         exact["hits"][0]["line"].as_u64().is_some_and(|line| line > 17_000),
         "{exact}"
     );
-    assert_ne!(exact["total_is_partial"], true, "{exact}");
+    assert!(
+        exact.get("truncated").is_none() && exact.get("total_is_partial").is_none(),
+        "{exact}"
+    );
     assert!(exact.get("next_cursor").is_none(), "{exact}");
+
+    // A scan that stops at its cap before the end of the matches is a hard cut: `total` is then a
+    // lower bound, said in the same words every other cut uses.
+    let capped = call(
+        &client,
+        "code_refs",
+        json!({ "name": "zap", "match": "substring", "limit": 5 }),
+    )
+    .await;
+    assert_eq!(capped["truncated"], true, "{capped}");
+    assert_eq!(capped["truncated_reason"], "scan_cap", "{capped}");
+    assert!(capped.get("total_is_partial").is_none(), "{capped}");
+    assert!(capped["next_cursor"].is_string(), "{capped}");
 }
 
 const PLAIN_PY: &str = "print(1)\n";

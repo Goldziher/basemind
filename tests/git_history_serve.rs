@@ -110,9 +110,10 @@ async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleCl
 /// live-walk fallback. Whoever legitimately owns the index in this build (serve itself standalone,
 /// the daemon on a `comms` build) must build it, and serve must then use it.
 ///
-/// Observable: `git_log {query}` sets `partial: true` and searches only summaries/authors over a
-/// bounded window when it falls back to the live walk. A hit on [`BODY_ONLY_TOKEN`] — which exists
-/// only in a commit BODY — with `partial` unset therefore proves the answer came from the index.
+/// Observable: `git_log {query}` sets `truncated` (reason `live_walk`) and searches only
+/// summaries/authors over a bounded window when it falls back to the live walk. A hit on
+/// [`BODY_ONLY_TOKEN`] — which exists only in a commit BODY — with `truncated` unset therefore
+/// proves the answer came from the index.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn serve_answers_git_history_from_the_index_not_the_live_walk() {
     let dir = build_repo();
@@ -129,7 +130,7 @@ async fn serve_answers_git_history_from_the_index_not_the_live_walk() {
             .await
             .expect("git_log call");
         last = decode_text(&result);
-        let indexed = !last.get("partial").and_then(Value::as_bool).unwrap_or(false);
+        let indexed = !last.get("truncated").and_then(Value::as_bool).unwrap_or(false);
         let hits = last.get("commits").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
         if indexed && hits > 0 {
             break;
@@ -137,7 +138,7 @@ async fn serve_answers_git_history_from_the_index_not_the_live_walk() {
         if std::time::Instant::now() > deadline {
             panic!(
                 "serve never answered git_log from the git-history index \
-                 (expected a body-only hit with partial=false); last response: {last}"
+                 (expected a body-only hit with `truncated` unset); last response: {last}"
             );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;

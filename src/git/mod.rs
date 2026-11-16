@@ -519,7 +519,19 @@ impl Repo {
     }
 
     /// Porcelain-style status: bucketed by stage vs working tree, including untracked files.
+    /// An untracked directory is one entry or one per file, as `status.showUntrackedFiles` says.
     pub fn status_porcelain(&self) -> Result<WorkingTreeStatus, GitError> {
+        self.status_listing(None)
+    }
+
+    /// [`status_porcelain`](Self::status_porcelain) with every untracked file listed on its own,
+    /// whatever the configuration collapses: the form a status narrowed to a directory needs, since
+    /// a collapsed entry for an ancestor says nothing about the paths under it.
+    pub fn status_per_file(&self) -> Result<WorkingTreeStatus, GitError> {
+        self.status_listing(Some(gix::status::UntrackedFiles::Files))
+    }
+
+    fn status_listing(&self, untracked: Option<gix::status::UntrackedFiles>) -> Result<WorkingTreeStatus, GitError> {
         let local = self.local();
         let mut out = WorkingTreeStatus::default();
 
@@ -527,6 +539,10 @@ impl Repo {
             what: "status".to_string(),
             msg: e.to_string(),
         })?;
+        let platform = match untracked {
+            Some(untracked) => platform.untracked_files(untracked),
+            None => platform,
+        };
         let iter = platform.into_iter(None).map_err(|e| GitError::Read {
             what: "status".to_string(),
             msg: e.to_string(),

@@ -731,10 +731,9 @@ async fn mcp_server_exercises_representative_tools() {
         Some(1),
         "find_files('cy1') returned must be exactly 1: {body}"
     );
-    assert_eq!(
-        body.get("truncated").and_then(Value::as_bool),
-        Some(false),
-        "find_files('cy1') must not be truncated: {body}"
+    assert!(
+        body.get("truncated").is_none() && body.get("next_cursor").is_none(),
+        "find_files('cy1') is one whole page, and a listing has no `truncated`: {body}"
     );
 
     let body = decode_text(
@@ -832,15 +831,18 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_grep(limit=1)"),
     );
-    let truncated = body.get("truncated").and_then(Value::as_bool).unwrap_or(false);
     let hits_with_limit = body.get("hits").and_then(Value::as_array).expect("hits");
     assert_eq!(hits_with_limit.len(), 1, "limit=1 should return exactly 1 hit");
-    assert!(truncated, "limit=1 with multiple matches should set truncated=true");
-    assert_eq!(
-        body.get("truncated_reason").and_then(Value::as_str),
-        Some("limit"),
-        "a truncated grep must name the bound that cut it: {body}"
+    assert!(
+        body.get("next_cursor").is_some_and(Value::is_string),
+        "limit=1 with multiple matches pages: {body}"
     );
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(false),
+        "a `limit` cut is paging, not truncation: {body}"
+    );
+    assert!(body.get("truncated_reason").is_none(), "{body}");
     let capped_total = body
         .get("total_matches")
         .and_then(Value::as_u64)

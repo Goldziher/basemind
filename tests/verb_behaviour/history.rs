@@ -62,12 +62,19 @@ async fn git_log_matches_author_terms_against_the_author_only() {
     commit_as(root, "bob", "bob@e.x", "thanks alice for the review");
 
     assert_author_scoping(&client).await;
+    // Before the git-history index has caught up the search is a bounded walk over subjects and
+    // authors, which is a cut the caller did not ask for.
+    let live = call(&client, "git_log", json!({ "query": "parser" })).await;
+    if live.get("truncated").is_some() {
+        assert_eq!(live["truncated_reason"], "live_walk", "{live}");
+    }
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut indexed = false;
     while Instant::now() < deadline {
         let probe = call(&client, "git_log", json!({ "query": "parser" })).await;
-        if probe.get("partial").and_then(Value::as_bool) != Some(true) {
+        assert!(probe.get("partial").is_none(), "{probe}");
+        if probe.get("truncated").and_then(Value::as_bool) != Some(true) {
             indexed = true;
             break;
         }
@@ -253,6 +260,94 @@ async fn git_log_of_a_symbol_the_working_tree_no_longer_has_reads_its_history() 
     assert!(
         never.contains("no symbol `never_defined` in `src/steady.rs`"),
         "{never}"
+    );
+}
+
+/// A mistyped symbol on a file with more commits than one window never pages silently: each empty
+/// page says the name is defined nowhere so far, and the last page is the error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_of_a_mistyped_symbol_says_so_on_every_page_and_ends_in_the_error() {
+    let (dir, client) = started_with(&[("src/steady.rs", STEADY_RS)]).await;
+    let root = dir.path();
+    for round in 1..=20 {
+        std::fs::write(
+            root.join("src/steady.rs"),
+            STEADY_RS.replace("    0\n", &format!("    {round}\n")),
+        )
+        .unwrap();
+        super::git(root, &["commit", "-qam", &format!("round {round}")]);
+    }
+
+    let mut arguments = json!({ "path": "src/steady.rs", "symbol": "stabel", "limit": 1 });
+    let mut pages = 0;
+    let refusal = loop {
+        pages += 1;
+        assert!(pages < 10, "the cursor must make progress");
+        let result = super::call_raw(&client, "git_log", arguments.clone()).await;
+        let text = super::text_of(&result);
+        if result.is_error == Some(true) {
+            break text;
+        }
+        let page: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(page["history"], json!([]), "{page}");
+        let why = page["unmatched"].as_str().unwrap_or_default();
+        assert!(
+            why.contains("no symbol `stabel` in `src/steady.rs`") && why.contains("stable"),
+            "an empty page names the mistake and the candidates: {page}"
+        );
+        arguments["cursor"] = page["next_cursor"].clone();
+    };
+    assert_eq!(pages, 3, "21 commits in windows of 8, the last page being the error");
+    assert!(
+        refusal.contains("no symbol `stabel` in `src/steady.rs`") && refusal.contains("stable"),
+        "{refusal}"
+    );
+}
+
+/// A symbol removed longer ago than one window is not a mistake: the pages before its removal say
+/// nothing has defined it yet, and the history is still reached.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_of_a_symbol_removed_before_the_first_window_still_reaches_its_history() {
+    let (dir, client) = started_with(&[("src/steady.rs", STEADY_RS)]).await;
+    let root = dir.path();
+    let without_churn = "pub fn stable() -> u32 {\n    7\n}\n";
+    for round in 1..=20 {
+        let body = if round < 3 {
+            STEADY_RS.replace("    0\n", &format!("    {round}\n"))
+        } else {
+            format!("{without_churn}// round {round}\n")
+        };
+        std::fs::write(root.join("src/steady.rs"), body).unwrap();
+        super::git(root, &["commit", "-qam", &format!("round {round}")]);
+    }
+    call(&client, "index_rescan", json!({ "paths": ["src/steady.rs"] })).await;
+
+    let first = call(
+        &client,
+        "git_log",
+        json!({ "path": "src/steady.rs", "symbol": "churn", "limit": 1 }),
+    )
+    .await;
+    assert!(
+        first["unmatched"]
+            .as_str()
+            .is_some_and(|why| why.contains("no symbol `churn`")),
+        "{first}"
+    );
+    let (churn, pages) = whole_symbol_history(
+        &client,
+        json!({ "path": "src/steady.rs", "symbol": "churn", "limit": 1 }),
+    )
+    .await;
+    assert_eq!(
+        churn,
+        [
+            ("removed".to_string(), "round 3".to_string()),
+            ("modified".to_string(), "round 2".to_string()),
+            ("modified".to_string(), "round 1".to_string()),
+            ("introduced".to_string(), "init".to_string())
+        ],
+        "after {pages} pages"
     );
 }
 

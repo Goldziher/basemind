@@ -52,6 +52,9 @@ pub(crate) struct SharedReadStack {
     /// `(blob_oid, lang) -> Arc<OutlineEntry>` cache that keeps `symbol_history` fast on
     /// hot files even when the symbol's source blob shows up in many adjacent commits.
     pub(crate) outline_cache: Arc<OutlineCache>,
+    /// The `[languages]` overrides of `config`, compiled on first use: the git tools and a stale
+    /// re-parse detect a language per call, and the table never changes while the server runs.
+    lang_rules: std::sync::OnceLock<crate::lang_rules::LangRules>,
     /// Scanner config (include / exclude globs, eager_l2, document tier knobs, …).
     /// Held on the server so the `rescan` MCP tool can re-run a scan in-process
     /// without re-reading `basemind.toml`.
@@ -69,6 +72,13 @@ pub(crate) struct SharedReadStack {
     /// against a stale generation can be detected and reported back as
     /// `cursor_invalidated = true`.
     pub(crate) cache_generation: AtomicU32,
+    /// Ranked lists of recent `code_search` / `docs_search` retrievals, keyed by query and
+    /// `cache_generation`, so a later page does not rank the whole retrieval again.
+    #[cfg_attr(
+        not(any(feature = "code-search", feature = "documents")),
+        allow(dead_code, reason = "read only by the ranked tools, which this build lacks")
+    )]
+    pub(crate) ranked: super::ranked_cache::RankedCache,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)]
@@ -233,10 +243,12 @@ impl SharedReadStack {
             git_cache,
             git_history,
             outline_cache,
+            lang_rules: std::sync::OnceLock::new(),
             config,
             telemetry: telemetry_handle,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
+            ranked: Default::default(),
             scope,
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             lance: tokio::sync::OnceCell::new(),
@@ -260,6 +272,15 @@ impl SharedReadStack {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             host,
         }
+    }
+}
+
+impl SharedReadStack {
+    /// The compiled `[languages]` overrides. A table that does not compile was already reported
+    /// when the config was loaded; detection then falls back to the built-in rules.
+    pub(crate) fn lang_rules(&self) -> &crate::lang_rules::LangRules {
+        self.lang_rules
+            .get_or_init(|| crate::lang_rules::LangRules::from_config(&self.config.languages).unwrap_or_default())
     }
 }
 

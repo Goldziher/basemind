@@ -89,7 +89,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     } else {
         hits
     };
-    let truncated_reason = (hits.len() < candidates).then(|| "rerank_top_k".to_string());
+    let truncated_reason = super::helpers_page::retrieval_cut(false, hits.len() < candidates).map(str::to_string);
 
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_code_response(

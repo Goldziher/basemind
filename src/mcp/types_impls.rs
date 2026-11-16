@@ -40,9 +40,13 @@ pub struct FindImplementationsResponse {
     #[serde(rename = "match")]
     pub matching: &'static str,
     pub total: usize,
-    /// True when `total` was capped by `scan_cap` and more matches exist on disk.
+    /// True when the scan stopped at its cap before the end of the matches: `total` is then a
+    /// lower bound, and `next_cursor` resumes the scan.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub total_is_partial: bool,
+    pub truncated: bool,
+    /// `scan_cap` whenever `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
