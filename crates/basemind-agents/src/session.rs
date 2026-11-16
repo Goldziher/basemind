@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use crate::error::LaunchError;
 use crate::event::{ApprovalRequest, ApprovalSource, Control, Event, FinishStatus};
 use crate::process;
+use crate::queue::EventQueue;
 use crate::spec::{ApprovalPolicy, ApprovalVerdict, LaunchSpec, Limits};
 
 const STDERR_TAIL_BYTES: usize = 8192;
@@ -67,6 +68,8 @@ struct Shared {
     turns: AtomicU32,
     /// Prompts the caller has handed over, the brief included.
     prompts: AtomicU32,
+    /// The events on their way to the caller.
+    events: Arc<EventQueue>,
 }
 
 impl Shared {
@@ -84,6 +87,7 @@ impl Shared {
             control,
             turns: AtomicU32::new(0),
             prompts: AtomicU32::new(1),
+            events: Arc::default(),
         })
     }
 
@@ -96,13 +100,13 @@ impl Shared {
 /// itself: whether a turn may begin, and what an approval request is answered with.
 #[derive(Clone)]
 pub(crate) struct EventSink {
-    tx: Sender<Event>,
     shared: Arc<Shared>,
 }
 
 impl EventSink {
+    /// Queues `event` for the caller; it may wait while the queue is full.
     pub fn emit(&self, event: Event) {
-        let _ = self.tx.send(event);
+        self.shared.events.push(event);
     }
 
     /// Counts a turn the harness is about to run, and refuses one beyond the limit.
@@ -153,19 +157,14 @@ impl EventSink {
     }
 
     #[cfg(test)]
-    pub fn for_test(policy: Option<Arc<dyn ApprovalPolicy>>, max_turns: u32) -> (Self, Receiver<Event>) {
-        let (tx, rx) = mpsc::channel();
+    pub fn for_test(policy: Option<Arc<dyn ApprovalPolicy>>, max_turns: u32) -> (Self, Arc<EventQueue>) {
         let limits = Limits {
             max_turns,
             ..Limits::default()
         };
-        (
-            Self {
-                tx,
-                shared: Shared::new(0, limits, policy, Box::new(|_| false)),
-            },
-            rx,
-        )
+        let shared = Shared::new(0, limits, policy, Box::new(|_| false));
+        let events = shared.events.clone();
+        (Self { shared }, events)
     }
 }
 
@@ -174,7 +173,6 @@ impl EventSink {
 /// Events arrive in order and end with [`Event::Finished`]. Dropping the session kills the
 /// harness's process group.
 pub struct Session {
-    events: Receiver<Event>,
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
 }
@@ -197,7 +195,7 @@ impl Session {
     /// The next event, blocking until there is one. `None` once [`Event::Finished`] was read.
     #[must_use]
     pub fn recv(&self) -> Option<Event> {
-        self.events.recv().ok()
+        self.shared.events.recv_until(None).ok()
     }
 
     /// The next event, waiting at most `timeout`.
@@ -207,12 +205,12 @@ impl Session {
     /// [`RecvTimeoutError::Timeout`] when none arrived in time, and
     /// [`RecvTimeoutError::Disconnected`] once [`Event::Finished`] was read.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<Event, RecvTimeoutError> {
-        self.events.recv_timeout(timeout)
+        self.shared.events.recv_timeout(timeout)
     }
 
     /// Every remaining event, blocking between them, ending after [`Event::Finished`].
     pub fn events(&self) -> impl Iterator<Item = Event> + '_ {
-        self.events.iter()
+        std::iter::from_fn(|| self.recv())
     }
 
     /// Allows the pending approval request `id`, once.
@@ -290,6 +288,7 @@ impl Session {
             let deadline = Instant::now() + grace;
             state.stop_deadline = Some(state.stop_deadline.map_or(deadline, |at| at.min(deadline)));
         }
+        self.shared.events.drain();
         self.shared.wake.notify_all();
         (self.shared.control)(Control::Stop);
     }
@@ -298,6 +297,7 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.request_stop(Duration::ZERO);
+        self.shared.events.close();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -333,11 +333,7 @@ pub(crate) fn start(
     let mut stderr = child.stderr.take().expect(piped);
 
     let shared = Shared::new(child.id(), spec.limits, spec.approval_policy.clone(), control);
-    let (tx, events) = mpsc::channel();
-    let sink = EventSink {
-        tx,
-        shared: shared.clone(),
-    };
+    let sink = EventSink { shared: shared.clone() };
 
     let tail = Arc::new(Mutex::new(Vec::new()));
     let (stderr_done, stderr_drained) = mpsc::channel::<()>();
@@ -381,6 +377,7 @@ pub(crate) fn start(
                 }
             };
             shared.wake.notify_all();
+            shared.events.drain();
             // From here on only this thread signals the group: the watchdog saw `finished`.
             if matches!(status, FinishStatus::Completed | FinishStatus::Stopped) {
                 process::retire(&mut child);
@@ -392,18 +389,17 @@ pub(crate) fn start(
                 let tail = tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let tail = String::from_utf8_lossy(&tail);
                 let tail = tail.trim();
-                sink.emit(Event::Error(if tail.is_empty() {
+                shared.events.push_last(Event::Error(if tail.is_empty() {
                     error.to_string()
                 } else {
                     format!("{error}\n{tail}")
                 }));
             }
-            sink.emit(Event::Finished(status));
+            shared.events.push_last(Event::Finished(status));
         }
     });
 
     Ok(Session {
-        events,
         shared,
         worker: Some(worker),
     })
@@ -441,6 +437,7 @@ fn watchdog(shared: &Shared, started: Instant) {
             // `finished` is false under the lock, so the leader is unreaped and the id is ours.
             process::kill_group(shared.pid);
             drop(state);
+            shared.events.drain();
             // A descendant that left the group can hold the pipes open; the adapter is told
             // to stop instead of being left to wait for an end of output that never comes.
             (shared.control)(Control::Stop);

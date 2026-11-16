@@ -375,6 +375,44 @@ fn a_frame_over_sixteen_mebibytes_fails_the_session() {
 }
 
 #[test]
+fn a_caller_that_reads_late_finds_a_bounded_queue_with_the_text_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = format!(
+        r#"{HANDSHAKE}printf '%s\n' '{{"type":"stream_event","event":{{"type":"message_start"}}}}'
+i=0
+while [ $i -lt 5000 ]; do
+  printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"x"}}}}}}'
+  i=$((i+1))
+done
+printf '%s\n' '{{"type":"result","result":"done"}}'
+printf 'printed\n' > "{dir}/printed"
+cat > /dev/null
+"#,
+        dir = dir.path().display()
+    );
+    let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), &body));
+    let printed = dir.path().join("printed");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !printed.exists() {
+        assert!(Instant::now() < deadline, "the stand-in never finished printing");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The adapter has read every frame; give it a moment to queue them.
+    std::thread::sleep(Duration::from_millis(500));
+    let events: Vec<_> = session.events().collect();
+    assert!(events.len() <= 1024 + 2, "{} events were queued", events.len());
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "x".repeat(5000));
+    assert_eq!(events.last(), Some(&Event::Finished(FinishStatus::Completed)));
+}
+
+#[test]
 fn a_harness_that_exits_mid_turn_fails_the_session() {
     let dir = tempfile::tempdir().unwrap();
     let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), HANDSHAKE));

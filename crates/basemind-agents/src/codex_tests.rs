@@ -249,7 +249,7 @@ fn a_policy_decides_and_a_deferred_request_waits_for_the_caller() {
     assert!(!protocol.answer(&asked.id, false, &mut out).unwrap());
 }
 
-fn asked(events: &std::sync::mpsc::Receiver<Event>) -> Vec<ApprovalRequest> {
+fn asked(events: &crate::queue::EventQueue) -> Vec<ApprovalRequest> {
     events
         .try_iter()
         .filter_map(|event| match event {

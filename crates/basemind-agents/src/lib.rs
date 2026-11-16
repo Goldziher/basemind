@@ -43,6 +43,7 @@ mod harness;
 mod identity;
 mod line;
 mod process;
+mod queue;
 mod registry;
 mod session;
 mod spec;
