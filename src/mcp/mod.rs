@@ -601,13 +601,13 @@ impl BasemindServer {
                 .inspect_err(|error| tracing::warn!(%error, "git-history: bad agent id; tools will live-walk"))
                 .ok()?;
             if let Some(host) = git_history_host {
-                return Some(Arc::new(crate::git_history::GitHistoryIndex::hosted(
+                return Some(Arc::new(crate::git_history::remote::hosted_index(
                     root.to_path_buf(),
                     agent,
                     host,
                 )));
             }
-            return Some(Arc::new(crate::git_history::GitHistoryIndex::remote(
+            return Some(Arc::new(crate::git_history::remote::remote_index(
                 root.to_path_buf(),
                 agent,
             )));
@@ -644,7 +644,7 @@ impl BasemindServer {
         // ~keep A daemon-hosted handle syncs in-process through the seam (the daemon's own build lock),
         // ~keep never over the socket back to itself.
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if let Some(host) = index.history_host() {
+        if let Some(host) = crate::git_history::remote::history_host(index) {
             let root = state.shared.root.clone();
             tokio::spawn(async move {
                 match host

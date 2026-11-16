@@ -216,9 +216,23 @@ pub struct CommitMeta {
 enum Backend {
     /// This process holds the fjall database.
     Local(LocalDb),
-    /// The daemon holds it; every read is a forwarded RPC.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    Remote(remote::RemoteHistory),
+    /// Another process holds it; every read is forwarded to it.
+    Remote(std::sync::Arc<dyn HistoryForwarder>),
+}
+
+/// The read side of a daemon-backed index: forwards each query to the process that holds the
+/// database. Implemented outside the core by the transport (`remote::RemoteHistory`), so this module
+/// names no transport, runtime or caller identity; the implementor carries its own. Synchronous: an
+/// implementor that waits on IO blocks inside the call. `Any` lets the transport recover its own type
+/// from a handle.
+pub trait HistoryForwarder: Send + Sync + std::any::Any {
+    /// The HEAD the holder's index is synced to, or `None` when unbuilt or unreachable. `None` makes
+    /// the caller's freshness check fail closed: it live-walks.
+    fn indexed_head(&self) -> Option<String>;
+
+    /// Run one commit-returning op against the holder's index. Unreachable or a reply of another
+    /// shape yields an empty page.
+    fn commits(&self, op: proto::GitHistoryOp) -> Vec<crate::git::CommitInfo>;
 }
 
 /// Handle to every git-history partition. Cloned cheaply (each `Keyspace` is `Arc`'d by Fjall).
@@ -269,46 +283,27 @@ impl GitHistoryIndex {
         }
     }
 
-    /// A handle backed by the DAEMON's index for the repo at `root`. Takes no lock and performs no
-    /// IO: this is what every front-end running under a live daemon holds — a `daemon_writer` serve,
-    /// and the one-shot CLI — instead of opening the database the daemon has locked.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub fn remote(root: std::path::PathBuf, agent: crate::comms::ids::AgentId) -> Self {
+    /// A handle backed by an index another process holds (the DAEMON's), reached through
+    /// `forwarder`. Takes no lock and performs no IO: this is what every front-end running under a
+    /// live daemon holds — a `daemon_writer` serve, and the one-shot CLI — instead of opening the
+    /// database the daemon has locked.
+    pub fn forwarded(forwarder: std::sync::Arc<dyn HistoryForwarder>) -> Self {
         Self {
-            backend: Backend::Remote(remote::RemoteHistory::new(root, agent)),
-        }
-    }
-
-    /// A DAEMON-BACKED handle whose daemon is *this process* — a daemon-hosted connection. Instead of
-    /// dialing the daemon over its own socket (a loopback), history ops run in-process through `host`,
-    /// which shares the daemon's single open handle and per-repo build lock. Takes no lock and
-    /// performs no IO.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub fn hosted(
-        root: std::path::PathBuf,
-        agent: crate::comms::ids::AgentId,
-        host: std::sync::Arc<dyn remote::HistoryHost>,
-    ) -> Self {
-        Self {
-            backend: Backend::Remote(remote::RemoteHistory::hosted(root, agent, host)),
+            backend: Backend::Remote(forwarder),
         }
     }
 
     /// True when this handle forwards to the daemon rather than holding the database. The write side
     /// keys off it: the builder can only run in the process that owns the lock, so a daemon-backed
     /// session must ASK the daemon to build instead of calling the builder itself.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
     pub fn is_daemon_backed(&self) -> bool {
         matches!(self.backend, Backend::Remote(_))
     }
 
-    /// The in-process host of a daemon-hosted handle, if any. A hosted connection uses it to run the
-    /// startup git-history sync directly (through the daemon's build lock) instead of forwarding the
-    /// `Sync` op back over the socket. `None` for a local handle or a socket-forwarding one.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) fn history_host(&self) -> Option<std::sync::Arc<dyn remote::HistoryHost>> {
+    /// The forwarder of a daemon-backed handle, `None` for a local one.
+    pub fn forwarder(&self) -> Option<&std::sync::Arc<dyn HistoryForwarder>> {
         match &self.backend {
-            Backend::Remote(remote) => remote.host(),
+            Backend::Remote(forwarder) => Some(forwarder),
             Backend::Local(_) => None,
         }
     }
@@ -318,7 +313,6 @@ impl GitHistoryIndex {
     pub(crate) fn local(&self) -> Option<&LocalDb> {
         match &self.backend {
             Backend::Local(db) => Some(db),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
             Backend::Remote(_) => None,
         }
     }
@@ -409,7 +403,6 @@ impl GitHistoryIndex {
     pub fn last_indexed_head_hex(&self) -> Option<String> {
         match &self.backend {
             Backend::Local(db) => db.meta_sha(keys::META_LAST_HEAD).map(|s| keys::sha_raw_to_hex(&s)),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
             Backend::Remote(remote) => remote.indexed_head(),
         }
     }

@@ -56,12 +56,10 @@ impl GitHistoryIndex {
     /// check (`last_indexed_head_hex`, itself a forwarded call) fails closed first, so a tool
     /// live-walks rather than ever seeing this.
     pub(crate) fn forward(&self, op: GitHistoryOp) -> Vec<CommitInfo> {
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if let super::Backend::Remote(remote) = &self.backend {
-            return remote.commits(op);
+        match &self.backend {
+            super::Backend::Remote(remote) => remote.commits(op),
+            super::Backend::Local(_) => Vec::new(),
         }
-        let _ = op;
-        Vec::new()
     }
 }
 
