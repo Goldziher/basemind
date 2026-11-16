@@ -146,6 +146,11 @@ pub(super) fn owe_rows(root: &Path) {
 /// A save wrote its note's row in this process's table: tell the processes searching every other
 /// preset's table, which has no row of the write. A table created after the listing here lists
 /// the note when it is first searched.
+///
+/// Every table directory present is stamped, one of a preset no longer in use too: neither those
+/// directories nor their `memory-rows-owed.<table>` stamps are ever collected. A process that dies
+/// between writing the row and these stamps leaves the other presets' searches to find the note
+/// when their level lapses, after at most [`LEVEL_TTL_MAX`].
 pub(super) async fn owe_rows_elsewhere(state: &ServerState) {
     let Some(own) = table_name(state).await else {
         return;

@@ -168,10 +168,13 @@ changed, checked against `main` at `3d627ba5`. A clause not named here stands.
     memory rows is refused. Only a writer open stamps the version.
 23. **ADR-0025 (c) and its vectors row become:** memory-note vectors live per group and embedding
     preset in `repos/<group>/memory.lance/<model>-<dim>-<hash>/`; rows hold no text. Each search
-    embeds at most 256 missing notes or 3 seconds' worth, and the next continues. A save that left a
-    table without a row of its write (in its own preset when it wrote none, in every other preset
-    when it did) rewrites that table's stamp in the group directory, which a search reads before it
-    trusts the table to be level.
+    embeds at most 256 missing notes or 3 seconds' worth, and the next continues. A save that wrote
+    no row rewrites the group's stamp (`memory-rows-owed`), which every table reads; one that wrote
+    its row in its own preset's table rewrites the stamp (`memory-rows-owed.<table>`) of every other
+    table directory present at that moment, a preset no longer in use included. A search reads both
+    before it trusts its table to be level. Stamps are renamed into place whole and never collected;
+    a save that dies between its row and the stamps leaves other presets to find the note when
+    their level lapses, within an hour.
 24. **ADR-0025 (d), "a pending set recorded in the file map", becomes:** the set is the sidecar
     `pending-vectors.msgpack`, synced before the file map that claims its files, so settling a path
     costs one small write. A view records its `vector-store-id`; a lost or replaced store, or an
