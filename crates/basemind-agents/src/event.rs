@@ -143,8 +143,8 @@ pub enum ApprovalKind {
     /// Grant the harness further permissions, such as network access or writable paths, or
     /// switch it into a mode that asks less (Claude Code's `ExitPlanMode`, an ACP mode switch).
     Permissions,
-    /// Call a tool of an MCP server. Claude Code reports these; ACP does not say which tool
-    /// calls are MCP calls, so an ACP request is never of this kind.
+    /// Call a tool of an MCP server. Claude Code and Codex report these; ACP does not say which
+    /// tool calls are MCP calls, so an ACP request is never of this kind.
     McpTool,
     /// Fetch from the network or search the web.
     Fetch,

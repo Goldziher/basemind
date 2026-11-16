@@ -23,26 +23,30 @@
 //!   unless the config carries an [`ApprovalPolicy`]. A request shows the grant itself (the
 //!   command, the file changes, the permissions, the tool input) as an [`ApprovalKind`] and the
 //!   raw wire params; an agent's stated reason is only appended. A Codex file change carries
-//!   the item's full changes, or is denied unasked when they are unknown or over 1 MiB. An ACP
-//!   allow takes the `allow_once` option only. Requests get ids of the crate's own; at most 16
-//!   wait for the caller, and a further one is denied.
+//!   the item's full changes, or is denied unasked when they are unknown or over 1 MiB; a
+//!   Codex MCP tool call goes to the policy too. An ACP allow takes the `allow_once` option
+//!   only. Requests get ids of the crate's own; at most 16 wait for the caller, a further one
+//!   is denied, and two sharing a wire id are both denied.
 //! - **No permission bypass.** [`PermissionMode::Bypass`] is refused unless the config carries
 //!   a [`BypassOptIn`] naming that harness and its mode.
 //! - **No unverified mode without consent.** An ACP agent in any other mode needs an
 //!   [`UnverifiedModeOptIn`] naming the harness and the mode, since what it does unasked was
-//!   not verified; OpenCode is never launched supervised.
+//!   not verified. OpenCode supervised needs none: every OpenCode launch is configured to ask
+//!   for every permission. An ACP agent that switches its own session mode fails the session.
 //! - **No free-form arguments.** A request names a model and an effort, which the adapter
 //!   turns into that harness's flags after checking their grammar; nothing else of a request
 //!   reaches the command line, its limits are clamped to the config's caps, and its brief is
-//!   at most 1 MiB.
+//!   at most 1 MiB and may not start with `/`, which a harness runs as a slash command.
 //! - **No project configuration.** Claude Code is asked for no setting sources, hooks disabled
 //!   and only the MCP server the config names, and the session fails unless its `system/init`
-//!   frame reports the requested permission mode and exactly that server. Codex, Gemini,
+//!   frame reports the requested permission mode, exactly that server as loaded from
+//!   `--mcp-config` and only built-in plugins (verified on Claude Code 2.1.325). Codex, Gemini,
 //!   Cursor and OpenCode are not launched over a project file of theirs (`.codex`, `.gemini`,
 //!   ...) in the working directory or above it. Only MCP tools the config names are
 //!   pre-approved, and only Claude Code can pre-approve.
 //! - **Executables.** The harness executable and the MCP server's command are resolved to
-//!   absolute paths outside the root; the child's `PATH` keeps only absolute entries.
+//!   absolute paths outside the root, with no link on the way inside it; the child's `PATH`
+//!   keeps only absolute entries outside the root.
 //! - **Working directory.** It is relative, has to resolve inside [`LaunchConfig::root`], and
 //!   is checked again in the child after it changes into it. The agent is not sandboxed to
 //!   the root.
@@ -51,21 +55,22 @@
 //!   one of a few provider settings, and may not redirect configuration, code loading, an
 //!   endpoint or basemind. Credentials in the launcher's environment do not reach the child.
 //! - **Limits.** At the wall-time limit, or when the harness starts more turns than
-//!   [`Limits::max_turns`], the process group is killed. A stop gets [`Limits::stop_grace`].
-//! - **Bounded resources.** A frame is at most 16 MiB, the event queue holds at most 1024
-//!   events and 16 MiB, and every channel and table is bounded; an ACP agent that leaves the
-//!   client's lines unread fails the session. Dropping a session waits at most 2 s for its
-//!   supervisor, even when a descendant holds the harness's pipes.
+//!   [`Limits::max_turns`], the process group is killed. A stop, and a session that failed,
+//!   get [`Limits::stop_grace`].
+//! - **Bounded resources.** A frame is at most 16 MiB and 256 Ki JSON values, the event
+//!   queue holds at most 1024 events and 16 MiB, and every channel and table is bounded; an
+//!   ACP agent that leaves the client's lines unread fails the session. Dropping a session
+//!   waits at most 2 s for its supervisor, even when a descendant holds the harness's pipes.
 //!
 //! What it does not do: the config's executable, its MCP server's command and its
 //! environment values are used as given, so the configuration has to restrict them; the
 //! harnesses' user-level configuration still applies; a descendant that leaves the harness's
-//! process group survives the session (the session still ends on time); a project file
-//! written during a session is only seen by the next launch; `BASEMIND_AGENT_ID` is
-//! self-asserted; what the ACP agents' modes ask for and what Claude Code's flags and init
-//! frame do were not run against a live harness (the checks fail closed); the launcher must
-//! not reap children it did not start and must ignore SIGPIPE; and nothing is launched off
-//! Unix.
+//! process group survives the session (the session still ends on time), as OpenCode's own
+//! server does; a project file written during a session is only seen by the next launch;
+//! `BASEMIND_AGENT_ID` is self-asserted; what the ACP agents' modes other than OpenCode's
+//! supervised one ask for was not run against a live harness; the launcher must not reap
+//! children it did not start and must ignore SIGPIPE; and nothing is launched off Unix. The
+//! README lists what was verified against which harness version.
 //!
 //! # Harnesses
 //!

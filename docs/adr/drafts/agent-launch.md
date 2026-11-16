@@ -70,40 +70,53 @@ id that fails the grammar stops the launch.
      supplies. It carries its kind and the raw request, and its text is rendered from the grant
      (command, file changes, permissions, tool input), never from the agent's reason alone. A Codex
      file change carries the item's full changes; one whose changes were not announced or are over
-     1 MiB is denied without asking. An ACP allow selects `allow_once` only. At most 16 requests
-     wait for the caller. Approval ids are the crate's own, so a late answer cannot reach a newer
-     request that reuses a wire id. A Codex or ACP request still pending when its turn ends, and
-     any request pending when the session stops, is answered with a denial (Claude Code's requests
-     of a finished turn are only reported withdrawn: the harness no longer waits on them).
+     1 MiB is denied without asking. A Codex MCP tool call, which Codex 0.169 asks for as an
+     `mcpServer/elicitation/request` of kind `mcp_tool_call`, goes to the policy; an allow
+     accepts that one call. An ACP allow selects `allow_once` only. At most 16 requests wait for
+     the caller. Approval ids are the crate's own, so a late answer cannot reach a newer request
+     that reuses a wire id, and two pending requests sharing a wire id are both denied. A Codex or
+     ACP request still pending when its turn ends, and any request pending when the session
+     stops, is answered with a denial and reported withdrawn (Claude Code's requests of a finished
+     turn are only reported withdrawn: the harness no longer waits on them).
    - **No permission bypass** (Claude `bypassPermissions`, Codex `danger-full-access`, ACP yolo
      modes) without a `BypassOptIn` naming that harness and mode. Like every opt-in it is config
      data: the crate checks that it matches, not who set it.
    - **No mode whose behaviour is unverified, without consent.** Claude Code's and Codex's adapters
-     set the permission mode explicitly. An ACP agent in any mode but an authorized bypass needs an
-     `UnverifiedModeOptIn` naming the harness and the mode, because what it does unasked was not
-     verified. OpenCode is never launched supervised: its default edits files and runs commands
-     without asking (from OpenCode's documentation, not run here).
+     set the permission mode explicitly; Codex refuses `AcceptEdits`, because its nearest mode
+     (`on-request`, workspace-write) ran a shell command unasked on Codex 0.169. An ACP agent in
+     any mode but an authorized bypass needs an `UnverifiedModeOptIn` naming the harness and the
+     mode, because what it does unasked was not verified, except OpenCode supervised: OpenCode
+     2.3.0's default wrote a file unasked, but with `OPENCODE_CONFIG_CONTENT={"permission":"ask"}`,
+     which every OpenCode launch now sets, it asked before an edit, a shell command and an MCP
+     call. An ACP agent that reports switching itself to another session mode fails the session.
    - **Only a model and an effort reach the command line from a request,** as the harness's own
-     flags after a grammar check; a harness that takes neither at launch refuses them.
+     flags after a grammar check; a harness that takes neither at launch refuses them. A brief or
+     follow-up may not start with `/`: Claude Code 2.1.325 ran a prompt of `/context` as its own
+     slash command. Errors about a request's fields repeat neither the root nor a whole value.
    - **No project configuration.** Claude Code is asked for no setting sources, hooks disabled and
      only the injected MCP server, and the session fails unless its `system/init` frame reports the
-     requested permission mode and exactly the injected MCP server. Codex, Gemini, Cursor and
+     requested permission mode, exactly the injected MCP server as loaded from `--mcp-config`
+     (`source: "dynamic"`) and only built-in plugins. Verified on Claude Code 2.1.325: under these
+     flags a project `CLAUDE.md`, `.claude/` hooks, permission rules, agents, commands and skills,
+     `.mcp.json`, user plugins and claude.ai connectors were not loaded. Codex, Gemini, Cursor and
      OpenCode are not launched over a project file of theirs in the working directory or above it
      (for Cursor, anything in `.cursor/` but `rules`); a path that cannot be read counts as
      present.
    - **Executables.** The harness executable and the MCP server's command are resolved to absolute
      paths at the plan, against the absolute entries of the launcher's `PATH`, and refused when
-     they lie inside the root, directly or through a link. The child's `PATH` keeps only absolute
-     entries.
+     they lie inside the root, directly, at the end of their links or through any link on the
+     way. The check is not atomic with the exec. The child's `PATH` keeps only absolute entries
+     outside the root.
    - **Working directory.** It resolves inside the root, checked at the plan and again in the
      child. The agent is not sandboxed to the root.
    - **Environment.** An allow-list plus config additions whose names must be provider credentials
      or a few provider settings, so the launcher's credentials do not leak and an addition cannot
      redirect configuration, code loading, executable search or the basemind daemon.
-   - **Limits.** Wall time and turns per session, enforced by killing the process group; a stop
-     gets its grace. Frames, events, channels and tables are bounded. An ACP agent that stops
-     reading while the client has 16 lines queued for it fails the session. Dropping a session
-     waits at most 2 s for its supervisor; the group is killed either way.
+   - **Limits.** Wall time and turns per session, enforced by killing the process group; a stop,
+     and a session that failed, get the stop grace. Frames (16 MiB and 256 Ki JSON values),
+     events, channels and tables are bounded. An ACP agent that stops reading while the client has
+     16 lines queued for it fails the session. Dropping a session waits at most 2 s for its
+     supervisor; the group is killed either way.
 
    Left to the engine and the configuration:
    - **Off by default.** Launching is disabled until `[agents.launch] enabled = true`.
@@ -141,22 +154,28 @@ call that started it.
 - basemind now carries two protocol adapters that track upstream CLIs with no stability promise.
   They will break when Claude Code or Codex change their wire format. The recorded-transcript tests
   show what the adapters expect, not what the CLIs currently send.
-- Nothing here was run against a live harness. Flags for Gemini CLI and OpenCode, the session-mode
-  names for Gemini and Hermes, the fields of Claude Code's `system/init` frame (`permissionMode`,
-  `mcp_servers`) and the effect of an empty `--setting-sources` were taken from documentation and
-  monocode. Where a guess would weaken a check, the check fails closed: a Claude Code version
-  whose init frame lacks those fields, or lists another MCP server (an account connector, say),
-  fails every launch.
+- Verified on 2026-11-16 against Claude Code 2.1.325, Codex 0.169.0 and OpenCode 2.3.0, in a
+  throwaway repository through the crate's opt-in `live_probe` example and raw captures; the
+  crate README lists what each showed, and the redacted frames are test fixtures. A Claude Code
+  launch on the test machine, which has user plugins and claude.ai connectors, passed the init
+  check. Not run live: Cursor, Gemini CLI, Grok and Hermes (their flags and mode names are from
+  documentation and monocode), OpenCode's plan mode beyond `session/set_mode` being accepted, the
+  legacy `applyPatchApproval` (its `fileChanges` comes from Codex's generated schema), and Claude
+  Code's managed settings and user `CLAUDE.md`. A Claude Code version whose init frame lacks the
+  mode or the servers still fails every launch.
 - **User-level configuration still applies** to every harness but Claude Code: the child inherits
   `HOME` and `XDG_*`, so `~/.codex/config.toml`, `~/.gemini/settings.json`,
-  `~/.cursor/cli-config.json`, OpenCode's global `permission` and Hermes's settings can approve
-  tools, add MCP servers or run hooks behind the policy. A launcher-owned config home per harness
-  would close this; it is not done because none of those homes was verified to keep sign-in
-  working. Claude Code still reads managed (policy) settings, `CLAUDE.md` memory files and
-  `~/.claude.json`.
-- **Default modes that do not ask.** ACP agents run in modes nobody here verified, under an
-  explicit opt-in; OpenCode's default is refused. Codex `ReadOnly` uses approval policy `never`
-  with a read-only sandbox: nothing is asked, and whatever the sandbox blocks fails.
+  `~/.cursor/cli-config.json` and Hermes's settings can approve tools, add MCP servers or run
+  hooks behind the policy; Codex 0.169 started the user's own MCP servers and plugins next to the
+  injected one. OpenCode's inline `permission: ask` overrides its config files' permissions, but
+  its user MCP servers and plugins still load. A launcher-owned config home per harness would
+  close this; it is not done because none of those homes was verified to keep sign-in working.
+  Claude Code may still read managed (policy) settings and `~/.claude.json`.
+- **Default modes that do not ask.** ACP agents other than OpenCode run in modes nobody here
+  verified, under an explicit opt-in. Codex `ReadOnly` uses approval policy `never` with a
+  read-only sandbox: nothing is asked, whatever the sandbox blocks fails, and an MCP tool call
+  fails rather than runs (Codex 0.169). Claude Code's default mode ran `Read`, a read-only `Bash`
+  command and `ToolSearch` unasked.
 - **PATH and executables.** The harness's own lookups (`#!/usr/bin/env node`, helper binaries)
   search the child's `PATH`, which keeps the launcher's absolute entries; a directory on it that
   the agent can write is outside what the crate checks.
@@ -177,9 +196,10 @@ call that started it.
   only seen by the next launch, which it then refuses. This repository has a `.codex/`, so Codex
   refuses to launch in it.
 - **Per-session memory.** Bounded, but not small: two queued frames and the one being read (each
-  up to 16 MiB, more once parsed), 16 MiB of queued events, 16 pending requests of up to 1 MiB, 16
-  Codex file changes of up to 1 MiB, 64 tracked tool calls of up to about 192 KiB and 8 MiB of text
-  de-duplication: on the order of 150 MiB in the worst case. The engine has to cap concurrent
+  up to 16 MiB and 256 Ki JSON values, a few tens of MiB once parsed), 16 MiB of queued events,
+  16 pending requests of up to 1 MiB, 16 Codex file changes of up to 1 MiB, 64 tracked tool calls
+  of up to about 192 KiB and 8 MiB of text de-duplication: on the order of 200 MiB in the worst
+  case. The engine has to cap concurrent
   sessions per daemon.
 - **Host preconditions.** The launcher must not ignore SIGCHLD or set `SA_NOCLDWAIT` (a launch is
   refused then), and must not reap children it did not start (`waitpid(-1)` elsewhere in the
@@ -190,7 +210,9 @@ call that started it.
   is contained by a Job Object, which is not implemented.
 - A descendant that leaves the process group (a helper that daemonizes) survives the session. The
   session still ends on time and stops reading its pipes; containing such a process needs a cgroup
-  or a job object.
+  or a job object. `opencode acp` 2.3.0 does this by design: it runs its server (`opencode serve
+  --stdio`), the MCP servers and plugins in a process group of their own, which exit once the
+  server's input closes, not when the session's group is killed.
 - A follow-up starts a new turn; mid-turn steering, which monocode supports, is not offered.
 - The project files of Grok, Hermes and a generic ACP agent are not known, so they are not
   checked.
