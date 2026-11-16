@@ -763,7 +763,7 @@ async fn notes_beyond_one_reply_are_read_in_several() {
     // The longest note a save takes, with its one-byte tag: two of them, with their keys and
     // framing, pass one reply. ~keep
     let long = "x".repeat(NOTE_MAX_BYTES - 1);
-    assert!(2 * NOTE_MAX_BYTES >= GET_MANY_MAX_BYTES);
+    const { assert!(2 * NOTE_MAX_BYTES >= GET_MANY_MAX_BYTES) };
     let keys: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
     for key in &keys {
         save(&state, key, &long).await;
