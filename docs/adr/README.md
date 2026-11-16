@@ -104,9 +104,10 @@ them.
 | [0018](0018-mcp-verb-tools.md) | MCP surface — verb tools with exact schemas | Accepted (amended by ADR-0020, ADR-0022) |
 | [0019](0019-library-crate-layering.md) | Library crate layering | Superseded by ADR-0023 |
 | [0020](0020-verb-tool-contract-amendments.md) | Verb-tool contract — no output schemas, always-load scope, kept domain tools | Accepted (amended by ADR-0021, ADR-0022) |
-| [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, per-actor delivery, three deferred tools | Accepted |
+| [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, per-actor delivery, three deferred tools | Accepted (amended by ADR-0027) |
 | [0022](0022-surface-adr-amendments.md) | Surface ADR amendments — as-built facts and a measurable value gate | Accepted |
-| [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted |
+| [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted (amended by ADR-0027) |
 | [0024](0024-daemon-and-process-model.md) | Daemon and process model — rendezvous scoped by protocol generation | Accepted |
 | [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted |
-| [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Accepted |
+| [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Superseded by ADR-0027 |
+| [0027](0027-single-breaking-release.md) | Release and branch policy — trunk-based, one breaking release | Accepted |

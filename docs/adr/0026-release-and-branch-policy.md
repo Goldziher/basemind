@@ -1,7 +1,8 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-15
 supersedes: "0010"
+superseded-by: "0027"
 ---
 
 # ADR-0026: Release and branch policy — trunk-based, three breaking releases
