@@ -127,6 +127,33 @@ async fn a_window_that_ran_out_during_an_attempt_ends_when_the_attempt_fails() {
     assert!(waited >= SLOW && waited < SLOW + Duration::from_secs(1), "{waited:?}");
 }
 
+/// The back-off before the next attempt can end on the very tick the hold window does. Whichever
+/// timer the relay sees first, the window is over: what waits is answered then, not held for the
+/// whole bound of an attempt started on that tick.
+#[tokio::test(start_paused = true)]
+async fn a_window_ending_with_the_back_off_is_not_stretched_by_the_next_attempt() {
+    // `select!` breaks a tie at random, so the tie is set up often enough to meet both orders. ~keep
+    const TIES: usize = 16;
+    for _ in 0..TIES {
+        let first = Step::After(
+            HOLD_WINDOW - INITIAL_RECONNECT_DELAY,
+            Box::new(Step::Fail(ReconnectFailure::Transient, REFUSED)),
+        );
+        let mut session = Session::start(vec![first, Step::Hang], (ReconnectFailure::Fatal, "unreachable step"));
+        session.send(request_line(1)).await;
+
+        let refused = session.read().await;
+        assert_eq!(refused["id"], serde_json::json!(1));
+        assert_eq!(refused["error"]["code"], BACKEND_UNAVAILABLE_CODE, "{refused}");
+        let waited = session.elapsed();
+        assert!(
+            waited >= HOLD_WINDOW && waited < HOLD_WINDOW + Duration::from_secs(1),
+            "{waited:?}"
+        );
+        assert_eq!(session.attempt_count(), 2);
+    }
+}
+
 /// The upgrade case. Another version's daemon holds the workspace when the session starts and
 /// stays past the hold window. The host sends `initialize` once, as hosts do. It must get a
 /// result, so the server is up and its tools are listed; a tool call says who is in the way; and

@@ -215,6 +215,11 @@ where
         reason: NOT_REACHED_YET.to_owned(),
     };
     loop {
+        // The back-off and the window can fall due on one tick, and the sleep may win that race:
+        // a window already over must not be stretched by the next attempt's own bound. ~keep
+        if !hold.refusing && hold.until.is_some_and(|until| until <= tokio::time::Instant::now()) {
+            stop_holding(output, state, &mut hold).await?;
+        }
         let in_flight = Some(tokio::time::Instant::now());
         let Some(attempt) = watching_host(reconnect(), in_flight, input, output, state, &mut hold).await? else {
             return Ok(Reconnected::HostClosed);
@@ -313,13 +318,20 @@ where
                     Some(at) => tokio::time::sleep_until(at).await,
                     None => std::future::pending().await,
                 }
-            } => {
-                hold.refusing = true;
-                tracing::warn!(reason = %hold.reason, "daemon relay has no backend; answering the host meanwhile");
-                write_lines(output, state.answer_waiting(&hold.reason)).await?;
-            }
+            } => stop_holding(output, state, hold).await?,
         }
     }
+}
+
+/// End the hold: answer everything waiting, and from now on each request as it arrives.
+async fn stop_holding<W: AsyncWrite + Unpin>(
+    output: &mut W,
+    state: &mut SessionState,
+    hold: &mut Hold,
+) -> io::Result<()> {
+    hold.refusing = true;
+    tracing::warn!(reason = %hold.reason, "daemon relay has no backend; answering the host meanwhile");
+    write_lines(output, state.answer_waiting(&hold.reason)).await
 }
 
 pub(super) async fn write_lines<W: AsyncWrite + Unpin>(output: &mut W, lines: Vec<String>) -> io::Result<()> {
