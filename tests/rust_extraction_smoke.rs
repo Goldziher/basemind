@@ -270,6 +270,87 @@ fn an_epoch_refresh_re_extracts_the_calls_of_an_old_blob_with_eager_l2_off() {
     assert!(calls.contains(&"parse"), "stale calls were carried over: {calls:?}");
 }
 
+fn count(calls: &[String], name: &str) -> usize {
+    calls.iter().filter(|c| *c == name).count()
+}
+
+#[test]
+fn calls_in_a_parsed_macro_body_come_from_the_calls_query_once() {
+    let src = "\
+cfg_rt! {
+    #[cfg_attr(docsrs, doc(cfg(all(feature = \"rt\", not(loom)))))]
+    #[derive(Debug)]
+    #[repr(C)]
+    pub enum Kind { CurrentThread(CT), Multi(MT) }
+
+    pub fn spawn<F: FnOnce() -> u32>(f: F, s: &str) -> u32 {
+        if let Ok(v) = s.parse::<u32>() { helper(v); }
+        matches!(f, Some(_));
+        x.method(1)
+    }
+}
+";
+    let calls = callees(src);
+    for want in ["helper", "method", "parse", "cfg_rt", "matches"] {
+        assert_eq!(count(&calls, want), 1, "{want} once in {calls:?}");
+    }
+    for bad in [
+        "cfg_attr",
+        "doc",
+        "cfg",
+        "all",
+        "not",
+        "derive",
+        "repr",
+        "CurrentThread",
+        "Multi",
+        "FnOnce",
+        "spawn",
+        "Ok",
+        "Some",
+    ] {
+        assert_eq!(count(&calls, bad), 0, "{bad} must not be a call: {calls:?}");
+    }
+    let l2 = extract_l2("rust", src.as_bytes()).expect("extract l2");
+    let helper = l2.calls.iter().find(|c| c.callee == "helper").expect("helper");
+    assert_eq!((helper.start_row, helper.start_col), (7, 42));
+    assert_eq!(&src[helper.start_byte as usize..helper.end_byte as usize], "helper(v)");
+}
+
+#[test]
+fn lexical_calls_skip_attributes_fn_bounds_bindings_and_patterns() {
+    let src = "\
+cfg_if::cfg_if! {
+    if #[cfg(all(unix, not(loom)))] {
+        #![allow(dead_code)]
+        fn f() { g() }
+    }
+}
+fn t() {
+    assert!(f(a, (b)));
+    assert!(v[0] == 1);
+    assert!(matches!(r, Some(Ok(_)) if guard(r)));
+    takes!(Box<dyn FnMut(u8)>, Fn(u8), FnOnce());
+    run!(if let Ok(v) = parse_it(s) { use_it(v) });
+}
+";
+    let calls = callees(src);
+    for want in ["g", "f", "guard", "parse_it", "use_it"] {
+        assert_eq!(count(&calls, want), 1, "{want} once in {calls:?}");
+    }
+    for bad in [
+        "cfg", "all", "not", "allow", "a", "b", "v", "Some", "Ok", "FnMut", "Fn", "FnOnce",
+    ] {
+        assert_eq!(count(&calls, bad), 0, "{bad} must not be a call: {calls:?}");
+    }
+}
+
+#[test]
+fn turbofish_is_recorded_once() {
+    let calls = callees("fn t() { let n = s.parse::<u32>(); }\n");
+    assert_eq!(count(&calls, "parse"), 1, "{calls:?}");
+}
+
 #[test]
 fn macro_body_positions_on_the_opening_line_carry_its_column() {
     let one = l1("m! { pub fn one() {} }\n");

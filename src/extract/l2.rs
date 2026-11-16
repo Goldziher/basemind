@@ -119,15 +119,27 @@ fn build_call(q: &Query, m: &QueryMatch, source: &[u8], skip_lexical: &dyn Fn(us
     })
 }
 
-/// Token kinds that, directly before `name(`, make it a definition rather than a call.
-const DEFINITION_KEYWORDS: &[&str] = &["fn", "struct", "enum", "union"];
+/// Token kinds that, directly before `name(`, make it a definition or a binding pattern rather
+/// than a call.
+const DEFINITION_KEYWORDS: &[&str] = &["fn", "struct", "enum", "union", "let"];
+
+/// `Fn(A) -> B` and its siblings are trait bounds, not calls.
+const FN_TRAITS: &[&[u8]] = &[b"Fn", b"FnMut", b"FnOnce"];
+
+/// Macros whose arguments after the first comma are a pattern (`matches!(x, Some(_) if ok(x))`).
+const PATTERN_MACROS: &[&[u8]] = &[b"matches", b"assert_matches", b"debug_assert_matches"];
 
 /// A call inside a macro's unparsed token tree: `name` immediately followed by a `(`-delimited
 /// `args` tree (no `!` between, which would make it a nested macro), not preceded by a definition
-/// keyword, and inside a `macro_invocation` (a `macro_rules!` body is a template, not a call site).
-/// Like every other call it is name-only; the range spans `name(..)`.
+/// keyword or `let`, not inside an attribute (`#[cfg(all(..))]`) or a `matches!` pattern, and inside
+/// a `macro_invocation` (a `macro_rules!` body is a template, not a call site). Like every other
+/// call it is name-only; the range spans `name(..)`.
 fn lexical_macro_call(name: Node, args: Node, source: &[u8]) -> Option<Call> {
     if name.next_sibling() != Some(args) || source.get(args.start_byte()) != Some(&b'(') {
+        return None;
+    }
+    let callee = source.get(name.start_byte()..name.end_byte())?;
+    if FN_TRAITS.contains(&callee) {
         return None;
     }
     if name
@@ -138,6 +150,9 @@ fn lexical_macro_call(name: Node, args: Node, source: &[u8]) -> Option<Call> {
     }
     let mut owner = name.parent();
     while let Some(n) = owner.filter(|n| n.kind() == "token_tree") {
+        if is_attribute_body(n, source) || in_pattern(n, name.start_byte(), source) {
+            return None;
+        }
         owner = n.parent();
     }
     if owner?.kind() != "macro_invocation" {
@@ -151,6 +166,55 @@ fn lexical_macro_call(name: Node, args: Node, source: &[u8]) -> Option<Call> {
         start_row: pos.row as u32,
         start_col: pos.column as u32,
     })
+}
+
+/// `[..]` written as `#[..]` or `#![..]`. The `#` may be lexed together with the punctuation around it
+/// (`#!`), so the previous token is matched by its trailing bytes.
+fn is_attribute_body(tt: Node, source: &[u8]) -> bool {
+    if source.get(tt.start_byte()) != Some(&b'[') {
+        return false;
+    }
+    let Some(prev) = tt.prev_sibling() else {
+        return false;
+    };
+    let text = &source[prev.start_byte()..prev.end_byte()];
+    if text.ends_with(b"#") || text.ends_with(b"#!") {
+        return true;
+    }
+    text == b"!"
+        && prev
+            .prev_sibling()
+            .is_some_and(|p| source[p.start_byte()..p.end_byte()].ends_with(b"#"))
+}
+
+/// Whether byte `at` inside `tt`, the argument list of a [`PATTERN_MACROS`] macro, falls in its
+/// pattern: after the first top-level comma and before an `if` guard.
+fn in_pattern(tt: Node, at: usize, source: &[u8]) -> bool {
+    let text = |n: Node| &source[n.start_byte()..n.end_byte()];
+    let name = match tt.parent().filter(|p| p.kind() == "macro_invocation") {
+        Some(invocation) => invocation.child_by_field_name("macro").map(|m| {
+            let last = m.child_by_field_name("name").unwrap_or(m);
+            text(last)
+        }),
+        None => tt
+            .prev_sibling()
+            .filter(|bang| text(*bang) == b"!")
+            .and_then(|bang| bang.prev_sibling())
+            .filter(|n| n.kind() == "identifier")
+            .map(text),
+    };
+    if !name.is_some_and(|n| PATTERN_MACROS.contains(&n)) {
+        return false;
+    }
+    let mut cursor = tt.walk();
+    let mut after_comma = false;
+    for child in tt.children(&mut cursor).take_while(|c| c.start_byte() < at) {
+        if child.kind() == "if" {
+            return false;
+        }
+        after_comma |= !child.is_named() && text(child).contains(&b',');
+    }
+    after_comma
 }
 
 fn build_doc(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<DocComment> {
