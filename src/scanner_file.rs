@@ -343,14 +343,15 @@ fn process_file(
 
     let mut foreign_lang = false;
     // Set when a schema-current blob of the right language predates `EXTRACT_EPOCH`: it is rewritten
-    // in place (its L2 calls, which the epoch does not touch, are carried over).
+    // in place. The epoch covers L2 calls too, so a blob that held L2 gets it re-extracted rather
+    // than carried over, even when this scan would not extract L2 on its own.
     let mut stale_epoch = false;
-    let mut carried_l2: Option<FileMapL2> = None;
+    let mut stale_had_l2 = false;
     let reused_pair: Option<(FileMapL1, Option<FileMapL2>)> = if sidecars_present {
         match store.read_l1_by_hex(hash_hex_str) {
             Ok(Some(l1)) if l1.language == lang && l1.extract_epoch < extract::EXTRACT_EPOCH => {
                 stale_epoch = true;
-                carried_l2 = store.read_l2_by_hex(hash_hex_str).unwrap_or(None);
+                stale_had_l2 = matches!(store.read_l2_by_hex(hash_hex_str), Ok(Some(_)));
                 None
             }
             Ok(Some(l1)) if l1.language == lang => {
@@ -384,7 +385,7 @@ fn process_file(
             if bytes.len() >= LARGE_FILE_ADMIT_BYTES {
                 crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
             }
-            match extract::extract_l1_l2(lang, &bytes, want_l2) {
+            match extract::extract_l1_l2(lang, &bytes, want_l2 || stale_had_l2) {
                 Ok(pair) => pair,
                 Err(ExtractError::ParseTimeout(_)) => {
                     return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
@@ -401,7 +402,7 @@ fn process_file(
         }
     };
 
-    let l2: Option<FileMapL2> = l2_opt.or(carried_l2);
+    let l2: Option<FileMapL2> = l2_opt;
     if !reused {
         let written = if foreign_lang || stale_epoch {
             store.overwrite_filemap_hex(hash_hex_str, &l1, l2.as_ref())

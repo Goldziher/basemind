@@ -223,3 +223,49 @@ extern \"C\" { fn c_entry(x: i32) -> i32; }
         assert!(names.contains(&want), "{want} missing from {names:?}");
     }
 }
+
+#[test]
+fn an_epoch_refresh_re_extracts_the_calls_of_an_old_blob_with_eager_l2_off() {
+    use basemind::scanner::{EmbedMode, ScanSource, scan};
+    use basemind::store::{FileEntry, Store, VIEW_WORKING};
+
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let src = "// epoch-l2-rust\nfn t(s: &str) -> u32 { s.parse::<u32>().unwrap() }\n";
+    std::fs::write(root.join("lib.rs"), src).unwrap();
+    let mut cfg = basemind::config::ConfigV1::with_defaults();
+    cfg.scan.eager_l2 = false;
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    let entry = store.lookup("lib.rs").expect("lib.rs indexed").clone();
+
+    // The blob an extractor from before the turbofish fix left: L1 and L2, the L2 without `parse`.
+    let (mut old_l1, old_l2) = basemind::extract::extract_l1_l2("rust", src.as_bytes(), true).expect("extract");
+    let mut old_l2 = old_l2.expect("l2");
+    old_l2.calls.retain(|c| c.callee != "parse");
+    old_l1.extract_epoch = 1;
+    store
+        .overwrite_filemap_hex(&entry.hash_hex, &old_l1, Some(&old_l2))
+        .unwrap();
+    store.upsert(
+        "lib.rs",
+        FileEntry {
+            extract_epoch: 1,
+            ..entry.clone()
+        },
+    );
+    store.flush().unwrap();
+
+    let report = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    assert_eq!(
+        report.stats.refreshed_extraction, 1,
+        "premise: the stale blob is refreshed"
+    );
+    let l2 = store
+        .read_l2_by_hex(&entry.hash_hex)
+        .unwrap()
+        .expect("the refreshed blob keeps a calls tier");
+    let calls: Vec<&str> = l2.calls.iter().map(|c| c.callee.as_str()).collect();
+    assert!(calls.contains(&"parse"), "stale calls were carried over: {calls:?}");
+}
