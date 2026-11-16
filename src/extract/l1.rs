@@ -409,13 +409,6 @@ fn is_already_collapsed(slice: &str) -> bool {
     true
 }
 
-/// Build an `Implementation` from a query match that contains:
-/// - `@impl.trait_name` — the parent / trait / interface identifier node.
-/// - `@impl.implementor` (optional) — the implementing type identifier node.
-///   When absent (TSLP-adapted patterns), the implementor is inferred by walking
-///   the `@impl.range` node's named ancestors to find the nearest identifier.
-/// - `@impl.range` (optional) — the containing declaration node; used for position
-///   when `@impl.trait_name` itself carries no useful start position.
 /// `impl !Send for X {}` declares that `X` does NOT implement the trait.
 fn is_negative_impl(m: &QueryMatch) -> bool {
     m.captures().iter().any(|cap| {
@@ -427,6 +420,13 @@ fn is_negative_impl(m: &QueryMatch) -> bool {
     })
 }
 
+/// Build an `Implementation` from a query match that contains:
+/// - `@impl.trait_name` — the parent / trait / interface identifier node.
+/// - `@impl.implementor` (optional) — the implementing type identifier node.
+///   When absent (TSLP-adapted patterns), the implementor is inferred by walking
+///   the `@impl.range` node's named ancestors to find the nearest identifier.
+/// - `@impl.range` (optional) — the containing declaration node; used for position
+///   when `@impl.trait_name` itself carries no useful start position.
 fn build_implementation(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Implementation> {
     let mut trait_name: Option<String> = None;
     let mut impl_type: Option<String> = None;

@@ -228,7 +228,7 @@ fn item_macro_bodies<'t>(root: Node<'t>, source: &[u8]) -> Vec<Node<'t>> {
                 "macro_invocation" => {
                     // The body is the invocation's last child; no field names it.
                     if let Some(tt) = child
-                        .child(child.child_count().saturating_sub(1) as u32)
+                        .child(child.child_count().saturating_sub(1))
                         .filter(|n| n.kind() == "token_tree" && opens_like_items(*n, source))
                     {
                         found.push(tt);
