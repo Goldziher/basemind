@@ -29,7 +29,8 @@ pub(crate) struct OutlineCache {
 }
 
 struct Held {
-    lru: LruCache<Key, Arc<OutlineEntry>>,
+    /// Each entry with its [`cost`], computed once before the lock is taken.
+    lru: LruCache<Key, (Arc<OutlineEntry>, u64)>,
     entries_max: usize,
     bytes_max: u64,
     bytes: u64,
@@ -55,24 +56,24 @@ impl OutlineCache {
 
     /// The entry stored for `key`, marked most recently used.
     pub(crate) fn get(&self, key: &Key) -> Option<Arc<OutlineEntry>> {
-        self.inner.lock().ok()?.lru.get(key).cloned()
+        self.inner.lock().ok()?.lru.get(key).map(|(entry, _)| Arc::clone(entry))
     }
 
     /// Store `entry` under `key`, then evict least recently used entries until both bounds hold.
     pub(crate) fn put(&self, key: Key, entry: Arc<OutlineEntry>) {
+        let added = cost(&entry);
         let Ok(mut held) = self.inner.lock() else {
             return;
         };
-        let added = cost(&entry);
-        if let Some(replaced) = held.lru.put(key, entry) {
-            held.bytes = held.bytes.saturating_sub(cost(&replaced));
+        if let Some((_, replaced)) = held.lru.put(key, (entry, added)) {
+            held.bytes = held.bytes.saturating_sub(replaced);
         }
         held.bytes = held.bytes.saturating_add(added);
         while held.lru.len() > held.entries_max || (held.bytes > held.bytes_max && held.lru.len() > 1) {
-            let Some((_, evicted)) = held.lru.pop_lru() else {
+            let Some((_, (_, evicted))) = held.lru.pop_lru() else {
                 break;
             };
-            held.bytes = held.bytes.saturating_sub(cost(&evicted));
+            held.bytes = held.bytes.saturating_sub(evicted);
         }
     }
 
@@ -138,6 +139,10 @@ mod tests {
         }
         assert_eq!(cache.held().0, 4);
         cache.put(key(5), entry(1));
-        assert_eq!(cache.held().0, 4, "storing a key again replaces it");
+        assert_eq!(
+            cache.held(),
+            (4, 4 * cost(&entry(1))),
+            "storing a key again replaces it"
+        );
     }
 }
