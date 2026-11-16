@@ -122,7 +122,10 @@ pub(crate) fn process_started_unix(pid: u32) -> Option<i64> {
         if per_second <= 0 {
             return None;
         }
-        Some(i64::try_from(boot).ok()? + ticks / i64::from(per_second))
+        // `c_long` is `i64` on 64-bit Linux but `i32` on 32-bit targets, where this widens.
+        #[allow(clippy::useless_conversion)]
+        let per_second = i64::from(per_second);
+        Some(i64::try_from(boot).ok()? + ticks / per_second)
     }
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
