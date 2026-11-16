@@ -165,6 +165,15 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --tests --features "${{ matrix.features }}" -- -D warnings
 
+      # ~keep Disk use around the tests: a run of the macOS `full` leg failed its last store-opening
+      # ~keep test binaries with EIO from Fjall, and only these numbers can say whether the disk
+      # ~keep (build output plus every test binary's temp data home) was full by then.
+      - name: Disk usage before the tests
+        shell: bash
+        run: |
+          df -h . "$RUNNER_TEMP" "${TMPDIR:-/tmp}" || true
+          du -sh target "${TMPDIR:-/tmp}" 2>/dev/null || true
+
       # ~keep `--no-fail-fast`: plain `cargo test` stops at the first failing test BINARY, so a leg
       # ~keep reports one target's failures and hides every straggler behind it. A cross-cutting
       # ~keep change leaves failures in several binaries at once, and discovering them one CI
@@ -179,6 +188,13 @@ jobs:
       - name: cargo test
         if: runner.os != 'macOS' || matrix.features != 'full'
         run: cargo test --workspace --features "${{ matrix.features }}" --quiet --no-fail-fast
+
+      - name: Disk usage after the tests
+        if: always()
+        shell: bash
+        run: |
+          df -h . "$RUNNER_TEMP" "${TMPDIR:-/tmp}" || true
+          du -sh target "${TMPDIR:-/tmp}" 2>/dev/null || true
 
       - name: cargo build --release
         if: runner.os != 'macOS' || matrix.features != 'full'
