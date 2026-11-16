@@ -34,7 +34,7 @@ until its own redesign.
 | `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | per-line authorship of a file, a span, or one symbol (located at `rev`) |
 | `git_diff` | `path?`, `from?`, `to?`, `structural?` | no arguments: working-tree status (200 paths per list; a `path` ending in `/` narrows it to that directory); `path`: that file's diff (`from` defaults to HEAD, `to` to the working tree); `structural`: symbols added and removed since `from` plus the `common` count, no `to`; at most 200 hunks or 128 KiB, then `truncated`; `binary` for a binary file |
 | `memory_save` | `key`, `value`, `tags?`, `visibility?` | write a durable note |
-| `memory_search` | `query?` or `key?` or `prefix?`, `tag?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, by key, or by key prefix |
+| `memory_search` | `query?` or `key?` or `prefix?`, `tag?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, by key, or by key prefix; a listing pages by `next_cursor` and sets `truncated` (`scan_cap`) when its `total` stopped counting |
 | `index_status` | none | index health and repository identity (files per language, scan state, `cache_dir` for this workspace, `grammar_dir`, branch, HEAD) |
 | `index_rescan` | `paths?` | re-index the given paths, or with none the whole workspace (unchanged files are skipped) |
 

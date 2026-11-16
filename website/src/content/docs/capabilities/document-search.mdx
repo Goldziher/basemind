@@ -93,7 +93,9 @@ Store a note. Saving an existing `key` replaces it. CLI: `basemind memory put`.
 ### `memory_search`
 
 Recall notes. `query` searches by meaning, `key` reads one note, `prefix` lists by key prefix, and
-no arguments lists everything. CLI: `basemind memory search` / `get` / `list`.
+no arguments lists everything. A listing pages by `next_cursor`; `truncated` with
+`truncated_reason: "scan_cap"` says its `total` stopped counting and is a lower bound. CLI:
+`basemind memory search` / `get` / `list`.
 
 ```json
 {

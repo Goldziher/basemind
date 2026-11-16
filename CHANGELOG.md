@@ -170,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     names because they say something else: `skipped_files` (files that could not be searched),
     `limit_clamped` (`find_files` lowered an over-large `limit`), `body_truncated` (one commit's
     message in a `git_log` search hit) and `too_large` (`git_diff` did not diff a file over 4 MiB).
-    `memory_search` still sets a bare `truncated` on a listing.
+    A `memory_search` listing no longer sets `truncated` on a `limit` cut; it sets `truncated` and
+    `truncated_reason: "scan_cap"` when its `total` stopped counting at the scan cap.
   - `git_diff {structural}`: `common` is a count, not a list. Two definitions sharing a name and kind are
     counted once.
   - `git_diff {}`: each status list is cut at 200 paths, in path order; `omitted` counts the rest and the
