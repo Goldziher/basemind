@@ -437,7 +437,15 @@ pub(crate) fn start(
             shared.events.drain();
             // From here on only this thread signals the group: the watchdog saw `finished`.
             if matches!(status, FinishStatus::Completed | FinishStatus::Stopped) {
-                process::retire(&mut child);
+                // A stopped harness gets what is left of its stop grace, not the full waits.
+                let budget = match status {
+                    FinishStatus::Stopped => shared
+                        .state()
+                        .stop_deadline
+                        .map_or(Duration::ZERO, |at| at.saturating_duration_since(Instant::now())),
+                    _ => process::EXIT_GRACE + process::TERM_GRACE,
+                };
+                process::retire(&mut child, budget);
             } else {
                 process::terminate(&mut child);
             }

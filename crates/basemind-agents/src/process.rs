@@ -3,8 +3,9 @@
 //! session ends every helper it spawned and leaves no orphan behind.
 
 use std::process::{Child, Command};
+use std::time::Duration;
 #[cfg(unix)]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -12,10 +13,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 /// How long a harness whose stdin was closed may take to exit by itself.
-#[cfg(unix)]
 pub(crate) const EXIT_GRACE: Duration = Duration::from_millis(1500);
 /// How long the group leader may take to shut down after SIGTERM.
-#[cfg(unix)]
 pub(crate) const TERM_GRACE: Duration = Duration::from_secs(2);
 
 /// The error a spawn fails with when the working directory changed after it was checked.
@@ -112,16 +111,22 @@ pub(crate) fn terminate(child: &mut Child) {
 /// a helper process. Killing the group in that window loses the token and signs the account
 /// out. So: wait for an exit on stdin EOF, then SIGTERM the leader only, and SIGKILL the group
 /// last. The group is always killed before the leader is reaped, while its id is still ours.
-pub(crate) fn retire(child: &mut Child) {
+///
+/// The two waits ([`EXIT_GRACE`], then [`TERM_GRACE`]) together take at most `budget`.
+pub(crate) fn retire(child: &mut Child, budget: Duration) {
     #[cfg(unix)]
     {
         let pid = child.id();
-        if !exited(pid, EXIT_GRACE) {
+        let started = Instant::now();
+        if !exited(pid, EXIT_GRACE.min(budget)) {
             // SAFETY: kill takes plain integers; the leader is unreaped, so the id is ours.
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-            exited(pid, TERM_GRACE);
+            let left = budget.saturating_sub(started.elapsed());
+            exited(pid, TERM_GRACE.min(left));
         }
     }
+    #[cfg(not(unix))]
+    let _ = budget;
     terminate(child);
 }
 
@@ -192,7 +197,7 @@ mod tests {
         ));
         drop(child.stdin.take());
         let started = Instant::now();
-        retire(&mut child);
+        retire(&mut child, EXIT_GRACE + TERM_GRACE);
         assert!(started.elapsed() < EXIT_GRACE);
         assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "saved");
     }
@@ -203,7 +208,7 @@ mod tests {
         let pid = child.id();
         drop(child.stdin.take());
         let started = Instant::now();
-        retire(&mut child);
+        retire(&mut child, EXIT_GRACE + TERM_GRACE);
         assert!(started.elapsed() >= EXIT_GRACE + TERM_GRACE - Duration::from_millis(100));
         wait_for_group_exit(pid);
         assert!(!group_alive(pid));

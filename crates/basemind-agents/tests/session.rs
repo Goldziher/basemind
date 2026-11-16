@@ -560,3 +560,32 @@ while :; do sleep 1; done
     assert!(returned, "dropping the session blocked");
     assert_gone(&leader);
 }
+
+#[test]
+fn a_stopped_harness_gets_only_the_stop_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    // Ignores the interrupt, the closed stdin and SIGTERM alike.
+    let body = format!(
+        "trap '' TERM\n{HANDSHAKE}touch '{}/ready'\nwhile :; do sleep 0.05; done\n",
+        dir.path().display()
+    );
+    let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
+    spec.limits.stop_grace = Duration::from_millis(200);
+    let session = launch(&spec);
+    let ready = dir.path().join("ready");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ready.exists() {
+        assert!(Instant::now() < deadline, "the stand-in never got past the handshake");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let leader = session.pid().to_string();
+    let stopped = Instant::now();
+    session.stop();
+    assert_eq!(session.wait(), FinishStatus::Stopped);
+    let took = stopped.elapsed();
+    assert!(
+        took < Duration::from_millis(1500),
+        "the stop took {took:?} with a 200 ms grace"
+    );
+    assert_gone(&leader);
+}
