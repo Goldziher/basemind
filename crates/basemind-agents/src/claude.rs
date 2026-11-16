@@ -47,12 +47,7 @@ impl Adapter for ClaudeCodeAdapter {
 impl ClaudeCodeAdapter {
     pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
         let prepared = spec.prepare()?;
-        let mode = match spec.permission_mode {
-            PermissionMode::Supervised => "default",
-            PermissionMode::ReadOnly => "plan",
-            PermissionMode::AcceptEdits => "acceptEdits",
-            PermissionMode::Bypass => "bypassPermissions",
-        };
+        let mode = permission_mode(spec.permission_mode);
         let mut args: Vec<String> = [
             "--verbose",
             "--input-format",
@@ -101,9 +96,50 @@ impl ClaudeCodeAdapter {
 
     fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
         let plan = self.plan_spec(spec)?;
-        let (driver, control) = LineDriver::boxed(ClaudeProtocol::new(spec.brief.clone()));
+        let servers = spec.mcp_server.iter().map(|server| server.name.clone()).collect();
+        let protocol = ClaudeProtocol::new(spec.brief.clone(), permission_mode(spec.permission_mode), servers);
+        let (driver, control) = LineDriver::boxed(protocol);
         session::start(&plan, spec, driver, control)
     }
+}
+
+/// Claude Code's name for `mode`, as `--permission-mode` takes it and `system/init` reports it.
+fn permission_mode(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Supervised => "default",
+        PermissionMode::ReadOnly => "plan",
+        PermissionMode::AcceptEdits => "acceptEdits",
+        PermissionMode::Bypass => "bypassPermissions",
+    }
+}
+
+/// Checks Claude Code's `system/init` frame: it has to report the permission mode the adapter
+/// asked for and exactly the MCP servers it injected. An empty `--setting-sources` and
+/// `--strict-mcp-config` were not run against a live Claude Code; this is where a version
+/// that ignores them, or a frame that no longer carries these fields, fails the session
+/// instead of running with permissions or servers nobody chose.
+fn check_init(frame: &Value, mode: &str, servers: &[String]) -> Result<(), LaunchError> {
+    let reported_mode = frame["permissionMode"].as_str();
+    if reported_mode != Some(mode) {
+        return Err(LaunchError::Protocol(format!(
+            "Claude Code reported permission mode {}, not the requested {mode:?}",
+            frame["permissionMode"]
+        )));
+    }
+    let reported: Option<Vec<&str>> = frame["mcp_servers"]
+        .as_array()
+        .and_then(|list| list.iter().map(|server| server["name"].as_str()).collect());
+    let mut reported = reported
+        .ok_or_else(|| LaunchError::Protocol(format!("Claude Code reported MCP servers {}", frame["mcp_servers"])))?;
+    reported.sort_unstable();
+    let mut expected: Vec<&str> = servers.iter().map(String::as_str).collect();
+    expected.sort_unstable();
+    if reported != expected {
+        return Err(LaunchError::Protocol(format!(
+            "Claude Code reported MCP servers {reported:?}, not {expected:?}"
+        )));
+    }
+    Ok(())
 }
 
 /// On resume, Claude Code replays a background-task notification from the earlier session and
@@ -141,6 +177,12 @@ fn approval_request(id: String, request: &Value) -> ApprovalRequest {
 pub(crate) struct ClaudeProtocol {
     /// The brief, until it has been sent.
     brief: Option<String>,
+    /// The permission mode `system/init` has to report.
+    mode: &'static str,
+    /// The MCP servers `system/init` has to report, and no others.
+    servers: Vec<String>,
+    /// Whether a `system/init` frame was checked.
+    verified: bool,
     turn_active: bool,
     session_id: Option<String>,
     text: TextStream,
@@ -159,9 +201,12 @@ pub(crate) struct ClaudeProtocol {
 }
 
 impl ClaudeProtocol {
-    pub fn new(brief: String) -> Self {
+    pub fn new(brief: String, mode: &'static str, servers: Vec<String>) -> Self {
         Self {
             brief: Some(brief),
+            mode,
+            servers,
+            verified: false,
             turn_active: false,
             session_id: None,
             text: TextStream::default(),
@@ -369,6 +414,20 @@ impl Protocol for ClaudeProtocol {
                 sink.resolved(id, false, ApprovalSource::Withdrawn);
             }
             return Ok(Step::Continue);
+        }
+        if kind == "system" && frame["subtype"] == "init" {
+            check_init(&frame, self.mode, &self.servers)?;
+            self.verified = true;
+        }
+        if !self.verified
+            && matches!(
+                kind,
+                "assistant" | "stream_event" | "user" | "result" | "control_request"
+            )
+        {
+            return Err(LaunchError::Protocol(format!(
+                "Claude Code sent a {kind} frame before reporting its permission mode"
+            )));
         }
         let initialized = kind == "system" && matches!(frame["subtype"].as_str(), Some("init" | "initialized"));
         if kind == "control_response" || initialized {

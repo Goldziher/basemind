@@ -6,16 +6,26 @@ use crate::spec::{BypassOptIn, McpServerSpec};
 use crate::test_support::{EXECUTABLE, MCP_COMMAND, always, spec, value_of, written};
 
 fn protocol() -> ClaudeProtocol {
-    ClaudeProtocol::new("Summarize the README.".to_owned())
+    ClaudeProtocol::new("Summarize the README.".to_owned(), "default", Vec::new())
 }
 
-/// A protocol past its handshake, with the brief sent.
+/// The `system/init` frame of a supervised session without MCP servers.
+fn init(session: Option<&str>) -> Value {
+    let mut frame = json!({"type": "system", "subtype": "init", "permissionMode": "default", "mcp_servers": []});
+    if let Some(session) = session {
+        frame["session_id"] = session.into();
+    }
+    frame
+}
+
+/// A protocol past its handshake and its checked init frame, with the brief sent.
 fn started(sink: &EventSink) -> ClaudeProtocol {
     let mut protocol = protocol();
     let mut out = Vec::new();
     protocol.start(&mut out).unwrap();
     let ack = json!({"type": "control_response", "response": {"request_id": INIT_REQUEST}});
     protocol.frame(ack, &mut out, sink).unwrap();
+    protocol.frame(init(None), &mut out, sink).unwrap();
     protocol
 }
 
@@ -41,7 +51,7 @@ fn the_brief_is_sent_once_after_the_handshake() {
 
     let ack = json!({"type": "control_response", "response": {"request_id": INIT_REQUEST}});
     protocol.frame(ack, &mut out, &sink).unwrap();
-    let init = json!({"type": "system", "subtype": "init", "session_id": "s-1"});
+    let init = init(Some("s-1"));
     protocol.frame(init, &mut out, &sink).unwrap();
 
     let frames = written(&out);
@@ -70,7 +80,7 @@ fn deltas_and_the_completed_snapshot_yield_each_text_once() {
     let mut protocol = started(&sink);
     let mut out = Vec::new();
     let transcript = [
-        json!({"type": "system", "subtype": "init", "session_id": "s-1"}),
+        init(Some("s-1")),
         json!({"type": "stream_event", "session_id": "s-1", "event": {"type": "message_start"}}),
         delta("The README "),
         delta("describes basemind."),
@@ -639,4 +649,65 @@ fn leaving_plan_mode_and_fetching_are_not_plain_tool_calls() {
             ApprovalKind::McpTool
         ]
     );
+}
+
+#[test]
+fn the_init_frame_must_report_the_requested_mode_and_only_the_injected_servers() {
+    let run = |mode: &'static str, servers: &[&str], frame: Value| {
+        let (sink, _events) = EventSink::for_test(None, 1);
+        let servers = servers.iter().map(|name| (*name).to_owned()).collect();
+        let mut protocol = ClaudeProtocol::new("brief".to_owned(), mode, servers);
+        protocol.frame(frame, &mut Vec::new(), &sink)
+    };
+    let frame = |mode: &str, servers: Value| json!({"type": "system", "subtype": "init", "permissionMode": mode, "mcp_servers": servers});
+    let basemind = json!([{"name": "basemind", "status": "connected"}]);
+    assert!(run("default", &["basemind"], frame("default", basemind.clone())).is_ok());
+    for (mode, servers, reported) in [
+        (
+            "default",
+            &["basemind"][..],
+            frame("bypassPermissions", basemind.clone()),
+        ),
+        ("plan", &["basemind"], frame("default", basemind.clone())),
+        ("default", &[], frame("default", basemind.clone())),
+        (
+            "default",
+            &["basemind"],
+            frame(
+                "default",
+                json!([{"name": "basemind"}, {"name": "from-a-project-file"}]),
+            ),
+        ),
+        ("default", &["basemind"], frame("default", json!([]))),
+        ("default", &[], json!({"type": "system", "subtype": "init"})),
+        (
+            "default",
+            &[],
+            json!({"type": "system", "subtype": "init", "permissionMode": "default"}),
+        ),
+    ] {
+        let result = run(mode, servers, reported.clone());
+        assert!(
+            matches!(result, Err(LaunchError::Protocol(_))),
+            "{reported} passed for {mode} / {servers:?}"
+        );
+    }
+}
+
+#[test]
+fn nothing_of_a_turn_is_acted_on_before_the_init_frame() {
+    for frame in [
+        permission_request("req-1"),
+        json!({"type": "result", "result": "Done."}),
+        json!({"type": "stream_event", "event": {"type": "message_start"}}),
+    ] {
+        let (sink, _events) = EventSink::for_test(always(ApprovalVerdict::Allow), 1);
+        let mut protocol = protocol();
+        let mut out = Vec::new();
+        protocol.start(&mut out).unwrap();
+        out.clear();
+        let error = protocol.frame(frame.clone(), &mut out, &sink).unwrap_err();
+        assert!(matches!(error, LaunchError::Protocol(_)), "{frame}: {error}");
+        assert!(out.is_empty(), "{frame} was answered");
+    }
 }

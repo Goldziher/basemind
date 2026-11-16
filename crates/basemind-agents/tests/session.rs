@@ -12,9 +12,11 @@ use basemind_agents::{
     LaunchConfig, LaunchError, LaunchRequest, PermissionMode, Registry, Session, UnverifiedModeOptIn,
 };
 
+/// Claude Code's handshake, up to the brief and the init frame of a supervised session.
 const HANDSHAKE: &str = r#"read -r init
 printf '%s\n' '{"type":"control_response","response":{"request_id":"basemind-init"}}'
 read -r prompt
+printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"default","mcp_servers":[]}'
 "#;
 
 /// Writes an executable `/bin/sh` script that stands in for a harness. It ignores its
@@ -106,7 +108,7 @@ printf '%s\n' '{{"type":"control_response","response":{{"request_id":"basemind-i
 read -r prompt
 printf '%s\n' "$prompt" > "{dir}/prompt"
 echo 'Loading plugins...'
-printf '%s\n' '{{"type":"system","subtype":"init","session_id":"s-1"}}'
+printf '%s\n' '{{"type":"system","subtype":"init","session_id":"s-1","permissionMode":"default","mcp_servers":[]}}'
 printf '%s\n' '{{"type":"stream_event","event":{{"type":"message_start"}}}}'
 printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"It is a code map."}}}}}}'
 printf '%s\n' '{{"type":"result","result":"It is a code map."}}'
