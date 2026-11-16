@@ -144,7 +144,8 @@ pub(crate) fn seed_working_view(root: &Path, basemind_dir: &Path, view_dir: &Pat
         .write(true)
         .open(source_ws.join(LOCK_FILE))
         .ok()
-        .and_then(|f| fs2::FileExt::try_lock_exclusive(&f).ok().map(|()| f));
+        .and_then(|f| fs2::FileExt::try_lock_exclusive(&f).ok().map(|()| f))
+        .map(crate::store_lock::LockGuard::held);
     let Some(sibling_lock) = sibling_lock else {
         tracing::info!(source = %source_ws.display(), "view seed skipped: source is being written; cold scan");
         return None;
@@ -423,16 +424,7 @@ mod tests {
             .write(true)
             .open(workspace_cache_dir(&main).join(LOCK_FILE))
             .expect("open main lock");
-        // ~keep The fixture's own store releases this lock when its file handle closes, which a
-        // loaded machine can deliver a moment after `drop` returns.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "hold main lock as a daemon would: {error}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        fs2::FileExt::try_lock_exclusive(&lock).expect("hold main lock as a daemon would");
 
         let store = Store::open(&wt, VIEW_WORKING).expect("open wt");
         assert!(

@@ -61,35 +61,114 @@ pub fn probe_writer_lock(basemind_dir: &Path) -> WriterProbe {
     }
 }
 
-pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
+/// An advisory lock that is held, and released by an explicit unlock when dropped.
+///
+/// Closing the file is not enough. A lock belongs to the open file description, and a child that
+/// another thread forked holds a copy of the descriptor until it execs: for that moment the lock
+/// outlives the close, and the next `try_lock` on the file finds it held. An unlock releases it
+/// whatever copies exist.
+#[derive(Debug)]
+pub(crate) struct LockGuard(File);
+
+impl LockGuard {
+    /// Take over `file`, on which the caller has just won a lock.
+    pub(crate) fn held(file: File) -> Self {
+        Self(file)
+    }
+}
+
+impl std::ops::Deref for LockGuard {
+    type Target = File;
+
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<LockGuard, StoreError> {
     acquire_lock_as(basemind_dir, LockHolder::Maintenance)
 }
 
 /// Acquire the store lock, recording `holder` in the `.lock.meta` sidecar on success and
 /// reading the *existing* holder's sidecar on contention so the error names the live holder.
-pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<File, StoreError> {
+pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
     let path = basemind_dir.join(LOCK_FILE);
     const LOCK_ATTEMPTS: u32 = 25;
     const LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
-    for attempt in 0..LOCK_ATTEMPTS {
+    // A lock won on a file no longer at the path is not contention: the remover that held it is
+    // gone, and the next open finds or creates the file that is there. Bounded apart from the
+    // contended attempts, so winning a stale file on the last of those does not report a free
+    // lock as held.
+    const STALE_RETRIES: u32 = 100;
+    let (mut contended, mut stale) = (0, 0);
+    while contended < LOCK_ATTEMPTS && stale < STALE_RETRIES {
         // Opened again on every attempt, and checked after the lock is won: a remover holds this
         // lock while it takes the whole directory away, and a lock won on the file it unlinked
         // would guard nothing against the next opener, who creates a new one.
         let file = open_lock_file(basemind_dir, &path)?;
+        #[cfg(test)]
+        hook::run(&path);
         match file.try_lock_exclusive() {
             Ok(()) if is_file_at(&file, &path) => {
                 write_lock_meta(basemind_dir, holder);
-                return Ok(file);
+                return Ok(LockGuard::held(file));
             }
-            Ok(()) => {}
-            Err(_) if attempt + 1 < LOCK_ATTEMPTS => std::thread::sleep(LOCK_BACKOFF),
-            Err(_) => break,
+            Ok(()) => stale += 1,
+            Err(_) => {
+                contended += 1;
+                if contended < LOCK_ATTEMPTS {
+                    std::thread::sleep(LOCK_BACKOFF);
+                }
+            }
         }
     }
     Err(StoreError::Locked {
         holder: read_lock_meta(basemind_dir),
         path,
     })
+}
+
+/// A seam between opening the lock file and trying to lock it, where a test puts the remover that
+/// replaces the file at the path.
+#[cfg(test)]
+pub(crate) mod hook {
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    type Hook = Box<dyn FnMut(&Path)>;
+
+    thread_local! {
+        static AFTER_OPEN: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Run `hook` after every open of a lock file on this thread, until the guard drops.
+    pub(crate) fn after_open(hook: impl FnMut(&Path) + 'static) -> Guard {
+        AFTER_OPEN.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        Guard
+    }
+
+    pub(crate) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            AFTER_OPEN.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    pub(super) fn run(path: &Path) {
+        // Taken out while it runs, so a hook that itself opens a lock file does not re-enter.
+        let hook = AFTER_OPEN.with(|slot| slot.borrow_mut().take());
+        if let Some(mut hook) = hook {
+            hook(path);
+            AFTER_OPEN.with(|slot| *slot.borrow_mut() = Some(hook));
+        }
+    }
 }
 
 /// Open (creating) the lock file, and its directory when a remover just took that away.
@@ -160,11 +239,45 @@ pub(crate) fn remove_dir_under_lock(workspace_dir: &Path) -> std::io::Result<()>
     }
 }
 
-/// Delete what a remover that died mid-delete left parked beside `workspaces_dir`.
-pub(crate) fn purge_reaped(workspaces_dir: &Path) {
-    if let Some(cache) = workspaces_dir.parent() {
-        let _ = std::fs::remove_dir_all(cache.join(REAPED_DIR));
+/// The pid in a parked directory's name (`<workspace>-<pid>-<stamp>`).
+fn parked_by(name: &str) -> Option<u32> {
+    let mut parts = name.rsplitn(3, '-');
+    let _stamp = parts.next()?;
+    parts.next()?.parse().ok()
+}
+
+/// Whether the process that parked a directory may still be deleting it.
+fn remover_is_live(pid: u32) -> bool {
+    #[cfg(any(unix, windows))]
+    {
+        crate::daemon_lock::pid_is_live(pid)
     }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Delete what a remover that died mid-delete left parked beside `workspaces_dir`. A directory
+/// parked by a process that is still alive is that process's to finish: deleting under it would
+/// fail its own delete on a file that is suddenly gone.
+pub(crate) fn purge_reaped(workspaces_dir: &Path) {
+    let Some(reaped) = workspaces_dir.parent().map(|cache| cache.join(REAPED_DIR)) else {
+        return;
+    };
+    for entry in std::fs::read_dir(&reaped).into_iter().flatten().flatten() {
+        let live = entry
+            .file_name()
+            .to_str()
+            .and_then(parked_by)
+            .is_some_and(remover_is_live);
+        if !live {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    // Only an empty directory goes.
+    let _ = std::fs::remove_dir(&reaped);
 }
 
 /// Write the `.lock.meta` sidecar naming the current holder. Best-effort and atomic
@@ -284,5 +397,127 @@ mod tests {
         assert!(!is_file_at(&file, &path), "unlinked");
         let _replacement = open_lock_file(tmp.path(), &path).expect("recreate");
         assert!(!is_file_at(&file, &path), "another file is at the path");
+    }
+
+    /// Replace the file at `path` with another one: both exist at once, so the inodes differ.
+    #[cfg(unix)]
+    fn swap_lock_file(path: &Path) {
+        let replacement = path.with_extension("swap");
+        std::fs::write(&replacement, b"").expect("replacement");
+        std::fs::rename(&replacement, path).expect("swap");
+    }
+
+    /// The window the identity check exists for: the file is opened, a remover replaces it at the
+    /// path, and the lock is then won on the file that is no longer there.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_won_on_a_file_swapped_after_the_open_is_not_accepted() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let swaps = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        let _hook = {
+            let swaps = std::rc::Rc::clone(&swaps);
+            hook::after_open(move |path| {
+                if swaps.get() == 0 {
+                    swap_lock_file(path);
+                }
+                swaps.set(swaps.get() + 1);
+            })
+        };
+
+        let held = acquire_lock_as(tmp.path(), LockHolder::Scan).expect("the second open wins");
+
+        assert_eq!(swaps.get(), 2, "the stale win was retried with a fresh open");
+        let at_path = std::fs::metadata(tmp.path().join(LOCK_FILE)).expect("lock file");
+        assert_eq!(held.metadata().expect("held").ino(), at_path.ino());
+        assert!(
+            writer_lock_is_held(tmp.path()),
+            "the lock held is the one a second opener would contend on"
+        );
+    }
+
+    /// A stale win is not contention: more of them than there are contended attempts still end in
+    /// the lock, never in a free lock reported as held.
+    #[cfg(unix)]
+    #[test]
+    fn stale_wins_do_not_use_up_the_contended_attempts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let swaps = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        let _hook = {
+            let swaps = std::rc::Rc::clone(&swaps);
+            hook::after_open(move |path| {
+                if swaps.get() < 30 {
+                    swap_lock_file(path);
+                }
+                swaps.set(swaps.get() + 1);
+            })
+        };
+
+        acquire_lock_as(tmp.path(), LockHolder::Scan).expect("the lock is free");
+        assert_eq!(swaps.get(), 31);
+    }
+
+    #[test]
+    fn purge_reaped_leaves_what_a_live_remover_parked() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let reaped = tmp.path().join(REAPED_DIR);
+        let live = reaped.join(format!("key-with-dash-{}-17", std::process::id()));
+        // No process has this pid: above every platform's pid range, below `pid_t`'s sign bit.
+        let dead = reaped.join("key-2147483646-17");
+        for dir in [&workspaces, &live, &dead] {
+            std::fs::create_dir_all(dir).expect("mkdir");
+        }
+
+        purge_reaped(&workspaces);
+
+        assert!(live.exists(), "a live remover is still deleting this one");
+        assert!(!dead.exists(), "the remover of this one died mid-delete");
+
+        std::fs::remove_dir_all(&live).expect("the live remover finishes");
+        purge_reaped(&workspaces);
+        assert!(!reaped.exists(), "the empty parking directory goes too");
+    }
+
+    /// A lock released by closing its file alone stays held while a child another thread forked
+    /// still has a copy of the descriptor, before it execs. The guard unlocks, so the lock is free
+    /// the moment it drops, however many processes are being spawned around it.
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_lock_is_free_at_once_while_other_threads_spawn_processes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let spawners: Vec<_> = (0..8)
+            .map(|_| {
+                let stop = std::sync::Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = std::process::Command::new("/usr/bin/true").status();
+                    }
+                })
+            })
+            .collect();
+
+        let mut still_held = 0;
+        for _ in 0..400 {
+            drop(acquire_lock(tmp.path()).expect("acquire"));
+            let reopened = open_lock_file(tmp.path(), &tmp.path().join(LOCK_FILE)).expect("open");
+            if reopened.try_lock_exclusive().is_err() {
+                still_held += 1;
+            }
+            let _ = FileExt::unlock(&reopened);
+        }
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            spawner.join().expect("join");
+        }
+
+        assert_eq!(
+            still_held, 0,
+            "a dropped lock was still held on {still_held} of 400 relocks"
+        );
     }
 }

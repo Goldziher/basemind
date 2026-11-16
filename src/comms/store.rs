@@ -21,7 +21,7 @@
 //! `cursors`, and `agents`. `thread_members` is the durable member set (drives inbox + creator
 //! authorization); `thread_subs` mirrors it for the notification-stream fan-out.
 
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
@@ -142,7 +142,7 @@ pub struct CommsStore {
     /// Serializes keyed posts so a retry racing its original cannot both pass the dedup lookup.
     post_lock: std::sync::Mutex<()>,
     /// Held for the lifetime of the store; released on drop (Draining → Stopped).
-    _lock: File,
+    _lock: crate::store_lock::LockGuard,
 }
 
 impl CommsStore {
@@ -636,7 +636,7 @@ pub fn build_meta(
 
 /// Acquire the comms store's advisory `.lock` (exclusive flock, bounded retry). Mirrors
 /// `crate::store::acquire_lock`.
-fn acquire_lock(comms_dir: &Path) -> Result<File, CommsStoreError> {
+fn acquire_lock(comms_dir: &Path) -> Result<crate::store_lock::LockGuard, CommsStoreError> {
     let path = comms_dir.join(LOCK_FILE);
     let file = OpenOptions::new()
         .create(true)
@@ -650,7 +650,7 @@ fn acquire_lock(comms_dir: &Path) -> Result<File, CommsStoreError> {
         })?;
     for attempt in 0..LOCK_ATTEMPTS {
         match file.try_lock_exclusive() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(crate::store_lock::LockGuard::held(file)),
             Err(_) if attempt + 1 < LOCK_ATTEMPTS => std::thread::sleep(LOCK_BACKOFF),
             Err(_) => return Err(CommsStoreError::Locked(path)),
         }

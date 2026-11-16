@@ -32,7 +32,7 @@ struct Journal {
 /// The caller must also hold the workspace writer lock and close standalone DB handles.
 pub(crate) struct Migration<'a> {
     views: &'a Path,
-    _lock: File,
+    _lock: crate::store_lock::LockGuard,
 }
 
 impl<'a> Migration<'a> {
@@ -44,7 +44,10 @@ impl<'a> Migration<'a> {
             .truncate(false)
             .open(views.join("working.migration.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
-        Ok(Self { views, _lock: lock })
+        Ok(Self {
+            views,
+            _lock: crate::store_lock::LockGuard::held(lock),
+        })
     }
 
     pub(crate) fn recover_for_writer(views: &Path) -> Result<()> {

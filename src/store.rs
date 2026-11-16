@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -342,7 +342,8 @@ pub struct Store {
     pub index_rebuild_needed: bool,
     /// Paths whose vector rows are not written yet (see [`crate::store_pending`]).
     pub pending_vectors: crate::store_pending::PendingVectors,
-    _lock: Option<File>,
+    /// Declared last: fields drop in order, and the lock must outlive the index handle above.
+    _lock: Option<crate::store_lock::LockGuard>,
 }
 
 impl Store {

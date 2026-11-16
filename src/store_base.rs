@@ -96,6 +96,7 @@ pub fn prepare(root: &Path, config: &Config) -> Result<BaseBuild> {
         }
         return Err(error).context("lock base generation directory");
     }
+    let _lock = crate::store_lock::LockGuard::held(lock);
 
     let (source_ref, commit) = resolve_commit(&repo)?;
     let digest = scan_digest(config)?;

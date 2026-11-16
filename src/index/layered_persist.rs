@@ -42,6 +42,7 @@ fn commit(
         .write(true)
         .open(path.join("overlay.lock"))?;
     fs2::FileExt::try_lock_exclusive(&lock)?;
+    let _lock = crate::store_lock::LockGuard::held(lock);
     let current = read(path, db, delta.base_generation, &delta.base_commit)?;
     let previous = current.as_ref().map_or(0, |delta| delta.seq);
     ensure!(delta.seq > previous, "overlay sequence must advance");
