@@ -358,6 +358,23 @@ fn a_truncated_frame_fails_the_session_with_the_stderr_tail() {
 }
 
 #[test]
+fn a_frame_over_sixteen_mebibytes_fails_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = format!("{HANDSHAKE}head -c 17000000 /dev/zero | tr '\\0' a\ncat > /dev/null\n");
+    let started = Instant::now();
+    let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), &body));
+    let events: Vec<_> = session.events().collect();
+    let [Event::Error(error), Event::Finished(FinishStatus::Failed)] = events.as_slice() else {
+        panic!(
+            "unexpected events {:?}",
+            events.iter().map(|e| format!("{e:.80?}")).collect::<Vec<_>>()
+        );
+    };
+    assert!(error.contains("frame longer than 16777216 bytes"), "{error:.200}");
+    assert!(started.elapsed() < Duration::from_secs(15));
+}
+
+#[test]
 fn a_harness_that_exits_mid_turn_fails_the_session() {
     let dir = tempfile::tempdir().unwrap();
     let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), HANDSHAKE));

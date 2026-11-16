@@ -4,7 +4,7 @@
 //! tested on recorded frames alone.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::error::LaunchError;
 use crate::event::{ApprovalSource, Control, Event};
+use crate::frames::FrameReader;
 use crate::session::{ChildIo, ControlTx, Driver, EventSink};
 
 const TICK: Duration = Duration::from_millis(16);
@@ -109,14 +110,12 @@ impl<P: Protocol> Driver for LineDriver<P> {
         let stdout = io.stdout;
         let (tx, lines) = mpsc::sync_channel(16);
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
+            let mut reader = FrameReader::new(stdout);
             loop {
-                let mut bytes = Vec::new();
-                // Tool and history snapshots can be large: read each line without a size cap.
-                match reader.read_until(b'\n', &mut bytes) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if tx.send(Ok(bytes)).is_err() {
+                match reader.next_frame() {
+                    Ok(None) => break,
+                    Ok(Some(frame)) => {
+                        if tx.send(Ok(frame)).is_err() {
                             break;
                         }
                     }
@@ -156,7 +155,11 @@ impl<P: Protocol> Driver for LineDriver<P> {
             }
             protocol.tick(started.elapsed(), &mut out, &sink)?;
             let line = match lines.recv_timeout(TICK) {
-                Ok(line) => line?,
+                Ok(Ok(line)) => line,
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::InvalidData => {
+                    return Err(LaunchError::Protocol(error.to_string()));
+                }
+                Ok(Err(error)) => return Err(error.into()),
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) if idle => return Ok(()),
                 Err(RecvTimeoutError::Disconnected) => {

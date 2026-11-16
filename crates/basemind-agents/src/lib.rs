@@ -37,6 +37,7 @@ mod claude;
 mod codex;
 mod error;
 mod event;
+mod frames;
 mod guard;
 mod harness;
 mod identity;

@@ -647,3 +647,28 @@ fn an_allow_without_an_allow_once_option_is_answered_as_a_denial() {
         source: ApprovalSource::Caller,
     }));
 }
+
+#[test]
+fn the_reader_passes_on_a_line_that_is_not_utf8_as_an_error_and_stops() {
+    let (tx, rx) = futures::channel::mpsc::channel(4);
+    pump_lines(&b"{\"ok\":1}\n\xff\xfe\n{\"after\":2}\n"[..], tx);
+    let lines: Vec<_> = futures::executor::block_on(rx.collect::<Vec<_>>());
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0].as_ref().unwrap(), "{\"ok\":1}");
+    assert_eq!(lines[1].as_ref().unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn a_read_error_mid_turn_fails_the_session() {
+    let root = tempfile::tempdir().unwrap();
+    let run = converse_with(&acp_spec(AcpFlavor::Cursor, root.path()), Vec::new(), |agent| {
+        agent.open();
+        agent.expect("session/prompt");
+        let invalid = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the agent sent a line that is not UTF-8",
+        );
+        agent.to_client.unbounded_send(Err(invalid)).unwrap();
+    });
+    assert!(run.result.is_err(), "{:?}", run.events);
+}

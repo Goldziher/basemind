@@ -5,7 +5,7 @@
 //! every permission request through the session's approval policy.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::{Arc, Mutex};
@@ -19,13 +19,14 @@ use agent_client_protocol::v1::schema::{
 };
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{Agent, Client, Lines};
-use futures::channel::mpsc::{UnboundedReceiver, unbounded};
+use futures::channel::mpsc::{Sender, UnboundedReceiver, channel, unbounded};
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 
 use crate::error::LaunchError;
 use crate::event::{
     ApprovalKind, ApprovalRequest, ApprovalSource, Control, Event, ToolCall, ToolState, approval_detail,
 };
+use crate::frames::FrameReader;
 use crate::harness::{AcpFlavor, HarnessKind};
 use crate::registry::Adapter;
 use crate::session::{self, ChildIo, CommandPlan, ControlTx, Driver, EventSink, Session};
@@ -175,15 +176,9 @@ struct AcpDriver {
 
 impl Driver for AcpDriver {
     fn run(self: Box<Self>, io: ChildIo, sink: EventSink) -> Result<(), LaunchError> {
-        let (line_tx, incoming) = unbounded();
+        let (line_tx, incoming) = channel(LINE_QUEUE);
         let stdout = io.stdout;
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if line_tx.unbounded_send(line).is_err() {
-                    break;
-                }
-            }
-        });
+        std::thread::spawn(move || pump_lines(stdout, line_tx));
         let (out_tx, mut out_rx) = unbounded::<String>();
         let mut stdin = io.stdin;
         std::thread::spawn(move || {
@@ -203,6 +198,32 @@ impl Driver for AcpDriver {
 }
 
 /// Answers one permission request; `Ok` carries whether the agent was allowed to proceed.
+/// How many lines read from the agent may wait for the connection.
+const LINE_QUEUE: usize = 16;
+
+/// Reads the agent's output as lines of at most [`MAX_FRAME_BYTES`](crate::frames::MAX_FRAME_BYTES)
+/// into `tx`. A line over the limit or not in UTF-8 is passed on as an
+/// [`InvalidData`](std::io::ErrorKind::InvalidData) error and ends the reading.
+fn pump_lines(reader: impl Read, mut tx: Sender<std::io::Result<String>>) {
+    let mut frames = FrameReader::new(reader);
+    loop {
+        let line = match frames.next_frame() {
+            Ok(None) => return,
+            Ok(Some(frame)) => String::from_utf8(frame).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the agent sent a line that is not UTF-8",
+                )
+            }),
+            Err(error) => Err(error),
+        };
+        let last = line.is_err();
+        if futures::executor::block_on(tx.send(line)).is_err() || last {
+            return;
+        }
+    }
+}
+
 type Answer = Box<dyn FnOnce(bool) -> Result<bool, agent_client_protocol::Error> + Send>;
 
 /// Permission requests the policy left for the caller, by event id.
