@@ -368,9 +368,17 @@ pub(crate) fn start(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     process::isolate(&mut command);
-    let mut child = spawn(&mut command).map_err(|source| LaunchError::Spawn {
-        executable: plan.program.clone(),
-        source,
+    #[cfg(unix)]
+    process::verify_cwd(&mut command, &plan.cwd);
+    let mut child = spawn(&mut command).map_err(|source| {
+        #[cfg(unix)]
+        if source.raw_os_error() == Some(process::CWD_CHANGED) {
+            return LaunchError::WorkingDirChanged(plan.cwd.clone());
+        }
+        LaunchError::Spawn {
+            executable: plan.program.clone(),
+            source,
+        }
     })?;
     let piped = "the child was spawned with piped stdio";
     let shared = Shared::new(child.id(), spec.limits, spec.approval_policy.clone(), control);
@@ -517,3 +525,7 @@ fn watchdog(shared: &Shared, started: Instant) {
         };
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "session_tests.rs"]
+mod tests;

@@ -23,6 +23,10 @@ pub enum LaunchError {
     /// A path the harness has to receive in its protocol is not valid UTF-8.
     #[error("path {0:?} is not valid UTF-8")]
     NonUtf8Path(PathBuf),
+    /// The working directory was replaced between the check and the spawn: the child's
+    /// directory after changing into it was not the checked canonical path.
+    #[error("working directory {0} changed before the harness started")]
+    WorkingDirChanged(PathBuf),
     /// A path of the spec could not be resolved.
     #[error("cannot resolve {path}: {source}")]
     Path {

@@ -18,6 +18,10 @@ pub(crate) const EXIT_GRACE: Duration = Duration::from_millis(1500);
 #[cfg(unix)]
 pub(crate) const TERM_GRACE: Duration = Duration::from_secs(2);
 
+/// The error a spawn fails with when the working directory changed after it was checked.
+#[cfg(unix)]
+pub(crate) const CWD_CHANGED: i32 = libc::ESTALE;
+
 /// Makes the child the leader of a new process group with the ordinary signal mask.
 pub(crate) fn isolate(command: &mut Command) {
     #[cfg(unix)]
@@ -29,6 +33,8 @@ pub(crate) fn isolate(command: &mut Command) {
             command.pre_exec(|| {
                 // exec preserves the signal mask. A launcher thread that blocks SIGCHLD would
                 // hand that mask to the harness, whose own child processes then never finish.
+                // Not redundant: without it `a_child_does_not_inherit_a_blocked_sigchld`
+                // fails, so std does not reset the mask on every spawn path.
                 let mut signals = std::mem::zeroed();
                 libc::sigemptyset(&mut signals);
                 if libc::sigprocmask(libc::SIG_SETMASK, &signals, std::ptr::null_mut()) != 0 {
@@ -43,6 +49,34 @@ pub(crate) fn isolate(command: &mut Command) {
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    }
+}
+
+/// Makes the spawn fail with [`CWD_CHANGED`] unless the child's working directory, after std
+/// changed into it, is exactly `expected`: a directory swapped for a symlink between the
+/// check and the spawn is caught here, in the child, before the harness runs.
+#[cfg(unix)]
+pub(crate) fn verify_cwd(command: &mut Command, expected: &std::path::Path) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
+    let expected = expected.as_os_str().as_bytes().to_vec();
+    // Allocated here, in the parent: the closure runs between fork and exec, where only
+    // async-signal-safe calls are allowed.
+    let mut buffer = vec![0_u8; libc::PATH_MAX as usize + 1];
+    // SAFETY: the closure only calls getcwd and strlen on a buffer it owns and compares
+    // bytes; it neither allocates nor takes a lock.
+    unsafe {
+        command.pre_exec(move || {
+            let cwd = libc::getcwd(buffer.as_mut_ptr().cast(), buffer.len());
+            if cwd.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let len = libc::strlen(cwd);
+            if buffer[..len] != expected[..] {
+                return Err(std::io::Error::from_raw_os_error(CWD_CHANGED));
+            }
+            Ok(())
+        });
     }
 }
 
