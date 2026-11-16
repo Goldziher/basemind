@@ -939,7 +939,16 @@ async fn a_store_that_would_not_open_is_unavailable_at_once_to_the_next_call() {
         visibility: Visibility::Group,
     };
     let first = run_memory_search(&state, params()).await.unwrap_err();
-    assert!(first.message.contains("unavailable"), "{}", first.message);
+    assert!(
+        first.message.starts_with("`memory_search`: vector store unavailable"),
+        "{}",
+        first.message
+    );
+    assert_eq!(
+        first.code,
+        rmcp::model::ErrorCode::INVALID_REQUEST,
+        "a refusal, not an internal error"
+    );
 
     std::fs::remove_file(&dir).unwrap();
     let second = run_memory_search(&state, params()).await.unwrap_err();

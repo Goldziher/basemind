@@ -68,6 +68,10 @@ const CATCHING_UP: &str = "the memory vector index is still catching up with the
      miss some of them; later `memory_search` calls continue the work. A read by `key` or a listing by `prefix` \
      is complete";
 
+/// What `memory_search` can still do while the vector store is unavailable.
+const MEMORY_SEARCH_MEANWHILE: Option<&str> =
+    Some("A read by `key` and a listing by `prefix` or with no arguments do not need it.");
+
 /// Where one namespace's rows stand against its notes in this process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Backfill {
@@ -218,7 +222,7 @@ pub(super) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
 }
 
 /// Open the repo group's memory vector store for the configured embedder.
-pub(super) async fn memory_lance_store(state: &ServerState) -> Result<Arc<LanceStore>, McpError> {
+pub(super) async fn memory_lance_store(state: &ServerState) -> Result<Arc<LanceStore>, super::lance_cell::Unavailable> {
     state
         .shared
         .memory_lance
@@ -256,7 +260,7 @@ async fn memory_lance_store_if_any(state: &ServerState) -> Option<Arc<LanceStore
     match memory_lance_store(state).await {
         Ok(lance) => Some(lance),
         Err(error) => {
-            tracing::warn!(error = %error.message, "memory vector store could not be opened");
+            tracing::warn!(%error, "memory vector store could not be opened");
             None
         }
     }
@@ -287,9 +291,7 @@ pub(super) async fn embed_note(
     let embedding = embed_query(state, &params.value)
         .await
         .map_err(|error| error.message.into_owned())?;
-    let lance = memory_lance_store(state)
-        .await
-        .map_err(|error| error.message.into_owned())?;
+    let lance = memory_lance_store(state).await.map_err(|error| error.to_string())?;
     let row = MemoryRow {
         scope: state.shared.scope.clone(),
         key: params.key.clone(),
@@ -711,7 +713,9 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
     let (vis_byte, owner) = memory_namespace(state, params.visibility);
     let lance_vis = lance_visibility(params.visibility);
     let embedding = embed_query(state, &params.query).await?;
-    let lance = memory_lance_store(state).await?;
+    let lance = memory_lance_store(state)
+        .await
+        .map_err(|unavailable| unavailable.refusal("memory_search", MEMORY_SEARCH_MEANWHILE))?;
     let catching_up = backfill_step(state, params.visibility, vis_byte, owner).await;
 
     // Rows the join refuses must not shrink the answer: the search fetches more than it serves,

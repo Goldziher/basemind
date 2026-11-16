@@ -182,8 +182,11 @@ changed, checked against `main` at `3d627ba5`. A clause not named here stands.
     directory is renamed into `cache/.reaped/` under its lock before it is deleted. A vector
     store's open holds its `.open.lock` while it wipes and creates; one that waits over 30 s
     fails, and the scan pass or, for a minute, the tool calls after it take the store as
-    unavailable instead of waiting again. An open that cannot create the lock file goes on
-    unserialised.
+    unavailable instead of waiting again, those already queued behind the failed open included.
+    Hybrid `code_search` then names the vector lane in `lanes_unavailable`; `docs_search`,
+    `memory_search` by `query` and `code_search` with `mode: "semantic"` refuse the call as an
+    `isError` result naming the store unavailable, its cause and the retry, with what the caller
+    can use meanwhile. An open that cannot create the lock file goes on unserialised.
 
 ## Consequences
 

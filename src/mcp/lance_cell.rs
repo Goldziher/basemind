@@ -34,7 +34,7 @@ impl LanceCell {
 
     /// The store, opened by `open` unless it is open already. An open that failed less than
     /// [`RETRY_AFTER`] ago is not tried again: the call fails at once with its reason.
-    pub(crate) async fn get_or_open<F, Fut>(&self, open: F) -> Result<Arc<LanceStore>, McpError>
+    pub(crate) async fn get_or_open<F, Fut>(&self, open: F) -> Result<Arc<LanceStore>, Unavailable>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Arc<LanceStore>, String>>,
@@ -42,8 +42,8 @@ impl LanceCell {
         if let Some(store) = self.store.get() {
             return Ok(Arc::clone(store));
         }
-        if let Some(reason) = self.recent_failure() {
-            return Err(unavailable(&reason));
+        if let Some(recent) = self.recent_failure() {
+            return Err(recent);
         }
         // Initialisers run one at a time, and a call queued behind one that fails runs its own
         // next: it looks again here, so calls that arrived during a failing open fail with it
@@ -52,38 +52,75 @@ impl LanceCell {
         let opened = self
             .store
             .get_or_try_init(|| async {
-                if let Some(reason) = self.recent_failure() {
-                    return Err(reason);
+                if let Some(recent) = self.recent_failure() {
+                    return Err(recent);
                 }
-                open().await.inspect_err(|reason| {
+                open().await.map_err(|reason| {
                     *self.failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
                         Some((Instant::now(), reason.clone()));
+                    Unavailable {
+                        reason,
+                        retry_in: RETRY_AFTER,
+                    }
                 })
             })
             .await;
-        opened.map(Arc::clone).map_err(|reason| unavailable(&reason))
+        opened.map(Arc::clone)
     }
 
-    /// Why the last open failed, when it failed less than [`RETRY_AFTER`] ago.
-    fn recent_failure(&self) -> Option<String> {
-        self.failed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .filter(|(at, _)| at.elapsed() < RETRY_AFTER)
-            .map(|(_, reason)| reason.clone())
+    /// The last open's failure, when it failed less than [`RETRY_AFTER`] ago.
+    fn recent_failure(&self) -> Option<Unavailable> {
+        let failed = self.failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (at, reason) = failed.as_ref()?;
+        let retry_in = RETRY_AFTER.checked_sub(at.elapsed()).filter(|left| !left.is_zero())?;
+        Some(Unavailable {
+            reason: reason.clone(),
+            retry_in,
+        })
     }
 }
 
-/// The error of a call that needed the store: it names the store unavailable, not the call broken.
-fn unavailable(reason: &str) -> McpError {
-    McpError::internal_error(
-        format!(
-            "the vector store is unavailable ({reason}); it is opened again {} s after an open fails",
-            RETRY_AFTER.as_secs()
-        ),
-        None,
-    )
+/// A call went without the store: its open failed, now or less than [`RETRY_AFTER`] ago.
+#[derive(Debug)]
+pub(crate) struct Unavailable {
+    /// Why the open failed.
+    reason: String,
+    /// How long until a call opens the store again.
+    retry_in: Duration,
+}
+
+impl Unavailable {
+    /// `tool`'s refusal of the call, naming the cause and when to retry, then `meanwhile`: what
+    /// the caller can do without the store. A refusal, not an internal error: nothing is broken in
+    /// the tool, and the same call succeeds once the store opens.
+    pub(crate) fn refusal(&self, tool: &str, meanwhile: Option<&str>) -> McpError {
+        let mut message = format!("`{tool}`: {self}.");
+        if let Some(meanwhile) = meanwhile {
+            message.push(' ');
+            message.push_str(meanwhile);
+        }
+        McpError::invalid_request(message, None)
+    }
+}
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "vector store unavailable ({}). An open that fails is retried by the first call after {} s; \
+             retry in about {} s",
+            self.reason,
+            RETRY_AFTER.as_secs(),
+            self.retry_in.as_secs().max(1)
+        )
+    }
+}
+
+/// The refusal of a call made on no tool's behalf (a backfill step), named by no tool.
+impl From<Unavailable> for McpError {
+    fn from(unavailable: Unavailable) -> Self {
+        McpError::invalid_request(unavailable.to_string(), None)
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +153,34 @@ mod tests {
             started.elapsed(),
             Duration::from_secs(30),
             "no call waited past the one open"
+        );
+    }
+
+    /// A call inside the window is refused at once, not opened again: the refusal names the tool,
+    /// the store and the first failure's cause, says when to retry, and ends with what the caller
+    /// can do meanwhile. It is a refusal, not an internal error.
+    #[tokio::test]
+    async fn a_call_inside_the_window_is_refused_by_name_with_when_to_retry() {
+        let cell = LanceCell::default();
+        let first = cell
+            .get_or_open(|| async { Err("the open lock is held".to_string()) })
+            .await;
+        assert!(first.is_err());
+        let refused = cell
+            .get_or_open(|| async { Err("opened again".to_string()) })
+            .await
+            .unwrap_err();
+        let error = refused.refusal("code_search", Some("Search with `mode: \"keyword\"` meanwhile."));
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
+        let message = error.message;
+        assert!(
+            message.starts_with("`code_search`: vector store unavailable (the open lock is held)"),
+            "{message}"
+        );
+        assert!(message.contains("retry in about "), "{message}");
+        assert!(
+            message.ends_with("Search with `mode: \"keyword\"` meanwhile."),
+            "{message}"
         );
     }
 }

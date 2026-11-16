@@ -66,7 +66,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
         hybrid_hits(state, &params.query, fetch_n).await?
     } else if mode.eq_ignore_ascii_case("semantic") {
         (
-            semantic_hits(state, &params.query, fetch_n).await?,
+            semantic_hits(state, &params.query, fetch_n, SEMANTIC_MEANWHILE).await?,
             LaneReport::ran_only("vector"),
         )
     } else if mode.eq_ignore_ascii_case("keyword") {
@@ -126,7 +126,7 @@ async fn hybrid_hits(
     // degraded — it was never asked to run. ~keep
     let mut vector_ran = false;
     let vector_ids: Vec<String> = if state.shared.config.code_search.embed {
-        match semantic_hits(state, query, fuse_limit).await {
+        match semantic_hits(state, query, fuse_limit, None).await {
             Ok(hits) => {
                 vector_ran = true;
                 report.ran.push("vector");
@@ -360,11 +360,25 @@ async fn forward_fjall_lanes(
     })
 }
 
+/// What a semantic-only `code_search` can do while the vector store is unavailable.
+const SEMANTIC_MEANWHILE: Option<&str> = Some(
+    "Meanwhile `mode: \"keyword\"` searches without it, and `mode: \"hybrid\"` runs the keyword and exact \
+     lanes and names the vector lane in `lanes_unavailable`.",
+);
+
 /// Semantic lane: embed the query and run vector KNN over the scope-filtered LanceDB `code_chunks`
-/// table. Each hit carries an L2 `distance` (lower = closer) and no BM25 `score`.
-async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result<Vec<CodeSearchHit>, McpError> {
+/// table. Each hit carries an L2 `distance` (lower = closer) and no BM25 `score`. A vector store
+/// that is unavailable is refused, ending with `meanwhile`.
+async fn semantic_hits(
+    state: &ServerState,
+    query: &str,
+    limit: usize,
+    meanwhile: Option<&str>,
+) -> Result<Vec<CodeSearchHit>, McpError> {
     let embedding = embed_query(state, query).await?;
-    let lance = lance_store(state).await?;
+    let lance = lance_store(state)
+        .await
+        .map_err(|unavailable| unavailable.refusal("code_search", meanwhile))?;
     let scope = state.shared.scope.clone();
     let routing = super::memory::shared_lance_route(state, crate::lance::shared_store::SharedLane::Code).await;
     let hits_raw = tokio::task::spawn_blocking(move || {

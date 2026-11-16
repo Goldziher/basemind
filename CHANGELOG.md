@@ -551,8 +551,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     processes opening a new store at once no longer share a temp file or remove each other's
     tables. An open that waits more than 30 s for another open of the store fails instead of
     opening beside one that may be wiping the store. The rest of that scan pass, and the tool calls
-    of the next minute, take the store as unavailable at once instead of each waiting again
-    (`code_search` runs its other lanes and names the vector lane in `lanes_unavailable`).
+    of the next minute, take the store as unavailable at once instead of each waiting again; so do
+    calls that were already waiting on the open that failed. A hybrid `code_search` runs its other
+    lanes and names the vector lane in `lanes_unavailable`. `docs_search`, `memory_search` by
+    `query` and `code_search` with `mode: "semantic"` refuse the call (`isError`, not an internal
+    error): the refusal says the vector store is unavailable and why, and when the store is opened
+    again; `code_search` points to `mode: "keyword"` and `"hybrid"`, `memory_search` to reads by
+    `key` or `prefix`.
 - `memory_save` refuses a key longer than 1024 bytes and a note whose text and tags pass 4 MiB,
   with an invalid-params error naming the limit: a longer one could be saved locally but not
   carried in one daemon frame, by its save or by any later read. Reads of several notes or stamps

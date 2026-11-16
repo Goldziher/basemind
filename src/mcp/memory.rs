@@ -83,7 +83,9 @@ async fn open_lance(
 }
 
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
+pub(super) async fn lance_store(
+    state: &ServerState,
+) -> Result<Arc<crate::lance::LanceStore>, super::lance_cell::Unavailable> {
     state
         .shared
         .lance
@@ -665,7 +667,9 @@ pub(super) async fn run_search_documents(
         limit
     };
     let embedding = embed_query(state, &params.query).await?;
-    let lance = lance_store(state).await?;
+    let lance = lance_store(state)
+        .await
+        .map_err(|unavailable| unavailable.refusal("docs_search", None))?;
     let scope = resolve_doc_scope(params.scope.as_deref(), &state.shared.scope);
     let mime = params.mime_type.clone();
     let lane = crate::lance::shared_store::SharedLane::Documents;
