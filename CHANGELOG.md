@@ -297,7 +297,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pid the system may have given to another process, and a free lock now means nothing is
   signalled. A `Stop` is refused while a relay session is still being set up, not only once it is
   registered; a relay link that has not sent its hello within 30 s is dropped, so a stalled client
-  cannot hold a daemon in place.
+  cannot hold a daemon in place. A `basemind rescan` running through the daemon makes it refuse
+  `Stop` as well, where a takeover's `Stop` was accepted and cancelled the scan half way.
 - `basemind serve` no longer retries forever, silently, when it cannot get a daemon, and no longer
   exits before reading the host's `initialize` when it cannot get one at start. The first
   connection goes through the same path as a reconnect. A failure no retry can cure ends the

@@ -194,3 +194,48 @@ async fn git_history_refuses_a_non_project_root_without_minting_cache_state() {
         "a refused root must not have history cache state created for it"
     );
 }
+
+/// A `basemind rescan` forwarded by the CLI is served over a plain link, which does not make the
+/// daemon refuse `Stop`. A takeover's `Stop` accepted then would cancel the scan half way, so the
+/// rescan counts as work for as long as it runs, from before its first wait.
+#[tokio::test]
+async fn stop_is_refused_while_a_forwarded_rescan_is_running() {
+    let (_dir, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let ws = tempfile::tempdir().expect("workspace");
+    let sweep = broker.blob_gc_lock.write().await;
+    let mut scanning = Session::default();
+    let rescan = broker.handle(
+        CommsRequest::Rescan {
+            root: ws.path().to_path_buf(),
+            paths: None,
+            full: false,
+            embed: false,
+        },
+        &mut scanning,
+        &tx,
+    );
+    tokio::pin!(rescan);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut rescan)
+            .await
+            .is_err(),
+        "the rescan waits for the blob sweep to finish"
+    );
+
+    let mut stopping = Session::default();
+    let refused = broker.handle(CommsRequest::Stop, &mut stopping, &tx).await;
+    assert!(
+        matches!(refused, CommsResponse::Error { ref code, ref message } if code == "daemon_busy" && message.contains("work=1")),
+        "a stop must not cancel a rescan in progress: {refused:?}"
+    );
+    assert!(!broker.scan_cancel.is_cancelled());
+
+    drop(sweep);
+    rescan.await;
+    assert_eq!(
+        broker.handle(CommsRequest::Stop, &mut stopping, &tx).await,
+        CommsResponse::Ok,
+        "a finished rescan no longer holds the daemon"
+    );
+}

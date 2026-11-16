@@ -7,7 +7,8 @@ use super::*;
 impl Broker {
     /// Scan/rescan a workspace on the sole-writer pool. The scan is CPU-bound, so it runs on a
     /// blocking thread while the reactor keeps serving other links. A scan/store error becomes a
-    /// `CommsResponse::Error` (never a torn link).
+    /// `CommsResponse::Error` (never a torn link). Held under a [`WorkGuard`] throughout: the
+    /// caller is attached by a plain link only, which does not make the daemon refuse `Stop`.
     pub(super) async fn on_rescan(
         &self,
         root: std::path::PathBuf,
@@ -20,12 +21,20 @@ impl Broker {
         // and the token never un-trips). Launching a scan now would only produce a doomed ~keep
         // partial pass that defeats coalescing — refuse instead; the client retries against ~keep
         // the next daemon. ~keep
-        if self.scan_cancel.is_cancelled() {
-            return CommsResponse::Error {
-                code: "rescan_draining".to_string(),
-                message: "daemon draining; rescan refused (retry against the next daemon)".to_string(),
-            };
-        }
+        // The scan counts as work from here to its end, so a `Stop` is refused instead of ~keep
+        // cancelling it. Taken under the registry lock, where `on_stop` reads the count and ~keep
+        // starts the drain: a rescan either is counted before that read or sees the drain. ~keep
+        let _working = {
+            let registry = self.registry.lock().await;
+            let draining = matches!(registry.state, LifecycleState::Draining | LifecycleState::Stopped);
+            if draining || self.scan_cancel.is_cancelled() {
+                return CommsResponse::Error {
+                    code: "rescan_draining".to_string(),
+                    message: "daemon draining; rescan refused (retry against the next daemon)".to_string(),
+                };
+            }
+            self.begin_work()
+        };
         let _rescan_guard = self.blob_gc_lock.read().await;
         let pool = Arc::clone(&self.workspaces);
         let cancel = self.scan_cancel.clone();
