@@ -266,6 +266,11 @@ The full mode mapping is in the CHANGELOG.
   archive after three days; messages and idle threads are removed after 30 days. A thread is
   addressed by a subject and open to its repository, or invitation-only with `to`. `basemind agent
   cleanup --archive <thread>` archives any thread.
+- **Operator-visible.** `basemind comms status` prints `agent_store=…` in place of
+  `threads=… subscribers=…`, and `basemind comms doctor --json` reports `"agent_store"` in place of
+  `"threads"`; adjust scripts that parse either. The plugin hooks' inbox announcements need `jq`.
+  The agent tools are not listed over the HTTP front-end. The hooks inject a session `as` only on
+  Claude Code and Codex.
 
 ## Running two basemind versions side by side
 

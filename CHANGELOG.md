@@ -243,8 +243,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archive after three days. The plugin launchers set `BASEMIND_HOST` (`claude`, `cursor`, `copilot`,
   `gemini`, `codex`), the `inbox-notify` hook announces unread messages with the daemon's own mark
   instead of a per-session file, and a new `PreToolUse` hook gives each session and subagent its own
-  `as`. [`docs/UPGRADING.md`](docs/UPGRADING.md) has the upgrade steps; the spec is
-  [`docs/comms-v2.md`](docs/comms-v2.md).
+  `as` on Claude Code and Codex. [`docs/UPGRADING.md`](docs/UPGRADING.md) has the upgrade steps;
+  the spec is [`docs/comms-v2.md`](docs/comms-v2.md).
 
   <!-- markdownlint-disable MD013 -->
 
@@ -272,6 +272,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `idempotency_key` (the relay replays with its own key), `since_hours`, `mark_read` and `message_ref`.
   A `BASEMIND_AGENT_ID` or `comms.agent_id` containing `.` is no longer valid and falls through with a
   notice. A thread needs a `subject`, not two of subject, path-glob and members.
+
+  Operator-visible: `basemind comms status` prints `agent_store=…` where it printed
+  `threads=… subscribers=…`, and `basemind comms doctor --json` reports `"agent_store"` where it
+  reported `"threads"`. The plugin hooks' inbox announcements need `jq`. The agent tools are not
+  listed over the HTTP front-end. The `PreToolUse` hook injects a session `as` only on Claude Code
+  and Codex; on other hosts the hooks act as the principal, like the tool calls.
 
 ### Removed
 

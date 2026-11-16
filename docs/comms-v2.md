@@ -31,10 +31,13 @@ code follows this document. Where the document leaves a point open, the code doe
   daemon's; `shared_identity_notice` returns none for a call that carries `as`.
 - `basemind agent cleanup [--archive <thread>]...` archives each named thread, whoever created it,
   then runs one retention sweep. The `archive` change of `agent_threads` stays creator-only.
-- `BASEMIND_HOST` is set identically for `serve` and the hooks by the plugin launchers
-  (`scripts/mcp-launch.sh`, and `scripts/codex-mcp-launch.mjs` for Codex): an existing value is kept,
-  else `cursor`, `copilot`, `claude` or `gemini` from the harness's environment, `codex` from the
-  Codex launcher, and none otherwise.
+- `BASEMIND_HOST` is set identically for `serve` and the hooks by the plugin launcher
+  `plugin/.ai-rulez/scripts/mcp-launch.sh`. An existing value is kept; else `cursor`
+  (`CURSOR_PLUGIN_ROOT`), `copilot` (`COPILOT_CLI`), `claude` (`CLAUDECODE`), `codex`
+  (`CODEX_PLUGIN_ROOT`, or `PLUGIN_ROOT` together with `CLAUDE_PLUGIN_ROOT`, or the launcher's
+  parent process is `codex`), `claude` (`CLAUDE_PLUGIN_ROOT` alone), `gemini` (`GEMINI_CLI`); none
+  otherwise. `scripts/codex-mcp-launch.mjs` sets `codex` for the repository's own development
+  config.
 
 ## Terms
 
@@ -86,9 +89,9 @@ The root is the discovered root above, canonicalised with symlinks resolved. Whe
 lexically and that path is hashed: a stable id, though not the canonical one when a symlink lies on
 the way.
 
-The plugin launchers and the plugin hooks will set `BASEMIND_HOST`; nothing sets it on `main`.
-Harnesses that leave it unset all derive `agent-<repo>-<hash>` and share that identity within one
-checkout.
+The plugin launcher `plugin/.ai-rulez/scripts/mcp-launch.sh` sets `BASEMIND_HOST` for `serve` and
+the hooks. Harnesses that leave it unset all derive `agent-<repo>-<hash>` and share that identity
+within one checkout.
 
 ### Grammar
 
@@ -100,25 +103,63 @@ checkout.
 ### Connection and call
 
 The principal, the root and the host are sent once in the connection's `Hello` and are fixed for
-that connection. Each call's envelope carries the optional sub-name. The daemon builds the caller
-(actor, repository, replay key) from those; nothing in a request body names the sender.
+that connection. A second `Hello` on one connection is refused (`hello_repeated`). Each call's
+envelope carries the optional sub-name. The daemon builds the caller (actor, repository, replay key)
+from those; nothing in a request body names the sender. A root whose repository cannot be derived
+makes agent requests fail, naming the root and the reason.
 
 ### Hook-injected `as`
 
-In Claude Code the plugin's `PreToolUse` hook matches the three agent tools and, when the call has
-no `as`, injects one through `updatedInput`:
+The plugin's `PreToolUse` hook matches the three agent tools and, when the call has no `as`, injects
+one through `updatedInput`, only on hosts observed to apply a rewritten input: Claude Code
+(`updatedInput` alone) and Codex (`updatedInput` only beside `permissionDecision: "allow"`, which in
+Codex does not approve an MCP tool call that needs approval). The binary decides from
+`BASEMIND_HOST` (`basemind agent hook pre-tool-use` and `agent hook name`, `src/cli/agent/hook.rs`).
+The injected name is:
 
 - inside a subagent: `<agent_type>-<8 hex of blake3(agent_id)>`, the type lower-cased, reduced to
   the sub-name grammar and cut to 23 bytes;
 - in the main session: `session-<8 hex of blake3(session_id)>`.
 
-The inbox hook reads with the same name, in announce mode (see `agent_inbox`). An orchestrator that
-wants to address a particular subagent tells it to pass an explicit `as`, since an injected name
-cannot be predicted.
+On Claude Code and Codex the inbox hook reads with the same name, in announce mode (see
+`agent_inbox`). An orchestrator that wants to address a particular subagent tells it to pass an
+explicit `as`, since an injected name cannot be predicted.
 
-A host with no hooks injects nothing. A parent and a subagent there are one actor unless one of
-them passes `as`: they share one read position and, because an actor's own posts are never unread
-for it, cannot message each other. The tool descriptions tell a subagent to pass `as`.
+On every other host the hook names nothing. The inbox hook, the session-start count, Hermes and
+OpenCode announce or peek at the principal level, matching the tool calls, which act as the
+principal. The status line (`.claude-plugin/statusline.sh`) peeks as the session name with
+`BASEMIND_HOST=claude`.
+
+A host that injects nothing makes a parent and a subagent one actor unless one of them passes `as`:
+they share one read position and, because an actor's own posts are never unread for it, cannot
+message each other. The tool descriptions tell a subagent to pass `as`.
+
+### Verified host behaviour
+
+Observed live on 2026-11-16 in throwaway repositories. The captures are untracked, in
+`reports/cutover-live/` of the polyrepo root.
+
+- **Claude Code 2.1.325.** `PreToolUse` fires for plugin MCP tools (`tool_name` is
+  `mcp__plugin_<plugin>_<server>__<tool>`; the payload has `mcp_server`). `updatedInput` without
+  `permissionDecision` is applied, observed with the tool allow-listed, in the main session and in a
+  subagent. The payload carries `session_id`, and inside a subagent also `agent_id` and
+  `agent_type`. Hooks and the MCP server process both get `CLAUDECODE=1`, `CLAUDE_PLUGIN_ROOT`,
+  `CLAUDE_PLUGIN_DATA`, `CLAUDE_PROJECT_DIR` and `CLAUDE_CODE_SESSION_ID` (equal to the payload's
+  `session_id`); `PLUGIN_ROOT` is not set.
+- **codex-cli 0.169.0.** `PreToolUse` fires for MCP tools (`tool_name` is `mcp__<server>__<tool>`).
+  The payload keys are `cwd`, `hook_event_name`, `model`, `permission_mode`, `session_id`,
+  `tool_input`, `tool_name`, `tool_use_id`, `transcript_path` and `turn_id`. `updatedInput` without
+  a decision makes the hook report Failed and the input is unchanged; with `permissionDecision:
+  "allow"` it is applied, and `allow` does not satisfy MCP tool approval (the call was still refused
+  under approval policy `never`). Plugin hooks get `PLUGIN_ROOT` and `CLAUDE_PLUGIN_ROOT` (and
+  `PLUGIN_DATA`, `CLAUDE_PLUGIN_DATA`), not `CODEX_PLUGIN_ROOT` or `CLAUDECODE`. A plugin's
+  `hooks/hooks.json` is discovered without a manifest `hooks` key. MCP servers get only `HOME`,
+  `PATH`, `TERM`, `USER`, `LC_CTYPE` and the configured env; their parent process is `codex`. Hooks
+  need persisted trust (`hooks.state.<key>.trusted_hash`).
+- **opencode 2.3.0.** The MCP server process gets no host-identifying variable. No model turn could
+  be run (expired API key), so tool-call hooks were not observed.
+- **Not verified.** Cursor, Gemini CLI and Copilot (not installed or not authorised); Claude Code
+  interactive permission prompts with an injected input.
 
 ## Threads and messages
 
@@ -226,7 +267,9 @@ carries the message id, the thread id, `created`, `pending` and `notices`.
 
 **Announcing read.** A fourth read mode exists for the hooks and is not a field of the MCP tool. In
 the request body it is `mark: notify` (`Mark::Notify`, read kind `ReadKind::Announcing` on the
-branch); the hook asks for it through the CLI's `inbox` command, with `--announce`. It:
+branch); the hook asks for it through the CLI's `inbox` command, with `--announce` (and `--as` where
+the host takes an injected name, see *Hook-injected `as`*). The hook needs `jq`: it builds its JSON
+output with `jq -n --arg`. The announcing read:
 
 - returns front matter only (message id, thread, subject, sender, timestamp, body size), never a
   body, for unread messages above `max(read_seq, notified_seq)`, oldest first, at most `limit`;
@@ -270,6 +313,12 @@ above 0, the daemon waits for the store-wide post counter to change, reads again
 connected immediately before a marking read, so a waiter whose client has gone advances nothing. A
 waiting read is exempt from the 10-second request bound of ADR-0013.
 
+- A wait holds no blocking thread.
+- A daemon drain ends every wait at once, with the reply `wait: timed_out`.
+- A peek that stops at its scan budget with nothing to return answers at once with `more: true`
+  and `next_cursor` instead of waiting.
+- A wait that times out carries the last read's `more` and `next_cursor`.
+
 ## Cursors
 
 A cursor is opaque. It is bound to the actor, the selection (every thread or one; for a listing, the
@@ -285,6 +334,10 @@ or for another read, is refused as invalid.
 - A marking read stores the ranges it delivered, one per thread, against the key, in the same
   batch as the position change, so a replay returns those ranges again. A read that moves nothing
   stores nothing.
+- A relayed waiting marking read goes to the store first, so a replay that arrives after the first
+  finished (same daemon or a restarted one) returns the remembered ranges. A replay that joined a
+  first request whose client left keeps waiting on its own.
+- The relay always overwrites a replay key the host put in `_meta`.
 - `join`, `leave`, `invite` and `archive` are idempotent under replay: a replay that finds the
   change already made returns the same success and changes nothing. `leave`, which would otherwise
   answer `not_member`, stores its key like a post.
@@ -296,6 +349,8 @@ or for another read, is refused as invalid.
   recovered: the messages are read and were never shown. `unread: false` reads them from history.
 - CLI and hook calls have no relay and no key. The hooks therefore use the announcing read, which
   never moves `read_seq`; a CLI read that marks is unprotected.
+- A CLI or hook agent request that writes (post, thread change, marking or announcing read,
+  cleanup) is not re-sent by the client after a broken connection.
 
 ## Time and order
 
@@ -350,6 +405,10 @@ that the sweep has not removed.
 | same version | opened |
 | newer version | opened; every write is refused with `store_newer`. Peeks, history, listings and reads by id work; marking reads and hook reads do not |
 | unreadable, or missing part of its layout | not opened and not modified; reported by `basemind agent status` |
+
+Fjall holds an OS file lock on `agents.fjall` while a process has it open. A daemon that finds it
+held (a takeover while the old daemon drains) retries the open with growing pauses for up to 120 s
+and reports `opening` meanwhile; any other open failure is final.
 
 basemind never deletes, recreates or completes an `agents.fjall` directory of a generation in use;
 cleanup removes a retired generation's directory whole (ADR-0024). Recovery from an unreadable
