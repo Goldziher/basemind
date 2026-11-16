@@ -23,7 +23,7 @@ pub struct ToolCall {
     pub id: String,
     /// The tool name; an MCP tool is `<server>:<tool>` under Codex.
     pub name: String,
-    /// The arguments, as the harness rendered them (usually JSON).
+    /// The arguments, as the harness rendered them (usually JSON), cut to their first 64 KiB.
     pub input: String,
     /// The output so far, cut to its last 64 KiB.
     pub output: String,
