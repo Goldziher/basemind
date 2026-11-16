@@ -1,8 +1,9 @@
 //! `run_list_files` + `run_find_files` — kept in their own file so `tools.rs` and `helpers.rs`
-//! stay under the 1000-line cap as the MCP surface grows. Both enumerate indexed paths and share the
-//! same limit/cursor/token-budget pagination shape; `find_files` additionally scores each candidate
-//! with `nucleo-matcher`, and with [`within_one_edit`] for a query that names nothing as typed,
-//! before paginating.
+//! stay under the 1000-line cap as the MCP surface grows. Both enumerate the workspace's files (the
+//! code map, the document tier, and the files git tracks that neither holds) and share the same
+//! limit/cursor/token-budget pagination shape; `find_files` additionally scores each candidate with
+//! `nucleo-matcher`, and with [`within_one_edit`] for a query that names nothing as typed, before
+//! paginating.
 
 use std::sync::atomic::Ordering;
 
@@ -29,8 +30,26 @@ fn invalidated(state: &ServerState, limit_clamped: bool) -> Result<CallToolResul
     })
 }
 
-/// Body of `find_files` without a query: enumerate indexed paths with optional substring
-/// (`path_contains`), prefix and `language` filters, then paginate.
+/// Files git tracks that neither the code map nor the document tier holds (images, fonts, data the
+/// scan does not parse), in the index's path order. Empty outside a git repository, and when the
+/// workspace is a directory inside one: git's paths are then not relative to the workspace root.
+fn unindexed_tracked(state: &ServerState, cache: &super::MapCache) -> Vec<RelPath> {
+    let Some(repo) = state.shared.repo.as_ref() else {
+        return Vec::new();
+    };
+    if !repo.origin_is_workdir() {
+        return Vec::new();
+    }
+    super::index_route::blocking(|| repo.tracked_files())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| !cache.contains(path) && !cache.contains_doc(path))
+        .collect()
+}
+
+/// Body of `find_files` without a query: enumerate the workspace's files with optional substring
+/// (`path_contains`), prefix and `language` filters, then paginate. A file git tracks that is not
+/// indexed has no language, so a `language` filter leaves it out.
 pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
     let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
@@ -56,23 +75,28 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
     let prefix_filter = params.path_prefix.as_deref().map(str::as_bytes);
     let lang_filter = params.language.as_deref();
 
-    // Code map first, then the document tier (markdown, config, data, PDFs ...) in sorted order:
-    // a file listing covers every indexed path, not just the code-mapped ones.
-    // The index map iterates in hash order, which differs per process; a cursor is an offset into
-    // this listing, so the order must be stable across calls.
+    // Code map first, then the document tier (markdown, config, data, PDFs ...), then the tracked
+    // files neither holds, each in sorted order. The index map iterates in hash order, which
+    // differs per process; a cursor is an offset into this listing, so the order must be stable.
     let mut code_sorted: Vec<_> = store.index.files.iter().collect();
     code_sorted.sort_unstable_by(|a, b| a.0.cmp(b.0));
-    let code = code_sorted.into_iter().map(|(p, e)| (p, e.language.clone()));
+    let code = code_sorted.into_iter().map(|(p, e)| (p, Some(e.language.clone())));
     let doc_paths = std::sync::Arc::clone(&cache.doc_paths);
-    let docs = doc_paths.iter().map(|p| (p, language_of_doc(p)));
+    let docs = doc_paths.iter().map(|p| (p, Some(language_of_doc(p))));
+    let tracked = if lang_filter.is_none() {
+        unindexed_tracked(state, &cache)
+    } else {
+        Vec::new()
+    };
+    let others = tracked.iter().map(|p| (p, None));
 
     let mut files: Vec<RelPath> = Vec::with_capacity(limit.min(256));
     let mut total: usize = 0;
     let mut seen: usize = 0;
-    for (p, language) in code.chain(docs) {
+    for (p, language) in code.chain(docs).chain(others) {
         let path_ok = path_finder.as_ref().is_none_or(|f| f.find(p.as_bytes()).is_some())
             && prefix_filter.is_none_or(|prefix| p.as_bytes().starts_with(prefix));
-        let lang_ok = lang_filter.is_none_or(|l| language == l);
+        let lang_ok = lang_filter.is_none_or(|l| language.as_deref() == Some(l));
         if !(path_ok && lang_ok) {
             continue;
         }
@@ -134,8 +158,8 @@ fn respond(
     })
 }
 
-/// Body of `find_files` with a query: fuzzy subsequence match over indexed paths (fzf/fd-style),
-/// ranked by `nucleo-matcher` score, with optional `path_prefix` / `language`
+/// Body of `find_files` with a query: fuzzy subsequence match over the workspace's files
+/// (fzf/fd-style), ranked by `nucleo-matcher` score, with optional `path_prefix` / `language`
 /// pre-filters. A query no path contains as typed may be a typo: files it names up to one edit
 /// ([`within_one_edit`]) rank first.
 ///
@@ -164,13 +188,21 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
 
     // Language and path are all the fuzzy-file search needs, and both live in the symbol-free file
     // view — so this whole scan reads no outline and touches no blob. The document tier (markdown,
-    // JSON, YAML, PDFs ...) is not code-mapped, but a file finder must cover every indexed path.
-    let code = cache.file_metas().map(|(p, meta)| (p, meta.language.to_string()));
-    let docs = cache.doc_paths.iter().map(|p| (p, language_of_doc(p)));
+    // JSON, YAML, PDFs ...) is not code-mapped, and the tracked files neither holds have no
+    // language, but a file finder must cover them too.
+    let tracked = if lang_filter.is_none() {
+        unindexed_tracked(state, &cache)
+    } else {
+        Vec::new()
+    };
+    let code = cache.file_metas().map(|(p, meta)| (p, Some(meta.language.to_string())));
+    let docs = cache.doc_paths.iter().map(|p| (p, Some(language_of_doc(p))));
+    let others = tracked.iter().map(|p| (p, None));
     let candidates: Vec<&RelPath> = code
         .chain(docs)
+        .chain(others)
         .filter(|(p, language)| {
-            lang_filter.is_none_or(|l| *language == l)
+            lang_filter.is_none_or(|l| language.as_deref() == Some(l))
                 && prefix_filter.is_none_or(|pre| p.as_bytes().starts_with(pre.as_bytes()))
         })
         .map(|(p, _)| p)

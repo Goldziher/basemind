@@ -1,5 +1,6 @@
-//! `find_files` covers every indexed path: the code map UNION the document tier, filtered by
-//! language, cut at a relative score and in a deterministic order.
+//! `find_files` covers every file of the workspace: the code map UNION the document tier UNION the
+//! files git tracks that neither holds, filtered by language, cut at a relative score and in a
+//! deterministic order.
 
 use std::sync::Arc;
 
@@ -14,6 +15,11 @@ use crate::scanner::{EmbedMode, ScanSource, scan};
 use crate::store::{Store, VIEW_WORKING};
 
 fn server(root: &std::path::Path) -> BasemindServer {
+    server_with(root, None)
+}
+
+/// A server over the fixture at `root`, answering with `repo` as its git repository.
+fn server_with(root: &std::path::Path, repo: Option<Arc<crate::git::Repo>>) -> BasemindServer {
     crate::store::init_isolated_cache();
     for (name, body) in [
         ("widget_factory.rs", "pub fn make() {}\n"),
@@ -42,7 +48,7 @@ fn server(root: &std::path::Path) -> BasemindServer {
     });
     let store = Store::open_read_only(root, VIEW_WORKING).expect("open ro");
     let git_cache = Arc::new(GitCache::open(&store.basemind_dir, 16, false).expect("git cache"));
-    BasemindServer::new_oneshot(store, root.to_path_buf(), Arc::new(config), None, git_cache)
+    BasemindServer::new_oneshot(store, root.to_path_buf(), Arc::new(config), repo, git_cache)
 }
 
 fn json_of(result: &CallToolResult) -> Value {
@@ -117,6 +123,49 @@ async fn find_names_the_file_a_transposed_or_dropped_letter_meant() {
         let found = find(&server, typo, None).await;
         assert_eq!(found.first().map(String::as_str), Some(meant), "{typo}: {found:?}");
     }
+}
+
+/// A file git tracks that the scan does not parse (an image, a font) is still a file to find, and to
+/// list; it has no language, so a language filter leaves it out.
+#[tokio::test]
+async fn find_and_list_cover_files_git_tracks_that_are_not_indexed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e.x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e.x")
+            .status()
+            .expect("git in PATH");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::create_dir_all(root.join("assets")).unwrap();
+    std::fs::write(root.join("assets/banner.png"), [0x89, b'P', b'N', b'G', 0, 1, 2]).unwrap();
+    std::fs::write(root.join("widget_factory.rs"), "pub fn make() {}\n").unwrap();
+    git(&["add", "-A"]);
+    let repo = Arc::new(crate::git::Repo::discover(root).expect("repo"));
+    let server = server_with(root, Some(repo));
+
+    assert_eq!(find(&server, "banner.png", None).await, ["assets/banner.png"]);
+    assert_eq!(
+        find(&server, "baner", None).await,
+        ["assets/banner.png"],
+        "a typo of it too"
+    );
+    assert!(find(&server, "banner", Some("rust")).await.is_empty());
+
+    let listed = server.find_files_call(listing(None, None)).await.expect("files");
+    assert!(paths(&json_of(&listed)).contains(&"assets/banner.png".to_string()));
+    let rust = server
+        .find_files_call(listing(None, Some("rust")))
+        .await
+        .expect("files");
+    assert!(!paths(&json_of(&rust)).contains(&"assets/banner.png".to_string()));
 }
 
 #[tokio::test]

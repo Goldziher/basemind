@@ -105,7 +105,6 @@ impl FileIndexView {
         self.files.get(path)
     }
 
-    #[cfg(test)]
     pub(crate) fn contains(&self, path: &RelPath) -> bool {
         self.files.contains_key(path)
     }

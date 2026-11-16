@@ -626,7 +626,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moved file's source) reach a repository indexed by an earlier build.
 - `find_files` finds the file a query names up to one typo (`buidl` finds `build.rs`, `SCEURITY` finds
   `SECURITY.md`) when no path holds the query as typed; a transposed letter matched nothing, or only
-  paths holding the letters in order.
+  paths holding the letters in order. It also covers every file git tracks that the scan does not index
+  (images, fonts), in a search and in a listing.
 - `basemind git by-path` refuses `--window 0` and `--limit 0`, which returned the same `next_cursor`
   forever.
 - `code_refs` answered by a daemon that predates exact matching no longer sets `truncated_reason:

@@ -420,6 +420,25 @@ impl Repo {
         Ok(out)
     }
 
+    /// Every file the staging index tracks, as `git ls-files` lists them: no submodule and no
+    /// sparse directory entry. Paths are relative to [`Self::workdir`].
+    pub fn tracked_files(&self) -> Result<Vec<crate::path::RelPath>, GitError> {
+        let local = self.local();
+        let index = local.index_or_empty().map_err(|e| GitError::Read {
+            what: "git index".to_string(),
+            msg: e.to_string(),
+        })?;
+        let mut files: Vec<crate::path::RelPath> = index
+            .entries()
+            .iter()
+            .filter(|entry| !entry.mode.is_submodule() && !entry.mode.is_sparse())
+            .map(|entry| crate::path::RelPath::from(<gix::bstr::BStr as AsRef<[u8]>>::as_ref(entry.path(&index))))
+            .collect();
+        // A conflicted path has an entry per stage, next to each other in the index's path order.
+        files.dedup();
+        Ok(files)
+    }
+
     /// List forward-slash relative paths of every blob in the tree at `rev_sha`.
     pub fn list_paths_rev(&self, rev_sha: &str) -> Result<Vec<String>, GitError> {
         let local = self.local();
