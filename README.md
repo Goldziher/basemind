@@ -755,9 +755,8 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 <details>
 <summary><strong>Measuring query latency (<code>elapsed_us</code>)</strong></summary>
 
-The tools whose answer replaces reading content — `code_outline`, `code_read`, `code_search`,
-`docs_search`, `git_blame`, the memory tools and `index_status` — report their own latency as
-**`elapsed_us`** on their response. The locating tools (`code_symbols`, `code_grep`, `code_refs`,
+`code_outline`, `code_search`, `docs_search`, `git_blame`, the memory tools and `index_status`
+report their own latency as **`elapsed_us`** on their response. The locating tools (`code_symbols`, `code_grep`, `code_refs`,
 `find_files`, `git_log`, `git_diff`) leave it out: their answer is a short list, and a timing field
 on it would cost as much as a row. Telemetry records every call's latency, and the CLI times the
 call itself when the response has no `elapsed_us`.

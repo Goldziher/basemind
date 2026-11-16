@@ -132,9 +132,9 @@ pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, Mcp
 
 pub(super) use timing::elapsed_us;
 
-/// Canonical contract for the `elapsed_us` field carried by the responses of the tools whose answer
-/// replaces reading content (`code_outline`, `code_read`, `code_search`, `docs_search`, `git_blame`,
-/// the memory tools, `index_status`). The locating tools (`code_symbols`, `code_grep`, `code_refs`,
+/// Canonical contract for the `elapsed_us` field carried by the responses of `code_outline`,
+/// `code_search`, `docs_search`, `git_blame`, the memory tools and `index_status`; `code_read`
+/// answers with the source and no timing. The locating tools (`code_symbols`, `code_grep`, `code_refs`,
 /// `find_files`, `git_log`, `git_diff`) leave it out: their answer is a few rows, the field cost as
 /// much as one, and ADR-0031 holds them to the shell's token cost. Telemetry records the latency of
 /// every call either way.
