@@ -427,10 +427,8 @@ fn a_model_and_effort_are_the_only_request_values_on_the_command_line() {
     spec.model = Some("sonnet".to_owned());
     spec.effort = Some("high".to_owned());
     let plan = ClaudeCodeAdapter.plan_spec(&spec).unwrap();
-    assert_eq!(
-        plan.args[plan.args.len() - 4..],
-        ["--model", "sonnet", "--effort", "high"]
-    );
+    let at = plan.args.iter().position(|arg| arg == "--model").unwrap();
+    assert_eq!(plan.args[at..at + 4], ["--model", "sonnet", "--effort", "high"]);
 }
 
 #[test]
@@ -710,4 +708,29 @@ fn nothing_of_a_turn_is_acted_on_before_the_init_frame() {
         assert!(matches!(error, LaunchError::Protocol(_)), "{frame}: {error}");
         assert!(out.is_empty(), "{frame} was answered");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bypass_guard_does_not_read_the_mcp_servers_own_path_and_arguments() {
+    use std::os::unix::fs::PermissionsExt;
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let command = outer.path().join("yoloMode").join("basemind");
+    std::fs::create_dir(command.parent().unwrap()).unwrap();
+    std::fs::write(&command, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut spec = spec(HarnessKind::ClaudeCode, &root);
+    let mut server = McpServerSpec::basemind_serve(&command);
+    server.args.push("--danger-full-access-log".to_owned());
+    spec.mcp_server = Some(server);
+    let plan = ClaudeCodeAdapter.plan_spec(&spec).unwrap();
+    assert!(plan.args.iter().any(|arg| arg.contains("yoloMode")));
+    // The adapter's own arguments are still guarded.
+    spec.model = Some("dangerFullAccess".to_owned());
+    assert!(matches!(
+        ClaudeCodeAdapter.plan_spec(&spec),
+        Err(LaunchError::BypassArgument(_))
+    ));
 }

@@ -149,7 +149,13 @@ impl AcpAdapter {
                 args
             }
         };
-        spec.plan(&prepared, args.into_iter().map(str::to_owned).collect(), &env)
+        // ACP hands the MCP server over in `session/new`, not on the command line.
+        spec.plan(
+            &prepared,
+            args.into_iter().map(str::to_owned).collect(),
+            Vec::new(),
+            &env,
+        )
     }
 
     fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {

@@ -414,15 +414,19 @@ impl LaunchSpec {
         }
     }
 
-    /// The plan for the adapter's final `args`, which include the model arguments where that
-    /// harness takes them, after the bypass guard.
+    /// The plan for the adapter's `args` followed by `server_args`. `args` are the adapter's
+    /// own and the model arguments, and pass the bypass guard; `server_args` carry the
+    /// config's MCP server (its command, arguments and tool names), which are trusted data
+    /// the guard's fragments could match by accident, as in a path through a `yolo` directory.
     pub fn plan(
         &self,
         prepared: &Prepared,
-        args: Vec<String>,
+        mut args: Vec<String>,
+        server_args: Vec<String>,
         extra_env: &[(&str, &str)],
     ) -> Result<CommandPlan, LaunchError> {
         guard_bypass(&args, prepared.bypass(self))?;
+        args.extend(server_args);
         let mut env = self.child_env(std::env::vars_os());
         for (name, value) in extra_env {
             env.entry((*name).to_owned()).or_insert_with(|| value.into());
