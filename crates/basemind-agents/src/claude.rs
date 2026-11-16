@@ -114,10 +114,11 @@ fn permission_mode(mode: PermissionMode) -> &'static str {
 }
 
 /// Checks Claude Code's `system/init` frame: it has to report the permission mode the adapter
-/// asked for and exactly the MCP servers it injected. An empty `--setting-sources` and
-/// `--strict-mcp-config` were not run against a live Claude Code; this is where a version
-/// that ignores them, or a frame that no longer carries these fields, fails the session
-/// instead of running with permissions or servers nobody chose.
+/// asked for, exactly the MCP servers it injected and each of them as loaded from
+/// `--mcp-config` (`source: "dynamic"`), and only built-in plugins. Claude Code 2.1.325 was
+/// seen to report exactly that under the adapter's flags, and project, plugin and claude.ai
+/// servers and user plugins without them; a version that stops honouring the flags, or whose
+/// frame no longer carries the mode and the servers, fails the session here.
 fn check_init(frame: &Value, mode: &str, servers: &[String]) -> Result<(), LaunchError> {
     let reported_mode = frame["permissionMode"].as_str();
     if reported_mode != Some(mode) {
@@ -137,6 +138,20 @@ fn check_init(frame: &Value, mode: &str, servers: &[String]) -> Result<(), Launc
     if reported != expected {
         return Err(LaunchError::Protocol(format!(
             "Claude Code reported MCP servers {reported:?}, not {expected:?}"
+        )));
+    }
+    let mut list = frame["mcp_servers"].as_array().into_iter().flatten();
+    if let Some(server) = list.find(|server| !server["source"].is_null() && server["source"] != "dynamic") {
+        return Err(LaunchError::Protocol(format!(
+            "Claude Code loaded MCP server {} from {}, not from the adapter's --mcp-config",
+            server["name"], server["source"]
+        )));
+    }
+    let mut plugins = frame["plugins"].as_array().into_iter().flatten();
+    if let Some(plugin) = plugins.find(|plugin| plugin["path"] != "builtin") {
+        return Err(LaunchError::Protocol(format!(
+            "Claude Code loaded plugin {} from {}",
+            plugin["name"], plugin["path"]
         )));
     }
     Ok(())
