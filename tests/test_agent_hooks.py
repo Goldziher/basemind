@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -41,7 +42,7 @@ LAUNCHER = """printf '%s\\n' "$@" > "$HOME/launcher-args"
 cat > "$HOME/launcher-stdin"
 case "$1 $2 $3" in
 "agent hook name") printf '%s' "${NAME_RESULT-session-1a2b3c4d}" ;;
-"agent hook pre-tool-use") printf '%s' "$HOOK_RESULT"; exit "${LAUNCHER_EXIT:-0}" ;;
+"agent hook pre-tool-use") sleep "${LAUNCHER_SLEEP:-0}"; printf '%s' "$HOOK_RESULT"; exit "${LAUNCHER_EXIT:-0}" ;;
 "agent inbox "*) printf '%s' "$INBOX_RESULT"; exit "${LAUNCHER_EXIT:-0}" ;;
 esac
 """
@@ -56,7 +57,7 @@ class AgentHookTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for command in ("jq", "dirname", "cat", "tr", "sed", "grep"):
+        for command in ("jq", "dirname", "cat", "tr", "sed", "grep", "sleep", "pkill"):
             (self.bin / command).symlink_to(shutil.which(command))
         hooks = self.root / "hooks"
         hooks.mkdir()
@@ -118,6 +119,12 @@ class AgentHookTests(unittest.TestCase):
         )
         self.assertEqual(self.run_hook("agent-as", "", HOOK_RESULT="ignored").stdout, "")
 
+    def test_agent_as_is_time_boxed_without_a_timeout_binary(self) -> None:
+        started = time.monotonic()
+        result = self.run_hook("agent-as", {"tool_name": "x"}, HOOK_RESULT="late", LAUNCHER_SLEEP="30")
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertEqual(result.stdout, "")
+
     def test_agent_as_is_time_boxed_when_timeout_exists(self) -> None:
         (self.bin / "timeout").write_text('#!/bin/bash\nprintf "%s\\n" "$1" > "$HOME/timeout-arg"\nshift\nexec "$@"\n')
         (self.bin / "timeout").chmod(0o755)
@@ -160,8 +167,18 @@ class AgentHookTests(unittest.TestCase):
         self.assertEqual(self.announce({"messages": [], "more": False}).stdout, "")
         self.assertEqual(self.announce("not JSON").stdout, "")
         self.assertEqual(self.announce("").stdout, "")
-        self.assertEqual(self.announce(INBOX, NAME_RESULT="").stdout, "")
         self.assertEqual(self.announce(INBOX, LAUNCHER_EXIT="1").stdout, "")
+
+    def test_inbox_notify_announces_as_the_principal_when_the_host_names_no_session(self) -> None:
+        result = self.announce(INBOX, NAME_RESULT="")
+        self.assertNotIn("--as", self.launcher_args(), "the tool calls act as the principal there")
+        self.assertIn("t-abcdef.3", json.loads(result.stdout)["additionalContext"])
+
+    def test_inbox_notify_builds_valid_json_from_any_subject(self) -> None:
+        hostile = 'quote " backslash \\ tab \t bell \u0007 }{'
+        inbox = {**INBOX, "messages": [{**INBOX["messages"][0], "subject": hostile}]}
+        payload = json.loads(self.announce(inbox, CLAUDE_PLUGIN_ROOT=str(self.root)).stdout)
+        self.assertIn(hostile, payload["hookSpecificOutput"]["additionalContext"])
 
     def test_inbox_notify_emits_the_harness_shape(self) -> None:
         cursor = json.loads(self.announce(INBOX, CURSOR_PLUGIN_ROOT="/p").stdout)
@@ -171,7 +188,14 @@ class AgentHookTests(unittest.TestCase):
 
 
 class AgentAsManifestTests(unittest.TestCase):
-    MANIFESTS = ("plugin/.ai-rulez/hooks/hooks.json", "plugin/hooks/hooks.json", "hooks/hooks.json")
+    MANIFESTS = (
+        "plugin/.ai-rulez/hooks/hooks.json",
+        "plugin/hooks/hooks.json",
+        "hooks/hooks.json",
+        ".codex-plugin/hooks/hooks.json",
+        ".cursor-plugin/hooks/hooks.json",
+        "gemini-extension.json",
+    )
 
     def entries(self, manifest: str) -> list[dict]:
         return json.loads((ROOT / manifest).read_text())["hooks"]["PreToolUse"]
@@ -180,8 +204,10 @@ class AgentAsManifestTests(unittest.TestCase):
         for manifest in self.MANIFESTS:
             entries = self.entries(manifest)
             by_command = {hook["command"].rsplit(" ", 1)[1]: entry for entry in entries for hook in entry["hooks"]}
-            self.assertEqual(set(by_command), {"pre-tool-guard", "agent-as"}, manifest)
-            self.assertEqual(by_command["pre-tool-guard"]["matcher"], "Grep|Glob|Bash", manifest)
+            self.assertIn("agent-as", by_command, manifest)
+            self.assertLessEqual(set(by_command), {"pre-tool-guard", "agent-as"}, manifest)
+            if "pre-tool-guard" in by_command:
+                self.assertEqual(by_command["pre-tool-guard"]["matcher"], "Grep|Glob|Bash", manifest)
             matcher = re.compile(by_command["agent-as"]["matcher"])
             for tool in ("agent_post", "agent_inbox", "agent_threads"):
                 self.assertTrue(matcher.fullmatch(f"mcp__plugin_basemind_basemind__{tool}"), (manifest, tool))
@@ -190,7 +216,7 @@ class AgentAsManifestTests(unittest.TestCase):
                 self.assertIsNone(matcher.fullmatch(f"mcp__plugin_basemind_basemind__{tool}"), (manifest, tool))
 
     def test_agent_as_ships_wherever_the_hook_scripts_do(self) -> None:
-        for directory in ("plugin/.ai-rulez/hooks", "plugin/hooks", "hooks"):
+        for directory in ("plugin/.ai-rulez/hooks", "plugin/hooks", "hooks", ".codex-plugin/hooks", ".cursor-plugin/hooks"):
             self.assertTrue((ROOT / directory / "agent-as").is_file(), directory)
             self.assertTrue(os.access(ROOT / directory / "agent-as", os.X_OK), directory)
 

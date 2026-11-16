@@ -49,7 +49,7 @@ class SessionStartTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for command in ("jq", "dirname", "sed", "grep", "wc", "tr"):
+        for command in ("jq", "dirname", "sed", "grep", "wc", "tr", "cat", "sleep", "pkill"):
             (self.bin / command).symlink_to(shutil.which(command))
         hooks = self.root / "hooks"
         hooks.mkdir()
@@ -61,6 +61,11 @@ class SessionStartTests(unittest.TestCase):
             scripts / "mcp-launch.sh",
             """case "$1" in
 agent)
+  if [ "$2" = hook ]; then
+    cat > "$HOME/hook-stdin"
+    printf '%s' "${NAME_RESULT-session-1a2b3c4d}"
+    exit "${AGENT_EXIT:-0}"
+  fi
   printf '%s\\n' "$@" > "$HOME/inbox-args"
   printf '%s' "$INBOX_RESULT"
   ;;
@@ -77,7 +82,7 @@ esac""",
         path.write_text(f"#!/bin/bash\n{body}\n")
         path.chmod(0o755)
 
-    def invoke(self, response: str, *, inbox: str = "", exit_code: int = 0) -> str:
+    def invoke(self, response: str, *, inbox: str = "", exit_code: int = 0, **extra: str) -> str:
         env = {
             **os.environ,
             "HOME": str(self.root),
@@ -87,11 +92,13 @@ esac""",
             "STATUS_RESULT": response,
             "STATUS_EXIT": str(exit_code),
             "INBOX_RESULT": inbox,
+            **extra,
         }
         env.pop("CURSOR_PLUGIN_ROOT", None)
         env.pop("COPILOT_CLI", None)
         output = subprocess.run(
             ["/bin/bash", self.hook],
+            input=json.dumps({"session_id": "s1", "source": "startup"}),
             cwd=self.root,
             env=env,
             capture_output=True,
@@ -175,6 +182,23 @@ esac""",
         self.assertIn("--json", args)
         more = self.invoke(status, inbox='{"messages":[{"id":"t-abcdef.1"}],"more":true}')
         self.assertIn("You have at least 1 unread agent message(s)", more)
+
+    def test_the_peek_reads_as_the_actor_the_agent_tools_act_as(self) -> None:
+        status = '{"file_count":5,"schema_version":33}'
+        inbox = '{"messages":[{"id":"t-abcdef.1"}],"more":false}'
+        self.invoke(status, inbox=inbox)
+        self.assertEqual(json.loads((self.root / "hook-stdin").read_text())["session_id"], "s1")
+        args = (self.root / "inbox-args").read_text().splitlines()
+        self.assertEqual(args[args.index("--as") + 1], "session-1a2b3c4d")
+        self.invoke(status, inbox=inbox, NAME_RESULT="")
+        args = (self.root / "inbox-args").read_text().splitlines()
+        self.assertNotIn("--as", args, "a host that injects no name reads as the principal")
+
+    def test_a_build_without_agent_messaging_names_no_agent_tool(self) -> None:
+        result = self.invoke('{"file_count":5,"schema_version":33}', AGENT_EXIT="2")
+        for tool in DEFERRED_AGENT_TOOLS:
+            self.assertNotIn(tool, result)
+        self.assertFalse((self.root / "inbox-args").exists())
 
     def test_session_start_hook_runs_on_resume(self) -> None:
         manifest = json.loads((ROOT / "plugin/hooks/hooks.json").read_text())

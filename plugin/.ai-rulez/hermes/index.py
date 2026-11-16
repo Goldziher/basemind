@@ -153,9 +153,8 @@ def _register_hooks(ctx) -> None:
     def on_session_start(**_kwargs):
         _inject(_session_start_context(os.getcwd()))
 
-    def pre_llm_call(**kwargs):
-        sid = str(kwargs.get("task_id") or kwargs.get("session_id") or "default")
-        _inject(_delta_context(os.getcwd(), sid))
+    def pre_llm_call(**_kwargs):
+        _inject(_delta_context(os.getcwd()))
 
     _safe_call(reg, "on_session_start", on_session_start)
     _safe_call(reg, "pre_llm_call", pre_llm_call)
@@ -169,12 +168,13 @@ def _session_start_context(cwd: str) -> str:
     return f"{_DISCIPLINE} {_COMMS_TOOLS}"
 
 
-def _delta_context(cwd: str, session_id: str) -> str | None:
-    """Per-turn delta: an announcing read lists unread messages once, as front matter, and marks none read."""
-    name = _session_name(session_id)
-    if not name:
-        return None
-    messages = _inbox_messages(cwd, ["--announce", "--as", name], 10)
+def _delta_context(cwd: str) -> str | None:
+    """Per-turn delta: an announcing read lists unread messages once, as front matter, and marks none read.
+
+    Hermes cannot rewrite a tool call's arguments, so its agent tool calls act as the principal and
+    this read does too: a session-scoped name would announce to an actor that never reads.
+    """
+    messages = _inbox_messages(cwd, ["--announce"], 10)
     if not messages:
         return None
     return (
@@ -182,12 +182,6 @@ def _delta_context(cwd: str, session_id: str) -> str | None:
         f"{_format_lines(messages)}\n"
         "Read them with agent_inbox (bodies inline; id reads one whole message). Reply with agent_post if warranted."
     )
-
-
-def _session_name(session_id: str) -> str:
-    """The sub-identity name the CLI derives for this session, the same one its tool calls carry."""
-    data = _run_basemind(["agent", "hook", "name"], timeout=6, stdin=json.dumps({"session_id": session_id}))
-    return "".join(c for c in (data or "").strip() if c.isalnum() or c in "_-").lower()
 
 
 def _inbox_messages(cwd: str, flags: list[str], limit: int):

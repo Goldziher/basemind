@@ -83,8 +83,11 @@ comms_state() {
   command -v pgrep >/dev/null 2>&1 && pgrep -f "comms daemon" >/dev/null 2>&1 || return 1
   [[ $have_jq -eq 1 ]] || return 1
 
-  local cache now cts cu ca json unread agent
-  cache="${TMPDIR:-/tmp}/basemind-sl-comms-$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)"
+  local cache now cts cu ca json unread agent name
+  # The actor this session's agent tools act as: the plugin's agent-as hook names the main session
+  # from its session id, under the principal `serve` derives with BASEMIND_HOST=claude.
+  name="$(printf '%s' "$input" | BASEMIND_HOST=claude timeout 2 basemind agent hook name 2>/dev/null | tr -cd 'a-z0-9_-' || true)"
+  cache="${TMPDIR:-/tmp}/basemind-sl-comms-$(printf '%s %s' "$cwd" "$name" | cksum | cut -d' ' -f1)"
   now="$(date +%s)"
   if [[ -f "$cache" ]]; then
     read -r cts cu ca <"$cache" 2>/dev/null || true
@@ -94,12 +97,13 @@ comms_state() {
     fi
   fi
 
-  json="$(timeout 2 basemind agent inbox --peek --root "$cwd" --json --limit 1 2>/dev/null || true)"
+  local as=()
+  [[ -n "$name" ]] && as=(--as "$name")
+  json="$(BASEMIND_HOST=claude timeout 2 basemind agent inbox --peek ${as[@]+"${as[@]}"} --root "$cwd" --json --limit 1 </dev/null 2>/dev/null || true)"
   [[ -n "$json" ]] || return 1
   unread="$(printf '%s' "$json" | jq -r '(.messages | length)' 2>/dev/null | tr -cd '0-9' || true)"
   [[ -n "$unread" ]] || unread=0
-  agent="${BASEMIND_AGENT_ID:-}"
-  [[ -z "$agent" ]] && agent="$(tr -d '[:space:]' <"${bm_dir}/agent-id" 2>/dev/null || true)"
+  agent="${BASEMIND_AGENT_ID:-${name}}"
   printf '%s %s %s\n' "$now" "$unread" "${agent:-}" >"$cache" 2>/dev/null || true
   printf '%s %s' "$unread" "${agent:-}"
 }
