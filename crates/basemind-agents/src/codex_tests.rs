@@ -391,7 +391,6 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
         [
             "mcp_servers.basemind.command=\"/opt/basemind/bin/basemind\"",
             "mcp_servers.basemind.args=[\"serve\"]",
-            "mcp_servers.basemind.default_tools_approval_mode=\"approve\"",
         ]
     );
     let env_vars = plan.args.iter().find(|arg| arg.contains("env_vars")).unwrap();
@@ -404,9 +403,10 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
         assert!(plan.env.contains_key(name), "{name} is not exported to the harness");
     }
 
-    spec.mcp_server.as_mut().unwrap().allow_tools = false;
-    let plan = CodexAdapter.plan(&spec).unwrap();
-    assert!(!plan.args.iter().any(|arg| arg.contains("default_tools_approval_mode")));
+    assert!(!plan.args.iter().any(|arg| arg.contains("approval")));
+    spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned()];
+    assert!(matches!(CodexAdapter.plan(&spec), Err(LaunchError::Unsupported { .. })));
+    spec.mcp_server.as_mut().unwrap().allow_tools.clear();
 
     spec.mcp_server.as_mut().unwrap().name = "bad.name".to_owned();
     assert!(matches!(

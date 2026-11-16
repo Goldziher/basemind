@@ -71,6 +71,16 @@ impl Adapter for AcpAdapter {
         let flavor = flavor(spec)?;
         let prepared = spec.prepare()?;
         session_mode(spec, &prepared, flavor)?;
+        if spec
+            .mcp_server
+            .as_ref()
+            .is_some_and(|server| !server.allow_tools.is_empty())
+        {
+            return Err(LaunchError::Unsupported {
+                harness: spec.harness.kind.id(),
+                feature: "pre-approving MCP tools",
+            });
+        }
         let mut env = Vec::new();
         let extra = prepared.extra_args.iter().map(String::as_str);
         let args: Vec<&str> = match flavor {

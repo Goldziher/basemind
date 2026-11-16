@@ -103,13 +103,16 @@ pub struct McpServerSpec {
     /// [`LaunchSpec::env`]. They are exported to the harness as well, because Claude Code and
     /// Codex hand a server variables by inheritance.
     pub env: BTreeMap<String, String>,
-    /// Whether the harness may call this server's tools without an approval request. Without
-    /// it every comms call of the launched agent is a request the default policy denies.
-    pub allow_tools: bool,
+    /// The tools of this server the harness may call without an approval request, by their
+    /// MCP name (`[A-Za-z0-9_-]{1,64}`). Empty by default: every call is then a request the
+    /// approval policy decides, and without a policy it is denied. Only Claude Code can
+    /// pre-approve single tools; for Codex and ACP agents a non-empty list fails the launch
+    /// with [`LaunchError::Unsupported`].
+    pub allow_tools: Vec<String>,
 }
 
 impl McpServerSpec {
-    /// `<executable> serve` under the name `basemind`, with its tools pre-approved.
+    /// `<executable> serve` under the name `basemind`, with no tool pre-approved.
     #[must_use]
     pub fn basemind_serve(executable: impl Into<PathBuf>) -> Self {
         Self {
@@ -117,7 +120,7 @@ impl McpServerSpec {
             command: executable.into(),
             args: vec!["serve".to_owned()],
             env: BTreeMap::new(),
-            allow_tools: true,
+            allow_tools: Vec::new(),
         }
     }
 }
@@ -211,13 +214,14 @@ impl LaunchSpec {
             check_env_name(name)?;
         }
         if let Some(server) = &self.mcp_server {
-            let valid = (1..=64).contains(&server.name.len())
-                && server
-                    .name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+            let valid = mcp_name(&server.name);
             if !valid {
                 return Err(LaunchError::InvalidMcpServerName(server.name.clone()));
+            }
+            for tool in &server.allow_tools {
+                if !mcp_name(tool) {
+                    return Err(LaunchError::InvalidMcpToolName(tool.clone()));
+                }
             }
         }
         let kind = self.harness.kind;
@@ -368,6 +372,14 @@ pub const ENV_ALLOWLIST: &[&str] = &[
 /// Where basemind keeps its store and its comms rendezvous. A launched agent has to see the
 /// launcher's values, or its `basemind serve` talks to a different daemon.
 const SHARED_STATE_ENV: &[&str] = &["BASEMIND_DATA_HOME", "BASEMIND_COMMS_DIR"];
+
+/// Whether `name` can be written into every harness's configuration: `[A-Za-z0-9_-]{1,64}`.
+fn mcp_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
 
 fn confine(root: &Path, working_dir: Option<&Path>) -> Result<PathBuf, LaunchError> {
     let resolve = |path: &Path| {

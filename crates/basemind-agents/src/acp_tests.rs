@@ -218,6 +218,9 @@ fn the_mcp_server_is_passed_in_session_new_with_the_identity_by_value() {
         agent.reply(&prompt, &json!({"stopReason": "end_turn"}));
     });
     run.result.unwrap();
+
+    spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned()];
+    assert!(matches!(AcpAdapter.plan(&spec), Err(LaunchError::Unsupported { .. })));
 }
 
 #[test]

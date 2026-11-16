@@ -34,15 +34,19 @@ impl Adapter for CodexAdapter {
         let prepared = spec.prepare()?;
         let mut args = vec!["app-server".to_owned()];
         if let Some(server) = &spec.mcp_server {
+            // Codex approves a server's tools all at once; single tools cannot be named here.
+            if !server.allow_tools.is_empty() {
+                return Err(LaunchError::Unsupported {
+                    harness: spec.harness.kind.id(),
+                    feature: "pre-approving single MCP tools",
+                });
+            }
             // Codex hands a server only the variables named in `env_vars`.
-            let mut settings = vec![
+            let settings = [
                 ("command", json!(server.command)),
                 ("args", json!(server.args)),
                 ("env_vars", json!(spec.mcp_env_names())),
             ];
-            if server.allow_tools {
-                settings.push(("default_tools_approval_mode", json!("approve")));
-            }
             for (key, value) in settings {
                 // JSON strings and arrays of strings are valid TOML literals for these values.
                 args.extend(["-c".to_owned(), format!("mcp_servers.{}.{key}={value}", server.name)]);

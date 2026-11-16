@@ -409,7 +409,7 @@ fn extra_arguments_are_limited_to_model_and_effort_even_with_an_opt_in() {
 }
 
 #[test]
-fn an_mcp_server_becomes_mcp_config_and_an_allowed_tools_entry() {
+fn an_mcp_server_becomes_mcp_config_and_only_named_tools_are_pre_approved() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = spec(HarnessKind::ClaudeCode, root.path());
     spec.mcp_server = Some(McpServerSpec::basemind_serve("/opt/basemind/bin/basemind"));
@@ -421,10 +421,17 @@ fn an_mcp_server_becomes_mcp_config_and_an_allowed_tools_entry() {
             "type": "stdio", "command": "/opt/basemind/bin/basemind", "args": ["serve"],
         }}})
     );
-    assert_eq!(value_of(&plan.args, "--allowedTools"), Some("mcp__basemind"));
-
-    spec.mcp_server.as_mut().unwrap().allow_tools = false;
-    let plan = ClaudeCodeAdapter.plan(&spec).unwrap();
-    assert!(value_of(&plan.args, "--mcp-config").is_some());
     assert_eq!(value_of(&plan.args, "--allowedTools"), None);
+
+    spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned(), "agent_inbox".to_owned()];
+    let plan = ClaudeCodeAdapter.plan(&spec).unwrap();
+    assert_eq!(
+        value_of(&plan.args, "--allowedTools"),
+        Some("mcp__basemind__agent_post,mcp__basemind__agent_inbox")
+    );
+    spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post,Bash".to_owned()];
+    assert!(matches!(
+        ClaudeCodeAdapter.plan(&spec),
+        Err(LaunchError::InvalidMcpToolName(_))
+    ));
 }

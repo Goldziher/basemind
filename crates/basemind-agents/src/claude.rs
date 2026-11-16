@@ -67,8 +67,13 @@ impl Adapter for ClaudeCodeAdapter {
         }
         // Always given, so `--strict-mcp-config` leaves exactly these servers.
         args.extend(["--mcp-config".to_owned(), json!({"mcpServers": servers}).to_string()]);
-        if let Some(server) = spec.mcp_server.as_ref().filter(|server| server.allow_tools) {
-            args.extend(["--allowedTools".to_owned(), format!("mcp__{}", server.name)]);
+        if let Some(server) = spec.mcp_server.as_ref().filter(|server| !server.allow_tools.is_empty()) {
+            let tools: Vec<String> = server
+                .allow_tools
+                .iter()
+                .map(|tool| format!("mcp__{}__{tool}", server.name))
+                .collect();
+            args.extend(["--allowedTools".to_owned(), tools.join(",")]);
         }
         if prepared.bypass(spec) {
             args.push("--allow-dangerously-skip-permissions".to_owned());

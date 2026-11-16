@@ -60,6 +60,9 @@ pub enum LaunchError {
     /// The MCP server name cannot be written into every harness's configuration.
     #[error("MCP server name {0:?} does not match [A-Za-z0-9_-]{{1,64}}")]
     InvalidMcpServerName(String),
+    /// A pre-approved MCP tool name is not `[A-Za-z0-9_-]{1,64}`.
+    #[error("MCP tool name {0:?} does not match [A-Za-z0-9_-]{{1,64}}")]
+    InvalidMcpToolName(String),
     /// An environment addition, of the spec or of its MCP server, has a name a launch spec
     /// may not set: see [`LaunchSpec::env`](crate::LaunchSpec::env).
     #[error("environment variable {0:?} may not be set by a launch spec")]
