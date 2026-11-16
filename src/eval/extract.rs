@@ -9,9 +9,9 @@
 //! | grep | `path:line` of each match (listed under its file) |
 //! | find, dependents | `path` |
 //! | docs | `path` of each hit chunk |
-//! | git_search, git_path | the commit `sha` |
-//! | git_symbol | the `sha` of each history entry |
-//! | implementations | `path:line` of each impl |
+//! | git_search, git_path | the commit `sha` (abbreviated; the scorer matches it as a prefix) |
+//! | git_symbol | the `sha` of each history entry (abbreviated, likewise) |
+//! | implementations | `path:line` of each impl (listed under its file) |
 //! | read | `path:line` for every line of the returned span |
 //! | blame, blame_symbol | `sha:line` for every line of each hunk |
 //! | diff | `+path:line` per added line, `-path:line` per removed line |
@@ -95,7 +95,7 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
         EvalMode::Docs => located(array(body, "hits"), |_| None),
         EvalMode::GitSearch | EvalMode::GitPath => shas(array(body, "commits")),
         EvalMode::GitSymbol => shas(array(body, "history")),
-        EvalMode::Implementations => located(array(body, "hits"), |e| u(e, "line")),
+        EvalMode::Implementations => grouped(body, "hits"),
         EvalMode::Read => {
             let path = s(body, "path").unwrap_or_default();
             span(&path, u(body, "line"), u(body, "end_line"))
@@ -138,13 +138,17 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
     }
 }
 
-/// `code_grep` hits as `(path:line, attached symbol name)`.
+/// `code_grep` hits as `(path:line, enclosing symbol name)`, from hits listed under their file.
 pub fn grep_annotations(body: &Value) -> Vec<(String, Option<String>)> {
-    array(body, "hits")
-        .iter()
-        .filter_map(|h| {
-            let key = format!("{}:{}", s(h, "path")?, u(h, "line")?);
-            Some((key, h.get("symbol").and_then(|sym| s(sym, "name"))))
+    body.get("hits")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .flat_map(|(path, rows)| {
+            rows.as_array().into_iter().flatten().filter_map(move |row| {
+                let key = format!("{path}:{}", u(row, "line")?);
+                Some((key, s(row, "symbol")))
+            })
         })
         .collect()
 }
@@ -268,12 +272,12 @@ mod tests {
 
     #[test]
     fn scores_the_symbol_attached_to_each_annotated_grep_hit() {
-        let body = json!({"hits":[
-            {"path":"a.rs","line":3,"symbol":{"name":"spin","kind":"function"}},
-            {"path":"a.rs","line":9,"symbol":{"name":"Wrong","kind":"struct"}},
-            {"path":"a.rs","line":12},
-            {"path":"b.rs","line":1,"symbol":{"name":"x","kind":"function"}}
-        ]});
+        let body = json!({"hits":{
+            "a.rs":[{"line":3,"text":"spin()","symbol":"spin"},
+                    {"line":9,"text":"w","symbol":"Wrong"},
+                    {"line":12,"text":"run"}],
+            "b.rs":[{"line":1,"text":"x","symbol":"x"}]
+        }});
         let hits = grep_annotations(&body);
         let expected: std::collections::BTreeMap<String, String> =
             [("a.rs:3", "spin"), ("a.rs:9", "Widget"), ("a.rs:12", "run")]
@@ -292,6 +296,13 @@ mod tests {
         assert_eq!(strs(&hist), vec!["s1"]);
         let path = extract_items(EvalMode::GitPath, &Value::Null, &json!({"commits":[{"sha":"s2"}]}));
         assert_eq!(strs(&path), vec!["s2"]);
+        let files = extract_items(
+            EvalMode::GitPath,
+            &Value::Null,
+            &json!({"commits":[{"sha":"0123456789ab","summary":"s","author":"a","author_time_unix":1,
+                                "files":{"src/a.rs":"modified","b.rs":"added"}}]}),
+        );
+        assert_eq!(strs(&files), vec!["0123456789ab"], "a `files` map adds no items");
         let read = extract_items(
             EvalMode::Read,
             &Value::Null,
@@ -320,8 +331,44 @@ mod tests {
         let impls = extract_items(
             EvalMode::Implementations,
             &Value::Null,
-            &json!({"hits":[{"path":"x.rs","line":3,"impl_type":"T"}]}),
+            &json!({"hits":{"x.rs":[{"line":3,"impl_type":"T"},{"impl_type":"U"}],"y.rs":[{"line":8,"impl_type":"V"}]}}),
         );
-        assert_eq!(strs(&impls), vec!["x.rs:3"]);
+        assert_eq!(strs(&impls), vec!["x.rs:3", "x.rs", "y.rs:8"]);
+    }
+
+    #[test]
+    fn every_git_kind_scores_its_abbreviated_sha_against_the_whole_one() {
+        use crate::eval::score::score;
+
+        let whole = "0123456789abcdef0123456789abcdef01234567";
+        let other = "fedcba9876543210fedcba9876543210fedcba98";
+        let gold = [Item::parse(whole), Item::parse(other)];
+        let row = |sha: &str| json!({"sha": sha, "summary": "s", "author": "a", "author_time_unix": 1});
+        let bodies = [
+            (
+                EvalMode::GitSearch,
+                json!({"commits": [row("0123456789ab"), row("fedcba987654")]}),
+            ),
+            (
+                EvalMode::GitPath,
+                json!({"commits": [row("0123456789ab"), row("fedcba987654")]}),
+            ),
+            (
+                EvalMode::GitSymbol,
+                json!({"history": [row("0123456789ab"), row("fedcba987654")], "commits_inspected": 2}),
+            ),
+        ];
+        for (mode, body) in bodies {
+            let got = extract_items(mode, &Value::Null, &body);
+            let s = score(&got, &gold, 0, None);
+            assert_eq!((s.precision, s.recall), (1.0, 1.0), "{mode:?}");
+        }
+        let blame = extract_items(
+            EvalMode::Blame,
+            &Value::Null,
+            &json!({"hunks":[{"commit_sha": whole, "short_sha": "0123456", "line": 2}]}),
+        );
+        let s = score(&blame, &[Item::parse(&format!("{whole}:2"))], 0, None);
+        assert_eq!(s.recall, 1.0);
     }
 }
