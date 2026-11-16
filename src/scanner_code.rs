@@ -143,6 +143,8 @@ fn stamp_legacy_digest(
 /// Chunk + embed one source file. Reuses the `.chunk` sidecar when an identical-content blob
 /// already exists (the embedding cache); otherwise chunks, embeds in bulk, and writes the blob.
 /// Returns `Ok(None)` when the file yields no chunks. Never opens LanceDB — the write is deferred.
+/// `refresh` marks outlines re-extracted for a newer `EXTRACT_EPOCH`: a sidecar chunked from the old
+/// outline is reused only when re-chunking gives the same chunks.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn chunk_and_embed(
     store: &Store,
@@ -154,6 +156,7 @@ pub(crate) fn chunk_and_embed(
     config: &Config,
     filters: &Filters,
     mode: EmbedMode,
+    refresh: bool,
 ) -> Result<Option<PendingCodeBatch>> {
     let cfg = &config.code_search;
     let embed = matches!(mode, EmbedMode::Inline) && cfg.embed && filters.code_embed_allowed(rel);
@@ -167,6 +170,7 @@ pub(crate) fn chunk_and_embed(
         .ok()
         .flatten()
         .filter(|blob| chunk_blob_is_current(blob, digest, &l1.language))
+        .filter(|blob| !refresh || blob.chunks == chunk_file(rel, hash_hex, l1, l2, bytes, opts))
         .map(|blob| stamp_legacy_digest(store, rel, hash_hex, blob, digest));
 
     if !embed {

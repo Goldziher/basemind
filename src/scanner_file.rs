@@ -435,6 +435,7 @@ fn process_file(
             config,
             filters,
             embed,
+            stale_epoch,
         ) {
             Ok(batch) => batch,
             Err(error) => {

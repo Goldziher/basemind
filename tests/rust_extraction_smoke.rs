@@ -270,6 +270,85 @@ fn an_epoch_refresh_re_extracts_the_calls_of_an_old_blob_with_eager_l2_off() {
     assert!(calls.contains(&"parse"), "stale calls were carried over: {calls:?}");
 }
 
+/// A chunk sidecar cut from a pre-epoch outline is not reused when the refreshed outline chunks
+/// differently: the function inside the macro body gets its own chunk.
+#[cfg(feature = "code-search")]
+#[test]
+fn an_epoch_refresh_re_chunks_a_file_whose_outline_changed() {
+    use basemind::chunk::{ChunkOptions, CodeChunkBlob, chunk_file};
+    use basemind::scanner::{EmbedMode, ScanSource, scan};
+    use basemind::store::{FileEntry, Store, VIEW_WORKING};
+
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let src = "// epoch-chunks-rust\ncfg_rt! {\n    pub fn spawn_inside() -> u32 { 1 }\n}\npub fn top() {}\n";
+    std::fs::write(root.join("lib.rs"), src).unwrap();
+    let mut cfg = basemind::config::ConfigV1::with_defaults();
+    cfg.code_search.enabled = true;
+    cfg.code_search.embed = false;
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    let entry = store.lookup("lib.rs").expect("lib.rs indexed").clone();
+    let has_inside = |blob: &CodeChunkBlob| blob.chunks.iter().any(|c| c.symbol.as_deref() == Some("spawn_inside"));
+    let current = store
+        .read_chunks_by_hex(&entry.hash_hex)
+        .unwrap()
+        .expect("chunk sidecar");
+    assert!(
+        has_inside(&current),
+        "premise: the current outline chunks the macro-body fn"
+    );
+
+    // What an extractor without macro-body items left: no `spawn_inside` symbol, chunks cut from that.
+    let (mut old_l1, old_l2) = basemind::extract::extract_l1_l2("rust", src.as_bytes(), true).expect("extract");
+    old_l1.symbols.retain(|s| s.name != "spawn_inside");
+    old_l1.extract_epoch = 1;
+    let opts = ChunkOptions {
+        max_characters: cfg.code_search.max_characters,
+        overlap: cfg.code_search.overlap,
+    };
+    let old_chunks = chunk_file(
+        "lib.rs",
+        &entry.hash_hex,
+        &old_l1,
+        old_l2.as_ref(),
+        src.as_bytes(),
+        opts,
+    );
+    let stale = CodeChunkBlob {
+        chunks: old_chunks,
+        ..current
+    };
+    assert!(
+        !has_inside(&stale),
+        "premise: the stale sidecar lacks the macro-body fn"
+    );
+    store.write_chunks_hex(&entry.hash_hex, &stale).unwrap();
+    store
+        .overwrite_filemap_hex(&entry.hash_hex, &old_l1, old_l2.as_ref())
+        .unwrap();
+    store.upsert(
+        "lib.rs",
+        FileEntry {
+            extract_epoch: 1,
+            ..entry.clone()
+        },
+    );
+    store.flush().unwrap();
+
+    let report = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    assert_eq!(
+        report.stats.refreshed_extraction, 1,
+        "premise: the stale blob is refreshed"
+    );
+    let refreshed = store
+        .read_chunks_by_hex(&entry.hash_hex)
+        .unwrap()
+        .expect("chunk sidecar");
+    assert!(has_inside(&refreshed), "the stale sidecar was reused");
+}
+
 fn count(calls: &[String], name: &str) -> usize {
     calls.iter().filter(|c| *c == name).count()
 }
