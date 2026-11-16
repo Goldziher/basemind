@@ -184,7 +184,21 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
 ) -> std::io::Result<RelayWelcome> {
     stream.write_all(&RELAY_MAGIC).await?;
     write_frame(stream, &encode_io(hello)?).await?;
-    let body = read_frame(stream).await?;
+    let body = read_frame(stream).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            // ~keep A daemon of relay protocol 1 cannot read this hello and closes the link
+            // ~keep without a welcome; one of protocol 2 or later declines a skew in a welcome.
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!(
+                    "the daemon closed the link without answering this relay's hello (relay protocol \
+                     {RELAY_PROTO_VER}); it is most likely an older basemind that cannot read it"
+                ),
+            )
+        } else {
+            error
+        }
+    })?;
     decode_io(&body)
 }
 
@@ -372,6 +386,35 @@ mod tests {
             as_len > MAX_FRAME_BYTES,
             "preamble prefix {as_len} must exceed MAX_FRAME_BYTES {MAX_FRAME_BYTES} for fallback"
         );
+    }
+
+    /// A daemon of relay protocol 1 drops a hello it cannot decode; the relay says so rather than
+    /// reporting a bare end of stream.
+    #[tokio::test]
+    async fn a_daemon_that_closes_without_a_welcome_is_named_as_likely_older() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let hello = RelayHello {
+            relay_proto_ver: RELAY_PROTO_VER,
+            root: std::path::PathBuf::from("/repo/root"),
+            view: "main".to_string(),
+            principal: Principal::parse("claude-code").expect("principal"),
+            host: None,
+            notices: Vec::new(),
+        };
+        let server_task = tokio::spawn(async move {
+            let mut magic = [0u8; RELAY_MAGIC.len()];
+            server.read_exact(&mut magic).await.expect("read magic");
+            let _ = read_frame(&mut server).await.expect("read the hello frame");
+            drop(server);
+        });
+        let error = client_handshake(&mut client, &hello)
+            .await
+            .expect_err("no welcome came");
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(error.to_string().contains("older basemind"), "{error}");
+        server_task.await.expect("server task");
     }
 
     /// Drive both ends of the handshake over an in-memory duplex: the client writes MAGIC + hello,
