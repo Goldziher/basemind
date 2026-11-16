@@ -47,20 +47,28 @@ impl Adapter for ClaudeCodeAdapter {
             "stdio",
             "--permission-mode",
             mode,
+            // No user, project or local settings: their permission rules, hooks and MCP
+            // servers would act behind the approval policy. The flags are monocode's
+            // (`provider.rs`); the empty source list and the always-on hook switch are ours.
+            "--setting-sources=",
+            "--settings",
+            r#"{"disableAllHooks":true}"#,
+            "--strict-mcp-config",
         ]
         .map(str::to_owned)
         .into();
+        let mut servers = serde_json::Map::new();
         if let Some(server) = &spec.mcp_server {
             // The server inherits the harness's environment, which carries the identity.
-            let config = json!({"mcpServers": {&server.name: {
-                "type": "stdio",
-                "command": server.command,
-                "args": server.args,
-            }}});
-            args.extend(["--mcp-config".to_owned(), config.to_string()]);
-            if server.allow_tools {
-                args.extend(["--allowedTools".to_owned(), format!("mcp__{}", server.name)]);
-            }
+            servers.insert(
+                server.name.clone(),
+                json!({"type": "stdio", "command": server.command, "args": server.args}),
+            );
+        }
+        // Always given, so `--strict-mcp-config` leaves exactly these servers.
+        args.extend(["--mcp-config".to_owned(), json!({"mcpServers": servers}).to_string()]);
+        if let Some(server) = spec.mcp_server.as_ref().filter(|server| server.allow_tools) {
+            args.extend(["--allowedTools".to_owned(), format!("mcp__{}", server.name)]);
         }
         if prepared.bypass(spec) {
             args.push("--allow-dangerously-skip-permissions".to_owned());

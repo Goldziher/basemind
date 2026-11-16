@@ -304,12 +304,26 @@ fn a_supervised_plan_carries_the_stream_flags_and_no_bypass() {
             .iter()
             .any(|arg| arg.contains("skip-permissions") || arg.contains("bypass"))
     );
-    assert!(
-        !plan
-            .args
-            .iter()
-            .any(|arg| arg == "--mcp-config" || arg == "--allowedTools")
-    );
+    assert!(!plan.args.iter().any(|arg| arg == "--allowedTools"));
+}
+
+#[test]
+fn settings_hooks_and_mcp_servers_come_only_from_the_adapter() {
+    let root = tempfile::tempdir().unwrap();
+    let plan = ClaudeCodeAdapter
+        .plan(&spec(HarnessKind::ClaudeCode, root.path()))
+        .unwrap();
+    let sources: Vec<_> = plan
+        .args
+        .iter()
+        .filter(|arg| arg.starts_with("--setting-sources"))
+        .collect();
+    assert_eq!(sources, ["--setting-sources="]);
+    let settings: Value = serde_json::from_str(value_of(&plan.args, "--settings").unwrap()).unwrap();
+    assert_eq!(settings, json!({"disableAllHooks": true}));
+    assert!(plan.args.iter().any(|arg| arg == "--strict-mcp-config"));
+    let config: Value = serde_json::from_str(value_of(&plan.args, "--mcp-config").unwrap()).unwrap();
+    assert_eq!(config, json!({"mcpServers": {}}));
 }
 
 #[test]
