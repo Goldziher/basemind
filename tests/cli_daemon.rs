@@ -11,6 +11,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use basemind::comms::singleton::{comms_socket_path, generation_dir, probe_alive};
+use basemind::store::{CACHE_DIR, WORKSPACES_DIR, WriterProbe, probe_writer_lock, workspace_key};
 use tempfile::TempDir;
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
@@ -175,21 +176,30 @@ fn writer_lock_collision_exits_busy_for_scan_rescan_and_cache_clear() {
         .stderr(Stdio::null())
         .spawn()
         .expect("watch");
-    // Wait until the watcher owns the lock: from then on `scan` reports busy (3).
+    // Wait until the watcher owns the lock, by probing it rather than by scanning: each probing scan
+    // held the lock itself, and `watch` gives up after half a second of contention, so on a loaded
+    // machine it exited busy and the loop waited out its deadline.
+    let workspace = env
+        .home
+        .path()
+        .join(CACHE_DIR)
+        .join(WORKSPACES_DIR)
+        .join(workspace_key(env.root()));
     let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let out = env.run(&["scan", "--quiet"]);
-        if code(&out) == 3 {
-            assert!(
-                text(&out).contains("already running") || text(&out).contains("locked"),
-                "{}",
-                text(&out)
-            );
-            break;
+    while !matches!(probe_writer_lock(&workspace), WriterProbe::Held { .. }) {
+        if let Some(status) = holder.try_wait().expect("poll watch") {
+            panic!("watch exited ({status}) before it took the lock");
         }
-        assert!(Instant::now() < deadline, "watch never took the lock: {}", text(&out));
-        std::thread::sleep(Duration::from_millis(250));
+        assert!(Instant::now() < deadline, "watch never took the lock");
+        std::thread::sleep(Duration::from_millis(50));
     }
+    let scan = env.run(&["scan", "--quiet"]);
+    assert_eq!(code(&scan), 3, "scan must not run next to a writer: {}", text(&scan));
+    assert!(
+        text(&scan).contains("already running") || text(&scan).contains("locked"),
+        "{}",
+        text(&scan)
+    );
     let rescan = env.run(&["rescan", "--quiet"]);
     assert_eq!(
         code(&rescan),
