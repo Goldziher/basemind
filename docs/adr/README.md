@@ -115,3 +115,4 @@ them.
 | [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Proposed |
 | [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Proposed |
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Proposed |
+| [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Proposed |
