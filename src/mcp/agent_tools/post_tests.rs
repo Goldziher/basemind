@@ -1,4 +1,4 @@
-//! `agent_post` against the in-memory reference store.
+//! `agent_post` against the store in a temporary directory.
 
 use serde_json::json;
 
@@ -9,13 +9,13 @@ use crate::comms::v2::api::{
     AgentOps, MAX_ACTIVE_THREADS_PER_REPO, MAX_POST_BODY_BYTES, MAX_RECIPIENTS, MAX_THREAD_PATHS, ReplayKey,
     cap_archive_notice,
 };
-use crate::comms::v2::fake::FakeAgents;
+use crate::comms::v2::store::test_agents::TestAgents;
 
 const NO_TARGET: &str = "`agent_post`: pass exactly one of thread, reply_to, subject; this call set";
 
 #[test]
 fn a_subject_starts_a_thread_and_thread_or_reply_to_post_into_it() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let (alice, bob) = (Agent::new("alice"), Agent::new("bob"));
 
     let started = alice
@@ -94,7 +94,7 @@ fn a_missing_or_mistyped_field_is_refused_by_name() {
 
 #[test]
 fn a_post_needs_exactly_one_of_thread_reply_to_and_subject() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
 
     for (arguments, set) in [
@@ -126,7 +126,7 @@ fn a_post_needs_exactly_one_of_thread_reply_to_and_subject() {
 
 #[test]
 fn to_and_paths_are_refused_on_a_post_that_creates_no_thread() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
     alice
         .post(&fake, json!({ "subject": "topic", "body": "first" }))
@@ -150,7 +150,7 @@ fn to_and_paths_are_refused_on_a_post_that_creates_no_thread() {
 
 #[test]
 fn a_malformed_id_is_refused_with_its_grammar() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
 
     let bad_thread = refused(alice.post(&fake, json!({ "thread": "T-1", "body": "b" })));
@@ -174,7 +174,7 @@ fn a_malformed_id_is_refused_with_its_grammar() {
 
 #[test]
 fn as_acts_as_a_sub_identity_of_the_sessions_principal_and_as_nobody_else() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let (alice, bob, mallory) = (Agent::new("alice"), Agent::new("bob"), Agent::new("mallory"));
 
     alice
@@ -204,7 +204,7 @@ fn as_acts_as_a_sub_identity_of_the_sessions_principal_and_as_nobody_else() {
 
 #[test]
 fn an_empty_as_is_the_field_left_out() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
 
     alice
@@ -218,7 +218,7 @@ fn an_empty_as_is_the_field_left_out() {
 
 #[test]
 fn an_invalid_as_is_refused_and_nothing_is_posted() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
     let too_long = "x".repeat(33);
 
@@ -245,7 +245,7 @@ fn an_invalid_as_is_refused_and_nothing_is_posted() {
 
 #[test]
 fn a_body_is_refused_when_empty_or_over_the_post_limit() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
 
     for blank in ["", "  \n\t"] {
@@ -273,7 +273,7 @@ fn a_body_is_refused_when_empty_or_over_the_post_limit() {
 
 #[test]
 fn a_subject_recipient_list_or_path_list_over_its_limit_is_refused_not_cut() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
     let post = |arguments| refused(alice.post(&fake, arguments));
     let bad_subject = "`agent_post`: `subject` must be one non-empty line of at most 200 bytes: shorten it and put the \
@@ -309,7 +309,7 @@ fn a_subject_recipient_list_or_path_list_over_its_limit_is_refused_not_cut() {
 
 #[test]
 fn pending_lists_the_recipients_that_have_made_no_call() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let (alice, bob) = (Agent::new("alice"), Agent::new("bob"));
     bob.inbox(&fake, json!({})).expect("bob makes a call");
 
@@ -332,7 +332,7 @@ fn pending_lists_the_recipients_that_have_made_no_call() {
 
 #[test]
 fn posting_needs_a_thread_that_exists_and_membership_of_it() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let (alice, mallory) = (Agent::new("alice"), Agent::new("mallory"));
     alice
         .post(&fake, json!({ "subject": "private", "body": "b", "to": ["bob"] }))
@@ -358,7 +358,7 @@ fn posting_needs_a_thread_that_exists_and_membership_of_it() {
 
 #[test]
 fn a_replayed_request_returns_the_first_post_and_stores_no_second_one() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
     let key = ReplayKey::parse("relay-7f3a").expect("a replay key");
     let session = AgentSession {
@@ -379,7 +379,7 @@ fn a_replayed_request_returns_the_first_post_and_stores_no_second_one() {
 
 #[test]
 fn the_post_that_archives_a_thread_at_the_cap_carries_the_stores_notice_unchanged() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
     let own = ["the session's own notice".to_string()];
     let session = AgentSession {

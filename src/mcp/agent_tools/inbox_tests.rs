@@ -1,4 +1,4 @@
-//! `agent_inbox` against the in-memory reference store.
+//! `agent_inbox` against the store in a temporary directory.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -13,11 +13,11 @@ use crate::comms::v2::api::{
     RESPONSE_BUDGET_BYTES, RepoKey, WaitOutcome,
 };
 use crate::comms::v2::conformance::{ConformanceHarness, wait_then_read};
-use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
+use crate::comms::v2::store::test_agents::{TEST_EPOCH_MICROS, TestAgents};
 
 /// A store in which alice has started `t-aaaaaa` with bob and posted `bodies` into it.
-fn thread_with(bodies: &[&str]) -> (FakeAgents, Agent, Agent) {
-    let fake = FakeAgents::new();
+fn thread_with(bodies: &[&str]) -> (TestAgents, Agent, Agent) {
+    let fake = TestAgents::new();
     let (alice, bob) = (Agent::new("alice"), Agent::new("bob"));
     for (index, body) in bodies.iter().enumerate() {
         let arguments = match index {
@@ -34,7 +34,7 @@ fn ids(response: &AgentInboxResponse) -> Vec<String> {
 }
 
 /// How many messages `agent_threads` counts as unread for `agent` in `t-aaaaaa`.
-fn unread(fake: &FakeAgents, agent: &Agent) -> u64 {
+fn unread(fake: &TestAgents, agent: &Agent) -> u64 {
     let described = agent
         .threads(fake, json!({ "thread": "t-aaaaaa" }))
         .expect("the thread described");
@@ -42,7 +42,7 @@ fn unread(fake: &FakeAgents, agent: &Agent) -> u64 {
 }
 
 /// Every page of a read that pages with a cursor, as the ids on each page.
-fn pages(fake: &FakeAgents, agent: &Agent, arguments: &Value) -> Vec<Vec<String>> {
+fn pages(fake: &TestAgents, agent: &Agent, arguments: &Value) -> Vec<Vec<String>> {
     let mut pages = Vec::new();
     let mut cursor = None;
     for _ in 0..16 {
@@ -79,7 +79,7 @@ fn no_arguments_returns_the_unread_messages_and_marks_them_read() {
                 id: message("t-aaaaaa.1"),
                 subject: "auth refactor".to_string(),
                 from: actor("alice"),
-                ts_micros: FAKE_EPOCH_MICROS,
+                ts_micros: TEST_EPOCH_MICROS,
                 reply_to: None,
                 body: "first".to_string(),
                 body_bytes: 5,
@@ -99,7 +99,7 @@ fn no_arguments_returns_the_unread_messages_and_marks_them_read() {
                 "id": "t-aaaaaa.1",
                 "subject": "auth refactor",
                 "from": "alice",
-                "ts_micros": FAKE_EPOCH_MICROS,
+                "ts_micros": TEST_EPOCH_MICROS,
                 "body": "first",
                 "body_bytes": 5,
             }],
@@ -459,7 +459,7 @@ fn a_delivered_message_is_passed_on_as_the_store_returned_it() {
         id: message(&format!("t-aaaaaa.{seq}")),
         subject: "topic".to_string(),
         from: actor("alice"),
-        ts_micros: FAKE_EPOCH_MICROS,
+        ts_micros: TEST_EPOCH_MICROS,
         reply_to: None,
         body,
         body_bytes,

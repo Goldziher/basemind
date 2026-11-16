@@ -1,11 +1,11 @@
-//! `agent post` against the in-memory store: what it prints, what it refuses and who it posts as.
+//! `agent post` against the test store: what it prints, what it refuses and who it posts as.
 
 use super::*;
 use crate::cli::agent::args::AgentCmd;
 use crate::cli::agent::test_support::{TEXT, caller, capture, json, owner, parse, refusal, text};
 use crate::cli::exit::{ERROR, USAGE};
 use crate::comms::v2::api::{MAX_ACTIVE_THREADS_PER_REPO, MAX_RECIPIENTS, MAX_SUBJECT_BYTES, cap_archive_notice};
-use crate::comms::v2::fake::FakeAgents;
+use crate::comms::v2::store::test_agents::TestAgents;
 use crate::comms::v2::{IdKind, InboxBody, InvalidId, MessageId, PostTarget, ThreadId, ThreadQuery};
 
 const START: [&str; 7] = ["post", "--subject", "topic", "--to", "b", "--body", "hello"];
@@ -30,14 +30,14 @@ fn thread() -> ThreadId {
 
 #[test]
 fn post_with_subject_creates_a_thread_and_lists_recipients_not_seen() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
 
     assert_eq!(text(&fake, "a", &START), "t-aaaaaa.1\tcreated\npending: b\n");
 }
 
 #[test]
 fn post_into_a_thread_and_as_a_reply() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     text(&fake, "a", &START);
 
     assert_eq!(
@@ -60,7 +60,7 @@ fn post_into_a_thread_and_as_a_reply() {
 
 #[test]
 fn post_json_is_the_reply() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
 
     assert_eq!(
         json(&fake, "a", &START),
@@ -76,7 +76,7 @@ fn post_json_is_the_reply() {
 
 #[test]
 fn post_stores_normalized_paths() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     text(
         &fake,
         "a",
@@ -187,7 +187,7 @@ fn post_reads_an_empty_optional_flag_as_left_out() {
 
 #[test]
 fn post_refused_flags_are_a_usage_error_and_store_nothing() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
 
     assert_eq!(
         refusal(&fake, "a", &["post", "--body", "hello"]),
@@ -201,7 +201,7 @@ fn post_refused_flags_are_a_usage_error_and_store_nothing() {
 
 #[test]
 fn post_refused_by_the_store_is_a_runtime_error_with_its_fix() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     text(&fake, "a", &START);
 
     let (code, message) = refusal(&fake, "c", &["post", "--thread", "t-aaaaaa", "--body", "hello"]);
@@ -217,7 +217,7 @@ fn post_refused_by_the_store_is_a_runtime_error_with_its_fix() {
 
 #[test]
 fn post_as_a_sub_identity_is_a_distinct_actor_of_the_same_member() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     text(
         &fake,
         "a",
@@ -251,7 +251,7 @@ fn post_as_a_sub_identity_is_a_distinct_actor_of_the_same_member() {
 
 #[test]
 fn post_at_the_thread_cap_prints_the_stores_notice_then_the_sessions() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     for n in 0..MAX_ACTIVE_THREADS_PER_REPO {
         let subject = format!("topic {n}");
         let filled = text(&fake, "a", &["post", "--subject", subject.as_str(), "--body", "hello"]);
@@ -290,7 +290,7 @@ fn post_at_the_thread_cap_prints_the_stores_notice_then_the_sessions() {
 
 #[test]
 fn post_refuses_a_malformed_sub_identity_and_stores_nothing() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
 
     let (code, message) = refusal(
         &fake,

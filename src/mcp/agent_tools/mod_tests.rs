@@ -19,7 +19,7 @@ use crate::comms::v2::api::{
     Actor, AgentOps, Caller, CommsError, InboxBody, InboxReply, MessageId, PostBody, PostReply, Principal, RepoKey,
     ThreadId, ThreadQuery, ThreadUpdate, ThreadsReply, WaitOutcome,
 };
-use crate::comms::v2::fake::FakeAgents;
+use crate::comms::v2::store::test_agents::TestAgents;
 use crate::mcp::strict::{ToolArgs, parse};
 use crate::mcp::tool_contract::into_tool_result;
 
@@ -55,18 +55,18 @@ impl Agent {
     }
 
     /// Call `agent_post` with `arguments` as a client would send them.
-    pub(super) fn post(&self, fake: &FakeAgents, arguments: Value) -> Result<AgentPostResponse, McpError> {
+    pub(super) fn post(&self, fake: &TestAgents, arguments: Value) -> Result<AgentPostResponse, McpError> {
         run_agent_post(fake, &self.session(), args(arguments))
     }
 
     /// Call `agent_inbox` with `arguments`. The call must not ask to wait: the hook panics, which
     /// also holds every test made through here to "no wait asked, no hook called".
-    pub(super) fn inbox(&self, fake: &FakeAgents, arguments: Value) -> Result<AgentInboxResponse, McpError> {
+    pub(super) fn inbox(&self, fake: &TestAgents, arguments: Value) -> Result<AgentInboxResponse, McpError> {
         run_agent_inbox(fake, &self.session(), args(arguments), &never_waits)
     }
 
     /// Call `agent_threads` with `arguments`.
-    pub(super) fn threads(&self, fake: &FakeAgents, arguments: Value) -> Result<AgentThreadsResponse, McpError> {
+    pub(super) fn threads(&self, fake: &TestAgents, arguments: Value) -> Result<AgentThreadsResponse, McpError> {
         run_agent_threads(fake, &self.session(), args(arguments))
     }
 }
@@ -122,7 +122,7 @@ fn example(description: &str) -> Value {
 }
 
 /// A store whose every reply carries a notice, as the daemon's do while an identity is shared.
-struct Noticing(FakeAgents);
+struct Noticing(TestAgents);
 
 const DAEMON_NOTICE: &str = "2 live sessions share the identity alice";
 
@@ -247,7 +247,7 @@ fn every_schema_requires_only_what_the_tool_cannot_run_without() {
 
 #[test]
 fn every_description_opens_with_its_use_and_ends_with_a_call_the_tool_runs() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let (alice, bob) = (Agent::new("alice"), Agent::new("bob"));
 
     let posted = alice
@@ -281,7 +281,7 @@ fn every_description_opens_with_its_use_and_ends_with_a_call_the_tool_runs() {
 
 #[test]
 fn a_refusal_is_an_is_error_result_that_names_the_tool_and_the_fix() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let error = Agent::new("alice")
         .post(&fake, json!({ "body": "hi" }))
         .expect_err("a post with no target");
@@ -327,7 +327,7 @@ fn a_store_failure_is_an_internal_error_and_not_the_callers_mistake() {
 
 #[test]
 fn the_tool_layers_notices_follow_the_daemons_in_every_reply() {
-    let store = Noticing(FakeAgents::new());
+    let store = Noticing(TestAgents::new());
     let alice = Agent::new("alice");
     let rejected = ["the configured agent id \"a.b\" is not a valid id and is not used".to_string()];
     let session = AgentSession {
@@ -349,7 +349,7 @@ fn the_tool_layers_notices_follow_the_daemons_in_every_reply() {
 
 #[test]
 fn a_waiting_reply_keeps_the_notices_and_the_outcome_the_daemon_set() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
     let waiting_read = |caller: &Caller, body: InboxBody, _: Duration| -> Result<InboxReply, CommsError> {
         let mut reply = fake.inbox(caller, body)?;

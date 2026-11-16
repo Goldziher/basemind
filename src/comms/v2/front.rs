@@ -153,6 +153,6 @@ pub fn as_refusal(surface: &str, error: &CommsError) -> Refusal {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "front_tests.rs"]
 mod tests;

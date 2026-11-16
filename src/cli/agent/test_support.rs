@@ -1,5 +1,5 @@
 //! What the tests of the `agent` commands share: a parser for the grammar, callers of the
-//! conformance suite's repository, and runs of a command line against the in-memory store.
+//! conformance suite's repository, and runs of a command line against the test store.
 
 use std::io::Write;
 use std::time::Duration;
@@ -12,12 +12,12 @@ use super::render::Render;
 use super::{run_inbox, run_post, run_threads};
 use crate::cli::exit::exit_code_for;
 use crate::comms::v2::conformance::{Repo, default_caller};
-use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
 use crate::comms::v2::front::Session;
+use crate::comms::v2::store::test_agents::{TEST_EPOCH_MICROS, TestAgents};
 use crate::comms::v2::{Caller, CommsError, InboxBody, InboxReply, Principal, RepoKey};
 
-/// Ninety seconds past the fake's clock, which a post does not move: every age reads `1m`.
-const NOW_MICROS: i64 = FAKE_EPOCH_MICROS + 90 * 1_000_000;
+/// Ninety seconds past the test store's clock, which a post does not move: every age reads `1m`.
+const NOW_MICROS: i64 = TEST_EPOCH_MICROS + 90 * 1_000_000;
 
 /// Text output, with ages counted from [`NOW_MICROS`].
 pub const TEXT: Render = Render {
@@ -83,7 +83,7 @@ pub fn capture(run: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>) -> anyhow
 
 /// Run the command line `args` as agent `who`. A read that asks for a wait fails: the tests of
 /// the wait inject their own.
-fn run(fake: &FakeAgents, who: &str, opts: &Render, args: &[&str]) -> anyhow::Result<String> {
+fn run(fake: &TestAgents, who: &str, opts: &Render, args: &[&str]) -> anyhow::Result<String> {
     let no_wait = |_: &Caller, _: InboxBody, _: Duration| -> Result<InboxReply, CommsError> {
         Err(CommsError::Backend {
             detail: "this test injected no wait".to_string(),
@@ -103,18 +103,18 @@ fn run(fake: &FakeAgents, who: &str, opts: &Render, args: &[&str]) -> anyhow::Re
 }
 
 /// The text output of a command that succeeds.
-pub fn text(fake: &FakeAgents, who: &str, args: &[&str]) -> String {
+pub fn text(fake: &TestAgents, who: &str, args: &[&str]) -> String {
     run(fake, who, &TEXT, args).expect("the command succeeds")
 }
 
 /// The `--json` output of a command that succeeds.
-pub fn json(fake: &FakeAgents, who: &str, args: &[&str]) -> Value {
+pub fn json(fake: &TestAgents, who: &str, args: &[&str]) -> Value {
     let output = run(fake, who, &JSON, args).expect("the command succeeds");
     serde_json::from_str(&output).expect("the output is JSON")
 }
 
 /// The exit code and the message of a command that fails.
-pub fn refusal(fake: &FakeAgents, who: &str, args: &[&str]) -> (u8, String) {
+pub fn refusal(fake: &TestAgents, who: &str, args: &[&str]) -> (u8, String) {
     let error = run(fake, who, &TEXT, args).expect_err("the command fails");
     (exit_code_for(&error), error.to_string())
 }

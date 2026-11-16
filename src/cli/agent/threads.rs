@@ -69,6 +69,6 @@ pub fn run_threads(
     render::threads(&reply, view, opts, out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "threads_tests.rs"]
 mod tests;

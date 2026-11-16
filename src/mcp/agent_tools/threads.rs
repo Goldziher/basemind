@@ -51,6 +51,6 @@ pub fn run_agent_threads(
     Ok(AgentThreadsResponse::from_reply(reply, notices))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "threads_tests.rs"]
 mod tests;

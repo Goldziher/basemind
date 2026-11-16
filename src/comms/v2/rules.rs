@@ -3,8 +3,8 @@
 //! Every [`AgentOps`](super::api::AgentOps) implementation answers the same questions: may this
 //! caller post here, where does this actor start reading, what does a read move, which threads
 //! does a listing show, what does a sweep remove. They are answered once, here, as pure functions
-//! over facts the implementation looks up, so the in-memory reference and a store-backed
-//! implementation cannot drift apart on a rule. What stays with an implementation is only how it
+//! over facts the implementation looks up, so no implementation can drift from them on a
+//! rule. What stays with an implementation is only how it
 //! finds the facts and how it writes the outcome.
 
 use std::collections::BTreeMap;

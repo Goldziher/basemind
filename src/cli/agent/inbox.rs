@@ -47,6 +47,6 @@ pub fn run_inbox(
     render::inbox(&reply, opts, out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "inbox_tests.rs"]
 mod tests;

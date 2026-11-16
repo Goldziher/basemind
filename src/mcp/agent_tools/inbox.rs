@@ -53,6 +53,6 @@ pub fn run_agent_inbox(
     Ok(AgentInboxResponse::from_reply(reply, notices))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "inbox_tests.rs"]
 mod tests;

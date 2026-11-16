@@ -236,6 +236,6 @@ pub fn report(value: &impl Serialize, opts: &Render, out: &mut dyn Write) -> Res
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "render_tests.rs"]
 mod tests;

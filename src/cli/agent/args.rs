@@ -133,6 +133,6 @@ pub struct ThreadsArgs {
     pub as_name: Option<String>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "args_tests.rs"]
 mod tests;

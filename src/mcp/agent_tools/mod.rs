@@ -65,6 +65,6 @@ fn refusal(tool: &str, error: &CommsError) -> McpError {
     into_error(front::refusal(&surface(tool), error))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "mod_tests.rs"]
 mod tests;

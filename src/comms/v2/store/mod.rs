@@ -1,8 +1,8 @@
 //! The Fjall-backed store of agent comms v2 (ADR-0021): [`FjallAgents`], an
 //! [`AgentOps`] that keeps threads, messages and read positions on disk.
 //!
-//! It is held to the same [conformance suite](crate::comms::v2::conformance) as the in-memory
-//! reference, and takes every decision from [`rules`](crate::comms::v2::rules); what is here is
+//! It is held to the [conformance suite](crate::comms::v2::conformance), and takes every decision
+//! from [`rules`](crate::comms::v2::rules); what is here is
 //! where the facts are kept and how a change is written.
 //!
 //! ## Layout
@@ -80,6 +80,9 @@ mod open;
 mod post;
 mod records;
 mod retention;
+/// The store on a test clock in a temporary directory, for the tests of what is built on it.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_agents;
 mod threads;
 
 pub use retention::{SWEEP_BUDGET, SweepReport};

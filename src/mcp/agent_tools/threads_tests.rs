@@ -1,18 +1,18 @@
-//! `agent_threads` against the in-memory reference store.
+//! `agent_threads` against the store in a temporary directory.
 
 use serde_json::{Value, json};
 
 use super::super::tests::{Agent, HOME, actor, parse_error, refused, thread};
 use super::super::{AgentThread, AgentThreadsParams, AgentThreadsResponse};
 use crate::comms::v2::api::{AgentOps, MAX_RECIPIENTS, Principal, RepoKey};
-use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
+use crate::comms::v2::store::test_agents::{TEST_EPOCH_MICROS, TestAgents};
 
 /// A repository other than [`HOME`].
 const ELSEWHERE: &str = "path:/work/elsewhere";
 
 /// Alice's invitation-only `t-aaaaaa` with bob, then carol's open `t-aaaaab`, both in [`HOME`].
-fn two_threads() -> (FakeAgents, Agent, Agent, Agent) {
-    let fake = FakeAgents::new();
+fn two_threads() -> (TestAgents, Agent, Agent, Agent) {
+    let fake = TestAgents::new();
     let (alice, bob, carol) = (Agent::new("alice"), Agent::new("bob"), Agent::new("carol"));
     alice
         .post(
@@ -37,7 +37,7 @@ fn peers(response: &AgentThreadsResponse) -> Vec<String> {
     response.threads[0].peers.iter().map(ToString::to_string).collect()
 }
 
-fn listed(fake: &FakeAgents, agent: &Agent, arguments: Value) -> Vec<String> {
+fn listed(fake: &TestAgents, agent: &Agent, arguments: Value) -> Vec<String> {
     ids(&agent.threads(fake, arguments).expect("a listing"))
 }
 
@@ -79,7 +79,7 @@ fn no_arguments_lists_the_callers_threads_with_unread_counts_and_peers() {
                 member: true,
                 unread: 0,
                 head: 1,
-                last_activity_micros: FAKE_EPOCH_MICROS,
+                last_activity_micros: TEST_EPOCH_MICROS,
                 peers: vec![Principal::parse("bob").expect("a principal")],
             }],
             pending: Vec::new(),
@@ -100,7 +100,7 @@ fn no_arguments_lists_the_callers_threads_with_unread_counts_and_peers() {
                 "member": true,
                 "unread": 0,
                 "head": 1,
-                "last_activity_micros": FAKE_EPOCH_MICROS,
+                "last_activity_micros": TEST_EPOCH_MICROS,
                 "peers": ["bob"],
             }],
             "notices": [],
@@ -579,7 +579,7 @@ fn as_shares_the_principals_memberships_and_an_invalid_as_is_refused() {
 
 #[test]
 fn a_listing_is_newest_first_and_pages_with_the_cursor_return_every_thread_once() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let alice = Agent::new("alice");
     for subject in ["one", "two", "three"] {
         alice

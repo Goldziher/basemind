@@ -1,8 +1,7 @@
 //! The rules of ADR-0021 as scenarios any [`AgentOps`] must pass.
 //!
-//! Each scenario is a `pub fn` taking a fresh, empty [`ConformanceHarness`]. The in-memory
-//! [`FakeAgents`](crate::comms::v2::fake::FakeAgents) passes them, and a store-backed implementation is
-//! correct when it does too:
+//! Each scenario is a `pub fn` taking a fresh, empty [`ConformanceHarness`]. The Fjall store runs
+//! them (`store/tests.rs`), and any other implementation is correct when it passes them too:
 //!
 //! ```ignore
 //! mod conformance {

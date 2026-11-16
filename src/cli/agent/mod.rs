@@ -4,7 +4,7 @@
 //! turns its flags into the request the tool of the same name builds, through the one field check
 //! the tools, the CLI and the hooks share ([`crate::comms::v2::fields`]), calls the operation and
 //! renders the reply. Nothing here opens a store or reaches a daemon, so the commands run against
-//! any implementation, the in-memory one included.
+//! any implementation, the test store included.
 //!
 //! Who is calling is the [`Session`](crate::comms::v2::front::Session) the binary resolved; a
 //! command chooses only `--as`. [`run`] resolves it, connects to the daemon and dispatches.
@@ -25,7 +25,7 @@ pub mod render;
 mod run;
 pub mod threads;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 mod test_support;
 
 use std::io::Write;
@@ -78,6 +78,6 @@ pub fn run_report<T: Serialize>(
     render::report(&report, opts, out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "mod_tests.rs"]
 mod tests;

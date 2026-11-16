@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::cli::agent::test_support::{JSON, TEXT, capture};
-use crate::comms::v2::fake::FAKE_EPOCH_MICROS;
+use crate::comms::v2::store::test_agents::TEST_EPOCH_MICROS;
 use crate::comms::v2::{MessageId, ThreadId};
 
 fn actor(id: &str) -> Actor {
@@ -19,7 +19,7 @@ fn rendered(run: impl FnOnce(&mut dyn Write) -> Result<()>) -> String {
 
 #[test]
 fn age_is_counted_in_the_largest_whole_unit() {
-    let ago = |secs: i64| age(FAKE_EPOCH_MICROS - secs * MICROS_PER_SEC, FAKE_EPOCH_MICROS);
+    let ago = |secs: i64| age(TEST_EPOCH_MICROS - secs * MICROS_PER_SEC, TEST_EPOCH_MICROS);
 
     assert_eq!(ago(0), "0s");
     assert_eq!(ago(59), "59s");
@@ -33,7 +33,7 @@ fn age_is_counted_in_the_largest_whole_unit() {
 
 #[test]
 fn age_of_a_timestamp_ahead_of_the_clock_is_zero() {
-    assert_eq!(age(FAKE_EPOCH_MICROS + MICROS_PER_SEC, FAKE_EPOCH_MICROS), "0s");
+    assert_eq!(age(TEST_EPOCH_MICROS + MICROS_PER_SEC, TEST_EPOCH_MICROS), "0s");
     assert_eq!(age(i64::MAX, i64::MIN), "0s");
 }
 
@@ -42,7 +42,7 @@ fn render_now_reads_the_system_clock() {
     let opts = Render::now(true);
 
     assert!(opts.json);
-    assert!(opts.now_micros > FAKE_EPOCH_MICROS, "{}", opts.now_micros);
+    assert!(opts.now_micros > TEST_EPOCH_MICROS, "{}", opts.now_micros);
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn inbox_text_names_the_message_replied_to_and_ends_the_body_once() {
             id: message_id("t-aaaaaa.2"),
             subject: "topic".to_string(),
             from: actor("b"),
-            ts_micros: FAKE_EPOCH_MICROS,
+            ts_micros: TEST_EPOCH_MICROS,
             reply_to: Some(message_id("t-aaaaaa.1")),
             body: "two\nlines\n\n".to_string(),
             body_bytes: 11,
