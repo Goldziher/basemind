@@ -56,6 +56,8 @@ pub const REQUEST_TIMEOUT_ENV: &str = "BASEMIND_COMMS_REQUEST_TIMEOUT_SECS";
 /// Env var overriding how long the connect + `Hello` handshake may take, in seconds.
 pub const HANDSHAKE_TIMEOUT_ENV: &str = "BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 10;
+/// What an agent request may wait beyond the request bound for the daemon's agent store to open.
+const AGENT_STORE_OPEN_ALLOWANCE: std::time::Duration = std::time::Duration::from_secs(60);
 /// Generous because `Hello` is the first store-dependent request: a cold daemon answers it only once
 /// its store has finished opening, which on a large store takes tens of seconds.
 const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
@@ -75,12 +77,20 @@ fn timeout_from_env(var: &str, default_secs: u64) -> std::time::Duration {
 /// broker round trip, so silence past the timeout means the broker is wedged, not busy.
 fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
     match req {
-        CommsRequest::AgentInbox { wait_secs, .. } if *wait_secs > 0 => Some(
+        // ~keep The daemon opens its agent store on a thread of its own, and a request made while it
+        // ~keep opens waits for it: creating the store can take tens of seconds on a contended disk.
+        CommsRequest::AgentInbox { wait_secs, .. } => Some(
             timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS)
+                + AGENT_STORE_OPEN_ALLOWANCE
                 + std::time::Duration::from_secs(u64::from((*wait_secs).min(MAX_WAIT_SECS))),
         ),
+        CommsRequest::AgentPost { .. }
+        | CommsRequest::AgentThreads { .. }
+        | CommsRequest::AgentThreadUpdate { .. }
+        | CommsRequest::AgentCleanup { .. } => {
+            Some(timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS) + AGENT_STORE_OPEN_ALLOWANCE)
+        }
         CommsRequest::Rescan { .. }
-        | CommsRequest::AgentCleanup { .. }
         | CommsRequest::GitHistory { .. }
         | CommsRequest::ResolvedRefs { .. }
         | CommsRequest::IndexRead { .. }

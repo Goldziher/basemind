@@ -466,6 +466,9 @@ async fn a_wait_with_no_peer_activity_times_out() {
     let root = tmp.path().to_path_buf();
     let daemon = Daemon::start(&comms_dir);
     let mut bob = connect(daemon.socket(), "agent-bob", &root).await;
+    bob.agent_inbox(None, InboxBody::default(), 0)
+        .await
+        .expect("a first read, once the store has opened");
 
     let started = Instant::now();
     let reply = bob.agent_inbox(None, InboxBody::default(), 1).await.expect("wait");
@@ -520,11 +523,18 @@ async fn daemon_answers_ping_while_the_store_is_still_opening() {
         bound.elapsed()
     );
 
-    // The handshake needs the store: it waits, then completes once the open finishes.
-    let _client = connect(&socket, "agent-early", tmp.path()).await;
+    // The agent store opens on a thread of its own: the handshake is served at once, and an agent
+    // request waits for the open, then completes.
+    let mut client = connect(&socket, "agent-early", tmp.path()).await;
+    assert!(
+        bound.elapsed() < OPEN_DELAY - Duration::from_secs(1),
+        "Hello must not wait for the agent store, took {:?}",
+        bound.elapsed()
+    );
+    start(&mut client, "early", &[]).await;
     assert!(
         bound.elapsed() >= OPEN_DELAY - Duration::from_secs(1),
-        "the store-dependent Hello must not be served before the store is open, took {:?}",
+        "an agent request must not be served before the store is open, took {:?}",
         bound.elapsed()
     );
     drop(daemon);

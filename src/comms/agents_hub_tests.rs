@@ -245,7 +245,7 @@ async fn two_sessions_of_one_principal_each_read_every_message() {
     };
     let (one, two) = (session("session-11111111"), session("session-22222222"));
     let thread = hub.post(caller("b"), new_thread(&["a"])).await.expect("start").thread;
-    for reader in [&one, &two] {
+    for (reader, expected) in [(&one, 1), (&two, 0)] {
         let first = hub
             .read(
                 reader.clone(),
@@ -255,7 +255,11 @@ async fn two_sessions_of_one_principal_each_read_every_message() {
             )
             .await
             .expect("read");
-        assert_eq!(first.messages.len(), 1, "each session reads the first post");
+        assert_eq!(
+            first.messages.len(),
+            expected,
+            "a session's first read starts where a sibling has read (ADR-0021 rule 5)"
+        );
     }
     hub.post(caller("b"), into(&thread, "for both")).await.expect("post");
 
@@ -308,11 +312,11 @@ fn an_unreadable_store_is_reported_and_refuses_agent_calls() {
     let dir = tempfile::tempdir().expect("temporary directory");
     std::fs::write(dir.path().join(STORE_DIR), b"not a directory").expect("block the store");
     let hub = AgentHub::open(dir.path());
-    let status = hub.status(None, None);
-    assert_eq!(status.state, "unreadable");
-    assert!(status.error.is_some());
     assert!(matches!(
         hub.ops().post(&caller("a"), new_thread(&["b"])),
         Err(CommsError::Backend { .. })
     ));
+    let status = hub.status(None, None);
+    assert_eq!(status.state, "unreadable");
+    assert!(status.error.is_some());
 }

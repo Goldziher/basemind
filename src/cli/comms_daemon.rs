@@ -156,15 +156,7 @@ pub fn run() -> Result<()> {
             crate::version::build_id();
         });
 
-        let comms_dir = paths.comms_dir.clone();
-        let agents = tokio::task::spawn_blocking(move || {
-            if let Some(delay) = test_store_open_delay() {
-                std::thread::sleep(delay);
-            }
-            AgentHub::open(&comms_dir)
-        })
-        .await
-        .context("join agent store open")?;
+        let agents = AgentHub::open_after(&paths.comms_dir, test_store_open_delay().unwrap_or_default());
         log_retention_policy();
         let machine_registry = match crate::registry::Registry::from_data_home() {
             Ok(registry) => registry,

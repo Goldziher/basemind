@@ -3,10 +3,12 @@
 //! root, and the count of live `serve` sessions per principal behind the shared-identity notice.
 //!
 //! The store never blocks and is synchronous; the hub runs it on the blocking pool for async
-//! callers and wakes waiters through a `watch` of the store-wide post counter.
+//! callers and wakes waiters through a `watch` of the store-wide post counter. It is opened on a
+//! thread of its own, so a daemon whose store takes seconds to create answers everything else
+//! meanwhile; an agent request waits for the open.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use ahash::AHashMap;
@@ -30,7 +32,7 @@ const MAX_READS_WITHOUT_WAITING: usize = 8;
 pub struct AgentStoreStatus {
     /// The store's directory.
     pub dir: PathBuf,
-    /// `open`, `newer` (read-only: written by a newer basemind) or `unreadable`.
+    /// `opening`, `open`, `newer` (read-only: written by a newer basemind) or `unreadable`.
     pub state: String,
     /// The layout version on disk, when the store opened.
     #[serde(default)]
@@ -69,10 +71,37 @@ pub struct AgentCleanupReport {
 /// Where the first of a relayed read's requests publishes its result for a replay that joins it.
 type WaitResult = watch::Receiver<Option<Result<InboxReply, CommsError>>>;
 
+/// The store, or why it did not open, once its open has finished.
+#[derive(Default)]
+struct StoreSlot {
+    value: OnceLock<Result<Arc<FjallAgents>, CommsError>>,
+    lock: Mutex<()>,
+    ready: Condvar,
+}
+
+impl StoreSlot {
+    fn set(&self, value: Result<Arc<FjallAgents>, CommsError>) {
+        let _held = lock(&self.lock);
+        let _ = self.value.set(value);
+        self.ready.notify_all();
+    }
+
+    /// The store, waiting for its open to finish. For a blocking thread only.
+    fn wait(&self) -> Result<Arc<FjallAgents>, CommsError> {
+        let mut held = lock(&self.lock);
+        loop {
+            if let Some(value) = self.value.get() {
+                return value.clone();
+            }
+            held = self.ready.wait(held).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
 /// The agent store as the daemon serves it.
 pub struct AgentHub {
     dir: PathBuf,
-    store: Result<Arc<FjallAgents>, CommsError>,
+    store: Arc<StoreSlot>,
     arrivals: watch::Sender<u64>,
     waits: Mutex<AHashMap<Vec<u8>, WaitResult>>,
     repos: Mutex<AHashMap<PathBuf, RepoKey>>,
@@ -117,28 +146,53 @@ impl AgentHub {
     /// left as it is: every agent request then answers with the reason, and the daemon still
     /// serves everything else.
     pub fn open(generation_dir: &Path) -> Self {
-        let store = FjallAgents::open(generation_dir).map(Arc::new);
-        if let Err(error) = &store {
-            tracing::error!(%error, "comms: the agent store did not open; agent tools will refuse until it is fixed");
+        Self::open_after(generation_dir, Duration::ZERO)
+    }
+
+    /// [`AgentHub::open`], starting the open after `delay`: the daemon's test hook for a slow
+    /// store.
+    pub fn open_after(generation_dir: &Path, delay: Duration) -> Self {
+        let hub = Self::empty(generation_dir.join(STORE_DIR));
+        let (slot, dir) = (Arc::clone(&hub.store), generation_dir.to_path_buf());
+        let opener = std::thread::Builder::new()
+            .name("agent-store-open".to_string())
+            .spawn(move || {
+                std::thread::sleep(delay);
+                let store = FjallAgents::open(&dir).map(Arc::new);
+                if let Err(error) = &store {
+                    tracing::error!(%error, "comms: the agent store did not open; agent tools will refuse until it is fixed");
+                }
+                slot.set(store);
+            });
+        if let Err(error) = opener {
+            hub.store.set(Err(CommsError::Backend {
+                detail: format!("could not start opening the agent store: {error}"),
+            }));
         }
-        Self::with_store(generation_dir.join(STORE_DIR), store)
+        hub
     }
 
     /// A hub over a store opened elsewhere (tests open one with their own clock).
     pub fn with_store(dir: PathBuf, store: Result<Arc<FjallAgents>, CommsError>) -> Self {
-        let posts = store.as_ref().map_or(0, |store| store.arrivals());
+        let hub = Self::empty(dir);
+        hub.store.set(store);
+        hub
+    }
+
+    fn empty(dir: PathBuf) -> Self {
         Self {
             dir,
-            store,
-            arrivals: watch::Sender::new(posts),
+            store: Arc::new(StoreSlot::default()),
+            arrivals: watch::Sender::new(0),
             waits: Mutex::new(AHashMap::new()),
             repos: Mutex::new(AHashMap::new()),
             sessions: Mutex::new(AHashMap::new()),
         }
     }
 
+    /// The store, waiting for its open. Called on blocking threads only.
     fn store(&self) -> Result<Arc<FjallAgents>, CommsError> {
-        self.store.clone()
+        self.store.wait()
     }
 
     /// The repository `root` belongs to: its registry id (the normalised `origin` remote) when it
@@ -335,8 +389,17 @@ impl AgentHub {
     /// The store's state, for `basemind agent status`.
     pub fn status(&self, principal: Option<&str>, repo: Option<RepoKey>) -> AgentStoreStatus {
         let sessions = principal.map_or(0, |principal| self.sessions_of(principal));
-        match &self.store {
-            Ok(store) => {
+        match self.store.value.get() {
+            None => AgentStoreStatus {
+                dir: self.dir.clone(),
+                state: "opening".to_string(),
+                store_version: None,
+                error: None,
+                posts: 0,
+                sessions,
+                repo,
+            },
+            Some(Ok(store)) => {
                 let version = store.store_version();
                 let state = if rules::check_writable(version).is_ok() {
                     "open"
@@ -353,7 +416,7 @@ impl AgentHub {
                     repo,
                 }
             }
-            Err(error) => AgentStoreStatus {
+            Some(Err(error)) => AgentStoreStatus {
                 dir: self.dir.clone(),
                 state: "unreadable".to_string(),
                 store_version: None,
@@ -390,7 +453,7 @@ impl AgentHub {
 
     /// The periodic sweep and the flush to disk: the daemon's maintenance tick and its shutdown.
     pub async fn maintain(self: &Arc<Self>) {
-        let Ok(store) = self.store() else {
+        let Some(Ok(store)) = self.store.value.get().cloned() else {
             return;
         };
         let swept = tokio::task::spawn_blocking(move || {
@@ -449,7 +512,7 @@ impl AgentOps for HubOps<'_> {
     }
 
     fn arrivals(&self) -> u64 {
-        *self.hub.arrivals.borrow()
+        self.hub.store().map_or(0, |store| store.arrivals())
     }
 }
 

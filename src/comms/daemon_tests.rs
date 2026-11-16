@@ -187,6 +187,16 @@ async fn a_wait_beyond_the_limit_is_refused_before_it_waits() {
 async fn status_names_the_store_and_the_links_repository() {
     let (dir, broker) = temp_broker();
     let mut alice = hello(&broker, "alice", dir.path()).await;
+    broker
+        .handle(
+            CommsRequest::AgentPost {
+                sub: None,
+                body: new_thread(&[]),
+            },
+            &mut alice,
+            &CancellationToken::new(),
+        )
+        .await;
     let status = broker
         .handle(CommsRequest::AgentStatus, &mut alice, &CancellationToken::new())
         .await;
