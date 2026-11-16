@@ -436,11 +436,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     wipe; one written by a newer basemind is refused even when this version cannot parse it. Two
     processes opening a new store at once no longer share a temp file or remove each other's
     tables.
-- The daemon protocol version is 6 (was 5): a search by meaning reads the notes of its hits in
-  batches (at most 256 keys per request, which the daemon enforces), and a rescan says whether its
-  paths were named or watched. A client and a daemon of different versions refuse each other at
-  connect, as before: after upgrading, run `basemind comms stop` and restart sessions of the older
-  version, which would otherwise take the daemon back in turn.
+- The daemon protocol version is 6 (was 5): a search by meaning reads the `updated_at` of its
+  hits' notes, and whole only the notes it may serve, in batches (at most 256 keys and 8 MiB of
+  notes per reply, which the daemon enforces), and a rescan says whether its paths were named or
+  watched. A client and a daemon of different versions refuse each other at connect, as before:
+  after upgrading, run `basemind comms stop` and restart sessions of the older version, which
+  would otherwise take the daemon back in turn.
 - The agent comms store is still versioned by the release minor, so the 0.34 bump empties it once
   more.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files

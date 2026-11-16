@@ -33,7 +33,8 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::{elapsed_us, json_result};
 use super::memory::{
-    embed_query, lance_visibility, memory_get_many_wire, memory_list_page, memory_namespace, shared_embedder,
+    embed_query, lance_visibility, memory_get_many_wire, memory_list_page, memory_namespace, memory_stamps_wire,
+    shared_embedder,
 };
 use super::memory_ops::{MEMORY_PREVIEW_CHARS, WireMemoryEntry};
 use super::types_memory::{MemoryPutParams, MemorySearchHit, MemorySearchParams, MemorySearchResponse, Visibility};
@@ -407,11 +408,11 @@ async fn still_current(
     written: Vec<(String, i64)>,
 ) -> Result<bool, McpError> {
     let keys: Vec<String> = written.iter().map(|(key, _)| key.clone()).collect();
-    let now = memory_get_many_wire(state, vis_byte, owner, keys).await?;
+    let now = memory_stamps_wire(state, vis_byte, owner, &keys).await?;
     Ok(written
         .iter()
         .zip(&now)
-        .all(|((_, embedded_from), note)| note.as_ref().is_some_and(|note| note.updated_at == *embedded_from)))
+        .all(|((_, embedded_from), stamp)| *stamp == Some(*embedded_from)))
 }
 
 /// A seam inside a backfill pass, between reading a batch's notes and embedding them, where a
@@ -554,8 +555,33 @@ pub(super) fn truth_join(
     joined
 }
 
+/// The keys of `hits` whose row is current by `stamps`, each once, nearest first.
+fn current_keys(hits: &[MemoryHit], stamps: &AHashMap<String, Option<i64>>) -> Vec<String> {
+    let mut seen: AHashSet<&str> = AHashSet::new();
+    hits.iter()
+        .filter(|hit| stamps.get(&hit.key).copied().flatten() == Some(hit.updated_at))
+        .filter(|hit| seen.insert(hit.key.as_str()))
+        .map(|hit| hit.key.clone())
+        .collect()
+}
+
+/// The hits [`truth_join`] can decide: those whose note was read whole, and those whose row is
+/// not current by `stamps`, which it refuses. A current hit past the notes read cannot be served
+/// yet and is not a refused row.
+fn decidable(
+    hits: &[MemoryHit],
+    stamps: &AHashMap<String, Option<i64>>,
+    notes: &AHashMap<String, Option<WireMemoryEntry>>,
+) -> Vec<MemoryHit> {
+    hits.iter()
+        .filter(|hit| notes.contains_key(&hit.key) || stamps.get(&hit.key).copied().flatten() != Some(hit.updated_at))
+        .cloned()
+        .collect()
+}
+
 /// `memory_search` by meaning: embed the query, bring the rows nearer the notes, and answer the
-/// nearest rows from the notes they were embedded from.
+/// nearest rows from the notes they were embedded from. Which rows are current is read from the
+/// notes' stamps; only the notes that may be served are read whole.
 pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> Result<CallToolResult, McpError> {
     let started = Instant::now();
     let limit = params.limit.unwrap_or(10).min(100) as usize;
@@ -568,6 +594,7 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
     // Rows the join refuses must not shrink the answer: the search fetches more than it serves,
     // and more again while refused rows leave it short and the table has rows left.
     let mut fetch = limit.saturating_mul(2).saturating_add(FETCH_SLACK);
+    let mut stamps: AHashMap<String, Option<i64>> = AHashMap::new();
     let mut notes: AHashMap<String, Option<WireMemoryEntry>> = AHashMap::new();
     let joined = loop {
         let (scope, agent_id, query) = (state.shared.scope.clone(), owner.to_string(), embedding.clone());
@@ -577,15 +604,32 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
         })
         .await?;
         let exhausted = raw.len() < fetch;
-        let mut unread: Vec<String> = Vec::new();
+        let mut unstamped: Vec<String> = Vec::new();
         for hit in &raw {
-            if !notes.contains_key(&hit.key) && !unread.contains(&hit.key) {
-                unread.push(hit.key.clone());
+            if !stamps.contains_key(&hit.key) && !unstamped.contains(&hit.key) {
+                unstamped.push(hit.key.clone());
             }
         }
-        let read = memory_get_many_wire(state, vis_byte, owner, unread.clone()).await?;
-        notes.extend(unread.into_iter().zip(read));
-        let joined = truth_join(raw, &notes, params.tag.as_deref(), limit);
+        let read = memory_stamps_wire(state, vis_byte, owner, &unstamped).await?;
+        stamps.extend(unstamped.into_iter().zip(read));
+        let current = current_keys(&raw, &stamps);
+        // A note read whole may lack the tag asked for: read further down only while short.
+        let mut wanted = limit;
+        let joined = loop {
+            let unread: Vec<String> = current
+                .iter()
+                .take(wanted)
+                .filter(|key| !notes.contains_key(*key))
+                .cloned()
+                .collect();
+            let read = memory_get_many_wire(state, vis_byte, owner, unread.clone()).await?;
+            notes.extend(unread.into_iter().zip(read));
+            let joined = truth_join(decidable(&raw, &stamps, &notes), &notes, params.tag.as_deref(), limit);
+            if joined.hits.len() >= limit || wanted >= current.len() {
+                break joined;
+            }
+            wanted += limit - joined.hits.len();
+        };
         if joined.hits.len() >= limit || exhausted || fetch >= FETCH_MAX {
             break joined;
         }

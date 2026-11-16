@@ -981,11 +981,11 @@ ceiling is real rather than merely configured — ships at `docs/systemd/basemin
 
 Every client request after `Hello` travels as a `Call { id, request }` and is answered by a
 `Reply { id, response }` (since protocol version 4; the current version is 6, which added the batched
-memory read `MemoryOp::GetMany`, at most 256 keys per request, and the `verify` flag of `Rescan`;
-`ensure_daemon` asks an older daemon to stop on its version check, and a skewed peer fails `Hello`
-with `proto_skew`). A client that abandons a request
-mid-flight (a timeout, a cancelled tool call) therefore cannot mistake the late reply for the next
-request's answer: stale ids are discarded, and only a drop in the middle of writing a frame forces
+memory reads `MemoryOp::GetMany`, at most 256 keys and 8 MiB of notes per reply, and
+`MemoryOp::Stamps`, and the `verify` flag of `Rescan`; `ensure_daemon` asks an older daemon to stop
+on its version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a
+request mid-flight (a timeout, a cancelled tool call) therefore cannot mistake the late reply for the
+next request's answer: stale ids are discarded, and only a drop in the middle of writing a frame forces
 a reconnect. Bare requests (status probes, `Hello`) still get an uncorrelated `Response`.
 
 Nothing waits forever. A coordination request must be answered within
@@ -1108,8 +1108,10 @@ A process stops looking once it has found a namespace level, for five minutes: o
 notes too. A save in the same process that wrote no row (the embedding failed, or was left for
 later) ends that at once. A note saved again while a backfill is embedding it keeps the row of the
 later save: a write removes only rows of the same or an earlier write of the note, and the backfill
-reads the notes it embedded once more before it calls the namespace level. The join reads the notes
-of its hits in batches of at most 256 keys per request; the daemon refuses a larger one.
+reads the notes it embedded once more before it calls the namespace level. The join tells a current
+row from a stale one by the notes' `updated_at` alone and reads whole only the notes it may serve, in
+batches of at most 256 keys per request (the daemon refuses a larger one) and 8 MiB of notes per
+reply (the daemon stops early and the caller asks again for the rest).
 
 The Fjall half is stored once per repo group, not per
 view: `<cache>/cache/repos/<group>/memory.fjall/`, where `<group>` is the blake3 of the canonical main

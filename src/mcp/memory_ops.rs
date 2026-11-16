@@ -44,11 +44,17 @@ pub struct WireMemoryEntry {
 /// ellipsis. Mirrors the constant the MCP `memory_list` tool used before the extraction.
 pub(crate) const MEMORY_PREVIEW_CHARS: usize = 200;
 
-/// The most keys one batched read may name. The reply carries every note whole, and a frame to
-/// or from the daemon is bounded: an unbounded batch of long notes would exceed it and fail the
-/// search that asked. The serving side refuses a larger request; a caller with more keys splits
-/// them (`memory_get_many_wire`).
+/// The most keys one batched read may name. The serving side refuses a larger request; a caller
+/// with more keys splits them (`memory_get_many_wire`).
 pub(crate) const GET_MANY_MAX_KEYS: usize = 256;
+
+/// The most bytes of notes one batched read answers with, well inside the daemon's 16 MiB frame.
+/// The reply carries every note whole, so a few long notes fill it before the key cap does: the
+/// serving side stops early and the caller asks again from the first key left unanswered.
+pub(crate) const GET_MANY_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// The most keys one read of stamps may name. A stamp is one number, so the reply stays small.
+pub(crate) const STAMPS_MAX_KEYS: usize = 4096;
 
 /// A fjall-side memory operation failed. Kept small and stringly so it maps cleanly to both an
 /// [`McpError`](rmcp::ErrorData) on the local path and a `CommsResponse::Error` on the daemon path.
@@ -78,12 +84,14 @@ pub(crate) enum MemoryOpError {
     },
     /// One batched read named more keys than a request may carry.
     #[error(
-        "a batched memory read carries at most {GET_MANY_MAX_KEYS} keys, and this one has {asked}; \
-         split it into several requests"
+        "a batched memory read carries at most {most} keys, and this one has {asked}; split it into several \
+         requests"
     )]
     TooManyKeys {
         /// How many keys the request named.
         asked: usize,
+        /// How many it may name.
+        most: usize,
     },
     /// A fjall get / insert / remove failed.
     #[error("fjall {op}: {source}")]
@@ -229,7 +237,8 @@ pub(crate) fn get_core(
     }))
 }
 
-/// [`get_core`] for several keys of one namespace: one slot per key, in order.
+/// [`get_core`] for several keys of one namespace: one slot per key, in order, for the keys
+/// whose notes fit in [`GET_MANY_MAX_BYTES`]. Always the first; the caller asks again for the rest.
 pub(crate) fn get_many_core(
     idx: &IndexDb,
     scope: &str,
@@ -237,11 +246,62 @@ pub(crate) fn get_many_core(
     owner: &str,
     keys: &[String],
 ) -> Result<Vec<Option<WireMemoryEntry>>, MemoryOpError> {
+    get_many_within(idx, scope, vis_byte, owner, keys, GET_MANY_MAX_BYTES)
+}
+
+/// [`get_many_core`] answering with at most `max_bytes` of notes, or the first note alone.
+fn get_many_within(
+    idx: &IndexDb,
+    scope: &str,
+    vis_byte: u8,
+    owner: &str,
+    keys: &[String],
+    max_bytes: usize,
+) -> Result<Vec<Option<WireMemoryEntry>>, MemoryOpError> {
     if keys.len() > GET_MANY_MAX_KEYS {
-        return Err(MemoryOpError::TooManyKeys { asked: keys.len() });
+        return Err(MemoryOpError::TooManyKeys {
+            asked: keys.len(),
+            most: GET_MANY_MAX_KEYS,
+        });
     }
+    let mut entries = Vec::with_capacity(keys.len());
+    let mut bytes = 0_usize;
+    for key in keys {
+        let entry = get_core(idx, scope, vis_byte, owner, key)?;
+        let size = key.len() + entry.as_ref().map_or(0, wire_bytes);
+        if !entries.is_empty() && bytes.saturating_add(size) > max_bytes {
+            break;
+        }
+        bytes = bytes.saturating_add(size);
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+/// What an entry costs a reply, near enough: its strings, and room for the numbers and framing.
+fn wire_bytes(entry: &WireMemoryEntry) -> usize {
+    const FIXED: usize = 64;
+    entry.key.len() + entry.value.len() + entry.tags.iter().map(|tag| tag.len() + 8).sum::<usize>() + FIXED
+}
+
+/// The `updated_at` of each key's note, in order, `None` where no note exists: what decides
+/// whether a vector row is current, without the notes' text.
+pub(crate) fn stamps_core(
+    idx: &IndexDb,
+    scope: &str,
+    vis_byte: u8,
+    owner: &str,
+    keys: &[String],
+) -> Result<Vec<Option<i64>>, MemoryOpError> {
+    if keys.len() > STAMPS_MAX_KEYS {
+        return Err(MemoryOpError::TooManyKeys {
+            asked: keys.len(),
+            most: STAMPS_MAX_KEYS,
+        });
+    }
+    require_memory(idx)?;
     keys.iter()
-        .map(|key| get_core(idx, scope, vis_byte, owner, key))
+        .map(|key| Ok(read_record(idx, scope, vis_byte, owner, key)?.map(|record| record.updated_at)))
         .collect()
 }
 
@@ -393,6 +453,9 @@ pub(crate) fn run_memory_op(
         MemoryOp::GetMany { vis_byte, owner, keys } => Ok(MemoryOutcome::GotMany(get_many_core(
             idx, scope, *vis_byte, owner, keys,
         )?)),
+        MemoryOp::Stamps { vis_byte, owner, keys } => {
+            Ok(MemoryOutcome::Stamps(stamps_core(idx, scope, *vis_byte, owner, keys)?))
+        }
         MemoryOp::Put {
             vis_byte,
             owner,
@@ -537,7 +600,64 @@ mod tests {
         };
 
         let refused = run_memory_op(&idx, "scope", &op).unwrap_err();
-        assert!(matches!(refused, MemoryOpError::TooManyKeys { asked } if asked == GET_MANY_MAX_KEYS + 1));
+        assert!(matches!(refused, MemoryOpError::TooManyKeys { asked, .. } if asked == GET_MANY_MAX_KEYS + 1));
+    }
+
+    /// The notes of a reply fill it to its byte cap and no further: the first note always goes, and
+    /// the caller asks again from the first key left out.
+    #[test]
+    fn a_batched_read_stops_before_its_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        let long = "x".repeat(1000);
+        for key in ["a", "b", "c"] {
+            put_core(&idx, "scope", 0, "", key, &long, &[]).unwrap();
+        }
+        let keys: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+
+        let two = get_many_within(&idx, "scope", 0, "", &keys, 2500).unwrap();
+        assert_eq!(two.len(), 2, "a third note would pass the cap");
+        let one = get_many_within(&idx, "scope", 0, "", &keys, 10).unwrap();
+        assert_eq!(one.len(), 1, "the first note goes whatever its size");
+        assert!(one[0].as_ref().is_some_and(|note| note.value == long));
+        assert_eq!(
+            get_many_within(&idx, "scope", 0, "", &keys, usize::MAX).unwrap().len(),
+            3
+        );
+    }
+
+    /// Stamps answer whether a row is current without carrying the notes' text, and the daemon
+    /// serves them through the same dispatch.
+    #[test]
+    fn stamps_are_read_without_the_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        let (_, written) = put_core(&idx, "scope", 0, "", "a", "one", &[]).unwrap();
+        let keys = ["missing".to_string(), "a".to_string()];
+
+        assert_eq!(stamps_core(&idx, "scope", 0, "", &keys).unwrap(), [None, Some(written)]);
+        let too_many: Vec<String> = (0..=STAMPS_MAX_KEYS).map(|index| format!("k{index}")).collect();
+        assert!(matches!(
+            stamps_core(&idx, "scope", 0, "", &too_many),
+            Err(MemoryOpError::TooManyKeys {
+                most: STAMPS_MAX_KEYS,
+                ..
+            })
+        ));
+
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        {
+            use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
+            let op = MemoryOp::Stamps {
+                vis_byte: 0,
+                owner: String::new(),
+                keys: keys.to_vec(),
+            };
+            assert_eq!(
+                run_memory_op(&idx, "scope", &op).unwrap(),
+                MemoryOutcome::Stamps(vec![None, Some(written)])
+            );
+        }
     }
 
     /// The notes of a newer basemind are refused by name, for a read and for a write.

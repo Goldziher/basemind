@@ -27,9 +27,10 @@ use super::model::{AgentCard, MessageMeta, Thread};
 /// requests were removed WITHOUT a bump: only a deliberate claim from an older client can send one,
 /// the daemon fails to decode the frame and drops that one link, and the client reports a closed
 /// connection and reconnects. Nothing else on the wire changed, so refusing every older client at
-/// Hello would cost more than the one call it protects. Bumped 5→6 for the batched memory read
-/// (`MemoryOp::GetMany` in `comms::memory_proto`): a daemon that predates it cannot decode the
-/// request, so a client that may send it is refused at Hello instead of failing mid-session. The
+/// Hello would cost more than the one call it protects. Bumped 5→6 for the batched memory reads
+/// (`MemoryOp::GetMany` and `MemoryOp::Stamps` in `comms::memory_proto`): a daemon that predates
+/// them cannot decode the request, so a client that may send one is refused at Hello instead of
+/// failing mid-session. The
 /// same version carries the `verify` flag of [`CommsRequest::Rescan`], which a daemon that predates
 /// it would drop without a word.
 pub const PROTO_VER: u32 = 6;

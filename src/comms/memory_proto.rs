@@ -32,8 +32,18 @@ pub enum MemoryOp {
         key: String,
     },
     /// Read several records of one namespace in one round trip, for the search by meaning that
-    /// joins every vector hit against its note.
+    /// answers its hits from their notes. Returns [`MemoryOutcome::GotMany`].
     GetMany {
+        /// Visibility tier byte.
+        vis_byte: u8,
+        /// Owner segment (`""` for group).
+        owner: String,
+        /// The memory keys to read, in the order the replies are wanted.
+        keys: Vec<String>,
+    },
+    /// Read the `updated_at` of several records of one namespace, for telling a current vector row
+    /// from a stale one without the notes' text. Returns [`MemoryOutcome::Stamps`].
+    Stamps {
         /// Visibility tier byte.
         vis_byte: u8,
         /// Owner segment (`""` for group).
@@ -93,8 +103,14 @@ pub enum MemoryOutcome {
     },
     /// Reply to [`MemoryOp::Get`]: the record, or `None` when the key is absent.
     Got(Option<WireMemoryEntry>),
-    /// Reply to [`MemoryOp::GetMany`]: one slot per requested key, in order, `None` where absent.
+    /// Reply to [`MemoryOp::GetMany`]: one slot per requested key, in order, `None` where absent,
+    /// for a leading run of the keys. It stops once the notes fill
+    /// [`GET_MANY_MAX_BYTES`](crate::mcp::memory_ops::GET_MANY_MAX_BYTES), always carrying at least
+    /// one slot; the caller asks again for the keys after it.
     GotMany(Vec<Option<WireMemoryEntry>>),
+    /// Reply to [`MemoryOp::Stamps`]: one `updated_at` per requested key, in order, `None` where
+    /// absent.
+    Stamps(Vec<Option<i64>>),
     /// Reply to [`MemoryOp::List`]: a page of entries plus pagination metadata.
     Listed {
         /// The page of entries (preview-truncated values).

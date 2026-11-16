@@ -707,6 +707,59 @@ async fn notes_beyond_one_request_are_read_in_chunks() {
     assert!(read[..keys.len() - 1].iter().all(Option::is_none));
 }
 
+/// Notes longer together than one reply may carry are read over several replies, each starting
+/// at the first key the one before left unanswered.
+#[tokio::test]
+async fn notes_beyond_one_reply_are_read_in_several() {
+    use crate::mcp::memory_ops::GET_MANY_MAX_BYTES;
+
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    let long = "x".repeat(GET_MANY_MAX_BYTES / 2 + 1);
+    let keys: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+    for key in &keys {
+        save(&state, key, &long).await;
+    }
+
+    let read = memory_get_many_wire(&state, vis(), "", keys.clone()).await.unwrap();
+
+    let read_keys: Vec<Option<&str>> = read.iter().map(|note| note.as_ref().map(|n| n.key.as_str())).collect();
+    assert_eq!(read_keys, [Some("a"), Some("b"), Some("c")]);
+    assert!(read.iter().flatten().all(|note| note.value.len() == long.len()));
+}
+
+/// Stamps decide which rows are current. Only the notes of current rows are read whole, and a
+/// current row whose note was not read is neither served nor refused.
+#[test]
+fn stamps_pick_the_notes_to_read_and_the_rows_to_refuse() {
+    let hits = vec![
+        hit("a", "", 5),
+        hit("stale", "", 1),
+        hit("a", "", 5),
+        hit("c", "", 7),
+        hit("gone", "", 3),
+    ];
+    let stamps: AHashMap<String, Option<i64>> = [("a", Some(5)), ("stale", Some(2)), ("c", Some(7)), ("gone", None)]
+        .into_iter()
+        .map(|(key, stamp)| (key.to_string(), stamp))
+        .collect();
+
+    assert_eq!(current_keys(&hits, &stamps), ["a", "c"]);
+
+    let notes = notes_by_key(vec![("a", Some(note("a", "text", 5)))]);
+    let keys: Vec<String> = decidable(&hits, &stamps, &notes)
+        .into_iter()
+        .map(|hit| hit.key)
+        .collect();
+    assert_eq!(keys, ["a", "stale", "a", "gone"], "c is current but unread");
+    let joined = truth_join(decidable(&hits, &stamps, &notes), &notes, None, 10);
+    assert_eq!(joined.hits.len(), 1);
+    assert_eq!(
+        joined.dropped, 3,
+        "the stale row, the second row of a, the row of a gone note"
+    );
+}
+
 /// A save and a delete end in an fsync, which must not run on the reactor: both go through
 /// `blocking`. On this current-thread runtime that runs inline, on this thread.
 #[tokio::test]

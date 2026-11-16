@@ -333,7 +333,7 @@ Also check scripts for these behaviour changes:
 | Resident term index, name dictionaries, heap retag | In memory only. Nothing on disk, nothing to migrate | none |
 | `[resources] onnx_provider` defaults to `cpu` | Behaviour only: models load on the CPU provider instead of the platform default (CoreML on macOS). Set `onnx_provider = "auto"` to restore it. No on-disk change | none |
 | Daemon `IndexRead` forwarding | Wire protocol only | none |
-| Daemon protocol version 6 (was 5): the batched memory read and the `verify` flag of a rescan | A client and a daemon of different versions refuse each other at connect, and a client replaces an older daemon. With sessions of two versions open at once, each takes the daemon from the other in turn until the older ones are closed: run `basemind comms stop` after upgrading and restart the older sessions | none on disk |
+| Daemon protocol version 6 (was 5): the batched memory reads and the `verify` flag of a rescan | A client and a daemon of different versions refuse each other at connect, and a client replaces an older daemon. With sessions of two versions open at once, each takes the daemon from the other in turn until the older ones are closed: run `basemind comms stop` after upgrading and restart the older sessions | none on disk |
 
 ## The extractor epoch
 

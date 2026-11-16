@@ -317,7 +317,9 @@ pub(super) async fn memory_get_wire(
 
 /// Read several notes of one namespace from the Fjall truth, one slot per key in order. However
 /// many keys, a request carries at most [`GET_MANY_MAX_KEYS`](super::memory_ops::GET_MANY_MAX_KEYS)
-/// of them: one round trip per chunk to the daemon when it owns the store.
+/// of them, and a reply answers those whose notes fit in
+/// [`GET_MANY_MAX_BYTES`](super::memory_ops::GET_MANY_MAX_BYTES): the next request starts at the
+/// first key left unanswered.
 #[cfg(feature = "memory")]
 pub(super) async fn memory_get_many_wire(
     state: &ServerState,
@@ -326,13 +328,15 @@ pub(super) async fn memory_get_many_wire(
     keys: Vec<String>,
 ) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
     let mut entries = Vec::with_capacity(keys.len());
-    for chunk in keys.chunks(super::memory_ops::GET_MANY_MAX_KEYS) {
+    while entries.len() < keys.len() {
+        let rest = &keys[entries.len()..];
+        let chunk = &rest[..rest.len().min(super::memory_ops::GET_MANY_MAX_KEYS)];
         entries.extend(memory_get_chunk_wire(state, vis_byte, owner, chunk).await?);
     }
     Ok(entries)
 }
 
-/// One request of [`memory_get_many_wire`].
+/// One request of [`memory_get_many_wire`]: a slot for each of the leading keys, at least one.
 #[cfg(feature = "memory")]
 async fn memory_get_chunk_wire(
     state: &ServerState,
@@ -351,7 +355,7 @@ async fn memory_get_chunk_wire(
             keys: keys.to_vec(),
         };
         return match super::helpers_comms::dispatch_memory_op(state, op).await? {
-            MemoryOutcome::GotMany(entries) if entries.len() == wanted => Ok(entries),
+            MemoryOutcome::GotMany(entries) if (1..=wanted).contains(&entries.len()) => Ok(entries),
             other => Err(McpError::internal_error(
                 format!("memory_get_many: unexpected daemon outcome {other:?}"),
                 None,
@@ -371,6 +375,53 @@ async fn memory_get_chunk_wire(
         owner,
         keys,
     )?)
+}
+
+/// The `updated_at` of each key's note, in order, `None` where no note exists, without the notes'
+/// text: one request per [`STAMPS_MAX_KEYS`](super::memory_ops::STAMPS_MAX_KEYS) keys.
+#[cfg(feature = "memory")]
+pub(super) async fn memory_stamps_wire(
+    state: &ServerState,
+    vis_byte: u8,
+    owner: &str,
+    keys: &[String],
+) -> Result<Vec<Option<i64>>, McpError> {
+    let mut stamps = Vec::with_capacity(keys.len());
+    for chunk in keys.chunks(super::memory_ops::STAMPS_MAX_KEYS) {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if state.shared.daemon_writer {
+            use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
+
+            let op = MemoryOp::Stamps {
+                vis_byte,
+                owner: owner.to_string(),
+                keys: chunk.to_vec(),
+            };
+            match super::helpers_comms::dispatch_memory_op(state, op).await? {
+                MemoryOutcome::Stamps(read) if read.len() == chunk.len() => stamps.extend(read),
+                other => {
+                    return Err(McpError::internal_error(
+                        format!("memory_stamps: unexpected daemon outcome {other:?}"),
+                        None,
+                    ));
+                }
+            }
+            continue;
+        }
+        let store = state.shared.store.read().await;
+        let idx = store
+            .index_db
+            .as_ref()
+            .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
+        stamps.extend(super::memory_ops::stamps_core(
+            idx,
+            &state.shared.scope,
+            vis_byte,
+            owner,
+            chunk,
+        )?);
+    }
+    Ok(stamps)
 }
 
 /// Map a wire memory entry onto the MCP [`MemoryEntry`] response shape.
