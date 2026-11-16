@@ -78,6 +78,40 @@ fmt_kb() {
   else printf '%d.%dG' "$((kb / 1048576))" "$(((kb * 10 / 1048576) % 10))"; fi
 }
 
+# A copy of the plugin hooks' run_bounded.
+# Run "$@" for at most $1 seconds. Uses `timeout` where installed; macOS has none by default, so a
+# watchdog stops the command there. The command runs in a process group of its own and the watchdog
+# signals that group: a helper it left holding stdout goes too, while the daemon its CLI may have
+# started, in a session of its own, is outside the group and keeps running. Standard input is passed
+# through.
+run_bounded() (
+  secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    exec timeout "$secs" "$@"
+  fi
+  # Job control gives a background job its own process group. The shell's job reports would go to
+  # its stderr, so that is discarded and the command gets the caller's stderr from fd 3.
+  exec 3>&2 2>/dev/null
+  set -m
+  "$@" <&0 2>&3 3>&- &
+  pid=$!
+  (
+    nap=""
+    trap '[ -z "$nap" ] || kill "$nap"; exit 0' TERM
+    sleep "$secs" &
+    nap=$!
+    wait "$nap" || exit 0
+    kill -TERM -- "-$pid"
+  ) >/dev/null 3>&- &
+  watchdog=$!
+  wait "$pid"
+  rc=$?
+  kill "$watchdog"
+  wait "$watchdog"
+  exit "$rc"
+)
+
 comms_state() {
   command -v basemind >/dev/null 2>&1 || return 1
   command -v pgrep >/dev/null 2>&1 && pgrep -f "comms daemon" >/dev/null 2>&1 || return 1
@@ -86,7 +120,7 @@ comms_state() {
   local cache now cts cu ca json unread agent name
   # The actor this session's agent tools act as: the plugin's agent-as hook names the main session
   # from its session id, under the principal `serve` derives with BASEMIND_HOST=claude.
-  name="$(printf '%s' "$input" | BASEMIND_HOST=claude timeout 2 basemind agent hook name 2>/dev/null | tr -cd 'a-z0-9_-' || true)"
+  name="$(printf '%s' "$input" | run_bounded 2 env BASEMIND_HOST=claude basemind agent hook name 2>/dev/null | tr -cd 'a-z0-9_-' || true)"
   cache="${TMPDIR:-/tmp}/basemind-sl-comms-$(printf '%s %s' "$cwd" "$name" | cksum | cut -d' ' -f1)"
   now="$(date +%s)"
   if [[ -f "$cache" ]]; then
@@ -99,7 +133,7 @@ comms_state() {
 
   local as=()
   [[ -n "$name" ]] && as=(--as "$name")
-  json="$(BASEMIND_HOST=claude timeout 2 basemind agent inbox --peek ${as[@]+"${as[@]}"} --root "$cwd" --json --limit 1 </dev/null 2>/dev/null || true)"
+  json="$(run_bounded 2 env BASEMIND_HOST=claude basemind agent inbox --peek ${as[@]+"${as[@]}"} --root "$cwd" --json --limit 1 </dev/null 2>/dev/null || true)"
   [[ -n "$json" ]] || return 1
   unread="$(printf '%s' "$json" | jq -r '(.messages | length)' 2>/dev/null | tr -cd '0-9' || true)"
   [[ -n "$unread" ]] || unread=0

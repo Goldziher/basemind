@@ -235,6 +235,61 @@ class AgentHookTests(unittest.TestCase):
         self.assertIn("additionalContext", plain)
 
 
+class StatusLineCommsTests(unittest.TestCase):
+    """The status line counts unread agent mail on a machine with no `timeout` binary."""
+
+    def setUp(self) -> None:
+        if shutil.which("jq") is None:
+            self.skipTest("jq is required")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        # The system commands and jq, without `timeout`, as on stock macOS.
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        for directory in ("/bin", "/usr/bin", "/sbin", "/usr/sbin", str(Path(shutil.which("jq")).parent)):
+            if not Path(directory).is_dir():
+                continue
+            for entry in os.scandir(directory):
+                target = self.bin / entry.name
+                if entry.name in ("timeout", "gtimeout", "basemind", "pgrep") or target.exists():
+                    continue
+                if os.access(entry.path, os.X_OK) and not entry.is_dir():
+                    target.symlink_to(entry.path)
+        stubs = {
+            "pgrep": "exit 0",
+            "basemind": """printf '%s\\n' "$@" >> "$HOME/basemind-args"
+case "$1 $2 $3" in
+"agent hook name") cat >/dev/null; printf '%s' session-1a2b3c4d ;;
+"agent inbox --peek") printf '%s' '{"messages":[{"id":"t-abcdef.1"},{"id":"t-abcdef.2"}],"more":false}' ;;
+esac""",
+        }
+        for name, body in stubs.items():
+            (self.bin / name).write_text(f"#!/bin/bash\n{body}\n")
+            (self.bin / name).chmod(0o755)
+        self.work = self.root / "work"
+        (self.work / ".basemind/blobs").mkdir(parents=True)
+        (self.work / ".basemind/views/working").mkdir(parents=True)
+        (self.work / ".basemind/blobs/0aaaaaaaa.fm.msgpack").touch()
+        (self.work / ".basemind/views/working/index.msgpack").touch()
+
+    def test_unread_mail_is_counted_for_the_session(self) -> None:
+        env = {**os.environ, "HOME": str(self.root), "TMPDIR": str(self.root), "PATH": str(self.bin), "COLUMNS": "200"}
+        payload = json.dumps({"session_id": "s1", "workspace": {"current_dir": str(self.work)}})
+        result = subprocess.run(
+            ["/bin/bash", str(ROOT / ".claude-plugin/statusline.sh")],
+            input=payload,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        self.assertIn("\u2709 2", result.stdout)
+        args = (self.root / "basemind-args").read_text().splitlines()
+        self.assertEqual(args[args.index("--as") + 1], NAME)
+
+
 class AgentAsManifestTests(unittest.TestCase):
     MANIFESTS = (
         "plugin/.ai-rulez/hooks/hooks.json",
