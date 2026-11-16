@@ -233,6 +233,10 @@ pub trait HistoryForwarder: Send + Sync + std::any::Any {
     /// Run one commit-returning op against the holder's index. Unreachable or a reply of another
     /// shape yields an empty page.
     fn commits(&self, op: proto::GitHistoryOp) -> Vec<crate::git::CommitInfo>;
+
+    /// Whether the holder is this process. Such a handle must never be asked to sync over the
+    /// holder's socket, which would dial itself; required so no implementor can leave it out.
+    fn hosts_in_process(&self) -> bool;
 }
 
 /// Handle to every git-history partition. Cloned cheaply (each `Keyspace` is `Arc`'d by Fjall).
@@ -301,7 +305,7 @@ impl GitHistoryIndex {
     }
 
     /// The forwarder of a daemon-backed handle, `None` for a local one.
-    pub fn forwarder(&self) -> Option<&std::sync::Arc<dyn HistoryForwarder>> {
+    pub(crate) fn forwarder(&self) -> Option<&std::sync::Arc<dyn HistoryForwarder>> {
         match &self.backend {
             Backend::Remote(forwarder) => Some(forwarder),
             Backend::Local(_) => None,

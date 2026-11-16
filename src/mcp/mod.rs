@@ -658,6 +658,10 @@ impl BasemindServer {
             return;
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
+        if index.forwarder().is_some_and(|forwarder| forwarder.hosts_in_process()) {
+            return;
+        }
+        #[cfg(all(feature = "comms", any(unix, windows)))]
         if index.is_daemon_backed() {
             let root = state.shared.root.clone();
             let agent_id = state.agent_id.clone();

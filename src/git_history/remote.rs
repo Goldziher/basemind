@@ -166,6 +166,10 @@ impl HistoryForwarder for RemoteHistory {
             _ => Vec::new(),
         }
     }
+
+    fn hosts_in_process(&self) -> bool {
+        self.host.is_some()
+    }
 }
 
 /// A handle backed by the DAEMON's index for the repo at `root`. Takes no lock and performs no IO:
@@ -186,9 +190,18 @@ pub fn hosted_index(root: PathBuf, agent: AgentId, host: Arc<dyn HistoryHost>) -
 /// The in-process host of a daemon-hosted handle, if any. A hosted connection uses it to run the
 /// startup git-history sync directly (through the daemon's build lock) instead of forwarding the
 /// `Sync` op back over the socket. `None` for a local handle or a socket-forwarding one.
+///
+/// A forwarder that [hosts in process](HistoryForwarder::hosts_in_process) but is not a
+/// [`RemoteHistory`] yields `None` too; that is a wiring bug, logged here, and the caller must still
+/// not fall back to the socket (it checks `hosts_in_process` itself).
 pub(crate) fn history_host(index: &GitHistoryIndex) -> Option<Arc<dyn HistoryHost>> {
-    let forwarder: &dyn std::any::Any = index.forwarder()?.as_ref();
-    forwarder.downcast_ref::<RemoteHistory>()?.host()
+    let forwarder = index.forwarder()?;
+    let any: &dyn std::any::Any = forwarder.as_ref();
+    let host = any.downcast_ref::<RemoteHistory>().and_then(RemoteHistory::host);
+    if host.is_none() && forwarder.hosts_in_process() {
+        tracing::error!("git-history: an in-process forwarder exposes no host; its startup sync is skipped");
+    }
+    host
 }
 
 /// Whether a machine daemon is up — and therefore holds this machine's git-history databases.
@@ -282,5 +295,42 @@ async fn try_sync(
         _ => Err(crate::comms::client::CommsClientError::Unexpected {
             request: "git_history sync",
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DecliningHost;
+
+    impl HistoryHost for DecliningHost {
+        fn run_history(
+            &self,
+            _root: PathBuf,
+            _op: GitHistoryOp,
+        ) -> Pin<Box<dyn Future<Output = Result<GitHistoryReply, GitHistoryError>> + Send + '_>> {
+            Box::pin(async { Err(GitHistoryError::Disabled) })
+        }
+    }
+
+    fn agent() -> AgentId {
+        AgentId::parse("agent-1".to_string()).expect("agent id")
+    }
+
+    #[test]
+    fn a_hosted_index_syncs_in_process_and_never_over_the_socket() {
+        let index = hosted_index(PathBuf::from("/repo"), agent(), Arc::new(DecliningHost));
+        let forwarder = index.forwarder().expect("a hosted index is daemon-backed");
+        assert!(forwarder.hosts_in_process());
+        assert!(history_host(&index).is_some());
+    }
+
+    #[test]
+    fn a_remote_index_has_no_in_process_host() {
+        let index = remote_index(PathBuf::from("/repo"), agent());
+        let forwarder = index.forwarder().expect("a remote index is daemon-backed");
+        assert!(!forwarder.hosts_in_process());
+        assert!(history_host(&index).is_none());
     }
 }
