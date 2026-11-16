@@ -47,13 +47,16 @@
 //! A daemon whose socket has gone quiet has the whole exit window to leave by itself, because it is
 //! usually draining for someone else: another client's `Stop`, or its own idle exit. If its process
 //! is still there afterwards it is asked once more, `Stop` and then `Ping`; if it is silent to both
-//! it gets SIGTERM then SIGKILL — but only when `daemon.pid` in this generation, read at that
-//! moment, names the pid it reported. Otherwise the call fails with `StalePredecessor`.
-//! `basemind comms stop` and `comms stop --all` reclaim a daemon through the same steps
-//! ([`reclaim_holder`]), identifying it by `daemon.pid` alone.
+//! it gets SIGTERM then SIGKILL — but only while `daemon.lock` in this generation reads held and
+//! `daemon.pid`, read at that moment, names the pid it reported. Otherwise the call fails with
+//! `StalePredecessor`. `basemind comms stop` and `comms stop --all` reclaim a daemon through the
+//! same steps ([`reclaim_holder`]), identifying it by the lock and `daemon.pid` alone.
+//!
+//! Silent means asked and unanswered. A `Ping` that could not be sent ([`Liveness::Unknown`])
+//! establishes nothing: the daemon is not signalled and none is spawned beside it.
 //!
 //! A daemon that does not answer `Status` at all is not classified: if it answers `Ping` it is
-//! used, and the handshake reports what is wrong with it; if it does not, one is spawned, and the
+//! used, and the handshake reports what is wrong with it; if it is silent, one is spawned, and the
 //! spawned daemon defers to whoever holds `daemon.lock`. With `BASEMIND_NO_AUTOSPAWN` set, nothing
 //! is ever asked to stop, because nothing could replace it.
 
@@ -220,6 +223,16 @@ pub enum SingletonError {
         count: usize,
         /// The effective ceiling.
         max: usize,
+    },
+    /// The endpoint could not be asked whether a daemon is there: the exchange never started.
+    /// Nothing was spawned or signalled on a guess.
+    #[error(
+        "could not ask the basemind comms daemon at {socket} whether it is running, so none was \
+         started or stopped; retry"
+    )]
+    EndpointUnknown {
+        /// The endpoint that could not be asked.
+        socket: PathBuf,
     },
     /// No daemon answered and [`NO_AUTOSPAWN_ENV`] forbids starting one. The operator asked for
     /// connect-only behaviour; saying so is the whole point, so this is an error rather than a
@@ -539,9 +552,35 @@ pub async fn ensure_daemon_with_policy(
     is_alive: impl Fn(&Path) -> bool,
     spawn: impl FnOnce(&CommsPaths) -> std::io::Result<()>,
 ) -> Result<(), SingletonError> {
+    let probe = |socket: &Path| {
+        if is_alive(socket) {
+            Liveness::Answers
+        } else {
+            Liveness::Silent
+        }
+    };
+    ensure_daemon_probing(paths, policy, probe, spawn).await
+}
+
+/// [`ensure_daemon_with_policy`] with a probe that can say it does not know. A daemon is spawned
+/// only when the probe found the endpoint silent: one that could not be asked may be serving, and
+/// a second daemon would only exit on the lock the first holds.
+async fn ensure_daemon_probing(
+    paths: &CommsPaths,
+    policy: SpawnPolicy,
+    probe: impl Fn(&Path) -> Liveness,
+    spawn: impl FnOnce(&CommsPaths) -> std::io::Result<()>,
+) -> Result<(), SingletonError> {
+    let is_alive = |socket: &Path| probe(socket) == Liveness::Answers;
     // Ahead of the opt-out on purpose: connect-only means *do not start one*, not *do not use one*.
-    if is_alive(&paths.socket_path) {
-        return Ok(());
+    match probe(&paths.socket_path) {
+        Liveness::Answers => return Ok(()),
+        Liveness::Silent => {}
+        Liveness::Unknown => {
+            return Err(SingletonError::EndpointUnknown {
+                socket: paths.socket_path.clone(),
+            });
+        }
     }
     if policy == SpawnPolicy::Auto && autospawn_disabled() {
         return Err(SingletonError::AutospawnDisabled {
@@ -622,10 +661,10 @@ async fn ensure_daemon_as(
     if live >= max {
         return Err(SingletonError::TooManyDaemons { count: live, max });
     }
-    ensure_daemon_with_policy(
+    ensure_daemon_probing(
         paths,
         policy,
-        |socket| off_worker(|| probe_alive(socket)),
+        |socket| off_worker(|| probe_liveness(socket)),
         spawn_detached_daemon,
     )
     .await
@@ -735,6 +774,7 @@ fn roundtrip_within(socket_path: &Path, req: &CommsRequest, timeout: Duration) -
 /// what bounds them on each platform.
 #[path = "singleton_endpoint.rs"]
 mod endpoint;
+pub use endpoint::Liveness;
 pub(crate) use endpoint::endpoint_accepts;
 use endpoint::probe_once;
 
@@ -761,23 +801,27 @@ const PROBE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 /// Probe whether a daemon is alive at `socket_path` by connecting and pinging it. Synchronous
 /// (uses a blocking connect with a short timeout) so it can be used as the `probe` in
 /// [`bind_listener`] too. Retries a few times before giving up so a momentarily-busy daemon is
-/// not falsely reclaimed.
-#[cfg(any(unix, windows))]
+/// not falsely reclaimed. `false` also when the daemon could not be asked; a caller about to
+/// signal or spawn uses [`probe_liveness`], which keeps that case apart.
 pub fn probe_alive(socket_path: &Path) -> bool {
+    probe_liveness(socket_path) == Liveness::Answers
+}
+
+/// [`probe_alive`] with the third answer kept: [`Liveness::Silent`] only when every attempt was
+/// made and none was answered, [`Liveness::Unknown`] when any could not be made.
+pub fn probe_liveness(socket_path: &Path) -> Liveness {
+    let mut verdict = Liveness::Silent;
     for attempt in 0..PROBE_ATTEMPTS {
-        if probe_once(socket_path) {
-            return true;
+        match probe_once(socket_path) {
+            Liveness::Answers => return Liveness::Answers,
+            Liveness::Silent => {}
+            Liveness::Unknown => verdict = Liveness::Unknown,
         }
         if attempt + 1 < PROBE_ATTEMPTS {
             std::thread::sleep(PROBE_RETRY_BACKOFF);
         }
     }
-    false
-}
-
-#[cfg(not(any(unix, windows)))]
-pub fn probe_alive(_socket_path: &Path) -> bool {
-    false
+    verdict
 }
 
 /// Daemon binary resolution + detached spawn. See [`singleton_spawn`](spawn) for why re-exec'ing

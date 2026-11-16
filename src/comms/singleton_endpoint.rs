@@ -1,43 +1,70 @@
 //! One-shot blocking exchanges with a daemon's endpoint: what the liveness probe, the status read
 //! and the stop request are built on.
 //!
-//! On Unix every read and write takes a timeout. A Windows pipe opened as a file takes none, so
-//! there an exchange runs on a thread of its own under [`bounded`], and the caller gives up on it
-//! at the limit. Two things follow that this module keeps in hand:
+//! Every exchange is bounded, and none is skipped because of an earlier one. On Unix each read and
+//! write takes a timeout. A Windows pipe opened as a file takes none, so there the exchange is
+//! done with tokio's pipe client under a timeout, on a short-lived thread with a runtime of its
+//! own (the callers are synchronous, and some run inside a runtime). Giving up drops the client,
+//! which cancels the read: nothing outlives the call, and a daemon that accepted one exchange and
+//! never answered it is asked again by the next.
 //!
-//! - A pipe whose every instance is serving another client refuses the open with
-//!   `ERROR_PIPE_BUSY`. That is a daemon at work, the opposite of a silent one: the open is
-//!   retried for a bounded time, and a pipe still busy at the end counts as present.
-//! - A call given up on leaves its thread blocked in the read, with the pipe open, until the
-//!   daemon answers, closes the pipe or dies. No new exchange is started with an endpoint while
-//!   one given up on is still blocked there, so a daemon that accepts and never answers holds one
-//!   thread and one pipe handle of this process, however often it is probed. (Callers that were
-//!   already waiting on the same endpoint at that moment may each leave one more.)
+//! What could not be asked is not silence. A probe says [`Liveness::Unknown`] when the exchange
+//! never started, and a caller must neither signal nor spawn on that. A pipe whose every instance
+//! is serving another client refuses the open with `ERROR_PIPE_BUSY`: that is a daemon at work,
+//! so the open is retried for a bounded time and a pipe still busy at the end counts as present.
 
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(any(unix, windows))]
+use super::super::protocol::CommsRequest;
 use super::super::protocol::{CommsOut, CommsResponse};
 
+/// How long one `Ping` waits for its answer.
+#[cfg(any(unix, windows))]
+const PING_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// What a `Ping` established about the daemon at an endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Liveness {
+    /// It answered, or its pipe is there with every instance busy serving other clients.
+    Answers,
+    /// It was asked and did not answer in time, or nothing is listening.
+    Silent,
+    /// It could not be asked: the exchange never started. That says nothing about the daemon, so
+    /// no signal and no spawn may follow from it.
+    Unknown,
+}
+
 /// Send one framed request `body` and decode the one framed reply, giving up after `timeout`:
-/// per read and write on Unix, for the whole exchange on Windows.
+/// per read and write on Unix, per step of the exchange on Windows. `None` covers a daemon that
+/// did not answer and one that could not be asked; a caller that has to tell them apart pings
+/// ([`probe_once`]).
 pub(super) fn exchange(socket_path: &Path, body: Vec<u8>, timeout: Duration) -> Option<CommsResponse> {
     #[cfg(windows)]
     {
-        let endpoint = socket_path.to_path_buf();
-        bounded(socket_path, timeout, move || {
-            let Pipe::Open(stream) = open_pipe(&endpoint, timeout / 2) else {
+        pipe::hosted(async {
+            let pipe::Opened::Open(mut client) = pipe::open(socket_path, timeout / 2).await else {
                 return None;
             };
-            converse(stream, &body)
+            let reply = tokio::time::timeout(timeout, pipe::converse(&mut client, &body)).await;
+            decode_reply(&reply.ok()??)
         })
+        .flatten()
     }
     #[cfg(unix)]
     {
-        let stream = std::os::unix::net::UnixStream::connect(socket_path).ok()?;
+        use std::io::{Read as _, Write as _};
+
+        let mut stream = std::os::unix::net::UnixStream::connect(socket_path).ok()?;
         let _ = stream.set_read_timeout(Some(timeout));
         let _ = stream.set_write_timeout(Some(timeout));
-        converse(stream, &body)
+        stream.write_all(&frame(&body)?).ok()?;
+        let mut prefix = [0u8; 4];
+        stream.read_exact(&mut prefix).ok()?;
+        let mut reply = vec![0u8; reply_len(prefix)?];
+        stream.read_exact(&mut reply).ok()?;
+        decode_reply(&reply)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -46,120 +73,29 @@ pub(super) fn exchange(socket_path: &Path, body: Vec<u8>, timeout: Duration) -> 
     }
 }
 
-/// Write the framed request and read the framed reply. Bounds the reply to 64 KiB.
+/// `body` behind its length prefix, as the daemon's front-end frames a request.
 #[cfg(any(unix, windows))]
-fn converse(mut stream: impl std::io::Read + std::io::Write, body: &[u8]) -> Option<CommsResponse> {
+fn frame(body: &[u8]) -> Option<Vec<u8>> {
     let len = u32::try_from(body.len()).ok()?;
-    stream.write_all(&len.to_be_bytes()).ok()?;
-    stream.write_all(body).ok()?;
-    let mut prefix = [0u8; 4];
-    stream.read_exact(&mut prefix).ok()?;
-    let rlen = u32::from_be_bytes(prefix) as usize;
-    if rlen > 64 * 1024 {
-        return None;
-    }
-    let mut buf = vec![0u8; rlen];
-    stream.read_exact(&mut buf).ok()?;
-    match rmp_serde::from_slice::<CommsOut>(&buf).ok()? {
+    let mut framed = Vec::with_capacity(body.len() + 4);
+    framed.extend_from_slice(&len.to_be_bytes());
+    framed.extend_from_slice(body);
+    Some(framed)
+}
+
+/// The length a reply's prefix announces, when it is within the 64 KiB a one-shot reply may take.
+#[cfg(any(unix, windows))]
+fn reply_len(prefix: [u8; 4]) -> Option<usize> {
+    const MAX_REPLY_BYTES: usize = 64 * 1024;
+    let len = u32::from_be_bytes(prefix) as usize;
+    (len <= MAX_REPLY_BYTES).then_some(len)
+}
+
+#[cfg(any(unix, windows))]
+fn decode_reply(reply: &[u8]) -> Option<CommsResponse> {
+    match rmp_serde::from_slice::<CommsOut>(reply).ok()? {
         CommsOut::Response(resp) | CommsOut::Reply { response: resp, .. } => Some(resp),
         CommsOut::Notification(_) => None,
-    }
-}
-
-/// Endpoints with a [`bounded`] call that was given up on and is still blocked, and how many.
-#[cfg(any(windows, test))]
-static ABANDONED: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, usize>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-/// Run blocking `work` against `endpoint` on a thread of its own and wait at most `limit` for
-/// what it returns. For I/O that takes no timeout: past the limit the caller moves on with `None`,
-/// and the thread ends whenever its call returns. While a call given up on is still blocked,
-/// further calls for the same endpoint return `None` at once without starting `work`, which is
-/// what bounds the threads and handles one unanswering endpoint can hold.
-#[cfg(any(windows, test))]
-pub(super) fn bounded<T: Send + 'static>(
-    endpoint: &Path,
-    limit: Duration,
-    work: impl FnOnce() -> Option<T> + Send + 'static,
-) -> Option<T> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, PoisonError};
-
-    let abandoned = || ABANDONED.lock().unwrap_or_else(PoisonError::into_inner);
-    if abandoned().contains_key(endpoint) {
-        return None;
-    }
-    // Both flags are read and written only under the `ABANDONED` lock, which is what lets the
-    // thread and the caller agree on who saw the other first.
-    let finished = Arc::new(AtomicBool::new(false));
-    let given_up = Arc::new(AtomicBool::new(false));
-    let (done, result) = std::sync::mpsc::channel();
-    let (thread_finished, thread_given_up, key) = (finished.clone(), given_up.clone(), endpoint.to_path_buf());
-    std::thread::Builder::new()
-        .name("comms-endpoint".to_string())
-        .spawn(move || {
-            let outcome = work();
-            {
-                let mut abandoned = ABANDONED.lock().unwrap_or_else(PoisonError::into_inner);
-                thread_finished.store(true, Ordering::Relaxed);
-                if thread_given_up.load(Ordering::Relaxed)
-                    && let Some(count) = abandoned.get_mut(&key)
-                {
-                    *count -= 1;
-                    if *count == 0 {
-                        abandoned.remove(&key);
-                    }
-                }
-            }
-            let _ = done.send(outcome);
-        })
-        .ok()?;
-    if let Ok(outcome) = result.recv_timeout(limit) {
-        return outcome;
-    }
-    {
-        let mut abandoned = abandoned();
-        if !finished.load(Ordering::Relaxed) {
-            given_up.store(true, Ordering::Relaxed);
-            *abandoned.entry(endpoint.to_path_buf()).or_insert(0) += 1;
-            return None;
-        }
-    }
-    // The work returned as the limit ran out; its result is on its way.
-    result.recv().ok().flatten()
-}
-
-/// What opening the daemon's pipe found.
-#[cfg(windows)]
-enum Pipe {
-    /// A free instance, connected.
-    Open(std::fs::File),
-    /// The pipe exists and every instance of it stayed busy for the whole wait: a daemon is
-    /// there, serving other clients.
-    Busy,
-    /// No such pipe, or it cannot be opened.
-    Absent,
-}
-
-/// Open the daemon's pipe, retrying for up to `wait` while every instance is busy.
-#[cfg(windows)]
-fn open_pipe(socket_path: &Path, wait: Duration) -> Pipe {
-    /// Every instance of the pipe is serving a client, which takes a server.
-    const ERROR_PIPE_BUSY: i32 = 231;
-    const RETRY_INTERVAL: Duration = Duration::from_millis(50);
-
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        match std::fs::OpenOptions::new().read(true).write(true).open(socket_path) {
-            Ok(pipe) => return Pipe::Open(pipe),
-            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                if std::time::Instant::now() >= deadline {
-                    return Pipe::Busy;
-                }
-                std::thread::sleep(RETRY_INTERVAL);
-            }
-            Err(_) => return Pipe::Absent,
-        }
     }
 }
 
@@ -172,7 +108,10 @@ pub(crate) fn endpoint_accepts(socket_path: &Path) -> bool {
     }
     #[cfg(windows)]
     {
-        !matches!(open_pipe(socket_path, Duration::ZERO), Pipe::Absent)
+        match std::fs::OpenOptions::new().read(true).write(true).open(socket_path) {
+            Ok(_) => true,
+            Err(error) => error.raw_os_error() == Some(pipe::ERROR_PIPE_BUSY),
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -181,59 +120,138 @@ pub(crate) fn endpoint_accepts(socket_path: &Path) -> bool {
     }
 }
 
-/// One connect+ping attempt against the Unix socket. See [`probe_alive`](super::probe_alive) for
+/// One connect+ping attempt: the framed `Ping` every front-end answers, where any 4-byte reply
+/// prefix read back means the daemon answers. See [`probe_liveness`](super::probe_liveness) for
 /// the retrying wrapper.
-#[cfg(unix)]
-pub(super) fn probe_once(socket_path: &Path) -> bool {
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
-
-    let Ok(mut stream) = UnixStream::connect(socket_path) else {
-        return false;
+#[cfg(any(unix, windows))]
+pub(super) fn probe_once(socket_path: &Path) -> Liveness {
+    let Some(ping) = rmp_serde::to_vec_named(&CommsRequest::Ping)
+        .ok()
+        .and_then(|body| frame(&body))
+    else {
+        return Liveness::Unknown;
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    #[cfg(unix)]
+    {
+        use std::io::{Read as _, Write as _};
 
-    let body = match rmp_serde::to_vec_named(&super::super::protocol::CommsRequest::Ping) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    let len = match u32::try_from(body.len()) {
-        Ok(l) => l,
-        Err(_) => return false,
-    };
-    if stream.write_all(&len.to_be_bytes()).is_err() || stream.write_all(&body).is_err() {
-        return false;
-    }
-    let mut prefix = [0u8; 4];
-    stream.read_exact(&mut prefix).is_ok()
-}
-
-/// One connect+ping attempt against the Windows named pipe. See [`probe_alive`](super::probe_alive)
-/// for the retrying wrapper. A `\\.\pipe\...` path opens as an ordinary [`std::fs::File`], so the
-/// SAME framed `Ping` the Unix probe sends goes over it (u32-be length prefix + msgpack), and any
-/// 4-byte response prefix read back means alive. The read has no timeout of its own, so the
-/// attempt runs under [`bounded`]: a daemon that accepts and never answers is not alive. A pipe
-/// that is not there is not alive either. One whose every instance stays busy is: something is
-/// serving those clients.
-#[cfg(windows)]
-pub(super) fn probe_once(socket_path: &Path) -> bool {
-    use std::io::{Read, Write};
-
-    const PING_TIMEOUT: Duration = Duration::from_millis(500);
-    let endpoint = socket_path.to_path_buf();
-    bounded(socket_path, PING_TIMEOUT, move || {
-        let mut stream = match open_pipe(&endpoint, PING_TIMEOUT / 2) {
-            Pipe::Open(stream) => stream,
-            Pipe::Busy => return Some(()),
-            Pipe::Absent => return None,
+        let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) else {
+            return Liveness::Silent;
         };
-        let body = rmp_serde::to_vec_named(&super::super::protocol::CommsRequest::Ping).ok()?;
-        let len = u32::try_from(body.len()).ok()?;
-        stream.write_all(&len.to_be_bytes()).ok()?;
-        stream.write_all(&body).ok()?;
+        let _ = stream.set_read_timeout(Some(PING_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(PING_TIMEOUT));
         let mut prefix = [0u8; 4];
-        stream.read_exact(&mut prefix).ok()
-    })
-    .is_some()
+        if stream.write_all(&ping).is_ok() && stream.read_exact(&mut prefix).is_ok() {
+            Liveness::Answers
+        } else {
+            Liveness::Silent
+        }
+    }
+    #[cfg(windows)]
+    {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        pipe::hosted(async {
+            let mut client = match pipe::open(socket_path, PING_TIMEOUT / 2).await {
+                pipe::Opened::Open(client) => client,
+                pipe::Opened::Busy => return Liveness::Answers,
+                pipe::Opened::Absent => return Liveness::Silent,
+            };
+            let answered = tokio::time::timeout(PING_TIMEOUT, async {
+                client.write_all(&ping).await.ok()?;
+                let mut prefix = [0u8; 4];
+                client.read_exact(&mut prefix).await.ok()
+            })
+            .await;
+            match answered {
+                Ok(Some(_)) => Liveness::Answers,
+                Ok(None) | Err(_) => Liveness::Silent,
+            }
+        })
+        .unwrap_or(Liveness::Unknown)
+    }
 }
+
+/// No endpoint exists on this platform, so nothing can be asked.
+#[cfg(not(any(unix, windows)))]
+pub(super) fn probe_once(_socket_path: &Path) -> Liveness {
+    Liveness::Unknown
+}
+
+/// The Windows side: a named pipe driven by tokio, so that a read can be given up on.
+#[cfg(windows)]
+mod pipe {
+    use std::future::Future;
+    use std::path::Path;
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+
+    /// Every instance of the pipe is serving a client, which takes a server.
+    pub(super) const ERROR_PIPE_BUSY: i32 = 231;
+
+    /// What opening the daemon's pipe found.
+    pub(super) enum Opened {
+        /// A free instance, connected.
+        Open(NamedPipeClient),
+        /// The pipe exists and every instance of it stayed busy for the whole wait: a daemon is
+        /// there, serving other clients.
+        Busy,
+        /// No such pipe, or it cannot be opened.
+        Absent,
+    }
+
+    /// Open the daemon's pipe, retrying for up to `wait` while every instance is busy.
+    pub(super) async fn open(socket_path: &Path, wait: Duration) -> Opened {
+        const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match ClientOptions::new().open(socket_path) {
+                Ok(client) => return Opened::Open(client),
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Opened::Busy;
+                    }
+                    tokio::time::sleep(RETRY_INTERVAL).await;
+                }
+                Err(_) => return Opened::Absent,
+            }
+        }
+    }
+
+    /// Write the framed request and read the framed reply's body. The caller bounds it.
+    pub(super) async fn converse(client: &mut NamedPipeClient, body: &[u8]) -> Option<Vec<u8>> {
+        client.write_all(&super::frame(body)?).await.ok()?;
+        let mut prefix = [0u8; 4];
+        client.read_exact(&mut prefix).await.ok()?;
+        let mut reply = vec![0u8; super::reply_len(prefix)?];
+        client.read_exact(&mut reply).await.ok()?;
+        Some(reply)
+    }
+
+    /// Run `work` to its end on a thread of its own with a runtime of its own, and wait for it.
+    /// `work` must bound every wait it makes; the thread then always ends with the call. `None`
+    /// when the thread or its runtime could not be started, so that nothing was asked.
+    pub(super) fn hosted<T: Send>(work: impl Future<Output = T> + Send) -> Option<T> {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("comms-endpoint".to_string())
+                .spawn_scoped(scope, || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .ok()?;
+                    Some(runtime.block_on(work))
+                })
+                .ok()?
+                .join()
+                .ok()?
+        })
+    }
+}
+
+#[cfg(all(test, windows))]
+#[path = "singleton_endpoint_windows_tests.rs"]
+mod windows_tests;

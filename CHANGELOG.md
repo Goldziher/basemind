@@ -276,11 +276,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another protocol version, waits the normal stop timeout for its answer and honours a refusal.
   On Windows every such exchange with a daemon is now bounded: the pipe read takes no timeout, so
   a daemon that accepted a connection and never answered could hang `comms stop` and daemon
-  bring-up for good. An exchange given up on leaves one thread blocked on the open pipe, and no
-  further one is started with that endpoint until it returns, so such a daemon holds one thread
-  and one handle however often it is probed. A pipe whose every instance is busy is a daemon at
-  work: the open is retried for a bounded time and the daemon counts as present, where it read as
-  silent and could end in `taskkill /F`.
+  bring-up for good. The exchange is made with an asynchronous pipe client under a timeout, and
+  giving up cancels the read, so nothing stays blocked and the next probe is sent like the first.
+  A pipe whose every instance is busy is a daemon at work: the open is retried for a bounded time
+  and the daemon counts as present, where it read as silent and could end in `taskkill /F`. A
+  `Ping` that could not be sent at all is reported as unknown, not as silence: the daemon is not
+  signalled and no second one is spawned.
   "Older" and "newer" follow semantic-version precedence, pre-release included: the daemon of
   `0.34.0-rc.1` makes way for `0.34.0` and is never preferred to it.
 - `basemind comms stop` and `comms stop --all` reclaim a daemon by the takeover's own steps: wait

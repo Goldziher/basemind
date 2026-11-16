@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use basemind::comms::client::{CommsClient, CommsClientError};
-use basemind::comms::singleton::{self, CommsPaths, ReclaimRules, Reclaimed, StopOutcome};
+use basemind::comms::singleton::{self, CommsPaths, Liveness, ReclaimRules, Reclaimed, StopOutcome};
 use basemind::daemon_lock::{self, DaemonKind};
 
 /// The one refusal that is a symptom, not a decision: the daemon answers only to say its store is
@@ -32,7 +32,7 @@ const STOP_REPROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const TERM_GRACE: Duration = Duration::from_secs(3);
 
 /// What the first `Stop` established.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Asked {
     /// The daemon took the request.
     Accepted,
@@ -129,12 +129,26 @@ fn stop_without_handshake(socket_path: &std::path::Path) -> Result<Asked> {
         StopOutcome::Accepted => Ok(Asked::Accepted),
         StopOutcome::Refused { code, .. } if code == STORE_ERROR => Ok(Asked::BrokenStore),
         StopOutcome::Refused { code, message } => Err(anyhow::anyhow!("stop: daemon refused [{code}]: {message}")),
-        StopOutcome::Unreachable if singleton::probe_alive(socket_path) => Err(anyhow::anyhow!(
+        StopOutcome::Unreachable => after_unanswered_stop(singleton::probe_liveness(socket_path)),
+    }
+}
+
+/// What a `Stop` nobody answered means, given what a `Ping` then established. Only a daemon that
+/// was asked and stayed silent goes on to be reclaimed; one that answers, or that could not be
+/// asked, is left running.
+fn after_unanswered_stop(ping: Liveness) -> Result<Asked> {
+    match ping {
+        Liveness::Silent => Ok(Asked::Unanswered),
+        Liveness::Answers => Err(anyhow::anyhow!(
             "stop: the daemon did not answer the stop request within {}s but still answers pings, \
              so it was left running; retry, or terminate its process yourself if it is stuck",
             STOP_RPC_TIMEOUT.as_secs()
         )),
-        StopOutcome::Unreachable => Ok(Asked::Unanswered),
+        Liveness::Unknown => Err(anyhow::anyhow!(
+            "stop: the daemon did not answer the stop request within {}s and could not be pinged, so \
+             whether it is running is not known and it was left alone; retry",
+            STOP_RPC_TIMEOUT.as_secs()
+        )),
     }
 }
 
@@ -160,6 +174,10 @@ fn why_left_running(paths: &CommsPaths, left: &Reclaimed) -> String {
             paths.comms_dir.join("daemon.lock").display(),
         ),
         Reclaimed::Survived { pid } => format!("the daemon for {dir} (pid {pid}) is still running after SIGKILL"),
+        Reclaimed::Unknown => format!(
+            "the daemon for {dir} did not answer the stop request and could not be pinged, so whether it is \
+             running is not known and nothing was signalled; retry"
+        ),
         Reclaimed::Gone { .. } => format!("the daemon for {dir} is gone"),
     }
 }
@@ -296,4 +314,30 @@ fn stop_one(dir: &std::path::Path) -> Result<Reclaimed, (String, String)> {
         return Ok(Reclaimed::Unidentified);
     };
     Ok(runtime.block_on(singleton::reclaim_holder(&paths, None, asked.rules())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs on every platform. A daemon goes on to be reclaimed, and so possibly signalled, only
+    /// when it was pinged and stayed silent.
+    #[test]
+    fn only_a_daemon_that_was_pinged_and_stayed_silent_goes_on_to_be_reclaimed() {
+        assert_eq!(
+            after_unanswered_stop(Liveness::Silent).expect("reclaim"),
+            Asked::Unanswered
+        );
+        let answers = after_unanswered_stop(Liveness::Answers).expect_err("left running");
+        assert!(answers.to_string().contains("still answers pings"), "{answers}");
+        let unknown = after_unanswered_stop(Liveness::Unknown).expect_err("left alone");
+        assert!(unknown.to_string().contains("could not be pinged"), "{unknown}");
+    }
+
+    #[test]
+    fn a_daemon_that_could_not_be_asked_is_reported_as_left_alone() {
+        let paths = paths_of(std::path::Path::new("comms/g1"));
+        let why = why_left_running(&paths, &Reclaimed::Unknown);
+        assert!(why.contains("nothing was signalled"), "{why}");
+    }
 }

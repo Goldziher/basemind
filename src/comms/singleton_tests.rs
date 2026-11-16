@@ -49,81 +49,34 @@ fn version_is_older_orders_pre_releases_by_semver_precedence() {
     assert!(version_is_older("0.10.0-rc.1+build.9", "0.10.0+build.1"));
 }
 
-/// What bounds a pipe exchange on Windows, where a read takes no timeout: the caller gets `None`
-/// at the limit even though the call it started is still blocked.
-#[test]
-fn bounded_gives_up_on_work_that_never_returns_and_passes_on_what_returns_in_time() {
-    use endpoint::bounded;
-
-    const LIMIT: Duration = Duration::from_millis(100);
-    const PROMPT: Duration = Duration::from_secs(5);
-    let (release, blocked) = std::sync::mpsc::channel::<()>();
-    let started = std::time::Instant::now();
-
-    let hung = bounded(Path::new("bounded/hung"), LIMIT, move || {
-        let _ = blocked.recv();
-        Some("too late")
-    });
-
-    assert_eq!(hung, None, "work still blocked at the limit yields nothing");
-    assert!(started.elapsed() >= LIMIT);
-    assert!(
-        started.elapsed() < PROMPT,
-        "the caller is not held: {:?}",
-        started.elapsed()
-    );
-    drop(release);
-    assert_eq!(bounded(Path::new("bounded/prompt"), PROMPT, || Some(7)), Some(7));
-    assert_eq!(bounded(Path::new("bounded/prompt"), PROMPT, || None::<u8>), None);
-}
-
-/// A daemon that accepts and never answers is probed again and again. Each probe given up on
-/// leaves a thread blocked on an open pipe, so no further one is started while that one is still
-/// blocked: the endpoint costs one thread, not one per probe.
-#[test]
-fn bounded_starts_nothing_new_for_an_endpoint_whose_earlier_call_is_still_blocked() {
-    use endpoint::bounded;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    const LIMIT: Duration = Duration::from_millis(100);
-    const PROMPT: Duration = Duration::from_secs(5);
-    let wedged = Path::new("bounded/wedged");
-    let (release, blocked) = std::sync::mpsc::channel::<()>();
-    let started = Arc::new(AtomicUsize::new(0));
-    let count = |started: &Arc<AtomicUsize>| {
-        let started = Arc::clone(started);
-        move || {
-            started.fetch_add(1, Ordering::SeqCst);
-            Some(())
-        }
+/// A probe that could not be made is not a silent daemon. Nothing is spawned on it: the daemon
+/// may be serving, and a second one would only exit on the lock the first holds.
+#[tokio::test]
+async fn no_daemon_is_spawned_when_the_endpoint_could_not_be_asked() {
+    let paths = CommsPaths {
+        comms_dir: PathBuf::from("comms"),
+        socket_path: PathBuf::from("comms/endpoint"),
     };
-
-    let first = bounded(wedged, LIMIT, move || blocked.recv().ok());
-    assert_eq!(first, None);
-    for _ in 0..3 {
-        assert_eq!(bounded(wedged, PROMPT, count(&started)), None);
-    }
-    assert_eq!(
-        started.load(Ordering::SeqCst),
-        0,
-        "nothing is started while the earlier call is still blocked"
+    let spawned = std::cell::Cell::new(false);
+    let spawn = |_: &CommsPaths| {
+        spawned.set(true);
+        Ok(())
+    };
+    let outcome = ensure_daemon_probing(&paths, SpawnPolicy::Explicit, |_| Liveness::Unknown, spawn).await;
+    assert!(
+        matches!(&outcome, Err(SingletonError::EndpointUnknown { socket }) if *socket == paths.socket_path),
+        "{outcome:?}"
     );
-    assert_eq!(
-        bounded(Path::new("bounded/another"), PROMPT, count(&started)),
-        Some(()),
-        "another endpoint is not held up"
-    );
+    assert!(!spawned.get(), "nothing is spawned on a guess");
 
-    drop(release);
-    let deadline = std::time::Instant::now() + PROMPT;
-    while bounded(wedged, PROMPT, count(&started)).is_none() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the endpoint is usable again once the blocked call has returned"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let answering = ensure_daemon_probing(
+        &paths,
+        SpawnPolicy::Explicit,
+        |_| Liveness::Answers,
+        |_| unreachable!("a daemon that answers is used"),
+    )
+    .await;
+    assert!(answering.is_ok(), "{answering:?}");
 }
 
 /// Runs on every platform: the name is a pure function of the user and the directory path.

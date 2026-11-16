@@ -23,6 +23,8 @@ include = [
   "!/src/comms/generation_cleanup_tests.rs",
   "!/src/comms/singleton_tests.rs",
   "!/src/comms/singleton_takeover_tests.rs",
+  "!/src/comms/singleton_takeover_decision_tests.rs",
+  "!/src/comms/singleton_endpoint_windows_tests.rs",
   "!/src/stdio_relay_tests.rs",
   "!/src/stdio_relay_offline_tests.rs",
   "!/src/lance/tests.rs",

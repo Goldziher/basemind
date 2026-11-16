@@ -1,19 +1,25 @@
 //! What a client does about a daemon already running in its generation.
 //!
 //! A child of [`singleton`](super), which states the decision table in its module doc. The rule
-//! the code here exists to keep: a daemon that answers is never signalled. Signals are for a
-//! process that has gone silent and that this generation's `daemon.pid` still names.
+//! the code here exists to keep: a daemon that answers is never signalled, and neither is one that
+//! could not be asked. Signals are for a process that was asked and stayed silent, while this
+//! generation's `daemon.lock` reads held and its `daemon.pid` names that process.
+//!
+//! The decisions reach the machine only through [`Generation`], so the same code is tested on
+//! every platform against a scripted one (`singleton_takeover_decision_tests.rs`), and on Unix
+//! against real sockets and processes (`singleton_takeover_tests.rs`).
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::super::protocol::StatusReport;
 use super::super::store::STORE_DIR;
-use super::probe::{StopOutcome, force_terminate, request_stop_classified, request_stop_within};
+use super::probe::{StopOutcome, force_terminate, request_stop_within};
 use super::{
-    CommsPaths, ENDPOINT_TIMEOUT, NO_AUTOSPAWN_ENV, SPAWN_POLL_INTERVAL, SingletonError, SpawnPolicy,
-    autospawn_disabled, daemon_status, endpoint_accepts, off_worker, probe_alive, version_is_older,
+    CommsPaths, ENDPOINT_TIMEOUT, Liveness, NO_AUTOSPAWN_ENV, SPAWN_POLL_INTERVAL, SingletonError, SpawnPolicy,
+    autospawn_disabled, daemon_status, endpoint_accepts, off_worker, probe_liveness, version_is_older,
 };
-use crate::daemon_lock::{self, DaemonKind, LockState};
+use crate::daemon_lock::{self, DaemonKind, DaemonRecord, LockState};
 
 /// The store error token: the one `Stop` refusal that reports a fault rather than a decision.
 const STORE_ERROR: &str = "store_error";
@@ -87,6 +93,73 @@ pub enum Reclaimed {
         /// The pid that outlived SIGKILL.
         pid: u32,
     },
+    /// The daemon did not answer `Stop` and could not be asked whether it is alive: the `Ping`
+    /// was never sent. That is not silence, so nothing was signalled.
+    Unknown,
+}
+
+/// What the takeover and the reclaim need from the machine: the daemon's endpoint, the
+/// generation's lock and pidfile, and the one way a process is signalled.
+pub(super) trait Generation {
+    /// The generation's directory, for naming its store in an error.
+    fn dir(&self) -> &Path;
+    /// The daemon's answer to `Status`, if it gave one.
+    fn status(&self) -> Option<StatusReport>;
+    /// Ask the daemon to stop, waiting up to `timeout` for its answer.
+    fn stop(&self, timeout: Duration) -> StopOutcome;
+    /// Whether the daemon answers `Ping`.
+    fn ping(&self) -> Liveness;
+    /// Whether anything accepts a connection at the endpoint.
+    fn accepts(&self) -> bool;
+    /// What `daemon.lock` says.
+    fn lock_state(&self) -> LockState;
+    /// Whether a process runs under `pid`.
+    fn pid_is_live(&self, pid: u32) -> bool;
+    /// The live process `daemon.pid` names.
+    fn recorded_holder(&self) -> Option<DaemonRecord>;
+    /// Signal `pid` to terminate; whether it is gone afterwards.
+    fn terminate(&self, pid: u32, grace: Duration) -> bool;
+}
+
+/// The machine as it is: the generation at `paths`.
+struct Live<'a>(&'a CommsPaths);
+
+impl Generation for Live<'_> {
+    fn dir(&self) -> &Path {
+        &self.0.comms_dir
+    }
+
+    fn status(&self) -> Option<StatusReport> {
+        off_worker(|| daemon_status(&self.0.socket_path))
+    }
+
+    fn stop(&self, timeout: Duration) -> StopOutcome {
+        off_worker(|| request_stop_within(&self.0.socket_path, timeout))
+    }
+
+    fn ping(&self) -> Liveness {
+        off_worker(|| probe_liveness(&self.0.socket_path))
+    }
+
+    fn accepts(&self) -> bool {
+        endpoint_accepts(&self.0.socket_path)
+    }
+
+    fn lock_state(&self) -> LockState {
+        daemon_lock::lock_state(&self.0.comms_dir)
+    }
+
+    fn pid_is_live(&self, pid: u32) -> bool {
+        daemon_lock::pid_is_live(pid)
+    }
+
+    fn recorded_holder(&self) -> Option<DaemonRecord> {
+        daemon_lock::recorded_holder(&self.0.comms_dir)
+    }
+
+    fn terminate(&self, pid: u32, grace: Duration) -> bool {
+        off_worker(|| force_terminate(pid, grace))
+    }
 }
 
 /// This binary's side of the comparison. A parameter rather than the crate constants so the tests
@@ -152,8 +225,20 @@ pub(super) async fn settle_existing(
     timings: Timings,
     stop_sent: &mut bool,
 ) -> Result<Existing, SingletonError> {
-    let socket = paths.socket_path.as_path();
-    let Some(report) = off_worker(|| daemon_status(socket)) else {
+    settle(&Live(paths), policy, takeover, ours, timings, stop_sent).await
+}
+
+/// [`settle_existing`] over any [`Generation`]. [`Existing::Spawn`] here means only that no
+/// daemon answered `Status`; the caller still pings before it spawns.
+async fn settle(
+    generation: &impl Generation,
+    policy: SpawnPolicy,
+    takeover: Takeover,
+    ours: Ours,
+    timings: Timings,
+    stop_sent: &mut bool,
+) -> Result<Existing, SingletonError> {
+    let Some(report) = generation.status() else {
         return Ok(Existing::Spawn);
     };
     let usable = match classify(&report, ours) {
@@ -192,12 +277,12 @@ pub(super) async fn settle_existing(
         "comms: a daemon from another build holds the socket; asking it to stop"
     );
     *stop_sent = true;
-    match off_worker(|| request_stop_classified(socket)) {
+    match generation.stop(ENDPOINT_TIMEOUT) {
         StopOutcome::Refused { code, message } if code == STORE_ERROR => {
             return Err(SingletonError::FailingPredecessor {
                 version: report.version,
                 pid: report.pid,
-                store: paths.comms_dir.join(STORE_DIR),
+                store: generation.dir().join(STORE_DIR),
                 message,
             });
         }
@@ -221,14 +306,19 @@ pub(super) async fn settle_existing(
         }
         StopOutcome::Accepted | StopOutcome::Unreachable => {}
     }
-    if !wait_until(timings.drain, || !off_worker(|| probe_alive(socket))).await {
+    // Only a daemon that was asked and stayed silent has stopped answering. One that could not
+    // be asked is treated as still there.
+    if !wait_until(timings.drain, || generation.ping() == Liveness::Silent).await {
         return Err(stale(report));
     }
-    match reclaim_holder(paths, Some(report.pid), timings.reclaim()).await {
+    match reclaim(generation, Some(report.pid), timings.reclaim()).await {
         Reclaimed::Gone { .. } => Ok(Existing::Spawn),
-        // Alive and answering, or alive and not the recorded holder: it may not be signalled, and
-        // a daemon spawned now would only exit on the lock that process may still hold.
-        Reclaimed::Answers { .. } | Reclaimed::Unidentified | Reclaimed::Survived { .. } => Err(stale(report)),
+        // Alive and answering, alive and not the recorded holder, or not known to be silent: it
+        // may not be signalled, and a daemon spawned now would only exit on the lock that process
+        // may still hold.
+        Reclaimed::Answers { .. } | Reclaimed::Unidentified | Reclaimed::Survived { .. } | Reclaimed::Unknown => {
+            Err(stale(report))
+        }
     }
 }
 
@@ -237,27 +327,38 @@ pub(super) async fn settle_existing(
 ///
 /// A daemon that closed its socket is usually on its way out — draining after this caller's `Stop`,
 /// after another's, or on its own idle exit — so first it gets the whole `rules.exit` window. Gone
-/// means `reported_pid` no longer runs, or, when the caller has no pid from the daemon itself, that
-/// nothing holds `daemon.lock` and nothing accepts a connection at the endpoint. A daemon still
+/// then means `reported_pid` no longer runs, or, when the caller has no pid from the daemon itself,
+/// that nothing holds `daemon.lock` and nothing accepts a connection at the endpoint. A daemon still
 /// there at the end of the window is asked again, `Stop` and then `Ping`, and is left alone if it
-/// answers either. Only one silent to both is signalled, only while `daemon.lock` still reads held
-/// at that moment, and only the process this generation's `daemon.pid` names then; given a
-/// `reported_pid`, the two must agree. A pid taken from the wire alone could be anything: an
+/// answers either, or if the `Ping` could not be sent ([`Reclaimed::Unknown`]). Only one silent to
+/// both is signalled, only while `daemon.lock` still reads held at that moment, and only the
+/// process this generation's `daemon.pid` names then; given a `reported_pid`, the two must agree.
+/// With the lock free nothing is signalled: the generation is reported gone when its endpoint is
+/// closed too, whatever now runs under `reported_pid`, and unidentified when something still
+/// accepts there. A pid taken from the wire alone could be anything: an
 /// in-process test broker reports its host. And a pid, reported or recorded, outlives its process:
 /// a daemon that died inside the exit window leaves both naming a number the system may have given
 /// to something else, whereas its lock went with it.
 pub async fn reclaim_holder(paths: &CommsPaths, reported_pid: Option<u32>, rules: ReclaimRules) -> Reclaimed {
-    let socket = paths.socket_path.as_path();
+    reclaim(&Live(paths), reported_pid, rules).await
+}
+
+/// [`reclaim_holder`] over any [`Generation`].
+async fn reclaim(generation: &impl Generation, reported_pid: Option<u32>, rules: ReclaimRules) -> Reclaimed {
     let gone = || match reported_pid {
-        Some(pid) => !daemon_lock::pid_is_live(pid),
-        None => daemon_lock::lock_state(&paths.comms_dir) != LockState::Held && !endpoint_accepts(socket),
+        Some(pid) => !generation.pid_is_live(pid),
+        None => generation.lock_state() != LockState::Held && !generation.accepts(),
     };
     if wait_until(rules.exit, &gone).await {
         return Reclaimed::Gone { forced: false };
     }
-    let stop = off_worker(|| request_stop_within(socket, rules.probe_timeout));
+    let stop = generation.stop(rules.probe_timeout);
     let silent = match &stop {
-        StopOutcome::Unreachable => !off_worker(|| probe_alive(socket)),
+        StopOutcome::Unreachable => match generation.ping() {
+            Liveness::Silent => true,
+            Liveness::Answers => false,
+            Liveness::Unknown => return Reclaimed::Unknown,
+        },
         StopOutcome::Refused { code, .. } => rules.store_error_is_silence && code == STORE_ERROR,
         StopOutcome::Accepted => false,
     };
@@ -267,15 +368,16 @@ pub async fn reclaim_holder(paths: &CommsPaths, reported_pid: Option<u32>, rules
     if gone() {
         return Reclaimed::Gone { forced: false };
     }
-    if daemon_lock::lock_state(&paths.comms_dir) != LockState::Held {
+    if generation.lock_state() != LockState::Held {
         // No daemon holds this generation. Whatever the pids name now is not it.
-        return if endpoint_accepts(socket) {
+        return if generation.accepts() {
             Reclaimed::Unidentified
         } else {
             Reclaimed::Gone { forced: false }
         };
     }
-    let Some(holder) = daemon_lock::recorded_holder(&paths.comms_dir)
+    let Some(holder) = generation
+        .recorded_holder()
         .filter(|holder| holder.kind == DaemonKind::Comms && reported_pid.is_none_or(|pid| holder.pid == pid))
     else {
         return Reclaimed::Unidentified;
@@ -285,7 +387,7 @@ pub async fn reclaim_holder(paths: &CommsPaths, reported_pid: Option<u32>, rules
         daemon_pid = holder.pid,
         "comms: the daemon stopped answering without exiting; terminating it by pid"
     );
-    if off_worker(|| force_terminate(holder.pid, rules.term_grace)) {
+    if generation.terminate(holder.pid, rules.term_grace) {
         Reclaimed::Gone { forced: true }
     } else {
         Reclaimed::Survived { pid: holder.pid }
@@ -316,3 +418,7 @@ async fn wait_until(limit: Duration, done: impl Fn() -> bool) -> bool {
 #[cfg(all(test, unix))]
 #[path = "singleton_takeover_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "singleton_takeover_decision_tests.rs"]
+mod decision_tests;
