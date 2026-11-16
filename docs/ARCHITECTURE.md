@@ -581,7 +581,10 @@ daemon served, and the markers go only after every request is written. A daemon 
 machine stayed up tore nothing (a blob is renamed into place whole) and asks for nothing; a pid alone
 is not trusted, because after a restart another process has the number. The boot is the platform's
 per-boot id (Linux `boot_id`, macOS `kern.bootsessionuuid`, Windows `BootId`), not a boot time a
-clock step moves, and a live pid whose process started when the marker's did is the daemon itself.
+clock step moves, and a live pid whose process started when the marker's did, in the same boot, is
+the daemon itself. A workspace created later and seeded from a sibling's file map inherits the
+sibling's request, since it names the same blobs; one that starts empty takes no file as unchanged,
+and the blobs it reuses are decoded.
 Apart from that pass, only paths named in `basemind rescan <paths>` or `index_rescan paths` have
 their blobs validated; a watcher batch asks whether the blob exists.
 

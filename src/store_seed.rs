@@ -151,12 +151,15 @@ pub(crate) fn seed_working_view(root: &Path, basemind_dir: &Path, view_dir: &Pat
         return None;
     };
     let cloned = clone_dir(&source_view, &tmp);
+    // Read under the sibling's lock, so it speaks for the map just cloned. ~keep
+    let blobs_unverified = crate::scan_evidence::blobs_need_verifying(&source_ws);
     drop(sibling_lock);
 
     let result = cloned
         .map_err(|e| e.to_string())
         .and_then(|()| vet_clone(&tmp))
         .and_then(|index| mark_lance_stale(&tmp, index))
+        .and_then(|()| inherit_blob_verification(blobs_unverified, basemind_dir))
         .and_then(|()| promote(&tmp, view_dir));
     match result {
         Ok(()) => {
@@ -199,6 +202,18 @@ fn mark_lance_stale(tmp: &Path, mut index: crate::store::Index) -> Result<(), St
     let staging = tmp.join(format!("{INDEX_FILE}.seed"));
     std::fs::write(&staging, bytes).map_err(|e| format!("write seeded index: {e}"))?;
     std::fs::rename(&staging, tmp.join(INDEX_FILE)).map_err(|e| format!("replace seeded index: {e}"))
+}
+
+/// Ask this workspace's next scan to verify its blobs when the sibling's had to: the clone names
+/// the same blobs, which a power loss may have torn, and this workspace did not exist when the
+/// request was made. Without the request the seed is not used.
+fn inherit_blob_verification(blobs_unverified: bool, basemind_dir: &Path) -> Result<(), String> {
+    if !blobs_unverified {
+        return Ok(());
+    }
+    std::fs::create_dir_all(basemind_dir)
+        .and_then(|()| std::fs::write(basemind_dir.join(crate::scan_evidence::VERIFY_BLOBS_FILE), b""))
+        .map_err(|e| format!("request blob verification: {e}"))
 }
 
 /// Atomically move the vetted clone into place. `view_dir` may exist as an empty directory.
@@ -397,6 +412,44 @@ mod tests {
         // The sibling is untouched by the clone.
         let m = Store::open(&main, VIEW_WORKING).expect("reopen main");
         assert_eq!(m.index.files.len(), 3);
+    }
+
+    /// The sibling's blobs may be torn (a scan of it died, or the machine went down under a
+    /// daemon), and its next scan is to verify them. A worktree seeded from it names the same
+    /// blobs, did not exist when that was asked, and must verify them too: otherwise its first scan
+    /// takes a torn blob for an unchanged file's because the blob exists.
+    #[test]
+    fn a_seed_from_a_sibling_that_must_verify_its_blobs_verifies_them_too() {
+        let (_tmp, main, wt) = fixture();
+        let main_dir = workspace_cache_dir(&main);
+        std::fs::write(main_dir.join(crate::scan_evidence::VERIFY_BLOBS_FILE), b"").expect("request");
+        let torn = {
+            let m = Store::open(&main, VIEW_WORKING).expect("open main");
+            let hash = m.index.files[&crate::path::RelPath::from("a.rs")].hash_hex.clone();
+            let path = m.blob_path_fm_hex(&hash);
+            std::fs::write(&path, b"torn").expect("tear the blob");
+            (path, hash)
+        };
+
+        let mut store = Store::open(&wt, VIEW_WORKING).expect("open wt");
+        assert_eq!(store.index.files.len(), 3, "the view was seeded");
+        assert!(
+            crate::scan_evidence::blobs_need_verifying(&workspace_cache_dir(&wt)),
+            "the seeded worktree inherits the request"
+        );
+        scan(
+            &wt,
+            &mut store,
+            &ConfigV1::with_defaults(),
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+        )
+        .expect("scan wt");
+        assert!(
+            store.filemap_blob_is_intact(&torn.1),
+            "{} was rebuilt",
+            torn.0.display()
+        );
     }
 
     #[test]
