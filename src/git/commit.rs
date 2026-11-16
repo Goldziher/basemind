@@ -60,11 +60,11 @@ fn listable(local: &gix::Repository, id: gix::ObjectId) -> bool {
 
 /// Diff `commit_id`'s tree against its parent(s) and return (path, change-kind) pairs.
 ///
-/// For commits with multiple parents (merges, including octopus merges with ≥3 parents) we
-/// **union** the diffs against every parent so files changed on a non-first branch leg
-/// still surface — `git log -m`-style semantics rather than first-parent default. When a
-/// file is reported with different statuses against different parents, the higher-severity
-/// kind wins (Added > Modified ≈ Renamed > Deleted).
+/// A merge (including an octopus merge) lists only the files it changed against **every** parent,
+/// as `git log --cc` and `git log -- <path>` do: a file the merge took unchanged from one branch
+/// was changed by that branch's own commits, which the walk lists. When a file is reported with
+/// different statuses against different parents, the higher-severity kind wins (Added > Modified ≈
+/// Renamed > Deleted).
 pub(super) fn commit_files(
     local: &gix::Repository,
     commit_id: gix::ObjectId,
@@ -82,7 +82,10 @@ pub(super) fn commit_files(
         return Some(out);
     }
 
-    let mut union: ahash::AHashMap<crate::path::RelPath, ChangeKind> = ahash::AHashMap::new();
+    // Per path: the strongest kind seen so far, how many parents it differs from, and the last
+    // parent (by its 1-based count) it was seen against.
+    let mut changed: ahash::AHashMap<crate::path::RelPath, (ChangeKind, usize, usize)> = ahash::AHashMap::new();
+    let mut compared = 0usize;
     for pid in parents {
         let Ok(parent_commit) = local.find_commit(pid) else {
             continue;
@@ -94,16 +97,19 @@ pub(super) fn commit_files(
             Ok(p) => p,
             Err(_) => continue,
         };
+        compared += 1;
         let _ = platform.for_each_to_obtain_tree(&tree, |change| {
             let mut record = |path, kind| {
-                union
-                    .entry(path)
-                    .and_modify(|existing| {
-                        if change_severity(kind) > change_severity(*existing) {
-                            *existing = kind;
-                        }
-                    })
-                    .or_insert(kind);
+                let entry = changed.entry(path).or_insert((kind, 0, 0));
+                if change_severity(kind) > change_severity(entry.0) {
+                    entry.0 = kind;
+                }
+                // A path named twice against one parent (a move's source and a new file there)
+                // still differs from that parent once.
+                if entry.2 != compared {
+                    entry.1 += 1;
+                    entry.2 = compared;
+                }
             };
             if let Some((path, kind)) = classify_tree_change(&change) {
                 record(path, kind);
@@ -125,7 +131,11 @@ pub(super) fn commit_files(
             Ok(gix::object::tree::diff::Action::Continue(()))
         });
     }
-    let mut out: Vec<(crate::path::RelPath, ChangeKind)> = union.into_iter().collect();
+    let mut out: Vec<(crate::path::RelPath, ChangeKind)> = changed
+        .into_iter()
+        .filter(|(_, (_, parents, _))| *parents == compared)
+        .map(|(path, (kind, _, _))| (path, kind))
+        .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Some(out)
 }
@@ -162,7 +172,9 @@ pub(super) fn commit_touches_path(local: &gix::Repository, commit_id: gix::Objec
     if parents.is_empty() {
         return current.is_some();
     }
-    parents.into_iter().any(|pid| {
+    // A merge touches the path only when it differs there from every parent, as `git log --
+    // <path>` shows it: one that took the path unchanged from a branch did not change it.
+    parents.into_iter().all(|pid| {
         let parent = local
             .find_commit(pid)
             .ok()

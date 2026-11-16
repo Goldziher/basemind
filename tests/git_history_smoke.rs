@@ -68,10 +68,10 @@ fn sync(root: &Path) -> (GitHistoryIndex, RebuildOutcome) {
     (index, outcome)
 }
 
-/// Newest-first 40-hex shas of commits touching `path`, per the `git` CLI (the oracle). Uses
-/// `--full-history` to match the index's union-across-parents, exact-path semantics.
+/// Newest-first 40-hex shas of commits touching `path`, per the `git` CLI (the oracle): `git log --
+/// <path>`, which lists a merge only when it differs at `path` from every parent.
 fn git_commits_touching(root: &Path, path: &str) -> Vec<String> {
-    capture(root, &["log", "--full-history", "--format=%H", "--", path])
+    capture(root, &["log", "--format=%H", "--", path])
         .lines()
         .map(|s| s.to_string())
         .collect()
@@ -183,8 +183,23 @@ fn reset_back_diverges_and_triggers_full_rebuild() {
     );
 }
 
+/// Newest-first shas of commits touching `path` per the live walk, the other half of `git_log
+/// {path}`.
+fn live_commits_touching(root: &Path, path: &str) -> Vec<String> {
+    let repo = Repo::discover(root).expect("repo discover");
+    let head = capture(root, &["rev-parse", "HEAD"]);
+    repo.log_window_touching(head.trim(), &path.as_bytes().into(), 0, 1000)
+        .expect("live walk")
+        .into_iter()
+        .map(|c| c.sha)
+        .collect()
+}
+
+/// A merge that only brings a branch in changes no path of its own: `git log -- <path>` leaves it
+/// out, and so do the index and the live walk. One that changes a path against both parents (an
+/// evil merge) touches it.
 #[test]
-fn merge_commit_union_across_parents_matches_git() {
+fn a_merge_touches_only_the_paths_it_changes_against_every_parent() {
     let dir = init_repo();
     let root = dir.path();
     commit_file(root, "base.rs", "fn base() {}\n", "c1");
@@ -193,16 +208,31 @@ fn merge_commit_union_across_parents_matches_git() {
     run(root, &["checkout", "-q", "main"]);
     commit_file(root, "base.rs", "fn base2() {}\n", "main2");
     run(root, &["merge", "-q", "--no-ff", "feature", "-m", "merge"]);
+    fs::write(root.join("base.rs"), "fn evil() {}\n").unwrap();
+    run(root, &["commit", "-q", "--amend", "-am", "merge"]);
+    let merge = capture(root, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_eq!(
+        capture(root, &["rev-list", "--parents", "-n1", "HEAD"])
+            .split_whitespace()
+            .count(),
+        3
+    );
 
     let (index, _) = sync(root);
+    for path in ["shared.rs", "base.rs"] {
+        let git = git_commits_touching(root, path);
+        assert_eq!(index_commits_touching(&index, path), git, "index: {path}");
+        assert_eq!(live_commits_touching(root, path), git, "live walk: {path}");
+    }
+    assert!(!git_commits_touching(root, "shared.rs").contains(&merge));
+    assert!(git_commits_touching(root, "base.rs").contains(&merge));
+
+    let repo = Repo::discover(root).expect("repo discover");
+    let files = repo.commit_record(&merge).expect("merge record").files;
     assert_eq!(
-        index_commits_touching(&index, "shared.rs"),
-        git_commits_touching(root, "shared.rs"),
-        "merge handling matches git full-history"
-    );
-    assert_eq!(
-        index_commits_touching(&index, "base.rs"),
-        git_commits_touching(root, "base.rs"),
+        files,
+        [("base.rs".into(), basemind::git::ChangeKind::Modified)],
+        "a merge lists what it changed against every parent"
     );
 }
 
