@@ -57,7 +57,7 @@ pub const REQUEST_TIMEOUT_ENV: &str = "BASEMIND_COMMS_REQUEST_TIMEOUT_SECS";
 pub const HANDSHAKE_TIMEOUT_ENV: &str = "BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 10;
 /// What an agent request may wait beyond the request bound for the daemon's agent store to open.
-const AGENT_STORE_OPEN_ALLOWANCE: std::time::Duration = std::time::Duration::from_secs(60);
+pub(crate) const AGENT_STORE_OPEN_ALLOWANCE: std::time::Duration = std::time::Duration::from_secs(60);
 /// Generous because a cold client may first have to spawn the daemon and wait for its socket.
 const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 

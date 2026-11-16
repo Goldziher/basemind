@@ -92,12 +92,19 @@ impl Broker {
         Ok(Caller::new(Actor::new(principal, sub.as_ref())?, repo.clone()))
     }
 
-    pub(super) async fn on_agent_post(&self, session: &Session, sub: Option<SubName>, body: PostBody) -> CommsResponse {
+    /// A post. `gone` is cancelled when the client hangs up.
+    pub(super) async fn on_agent_post(
+        &self,
+        session: &Session,
+        sub: Option<SubName>,
+        body: PostBody,
+        gone: &CancellationToken,
+    ) -> CommsResponse {
         let caller = match Self::link_caller(session, sub) {
             Ok(caller) => caller,
             Err(error) => return refused(error),
         };
-        match self.agents.post(caller, body).await {
+        match self.agents.post(caller, body, gone).await {
             Ok(reply) => CommsResponse::AgentPosted(reply),
             Err(error) => refused(error),
         }
@@ -139,17 +146,19 @@ impl Broker {
         }
     }
 
+    /// A thread change. `gone` is cancelled when the client hangs up.
     pub(super) async fn on_agent_thread_update(
         &self,
         session: &Session,
         sub: Option<SubName>,
         update: ThreadUpdate,
+        gone: &CancellationToken,
     ) -> CommsResponse {
         let caller = match Self::link_caller(session, sub) {
             Ok(caller) => caller,
             Err(error) => return refused(error),
         };
-        match self.agents.threads_update(caller, update).await {
+        match self.agents.threads_update(caller, update, gone).await {
             Ok(reply) => CommsResponse::AgentThreads(reply),
             Err(error) => refused(error),
         }
@@ -170,9 +179,10 @@ impl Broker {
         self.agents.maintain().await;
     }
 
-    pub(super) async fn on_agent_cleanup(&self, archive: Vec<ThreadId>) -> CommsResponse {
+    /// The operator's cleanup. `gone` is cancelled when the client hangs up.
+    pub(super) async fn on_agent_cleanup(&self, archive: Vec<ThreadId>, gone: &CancellationToken) -> CommsResponse {
         let _working = self.begin_work();
-        match self.agents.cleanup(archive).await {
+        match self.agents.cleanup(archive, gone).await {
             Ok(report) => CommsResponse::AgentCleaned(report),
             Err(error) => refused(error),
         }

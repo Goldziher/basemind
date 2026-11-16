@@ -35,6 +35,13 @@ const LOCKED_STORE_PATIENCE: Duration = Duration::from_secs(120);
 /// The longest pause between two tries of a held store.
 const LOCKED_STORE_MAX_PAUSE: Duration = Duration::from_secs(2);
 
+/// How long an agent request waits for the store's open before it is refused as still opening.
+/// Below the client's allowance for the open, so a write that waited lands while its client still
+/// waits for the reply, never after the client reported a failure.
+const STORE_OPEN_WAIT: Duration = Duration::from_secs(50);
+
+const _: () = assert!(STORE_OPEN_WAIT.as_secs() < super::client::AGENT_STORE_OPEN_ALLOWANCE.as_secs());
+
 /// Open the store in `dir`, trying again with a growing pause while another process holds it, for
 /// up to `patience`. Any other failure is final at once.
 fn open_waiting_for_lock(dir: &Path, patience: Duration) -> Result<FjallAgents, CommsError> {
@@ -332,11 +339,23 @@ impl AgentHub {
         self.store.get()
     }
 
-    /// Wait for the store's open to finish, without holding a thread. Every async entry point
-    /// awaits it before it hands work to the blocking pool, so a blocking thread never waits on
-    /// the open.
+    /// Wait for the store's open to finish, without holding a thread.
     pub async fn opened(&self) {
         let _ = self.store.opened().await;
+    }
+
+    /// Wait for the store's open, up to [`STORE_OPEN_WAIT`], without holding a thread. Every async
+    /// entry point awaits this before it hands work to the blocking pool, so a blocking thread never
+    /// waits on the open; a store still opening then refuses the request. A request that would write
+    /// is refused when its client went away meanwhile.
+    async fn ready(&self, gone: Option<&CancellationToken>) -> Result<(), CommsError> {
+        let _ = tokio::time::timeout(STORE_OPEN_WAIT, self.store.opened()).await;
+        if gone.is_some_and(CancellationToken::is_cancelled) {
+            return Err(CommsError::Backend {
+                detail: "the client went away while the agent store opened; nothing was written".to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// End every wait now and refuse to start new ones: the daemon is draining.
@@ -394,9 +413,14 @@ impl AgentHub {
         HubOps { hub: self }
     }
 
-    /// Post, on the blocking pool.
-    pub async fn post(self: &Arc<Self>, caller: Caller, body: PostBody) -> Result<PostReply, CommsError> {
-        self.opened().await;
+    /// Post, on the blocking pool. `gone` is cancelled when the client has gone.
+    pub async fn post(
+        self: &Arc<Self>,
+        caller: Caller,
+        body: PostBody,
+        gone: &CancellationToken,
+    ) -> Result<PostReply, CommsError> {
+        self.ready(Some(gone)).await?;
         let hub = Arc::clone(self);
         joined(tokio::task::spawn_blocking(move || hub.ops().post(&caller, body)).await)
     }
@@ -407,24 +431,31 @@ impl AgentHub {
         caller: Caller,
         query: ThreadQuery,
     ) -> Result<ThreadsReply, CommsError> {
-        self.opened().await;
+        self.ready(None).await?;
         let hub = Arc::clone(self);
         joined(tokio::task::spawn_blocking(move || hub.ops().threads_query(&caller, query)).await)
     }
 
-    /// Change a thread, on the blocking pool.
+    /// Change a thread, on the blocking pool. `gone` is cancelled when the client has gone.
     pub async fn threads_update(
         self: &Arc<Self>,
         caller: Caller,
         update: ThreadUpdate,
+        gone: &CancellationToken,
     ) -> Result<ThreadsReply, CommsError> {
-        self.opened().await;
+        self.ready(Some(gone)).await?;
         let hub = Arc::clone(self);
         joined(tokio::task::spawn_blocking(move || hub.ops().threads_update(&caller, update)).await)
     }
 
-    async fn inbox_now(self: &Arc<Self>, caller: &Caller, body: InboxBody) -> Result<InboxReply, CommsError> {
-        self.opened().await;
+    async fn inbox_now(
+        self: &Arc<Self>,
+        caller: &Caller,
+        body: InboxBody,
+        gone: &CancellationToken,
+    ) -> Result<InboxReply, CommsError> {
+        let writes = body.kind().is_ok_and(|kind| kind.writes());
+        self.ready(writes.then_some(gone)).await?;
         let (hub, caller) = (Arc::clone(self), caller.clone());
         joined(tokio::task::spawn_blocking(move || hub.ops().inbox(&caller, body)).await)
     }
@@ -446,7 +477,7 @@ impl AgentHub {
     ) -> Result<InboxReply, CommsError> {
         let kind = body.kind()?;
         if wait.is_zero() {
-            return self.inbox_now(&caller, body).await;
+            return self.inbox_now(&caller, body, gone).await;
         }
         let key = caller
             .replay_key
@@ -565,7 +596,7 @@ impl AgentHub {
             arrivals.borrow_and_update();
             let reply = if kind == ReadKind::Marking {
                 let found = if probe_first {
-                    Some(self.inbox_now(caller, probe.clone()).await?)
+                    Some(self.inbox_now(caller, probe.clone(), gone).await?)
                 } else {
                     None
                 };
@@ -573,10 +604,10 @@ impl AgentHub {
                 match found {
                     Some(found) if found.messages.is_empty() && !found.more => found,
                     _ if gone.is_cancelled() => return Ok(None),
-                    _ => self.inbox_now(caller, body.clone()).await?,
+                    _ => self.inbox_now(caller, body.clone(), gone).await?,
                 }
             } else {
-                self.inbox_now(caller, body.clone()).await?
+                self.inbox_now(caller, body.clone(), gone).await?
             };
             let outcome = if waited {
                 WaitOutcome::Arrived
@@ -662,8 +693,13 @@ impl AgentHub {
     }
 
     /// Archive `threads` whoever created them, then sweep once: the operator's `agent cleanup`.
-    pub async fn cleanup(self: &Arc<Self>, threads: Vec<ThreadId>) -> Result<AgentCleanupReport, CommsError> {
-        self.opened().await;
+    /// `gone` is cancelled when the client has gone.
+    pub async fn cleanup(
+        self: &Arc<Self>,
+        threads: Vec<ThreadId>,
+        gone: &CancellationToken,
+    ) -> Result<AgentCleanupReport, CommsError> {
+        self.ready(Some(gone)).await?;
         let hub = Arc::clone(self);
         joined(
             tokio::task::spawn_blocking(move || {

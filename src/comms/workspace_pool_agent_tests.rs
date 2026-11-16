@@ -67,7 +67,11 @@ fn more_waiting_reads_than_blocking_threads_still_let_a_post_through() {
             },
             body: "first".to_string(),
         };
-        let thread = hub.post(writer.clone(), to_reader).await.expect("post").thread;
+        let thread = hub
+            .post(writer.clone(), to_reader, &tokio_util::sync::CancellationToken::new())
+            .await
+            .expect("post")
+            .thread;
         // Read as the principal, so every sub-identity starts past the first post and waits.
         let reader = Caller::new(Actor::parse("reader").expect("actor"), repo_key());
         hub.read(
@@ -97,10 +101,13 @@ fn more_waiting_reads_than_blocking_threads_still_let_a_post_through() {
             target: PostTarget::Thread(thread),
             body: "news".to_string(),
         };
-        tokio::time::timeout(Duration::from_secs(5), hub.post(writer, post))
-            .await
-            .expect("a post is not starved by waiting reads")
-            .expect("post");
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            hub.post(writer, post, &tokio_util::sync::CancellationToken::new()),
+        )
+        .await
+        .expect("a post is not starved by waiting reads")
+        .expect("post");
         while let Some(answer) = tokio::time::timeout(Duration::from_secs(5), waiters.join_next())
             .await
             .expect("every waiter is answered once the post lands")

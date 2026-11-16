@@ -665,14 +665,16 @@ impl Broker {
                 root,
                 host,
             } => self.on_hello(proto_ver, principal, root, host, session).await,
-            CommsRequest::AgentPost { sub, body } => self.on_agent_post(session, sub, body).await,
+            CommsRequest::AgentPost { sub, body } => self.on_agent_post(session, sub, body, gone).await,
             CommsRequest::AgentInbox { sub, body, wait_secs } => {
                 self.on_agent_inbox(session, sub, body, wait_secs, gone).await
             }
             CommsRequest::AgentThreads { sub, query } => self.on_agent_threads(session, sub, query).await,
-            CommsRequest::AgentThreadUpdate { sub, update } => self.on_agent_thread_update(session, sub, update).await,
+            CommsRequest::AgentThreadUpdate { sub, update } => {
+                self.on_agent_thread_update(session, sub, update, gone).await
+            }
             CommsRequest::AgentStatus => self.on_agent_status(session),
-            CommsRequest::AgentCleanup { archive } => self.on_agent_cleanup(archive).await,
+            CommsRequest::AgentCleanup { archive } => self.on_agent_cleanup(archive, gone).await,
             CommsRequest::Rescan {
                 root,
                 paths,

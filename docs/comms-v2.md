@@ -419,7 +419,12 @@ that the sweep has not removed.
 
 Fjall holds an OS file lock on `agents.fjall` while a process has it open. A daemon that finds it
 held (a takeover while the old daemon drains) retries the open with growing pauses for up to 120 s
-and reports `opening` meanwhile; any other open failure is final.
+and reports `opening` meanwhile. A store still held after that is reported `unreadable`, and the
+next agent request starts the open again; any other open failure is final.
+
+An agent request waits at most 50 s for the open, less than the client allows, and is then refused
+as still opening. A post, thread change or cleanup whose client hung up during that wait is refused
+and writes nothing.
 
 basemind never deletes, recreates or completes an `agents.fjall` directory of a generation in use;
 cleanup removes a retired generation's directory whole (ADR-0024). Recovery from an unreadable
