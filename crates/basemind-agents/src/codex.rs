@@ -44,12 +44,11 @@ impl Adapter for CodexAdapter {
             }
             // Codex hands a server only the variables named in `env_vars`.
             let settings = [
-                ("command", json!(utf8(&server.command)?)),
-                ("args", json!(server.args)),
-                ("env_vars", json!(spec.mcp_env_names())),
+                ("command", toml_string(utf8(&server.command)?)),
+                ("args", toml_array(&server.args)),
+                ("env_vars", toml_array(&spec.mcp_env_names())),
             ];
             for (key, value) in settings {
-                // JSON strings and arrays of strings are valid TOML literals for these values.
                 args.extend(["-c".to_owned(), format!("mcp_servers.{}.{key}={value}", server.name)]);
             }
         }
@@ -65,6 +64,29 @@ impl Adapter for CodexAdapter {
         let (driver, control) = LineDriver::boxed(protocol);
         session::start(&plan, spec, driver, control)
     }
+}
+
+/// `text` as a TOML basic string. JSON's escaping is not enough: TOML also forbids a raw DEL
+/// and every other control character, so all of them are written as `\uXXXX`.
+fn toml_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `items` as a TOML array of basic strings.
+fn toml_array(items: &[String]) -> String {
+    let items: Vec<String> = items.iter().map(|item| toml_string(item)).collect();
+    format!("[{}]", items.join(","))
 }
 
 /// The approval policy and sandbox a permission mode maps to.

@@ -581,3 +581,23 @@ fn the_tool_table_forgets_the_oldest_calls() {
     assert!(protocol.tools.get("c999").is_some());
     assert!(protocol.tools.get("c0").is_none());
 }
+
+#[test]
+fn config_values_are_written_as_toml_strings() {
+    assert_eq!(toml_string("/opt/basemind"), "\"/opt/basemind\"");
+    assert_eq!(toml_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    assert_eq!(toml_string("x\u{7f}y\nz\u{1}"), "\"x\\u007Fy\\u000Az\\u0001\"");
+    assert_eq!(toml_array(&["serve".to_owned(), "é".to_owned()]), "[\"serve\",\"é\"]");
+    let root = tempfile::tempdir().unwrap();
+    let mut spec = spec(HarnessKind::Codex, root.path());
+    let mut server = McpServerSpec::basemind_serve("/opt/basemind");
+    server.args = vec!["se\u{7f}rve".to_owned()];
+    spec.mcp_server = Some(server);
+    let plan = CodexAdapter.plan(&spec).unwrap();
+    assert!(
+        plan.args
+            .contains(&"mcp_servers.basemind.args=[\"se\\u007Frve\"]".to_owned()),
+        "{:?}",
+        plan.args
+    );
+}
