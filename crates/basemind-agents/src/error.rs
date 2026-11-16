@@ -12,6 +12,9 @@ pub enum LaunchError {
     /// The sub-name does not satisfy the sub-name grammar, or the composed id is too long.
     #[error("sub-name {0:?} does not match [a-z0-9_-]{{1,32}} or makes the id longer than 128 bytes")]
     InvalidSubName(String),
+    /// The host does not satisfy `[a-z0-9]{1,16}`, the form the comms resolver reduces to.
+    #[error("host {0:?} does not match [a-z0-9]{{1,16}}")]
+    InvalidHost(String),
     /// The working directory resolves to a path outside the confinement root.
     #[error("working directory {dir} is outside the root {root}")]
     WorkingDirOutsideRoot {

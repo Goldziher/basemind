@@ -12,6 +12,7 @@ pub const ENV_HOST: &str = "BASEMIND_HOST";
 
 const MAX_ID_BYTES: usize = 128;
 const MAX_SUB_NAME_BYTES: usize = 32;
+const MAX_HOST_BYTES: usize = 16;
 
 /// The principal a launched agent acts as, validated when it is built.
 ///
@@ -43,10 +44,21 @@ impl AgentIdentity {
     }
 
     /// The same identity with an explicit `BASEMIND_HOST` instead of the harness id.
-    #[must_use]
-    pub fn with_host(mut self, host: impl Into<String>) -> Self {
-        self.host = Some(host.into());
-        self
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchError::InvalidHost`] unless `host` is `[a-z0-9]{1,16}`: the comms resolver
+    /// reduces a host to that form, so anything else would be exported as one value and read
+    /// as another.
+    pub fn with_host(mut self, host: impl Into<String>) -> Result<Self, LaunchError> {
+        let host = host.into();
+        let valid = (1..=MAX_HOST_BYTES).contains(&host.len())
+            && host.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+        if !valid {
+            return Err(LaunchError::InvalidHost(host));
+        }
+        self.host = Some(host);
+        Ok(self)
     }
 
     /// The principal, as exported in `BASEMIND_AGENT_ID`.
@@ -118,6 +130,21 @@ mod tests {
             identity.env("codex"),
             [(ENV_AGENT_ID, "lead".to_owned()), (ENV_HOST, "codex".to_owned())]
         );
-        assert_eq!(identity.with_host("custom").env("codex")[1].1, "custom");
+        assert_eq!(
+            identity.clone().with_host("custom2").unwrap().env("codex")[1].1,
+            "custom2"
+        );
+    }
+
+    #[test]
+    fn a_host_the_resolver_would_rewrite_is_refused() {
+        let identity = AgentIdentity::new("lead").unwrap();
+        for bad in ["", "Claude", "my-host", "a\nBASEMIND_AGENT_ID=x", &"h".repeat(17)] {
+            assert!(
+                matches!(identity.clone().with_host(bad), Err(LaunchError::InvalidHost(_))),
+                "{bad:?} was accepted"
+            );
+        }
+        assert!(identity.with_host("h".repeat(16)).is_ok());
     }
 }
