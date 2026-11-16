@@ -14,8 +14,8 @@ use super::helpers::{
     git_history_if_fresh, head_sha, head_snapshot_id, json_result, kind_to_str, outline_entry_for_blob,
     paginate_blame_hunks, parse_hash_mode, parse_kind, require_git_repo, symbol_fingerprint,
 };
-use super::helpers_git::reject_external_path;
-use super::helpers_git_by_path::{LIVE_WALK, MATCHED_EARLIER};
+use super::helpers_git::{history_page, reject_external_path, walk_cursor};
+use super::helpers_git_by_path::MATCHED_EARLIER;
 use super::helpers_pick::pick_symbol;
 use super::types::{
     BlameFileParams, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams, DiffFileResponse,
@@ -511,10 +511,6 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     };
 
     let head = head_sha(repo)?;
-    // The low bit of a cursor's snapshot says which list its offset counts in. The live walk
-    // simplifies history where the index keeps every commit touching the file, so an offset into
-    // one is not an offset into the other, and the index can become fresh between two pages.
-    let snapshot_of = |live: bool| (head_snapshot_id(&head) & !LIVE_WALK) | u32::from(live);
     let invalidated = |params: SymbolHistoryParams| {
         json_result(&SymbolHistoryResponse {
             path: params.path,
@@ -534,49 +530,29 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     };
 
     // The cursor is an offset into the commits touching the file, newest first, and whether a
-    // commit on an earlier page defined the name.
-    let (start, defined_earlier, cursor_snapshot) = match params.cursor.as_ref() {
-        Some(c) => {
-            let (packed, snapshot_id) = c.decode_in_memory()?;
-            if snapshot_id & !LIVE_WALK != snapshot_of(false) {
-                return invalidated(params);
-            }
-            (
-                usize::try_from(packed & !MATCHED_EARLIER).unwrap_or(usize::MAX),
-                packed & MATCHED_EARLIER != 0,
-                Some(snapshot_id),
-            )
-        }
-        None => (0, false, None),
+    // commit on an earlier page defined the name. Its snapshot says which list the offset counts
+    // in: the live walk simplifies history where the index keeps every commit touching the file.
+    let Some((packed, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
+        return invalidated(params);
     };
+    let start = usize::try_from(packed & !MATCHED_EARLIER).unwrap_or(usize::MAX);
+    let defined_earlier = packed & MATCHED_EARLIER != 0;
 
     let window = limit.saturating_add(1).saturating_mul(4).min(LOG_WALK_MAX);
     // One commit past the window: it tells a used-up window from a whole history, and it is the
-    // state the window's oldest commit is compared against.
+    // state the window's oldest commit is compared against. Only the window is walked into: a log
+    // cached under its depth would be a new entry, walked again from HEAD, for every page.
     let fetch = window + 1;
-    let indexed = git_history_if_fresh(state, &head)
-        .map(|index| index.commits_touching(&params.path, start, fetch))
-        .filter(|commits| !commits.is_empty());
-    let snapshot = snapshot_of(indexed.is_none());
-    if cursor_snapshot.is_some_and(|issued| issued != snapshot) {
-        return Err(super::cursor_bind::walk_switched("git_log"));
-    }
-    let mut commits: Vec<CommitInfo> = match indexed {
-        Some(commits) => commits,
-        // Also the answer to an empty indexed lookup, which a failed forward returns as well.
-        None => {
-            let depth = u32::try_from(start.saturating_add(fetch)).unwrap_or(u32::MAX);
-            state
-                .shared
-                .git_cache
-                .log(repo, &head, Some(&params.path), depth, false)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-                .iter()
-                .skip(start)
-                .cloned()
-                .collect()
-        }
-    };
+    let (mut commits, snapshot) = history_page(
+        "git_log",
+        &head,
+        issued,
+        git_history_if_fresh(state, &head).map(|index| index.commits_touching(&params.path, start, fetch)),
+        || {
+            repo.log_window_touching(&head, &params.path, start, fetch)
+                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))
+        },
+    )?;
     let fingerprint_at = |sha: &str| -> Result<Option<Vec<u8>>, McpError> {
         let blob = repo
             .read_blob_at_rev_with_oid(sha, &params.path)

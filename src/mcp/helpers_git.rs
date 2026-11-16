@@ -14,7 +14,7 @@ use super::helpers::{
     LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, commit_to_view, elapsed_us, git_history_if_fresh, head_sha,
     head_snapshot_id, json_result, require_git_repo,
 };
-use super::helpers_git_by_path::by_path;
+use super::helpers_git_by_path::{LIVE_WALK, by_path};
 use super::helpers_git_show::{budget_commits, commit_to_hit, resolve_body_chars, run_show};
 use super::index_route::blocking;
 use super::tool_contract::budget;
@@ -371,18 +371,42 @@ fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolRe
     })
 }
 
-/// The commits an indexed lookup returned, or the live walk's when it returned none.
+/// The offset a paged git walk's cursor carries and the snapshot it was issued on (`None` without a
+/// cursor), or `None` when HEAD moved since it was issued.
+pub(super) fn walk_cursor(
+    cursor: Option<&super::cursor::Cursor>,
+    head: &str,
+) -> Result<Option<(u64, Option<u32>)>, McpError> {
+    let Some(cursor) = cursor else {
+        return Ok(Some((0, None)));
+    };
+    let (packed, snapshot) = cursor.decode_in_memory()?;
+    Ok((snapshot & !LIVE_WALK == head_snapshot_id(head) & !LIVE_WALK).then_some((packed, Some(snapshot))))
+}
+
+/// One page of a newest-first history, and the cursor snapshot that says which list it was cut from:
+/// the git-history index's page when it returned one, the live walk's otherwise.
 ///
-/// The git-history index answers with an empty list both when no commit matches and when the
-/// lookup failed (a forward to the daemon that did not come back). An empty answer is therefore
-/// checked against the repository itself before anything is concluded from it.
-fn indexed_or_live(
+/// The index answers with an empty list both when no commit matches and when the lookup failed (a
+/// forward to the daemon that did not come back), so an empty answer is checked against the
+/// repository itself. A cursor `issued` on the other list is refused: the index appends the commits
+/// a sync finds after the ones it holds, where the live walk interleaves them by commit time, so an
+/// offset into one is not an offset into the other.
+pub(super) fn history_page(
+    tool: &str,
+    head: &str,
+    issued: Option<u32>,
     indexed: Option<Vec<CommitInfo>>,
     live: impl FnOnce() -> Result<Vec<CommitInfo>, McpError>,
-) -> Result<Vec<CommitInfo>, McpError> {
+) -> Result<(Vec<CommitInfo>, u32), McpError> {
+    let indexed = indexed.filter(|commits| !commits.is_empty());
+    let snapshot = (head_snapshot_id(head) & !LIVE_WALK) | u32::from(indexed.is_none());
+    if issued.is_some_and(|issued| issued != snapshot) {
+        return Err(super::cursor_bind::walk_switched(tool));
+    }
     match indexed {
-        Some(commits) if !commits.is_empty() => Ok(commits),
-        _ => live(),
+        Some(commits) => Ok((commits, snapshot)),
+        None => Ok((live()?, snapshot)),
     }
 }
 
@@ -408,57 +432,47 @@ fn on_disk(repo: &crate::git::Repo, path: &RelPath) -> bool {
     crate::path::contained_file(repo.workdir(), path).is_ok_and(|file| file.exists())
 }
 
-/// The `recent` operation: a bounded recency window over HEAD's ancestry, newest first.
+/// The `recent` operation: HEAD's ancestry, newest first, one page at a time.
 fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
-    let snapshot = head_snapshot_id(&head);
-
-    let skip = match params.cursor.as_ref() {
-        Some(c) => {
-            let (offset, snapshot_id) = c.decode_in_memory()?;
-            if snapshot_id != snapshot {
-                return json_result(&RecentChangesResponse {
-                    commits: Vec::new(),
-                    truncated: false,
-                    truncated_reason: None,
-                    next_cursor: None,
-                    budgeted: false,
-                    cursor_invalidated: true,
-                    elapsed_us: elapsed_us(started),
-                });
-            }
-            offset as usize
-        }
-        None => 0,
+    let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
+        return json_result(&RecentChangesResponse {
+            commits: Vec::new(),
+            truncated: false,
+            truncated_reason: None,
+            next_cursor: None,
+            budgeted: false,
+            cursor_invalidated: true,
+            elapsed_us: elapsed_us(started),
+        });
     };
-
-    let walk_depth = (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
-    let commits = indexed_or_live(
-        git_history_if_fresh(state, &head)
-            .map(|index| index.recent_commits(0, walk_depth as usize, params.include_files)),
+    let skip = usize::try_from(skip).unwrap_or(usize::MAX);
+    // One commit past the page, only to learn whether the history goes on. Only this page's commits
+    // are listed, and nothing is kept per page: a log cached under its depth would be a new entry,
+    // walked again from HEAD, for every page.
+    let fetch = limit + 1;
+    let (commits, snapshot) = history_page(
+        "git_log",
+        &head,
+        issued,
+        git_history_if_fresh(state, &head).map(|index| index.recent_commits(skip, fetch, params.include_files)),
         || {
-            let walked = state
-                .shared
-                .git_cache
-                .log(repo, &head, None, walk_depth, params.include_files)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
-            Ok(walked.as_ref().clone())
+            repo.log_window(&head, skip, fetch, params.include_files)
+                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))
         },
     )?;
+    let more = commits.len() > limit;
     let page: Vec<CommitView> = commits
-        .iter()
-        .skip(skip)
+        .into_iter()
         .take(limit)
-        .cloned()
         .map(|c| commit_to_view(c, params.include_files))
         .collect();
-    let page_len = page.len();
     let (page, budgeted) = budget_commits(page, params.max_tokens);
-    let has_more = commits.len() > skip + page_len || budgeted;
-    let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
+    let next_cursor =
+        (more || budgeted).then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
     json_result(&RecentChangesResponse {
         commits: page,
@@ -471,60 +485,48 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
     })
 }
 
-/// The `touching` operation: commits whose tree differs from the parent's at `path`.
+/// The `touching` operation: commits whose tree differs from the parent's at `path`, a page at a time.
 fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
-    let snapshot = head_snapshot_id(&head);
-
-    let skip = match params.cursor.as_ref() {
-        Some(c) => {
-            let (offset, snapshot_id) = c.decode_in_memory()?;
-            if snapshot_id != snapshot {
-                return json_result(&CommitsTouchingResponse {
-                    path: params.path,
-                    commits: Vec::new(),
-                    truncated: false,
-                    truncated_reason: None,
-                    next_cursor: None,
-                    budgeted: false,
-                    cursor_invalidated: true,
-                    elapsed_us: elapsed_us(started),
-                });
-            }
-            offset as usize
-        }
-        None => 0,
+    let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
+        return json_result(&CommitsTouchingResponse {
+            path: params.path,
+            commits: Vec::new(),
+            truncated: false,
+            truncated_reason: None,
+            next_cursor: None,
+            budgeted: false,
+            cursor_invalidated: true,
+            elapsed_us: elapsed_us(started),
+        });
     };
-
-    let walk_depth = (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
-    let commits = indexed_or_live(
-        git_history_if_fresh(state, &head).map(|index| index.commits_touching(&params.path, 0, walk_depth as usize)),
+    let skip = usize::try_from(skip).unwrap_or(usize::MAX);
+    let fetch = limit + 1;
+    let (commits, snapshot) = history_page(
+        "git_log",
+        &head,
+        issued,
+        git_history_if_fresh(state, &head).map(|index| index.commits_touching(&params.path, skip, fetch)),
         || {
-            let walked = state
-                .shared
-                .git_cache
-                .log(repo, &head, Some(&params.path), walk_depth, false)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
-            Ok(walked.as_ref().clone())
+            repo.log_window_touching(&head, &params.path, skip, fetch)
+                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))
         },
     )?;
-    if commits.is_empty() && !repo.is_shallow() && !on_disk(repo, &params.path) {
+    if commits.is_empty() && skip == 0 && !repo.is_shallow() && !on_disk(repo, &params.path) {
         return Err(no_such_path(&params.path));
     }
+    let more = commits.len() > limit;
     let page: Vec<CommitView> = commits
-        .iter()
-        .skip(skip)
+        .into_iter()
         .take(limit)
-        .cloned()
         .map(|c| commit_to_view(c, false))
         .collect();
-    let page_len = page.len();
     let (page, budgeted) = budget_commits(page, params.max_tokens);
-    let has_more = commits.len() > skip + page_len || budgeted;
-    let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
+    let next_cursor =
+        (more || budgeted).then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
     json_result(&CommitsTouchingResponse {
         path: params.path,
@@ -762,17 +764,21 @@ mod tests {
 
     #[test]
     fn an_empty_indexed_answer_is_checked_against_the_live_walk() {
+        let head = "0123456789abcdef0123456789abcdef01234567";
         let walked = || Ok(vec![commit(1, "alice")]);
-        let indexed = indexed_or_live(Some(vec![commit(7, "bob")]), walked).expect("indexed");
+        let page = |indexed| history_page("git_log", head, None, indexed, walked).expect("page");
+        let (indexed, snapshot) = page(Some(vec![commit(7, "bob")]));
         assert_eq!(indexed[0].author, "bob", "a non-empty indexed answer is used as is");
-        let failed_forward = indexed_or_live(Some(Vec::new()), walked).expect("live");
+        assert_eq!(snapshot & LIVE_WALK, 0, "and its cursor counts in the index's list");
+        let (failed_forward, snapshot) = page(Some(Vec::new()));
         assert_eq!(
             failed_forward[0].author, "alice",
             "an empty one may be a lookup that failed"
         );
-        let no_index = indexed_or_live(None, walked).expect("live");
+        assert_eq!(snapshot & LIVE_WALK, LIVE_WALK, "the live walk's list");
+        let (no_index, _) = page(None);
         assert_eq!(no_index[0].author, "alice");
-        let truly_empty = indexed_or_live(Some(Vec::new()), || Ok(Vec::new())).expect("live");
+        let (truly_empty, _) = history_page("git_log", head, None, Some(Vec::new()), || Ok(Vec::new())).expect("live");
         assert!(truly_empty.is_empty());
     }
 

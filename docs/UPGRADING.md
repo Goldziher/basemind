@@ -169,8 +169,9 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   cursor until it is absent. A symbol the working tree no longer defines has its history read; a
   name that no inspected commit defines either is named in `unmatched` on each empty page and is an
   error on the last. `git_log` with a directory `path` pages the same way, 200 commits per page.
-  Either cursor is refused when the git-history index came up (or stopped answering) since it was
-  issued, because the index and the live walk order commits differently: restart without `cursor`.
+  A cursor of any `git_log` list (recent commits, a file's, a directory's or a symbol's history)
+  is refused when the git-history index came up (or stopped answering) since it was issued,
+  because the index and the live walk order commits differently: restart without `cursor`.
 - **`code_refs` leaves `resolved` absent where nothing was checked.** With `path`, a hit has
   `resolved: true` (proven to bind to the definition), `resolved: false` (checked and not proven)
   or no `resolved` at all; `resolution` gains `no resolution facts for this definition`.

@@ -459,6 +459,9 @@ fn a_commit_missing_from_the_object_store_fails_the_history_walk() {
     let head = repo.resolve_rev("HEAD").expect("HEAD");
     assert!(repo.log_paths(10, false).is_err(), "the recent-commits walk");
     assert!(repo.log_for_path("a.rs", 10).is_err(), "a file's history");
-    assert!(repo.log_window(&head, 0, 10).is_err(), "a directory's history window");
+    assert!(
+        repo.log_window(&head, 0, 10, false).is_err(),
+        "a directory's history window"
+    );
     assert!(repo.all_commit_shas().is_err(), "the git-history index build");
 }

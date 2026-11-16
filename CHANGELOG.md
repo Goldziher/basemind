@@ -540,9 +540,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A page of `git_log` with a directory `path`, answered before the git-history index is ready, walks to its
   window without listing the files of the commits before it and stores nothing in the git cache. Each page
   walked from HEAD listing every commit's files and wrote a larger log to disk.
-- A `git_log` cursor for a directory's or a symbol's history is refused when the git-history index came up
-  (or stopped answering) since it was issued, and the error says to restart without `cursor`: the index and
-  the live walk order the commits a sync appended differently, so the offset could skip or repeat commits.
+- A `git_log` cursor is refused when the git-history index came up (or stopped answering) since it was
+  issued, and the error says to restart without `cursor`: the index and the live walk order the commits a sync
+  appended differently, so the offset could skip or repeat commits. Recent commits and a file's history had no
+  such check.
+- A page of recent commits, of a file's history or of a symbol's history walks to its page alone and stores
+  nothing in the git cache, like a directory's. Each page walked from HEAD again, wrote a larger log to disk,
+  and recent commits listed the files of every commit before the page; paging also stopped at 10,000 commits.
 - A commit the history walk cannot read (missing from the object store or corrupt) is an error from `git_log`
   and the git-history index build. It was skipped, which ended the history there with nothing to say the list
   was short. A shallow clone's boundary is not such a commit: the walk honours `.git/shallow`.

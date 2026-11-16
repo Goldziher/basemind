@@ -24,8 +24,8 @@ impl BasemindServer {
         touched this file\", \"which commit mentions X\" or \"when did this function change\". No \
         arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow \
         it. A symbol's or a directory's history is read one window of commits per page: follow \
-        `next_cursor`, even from an empty page (`truncated_reason` `window`); restart without it \
-        if it is refused because the git-history index came up between pages. \
+        `next_cursor`, even from an empty page (`truncated_reason` `window`). Restart without a \
+        cursor refused because the git-history index came up between pages. \
         Example: {\"path\":\"src/store.rs\",\"limit\":5}",
         annotations(
             read_only_hint = true,

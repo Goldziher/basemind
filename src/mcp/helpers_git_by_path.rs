@@ -106,7 +106,7 @@ pub(super) fn by_path(
         // this page's window has its files listed, and nothing is kept per page: a log cached under
         // its depth would be a new entry, walked again from HEAD, for every page.
         None => repo
-            .log_window(&head, start, fetch)
+            .log_window(&head, start, fetch, true)
             .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?,
     };
     // A history that ends exactly at the window is whole.

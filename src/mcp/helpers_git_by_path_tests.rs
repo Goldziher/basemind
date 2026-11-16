@@ -1,5 +1,5 @@
-//! `by_path` paging on the live walk: what one page costs, what it leaves behind, and the cursors it
-//! refuses.
+//! `git_log` paging on the live walk (`by_path`, and the recent, file and symbol histories): what one
+//! page costs, what it leaves behind, and the cursors it refuses.
 
 use std::path::Path;
 use std::process::Command;
@@ -8,6 +8,9 @@ use std::sync::Arc;
 use super::*;
 use crate::git::FILE_LISTINGS;
 use crate::mcp::cursor::Cursor;
+use crate::mcp::helpers_git::git_log;
+use crate::mcp::types_tools::GitLogParams;
+use crate::path::RelPath;
 
 /// Commits after the first: the odd ones touch `dir/`, the even ones a file beside it.
 const COMMITS: usize = 6;
@@ -46,6 +49,11 @@ fn state(root: &Path, cache: &Path) -> ServerState {
         git(root, &["add", "-A"]);
         git(root, &["commit", "-qm", &format!("round {round}")]);
     }
+    state_over(root, cache)
+}
+
+/// A server state over the repository at `root`, whose git cache persists to `cache`.
+fn state_over(root: &Path, cache: &Path) -> ServerState {
     let store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("store");
     let repo = crate::git::Repo::discover(root).expect("repo");
     let shared = super::super::SharedReadStack::new(
@@ -165,4 +173,130 @@ fn a_cursor_from_the_other_walk_is_refused_with_a_restart() {
         "{}",
         refused.message
     );
+}
+
+/// A repository whose odd rounds change `tracked` in `src/lib.rs` and whose even rounds add a file
+/// beside it, and a server state over it. No git-history index: every page is the live walk.
+fn history_state(root: &Path, cache: &Path) -> ServerState {
+    crate::store::init_isolated_cache();
+    let _ = crate::lang::ensure_grammars().expect("grammar bootstrap");
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("README"), "r\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "init"]);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for round in 1..=COMMITS {
+        if round % 2 == 1 {
+            std::fs::write(
+                root.join("src/lib.rs"),
+                format!("pub fn tracked() -> u32 {{\n    {round}\n}}\n"),
+            )
+            .unwrap();
+        } else {
+            std::fs::write(root.join(format!("top{round}")), "t\n").unwrap();
+        }
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-qm", &format!("round {round}")]);
+    }
+    state_over(root, cache)
+}
+
+fn log(path: Option<&str>, symbol: Option<&str>, cursor: Option<Cursor>) -> GitLogParams {
+    GitLogParams {
+        path: path.map(|path| RelPath::from(path.as_bytes())),
+        query: None,
+        author: None,
+        symbol: symbol.map(str::to_string),
+        line: None,
+        rev: None,
+        limit: Some(LIMIT),
+        cursor,
+        max_tokens: None,
+    }
+}
+
+const LIMIT: u32 = 1;
+
+fn json_of(result: &rmcp::model::CallToolResult) -> serde_json::Value {
+    for content in &result.content {
+        if let rmcp::model::ContentBlock::Text(text) = content {
+            return serde_json::from_str(&text.text).expect("tool payload is JSON");
+        }
+    }
+    panic!("tool returned no text content");
+}
+
+/// The three lists `git_log` pages one window at a time: recent commits, a file's, a symbol's.
+fn lists() -> [(&'static str, fn(Option<Cursor>) -> GitLogParams); 3] {
+    [
+        ("commits", |cursor| log(None, None, cursor)),
+        ("commits", |cursor| log(Some("src/lib.rs"), None, cursor)),
+        ("history", |cursor| log(Some("src/lib.rs"), Some("tracked"), cursor)),
+    ]
+}
+
+/// A page walks to its window without listing the files of the commits before it, and keeps no log
+/// per page: a later page costs what the first does, and the disk cache does not grow with paging.
+#[test]
+fn every_git_log_list_lists_only_its_own_page_and_caches_nothing() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let state = history_state(repo_dir.path(), cache_dir.path());
+    let expected: [&[&str]; 3] = [
+        &["round 6", "round 5", "round 4", "round 3", "round 2", "round 1", "init"],
+        &["round 5", "round 3", "round 1"],
+        &["round 5", "round 3", "round 1"],
+    ];
+
+    for ((key, params), expected) in lists().into_iter().zip(expected) {
+        let mut cursor = None;
+        let mut summaries = Vec::new();
+        for page in 1.. {
+            FILE_LISTINGS.with(|listed| listed.set(0));
+            let body = json_of(&git_log(&state, params(cursor.take())).expect("page"));
+            let listed = FILE_LISTINGS.with(std::cell::Cell::get);
+            assert!(
+                listed <= LIMIT as usize + 1,
+                "{key} page {page} listed the files of {listed} commits: {body}"
+            );
+            for entry in body[key].as_array().expect("list") {
+                summaries.push(entry["summary"].as_str().expect("summary").to_string());
+            }
+            match body.get("next_cursor") {
+                Some(next) => cursor = Some(serde_json::from_value(next.clone()).expect("cursor")),
+                None => break,
+            }
+            assert!(page <= COMMITS + 1, "paging must end");
+        }
+        assert_eq!(summaries, expected, "every entry once, newest first");
+    }
+    assert_eq!(files_under(cache_dir.path()), 0, "no log is written to disk per page");
+}
+
+/// A cursor of the recent, file or symbol history counts in the list it was issued on. One from the
+/// git-history index is refused by the live walk with the reason and the way out.
+#[test]
+fn a_cursor_of_any_git_log_list_from_the_other_walk_is_refused() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let state = history_state(repo_dir.path(), cache_dir.path());
+
+    for (key, params) in lists() {
+        let first = json_of(&git_log(&state, params(None)).expect("first page"));
+        let issued: Cursor = serde_json::from_value(first["next_cursor"].clone()).expect("history goes on");
+        let (offset, snapshot) = issued.decode_in_memory().expect("in-memory cursor");
+        assert_eq!(snapshot & LIVE_WALK, LIVE_WALK, "{key}: issued on the live walk");
+        git_log(&state, params(Some(issued))).expect("the live walk resumes it");
+
+        let from_index = Cursor::encode_in_memory(offset, snapshot & !LIVE_WALK);
+        let refused = git_log(&state, params(Some(from_index)))
+            .err()
+            .expect("an index cursor on the live walk");
+        assert!(
+            refused.message.contains("git-history index") && refused.message.contains("without `cursor`"),
+            "{key}: {}",
+            refused.message
+        );
+    }
 }

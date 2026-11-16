@@ -52,6 +52,12 @@ pub(super) fn build_commit_info(local: &gix::Repository, id: gix::ObjectId, incl
     })
 }
 
+/// Whether [`build_commit_info`] would list `id`, without building the record: the commit reads and
+/// has an author.
+fn listable(local: &gix::Repository, id: gix::ObjectId) -> bool {
+    local.find_commit(id).is_ok_and(|commit| commit.author().is_ok())
+}
+
 /// Diff `commit_id`'s tree against its parent(s) and return (path, change-kind) pairs.
 ///
 /// For commits with multiple parents (merges, including octopus merges with ≥3 parents) we
@@ -297,9 +303,42 @@ impl Repo {
     }
 
     /// The commits at `skip..skip + take` of [`Repo::log_paths`]' list for `head`, with their
-    /// changed files. The `skip` commits before them are walked without listing files, so a page
-    /// deep in the history costs one walk to it and a file listing per commit on the page.
-    pub fn log_window(&self, head: &str, skip: usize, take: usize) -> Result<Vec<CommitInfo>, GitError> {
+    /// changed files when `include_files`. The `skip` commits before them are walked without listing
+    /// files, so a page deep in the history costs one walk to it and a file listing per commit on the
+    /// page.
+    pub fn log_window(
+        &self,
+        head: &str,
+        skip: usize,
+        take: usize,
+        include_files: bool,
+    ) -> Result<Vec<CommitInfo>, GitError> {
+        self.window(head, skip, take, include_files, |_, _| true)
+    }
+
+    /// The commits at `skip..skip + take` of [`Repo::log_for_path`]'s list for `head`: those that
+    /// changed the entry at exactly `rel`. The commits before them are only tested against `rel`.
+    pub fn log_window_touching(
+        &self,
+        head: &str,
+        rel: &crate::path::RelPath,
+        skip: usize,
+        take: usize,
+    ) -> Result<Vec<CommitInfo>, GitError> {
+        self.window(head, skip, take, false, |local, id| {
+            commit_touches_path(local, id, rel.as_bytes())
+        })
+    }
+
+    /// The commits at `skip..skip + take` of `head`'s newest-first history that `keep` admits.
+    fn window(
+        &self,
+        head: &str,
+        skip: usize,
+        take: usize,
+        include_files: bool,
+        keep: impl Fn(&gix::Repository, gix::ObjectId) -> bool,
+    ) -> Result<Vec<CommitInfo>, GitError> {
         let local = self.local();
         let Some(head) = Self::resolve_oid(&local, head) else {
             return Err(GitError::RevParse {
@@ -317,21 +356,21 @@ impl Repo {
                 what: "rev walk".to_string(),
                 msg: e.to_string(),
             })?;
-        // Offsets count the commits `log_paths` lists: one that does not decode is skipped there,
-        // so it is not counted here either.
-        let mut listed = 0usize;
+        let mut kept = 0usize;
         let mut out = Vec::new();
         for step in walk {
             if out.len() >= take {
                 break;
             }
-            let info = walk_step(step)?;
-            if build_commit_info(&local, info.id, false).is_none() {
+            let id = walk_step(step)?.id;
+            // Offsets count the commits the whole-list walks list: one that does not decode is
+            // skipped there, so it is not counted here either.
+            if !keep(&local, id) || !listable(&local, id) {
                 continue;
             }
-            listed += 1;
-            if listed > skip
-                && let Some(commit) = build_commit_info(&local, info.id, true)
+            kept += 1;
+            if kept > skip
+                && let Some(commit) = build_commit_info(&local, id, include_files)
             {
                 out.push(commit);
             }
