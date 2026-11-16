@@ -216,7 +216,9 @@ pub(super) struct ExpandResponse {
     pub body: String,
     /// Byte length of the returned body (before any truncation).
     pub bytes: usize,
-    /// `true` when the body was cut at the 128 KiB size cap, after its last whole line that fits.
+    /// `true` when the body was cut at the 128 KiB size cap, after its last whole line that fits;
+    /// absent otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `size_cap` whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -243,7 +245,9 @@ pub(super) struct ReadSpanResponse {
     pub body: String,
     /// Byte length of the span before any truncation.
     pub bytes: usize,
-    /// `true` when the body was cut at the 128 KiB size cap, after its last whole line that fits.
+    /// `true` when the body was cut at the 128 KiB size cap, after its last whole line that fits;
+    /// absent otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `size_cap` whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]

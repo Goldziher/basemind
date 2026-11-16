@@ -537,7 +537,7 @@ async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
         let _ = writeln!(big, "    let caf\u{e9}_{index:04} = \"{}\";", "\u{e9}".repeat(20));
     }
     big.push_str("}\n");
-    let (_dir, client) = started_with(&[("src/big.rs", big.as_str())]).await;
+    let (_dir, client) = started_with(&[("src/big.rs", big.as_str()), ("src/tiny.rs", "pub fn tiny() {}\n")]).await;
     let lines: Vec<&str> = big.lines().collect();
 
     for arguments in [
@@ -595,11 +595,17 @@ async fn code_read_cuts_an_oversized_read_at_a_line_and_reports_where() {
     assert_eq!(small["body"], format!("{}\n}}", lines[4000]), "{small}");
     assert_eq!(small["end_line"], 4002, "{small}");
     assert_eq!(small["total_lines"], 4002, "{small}");
-    assert_eq!(small["truncated"], false, "{small}");
-    assert!(
-        small.get("truncated_reason").is_none() && small.get("omitted_bytes").is_none(),
-        "{small}"
-    );
+    // A read that was not cut leaves `truncated` out, as every other tool does.
+    let tiny = call(&client, "code_read", json!({ "path": "src/tiny.rs", "symbol": "tiny" })).await;
+    assert_eq!(tiny["body"], "pub fn tiny() {}", "{tiny}");
+    for whole in [&small, &tiny] {
+        assert!(
+            whole.get("truncated").is_none()
+                && whole.get("truncated_reason").is_none()
+                && whole.get("omitted_bytes").is_none(),
+            "{whole}"
+        );
+    }
 }
 
 const TWO_NEW_RS: &str = "\
