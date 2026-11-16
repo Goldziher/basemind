@@ -120,8 +120,9 @@ fn code_outline_reports_symbols() {
 fn code_symbols_finds_symbol() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["code", "symbols", "alpha"], &["total", "truncated", "results"]);
+    let v = assert_json_fields(root, &["code", "symbols", "alpha"], &["total", "results"]);
     assert_eq!(v["total"], 1);
+    assert!(v.get("truncated").is_none(), "a false `truncated` is left out: {v}");
     assert_human_contains(root, &["code", "symbols", "alpha"], "alpha");
 }
 
