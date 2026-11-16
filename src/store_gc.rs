@@ -183,7 +183,10 @@ pub struct GcReport {
 /// A view directory that simply has no `index.msgpack` yet (`read_index` returns
 /// `Ok(None)`) contributes nothing and is skipped — it genuinely references no blobs.
 ///
-/// Any *other* read failure (corrupt msgpack, schema mismatch, I/O error) is treated as a
+/// A view a newer basemind wrote is skipped too: blobs are namespaced by schema, so it cannot
+/// reference a blob of this binary's namespace.
+///
+/// Any *other* read failure (corrupt msgpack, an older schema, I/O error) is treated as a
 /// hard error and propagated. Silently skipping such a view would drop its live hashes from
 /// the union and cause the subsequent sweep to delete blobs that are in fact still
 /// referenced — orphaning the entire store. Refusing to sweep when the live set might be
@@ -211,6 +214,9 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<LiveBlobs, GcErr
         let index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
             Ok(None) => continue,
+            // A newer basemind's view names blobs of its own namespace only: it has no vote in
+            // this one, and must not stop the sweep of it.
+            Err(StoreError::NewerSchema { .. }) => continue,
             Err(e) => return Err(GcError::Store(e)),
         };
         for entry in index.files.values() {
@@ -388,15 +394,28 @@ pub fn gc_global_blobs() -> Result<GcReport, GcError> {
 }
 
 /// Sweep a whole blob store: the unreferenced blobs of the `schema` namespace under `blobs_root`,
-/// then everything older builds left there (see [`crate::store_gc_namespaces`]).
+/// and everything older builds left there (see [`crate::store_gc_namespaces`]). The second sweep
+/// needs no live set, so it runs whatever became of the first: a workspace whose references cannot
+/// be read must not also keep the superseded namespaces on disk.
 pub(crate) fn gc_blob_store_in(
     workspaces_dir: &Path,
     blobs_root: &Path,
     schema: u16,
     grace: Duration,
 ) -> Result<GcReport, GcError> {
-    let mut report = gc_global_blobs_in(workspaces_dir, &blobs_root.join(format!("v{schema}")), grace)?;
-    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace)?;
+    let current = gc_global_blobs_in(workspaces_dir, &blobs_root.join(format!("v{schema}")), grace);
+    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace);
+    if let (Err(_), Ok(superseded)) = (&current, &superseded)
+        && superseded.removed > 0
+    {
+        tracing::info!(
+            removed = superseded.removed,
+            bytes_freed = superseded.bytes_freed,
+            "reaped superseded blob namespaces although the current one could not be swept"
+        );
+    }
+    let mut report = current?;
+    let superseded = superseded?;
     report.scanned += superseded.scanned;
     report.removed += superseded.removed;
     report.bytes_freed += superseded.bytes_freed;
@@ -478,31 +497,36 @@ pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
     Ok(report)
 }
 
-/// Non-destructive GC report over the GLOBAL blob store: counts every blob file (`scanned`) and the
-/// marker-less workspace dirs the daemon's sweep would reap, and removes nothing. This is the safe
-/// standalone behavior while the blob store is machine-global — see [`run_gc`]. `bytes_freed` /
-/// `removed` are always `0`.
+/// Non-destructive GC report over the GLOBAL blob store: counts every blob file (`scanned`), in
+/// every namespace and beside them, and the marker-less workspace dirs the daemon's sweep would
+/// reap, and removes nothing. This is the safe standalone behavior while the blob store is
+/// machine-global (see [`run_gc`]). `bytes_freed` / `removed` are always `0`.
 pub fn gc_report_only() -> Result<GcReport, GcError> {
-    let blobs_dir = global_blobs_dir();
     let candidates = markerless_workspace_candidates()?;
-    let mut report = GcReport {
+    Ok(GcReport {
         markerless_workspaces_reapable: candidates.count,
         markerless_workspace_bytes_reapable: candidates.bytes,
+        scanned: count_blob_files(&crate::store_layout::global_blobs_root())?,
         ..GcReport::default()
-    };
-    if !blobs_dir.exists() {
-        return Ok(report);
+    })
+}
+
+/// How many files a blob store holds: those in its root (blobs from before the namespaces) and
+/// those of each namespace directory.
+pub(crate) fn count_blob_files(blobs_root: &Path) -> Result<usize, GcError> {
+    if !blobs_root.exists() {
+        return Ok(0);
     }
-    for entry in read_dir(&blobs_dir)? {
-        let entry = entry.map_err(|source| GcError::Io {
-            path: blobs_dir.clone(),
-            source,
-        })?;
-        if entry.path().is_file() {
-            report.scanned += 1;
+    let mut files = 0;
+    for entry in read_dir(blobs_root)?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files += read_dir(&path)?.flatten().filter(|blob| blob.path().is_file()).count();
+        } else {
+            files += 1;
         }
     }
-    Ok(report)
+    Ok(files)
 }
 
 /// Strip a known blob suffix off a filename, returning the hex stem. `None` if the filename

@@ -234,7 +234,7 @@ fn guard_clear(basemind_dir: &Path, component: &str, yes: bool) -> Result<()> {
         format!(
             "`blobs` is the MACHINE-GLOBAL extraction store ({}) shared by EVERY workspace on this machine; \
              clearing it forces all of them to re-extract on their next scan",
-            crate::store::global_blobs_dir().display()
+            crate::store_layout::global_blobs_root().display()
         )
     } else {
         format!("clear `{component}` under {}", basemind_dir.display())

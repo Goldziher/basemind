@@ -543,32 +543,70 @@ fn global_gc_heals_a_mixed_release_workspace_index() {
     assert!(!stale_view.exists(), "the stale view is removed for lazy rebuild");
 }
 
+/// A view a newer basemind wrote is neither healed away nor a reason to stop: it stays as it is,
+/// and it has no vote, since the blobs it names are in its own namespace. Even a newer map this
+/// binary cannot decode is read as newer, not as a damaged one that may be removed.
 #[test]
-fn global_gc_refuses_to_remove_a_view_written_by_a_newer_basemind() {
+fn global_gc_passes_over_a_view_written_by_a_newer_basemind() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspaces = tmp.path().join("workspaces");
     let newer_view = workspaces.join("key-newer").join(VIEWS_DIR).join("working");
     fs::create_dir_all(&newer_view).expect("mk newer view");
     let mut newer = Index::empty();
     newer.schema_ver = crate::extract::SCHEMA_VER + 1;
+    newer.rebuild_pins = vec!["a".repeat(64)];
+    let undecodable = workspaces.join("key-newer-shape").join(VIEWS_DIR).join("working");
+    fs::create_dir_all(&undecodable).expect("mk view");
+    #[derive(serde::Serialize)]
+    struct AnotherShape {
+        schema_ver: u16,
+        files: &'static str,
+    }
+    let another = AnotherShape {
+        schema_ver: crate::extract::SCHEMA_VER + 1,
+        files: "not the map this binary expects",
+    };
     fs::write(
         newer_view.join(INDEX_FILE),
         rmp_serde::to_vec_named(&newer).expect("encode newer index"),
     )
     .expect("write newer index");
+    fs::write(
+        undecodable.join(INDEX_FILE),
+        rmp_serde::to_vec_named(&another).expect("encode"),
+    )
+    .expect("write");
 
-    let Err(error) = collect_referenced_hashes_global_in(&workspaces) else {
-        panic!("an unreadable newer view must abort the sweep, not be healed away");
-    };
+    let referenced = collect_referenced_hashes_global_in(&workspaces).expect("a newer view does not stop the sweep");
 
+    assert!(referenced.is_empty(), "and names nothing in this namespace");
     assert!(
-        matches!(error, GcError::Store(StoreError::NewerSchema { .. })),
-        "expected the newer-schema error, got: {error}"
+        newer_view.join(INDEX_FILE).exists() && undecodable.join(INDEX_FILE).exists(),
+        "the newer basemind's views survive"
     );
-    assert!(
-        newer_view.join(INDEX_FILE).exists(),
-        "the newer basemind's view survives"
-    );
+    assert!(matches!(read_index(&undecodable), Err(StoreError::NewerSchema { .. })));
+}
+
+/// A file map from before blobs were namespaced is stale cache like one of an older schema: the
+/// sweep removes the view instead of failing on it.
+#[test]
+fn global_gc_heals_a_view_of_an_earlier_blob_layout() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let stale_view = workspaces.join("key-flat").join(VIEWS_DIR).join("working");
+    fs::create_dir_all(&stale_view).expect("mk stale view");
+    let mut stale = Index::empty();
+    stale.blob_layout = 0;
+    fs::write(
+        stale_view.join(INDEX_FILE),
+        rmp_serde::to_vec_named(&stale).expect("encode stale index"),
+    )
+    .expect("write stale index");
+
+    let referenced = collect_referenced_hashes_global_in(&workspaces).expect("heal");
+
+    assert!(referenced.is_empty());
+    assert!(!stale_view.exists(), "the stale view is removed for lazy rebuild");
 }
 
 #[test]
@@ -733,4 +771,103 @@ fn the_machine_global_sweep_reaps_what_older_builds_left() {
     assert!(!older.exists(), "an older namespace is swept by the global sweep");
     assert!(!flat.exists(), "so is an un-namespaced blob");
     assert!(newer.exists(), "a newer namespace is not touched");
+}
+
+/// Reaping what older builds left needs no live set. A workspace whose references cannot be read
+/// fails the sweep of the current namespace, and must not also keep the old namespaces on disk.
+#[test]
+fn superseded_namespaces_are_reaped_although_the_live_set_cannot_be_read() {
+    let fx = build_fixture();
+    let paths = fx.blobs();
+    let workspaces = fx.basemind_dir.join("workspaces");
+    let unreadable = workspaces.join("key").join(VIEWS_DIR).join("working").join(INDEX_FILE);
+    fs::create_dir_all(&unreadable).expect("a directory where the file map belongs");
+    let older = plant_blob(&paths.root.join("v1"), 'd');
+    let flat = plant_blob(&paths.root, 'c');
+    let orphan = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.orphan_stem));
+
+    let swept = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO);
+
+    assert!(
+        swept.is_err(),
+        "the current namespace cannot be swept without its live set"
+    );
+    assert!(orphan.exists(), "and nothing of it was");
+    assert!(
+        !older.exists() && !flat.exists(),
+        "what older builds left is reaped all the same"
+    );
+}
+
+/// Blobs are namespaced by schema, so a view a newer basemind wrote names nothing in this binary's
+/// namespace: it neither votes in the sweep nor stops it, and it is left as it is.
+#[test]
+fn a_view_of_a_newer_basemind_neither_stops_the_sweep_nor_is_touched_by_it() {
+    let fx = build_fixture();
+    let paths = fx.blobs();
+    let workspaces = fx.basemind_dir.join("workspaces");
+    seed_workspace(&workspaces, "key-newer", &[&fx.orphan_stem]);
+    let newer_map = workspaces
+        .join("key-newer")
+        .join(VIEWS_DIR)
+        .join("working")
+        .join(INDEX_FILE);
+    let mut index: Index = rmp_serde::from_slice(&fs::read(&newer_map).expect("read")).expect("decode");
+    index.schema_ver = crate::extract::SCHEMA_VER + 1;
+    let bytes = rmp_serde::to_vec_named(&index).expect("encode");
+    fs::write(&newer_map, &bytes).expect("write");
+    let orphan = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.orphan_stem));
+
+    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO).expect("sweep");
+
+    assert!(report.removed >= 1, "{report:?}");
+    assert!(
+        !orphan.exists(),
+        "a hash only the newer view names is not kept in this namespace"
+    );
+    assert_eq!(
+        fs::read(&newer_map).expect("still there"),
+        bytes,
+        "the newer view is untouched"
+    );
+}
+
+/// The report counts the files of the whole blob store, not of this binary's namespace alone.
+#[test]
+fn the_report_counts_the_blobs_of_every_namespace() {
+    let root = tempfile::tempdir().expect("tempdir");
+    plant_blob(root.path(), 'a');
+    plant_blob(&root.path().join("v1"), 'b');
+    plant_blob(&root.path().join("v2"), 'c');
+    plant_blob(&root.path().join("v2"), 'd');
+
+    assert_eq!(count_blob_files(root.path()).expect("count"), 4);
+    assert_eq!(count_blob_files(&root.path().join("absent")).expect("count"), 0);
+}
+
+/// A workspace can hold a stale view beside one a newer basemind wrote. Healing the first must
+/// neither remove the second nor stop over it.
+#[test]
+fn global_gc_heals_a_stale_view_and_keeps_the_newer_view_beside_it() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let views = workspaces.join("key").join(VIEWS_DIR);
+    let write = |view: &str, schema_ver: u16| {
+        let dir = views.join(view);
+        fs::create_dir_all(&dir).expect("mk view");
+        let mut index = Index::empty();
+        index.schema_ver = schema_ver;
+        fs::write(dir.join(INDEX_FILE), rmp_serde::to_vec_named(&index).expect("encode")).expect("write");
+        dir
+    };
+    let stale = write("working", crate::extract::SCHEMA_VER.saturating_sub(1));
+    let newer = write("staged", crate::extract::SCHEMA_VER + 1);
+
+    collect_referenced_hashes_global_in(&workspaces).expect("the sweep goes on");
+
+    assert!(!stale.exists(), "the stale view is removed for lazy rebuild");
+    assert!(
+        newer.join(INDEX_FILE).exists(),
+        "a newer basemind's view is never removed by GC"
+    );
 }

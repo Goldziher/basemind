@@ -127,10 +127,12 @@ fn protected_workspaces_are_persisted_and_make_the_state_over_budget() {
     );
 }
 
-/// The budget is a disk budget: blobs in another schema's namespace and un-namespaced blobs of an
-/// older build occupy the same disk, so the footprint counts everything under the blobs root.
+const SCHEMA: u16 = 7;
+
+/// The budget is a disk budget: blobs in an older schema's namespace and un-namespaced blobs of an
+/// older build occupy the same disk and are this binary's to reap, so the footprint counts them.
 #[test]
-fn the_budget_footprint_counts_every_blob_namespace() {
+fn the_budget_footprint_counts_the_older_blob_namespaces() {
     let (_tmp, workspaces, root) = roots();
     let current = root.join("v7");
     fs::create_dir_all(&current).expect("mk current");
@@ -139,13 +141,129 @@ fn the_budget_footprint_counts_every_blob_namespace() {
     fs::write(root.join("flat.fm.msgpack"), vec![0_u8; 64 * 1024]).expect("flat blob");
     seed_workspace_aged(&workspaces, "key-a", &"a".repeat(64), Duration::from_secs(9999));
 
-    let report = enforce_cache_budget_at(&workspaces, &root, &current, u64::MAX, DAY, Duration::ZERO).expect("enforce");
+    let report =
+        enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, u64::MAX, DAY, Duration::ZERO).expect("enforce");
 
     assert!(
         report.total_bytes_before >= 2 * 64 * 1024,
         "blobs outside the current namespace are part of the footprint: {}",
         report.total_bytes_before
     );
+}
+
+/// A newer basemind's namespace is bytes this binary can never free. Counted, they would keep the
+/// cache over budget whatever is evicted, and every cycle would evict another idle workspace.
+#[test]
+fn a_newer_blob_namespace_is_outside_the_budget_and_costs_no_workspace() {
+    let (_tmp, workspaces, root) = roots();
+    let current = root.join("v7");
+    fs::create_dir_all(&current).expect("mk current");
+    fs::create_dir_all(root.join("v8")).expect("mk newer");
+    fs::write(root.join("v8").join("new.fm.msgpack"), vec![0_u8; 256 * 1024]).expect("newer blob");
+    let idle = seed_workspace_aged(
+        &workspaces,
+        "key-idle",
+        &"a".repeat(64),
+        Duration::from_secs(9 * 24 * 3600),
+    );
+    seed_workspace_aged(
+        &workspaces,
+        "key-mru",
+        &"b".repeat(64),
+        Duration::from_secs(3 * 24 * 3600),
+    );
+
+    let budget = 128 * 1024;
+    let report =
+        enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, budget, DAY, Duration::ZERO).expect("enforce");
+
+    assert!(
+        report.total_bytes_before <= budget,
+        "the newer namespace is not counted: {}",
+        report.total_bytes_before
+    );
+    assert_eq!(report.evicted, 0);
+    assert!(
+        idle.join(crate::store::VIEWS_DIR).exists(),
+        "the idle workspace is kept"
+    );
+}
+
+/// A view a newer basemind wrote is that version's live index, not cache this binary may rebuild.
+#[test]
+fn a_workspace_written_by_a_newer_basemind_is_never_evicted() {
+    let (_tmp, workspaces, blobs) = roots();
+    let newer = seed_workspace_aged(
+        &workspaces,
+        "key-newer",
+        &"a".repeat(64),
+        Duration::from_secs(9 * 24 * 3600),
+    );
+    let mut index = crate::store::Index::empty();
+    index.schema_ver = crate::extract::SCHEMA_VER + 1;
+    write_index(&newer, &index);
+    let map = newer
+        .join(crate::store::VIEWS_DIR)
+        .join("working")
+        .join(crate::store::INDEX_FILE);
+    fs::File::options()
+        .write(true)
+        .open(map)
+        .and_then(|file| file.set_modified(SystemTime::now() - Duration::from_secs(9 * 24 * 3600)))
+        .expect("age the rewritten map");
+    let idle = seed_workspace_aged(
+        &workspaces,
+        "key-idle",
+        &"c".repeat(64),
+        Duration::from_secs(8 * 24 * 3600),
+    );
+    seed_workspace_aged(
+        &workspaces,
+        "key-mru",
+        &"b".repeat(64),
+        Duration::from_secs(3 * 24 * 3600),
+    );
+
+    let report = enforce_cache_budget_in(&workspaces, &blobs, 1, DAY, Duration::ZERO).expect("enforce");
+
+    assert!(
+        newer.join(crate::store::VIEWS_DIR).join("working").exists(),
+        "the newer view is intact"
+    );
+    assert!(
+        report
+            .protected
+            .iter()
+            .any(|ws| ws.key == "key-newer" && ws.reason == ProtectionReason::NewerVersion),
+        "{:?}",
+        report.protected
+    );
+    assert!(
+        !idle.join(crate::store::VIEWS_DIR).exists(),
+        "an idle workspace of this version is still evicted"
+    );
+    assert_eq!(report.locked_skipped, 0, "a newer view is not a locked workspace");
+}
+
+/// The sweep after an eviction takes only blobs older than the look at the locks: a scan in another
+/// process that started since has written blobs no file map names yet.
+#[test]
+fn a_blob_written_after_the_lock_probe_survives_the_sweep_that_follows_an_eviction() {
+    let (_tmp, workspaces, blobs) = roots();
+    fs::create_dir_all(&workspaces).expect("mk workspaces");
+    let orphaned = blobs.join(format!("{}.fm.msgpack", "a".repeat(64)));
+    fs::write(&orphaned, b"orphaned by the eviction").expect("old blob");
+    std::thread::sleep(Duration::from_millis(30));
+    let probed = SystemTime::now();
+    std::thread::sleep(Duration::from_millis(30));
+    let fresh = blobs.join(format!("{}.fm.msgpack", "b".repeat(64)));
+    fs::write(&fresh, b"written by a scan that started after the probe").expect("fresh blob");
+
+    let grace = orphan_grace(&workspaces, probed);
+    gc_global_blobs_in(&workspaces, &blobs, grace).expect("sweep");
+
+    assert!(fresh.exists(), "younger than the probe: not this eviction's orphan");
+    assert!(!orphaned.exists(), "older than the probe: reclaimed at once");
 }
 
 fn write_index(workspace_dir: &std::path::Path, index: &crate::store::Index) {

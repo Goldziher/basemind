@@ -14,6 +14,7 @@
 //! | [`ProtectionReason::Locked`] | A live writer (`serve`, `watch`, the daemon, a scan) holds its `.lock`. |
 //! | [`ProtectionReason::MostRecentlyUsed`] | Newest activity among workspaces that still hold a view. |
 //! | [`ProtectionReason::RecentlyBuilt`] | Built or rescanned within the grace window ([`cache_grace`]). |
+//! | [`ProtectionReason::NewerVersion`] | A view of it was written by a newer basemind sharing the cache. |
 //!
 //! "Used" is the newest mtime of `workspace.json`, `status.json` and each view's `index.msgpack`;
 //! every linked git worktree is its own workspace key, so the most recent one across all worktrees
@@ -42,6 +43,8 @@ pub enum ProtectionReason {
     MostRecentlyUsed,
     /// Built or rescanned within the grace window.
     RecentlyBuilt,
+    /// A view of it was written by a newer basemind sharing the cache: that version's live index.
+    NewerVersion,
 }
 
 /// A workspace the budget pass left alone although the cache is over budget.
