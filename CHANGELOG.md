@@ -383,7 +383,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (`memory_vectors_bytes`) and finds the last sweep again (`last_gc`). `cache clear blobs` clears
     the current namespace, older namespaces and un-namespaced blobs, and leaves a newer basemind's
     namespace in place, naming it. The cache budget counts everything under `cache/blobs/` but the
-    namespaces of a newer schema.
+    namespaces of a newer schema, and every workspace but those holding a newer basemind's view.
   - Vector rows a scan could not write (a killed process, a LanceDB error) stay recorded in
     `pending-vectors.msgpack` beside the file map and are written by a later scan, incremental
     ones included. They were lost for good and search missed the file. A file no rows can come of
@@ -398,11 +398,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     combined blob and the document blob of each file instead of
     trusting them for existing, so one torn by a power loss is rebuilt, and rewrites the vector
     rows from the blobs. Unclean means: a scan of that workspace died without finishing, or the
-    machine went down under a daemon (its marker names the boot it was started in, so a pid reused
-    after a restart is not taken for a live daemon; then every workspace verifies, whichever
-    process opens it next). A daemon killed while the machine stayed up tore nothing and asks for
-    no verification. A chunk sidecar's header, which states its length, is read
-    on every pass. Not covered: a power loss after a scan finished outside the daemon, the payload
+    machine went down under a daemon (its marker names the boot it was started in, by the
+    platform's per-boot id, and the daemon's process start, so a pid reused after a restart is not
+    taken for a live daemon and a clock step does not end a live one; then every workspace
+    verifies, whichever process opens it next). A daemon killed while the machine stayed up tore
+    nothing and asks for no verification. A chunk sidecar's header, which states its length, is
+    read on every pass. Not covered: a power loss after a scan finished outside the daemon, the payload
     of a chunk sidecar, and resolved-reference (`.rref`) blobs.
   - `memory_search` by meaning answers from the note itself and never from a stale, orphaned or
     duplicated vector row. The rows are rebuilt from the notes after an upgrade or for a new

@@ -574,10 +574,13 @@ the Fjall index sealed the same generation. So after a power loss a file map can
 bytes never reached the disk. Two records make the next scan a full one that decodes each combined
 and document blob instead of trusting it for existing (`verify-blobs` in the workspace cache
 directory): the breadcrumb of a scan that never finished, and the marker of a daemon
-(`hosting/<pid>`, holding the boot it was started in) left from an earlier boot of the machine. The
-second asks every workspace at once, since the marker does not say which ones its daemon served. A
-daemon killed while the machine stayed up tore nothing (a blob is renamed into place whole) and asks
-for nothing; a pid alone is not trusted, because after a restart another process has the number.
+(`hosting/<pid>`, holding the boot it was started in and its process start) left from an earlier boot
+of the machine. The second asks every workspace at once, since the marker does not say which ones its
+daemon served, and the markers go only after every request is written. A daemon killed while the
+machine stayed up tore nothing (a blob is renamed into place whole) and asks for nothing; a pid alone
+is not trusted, because after a restart another process has the number. The boot is the platform's
+per-boot id (Linux `boot_id`, macOS `kern.bootsessionuuid`, Windows `BootId`), not a boot time a
+clock step moves, and a live pid whose process started when the marker's did is the daemon itself.
 Apart from that pass, only paths named in `basemind rescan <paths>` or `index_rescan paths` have
 their blobs validated; a watcher batch asks whether the blob exists.
 
