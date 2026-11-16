@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use fs2::FileExt as _;
 
+use crate::store_lock::LockGuard;
+
 const BASE: &str = "base";
 const LEASES: &str = ".leases";
 
@@ -14,13 +16,12 @@ const LEASES: &str = ".leases";
 #[derive(Debug)]
 pub(crate) struct GenerationLease {
     path: PathBuf,
-    _lock: File,
+    _lock: LockGuard,
 }
 
 impl GenerationLease {
     pub(crate) fn open(group: &Path, generation: u64) -> io::Result<Self> {
-        let gate = group_lock(group)?;
-        fs2::FileExt::lock_shared(&gate)?;
+        let _gate = group_lock(group, false)?;
         let path = generation_path(group, generation);
         if !fs::symlink_metadata(&path)?.file_type().is_dir() {
             return Err(io::Error::new(
@@ -29,8 +30,11 @@ impl GenerationLease {
             ));
         }
         let lock = generation_lock(group, generation)?;
-        fs2::FileExt::lock_shared(&lock)?;
-        Ok(Self { path, _lock: lock })
+        lock.lock_shared()?;
+        Ok(Self {
+            path,
+            _lock: LockGuard::held(lock),
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -54,8 +58,7 @@ pub(crate) fn retire_unpinned(
     candidates: &BTreeSet<u64>,
     read_pins: impl FnOnce() -> io::Result<BTreeSet<u64>>,
 ) -> io::Result<RetiredGenerations> {
-    let gate = group_lock(group)?;
-    gate.lock_exclusive()?;
+    let gate = group_lock(group, true)?;
     let pins = read_pins()?;
     let mut result = RetiredGenerations::default();
     let mut pending = Vec::new();
@@ -73,7 +76,7 @@ pub(crate) fn retire_unpinned(
             Err(error) => return Err(error),
         }
         if let Some(path) = mark_retired(group, generation)? {
-            pending.push((generation, path, lease));
+            pending.push((generation, path, LockGuard::held(lease)));
         }
     }
     drop(gate);
@@ -126,8 +129,17 @@ pub(crate) fn highest_leased_generation(group: &Path) -> io::Result<u64> {
     Ok(highest)
 }
 
-pub(crate) fn group_lock(group: &Path) -> io::Result<File> {
-    open_lock(&group.join("base.lock"))
+/// Take the group's base lock, shared or exclusive, blocking until it is granted. Held in a
+/// [`LockGuard`]: a flock released only by closing the file outlives the close while a child
+/// another thread forked still holds a copy of the descriptor.
+pub(crate) fn group_lock(group: &Path, exclusive: bool) -> io::Result<LockGuard> {
+    let file = open_lock(&group.join("base.lock"))?;
+    if exclusive {
+        file.lock_exclusive()?;
+    } else {
+        file.lock_shared()?;
+    }
+    Ok(LockGuard::held(file))
 }
 
 fn generation_lock(group: &Path, generation: u64) -> io::Result<File> {
@@ -178,6 +190,58 @@ mod tests {
         );
         assert!(GenerationLease::open(group, 2).is_err());
         assert_eq!(highest_leased_generation(group).unwrap(), 3);
+    }
+
+    /// A dropped lease frees its generation at once, though other threads fork children that
+    /// briefly hold a copy of every open descriptor: a lock released only by the close would
+    /// still be held through each such child.
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_lease_is_free_at_once_while_other_threads_spawn_processes() {
+        use std::os::unix::process::CommandExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let group = dir.path();
+        fs::create_dir_all(generation_path(group, 1)).unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let spawners: Vec<_> = (0..8)
+            .map(|_| {
+                let stop = std::sync::Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let mut child = std::process::Command::new("/usr/bin/true");
+                        // SAFETY: the hook does nothing, so it is async-signal-safe; it is there
+                        // only because std forks and execs a command that has one.
+                        unsafe {
+                            child.pre_exec(|| Ok(()));
+                        }
+                        let _ = child.status();
+                    }
+                })
+            })
+            .collect();
+
+        let mut still_held = 0;
+        for _ in 0..400 {
+            drop(GenerationLease::open(group, 1).unwrap());
+            let lease = generation_lock(group, 1).unwrap();
+            if lease.try_lock_exclusive().is_err() {
+                still_held += 1;
+            }
+            let _ = fs2::FileExt::unlock(&lease);
+            let gate = open_lock(&group.join("base.lock")).unwrap();
+            if gate.try_lock_exclusive().is_err() {
+                still_held += 1;
+            }
+            let _ = fs2::FileExt::unlock(&gate);
+        }
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            spawner.join().unwrap();
+        }
+
+        assert_eq!(still_held, 0, "a dropped lease left a lock held {still_held} times");
     }
 
     #[test]

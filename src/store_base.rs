@@ -526,8 +526,7 @@ fn dirty_worktree(
             "overlay exceeds disk limit"
         );
         let group = repo_group_dir(root);
-        let gate = crate::store_base_retention::group_lock(&group)?;
-        fs2::FileExt::lock_exclusive(&gate)?;
+        let _gate = crate::store_base_retention::group_lock(&group, true)?;
         enforce_group_budget(&group, Some((&overlays, crate::store_layout::workspace_key(root))))?;
         write_overlay_pin(&group, root, generation)?;
         fs::rename(scratch.path(), &published)?;
