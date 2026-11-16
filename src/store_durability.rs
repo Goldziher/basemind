@@ -106,6 +106,7 @@ impl Store {
     /// map and finishing the rebuild scan, whatever else the map still lists: the rebuild empties
     /// `files` only, and a store with documents would otherwise pass for scanned.
     pub fn needs_full_scan(&self) -> bool {
+        crate::scan_evidence::settle_dead_hosts();
         self.index_rebuild_needed
             || self.index.rebuild_pending
             || (self.index.files.is_empty() && self.index.doc_files.is_empty())

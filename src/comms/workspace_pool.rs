@@ -804,10 +804,6 @@ impl WorkspacePool {
             Some(store) => store,
             None => Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?,
         };
-        // A layered store reads a published, synced base generation: nothing of it can be torn.
-        if store.layered_read.is_none() {
-            crate::scan_evidence::workspace_opened_by_host(&store.basemind_dir);
-        }
         let rebuild_pending = store.index_rebuild_needed;
         if rebuild_pending {
             tracing::warn!(root = %resolved.display(), "index is empty over a populated file map; scheduling a full rebuild");

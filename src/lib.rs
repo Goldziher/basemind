@@ -2,6 +2,7 @@
 
 pub mod alloc_tag;
 pub mod backpressure;
+mod boot_identity;
 #[cfg(feature = "code-search")]
 pub mod chunk;
 /// The scan pipeline's one chunked-drive primitive: a serial loop over weight-bounded chunks with

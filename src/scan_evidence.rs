@@ -93,14 +93,103 @@ pub fn blobs_verified(cache_dir: &Path) {
 /// Directory under the data home with one file per process that hosts workspaces, named by pid.
 const HOSTING_DIR: &str = "hosting";
 
-/// Set when this process found the marker of a host that never retracted it.
-static EARLIER_HOST_DIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// What a hosting marker holds.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct HostRecord {
+    /// The boot the host was started in ([`crate::boot_identity`]). A pid alone does not name a
+    /// process across a restart of the machine: another process gets the number.
+    #[serde(default)]
+    boot: Option<String>,
+}
+
+/// What became of the host a marker names.
+#[derive(Debug, PartialEq, Eq)]
+enum HostFate {
+    /// Still hosting.
+    Live,
+    /// Its process ended while the machine stayed up: every blob it wrote reached the OS, and a
+    /// blob is renamed into place whole, so nothing of it is torn.
+    DiedAlone,
+    /// The machine went down under it: blobs it wrote without an fsync may be torn.
+    DiedWithTheMachine,
+}
+
+/// Judge a marker from whether its pid is alive and the boots it and this process belong to. With
+/// either boot unknown the pid is all there is, and a dead one is read as the worse case.
+fn host_fate(pid_live: bool, marker_boot: Option<&str>, current_boot: Option<&str>) -> HostFate {
+    match (marker_boot, current_boot) {
+        (Some(then), Some(now)) if !crate::boot_identity::same_boot(then, now) => HostFate::DiedWithTheMachine,
+        (Some(_), Some(_)) if !pid_live => HostFate::DiedAlone,
+        _ if pid_live => HostFate::Live,
+        _ => HostFate::DiedWithTheMachine,
+    }
+}
+
+/// Remove the markers of hosts that are gone. When the machine went down under one, ask every
+/// workspace under `workspaces_dir` to verify its blobs: the marker does not say which workspaces
+/// its host served, and the request must not depend on which process happens to open one next.
+/// A marker under this process's own pid is judged like any other: left from an earlier boot it
+/// is a dead host's, and from this boot it is this process's own. Returns whether it asked.
+#[cfg(any(unix, windows))]
+fn settle_dead_hosts_in(hosting_dir: &Path, workspaces_dir: &Path, current_boot: Option<&str>) -> bool {
+    let mut machine_went_down = false;
+    for entry in std::fs::read_dir(hosting_dir).into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let record: HostRecord = std::fs::read(entry.path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let fate = host_fate(
+            crate::daemon_lock::pid_is_live(pid),
+            record.boot.as_deref(),
+            current_boot,
+        );
+        if fate == HostFate::Live {
+            continue;
+        }
+        machine_went_down |= fate == HostFate::DiedWithTheMachine;
+        let _ = std::fs::remove_file(entry.path());
+    }
+    if machine_went_down {
+        for workspace in std::fs::read_dir(workspaces_dir).into_iter().flatten().flatten() {
+            if workspace.path().is_dir() {
+                let _ = std::fs::write(workspace.path().join(VERIFY_BLOBS_FILE), b"");
+            }
+        }
+    }
+    machine_went_down
+}
+
+/// [`settle_dead_hosts_in`] against the data home, once per process: a host that dies while this
+/// process lives dies in this boot, which asks for nothing. Run by every process about to scan, so
+/// a `basemind scan` after a power loss verifies without waiting for a daemon to start.
+pub fn settle_dead_hosts() {
+    #[cfg(any(unix, windows))]
+    {
+        // A unit test that set no data home would be reading the developer's own cache. ~keep
+        #[cfg(test)]
+        if std::env::var_os(crate::store_layout::DATA_HOME_ENV).is_none() {
+            return;
+        }
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let root = cache_root();
+            settle_dead_hosts_in(
+                &root.join(HOSTING_DIR),
+                &root.join(CACHE_DIR).join(WORKSPACES_DIR),
+                crate::boot_identity::current().as_deref(),
+            );
+        });
+    }
+}
 
 /// The claim of a process that hosts workspaces for others (the daemon): written when it starts
 /// hosting, removed when it stops cleanly. A scan's breadcrumb covers only the scan in flight; this
 /// covers everything else a host does between scans, and the scan that finished seconds before the
-/// power went. A marker whose process is gone means blobs written since may be torn, in any
-/// workspace of the shared store.
+/// power went. A marker left by a host of an earlier boot means blobs written since may be torn, in
+/// any workspace of the shared store.
 #[derive(Debug)]
 pub struct HostingMarker {
     path: PathBuf,
@@ -111,54 +200,36 @@ impl HostingMarker {
     /// never a precondition for work.
     #[cfg(any(unix, windows))]
     pub fn begin() -> Option<Self> {
-        let (marker, earlier_died) = Self::begin_in(&cache_root().join(HOSTING_DIR));
-        if earlier_died {
-            EARLIER_HOST_DIED.store(true, std::sync::atomic::Ordering::Release);
-        }
-        marker
+        settle_dead_hosts();
+        Self::begin_in(
+            &cache_root().join(HOSTING_DIR),
+            crate::boot_identity::current().as_deref(),
+        )
     }
 
-    /// [`begin`](Self::begin) against an explicit directory. Also returns whether a marker of a
-    /// process that is no longer alive was found there (and removed: it is reported once).
+    /// Write this process's marker into `dir`, whole or not at all: another host reading a
+    /// half-written one would take it for the marker of a host from an unknown boot.
     #[cfg(any(unix, windows))]
-    pub fn begin_in(dir: &Path) -> (Option<Self>, bool) {
-        if std::fs::create_dir_all(dir).is_err() {
-            return (None, false);
-        }
-        let mut earlier_died = false;
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let pid = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok());
-            if pid.is_some_and(|pid| pid != std::process::id() && !crate::daemon_lock::pid_is_live(pid)) {
-                earlier_died = true;
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
+    fn begin_in(dir: &Path, boot: Option<&str>) -> Option<Self> {
+        std::fs::create_dir_all(dir).ok()?;
+        let record = HostRecord {
+            boot: boot.map(str::to_string),
+        };
+        let bytes = serde_json::to_vec(&record).ok()?;
         let path = dir.join(std::process::id().to_string());
-        let marker = std::fs::write(&path, b"").is_ok().then_some(Self { path });
-        (marker, earlier_died)
+        let temp = dir.join(format!(".{}.tmp", std::process::id()));
+        std::fs::write(&temp, bytes).ok()?;
+        if std::fs::rename(&temp, &path).is_err() {
+            let _ = std::fs::remove_file(&temp);
+            return None;
+        }
+        Some(Self { path })
     }
 }
 
 impl Drop for HostingMarker {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-/// Called when a host opens a workspace: if an earlier host died without stopping, ask for this
-/// workspace's blobs to be verified by its next scan. Once per workspace per process, so a
-/// workspace evicted and reopened after its verifying scan is not verified again.
-pub fn workspace_opened_by_host(cache_dir: &Path) {
-    static ASKED: Mutex<Option<ahash::AHashSet<PathBuf>>> = Mutex::new(None);
-    if !EARLIER_HOST_DIED.load(std::sync::atomic::Ordering::Acquire) {
-        return;
-    }
-    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
-    if asked
-        .get_or_insert_with(ahash::AHashSet::new)
-        .insert(cache_dir.to_path_buf())
-    {
-        let _ = std::fs::write(cache_dir.join(VERIFY_BLOBS_FILE), b"");
     }
 }
 
@@ -618,43 +689,160 @@ mod tests {
         log_memory_snapshot(Path::new("/repo"), Duration::from_secs(7));
     }
 
-    /// A host that stopped cleanly leaves nothing; one that died leaves its marker, and the next
-    /// host to start finds it, once.
-    #[cfg(unix)]
-    #[test]
-    fn a_host_that_died_is_noticed_by_the_next_one_and_a_clean_stop_is_not() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (marker, earlier_died) = HostingMarker::begin_in(dir.path());
-        assert!(!earlier_died, "nothing hosted here before");
-        let own = dir.path().join(std::process::id().to_string());
-        assert!(own.exists());
-        drop(marker);
-        assert!(!own.exists(), "a clean stop retracts the marker");
+    const THIS_BOOT: &str = "t:5000";
 
-        // A pid no process has: what a host killed without warning leaves behind.
-        let dead = dir.path().join((u32::MAX - 11).to_string());
-        std::fs::write(&dead, b"").expect("plant");
-        let (_marker, earlier_died) = HostingMarker::begin_in(dir.path());
-        assert!(earlier_died, "the dead host's marker is found");
-        assert!(!dead.exists(), "and reported once");
-        let (_again, earlier_died) = HostingMarker::begin_in(dir.path());
-        assert!(!earlier_died);
+    /// Plant the marker of a host with `pid`, started in `boot`.
+    #[cfg(unix)]
+    fn plant_host(hosting: &Path, pid: u32, boot: Option<&str>) -> PathBuf {
+        std::fs::create_dir_all(hosting).expect("hosting dir");
+        let path = hosting.join(pid.to_string());
+        let record = HostRecord {
+            boot: boot.map(str::to_string),
+        };
+        std::fs::write(&path, serde_json::to_vec(&record).expect("encode")).expect("plant");
+        path
     }
 
-    /// After an earlier host died, each workspace a host opens is asked to verify its blobs, once.
+    #[cfg(unix)]
+    fn two_workspaces(root: &Path) -> (PathBuf, [PathBuf; 2]) {
+        let workspaces = root.join("workspaces");
+        let pair = [workspaces.join("a"), workspaces.join("b")];
+        for dir in &pair {
+            std::fs::create_dir_all(dir).expect("workspace");
+        }
+        (workspaces, pair)
+    }
+
+    /// A pid no process has.
+    #[cfg(unix)]
+    const DEAD_PID: u32 = u32::MAX - 11;
+    /// A pid some other process always has.
+    #[cfg(unix)]
+    const LIVE_PID: u32 = 1;
+
+    #[cfg(unix)]
     #[test]
-    fn a_workspace_opened_after_a_dead_host_is_asked_to_verify_once() {
+    fn a_clean_stop_retracts_the_marker_and_the_marker_names_its_boot() {
         let dir = tempfile::tempdir().expect("tempdir");
-        workspace_opened_by_host(dir.path());
-        assert!(!blobs_need_verifying(dir.path()), "no host died");
+        let marker = HostingMarker::begin_in(dir.path(), Some(THIS_BOOT)).expect("marker");
+        let own = dir.path().join(std::process::id().to_string());
+        let record: HostRecord = serde_json::from_slice(&std::fs::read(&own).expect("read")).expect("decode");
+        assert_eq!(record.boot.as_deref(), Some(THIS_BOOT));
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("list").count(),
+            1,
+            "no temp file left"
+        );
+        drop(marker);
+        assert!(!own.exists());
+    }
 
-        EARLIER_HOST_DIED.store(true, std::sync::atomic::Ordering::Release);
-        workspace_opened_by_host(dir.path());
-        assert!(blobs_need_verifying(dir.path()));
+    /// The power went with a host at some pid, and after the restart another process has that
+    /// number. The pid being alive says nothing: the marker is of an earlier boot.
+    #[cfg(unix)]
+    #[test]
+    fn a_marker_of_an_earlier_boot_is_a_dead_host_even_when_its_pid_is_alive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hosting = dir.path().join("hosting");
+        let (workspaces, pair) = two_workspaces(dir.path());
+        let stale = plant_host(&hosting, LIVE_PID, Some("t:1000"));
 
-        blobs_verified(dir.path());
-        workspace_opened_by_host(dir.path());
-        assert!(!blobs_need_verifying(dir.path()), "verified once, not on every reopen");
-        EARLIER_HOST_DIED.store(false, std::sync::atomic::Ordering::Release);
+        assert!(settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+
+        assert!(!stale.exists(), "reported once");
+        assert!(
+            pair.iter().all(|workspace| blobs_need_verifying(workspace)),
+            "every workspace the dead host may have served verifies, not only the next one opened"
+        );
+        assert!(!settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+
+        // Verified once, not again on every later look at the markers.
+        blobs_verified(&pair[0]);
+        assert!(!settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+        assert!(!blobs_need_verifying(&pair[0]));
+    }
+
+    /// A marker that names no boot (written before markers did) under a pid no process has is the
+    /// marker of a host that died: it is noticed, once, and a clean stop leaves nothing to notice.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_that_died_is_noticed_once_and_a_clean_stop_is_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hosting = dir.path().join("hosting");
+        let (workspaces, pair) = two_workspaces(dir.path());
+        drop(HostingMarker::begin_in(&hosting, Some(THIS_BOOT)).expect("marker"));
+        assert!(
+            !settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)),
+            "a clean stop retracted the marker"
+        );
+
+        let dead = hosting.join(DEAD_PID.to_string());
+        std::fs::write(&dead, b"").expect("plant");
+        assert!(settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+        assert!(!dead.exists(), "reported once");
+        assert!(pair.iter().all(|workspace| blobs_need_verifying(workspace)));
+        assert!(!settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+    }
+
+    /// A host killed while the machine stayed up cannot have torn a blob: its marker goes and
+    /// nothing is verified.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_that_died_in_this_boot_asks_for_no_verification() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hosting = dir.path().join("hosting");
+        let (workspaces, pair) = two_workspaces(dir.path());
+        let killed = plant_host(&hosting, DEAD_PID, Some(THIS_BOOT));
+
+        assert!(!settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+
+        assert!(!killed.exists(), "the marker of a host that is gone is removed");
+        assert!(pair.iter().all(|workspace| !blobs_need_verifying(workspace)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_host_of_this_boot_keeps_its_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hosting = dir.path().join("hosting");
+        let (workspaces, pair) = two_workspaces(dir.path());
+        let live = plant_host(&hosting, LIVE_PID, Some(THIS_BOOT));
+
+        assert!(!settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+
+        assert!(live.exists());
+        assert!(pair.iter().all(|workspace| !blobs_need_verifying(workspace)));
+    }
+
+    /// The marker of an earlier boot can carry this very pid: the number was handed out again, to
+    /// this process. It is still a dead host's.
+    #[cfg(unix)]
+    #[test]
+    fn a_marker_of_an_earlier_boot_under_this_process_own_pid_is_a_dead_host() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hosting = dir.path().join("hosting");
+        let (workspaces, pair) = two_workspaces(dir.path());
+        plant_host(&hosting, std::process::id(), Some("t:1000"));
+
+        assert!(settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+        assert!(pair.iter().all(|workspace| blobs_need_verifying(workspace)));
+
+        let own = plant_host(&hosting, std::process::id(), Some(THIS_BOOT));
+        assert!(!settle_dead_hosts_in(&hosting, &workspaces, Some(THIS_BOOT)));
+        assert!(own.exists(), "this process's own marker of this boot is left alone");
+    }
+
+    /// With no boot on either side the pid is the only evidence, and a dead one is the worse case.
+    #[test]
+    fn without_a_boot_identity_a_dead_pid_is_read_as_a_machine_that_went_down() {
+        assert_eq!(host_fate(false, None, Some(THIS_BOOT)), HostFate::DiedWithTheMachine);
+        assert_eq!(host_fate(false, Some(THIS_BOOT), None), HostFate::DiedWithTheMachine);
+        assert_eq!(host_fate(true, None, Some(THIS_BOOT)), HostFate::Live);
+        assert_eq!(host_fate(true, Some(THIS_BOOT), None), HostFate::Live);
+        assert_eq!(host_fate(false, Some(THIS_BOOT), Some(THIS_BOOT)), HostFate::DiedAlone);
+        assert_eq!(
+            host_fate(true, Some("t:1"), Some(THIS_BOOT)),
+            HostFate::DiedWithTheMachine
+        );
     }
 }

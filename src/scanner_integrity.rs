@@ -15,6 +15,7 @@ use crate::store::{ScanHealth, Store};
 /// that is behind its file map so the pass rebuilds it, and refuse a volume without room for the
 /// index.
 pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
+    crate::scan_evidence::settle_dead_hosts();
     if let Some(db) = store.index_db.as_ref() {
         db.clear_recoverable_fault();
         if let Some(reason) = db.fatal_fault() {
