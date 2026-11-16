@@ -42,26 +42,36 @@ impl LanceCell {
         if let Some(store) = self.store.get() {
             return Ok(Arc::clone(store));
         }
-        if let Some((at, reason)) = self.failure()
-            && at.elapsed() < RETRY_AFTER
-        {
+        if let Some(reason) = self.recent_failure() {
             return Err(unavailable(&reason));
         }
-        match self.store.get_or_try_init(open).await {
-            Ok(store) => Ok(Arc::clone(store)),
-            Err(reason) => {
-                *self.failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some((Instant::now(), reason.clone()));
-                Err(unavailable(&reason))
-            }
-        }
+        // Initialisers run one at a time, and a call queued behind one that fails runs its own
+        // next: it looks again here, so calls that arrived during a failing open fail with it
+        // instead of each waiting out the same holder in turn. Only an open that ran records a
+        // failure, so a refusal does not extend the window.
+        let opened = self
+            .store
+            .get_or_try_init(|| async {
+                if let Some(reason) = self.recent_failure() {
+                    return Err(reason);
+                }
+                open().await.inspect_err(|reason| {
+                    *self.failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((Instant::now(), reason.clone()));
+                })
+            })
+            .await;
+        opened.map(Arc::clone).map_err(|reason| unavailable(&reason))
     }
 
-    fn failure(&self) -> Option<(Instant, String)> {
+    /// Why the last open failed, when it failed less than [`RETRY_AFTER`] ago.
+    fn recent_failure(&self) -> Option<String> {
         self.failed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < RETRY_AFTER)
+            .map(|(_, reason)| reason.clone())
     }
 }
 
@@ -74,4 +84,38 @@ fn unavailable(reason: &str) -> McpError {
         ),
         None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// Calls that arrive while an open is waiting out a stuck holder queue behind it. When it
+    /// fails they fail with it: none of them opens again and waits out the holder in turn.
+    #[tokio::test(start_paused = true)]
+    async fn calls_queued_behind_a_failing_open_fail_with_it() {
+        let cell = LanceCell::default();
+        let opens = AtomicUsize::new(0);
+        let call = || {
+            cell.get_or_open(|| async {
+                opens.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Err("the open lock is held".to_string())
+            })
+        };
+        let started = tokio::time::Instant::now();
+        let answers = tokio::join!(call(), call(), call(), call());
+        assert!(
+            [answers.0, answers.1, answers.2, answers.3].iter().all(Result::is_err),
+            "every call fails"
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 1, "one open ran for all the calls");
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_secs(30),
+            "no call waited past the one open"
+        );
+    }
 }
