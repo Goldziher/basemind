@@ -293,7 +293,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and drop what repeated per row or echoed the call (ADR-0031 holds a locating tool to 1.5 times the
   shell's tokens). None of them carries `elapsed_us` any more; the CLI times the call itself.
   `code_grep` and `code_refs` list hits under their file (`{"<path>": [hit, ...]}`), with a
-  `column` only where two hits of the page share a line; a grep hit's `symbol` is the enclosing symbol's name, `total_matches` is `total`, and
+  `column` only where the line does not place the hit, decided over the whole result and not the page;
+  a grep hit's `symbol` is the enclosing symbol's name, `total_matches` is `total`, and
   `pattern`, `regex` and `total_files_matched` are gone; a call site writes `callee` and an
   implementation `trait_name` only when it is not the name asked for, and `name`, `match` and
   `module` are no longer echoed. A `code_symbols` row is `path`, `line`, `kind`, `name` and

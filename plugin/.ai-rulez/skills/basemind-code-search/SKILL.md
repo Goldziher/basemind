@@ -99,8 +99,8 @@ code_outline {"path":"src/mcp/tools.rs"}
   every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
   that no indexed code file has is an error (it names `docs_search` when only documents match).
   `skipped_files` counts files that could not be searched. `hits` lists each file once, as
-  `{"<path>": [hit, ...]}`; a hit is `line` (and `column` when another hit of the page is on that
-  line), `text` (the matching line; one over 400 bytes is cut to a window around the match, `…`
+  `{"<path>": [hit, ...]}`; a hit is `line` (and `column` when the file has another match on that
+  line or `text` is clipped), `text` (the matching line; one over 400 bytes is cut to a window around the match, `…`
   marking each cut side) and `symbol` (the name of the innermost enclosing symbol; absent, with
   `stale: true`, for a file edited since it was indexed); `"context":true` adds `context_before` /
   `context_after`. It never caps files, so `total` is exact.
@@ -113,7 +113,7 @@ code_outline {"path":"src/mcp/tools.rs"}
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. `hits` lists
   each file once, as `{"<path>": [hit, ...]}`; a call site is its `line` (and `column` when another
-  hit of the page is on that line), plus `callee` when that is not `name` (a qualified call, a
+  call of the same callee is on that line), plus `callee` when that is not `name` (a qualified call, a
   substring match), and an implementation is its `line` and `impl_type`. Add `path` for one specific
   definition: the response carries that `definition` (`path`, `name`, `kind`, `line`, `column`) and
   either `resolved_total` with `resolved` on the hits it checked (`true`: proven to bind to the

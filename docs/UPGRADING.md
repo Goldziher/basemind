@@ -239,8 +239,8 @@ the response has none. The CLI's `--json` output has the same shapes.
 | Tool | Removed or changed | Now |
 | --- | --- | --- |
 | `code_symbols` | a row's `column` and `match` | a row is `path`, `line`, `kind`, `name`, `signature`; the rank order says how the name matched |
-| `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, and its `column` unless another hit of the page is on its line; `symbol.kind` | `total` (was `total_matches`); `hits` is `{"<path>": [hit, ...]}`; `symbol` is the enclosing symbol's name |
-| `code_refs` | `name` and `match` echoes; a hit's `path`, and its `column` unless another hit of the page is on its line; `callee` equal to `name`; `trait_name` equal to `name` | `hits` is `{"<path>": [hit, ...]}`; `importers` drops its `module` echo |
+| `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, and its `column` unless its file has another match on its line or its `text` is clipped; `symbol.kind` | `total` (was `total_matches`); `hits` is `{"<path>": [hit, ...]}`; `symbol` is the enclosing symbol's name |
+| `code_refs` | `name` and `match` echoes; a hit's `path`, and its `column` unless another call of the same callee is on its line; `callee` equal to `name`; `trait_name` equal to `name` | `hits` is `{"<path>": [hit, ...]}`; `importers` drops its `module` echo |
 | `find_files` | `returned`; a file's `language`, `size_bytes`, `score` | `files` is a list of paths; files git tracks that are not indexed (images, fonts) are listed too |
 | `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes` | `sha` is the first 12 hex digits; `files` is `{"<path>": "<change>"}`; `rev` keeps the full `sha`, `body` and `author_email` |
 | `git_log {path, symbol}` | `path` and `name` echoes; an entry's `short_sha` | an entry's `sha` is the first 12 hex digits |
