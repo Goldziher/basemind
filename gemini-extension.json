@@ -23,28 +23,6 @@
         ]
       }
     ],
-    "PreToolUse": [
-      {
-        "matcher": "Grep|Glob|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${extensionPath}/hooks/run-hook.cmd\" pre-tool-guard",
-            "async": false
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__.*basemind.*__agent_(post|inbox|threads)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${extensionPath}/hooks/run-hook.cmd\" agent-as",
-            "async": false
-          }
-        ]
-      }
-    ],
     "UserPromptSubmit": [
       {
         "hooks": [

@@ -166,6 +166,12 @@ class AgentHookTests(unittest.TestCase):
     def test_inbox_notify_watchdog_leaves_a_daemon_the_cli_started_running(self) -> None:
         self.assert_the_watchdog_spares_the_daemon("inbox-notify")
 
+    def test_agent_as_does_not_start_the_launcher_on_a_host_that_ignores_the_rewrite(self) -> None:
+        for marker in ("CURSOR_PLUGIN_ROOT", "COPILOT_CLI"):
+            result = self.run_hook("agent-as", {"tool_name": "x"}, HOOK_RESULT="{}", **{marker: "1"})
+            self.assertEqual(result.stdout, "", marker)
+            self.assertFalse((self.root / "launcher-args").exists(), marker)
+
     def test_agent_as_is_time_boxed_when_timeout_exists(self) -> None:
         (self.bin / "timeout").write_text('#!/bin/bash\nprintf "%s\\n" "$1" > "$HOME/timeout-arg"\nshift\nexec "$@"\n')
         (self.bin / "timeout").chmod(0o755)
@@ -296,9 +302,10 @@ class AgentAsManifestTests(unittest.TestCase):
         "plugin/hooks/hooks.json",
         "hooks/hooks.json",
         ".codex-plugin/hooks/hooks.json",
-        ".cursor-plugin/hooks/hooks.json",
-        "gemini-extension.json",
     )
+    # Hand-written manifests of hosts whose input rewrite basemind does not apply: the agent tools
+    # act at principal level there (docs/comms-v2.md).
+    WITHOUT_AGENT_AS = (".cursor-plugin/hooks/hooks.json", "gemini-extension.json")
 
     def entries(self, manifest: str) -> list[dict]:
         return json.loads((ROOT / manifest).read_text())["hooks"]["PreToolUse"]
@@ -318,14 +325,13 @@ class AgentAsManifestTests(unittest.TestCase):
             for tool in ("code_outline", "memory_save", "agent_other"):
                 self.assertIsNone(matcher.fullmatch(f"mcp__plugin_basemind_basemind__{tool}"), (manifest, tool))
 
+    def test_hosts_that_cannot_take_the_rewrite_do_not_run_agent_as(self) -> None:
+        for manifest in self.WITHOUT_AGENT_AS:
+            self.assertNotIn("agent-as", (ROOT / manifest).read_text(), manifest)
+        self.assertFalse((ROOT / ".cursor-plugin/hooks/agent-as").exists())
+
     def test_agent_as_ships_wherever_the_hook_scripts_do(self) -> None:
-        for directory in (
-            "plugin/.ai-rulez/hooks",
-            "plugin/hooks",
-            "hooks",
-            ".codex-plugin/hooks",
-            ".cursor-plugin/hooks",
-        ):
+        for directory in ("plugin/.ai-rulez/hooks", "plugin/hooks", "hooks", ".codex-plugin/hooks"):
             self.assertTrue((ROOT / directory / "agent-as").is_file(), directory)
             self.assertTrue(os.access(ROOT / directory / "agent-as", os.X_OK), directory)
 

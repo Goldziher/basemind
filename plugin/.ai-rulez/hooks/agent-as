@@ -51,6 +51,12 @@ run_bounded() (
   exit "$rc"
 )
 
+# Cursor and Copilot, which the launcher names before Claude Code or Codex: the binary rewrites no
+# input for them, so there is no launcher to start.
+if [ -z "${BASEMIND_HOST:-}" ] && { [ -n "${CURSOR_PLUGIN_ROOT:-}" ] || [ -n "${COPILOT_CLI:-}" ]; }; then
+  exit 0
+fi
+
 STDIN_JSON="$(cat 2>/dev/null || true)"
 [ -n "$STDIN_JSON" ] || exit 0
 

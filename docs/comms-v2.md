@@ -162,6 +162,15 @@ Observed live on 2026-11-16 in throwaway repositories. The captures are untracke
   be run (expired API key), so tool-call hooks were not observed.
 - **Not verified.** Cursor, Gemini CLI and Copilot (not installed or not authorised); Claude Code
   interactive permission prompts with an injected input.
+- **Cursor and Gemini CLI, from their documentation only.** Cursor's `preToolUse` (camel case, with
+  matchers such as `MCP:<tool>`) may return `updated_input`; its `beforeMCPExecution` cannot change
+  the input. Gemini CLI's event is `BeforeTool`, its MCP tools are named `mcp_<server>_<tool>`, and
+  `hookSpecificOutput.tool_input` is merged over the arguments. basemind answers neither shape:
+  `agent hook pre-tool-use` names no session for `cursor` or `gemini`, the hand-written Cursor and
+  Gemini manifests carry no agent-as entry, and the agent-as script exits at once under Cursor and
+  Copilot, so on those hosts the agent tools act at principal level unless a call passes `as`. The
+  generated plugin manifests still list agent-as for every host, because ai-rulez renders a plugin
+  hook group for every runtime.
 
 ## Threads and messages
 
