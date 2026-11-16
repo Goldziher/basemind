@@ -1,0 +1,529 @@
+{
+  "bench": "index_read",
+  "schema": 1,
+  "layout": "one index per worktree",
+  "mode": "full",
+  "unix_time": 1794820845,
+  "basemind_version": "0.33.0",
+  "host": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 14
+  },
+  "params": {
+    "files_per_worktree": 900,
+    "languages": ["rust", "typescript", "python"],
+    "helpers_per_file": 6,
+    "calls_per_fn": 5,
+    "hot_callees_per_mille": [
+      {
+        "name": "get",
+        "share": 120
+      },
+      {
+        "name": "dispatch_event",
+        "share": 60
+      },
+      {
+        "name": "acquire_lock",
+        "share": 30
+      },
+      {
+        "name": "get_or_insert",
+        "share": 25
+      },
+      {
+        "name": "record_metric",
+        "share": 15
+      }
+    ],
+    "changed_per_mille": 100,
+    "seed": 1592597989,
+    "page_limit": 100,
+    "cold_targets": 31,
+    "samples": 2000,
+    "warmup": 100
+  },
+  "groups": [
+    {
+      "versions": 1,
+      "worktrees": 1,
+      "paths_per_worktree": 903,
+      "changed_files_per_worktree": [0],
+      "distinct_contents": 903,
+      "index_seconds": 3.7623325,
+      "index_bytes": 20824064,
+      "calls_by_callee_rows": {
+        "get": {
+          "one_index": 5580,
+          "group_sum": 5580,
+          "distinct_content": 5580
+        },
+        "dispatch_event": {
+          "one_index": 2123,
+          "group_sum": 2123,
+          "distinct_content": 2123
+        },
+        "record_metric": {
+          "one_index": 562,
+          "group_sum": 562,
+          "distinct_content": 562
+        }
+      },
+      "ops": [
+        {
+          "op": "references/substring/hot",
+          "query": "get",
+          "p50_us": 311.833,
+          "p95_us": 744.875,
+          "mean_us": 373.775,
+          "min_us": 304.375,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/hot",
+          "query": "get",
+          "p50_us": 317.5,
+          "p95_us": 899.25,
+          "mean_us": 418.764,
+          "min_us": 291.167,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/warm",
+          "query": "record_metric",
+          "p50_us": 127.833,
+          "p95_us": 376.375,
+          "mean_us": 193.863,
+          "min_us": 116.833,
+          "samples": 2000,
+          "rows_per_read": 662.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/cold",
+          "query": "helper_<file>_0 (31 targets)",
+          "p50_us": 6.75,
+          "p95_us": 17.333,
+          "mean_us": 14.367,
+          "min_us": 3.083,
+          "samples": 2000,
+          "rows_per_read": 6.06,
+          "hits_per_read": 3.03
+        },
+        {
+          "op": "callers/hot",
+          "query": "dispatch_event in src/rs/core/events.rs",
+          "p50_us": 340.875,
+          "p95_us": 946.583,
+          "mean_us": 465.043,
+          "min_us": 311.0,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "callers/cold",
+          "query": "helper_<file>_0 in its file (31 targets)",
+          "p50_us": 6.167,
+          "p95_us": 17.958,
+          "mean_us": 9.321,
+          "min_us": 2.958,
+          "samples": 2000,
+          "rows_per_read": 19.669,
+          "hits_per_read": 3.03
+        },
+        {
+          "op": "implementations/hot",
+          "query": "Handler",
+          "p50_us": 163.666,
+          "p95_us": 170.917,
+          "mean_us": 176.481,
+          "min_us": 149.292,
+          "samples": 2000,
+          "rows_per_read": 1125.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "implementations/warm",
+          "query": "Renderable",
+          "p50_us": 149.333,
+          "p95_us": 156.667,
+          "mean_us": 176.44,
+          "min_us": 136.292,
+          "samples": 2000,
+          "rows_per_read": 1125.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "symbol_exact/hot",
+          "query": "process_widget",
+          "p50_us": 14.875,
+          "p95_us": 15.333,
+          "mean_us": 14.634,
+          "min_us": 13.541,
+          "samples": 2000,
+          "rows_per_read": 100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "symbol_exact/cold",
+          "query": "build_widget_<file> (31 targets)",
+          "p50_us": 0.667,
+          "p95_us": 0.75,
+          "mean_us": 0.683,
+          "min_us": 0.541,
+          "samples": 2000,
+          "rows_per_read": 1.0,
+          "hits_per_read": 1.0
+        },
+        {
+          "op": "grep_bloom/rare",
+          "query": "rare_token_zebra_quartz",
+          "p50_us": 3884.5,
+          "p95_us": 17966.625,
+          "mean_us": 6039.219,
+          "min_us": 792.708,
+          "samples": 2000,
+          "rows_per_read": 903.0,
+          "hits_per_read": 9.0
+        },
+        {
+          "op": "grep_bloom/absent",
+          "query": "absent_token_xylophone",
+          "p50_us": 4108.917,
+          "p95_us": 27957.209,
+          "mean_us": 7927.311,
+          "min_us": 644.792,
+          "samples": 2000,
+          "rows_per_read": 903.0,
+          "hits_per_read": 0.0
+        }
+      ]
+    },
+    {
+      "versions": 3,
+      "worktrees": 3,
+      "paths_per_worktree": 903,
+      "changed_files_per_worktree": [0, 89, 94],
+      "distinct_contents": 1086,
+      "index_seconds": 94.281410708,
+      "index_bytes": 62734336,
+      "calls_by_callee_rows": {
+        "get": {
+          "one_index": 5580,
+          "group_sum": 16923,
+          "distinct_content": 6954
+        },
+        "dispatch_event": {
+          "one_index": 2123,
+          "group_sum": 6369,
+          "distinct_content": 2549
+        },
+        "record_metric": {
+          "one_index": 562,
+          "group_sum": 1686,
+          "distinct_content": 669
+        }
+      },
+      "ops": [
+        {
+          "op": "references/substring/hot",
+          "query": "get",
+          "p50_us": 353.208,
+          "p95_us": 1857.792,
+          "mean_us": 677.824,
+          "min_us": 277.5,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/hot",
+          "query": "get",
+          "p50_us": 344.542,
+          "p95_us": 1217.709,
+          "mean_us": 491.151,
+          "min_us": 278.042,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/warm",
+          "query": "record_metric",
+          "p50_us": 119.167,
+          "p95_us": 364.375,
+          "mean_us": 162.995,
+          "min_us": 108.75,
+          "samples": 2000,
+          "rows_per_read": 662.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/cold",
+          "query": "helper_<file>_0 (31 targets)",
+          "p50_us": 6.334,
+          "p95_us": 17.833,
+          "mean_us": 8.636,
+          "min_us": 2.792,
+          "samples": 2000,
+          "rows_per_read": 6.06,
+          "hits_per_read": 3.03
+        },
+        {
+          "op": "callers/hot",
+          "query": "dispatch_event in src/rs/core/events.rs",
+          "p50_us": 393.25,
+          "p95_us": 1176.583,
+          "mean_us": 566.176,
+          "min_us": 294.125,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "callers/cold",
+          "query": "helper_<file>_0 in its file (31 targets)",
+          "p50_us": 8.0,
+          "p95_us": 33.042,
+          "mean_us": 13.112,
+          "min_us": 2.792,
+          "samples": 2000,
+          "rows_per_read": 19.691,
+          "hits_per_read": 3.03
+        },
+        {
+          "op": "implementations/hot",
+          "query": "Handler",
+          "p50_us": 153.834,
+          "p95_us": 463.542,
+          "mean_us": 197.991,
+          "min_us": 139.208,
+          "samples": 2000,
+          "rows_per_read": 1125.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "implementations/warm",
+          "query": "Renderable",
+          "p50_us": 136.291,
+          "p95_us": 261.542,
+          "mean_us": 155.072,
+          "min_us": 129.875,
+          "samples": 2000,
+          "rows_per_read": 1125.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "symbol_exact/hot",
+          "query": "process_widget",
+          "p50_us": 12.333,
+          "p95_us": 12.959,
+          "mean_us": 12.774,
+          "min_us": 11.583,
+          "samples": 2000,
+          "rows_per_read": 100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "symbol_exact/cold",
+          "query": "build_widget_<file> (31 targets)",
+          "p50_us": 0.583,
+          "p95_us": 0.667,
+          "mean_us": 0.579,
+          "min_us": 0.458,
+          "samples": 2000,
+          "rows_per_read": 1.0,
+          "hits_per_read": 1.0
+        },
+        {
+          "op": "grep_bloom/rare",
+          "query": "rare_token_zebra_quartz",
+          "p50_us": 2064.041,
+          "p95_us": 9387.958,
+          "mean_us": 3234.259,
+          "min_us": 714.542,
+          "samples": 2000,
+          "rows_per_read": 903.0,
+          "hits_per_read": 9.0
+        },
+        {
+          "op": "grep_bloom/absent",
+          "query": "absent_token_xylophone",
+          "p50_us": 2861.625,
+          "p95_us": 9784.209,
+          "mean_us": 3878.775,
+          "min_us": 660.042,
+          "samples": 2000,
+          "rows_per_read": 903.0,
+          "hits_per_read": 0.0
+        }
+      ]
+    },
+    {
+      "versions": 10,
+      "worktrees": 10,
+      "paths_per_worktree": 903,
+      "changed_files_per_worktree": [0, 89, 94, 70, 83, 95, 104, 86, 95, 91],
+      "distinct_contents": 1710,
+      "index_seconds": 34.067643459,
+      "index_bytes": 209338368,
+      "calls_by_callee_rows": {
+        "get": {
+          "one_index": 5580,
+          "group_sum": 56607,
+          "distinct_content": 11459
+        },
+        "dispatch_event": {
+          "one_index": 2123,
+          "group_sum": 21230,
+          "distinct_content": 4035
+        },
+        "record_metric": {
+          "one_index": 562,
+          "group_sum": 5620,
+          "distinct_content": 1073
+        }
+      },
+      "ops": [
+        {
+          "op": "references/substring/hot",
+          "query": "get",
+          "p50_us": 373.917,
+          "p95_us": 463.5,
+          "mean_us": 400.502,
+          "min_us": 313.875,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/hot",
+          "query": "get",
+          "p50_us": 395.458,
+          "p95_us": 484.0,
+          "mean_us": 415.11,
+          "min_us": 343.041,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/warm",
+          "query": "record_metric",
+          "p50_us": 151.125,
+          "p95_us": 469.542,
+          "mean_us": 187.237,
+          "min_us": 121.083,
+          "samples": 2000,
+          "rows_per_read": 662.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "references/exact/cold",
+          "query": "helper_<file>_0 (31 targets)",
+          "p50_us": 7.375,
+          "p95_us": 9.875,
+          "mean_us": 7.437,
+          "min_us": 2.75,
+          "samples": 2000,
+          "rows_per_read": 6.06,
+          "hits_per_read": 3.03
+        },
+        {
+          "op": "callers/hot",
+          "query": "dispatch_event in src/rs/core/events.rs",
+          "p50_us": 508.916,
+          "p95_us": 663.25,
+          "mean_us": 533.778,
+          "min_us": 426.625,
+          "samples": 2000,
+          "rows_per_read": 2100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "callers/cold",
+          "query": "helper_<file>_0 in its file (31 targets)",
+          "p50_us": 9.375,
+          "p95_us": 24.0,
+          "mean_us": 13.064,
+          "min_us": 2.791,
+          "samples": 2000,
+          "rows_per_read": 19.705,
+          "hits_per_read": 3.03
+        },
+        {
+          "op": "implementations/hot",
+          "query": "Handler",
+          "p50_us": 203.416,
+          "p95_us": 331.083,
+          "mean_us": 220.714,
+          "min_us": 153.125,
+          "samples": 2000,
+          "rows_per_read": 1125.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "implementations/warm",
+          "query": "Renderable",
+          "p50_us": 192.166,
+          "p95_us": 538.291,
+          "mean_us": 234.15,
+          "min_us": 136.583,
+          "samples": 2000,
+          "rows_per_read": 1125.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "symbol_exact/hot",
+          "query": "process_widget",
+          "p50_us": 13.75,
+          "p95_us": 14.209,
+          "mean_us": 14.836,
+          "min_us": 13.0,
+          "samples": 2000,
+          "rows_per_read": 100.0,
+          "hits_per_read": 100.0
+        },
+        {
+          "op": "symbol_exact/cold",
+          "query": "build_widget_<file> (31 targets)",
+          "p50_us": 0.708,
+          "p95_us": 1.125,
+          "mean_us": 0.75,
+          "min_us": 0.5,
+          "samples": 2000,
+          "rows_per_read": 1.0,
+          "hits_per_read": 1.0
+        },
+        {
+          "op": "grep_bloom/rare",
+          "query": "rare_token_zebra_quartz",
+          "p50_us": 5957.208,
+          "p95_us": 43703.5,
+          "mean_us": 12750.047,
+          "min_us": 705.25,
+          "samples": 2000,
+          "rows_per_read": 903.0,
+          "hits_per_read": 9.0
+        },
+        {
+          "op": "grep_bloom/absent",
+          "query": "absent_token_xylophone",
+          "p50_us": 4236.083,
+          "p95_us": 42161.584,
+          "mean_us": 11007.69,
+          "min_us": 685.25,
+          "samples": 2000,
+          "rows_per_read": 903.0,
+          "hits_per_read": 0.0
+        }
+      ]
+    }
+  ]
+}
