@@ -296,9 +296,16 @@ impl Serve {
         }
     }
 
+    /// Send `initialize` as a host does: once, with id 1.
     fn initialize(&mut self) {
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
-        writeln!(self.stdin, "{request}").expect("write initialize");
+        self.send(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+        );
+    }
+
+    /// Write one line to the relay, as the host does.
+    fn send(&mut self, line: &str) {
+        writeln!(self.stdin, "{line}").expect("write to basemind serve");
         self.stdin.flush().expect("flush");
     }
 
@@ -366,7 +373,8 @@ fn serve_started_under_a_newer_daemon_answers_initialize_and_exits_by_itself() {
 }
 
 /// The same start under an older daemon that is busy: nothing can be done yet, and something can
-/// later. The host is told why after the hold window, and the relay stays up to retry.
+/// later. After the hold window the session comes up from this binary, a tool call says why it
+/// cannot be served, and the relay stays up to retry.
 #[test]
 fn serve_started_under_an_older_daemon_that_will_not_stop_says_so_and_keeps_running() {
     /// The relay's hold window, less the slack of timing it from outside the process.
@@ -386,19 +394,26 @@ fn serve_started_under_an_older_daemon_that_will_not_stop_says_so_and_keeps_runn
     let started = std::time::Instant::now();
     serve.initialize();
 
-    let answer = serve.answer(Duration::from_secs(90));
-    assert_eq!(answer["id"], 1, "{answer}");
+    let initialized = serve.answer(Duration::from_secs(90));
+    assert_eq!(initialized["id"], 1, "{initialized}");
+    assert!(
+        initialized["result"]["capabilities"]["tools"].is_object(),
+        "initialize is answered, not refused: {initialized}"
+    );
+    assert!(
+        started.elapsed() >= HELD_AT_LEAST,
+        "initialize is held for the daemon to become reachable before this binary answers it: {:?}",
+        started.elapsed()
+    );
+    serve.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"index_status","arguments":{}}}"#);
+    let answer = serve.answer(Duration::from_secs(10));
+    assert_eq!(answer["id"], 2, "{answer}");
     let message = answer["error"]["message"].as_str().expect("an error message");
     assert!(
         message.contains("is still running and did not stop") && message.contains("basemind comms stop"),
         "the reason of the latest attempt, with the way out: {answer}"
     );
     assert_eq!(answer["error"]["data"]["retryable"], true, "{answer}");
-    assert!(
-        started.elapsed() >= HELD_AT_LEAST,
-        "initialize is held for the daemon to become reachable before it is refused: {:?}",
-        started.elapsed()
-    );
     assert!(
         serve.exits_within(Duration::from_secs(1)).is_none(),
         "the relay keeps running and retrying"
@@ -800,11 +815,12 @@ fn hold_index_lock(machine: &Machine, root: &Path, version: &str) -> std::fs::Fi
 }
 
 /// The upgrade case: a session of another basemind version is open in the repository, so that
-/// version's daemon holds the index lock when this build's session starts. The session must not
-/// end. The host is told who holds the index and what to do, and once the holder lets go the same
-/// `basemind serve` process connects and answers, with no restart by the host.
+/// version's daemon holds the index lock when this build's session starts. The host sends
+/// `initialize` once and sees a server that came up: its tools are listed, and a tool call says
+/// who holds the index and what to do. Once the holder lets go the same `basemind serve` process
+/// connects, tells the host the tool list changed, and serves the calls.
 #[test]
-fn serve_started_while_another_version_holds_the_index_waits_and_connects_when_it_is_released() {
+fn serve_started_while_another_version_holds_the_index_is_usable_and_connects_when_it_is_released() {
     const HELD_AT_LEAST: Duration = Duration::from_secs(8);
     let machine = Machine::new();
     let root = machine._tmp.path().join("workspace");
@@ -814,65 +830,62 @@ fn serve_started_while_another_version_holds_the_index_waits_and_connects_when_i
     let mut serve = Serve::start(&machine);
     let started = std::time::Instant::now();
     serve.initialize();
-
-    let answer = serve.answer(Duration::from_secs(120));
-    assert_eq!(answer["id"], 1, "{answer}");
-    let message = answer["error"]["message"].as_str().expect("an error message");
-    let holder = format!("the basemind v0.33.0 daemon, pid {}", std::process::id());
-    assert!(
-        message.contains("another basemind holds this workspace's index")
-            && message.contains(&holder)
-            && message.contains("Close that version's sessions; its daemon exits when idle"),
-        "the reason names the holder and the way out: {answer}"
+    let initialized = serve.answer(Duration::from_secs(120));
+    assert_eq!(initialized["id"], 1, "{initialized}");
+    assert_eq!(
+        initialized["result"]["capabilities"]["tools"]["listChanged"], true,
+        "initialize is answered, with a tool list that can change: {initialized}"
     );
-    assert_eq!(answer["error"]["data"]["retryable"], true, "{answer}");
     assert!(
         started.elapsed() >= HELD_AT_LEAST,
-        "initialize is held for the index to come free before it is refused: {:?}",
+        "initialize is held for the index to come free before this binary answers it: {:?}",
         started.elapsed()
     );
+    serve.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+
+    serve.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+    let listed = serve.answer(Duration::from_secs(10));
+    assert_eq!(listed["id"], 2, "{listed}");
+    assert!(
+        listed["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "index_status")),
+        "the tools are listed while the index is held: {listed}"
+    );
+
+    let call = |id: u64| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"index_status","arguments":{{}}}}}}"#
+        )
+    };
+    serve.send(&call(3));
+    let refused = serve.answer(Duration::from_secs(10));
+    assert_eq!(refused["id"], 3, "{refused}");
+    let message = refused["error"]["message"].as_str().expect("an error message");
+    let holder = format!("the basemind v0.33.0 daemon, pid {}", std::process::id());
+    assert!(
+        message.contains("another basemind holds this workspace's index") && message.contains(&holder),
+        "a tool call names the holder: {refused}"
+    );
+    assert_eq!(refused["error"]["data"]["retryable"], true, "{refused}");
     assert!(
         serve.exits_within(Duration::from_secs(1)).is_none(),
         "a locked workspace does not end the session"
     );
 
     drop(held);
-    let deadline = std::time::Instant::now() + Duration::from_secs(180);
-    let mut id = 1u64;
-    loop {
-        id += 1;
-        writeln!(
-            serve.stdin,
-            r#"{{"jsonrpc":"2.0","id":{id},"method":"initialize","params":{{"protocolVersion":"2025-03-26","capabilities":{{}},"clientInfo":{{"name":"test","version":"0"}}}}}}"#
-        )
-        .expect("write initialize");
-        serve.stdin.flush().expect("flush");
-        let answer = serve.answer(Duration::from_secs(120));
-        assert_eq!(answer["id"], id, "{answer}");
-        if answer.get("result").is_some() {
-            break;
-        }
-        assert_eq!(answer["error"]["data"]["retryable"], true, "{answer}");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the relay must connect once the index is free: {answer}"
-        );
-        std::thread::sleep(Duration::from_secs(1));
-    }
-    writeln!(
-        serve.stdin,
-        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
-    )
-    .expect("write initialized");
-    writeln!(serve.stdin, r#"{{"jsonrpc":"2.0","id":9000,"method":"tools/list"}}"#).expect("write tools/list");
-    serve.stdin.flush().expect("flush");
-    let listed = serve.answer(Duration::from_secs(60));
-    assert_eq!(listed["id"], 9000, "{listed}");
+    let changed = serve.answer(Duration::from_secs(180));
+    assert_eq!(
+        changed,
+        serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }),
+        "once the index is free the relay connects and says so; initialize is not answered again"
+    );
+    serve.send(&call(4));
+    let served = serve.answer(Duration::from_secs(60));
+    assert_eq!(served["id"], 4, "{served}");
     assert!(
-        listed["result"]["tools"]
-            .as_array()
-            .is_some_and(|tools| !tools.is_empty()),
-        "the same process serves the session: {listed}"
+        served.get("result").is_some(),
+        "the same process serves the session from the daemon: {served}"
     );
 
     drop(serve);

@@ -218,50 +218,57 @@ impl ServerHandler for BasemindServer {
     }
 
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_prompts()
-                .enable_resources()
-                .enable_completions()
-                .enable_tasks()
-                .build(),
-        )
-        // Hosts cap this text (Claude Code at 4,096 chars) and truncate from the END without
-        // telling the agent, so it is ordered by what must survive: what basemind is, the tools for
-        // navigating code, then history, documents, memory and, last, optional coordination.
-        // `instructions_stay_under_the_client_ceiling` enforces the cap.
-        .with_instructions(
-            "basemind is this repository's indexed context layer: a tree-sitter code map, git history at symbol \
-             resolution, document search and shared memory. Its tools are always loaded; call them \
-             directly, before shell `rg`/`grep`/`find`/`git` and before reading whole files. They \
-             return paths, 1-based line numbers and signatures, so they cost a fraction of the tokens of \
-             reading source.\n\
-             Code:\n\
-             - what is in a file: code_outline {\"path\":\"src/store.rs\"}, then code_read \
-             {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for only the body you need\n\
-             - where is X defined: code_symbols {\"name\":\"open_store\"}\n\
-             - what calls / implements / imports X: code_refs {\"name\":\"open_store\"}\n\
-             - find a string or comment: code_grep {\"pattern\":\"cache_root(\"} (literal unless \
-             \"regex\":true)\n\
-             - find code by what it does: code_search {\"query\":\"retry a failed upload\"}\n\
-             - find a file by name: find_files {\"query\":\"readme\"}\n\
-             History: git_log {} (recent commits; add path, query, author, symbol or rev), \
-             git_blame {\"path\":\"src/store.rs\",\"symbol\":\"open\"}, git_diff {} (working-tree status; \
-             add path, from, to).\n\
-             Documents (markdown, PDFs, config; the code tools cover code only): docs_search \
-             {\"query\":\"how releases are versioned\"}.\n\
-             Memory shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"}, \
-             memory_search {\"query\":\"…\"}.\n\
-             Index: index_status {} when a result is unexpectedly empty; index_rescan {} after edits or \
-             when a tool says the index is empty.\n\
-             Conventions: paths are repository-relative with forward slashes; line and end_line are \
-             1-based and inclusive; lists take limit and cursor and return next_cursor; a list trimmed \
-             to its token budget sets budgeted (raise max_tokens or follow next_cursor); a failure is a \
-             tool result with isError naming the fix; a notice field means the result is incomplete \
-             and says why. An unknown argument is rejected, never ignored.\n\
-             Only when collaborating with other agents in this repository: the agents tool (mode inbox, \
-             thread_list, message, post) carries scoped threads. Skip it when working alone.",
-        )
+        server_config()
     }
+}
+
+/// What the server says about itself in answer to `initialize`. It depends on nothing a workspace
+/// holds, so the relay can give the same answer while no daemon is reachable
+/// (see [`super::offline`]).
+pub(super) fn server_config() -> ServerConfig {
+    ServerConfig::new(
+        ServerCapabilities::builder()
+            .enable_tools()
+            .enable_prompts()
+            .enable_resources()
+            .enable_completions()
+            .enable_tasks()
+            .build(),
+    )
+    // Hosts cap this text (Claude Code at 4,096 chars) and truncate from the END without
+    // telling the agent, so it is ordered by what must survive: what basemind is, the tools for
+    // navigating code, then history, documents, memory and, last, optional coordination.
+    // `instructions_stay_under_the_client_ceiling` enforces the cap.
+    .with_instructions(
+        "basemind is this repository's indexed context layer: a tree-sitter code map, git history at symbol \
+         resolution, document search and shared memory. Its tools are always loaded; call them \
+         directly, before shell `rg`/`grep`/`find`/`git` and before reading whole files. They \
+         return paths, 1-based line numbers and signatures, so they cost a fraction of the tokens of \
+         reading source.\n\
+         Code:\n\
+         - what is in a file: code_outline {\"path\":\"src/store.rs\"}, then code_read \
+         {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for only the body you need\n\
+         - where is X defined: code_symbols {\"name\":\"open_store\"}\n\
+         - what calls / implements / imports X: code_refs {\"name\":\"open_store\"}\n\
+         - find a string or comment: code_grep {\"pattern\":\"cache_root(\"} (literal unless \
+         \"regex\":true)\n\
+         - find code by what it does: code_search {\"query\":\"retry a failed upload\"}\n\
+         - find a file by name: find_files {\"query\":\"readme\"}\n\
+         History: git_log {} (recent commits; add path, query, author, symbol or rev), \
+         git_blame {\"path\":\"src/store.rs\",\"symbol\":\"open\"}, git_diff {} (working-tree status; \
+         add path, from, to).\n\
+         Documents (markdown, PDFs, config; the code tools cover code only): docs_search \
+         {\"query\":\"how releases are versioned\"}.\n\
+         Memory shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"}, \
+         memory_search {\"query\":\"…\"}.\n\
+         Index: index_status {} when a result is unexpectedly empty; index_rescan {} after edits or \
+         when a tool says the index is empty.\n\
+         Conventions: paths are repository-relative with forward slashes; line and end_line are \
+         1-based and inclusive; lists take limit and cursor and return next_cursor; a list trimmed \
+         to its token budget sets budgeted (raise max_tokens or follow next_cursor); a failure is a \
+         tool result with isError naming the fix; a notice field means the result is incomplete \
+         and says why. An unknown argument is rejected, never ignored.\n\
+         Only when collaborating with other agents in this repository: the agents tool (mode inbox, \
+         thread_list, message, post) carries scoped threads. Skip it when working alone.",
+    )
 }

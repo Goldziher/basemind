@@ -24,6 +24,7 @@ include = [
   "!/src/comms/singleton_tests.rs",
   "!/src/comms/singleton_takeover_tests.rs",
   "!/src/stdio_relay_tests.rs",
+  "!/src/stdio_relay_offline_tests.rs",
   "!/src/lance/tests.rs",
   "!/src/mcp/helpers_calls_scan_tests.rs",
   "!/src/mcp/index_route_tests.rs",

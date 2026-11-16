@@ -363,6 +363,23 @@ enum Step {
     Fail(ReconnectFailure, &'static str),
     /// The attempt never completes, as one waiting on a daemon that neither answers nor goes.
     Hang,
+    /// The attempt takes this long, as a takeover or a daemon spawn does, and then ends as the
+    /// inner step.
+    After(Duration, Box<Step>),
+}
+
+impl Step {
+    fn attempt(self) -> Attempt {
+        match self {
+            Self::Backend(stream) => Box::pin(std::future::ready(Ok(stream))),
+            Self::Fail(failure, reason) => Box::pin(std::future::ready(Err(Refusal(failure, reason)))),
+            Self::Hang => Box::pin(std::future::pending()),
+            Self::After(wait, then) => Box::pin(async move {
+                tokio::time::sleep(wait).await;
+                then.attempt().await
+            }),
+        }
+    }
 }
 
 type Attempt = std::pin::Pin<Box<dyn Future<Output = Result<tokio::io::DuplexStream, Refusal>> + Send>>;
@@ -393,13 +410,7 @@ impl Session {
                     .lock()
                     .expect("attempts lock")
                     .push(tokio::time::Instant::now());
-                let attempt: Attempt = match steps.pop_front() {
-                    Some(Step::Backend(stream)) => Box::pin(std::future::ready(Ok(stream))),
-                    Some(Step::Fail(failure, reason)) => Box::pin(std::future::ready(Err(Refusal(failure, reason)))),
-                    Some(Step::Hang) => Box::pin(std::future::pending()),
-                    None => Box::pin(std::future::ready(Err(Refusal(then.0, then.1)))),
-                };
-                attempt
+                steps.pop_front().unwrap_or(Step::Fail(then.0, then.1)).attempt()
             },
             None,
         ));
@@ -550,59 +561,12 @@ async fn a_session_blocked_at_start_comes_up_by_itself_once_the_daemon_is_reacha
     assert_eq!(session.attempt_count(), 4);
 }
 
-/// The same start, but the daemon stays past the hold window. `initialize` is then answered with
-/// the retryable reason, the relay keeps retrying, and a later `initialize` goes through.
-#[tokio::test(start_paused = true)]
-async fn a_session_blocked_past_the_hold_window_refuses_initialize_and_keeps_retrying() {
-    const BLOCKED_ATTEMPTS: usize = 8;
-    let (reachable, mut backend) = backend();
-    let mut steps = blocked(BLOCKED_ATTEMPTS, WONT_STOP);
-    steps.push(reachable);
-    let mut session = Session::start(steps, (ReconnectFailure::Fatal, "unreachable step"));
-    session.send(initialize_line()).await;
-
-    let refused = session.read().await;
-    assert_eq!(refused["id"], serde_json::json!(1));
-    assert_eq!(refused["error"]["code"], BACKEND_UNAVAILABLE_CODE, "{refused}");
-    assert!(
-        refused["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains(WONT_STOP),
-        "{refused}"
-    );
-    assert_eq!(refused["error"]["data"]["retryable"], true);
-    assert!(
-        session.elapsed() >= HOLD_WINDOW,
-        "held for the window first: {:?}",
-        session.elapsed()
-    );
-
-    while session.attempt_count() <= BLOCKED_ATTEMPTS {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-    let again = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"initialize\",\"params\":{}}\n";
-    session.send(again.to_owned()).await;
-    assert_eq!(
-        backend_reads(&mut backend).await,
-        again,
-        "the refused initialize is not replayed"
-    );
-    backend
-        .write_all(response_line(7).as_bytes())
-        .await
-        .expect("initialize response");
-    let answer = session.read().await;
-    assert_eq!(answer["id"], serde_json::json!(7));
-    assert!(answer.get("result").is_some(), "{answer}");
-}
-
 /// A daemon that cannot be reached at all is retried for good, but not silently: once the hold
 /// window has passed the host is told why.
 #[tokio::test(start_paused = true)]
 async fn a_backend_that_stays_away_answers_requests_after_the_hold_window() {
     let mut session = Session::start(Vec::new(), (ReconnectFailure::Transient, REFUSED));
-    session.send(initialize_line()).await;
+    session.send(request_line(1)).await;
 
     let refused = session.read().await;
     assert_eq!(refused["id"], serde_json::json!(1));
@@ -620,41 +584,6 @@ async fn a_backend_that_stays_away_answers_requests_after_the_hold_window() {
     assert!(
         gaps.iter().all(|gap| *gap <= MAX_RECONNECT_DELAY),
         "a restarting backend is retried at the short back-off: {gaps:?}"
-    );
-}
-
-/// One connection attempt can outlast the hold window by itself: a takeover waits out a daemon's
-/// exit and then a spawn. The request is answered when its window ends all the same, not when the
-/// attempt finally fails.
-#[tokio::test(start_paused = true)]
-async fn a_request_is_answered_when_its_hold_window_ends_though_the_first_attempt_is_still_running() {
-    let mut session = Session::start(vec![Step::Hang], (ReconnectFailure::Fatal, "unreachable step"));
-    session.send(initialize_line()).await;
-
-    let refused = session.read().await;
-    assert_eq!(refused["id"], serde_json::json!(1));
-    assert_eq!(refused["error"]["code"], BACKEND_UNAVAILABLE_CODE, "{refused}");
-    assert_eq!(refused["error"]["data"]["retryable"], true);
-    assert!(
-        refused["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains(NOT_REACHED_YET),
-        "{refused}"
-    );
-    let waited = session.elapsed();
-    assert!(
-        waited >= HOLD_WINDOW && waited < HOLD_WINDOW + Duration::from_secs(1),
-        "the window runs from the request's arrival: {waited:?}"
-    );
-    assert_eq!(session.attempt_count(), 1, "the first attempt is still the only one");
-
-    session.send(request_line(2)).await;
-    let next = session.read().await;
-    assert_eq!(next["id"], serde_json::json!(2));
-    assert!(
-        session.elapsed() < HOLD_WINDOW + Duration::from_secs(1),
-        "once the window has ended a request is answered as it arrives"
     );
 }
 
@@ -843,6 +772,9 @@ async fn an_initialize_in_flight_is_answered_by_the_replacement_backend_as_a_who
     assert_eq!(answer["id"], serde_json::json!(1));
     assert!(answer.get("result").is_some(), "{answer}");
 }
+
+#[path = "stdio_relay_offline_tests.rs"]
+mod offline;
 
 #[test]
 fn stop_may_be_asked_until_one_is_sent_and_then_once_per_interval() {

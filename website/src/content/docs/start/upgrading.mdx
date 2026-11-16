@@ -158,16 +158,19 @@ directory, so its name changes too.
   side by side is a state to pass through during an upgrade, not one to work in on the same
   repository.
 - **What a session shows while another version holds the repository.** With a 0.33 session still
-  open in a repository, a session of the newer version started there keeps running and has no
-  tools yet. Ten seconds after its first request, that request and every later one is answered
-  with the retryable error `backend_unavailable: another basemind holds this workspace's index
-  (the basemind v0.33.0 daemon, pid 4242). Close that version's sessions; its daemon exits when
-  idle, and this session then connects by itself` (JSON-RPC code `-32003`). The parentheses name
-  the lock's holder: a daemon by the version it registered under, any other process by its
-  command (`` `basemind scan`, pid 4242 ``), and they are left out when the lock records nobody.
-  Closing the old version's sessions fixes it: that daemon exits ten minutes after its last
-  client, or at once on that version's `basemind comms stop`, and the waiting session connects on
-  its next retry, at most a minute later, without being restarted by the host.
+  open in a repository, a session of the newer version started there comes up without an index.
+  Its `initialize` waits ten seconds for the index to come free and is then answered by
+  `basemind serve` itself, so the host shows the server as connected and lists its tools. Each
+  tool call is answered with the retryable error `backend_unavailable: another basemind holds
+  this workspace's index (the basemind v0.33.0 daemon, pid 4242). Close that version's sessions;
+  its daemon exits when idle, and this session then connects by itself` (JSON-RPC code `-32003`);
+  so are requests for resources and prompts. The parentheses name the lock's holder: a daemon by
+  the version it registered under, any other process by its command
+  (`` `basemind scan`, pid 4242 ``), and they are left out when the lock records nobody. Closing
+  the old version's sessions fixes it: that daemon exits ten minutes after its last client, or at
+  once on that version's `basemind comms stop`. The waiting session connects on its next retry,
+  at most a minute later, without being restarted by the host, and sends
+  `notifications/tools/list_changed`.
 - The comms store is not carried over: threads, messages and the agent roster start empty in the new
   generation. Agents on a 0.33 binary and agents on a newer one do not see each other's threads.
 - The old daemon exits when its sessions end. Its files (`comms.sock`, `daemon.lock`, `daemon.pid`,

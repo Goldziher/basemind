@@ -901,8 +901,11 @@ used, or, when it is newer and speaks another protocol, reported (`update this b
 one is asked to stop and, if it refuses because it is serving other sessions, is used when the
 protocol matches and reported otherwise; until it goes, clients of the newer build on another
 protocol have no daemon, and a `basemind serve` relay, at session start as after a restart, holds
-requests for ten seconds and then answers them with that error while it retries with a growing
-back-off. A daemon that closed its socket gets the whole exit window to
+requests for ten seconds (longer while a connection attempt that has not failed is running) and
+then answers the host itself while it retries with a growing back-off: `initialize`, `ping` and
+`tools/list` from the binary (`src/mcp/offline.rs`), any other request with that error. Once it
+connects it replays the host's `initialize` to the daemon and sends
+`notifications/tools/list_changed`. A daemon that closed its socket gets the whole exit window to
 leave. SIGTERM and SIGKILL are reserved for a process still there after it, silent to `Stop` and
 `Ping` when asked once more, that the generation's `daemon.pid` names at that moment. `comms stop`
 and `comms stop --all` reclaim a daemon by the same steps and the same function. The full table is

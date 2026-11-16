@@ -72,6 +72,7 @@ mod memory;
 pub(crate) mod memory_ops;
 pub mod mode;
 mod notifications;
+pub mod offline;
 mod prompts;
 pub mod replay;
 mod resources;

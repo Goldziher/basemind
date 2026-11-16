@@ -304,12 +304,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   view the daemon does not host, a root it refuses to index. Pending and following requests,
   `initialize` included, are answered with the reason and the process exits non-zero without
   waiting for the host to close its pipe. Anything else is retried. A request waits ten seconds,
-  counted from its arrival or from the loss of the daemon it was sent to: those in flight that are
-  safe to replay are re-sent if a daemon arrives, as after a restart, and those that arrived
-  meanwhile are forwarded. After that they are answered with the retryable reason while the
-  retries go on, so a session that started under a busy older daemon comes up by itself once that
-  daemon leaves. The host's pipe is read throughout, so `basemind serve` exits as soon as the host
-  closes it, also in the middle of a connection attempt. An older daemon that will not stop, the
+  counted from its arrival or from the loss of the daemon it was sent to, and longer while a
+  connection attempt that has not failed is still running (a daemon being started or an older one
+  making way), up to ninety seconds from that attempt's start: those in flight that are safe to
+  replay are re-sent if a daemon arrives, as after a restart, and those that arrived meanwhile are
+  forwarded. After that `basemind serve` answers by itself while the retries go on: `initialize`
+  from the binary's own server description (with `tools.listChanged`), then `ping` and
+  `tools/list`, and every other request with the retryable reason. A session started under a busy
+  older daemon is therefore up from the start; once that daemon leaves, the relay initializes its
+  own daemon with the host's `initialize` and sends `notifications/tools/list_changed`. A
+  notification from the host that waited past the ten seconds is dropped, apart from
+  `notifications/initialized`. The host's pipe is read during a connection attempt and between
+  attempts, and `basemind serve` exits when the host closes it; inside an attempt that can take
+  the few seconds a liveness probe or a forced takeover blocks for. An older daemon that will not
+  stop, the
   daemon ceiling, `BASEMIND_NO_AUTOSPAWN` with no daemon and a session the daemon declines for now
   are logged at warn and retried with a back-off growing to a minute; a daemon that is merely slow
   to come back, or that declined because it is stopping, is retried within seconds and logged at
@@ -317,7 +325,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A workspace whose index another basemind holds no longer ends the session. The daemon declines
   such a relay session with `workspace_locked` and the holder (the version of the daemon that
   holds it, or the command the lock records), where it answered `host_build_failed` and
-  `basemind serve` exited on `initialize`. The session stays up, answers requests with `another
+  `basemind serve` exited on `initialize`. The session comes up, answers tool calls with `another
   basemind holds this workspace's index (...). Close that version's sessions; its daemon exits
   when idle, and this session then connects by itself`, and connects once the lock is free. A
   refusal with a token this build does not know is retried the same way, never fatal. See

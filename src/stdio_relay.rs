@@ -22,12 +22,18 @@ const FATAL_ANSWER_WINDOW: Duration = Duration::from_secs(1);
 /// How long a host that has sent nothing yet is given to send its first request after a fatal
 /// failure. A session that cannot start still owes `initialize` the reason.
 const FATAL_FIRST_REQUEST_WINDOW: Duration = Duration::from_secs(10);
-/// How long a request waits for a backend that is not there. It runs from the moment the oldest
-/// request began to wait, whether it arrived with no backend connected or was in flight when the
-/// backend went, and not from the first failed attempt: one attempt alone can outlast it. Until it
-/// ends everything waiting is kept and goes through if a backend arrives. Past it, waiting and
-/// arriving requests are answered with the reason while the retries go on.
+/// How long a host frame waits for a backend that is not there. It runs from the moment the oldest
+/// one began to wait, whether it arrived with no backend connected or was in flight when the
+/// backend went. Until it ends everything waiting is kept and goes through if a backend arrives.
+/// Past it the relay answers the host itself while the retries go on: `initialize` from this
+/// binary, so the session starts, and a request only a backend can serve with the reason. A
+/// connection attempt in flight extends the wait to [`ATTEMPT_HOLD_LIMIT`].
 const HOLD_WINDOW: Duration = Duration::from_secs(10);
+/// How long what is waiting is kept on one connection attempt that has neither failed nor
+/// succeeded, when that is later than its [`HOLD_WINDOW`]. An attempt takes long by design: a
+/// takeover waits up to 27 s for an older daemon to go, a spawned daemon gets 30 s to come up, and
+/// the relay handshake then opens the workspace.
+const ATTEMPT_HOLD_LIMIT: Duration = Duration::from_secs(90);
 /// The reason given when the window ends before any connection attempt has failed.
 const NOT_REACHED_YET: &str = "the basemind daemon has not become reachable yet; still trying";
 /// Failed attempts in a row after which a restarting backend is reported at warn, and how often
@@ -43,8 +49,8 @@ pub(crate) enum ReconnectFailure {
     /// The backend is restarting; retry soon.
     Transient,
     /// Something outside this process must change first, such as an older daemon that will not
-    /// stop. Retried with a long back-off; once [`HOLD_WINDOW`] has passed, host requests are
-    /// refused with the reason meanwhile.
+    /// stop. Retried with a long back-off; once [`HOLD_WINDOW`] has passed, the host is answered
+    /// with the reason meanwhile.
     Blocked,
     /// No retry can succeed. The relay answers what is pending with the reason and ends.
     Fatal,
@@ -248,6 +254,12 @@ struct SessionState {
     /// Host frames read while no backend was connected, in arrival order, each without its
     /// newline. They are forwarded when a backend arrives, or answered when the hold window ends.
     held: std::collections::VecDeque<String>,
+    /// Whether `initialize` was answered from this binary, which told the host that the tool list
+    /// can change.
+    initialized_locally: bool,
+    /// Whether the host holds an answer from this binary that the backend may give differently,
+    /// and is owed `notifications/tools/list_changed` once a backend serves the session.
+    owes_list_changed: bool,
 }
 
 impl SessionState {
@@ -262,6 +274,8 @@ impl SessionState {
         if method == Some("initialize") {
             self.initialize = Some(line.to_owned());
             self.initialize_id = id.cloned();
+            self.initialize_complete = false;
+            self.initialized = None;
         } else if method == Some("notifications/initialized") {
             self.initialized = Some(line.to_owned());
         }
@@ -419,6 +433,19 @@ impl SessionState {
     }
 }
 
+impl SessionState {
+    /// The notification telling the host to list the tools again, once: when a backend serves a
+    /// session this binary answered for and the host has said it is initialized, before which a
+    /// server sends it nothing.
+    fn list_changed_due(&mut self) -> Vec<String> {
+        if !self.owes_list_changed || self.initialized.is_none() {
+            return Vec::new();
+        }
+        self.owes_list_changed = false;
+        vec![serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }).to_string()]
+    }
+}
+
 fn id_key(id: &Value) -> String {
     id.to_string()
 }
@@ -471,7 +498,7 @@ where
             Reconnected::HostClosed => return Ok(()),
             Reconnected::Fatal(reason) => {
                 tracing::error!(%reason, "daemon relay cannot connect; ending the session");
-                write_lines(&mut output, state.drain_unavailable_errors(&reason, true)).await?;
+                write_lines(&mut output, state.fail_waiting(&reason)).await?;
                 answer_before_ending(&mut input, &mut output, &mut state, &reason).await?;
                 return Err(io::Error::other(reason));
             }
@@ -498,6 +525,7 @@ where
             output.write_all(b"\n").await?;
         }
         output.flush().await?;
+        write_lines(&mut output, state.list_changed_due()).await?;
         if connected_before {
             tracing::info!("daemon relay backend reconnected");
         }
@@ -518,6 +546,10 @@ where
                         || write_half.flush().await.is_err()
                     {
                         break;
+                    }
+                    let due = state.list_changed_due();
+                    if !due.is_empty() {
+                        write_lines(&mut output, due).await?;
                     }
                 }
                 read = backend.next_line() => {

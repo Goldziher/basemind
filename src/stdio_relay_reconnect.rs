@@ -9,9 +9,9 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader, Lines};
 
 use super::{
-    BACKEND_UNAVAILABLE_CODE, FATAL_ANSWER_WINDOW, FATAL_FIRST_REQUEST_WINDOW, HOLD_WINDOW, INITIAL_RECONNECT_DELAY,
-    MAX_BLOCKED_RECONNECT_DELAY, MAX_JSON_LINE_BYTES, MAX_RECONNECT_DELAY, NOT_REACHED_YET, REPLAY_TIMEOUT,
-    ReconnectError, ReconnectFailure, SessionState, TRANSIENT_WARN_AFTER, TRANSIENT_WARN_EVERY,
+    ATTEMPT_HOLD_LIMIT, BACKEND_UNAVAILABLE_CODE, FATAL_ANSWER_WINDOW, FATAL_FIRST_REQUEST_WINDOW, HOLD_WINDOW,
+    INITIAL_RECONNECT_DELAY, MAX_BLOCKED_RECONNECT_DELAY, MAX_JSON_LINE_BYTES, MAX_RECONNECT_DELAY, NOT_REACHED_YET,
+    REPLAY_TIMEOUT, ReconnectError, ReconnectFailure, SessionState, TRANSIENT_WARN_AFTER, TRANSIENT_WARN_EVERY,
 };
 
 fn unavailable_error(id: &Value, reason: &str, retryable: bool) -> String {
@@ -27,15 +27,15 @@ fn unavailable_error(id: &Value, reason: &str, retryable: bool) -> String {
     .to_string()
 }
 
+fn result(id: &Value, result: Value) -> String {
+    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
+}
+
 impl SessionState {
-    /// Keep a host frame that arrived with no backend connected. Returns whether it is a request,
-    /// which the host expects an answer to.
-    fn hold_client(&mut self, line: String) -> bool {
+    /// Keep a host frame that arrived with no backend connected.
+    fn hold_client(&mut self, line: String) {
         self.heard_from_host = true;
-        let is_request = serde_json::from_str::<Value>(&line)
-            .is_ok_and(|message| message.get("method").is_some() && message.get("id").is_some_and(|id| !id.is_null()));
         self.held.push_back(line);
-        is_request
     }
 
     /// The frames kept by [`Self::hold_client`], oldest first.
@@ -48,35 +48,40 @@ impl SessionState {
         !self.pending.is_empty() || !self.held.is_empty() || (self.initialize_id.is_some() && !self.initialize_complete)
     }
 
-    /// Fail every request still waiting for a backend, the ones held for replay and the ones that
-    /// arrived with no backend included, with `reason`; `fatal` says no backend will ever come,
-    /// which makes the errors final. An `initialize` still in flight is answered too and then
-    /// forgotten, so a later backend is not asked to answer a request the host has already been
-    /// given an error for.
-    pub(super) fn drain_unavailable_errors(&mut self, reason: &str, fatal: bool) -> Vec<String> {
+    /// Answer everything that has waited too long for a backend that may still come: the requests
+    /// in flight when the last one went, and the frames that arrived since. `initialize` is
+    /// answered from this binary and kept for the backend; every other request in flight gets
+    /// `reason`, and is not replayed later, since the host has its answer.
+    fn answer_waiting(&mut self, reason: &str) -> Vec<String> {
         self.replay.clear();
         self.started.clear();
-        let mut ids: Vec<Value> = std::mem::take(&mut self.pending).into_values().collect();
-        if !self.initialize_complete
-            && let Some(id) = self.initialize_id.take()
-        {
-            self.initialize = None;
-            self.initialized = None;
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
+        let pending = std::mem::take(&mut self.pending);
+        let unanswered_initialize = if self.initialize_complete {
+            None
+        } else {
+            self.initialize_id.clone()
+        };
+        let mut answers = Vec::new();
+        if let (Some(id), Some(line)) = (&unanswered_initialize, self.initialize.clone()) {
+            answers.push(self.initialize_locally(line.trim_end(), id));
         }
-        let mut errors: Vec<String> = ids.iter().map(|id| unavailable_error(id, reason, !fatal)).collect();
+        answers.extend(
+            pending
+                .values()
+                .filter(|id| Some(*id) != unanswered_initialize.as_ref())
+                .map(|id| unavailable_error(id, reason, true)),
+        );
         for line in self.take_held() {
-            errors.extend(self.refuse_client(&line, reason, !fatal));
+            answers.extend(self.answer_without_backend(&line, reason));
         }
-        errors
+        answers
     }
 
-    /// The answer to a host frame that arrives while no backend is connected: an error for a
-    /// request, nothing for a notification. `notifications/initialized` is still remembered, since
-    /// a later backend needs it replayed.
-    fn refuse_client(&mut self, line: &str, reason: &str, retryable: bool) -> Option<String> {
+    /// The answer to a host frame (without its newline) once the wait for a backend has gone on
+    /// too long. What this binary knows by itself it answers: `initialize`, `ping`, and
+    /// `tools/list` for a session it initialized. Any other request gets `reason`.
+    /// `notifications/initialized` is remembered for the backend; other notifications are dropped.
+    fn answer_without_backend(&mut self, line: &str, reason: &str) -> Option<String> {
         self.heard_from_host = true;
         let message = serde_json::from_str::<Value>(line).ok()?;
         let method = message.get("method").and_then(Value::as_str)?;
@@ -85,7 +90,74 @@ impl SessionState {
             return None;
         }
         let id = message.get("id").filter(|id| !id.is_null())?;
-        Some(unavailable_error(id, reason, retryable))
+        Some(match method {
+            "initialize" => self.initialize_locally(line, id),
+            "ping" => result(id, serde_json::json!({})),
+            "tools/list" if self.initialized_locally => {
+                self.owes_list_changed = true;
+                result(id, basemind::mcp::offline::tools_list())
+            }
+            _ => unavailable_error(id, reason, true),
+        })
+    }
+
+    /// Answer the `initialize` in `line` (without its newline) from this binary, and keep it as
+    /// the session's: the backend that arrives is initialized with it and its own answer is
+    /// dropped. The capabilities given promise the host that the tool list can change, which is
+    /// what lets the relay answer `tools/list` meanwhile.
+    fn initialize_locally(&mut self, line: &str, id: &Value) -> String {
+        let params = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|message| message.get("params").cloned())
+            .unwrap_or(Value::Null);
+        self.initialized = None;
+        match basemind::mcp::offline::initialize(params) {
+            Ok(answer) => {
+                self.initialize = Some(format!("{line}\n"));
+                self.initialize_id = Some(id.clone());
+                self.initialize_complete = true;
+                self.initialized_locally = true;
+                self.owes_list_changed = true;
+                result(id, answer)
+            }
+            Err(error) => {
+                self.initialize = None;
+                self.initialize_id = None;
+                self.initialize_complete = false;
+                serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": error }).to_string()
+            }
+        }
+    }
+
+    /// Fail every request waiting for a backend that will never come, with `reason`. The session
+    /// is over: nothing is kept for a replay.
+    pub(super) fn fail_waiting(&mut self, reason: &str) -> Vec<String> {
+        self.replay.clear();
+        self.started.clear();
+        let mut ids: Vec<Value> = std::mem::take(&mut self.pending).into_values().collect();
+        if !self.initialize_complete
+            && let Some(id) = self.initialize_id.take()
+            && !ids.contains(&id)
+        {
+            ids.push(id);
+        }
+        self.initialize = None;
+        self.initialized = None;
+        let mut errors: Vec<String> = ids.iter().map(|id| unavailable_error(id, reason, false)).collect();
+        for line in self.take_held() {
+            errors.extend(self.refuse_for_good(&line, reason));
+        }
+        errors
+    }
+
+    /// The final error for a host request (without its newline) that arrives after a fatal
+    /// failure; nothing for a notification.
+    fn refuse_for_good(&mut self, line: &str, reason: &str) -> Option<String> {
+        self.heard_from_host = true;
+        let message = serde_json::from_str::<Value>(line).ok()?;
+        message.get("method")?;
+        let id = message.get("id").filter(|id| !id.is_null())?;
+        Some(unavailable_error(id, reason, false))
     }
 }
 
@@ -114,9 +186,11 @@ struct Hold {
 }
 
 /// Obtain a backend, retrying for as long as a retry can help. The host's pipe is read throughout,
-/// during an attempt as well as between attempts, so the relay ends as soon as the host closes it
-/// and a request's [`HOLD_WINDOW`] runs from its arrival. Only the replay of MCP initialization on
-/// a fresh connection, bounded by [`REPLAY_TIMEOUT`] per frame, goes unwatched.
+/// during an attempt as well as between attempts, so a frame's [`HOLD_WINDOW`] runs from its
+/// arrival and the relay sees the host close its end whenever the attempt yields. An attempt that
+/// has not failed is not given up on at the window's end: what waits is kept until the attempt
+/// returns or has run for [`ATTEMPT_HOLD_LIMIT`]. Only the replay of MCP initialization on a fresh
+/// connection, bounded by [`REPLAY_TIMEOUT`] per frame, goes unwatched.
 pub(super) async fn reconnect_and_replay<R, W, S, C, F, E>(
     reconnect: &mut C,
     state: &mut SessionState,
@@ -141,7 +215,8 @@ where
         reason: NOT_REACHED_YET.to_owned(),
     };
     loop {
-        let Some(attempt) = watching_host(reconnect(), input, output, state, &mut hold).await? else {
+        let in_flight = Some(tokio::time::Instant::now());
+        let Some(attempt) = watching_host(reconnect(), in_flight, input, output, state, &mut hold).await? else {
             return Ok(Reconnected::HostClosed);
         };
         let (reason, cap) = match attempt {
@@ -184,7 +259,7 @@ where
             },
         };
         hold.reason = reason;
-        if watching_host(tokio::time::sleep(delay), input, output, state, &mut hold)
+        if watching_host(tokio::time::sleep(delay), None, input, output, state, &mut hold)
             .await?
             .is_none()
         {
@@ -195,11 +270,14 @@ where
 }
 
 /// Run `work` with no backend connected while still serving the host's pipe. A frame that arrives
-/// is kept, and starts the hold window if nothing was waiting; when the window ends everything
-/// waiting is answered with the latest reason, and later requests are answered as they arrive.
+/// is kept, and starts the hold window if nothing was waiting. When the window ends everything
+/// waiting is answered (see [`SessionState::answer_waiting`]) and later frames are answered as
+/// they arrive. `attempt_started` is set while `work` is a connection attempt: the window then
+/// ends no earlier than [`ATTEMPT_HOLD_LIMIT`] after that, since the attempt may yet succeed.
 /// Returns `None`, dropping `work`, when the host closes its end.
 async fn watching_host<T, R, W>(
     work: impl Future<Output = T>,
+    attempt_started: Option<tokio::time::Instant>,
     input: &mut Lines<BufReader<R>>,
     output: &mut W,
     state: &mut SessionState,
@@ -211,7 +289,10 @@ where
 {
     tokio::pin!(work);
     loop {
-        let window_end = hold.until.filter(|_| !hold.refusing);
+        let window_end = hold
+            .until
+            .filter(|_| !hold.refusing)
+            .map(|until| attempt_started.map_or(until, |started| until.max(started + ATTEMPT_HOLD_LIMIT)));
         tokio::select! {
             done = &mut work => return Ok(Some(done)),
             read = input.next_line() => {
@@ -219,10 +300,11 @@ where
                     return Ok(None);
                 };
                 if hold.refusing {
-                    if let Some(error) = state.refuse_client(&line, &hold.reason, true) {
-                        write_lines(output, vec![error]).await?;
+                    if let Some(answer) = state.answer_without_backend(&line, &hold.reason) {
+                        write_lines(output, vec![answer]).await?;
                     }
-                } else if state.hold_client(line) {
+                } else {
+                    state.hold_client(line);
                     hold.until.get_or_insert_with(|| tokio::time::Instant::now() + HOLD_WINDOW);
                 }
             }
@@ -233,7 +315,8 @@ where
                 }
             } => {
                 hold.refusing = true;
-                write_lines(output, state.drain_unavailable_errors(&hold.reason, false)).await?;
+                tracing::warn!(reason = %hold.reason, "daemon relay has no backend; answering the host meanwhile");
+                write_lines(output, state.answer_waiting(&hold.reason)).await?;
             }
         }
     }
@@ -266,7 +349,7 @@ where
         (FATAL_FIRST_REQUEST_WINDOW, Some(FATAL_ANSWER_WINDOW))
     };
     let wake = tokio::time::Instant::now() + window;
-    refuse_until(input, output, state, wake, reason, false, after_first).await?;
+    refuse_until(input, output, state, wake, reason, after_first).await?;
     Ok(())
 }
 
@@ -279,7 +362,6 @@ async fn refuse_until<R, W>(
     state: &mut SessionState,
     mut wake: tokio::time::Instant,
     reason: &str,
-    retryable: bool,
     mut after_first: Option<Duration>,
 ) -> io::Result<bool>
 where
@@ -293,7 +375,7 @@ where
                 let Some(line) = read? else {
                     return Ok(false);
                 };
-                if let Some(error) = state.refuse_client(&line, reason, retryable) {
+                if let Some(error) = state.refuse_for_good(&line, reason) {
                     write_lines(output, vec![error]).await?;
                 }
                 if let Some(grace) = after_first.take() {
