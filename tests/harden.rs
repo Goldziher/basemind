@@ -32,6 +32,9 @@ use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::{ServiceExt, service::RoleClient, service::RunningService};
 use serde_json::{Value, json};
 
+#[path = "harden/worktrees.rs"]
+mod worktrees;
+
 /// Per-tool wall-clock ceiling. Any call exceeding this fails the harness.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
 

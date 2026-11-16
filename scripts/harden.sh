@@ -67,11 +67,26 @@ for entry in "${REPOS[@]}"; do
     echo "==> reusing existing clone at ${dest}"
   fi
 
-  if BASEMIND_HARDEN_REPO="${dest}" \
-    BASEMIND_HARDEN_REPO_NAME="${name}" \
-    BASEMIND_HARDEN_RESULTS="${RESULTS}" \
-    cargo test --release ${feature_args[@]+"${feature_args[@]}"} --test harden -- \
-    --ignored --nocapture --test-threads=1 --exact harden_repo; then
+  ok=1
+  if [ -z "${BASEMIND_HARDEN_SKIP_SUITE:-}" ]; then
+    BASEMIND_HARDEN_REPO="${dest}" \
+      BASEMIND_HARDEN_REPO_NAME="${name}" \
+      BASEMIND_HARDEN_RESULTS="${RESULTS}" \
+      cargo test --release ${feature_args[@]+"${feature_args[@]}"} --test harden -- \
+      --ignored --nocapture --test-threads=1 --exact harden_repo || ok=0
+  fi
+
+  # BASEMIND_HARDEN_WORKTREES=<K> adds K git worktrees at older commits and measures what each
+  # costs on disk and to first-scan. BASEMIND_HARDEN_SKIP_SUITE=1 runs that measurement alone.
+  if [ -n "${BASEMIND_HARDEN_WORKTREES:-}" ]; then
+    BASEMIND_HARDEN_REPO="${dest}" \
+      BASEMIND_HARDEN_REPO_NAME="${name}" \
+      BASEMIND_HARDEN_RESULTS="${RESULTS}" \
+      cargo test --release ${feature_args[@]+"${feature_args[@]}"} --test harden -- \
+      --ignored --nocapture --test-threads=1 --exact worktrees::harden_worktrees || ok=0
+  fi
+
+  if [ "${ok}" -eq 1 ]; then
     passed+=("${name}")
   else
     failed+=("${name}")
