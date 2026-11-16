@@ -87,17 +87,32 @@ fn ensure_store_id(dir: &Path) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// Hold the open lock of the store at `dir`. `None` when the lock file cannot be created or
-/// locked: the open goes on unserialised, as it would on a directory it cannot write.
-fn lock_open(dir: &Path) -> Option<std::fs::File> {
+/// How long an open waits for another open of the same store to finish. An open holds the lock
+/// only while it creates the store's files, so a holder past this is stuck, not busy.
+const OPEN_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Hold the open lock of the store at `dir`, waiting at most `wait` for it. `None` when the lock
+/// file cannot be created or locked in time: the open goes on unserialised, as it would on a
+/// directory it cannot write.
+fn lock_open(dir: &Path, wait: std::time::Duration) -> Option<crate::store_lock::LockGuard> {
+    const RETRY: std::time::Duration = std::time::Duration::from_millis(20);
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(dir.join(OPEN_LOCK_FILE))
         .ok()?;
-    fs2::FileExt::lock_exclusive(&file).ok()?;
-    Some(file)
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
+            return Some(crate::store_lock::LockGuard::held(file));
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(dir = %dir.display(), "another open of this vector store held its lock too long; opening without it");
+            return None;
+        }
+        std::thread::sleep(RETRY);
+    }
 }
 
 /// Schema version of the lance Arrow tables, bound to the release minor exactly like
@@ -244,7 +259,7 @@ impl LanceStore {
             schema_ver: MEMORY_SCHEMA_VER,
         };
         // Released when this function returns, tables created.
-        let _opening = lock_open(dir);
+        let _opening = lock_open(dir, OPEN_LOCK_WAIT);
         wipe_on_mismatch(dir, &meta_path, &expected)?;
         // meta.json goes in before any table. Tables beside no meta.json have no known model: they
         // are what an open that died before its meta write left, and are removed, not adopted.

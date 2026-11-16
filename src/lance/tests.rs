@@ -547,3 +547,27 @@ fn a_store_keeps_its_id_until_it_is_wiped() {
     let second = store_id(dir.path()).expect("the rebuilt store has an id");
     assert_ne!(first, second, "a wipe starts a new store");
 }
+
+/// An open waits for another open of the store only so long, and the lock it takes is released
+/// when the guard drops.
+#[test]
+fn the_open_lock_is_waited_for_within_a_bound_and_released_on_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let held = lock_open(dir.path(), OPEN_LOCK_WAIT).expect("a free lock is taken");
+
+    let path = dir.path().to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(lock_open(&path, std::time::Duration::from_millis(100)).is_some());
+    });
+    let won = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("a held lock is waited for within the bound, not forever");
+    assert!(!won, "the lock was held throughout");
+
+    drop(held);
+    assert!(
+        lock_open(dir.path(), std::time::Duration::ZERO).is_some(),
+        "free once the guard drops"
+    );
+}
