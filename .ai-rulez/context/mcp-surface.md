@@ -22,16 +22,16 @@ until its own redesign.
 
 | Tool | Arguments (required first; `?` = optional) | Job |
 |---|---|---|
-| `code_outline` | `path`, `limit?`, `cursor?`, `max_tokens?` | a file's symbols (kind, signature, 1-based `line` / `end_line`) and imports; `stale` when the file changed since it was indexed and was outlined as it is |
+| `code_outline` | `path`, `limit?`, `cursor?`, `max_tokens?` | a file's symbols (kind, signature, 1-based `line` / `end_line`) and imports |
 | `code_symbols` | `name`, `kind?`, `fuzzy?`, `limit?`, `cursor?`, `max_tokens?` | find a definition by name; ranked exact, prefix, substring, then (with `fuzzy`) fuzzy subsequence; each row carries `match` |
-| `code_read` | `path`, then `symbol?` (+ `line?` / `kind?` when several share the name) or `line?` + `end_line?` | one symbol's body, or a 1-based inclusive line span; cut after a whole line at 128 KiB (resume at `end_line + 1`); `stale` when the file changed since it was indexed |
+| `code_read` | `path`, then `symbol?` (+ `line?` / `kind?` when several share the name) or `line?` + `end_line?` | one symbol's body, or a 1-based inclusive line span; cut after a whole line at 128 KiB (resume at `end_line + 1`) |
 | `code_grep` | `pattern`, `regex?`, `path?`, `language?`, `context?`, `limit?`, `cursor?`, `max_tokens?` | text search over indexed code; literal unless `regex` (`^` / `$` then match at every line); `path` is a literal substring, never a glob; a filter no indexed file passes is an error; `skipped_files` counts unsearchable files; a hit is its line `text` (a line over 400 bytes is cut around the match) plus the enclosing `symbol` |
 | `code_search` | `query`, `lane?`, `limit?`, `cursor?`, `max_tokens?` | search code by meaning; returns pointers, not bodies; reports `lanes_ran` and `lanes_unavailable` (lane + reason) |
 | `code_refs` | `name`, `relation?`, `path?`, `line?`, `column?`, `match?`, `limit?`, `cursor?`, `max_tokens?` | usages: call sites of a name, callers of one definition (`path`: returns `definition` and `resolved_total` + per-hit `resolved`, or a `resolution` note: `unsupported for <language>` / `no resolution facts for this file`; add `line` when several definitions share the name), `implementations`, `importers`, or the `definition` a reference binds to; `match` is `exact` (default: the identifier is the name, or a qualified path ending in it) or `substring` |
 | `find_files` | `query?`, `path_prefix?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing without `query`; code and documents |
-| `docs_search` | `query`, `mime_type?`, `keywords?`, `entity?`, `scope?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents; `truncated` (`depth`, `rerank_top_k`, `filter_depth`) when the ranking was cut |
+| `docs_search` | `query`, `mime_type?`, `keywords?`, `entity?`, `scope?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents |
 | `git_log` | `path?`, `query?`, `author?`, `symbol?`, `line?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | recent commits, a path's history, a commit search (`query` on the message, `author` on the author), a symbol's history (one window of commits per page, `next_cursor` continues past it), or one commit |
-| `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | per-line authorship of a file, a span, or one symbol (located in the file as it is at `rev`) |
+| `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | per-line authorship of a file, a span, or one symbol (located at `rev`) |
 | `git_diff` | `path?`, `from?`, `to?`, `structural?` | no arguments: working-tree status (200 paths per list; a `path` ending in `/` narrows it to that directory); `path`: that file's diff (`from` defaults to HEAD, `to` to the working tree); `structural`: symbols added and removed since `from` plus the `common` count, no `to`; at most 200 hunks or 128 KiB, then `truncated`; `binary` for a binary file |
 | `memory_save` | `key`, `value`, `tags?`, `visibility?` | write a durable note |
 | `memory_search` | `query?` or `key?` or `prefix?`, `tag?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, by key, or by key prefix |
@@ -64,18 +64,10 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   a default budget of 6000 tokens (`DEFAULT_MAX_TOKENS`) and then sets `budgeted`. Index scans
   stay bounded by a scan cap and report `total_is_partial`. `limit: 0` is refused in
   `cursor_bind::bound`, once for every tool that takes `limit`.
-- **One vocabulary for a cut.** A hard bound sets `truncated: true` and `truncated_reason`, with
-  `omitted` counting what was left out when the count is known; the token budget sets `budgeted`.
-  Do not add another field name for "something was left out". Every cut must leave the caller a
-  way on: a `next_cursor`, or an argument that narrows the call.
-- **Files that changed since the scan.** Indexed byte offsets apply only to the indexed bytes.
-  Every body that lays them over the working tree loads the file through `freshness::load` (one
-  bounded read, one verdict): a tool that can re-extract from live bytes does and sets `stale`,
-  a tool that cannot returns `freshness::edited`, and a deleted file gets `freshness::unloadable`.
-  No indexed file is read whole past `scan.max_file_bytes`.
-- **Filter refusals.** A `path` / `path_prefix` / `language` filter no listed file passes is an
-  error (`helpers_filters`), made only when the listing came back empty and the server has no
-  lifecycle notice to attach, from the same source the tool lists from.
+- **Cuts.** A hard bound sets `truncated` + `truncated_reason` (+ `omitted`); the token budget
+  sets `budgeted`. Add no other name. A filter no file passes is an error (`helpers_filters`).
+- **Files changed since the scan.** Load through `freshness::load`: re-extract and set `stale`,
+  else return `freshness::edited`; a deleted file gets `freshness::unloadable`.
 - **Cursors are bound to their query.** Every paginated `*_call` runs its body through
   `cursor_bind::bound`, which prefixes `next_cursor` with a hash of the tool name and the
   list-selecting arguments. A cursor passed to another query, or one that outlived its index or

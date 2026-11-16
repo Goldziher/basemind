@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.2'
 scope = 'all'
-tree = 'sha256:eb76955c3d096079a297e49cee4c08249299dbb009266793f34e99c82df5eaed'
+tree = 'sha256:a29aabcc8c2604f19a35568d4998561c62104a26e9db93798a61139519c81fb0'
 
 [[served]]
 name = 'adr-workflow'
@@ -232,7 +232,7 @@ digest = 'sha256:ff9e2660b0851ae58c9e5912a62c7e57a598ef95db774fe7cbe1e4950679b70
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:0a90a20245719300b734d6c645493cc8b90e106ab16a4c5d4d31da3fb426bde0'
+digest = 'sha256:4eae27b5451b599b5b37f871b06049b4fedef6d3a79a377e422483658ff8b0e9'
 
 [[item]]
 kind = 'context'
