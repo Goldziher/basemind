@@ -1,6 +1,8 @@
 //! Durable retirement of a verified standalone working view.
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io;
 #[cfg(any(unix, test))]
 use std::io::Write;

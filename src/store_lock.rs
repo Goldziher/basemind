@@ -219,14 +219,18 @@ pub(crate) mod hook {
         static AFTER_OPEN: RefCell<Option<Hook>> = const { RefCell::new(None) };
     }
 
-    /// Run `hook` after every open of a lock file on this thread, until the guard drops.
+    /// Run `hook` after every open of a lock file on this thread, until the guard drops. Unix only:
+    /// the tests that swap the file at the path are.
+    #[cfg(unix)]
     pub(crate) fn after_open(hook: impl FnMut(&Path) + 'static) -> Guard {
         AFTER_OPEN.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
         Guard
     }
 
+    #[cfg(unix)]
     pub(crate) struct Guard;
 
+    #[cfg(unix)]
     impl Drop for Guard {
         fn drop(&mut self) {
             AFTER_OPEN.with(|slot| *slot.borrow_mut() = None);
