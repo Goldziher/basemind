@@ -867,3 +867,19 @@ async fn a_lapsed_look_that_finds_nothing_doubles_the_wait() {
 
     assert!(matches!(mark_of(&state), Some(Backfill::Level { ttl, .. }) if ttl == LEVEL_TTL * 2));
 }
+
+/// A tag filter that refuses most notes read leaves a search short by a few notes round after
+/// round: what it reads grows geometrically, so the rounds grow with the log of what it reads.
+#[test]
+fn a_search_short_of_its_limit_reads_at_least_twice_as_far_each_round() {
+    assert_eq!(read_further(10, 10, 9), 20, "one note short still doubles");
+    assert_eq!(read_further(10, 10, 0), 20);
+    assert_eq!(read_further(5, 100, 0), 105, "the shortfall when that is more");
+    let mut wanted = 10;
+    let mut rounds = 0;
+    while wanted < 10_000 {
+        wanted = read_further(wanted, 10, 9);
+        rounds += 1;
+    }
+    assert!(rounds <= 10, "{rounds} rounds to read 10,000 notes");
+}

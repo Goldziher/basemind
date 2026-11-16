@@ -648,6 +648,13 @@ fn decidable(
         .collect()
 }
 
+/// How many current keys to read next, having read `wanted` and served `served` of `limit`: at
+/// least twice as many, since a tag filter can refuse most of what is read and one more note per
+/// round would cost a round per note.
+fn read_further(wanted: usize, limit: usize, served: usize) -> usize {
+    wanted.saturating_add(limit.saturating_sub(served).max(wanted))
+}
+
 /// `memory_search` by meaning: embed the query, bring the rows nearer the notes, and answer the
 /// nearest rows from the notes they were embedded from. Which rows are current is read from the
 /// notes' stamps; only the notes that may be served are read whole.
@@ -697,7 +704,7 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
             if joined.hits.len() >= limit || wanted >= current.len() {
                 break joined;
             }
-            wanted += limit - joined.hits.len();
+            wanted = read_further(wanted, limit, joined.hits.len());
         };
         if joined.hits.len() >= limit || exhausted || fetch >= FETCH_MAX {
             break joined;
