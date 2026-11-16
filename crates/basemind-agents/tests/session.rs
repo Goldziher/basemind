@@ -459,6 +459,10 @@ fn stop_interrupts_the_harness_and_ends_its_group() {
         session.send_follow_up("x".repeat(1024 * 1024 + 1)),
         Err(LaunchError::PromptTooLarge(_))
     ));
+    assert!(matches!(
+        session.send_follow_up(" /compact"),
+        Err(LaunchError::SlashCommandPrompt)
+    ));
     assert!(matches!(session.send_follow_up("more"), Err(LaunchError::TurnLimit(1))));
     assert_eq!(session.wait(), FinishStatus::Stopped);
     assert_gone(&grandchild);

@@ -362,3 +362,25 @@ fn a_brief_over_a_mebibyte_is_refused() {
         Err(LaunchError::PromptTooLarge(len)) if len == crate::session::MAX_PROMPT_BYTES + 1
     ));
 }
+
+#[test]
+fn a_brief_starting_with_a_slash_is_refused_for_every_harness() {
+    // Claude Code 2.1.325 ran a stream-json prompt of `/context` as its own command (a
+    // synthetic reply, no model turn) instead of handing it to the model.
+    let root = tempfile::tempdir().unwrap();
+    for kind in [
+        HarnessKind::ClaudeCode,
+        HarnessKind::Codex,
+        HarnessKind::Acp(AcpFlavor::Gemini),
+        HarnessKind::Acp(AcpFlavor::OpenCode),
+    ] {
+        let config = config(kind, root.path());
+        for brief in ["/context", "  \n/clear", "\t/model opus"] {
+            assert!(matches!(
+                LaunchSpec::new(&config, &LaunchRequest::new(brief)),
+                Err(LaunchError::SlashCommandPrompt)
+            ));
+        }
+        assert!(LaunchSpec::new(&config, &LaunchRequest::new("Summarize src/main.rs, not /etc.")).is_ok());
+    }
+}

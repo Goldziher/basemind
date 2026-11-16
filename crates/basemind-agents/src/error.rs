@@ -131,6 +131,10 @@ pub enum LaunchError {
     /// A brief or follow-up is longer than the 1 MiB a session takes.
     #[error("a prompt of {0} bytes is longer than 1 MiB")]
     PromptTooLarge(usize),
+    /// A brief or follow-up starts with `/`, which a harness takes as one of its own slash
+    /// commands instead of a prompt: Claude Code 2.1.325 ran `/context` locally.
+    #[error("a prompt may not start with '/', which the harness would run as a slash command")]
+    SlashCommandPrompt,
     /// The session already ran the number of turns its limits allow.
     #[error("turn limit of {0} reached")]
     TurnLimit(u32),

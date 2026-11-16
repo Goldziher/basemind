@@ -47,6 +47,18 @@ const STDERR_DRAIN: Duration = Duration::from_millis(200);
 /// The longest brief or follow-up a session takes.
 pub(crate) const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 
+/// Checks a brief or follow-up: at most [`MAX_PROMPT_BYTES`], and not starting (after
+/// whitespace) with `/`, which harnesses read as one of their slash commands.
+pub(crate) fn check_prompt(text: &str) -> Result<(), LaunchError> {
+    if text.len() > MAX_PROMPT_BYTES {
+        return Err(LaunchError::PromptTooLarge(text.len()));
+    }
+    if text.trim_start().starts_with('/') {
+        return Err(LaunchError::SlashCommandPrompt);
+    }
+    Ok(())
+}
+
 /// The exact process an adapter would start: its program, arguments, environment and working
 /// directory. Built without side effects, so a caller can log or inspect a launch beforehand.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -313,14 +325,13 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// [`LaunchError::PromptTooLarge`] for a text over 1 MiB, [`LaunchError::TurnLimit`] when
+    /// [`LaunchError::PromptTooLarge`] for a text over 1 MiB,
+    /// [`LaunchError::SlashCommandPrompt`] for one starting with `/`, [`LaunchError::TurnLimit`] when
     /// the limits allow no further turn, and
     /// [`LaunchError::SessionClosed`] when the session has finished.
     pub fn send_follow_up(&self, text: impl Into<String>) -> Result<(), LaunchError> {
         let text = text.into();
-        if text.len() > MAX_PROMPT_BYTES {
-            return Err(LaunchError::PromptTooLarge(text.len()));
-        }
+        check_prompt(&text)?;
         let max = self.shared.limits.max_turns;
         self.shared
             .prompts
