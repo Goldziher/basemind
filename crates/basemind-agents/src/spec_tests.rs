@@ -366,6 +366,23 @@ fn the_child_search_path_keeps_only_absolute_entries() {
 }
 
 #[test]
+fn the_child_search_path_drops_entries_inside_the_root() {
+    let root = tempfile::tempdir().unwrap();
+    let canonical = root.path().canonicalize().unwrap();
+    std::fs::create_dir(canonical.join("bin")).unwrap();
+    let spec = spec(HarnessKind::Codex, root.path());
+    let search = std::env::join_paths([
+        root.path().join("bin"),
+        canonical.join("bin"),
+        root.path().to_owned(),
+        PathBuf::from("/usr/bin"),
+    ])
+    .unwrap();
+    let env = spec.child_env([(OsString::from("PATH"), search)]);
+    assert_eq!(env["PATH"], OsString::from("/usr/bin"));
+}
+
+#[test]
 fn a_brief_over_a_mebibyte_is_refused() {
     let root = tempfile::tempdir().unwrap();
     let config = config(HarnessKind::Codex, root.path());

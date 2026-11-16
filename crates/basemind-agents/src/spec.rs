@@ -477,7 +477,7 @@ impl LaunchSpec {
                 continue;
             };
             let value = if name == "PATH" {
-                absolute_search_path(&value)
+                absolute_search_path(&value, &self.root)
             } else {
                 value
             };
@@ -518,7 +518,8 @@ impl Prepared {
 
 /// The variables a child inherits from its launcher. Everything else, credentials included,
 /// reaches it only through [`LaunchConfig::env`]. `PATH` is passed on without its empty and
-/// relative entries, which would resolve against the agent's working directory.
+/// relative entries, which would resolve against the agent's working directory, and without
+/// its entries inside the root.
 pub const ENV_ALLOWLIST: &[&str] = &[
     "PATH",
     "HOME",
@@ -565,9 +566,19 @@ fn mcp_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
-/// `value` as a search path without its empty and relative entries.
-fn absolute_search_path(value: &std::ffi::OsStr) -> OsString {
-    let kept = std::env::split_paths(value).filter(|dir| dir.is_absolute());
+/// `value` as a search path without its empty and relative entries, and without the entries
+/// inside `root` (as given or resolved), where the agent could plant what the harness's own
+/// lookups (`#!/usr/bin/env node`, helper binaries) then find.
+fn absolute_search_path(value: &std::ffi::OsStr, root: &Path) -> OsString {
+    let canonical_root = root.canonicalize().ok();
+    let inside = |dir: &Path| {
+        let canonical = dir.canonicalize().ok();
+        [Some(dir), canonical.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|dir| dir.starts_with(root) || canonical_root.as_deref().is_some_and(|root| dir.starts_with(root)))
+    };
+    let kept = std::env::split_paths(value).filter(|dir| dir.is_absolute() && !inside(dir));
     std::env::join_paths(kept).unwrap_or_default()
 }
 
