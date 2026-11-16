@@ -1359,6 +1359,7 @@ fn commit_shas(body: &Value) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_recent_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;
+    wait_for_git_history(&service).await;
     let page1 = decode_text(
         &service
             .call_tool(call_params("git_log", json!({ "limit": 2 })))
@@ -1396,6 +1397,7 @@ async fn git_recent_paginates_with_stable_cursor() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_touching_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;
+    wait_for_git_history(&service).await;
     let page1 = decode_text(
         &service
             .call_tool(call_params("git_log", json!({ "path": "paged.rs", "limit": 2 })))
@@ -1439,10 +1441,15 @@ async fn git_touching_paginates_with_stable_cursor() {
 }
 
 /// Wait (bounded) until `git_log` answers from the git-history index, which the server builds after
-/// it starts. A symbol-history cursor counts in the list it was issued on, and one issued on the live
-/// walk is refused once the index answers, so a test of stable paging pages after that point.
+/// it starts. A `git_log` cursor counts in the list it was issued on, and one issued on the live walk
+/// is refused once the index answers, so a test of stable paging pages after that point. An index
+/// that never comes up fails the test: the server is meant to build it, unless `BASEMIND_GH_INDEX=0`
+/// turns it off, and then every page is the live walk.
 async fn wait_for_git_history(service: &rmcp::service::RunningService<rmcp::RoleClient, ()>) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| value == "0") {
+        return;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         let probe = decode_text(
             &service
@@ -1455,7 +1462,7 @@ async fn wait_for_git_history(service: &rmcp::service::RunningService<rmcp::Role
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-    eprintln!("NOTE: the git-history index did not come up; paging the live walk only");
+    panic!("the git-history index did not come up within 60 s of `serve` starting");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
