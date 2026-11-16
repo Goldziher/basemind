@@ -138,7 +138,10 @@ pub(crate) fn collect_workspace_hashes_healing_stale_views(workspace_dir: &Path)
 }
 
 fn is_rebuildable_view_error(error: &StoreError) -> bool {
-    matches!(error, StoreError::SchemaMismatch { .. } | StoreError::Decode(_))
+    matches!(
+        error,
+        StoreError::SchemaMismatch { .. } | StoreError::StaleBlobLayout { .. } | StoreError::Decode(_)
+    )
 }
 
 #[cfg(test)]

@@ -60,6 +60,17 @@ pub(super) fn open_index_for_writer(
     Ok((index_db, index_rebuild_needed || index.rebuild_pending))
 }
 
+/// Remove the file map of a view written for an earlier blob store layout, and the index built
+/// from it: the index is of the current schema, so nothing else would empty it, and rows of files
+/// deleted since would outlive the map that knew of them. The caller holds the workspace lock.
+pub(super) fn discard_view_of_a_stale_layout(view_dir: &Path) -> Result<(), StoreError> {
+    super::wipe_view(view_dir)?;
+    if view_dir.join(crate::index::INDEX_DIR).exists() {
+        crate::index::durability::discard_index(view_dir)?;
+    }
+    Ok(())
+}
+
 /// What a reader is told when [`Store::rescan_owed`]: one line, naming the command that fixes it.
 pub const RESCAN_OWED: &str = "the code index of this workspace must be rebuilt (an older basemind wrote it, or a \
      rebuild was interrupted): run `basemind scan` (MCP: `index_rescan`). Until then symbol, reference and call \
@@ -126,6 +137,12 @@ impl Store {
         }
         if self._lock.is_none() {
             self._lock = Some(super::acquire_lock_as(&self.basemind_dir, super::LockHolder::Rescan)?);
+        }
+        if matches!(
+            super::read_index(&self.view_dir),
+            Err(StoreError::StaleBlobLayout { .. })
+        ) {
+            discard_view_of_a_stale_layout(&self.view_dir)?;
         }
         let (index_db, _) = open_index_for_writer(&self.root, &self.view, &self.view_dir, &mut self.index)?;
         self.hash_refs = HashRefs::of(&self.index.files);

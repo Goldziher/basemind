@@ -35,51 +35,6 @@ pub use crate::store_layout::{
     workspace_key, write_status_sidecar,
 };
 
-/// Which basemind command is taking the exclusive store lock. Threaded from the caller
-/// (`scan` / `rescan` / `watch` / `serve`) into [`Store::open_with_holder`] so a lock
-/// contention error can name the *actual* holder rather than a hardcoded guess.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LockHolder {
-    /// `basemind serve` — the long-running MCP server (the common holder; an editor plugin).
-    Serve,
-    /// `basemind watch` — the filesystem watcher / incremental re-indexer.
-    Watch,
-    /// `basemind scan` — a one-shot full index.
-    Scan,
-    /// `basemind rescan` — an incremental re-index.
-    Rescan,
-    /// GC / cache maintenance or any caller that did not specify a more precise identity.
-    Maintenance,
-}
-
-impl LockHolder {
-    /// The exact CLI command a user would run for this holder, used verbatim in the error
-    /// message so the guidance is actionable ("stop `basemind serve`").
-    pub fn command(self) -> &'static str {
-        match self {
-            LockHolder::Serve => "basemind serve",
-            LockHolder::Watch => "basemind watch",
-            LockHolder::Scan => "basemind scan",
-            LockHolder::Rescan => "basemind rescan",
-            LockHolder::Maintenance => "a basemind cache/maintenance task",
-        }
-    }
-}
-
-/// On-disk sidecar describing who currently holds the store lock. Written atomically when
-/// the exclusive lock is acquired and read on contention. Additive, non-load-bearing: a
-/// missing or corrupt sidecar simply falls back to the generic lock message, so it never
-/// trips schema wipe-on-mismatch (it lives outside the versioned index/blob stores).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LockMeta {
-    /// The CLI command of the holder (`basemind serve`, etc.).
-    pub command: String,
-    /// OS process id of the holder.
-    pub pid: u32,
-    /// Unix-epoch seconds when the lock was acquired.
-    pub acquired_unix: i64,
-}
-
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("io error on {path}: {source}")]
@@ -101,6 +56,10 @@ pub enum StoreError {
          — upgrade basemind"
     )]
     NewerSchema { stored: u16, current: u16 },
+    /// The file map was written for an earlier layout of the blob store, so the blobs it names are
+    /// not where this binary looks. Rebuildable, like an older schema.
+    #[error("file map written for blob store layout {found}; this binary uses layout {expected}")]
+    StaleBlobLayout { found: u8, expected: u8 },
     #[error("corrupt blob at {path}: malformed or unsupported envelope")]
     CorruptBlob { path: PathBuf },
     #[error("blob payload exceeds the supported envelope limits")]
@@ -150,34 +109,8 @@ impl StoreError {
     }
 }
 
-/// Render the lock-contention message, naming the live holder from the `.lock.meta` sidecar
-/// when it is available and falling back to the generic guess otherwise. Kept as a free fn so
-/// the `thiserror` `#[error(...)]` attribute can call it for [`StoreError::Locked`].
-fn lock_contention_message(path: &Path, holder: &Option<LockMeta>) -> String {
-    match holder {
-        Some(meta) => format!(
-            "another basemind process holds the lock on {} (`{}`, pid {})",
-            path.display(),
-            meta.command,
-            meta.pid
-        ),
-        None => format!(
-            "another basemind process holds the lock on {} (usually the `basemind serve` MCP \
-             server from your editor plugin, or `basemind watch`)",
-            path.display()
-        ),
-    }
-}
-
-/// Actionable guidance printed when a CLI writer (`scan` / `rescan`) can't acquire the
-/// store lock because another basemind process is holding it. Kept as a constant so the
-/// scan and rescan paths emit identical wording and a test can assert the contract.
-pub const LOCK_CONTENTION_HELP: &str = "the basemind index is locked by another process \
-(likely the MCP server). If an editor/plugin is serving this repo, use its `index_rescan` tool \
-to refresh the index, or stop that server before running `basemind scan`.";
-
-pub use crate::store_lock::{WriterProbe, probe_writer_lock};
-pub(crate) use crate::store_lock::{acquire_lock, acquire_lock_as, writer_lock_is_held};
+pub use crate::store_lock::{LOCK_CONTENTION_HELP, LockHolder, LockMeta, WriterProbe, probe_writer_lock};
+pub(crate) use crate::store_lock::{acquire_lock, acquire_lock_as, lock_contention_message, writer_lock_is_held};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Index {
@@ -220,6 +153,12 @@ pub struct Index {
     /// as referenced until the rebuild is done, since the rebuild re-indexes from those blobs.
     #[serde(default)]
     pub rebuild_pins: Vec<String>,
+    /// The layout of the blob store the hashes above are found in
+    /// ([`crate::store_layout::BLOB_LAYOUT`]). A map without the field was written when blobs lay
+    /// flat in `cache/blobs/` and decodes to `0`: [`read_index`] refuses it as stale, whatever the
+    /// schema it carries, so its files are not called unchanged over blobs that are elsewhere.
+    #[serde(default)]
+    pub blob_layout: u8,
 }
 
 impl Index {
@@ -233,6 +172,7 @@ impl Index {
             generation: 0,
             rebuild_pending: false,
             rebuild_pins: Vec::new(),
+            blob_layout: crate::store_layout::BLOB_LAYOUT,
         }
     }
 }
@@ -562,6 +502,12 @@ impl Store {
                 wipe_view(&view_dir)?;
                 Index::empty()
             }
+            Err(error @ StoreError::StaleBlobLayout { .. }) => {
+                reset_stale_schema = true;
+                tracing::info!(view, %error, "refreshing view in place (every file is extracted again)");
+                durability::discard_view_of_a_stale_layout(&view_dir)?;
+                Index::empty()
+            }
             Err(e) => return Err(e),
         };
         let (index_db, index_rebuild_needed) = durability::open_index_for_writer(root, view, &view_dir, &mut index)?;
@@ -641,6 +587,7 @@ impl Store {
         if view != VIEW_WORKING && !view_dir.join(INDEX_FILE).exists() {
             return Err(StoreError::ViewNotScanned { view: view.to_string() });
         }
+        let mut stale_layout = false;
         let (index, schema_ok) = match read_index(&view_dir) {
             Ok(Some(idx)) => (idx, true),
             Ok(None) => (Index::empty(), true),
@@ -652,9 +599,16 @@ impl Store {
                 );
                 (Index::empty(), false)
             }
+            Err(error @ StoreError::StaleBlobLayout { .. }) => {
+                tracing::warn!(%error, "index reads empty until `basemind scan` refreshes it");
+                stale_layout = true;
+                (Index::empty(), false)
+            }
             Err(e) => return Err(e),
         };
-        let mut index_rebuild_needed = false;
+        // A stale layout leaves an index of the current schema over a map that is gone: the scan
+        // that takes the lock replaces both ([`Store::open_index_owed_to_scan`]). ~keep
+        let mut index_rebuild_needed = stale_layout;
         let index_db = if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
             match IndexDb::open_tolerating_held_memory(&view_dir, &memory_store_dir(root)) {
                 Ok(db) => Some(db),
@@ -859,7 +813,7 @@ fn ensure_dir(p: &Path) -> Result<(), StoreError> {
 }
 
 /// Delete the index file in a single view's directory.
-fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
+pub(crate) fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
     let index_path = view_dir.join(INDEX_FILE);
     if index_path.exists() {
         std::fs::remove_file(&index_path).map_err(|source| StoreError::Io {
@@ -918,9 +872,15 @@ fn migrate_legacy_index_into_views(basemind_dir: &Path) -> Result<(), StoreError
 }
 
 /// Read and deserialize a view's `index.msgpack`. `Ok(None)` when the file is absent;
-/// `Err(StoreError::SchemaMismatch)` on an older version, `Err(StoreError::NewerSchema)` on a newer one. Reused by `store_gc` to
-/// enumerate the live blob hashes referenced by every view.
+/// `Err(StoreError::SchemaMismatch)` on an older version, `Err(StoreError::NewerSchema)` on a newer
+/// one, `Err(StoreError::StaleBlobLayout)` on a map of an earlier blob store layout. Reused by
+/// `store_gc` to enumerate the live blob hashes referenced by every view.
 pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
+    /// The one field every layout of the file map has had.
+    #[derive(Deserialize)]
+    struct Version {
+        schema_ver: u16,
+    }
     let path = view_dir.join(INDEX_FILE);
     if !path.exists() {
         return Ok(None);
@@ -929,8 +889,19 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
         path: path.clone(),
         source,
     })?;
+    // The version is read on its own first: a newer map need not decode as this one, and a decode
+    // failure must not read as a damaged map that may be removed. ~keep
+    if let Ok(Version { schema_ver }) = rmp_serde::from_slice(&bytes) {
+        check_schema(schema_ver)?;
+    }
     let index: Index = rmp_serde::from_slice(&bytes)?;
     check_schema(index.schema_ver)?;
+    if index.blob_layout < crate::store_layout::BLOB_LAYOUT {
+        return Err(StoreError::StaleBlobLayout {
+            found: index.blob_layout,
+            expected: crate::store_layout::BLOB_LAYOUT,
+        });
+    }
     Ok(Some(index))
 }
 

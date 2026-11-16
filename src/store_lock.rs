@@ -1,17 +1,89 @@
 //! Store write-lock machinery: the advisory `.basemind/.lock` flock, the `.lock.meta` holder
 //! sidecar, acquisition with retry, and the non-blocking writer probe.
 //!
-//! Split out of `store.rs` to keep that file under the 1000-line module cap. The lock *types*
-//! ([`LockHolder`] / [`LockMeta`]) and [`StoreError`] stay in `store.rs`; this module holds the
-//! behavior over them. `store.rs` re-exports the public entry points (`probe_writer_lock`,
+//! Split out of `store.rs` to keep that file under the 1000-line module cap. [`StoreError`] stays
+//! in `store.rs`; this module holds the lock types ([`LockHolder`] / [`LockMeta`]) and the behavior
+//! over them. `store.rs` re-exports the public names (`LockHolder`, `probe_writer_lock`,
 //! `acquire_lock*`, …) so callers keep importing them from `crate::store`.
 
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
 use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 
-use crate::store::{LOCK_FILE, LOCK_META_FILE, LockHolder, LockMeta, StoreError};
+use crate::store::{LOCK_FILE, LOCK_META_FILE, StoreError};
+
+/// Which basemind command is taking the exclusive store lock. Threaded from the caller
+/// (`scan` / `rescan` / `watch` / `serve`) into [`Store::open_with_holder`] so a lock
+/// contention error can name the *actual* holder rather than a hardcoded guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockHolder {
+    /// `basemind serve` — the long-running MCP server (the common holder; an editor plugin).
+    Serve,
+    /// `basemind watch` — the filesystem watcher / incremental re-indexer.
+    Watch,
+    /// `basemind scan` — a one-shot full index.
+    Scan,
+    /// `basemind rescan` — an incremental re-index.
+    Rescan,
+    /// GC / cache maintenance or any caller that did not specify a more precise identity.
+    Maintenance,
+}
+
+impl LockHolder {
+    /// The exact CLI command a user would run for this holder, used verbatim in the error
+    /// message so the guidance is actionable ("stop `basemind serve`").
+    pub fn command(self) -> &'static str {
+        match self {
+            LockHolder::Serve => "basemind serve",
+            LockHolder::Watch => "basemind watch",
+            LockHolder::Scan => "basemind scan",
+            LockHolder::Rescan => "basemind rescan",
+            LockHolder::Maintenance => "a basemind cache/maintenance task",
+        }
+    }
+}
+
+/// On-disk sidecar describing who currently holds the store lock. Written atomically when
+/// the exclusive lock is acquired and read on contention. Additive, non-load-bearing: a
+/// missing or corrupt sidecar simply falls back to the generic lock message, so it never
+/// trips schema wipe-on-mismatch (it lives outside the versioned index/blob stores).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockMeta {
+    /// The CLI command of the holder (`basemind serve`, etc.).
+    pub command: String,
+    /// OS process id of the holder.
+    pub pid: u32,
+    /// Unix-epoch seconds when the lock was acquired.
+    pub acquired_unix: i64,
+}
+
+/// Render the lock-contention message, naming the live holder from the `.lock.meta` sidecar
+/// when it is available and falling back to the generic guess otherwise. Kept as a free fn so
+/// the `thiserror` `#[error(...)]` attribute can call it for [`StoreError::Locked`].
+pub(crate) fn lock_contention_message(path: &Path, holder: &Option<LockMeta>) -> String {
+    match holder {
+        Some(meta) => format!(
+            "another basemind process holds the lock on {} (`{}`, pid {})",
+            path.display(),
+            meta.command,
+            meta.pid
+        ),
+        None => format!(
+            "another basemind process holds the lock on {} (usually the `basemind serve` MCP \
+             server from your editor plugin, or `basemind watch`)",
+            path.display()
+        ),
+    }
+}
+
+/// Actionable guidance printed when a CLI writer (`scan` / `rescan`) can't acquire the
+/// store lock because another basemind process is holding it. Kept as a constant so the
+/// scan and rescan paths emit identical wording and a test can assert the contract.
+pub const LOCK_CONTENTION_HELP: &str = "the basemind index is locked by another process \
+(likely the MCP server). If an editor/plugin is serving this repo, use its `index_rescan` tool \
+to refresh the index, or stop that server before running `basemind scan`.";
 
 /// Best-effort probe: does a live writer currently hold the exclusive `.basemind/.lock`?
 ///

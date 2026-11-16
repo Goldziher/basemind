@@ -503,3 +503,105 @@ fn the_scan_that_replaces_an_older_index_takes_the_workspace_lock() {
         "and holds the lock it took for as long as the store lives"
     );
 }
+
+/// Rewrite the working view's file map as one written before blobs were namespaced.
+fn forge_flat_layout(view_dir: &std::path::Path) {
+    let path = view_dir.join(INDEX_FILE);
+    let mut map: Index = rmp_serde::from_slice(&std::fs::read(&path).expect("read")).expect("decode");
+    map.blob_layout = 0;
+    std::fs::write(&path, rmp_serde::to_vec_named(&map).expect("encode")).expect("write");
+}
+
+/// A file map written when blobs lay flat in `cache/blobs/` names blobs that are not in this
+/// binary's namespace. Its schema is current, so nothing but the layout it records says so. The
+/// writer open must not call its files unchanged: it discards the map and the index built from
+/// it, and the scan that follows extracts every file again.
+#[test]
+fn a_file_map_from_before_the_blob_namespaces_is_discarded_by_the_writer_open() {
+    use crate::index::view::IndexView as _;
+
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("kept.rs"), b"pub fn kept_layout_fixture() {}\n").expect("write");
+    std::fs::write(root.join("gone.rs"), b"pub fn gone_layout_fixture() {}\n").expect("write");
+    let scan = |store: &mut Store| {
+        crate::scanner::scan(
+            root,
+            store,
+            &crate::config::Config::with_defaults(),
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Deferred,
+        )
+        .expect("scan")
+    };
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    assert_eq!(scan(&mut store).stats.updated, 2);
+    let view_dir = store.view_dir.clone();
+    drop(store);
+    forge_flat_layout(&view_dir);
+    std::fs::remove_file(root.join("gone.rs")).expect("delete a file the old map knew");
+
+    let mut reopened = loop {
+        match Store::open(root, VIEW_WORKING) {
+            Err(error) if error.is_lock_contention() => std::thread::sleep(std::time::Duration::from_millis(25)),
+            opened => break opened.expect("the writer open replaces the stale view"),
+        }
+    };
+
+    assert!(reopened.index.files.is_empty(), "no file is vouched for");
+    assert!(reopened.needs_full_scan());
+    assert!(reopened.reset_stale_schema, "the caller is told blobs were displaced");
+    assert!(
+        reopened
+            .index_db
+            .as_ref()
+            .expect("index")
+            .view()
+            .symbols_index_is_empty(),
+        "the index built from the stale map went with it: rows of a deleted file have no map left to purge them"
+    );
+    let report = scan(&mut reopened);
+    assert_eq!(
+        report.stats.skipped_unchanged, 0,
+        "nothing is skipped over the stale map"
+    );
+    assert!(reopened.lookup("kept.rs").is_some() && reopened.lookup("gone.rs").is_none());
+    reopened.flush().expect("flush");
+    let on_disk = read_index(&view_dir).expect("read").expect("a file map");
+    assert_eq!(on_disk.blob_layout, crate::store_layout::BLOB_LAYOUT);
+}
+
+/// A read-only open of such a view serves nothing from the stale map, says a rescan is owed and
+/// leaves the view as it found it.
+#[test]
+fn a_file_map_from_before_the_blob_namespaces_reads_as_a_rescan_owed() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), b"pub fn read_only_layout_fixture() {}\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    crate::scanner::scan(
+        root,
+        &mut store,
+        &crate::config::Config::with_defaults(),
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Deferred,
+    )
+    .expect("scan");
+    let view_dir = store.view_dir.clone();
+    drop(store);
+    forge_flat_layout(&view_dir);
+    let forged = std::fs::read(view_dir.join(INDEX_FILE)).expect("read");
+
+    let read_only = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+
+    assert!(read_only.index.files.is_empty());
+    assert!(read_only.index_db.is_none(), "the index of the stale map is not served");
+    assert!(read_only.rescan_owed());
+    assert_eq!(std::fs::read(view_dir.join(INDEX_FILE)).expect("read"), forged);
+    assert!(matches!(
+        read_index(&view_dir),
+        Err(StoreError::StaleBlobLayout { found: 0, .. })
+    ));
+}

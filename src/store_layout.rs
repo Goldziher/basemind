@@ -146,6 +146,12 @@ pub fn memory_vectors_dir(root: &Path) -> PathBuf {
     repo_group_dir(root).join(MEMORY_VECTORS_DIR)
 }
 
+/// The layout of the blob store, recorded in every file map ([`crate::store::Index::blob_layout`]).
+/// `0`: blobs flat in `cache/blobs/`. `1`: one namespace directory per blob schema. A file map of
+/// an earlier layout names blobs that are not where this binary looks, so it is discarded and the
+/// workspace scanned again, without waiting for a release to change the schema as well.
+pub const BLOB_LAYOUT: u8 = 1;
+
 /// Root of the global blob store: `cache_root()/cache/blobs/`. Holds one namespace directory per
 /// blob schema; only [`global_blobs_dir`] is read or written by this binary.
 pub fn global_blobs_root() -> PathBuf {
