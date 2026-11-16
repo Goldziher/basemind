@@ -55,9 +55,11 @@ def fake_basemind(binary: Path) -> None:
 
     A symlink to this test's Python, which ignores the name it runs under. Not `sleep`: the uutils
     coreutils of Ubuntu 26.04 refuse to run under a name other than their own, and macOS kills a
-    copied system binary at exec.
+    copied system binary at exec. A macOS framework build's `python3` re-executes the interpreter
+    inside its `Python.app`, which would show that path as the command, so that one is linked.
     """
-    binary.symlink_to(os.path.realpath(sys.executable))
+    framework_app = Path(sys.base_prefix) / "Resources/Python.app/Contents/MacOS/Python"
+    binary.symlink_to(framework_app if framework_app.is_file() else os.path.realpath(sys.executable))
 
 
 def windows_path(path: Path) -> str:
