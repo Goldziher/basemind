@@ -1263,10 +1263,9 @@ async fn mcp_server_exercises_representative_tools() {
     let end_line = body.get("end_line").and_then(Value::as_u64).expect("end_line");
     assert_eq!(line, 1, "alpha is defined on the first line (1-based): {body}");
     assert!(end_line >= line, "end_line must be >= line: {body}");
-    assert_eq!(
-        body.get("truncated").and_then(Value::as_bool),
-        Some(false),
-        "small function must not be truncated: {body}"
+    assert!(
+        body.get("truncated").is_none(),
+        "a small function is not truncated, and a false `truncated` is left out: {body}"
     );
 
     let missing = service
