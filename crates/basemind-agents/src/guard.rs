@@ -125,6 +125,70 @@ pub(crate) fn guard_bypass(args: &[String], bypass: bool) -> Result<(), LaunchEr
     }
 }
 
+/// Name suffixes an environment addition may carry: credentials and endpoints of a model
+/// provider, which a harness reads from its environment.
+const ENV_SUFFIXES: &[&str] = &["_API_KEY", "_TOKEN", "_BASE_URL"];
+
+/// Further names an addition may carry: provider settings that are neither a credential nor
+/// a location of code or configuration.
+const ENV_NAMES: &[&str] = &[
+    "AWS_REGION",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+];
+
+/// Prefixes no addition may carry, even when its suffix matches: basemind's own variables,
+/// the dynamic loaders' and the language runtimes' code-loading switches.
+const ENV_DENIED_PREFIXES: &[&str] = &[
+    "BASEMIND_",
+    "LD_",
+    "DYLD_",
+    "NODE_",
+    "NPM_",
+    "PYTHON",
+    "RUBY",
+    "PERL",
+    "JAVA_",
+];
+
+/// Names no addition may carry: the harnesses' configuration directories and files, which
+/// would hand the child a configuration of the caller's choosing.
+const ENV_DENIED_NAMES: &[&str] = &[
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "CODEX_SQLITE_HOME",
+    "GEMINI_CLI_HOME",
+    "CURSOR_CONFIG_DIR",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_CONFIG_CONTENT",
+    "HERMES_HOME",
+    "GROK_HOME",
+];
+
+/// Checks the name of an environment addition, of the spec or of its MCP server. It must be
+/// `[A-Z][A-Z0-9_]*`, end in a provider suffix or be on [`ENV_NAMES`], and be neither inherited
+/// through [`ENV_ALLOWLIST`](crate::ENV_ALLOWLIST) nor on a denied prefix or name.
+pub(crate) fn check_env_name(name: &str) -> Result<(), LaunchError> {
+    let grammar = name.len() <= MAX_VALUE_BYTES
+        && name.bytes().next().is_some_and(|b| b.is_ascii_uppercase())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+    let inherited = crate::spec::ENV_ALLOWLIST
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(name));
+    let denied = ENV_DENIED_PREFIXES.iter().any(|prefix| name.starts_with(prefix)) || ENV_DENIED_NAMES.contains(&name);
+    let allowed = ENV_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) || ENV_NAMES.contains(&name);
+    if grammar && !inherited && !denied && allowed {
+        Ok(())
+    } else {
+        Err(LaunchError::EnvNotAllowed(name.to_owned()))
+    }
+}
+
 #[cfg(test)]
 #[path = "guard_tests.rs"]
 mod tests;

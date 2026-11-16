@@ -374,9 +374,7 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = spec(HarnessKind::Codex, root.path());
     let mut server = McpServerSpec::basemind_serve("/opt/basemind/bin/basemind");
-    server
-        .env
-        .insert("BASEMIND_COMMS_DIR".to_owned(), "/tmp/comms".to_owned());
+    server.env.insert("SEARCH_API_KEY".to_owned(), "key".to_owned());
     spec.mcp_server = Some(server);
     let plan = CodexAdapter.plan(&spec).unwrap();
     assert_eq!(plan.args[0], "app-server");
@@ -398,7 +396,7 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
     );
     let env_vars = plan.args.iter().find(|arg| arg.contains("env_vars")).unwrap();
     let names: Vec<String> = serde_json::from_str(env_vars.split_once('=').unwrap().1).unwrap();
-    for name in ["BASEMIND_AGENT_ID", "BASEMIND_HOST", "BASEMIND_COMMS_DIR"] {
+    for name in ["BASEMIND_AGENT_ID", "BASEMIND_HOST", "SEARCH_API_KEY"] {
         assert!(
             names.iter().any(|forwarded| forwarded == name),
             "{name} is not forwarded: {names:?}"

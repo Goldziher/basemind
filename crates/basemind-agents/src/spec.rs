@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::error::LaunchError;
 use crate::event::ApprovalRequest;
-use crate::guard::{check_extra_args, guard_bypass};
+use crate::guard::{check_env_name, check_extra_args, guard_bypass};
 use crate::harness::{AcpFlavor, Harness, HarnessKind};
 use crate::identity::AgentIdentity;
 use crate::session::CommandPlan;
@@ -99,8 +99,9 @@ pub struct McpServerSpec {
     pub command: PathBuf,
     /// Its arguments.
     pub args: Vec<String>,
-    /// Variables the server needs besides the agent identity. They are exported to the
-    /// harness as well, because Claude Code and Codex hand a server variables by inheritance.
+    /// Variables the server needs besides the agent identity, under the same name rule as
+    /// [`LaunchSpec::env`]. They are exported to the harness as well, because Claude Code and
+    /// Codex hand a server variables by inheritance.
     pub env: BTreeMap<String, String>,
     /// Whether the harness may call this server's tools without an approval request. Without
     /// it every comms call of the launched agent is a request the default policy denies.
@@ -137,6 +138,14 @@ pub struct LaunchSpec {
     pub identity: AgentIdentity,
     /// Variables added to the allow-listed environment. Nothing else of the parent's
     /// environment reaches the child.
+    ///
+    /// A name must be `[A-Z][A-Z0-9_]*` and end in `_API_KEY`, `_TOKEN` or `_BASE_URL`, or be
+    /// one of a few provider settings (`AWS_REGION`, `AWS_ACCESS_KEY_ID`,
+    /// `AWS_SECRET_ACCESS_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`). Names on
+    /// [`ENV_ALLOWLIST`], `BASEMIND_*`, loader and runtime switches (`LD_*`, `DYLD_*`,
+    /// `NODE_*`, `PYTHON*`, ...) and the harnesses' configuration directories are refused
+    /// with [`LaunchError::EnvNotAllowed`], so an addition cannot redirect the child's
+    /// configuration, code loading, executable search or basemind daemon.
     pub env: BTreeMap<String, String>,
     /// The MCP server to inject, if any.
     pub mcp_server: Option<McpServerSpec>,
@@ -199,9 +208,7 @@ impl LaunchSpec {
             .keys()
             .chain(self.mcp_server.iter().flat_map(|server| server.env.keys()))
         {
-            if name.is_empty() || name.contains(['=', '\0']) {
-                return Err(LaunchError::InvalidEnvName(name.clone()));
-            }
+            check_env_name(name)?;
         }
         if let Some(server) = &self.mcp_server {
             let valid = (1..=64).contains(&server.name.len())

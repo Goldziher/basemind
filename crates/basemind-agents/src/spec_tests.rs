@@ -40,26 +40,47 @@ fn the_child_environment_is_the_allow_list_plus_additions_and_identity() {
 }
 
 #[test]
-fn an_addition_cannot_replace_the_identity() {
+fn additions_that_would_redirect_the_child_are_refused_from_the_spec_and_the_server() {
     let root = tempfile::tempdir().unwrap();
-    let mut spec = spec(HarnessKind::Codex, root.path());
-    spec.env
-        .insert("BASEMIND_AGENT_ID".to_owned(), "someone-else".to_owned());
-    let env = spec.child_env(Vec::new());
-    assert_eq!(env["BASEMIND_AGENT_ID"], "launched-agent");
-}
-
-#[test]
-fn environment_names_no_process_can_carry_are_refused() {
-    let root = tempfile::tempdir().unwrap();
-    for name in ["", "A=B", "NUL\0"] {
+    for name in [
+        "",
+        "A=B",
+        "BASEMIND_AGENT_ID",
+        "BASEMIND_COMMS_DIR",
+        "CLAUDE_CONFIG_DIR",
+        "LD_PRELOAD",
+        "PATH",
+    ] {
         let mut spec = spec(HarnessKind::Codex, root.path());
         spec.env.insert(name.to_owned(), "value".to_owned());
         assert!(
-            matches!(spec.prepare(), Err(LaunchError::InvalidEnvName(_))),
-            "{name:?} was accepted"
+            matches!(spec.prepare(), Err(LaunchError::EnvNotAllowed(_))),
+            "{name:?} was accepted from the spec"
+        );
+        let mut spec = spec_with_server(root.path());
+        spec.mcp_server
+            .as_mut()
+            .unwrap()
+            .env
+            .insert(name.to_owned(), "value".to_owned());
+        assert!(
+            matches!(spec.prepare(), Err(LaunchError::EnvNotAllowed(_))),
+            "{name:?} was accepted from the server"
         );
     }
+    let mut spec = spec_with_server(root.path());
+    spec.mcp_server
+        .as_mut()
+        .unwrap()
+        .env
+        .insert("SEARCH_API_KEY".to_owned(), "value".to_owned());
+    assert!(spec.prepare().is_ok());
+}
+
+fn spec_with_server(root: &Path) -> LaunchSpec {
+    let mut spec = spec(HarnessKind::Codex, root);
+    spec.mcp_server = Some(McpServerSpec::basemind_serve("/opt/basemind"));
+    spec
 }
 
 #[test]

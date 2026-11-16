@@ -122,3 +122,54 @@ fn the_bypass_guard_passes_only_a_launch_that_runs_in_bypass() {
     }
     assert!(guard_bypass(&args(&["--permission-mode", "plan", "acp"]), false).is_ok());
 }
+
+#[test]
+fn environment_additions_are_limited_to_provider_credentials_and_settings() {
+    for name in [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GITHUB_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "AWS_REGION",
+        "GOOGLE_CLOUD_PROJECT",
+    ] {
+        assert!(check_env_name(name).is_ok(), "{name} was refused");
+    }
+    for name in [
+        "",
+        "A=B_TOKEN",
+        "NUL\0_TOKEN",
+        "lower_api_key",
+        "1_TOKEN",
+        "PATH",
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "TMPDIR",
+        "SYSTEMROOT",
+        "BASEMIND_DATA_HOME",
+        "BASEMIND_COMMS_DIR",
+        "BASEMIND_AGENT_ID",
+        "BASEMIND_HOST",
+        "BASEMIND_SERVER_TOKEN",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "NODE_OPTIONS",
+        "NODE_AUTH_TOKEN",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "OPENCODE_CONFIG",
+        "GIT_SSH_COMMAND",
+        "SHELL",
+        "EDITOR",
+        "HTTPS_PROXY",
+    ] {
+        assert!(
+            matches!(check_env_name(name), Err(LaunchError::EnvNotAllowed(_))),
+            "{name:?} was accepted"
+        );
+    }
+}

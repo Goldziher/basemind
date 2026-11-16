@@ -107,7 +107,7 @@ cat > /dev/null
         dir = dir.path().display()
     );
     let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
-    spec.env.insert("EXTRA_FOR_THE_AGENT".to_owned(), "yes".to_owned());
+    spec.env.insert("EXTRA_API_KEY".to_owned(), "yes".to_owned());
     assert!(
         std::env::var_os("CARGO_MANIFEST_DIR").is_some(),
         "the launcher has no variable outside the allow-list, so the check below proves nothing"
@@ -143,14 +143,14 @@ cat > /dev/null
         "{env}"
     );
     assert!(env.lines().any(|line| line == "BASEMIND_HOST=claude"), "{env}");
-    assert!(env.lines().any(|line| line == "EXTRA_FOR_THE_AGENT=yes"), "{env}");
+    assert!(env.lines().any(|line| line == "EXTRA_API_KEY=yes"), "{env}");
     let leaked: Vec<_> = names
         .iter()
         .filter(|name| {
             // The shell itself sets these three.
             !matches!(**name, "PWD" | "SHLVL" | "_" | "OLDPWD")
                 && !basemind_agents::ENV_ALLOWLIST.contains(name)
-                && !matches!(**name, "BASEMIND_AGENT_ID" | "BASEMIND_HOST" | "EXTRA_FOR_THE_AGENT")
+                && !matches!(**name, "BASEMIND_AGENT_ID" | "BASEMIND_HOST" | "EXTRA_API_KEY")
         })
         .collect();
     assert!(
