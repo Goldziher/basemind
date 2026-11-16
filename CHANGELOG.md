@@ -440,9 +440,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The daemon protocol version is 6 (was 5): a search by meaning reads the `updated_at` of its
   hits' notes, and whole only the notes it may serve, in batches (at most 256 keys and 8 MiB of
   notes per reply, which the daemon enforces), and a rescan says whether its paths were named or
-  watched. A client and a daemon of different versions refuse each other at connect, as before:
-  after upgrading, run `basemind comms stop` and restart sessions of the older version, which
-  would otherwise take the daemon back in turn.
+  watched. A client and a daemon of different protocol versions refuse each other at connect, as
+  before. A 0.33 install never meets this daemon (it runs in another protocol generation). Within
+  the generation, the newer client asks an older daemon to stop, and gets no daemon while that one
+  refuses because it serves sessions: close those sessions or run `basemind comms stop`. An older
+  client that finds this daemon is told to update and never takes it over.
 - The agent comms store is still versioned by the release minor, so the 0.34 bump empties it once
   more.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
