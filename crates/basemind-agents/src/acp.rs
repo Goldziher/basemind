@@ -19,7 +19,8 @@ use agent_client_protocol::v1::schema::{
 };
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{Agent, Client, Lines};
-use futures::channel::mpsc::{Sender, UnboundedReceiver, channel, unbounded};
+use futures::channel::mpsc::{Receiver, Sender, channel};
+use futures::stream::FusedStream;
 use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 
 use crate::error::LaunchError;
@@ -28,8 +29,9 @@ use crate::event::{
 };
 use crate::frames::FrameReader;
 use crate::harness::{AcpFlavor, HarnessKind};
+use crate::pipe;
 use crate::registry::Adapter;
-use crate::session::{self, ChildIo, CommandPlan, ControlTx, Driver, EventSink, Session};
+use crate::session::{self, CONTROL_QUEUE, ChildIo, CommandPlan, ControlTx, Driver, EventSink, Session, Undelivered};
 use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode, Prepared};
 
 /// Drives every [`HarnessKind::Acp`] harness.
@@ -113,9 +115,19 @@ impl Adapter for AcpAdapter {
     fn launch(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
         let plan = self.plan(spec)?;
         let config = Config::new(spec, &plan)?;
-        let (tx, controls) = unbounded();
+        let (tx, controls) = channel(CONTROL_QUEUE);
         let driver = Box::new(AcpDriver { config, controls });
-        let control: ControlTx = Box::new(move |control| tx.unbounded_send(control).is_ok());
+        let tx = Mutex::new(tx);
+        let control: ControlTx = Box::new(move |control| {
+            let mut tx = tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            tx.try_send(control).map_err(|error| {
+                if error.is_full() {
+                    Undelivered::Full
+                } else {
+                    Undelivered::Closed
+                }
+            })
+        });
         session::start(&plan, spec, driver, control)
     }
 }
@@ -171,16 +183,16 @@ impl Config {
 
 struct AcpDriver {
     config: Config,
-    controls: UnboundedReceiver<Control>,
+    controls: Receiver<Control>,
 }
 
 impl Driver for AcpDriver {
     fn run(self: Box<Self>, io: ChildIo, sink: EventSink) -> Result<(), LaunchError> {
         let (line_tx, incoming) = channel(LINE_QUEUE);
-        let stdout = io.stdout;
+        let stdout = pipe::Reader::new(io.stdout, io.abandon.clone());
         std::thread::spawn(move || pump_lines(stdout, line_tx));
-        let (out_tx, mut out_rx) = unbounded::<String>();
-        let mut stdin = io.stdin;
+        let (out_tx, mut out_rx) = channel::<String>(LINE_QUEUE);
+        let mut stdin = pipe::Writer::new(io.stdin, io.abandon)?;
         std::thread::spawn(move || {
             while let Some(line) = futures::executor::block_on(out_rx.next()) {
                 let written = stdin
@@ -363,16 +375,17 @@ fn protocol_error(error: &agent_client_protocol::Error) -> LaunchError {
 }
 
 /// Runs one ACP conversation over a pair of line channels until its turns are over.
-pub(crate) async fn converse<O, I>(
+pub(crate) async fn converse<O, I, C>(
     outgoing: O,
     incoming: I,
     config: Config,
     sink: EventSink,
-    mut controls: UnboundedReceiver<Control>,
+    mut controls: C,
 ) -> Result<(), LaunchError>
 where
     O: Sink<String, Error = std::io::Error> + Send + 'static,
     I: Stream<Item = std::io::Result<String>> + Send + 'static,
+    C: Stream<Item = Control> + FusedStream + Unpin + Send + 'static,
 {
     let pending = Pending::default();
     let updates = Updates::default();
@@ -414,24 +427,51 @@ where
         }
     };
     let conversation = async move |connection: ConnectionTo<Agent>| {
-        let client = Implementation::new("basemind-agents", env!("CARGO_PKG_VERSION"));
-        connection
-            .send_request(InitializeRequest::new(ProtocolVersion::V1).client_info(client))
-            .block_task()
-            .await?;
-        let new_session = NewSessionRequest::new(config.cwd)
-            .mcp_servers(config.mcp_servers)
-            .meta(config.session_meta);
-        let session = connection.send_request(new_session).block_task().await?.session_id;
-        sink.emit(Event::HarnessSession(session.0.to_string()));
-        if let Some(mode) = config.mode {
+        let Config {
+            cwd,
+            brief,
+            mcp_servers,
+            session_meta,
+            mode,
+        } = config;
+        let setup = async {
+            let client = Implementation::new("basemind-agents", env!("CARGO_PKG_VERSION"));
             connection
-                .send_request(SetSessionModeRequest::new(session.clone(), mode))
+                .send_request(InitializeRequest::new(ProtocolVersion::V1).client_info(client))
                 .block_task()
                 .await?;
-        }
-        let mut next = Some(config.brief);
+            let new_session = NewSessionRequest::new(cwd).mcp_servers(mcp_servers).meta(session_meta);
+            let session = connection.send_request(new_session).block_task().await?.session_id;
+            sink.emit(Event::HarnessSession(session.0.to_string()));
+            if let Some(mode) = mode {
+                connection
+                    .send_request(SetSessionModeRequest::new(session.clone(), mode))
+                    .block_task()
+                    .await?;
+            }
+            Ok::<_, agent_client_protocol::Error>(session)
+        };
         let mut queued = VecDeque::new();
+        // A stop, or an agent that hangs up, must end the session while it is still opening.
+        let session = {
+            let mut setup = pin!(setup.fuse());
+            let mut closed = pin!(connection.incoming_closed().fuse());
+            loop {
+                futures::select_biased! {
+                    session = setup => break session?,
+                    control = controls.next() => match control {
+                        Some(Control::FollowUp(text)) => queued.push_back(text),
+                        Some(Control::Answer { id, allow }) => pending.answer(&id, allow, &sink),
+                        Some(Control::Stop) | None => return Ok(Ok(())),
+                    },
+                    () = closed => {
+                        let message = "the ACP agent closed its output before the session opened";
+                        return Ok(Err(LaunchError::Protocol(message.to_owned())));
+                    }
+                }
+            }
+        };
+        let mut next = Some(brief);
         loop {
             let Some(text) = next.take().or_else(|| queued.pop_front()) else {
                 let mut closed = pin!(connection.incoming_closed().fuse());

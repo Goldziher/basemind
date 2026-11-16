@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::{self, RecvTimeoutError, TrySendError};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -13,7 +13,8 @@ use serde_json::Value;
 use crate::error::LaunchError;
 use crate::event::{ApprovalSource, Control, Event};
 use crate::frames::FrameReader;
-use crate::session::{ChildIo, ControlTx, Driver, EventSink};
+use crate::pipe;
+use crate::session::{CONTROL_QUEUE, ChildIo, ControlTx, Driver, EventSink, Undelivered};
 
 const TICK: Duration = Duration::from_millis(16);
 
@@ -124,6 +125,50 @@ impl TextStream {
     }
 }
 
+/// How many frames may wait for the harness to read them.
+const OUTPUT_QUEUE: usize = 64;
+
+/// The protocol's side of the harness's stdin: each flushed frame goes to a writer thread
+/// through a bounded queue, so the driver never blocks on a harness that stopped reading.
+struct QueuedWriter {
+    frame: Vec<u8>,
+    tx: mpsc::SyncSender<Vec<u8>>,
+}
+
+impl QueuedWriter {
+    fn start(mut stdin: impl Write + Send + 'static) -> Self {
+        let (tx, frames) = mpsc::sync_channel::<Vec<u8>>(OUTPUT_QUEUE);
+        std::thread::spawn(move || {
+            for frame in frames {
+                if stdin.write_all(&frame).and_then(|()| stdin.flush()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { frame: Vec::new(), tx }
+    }
+}
+
+impl Write for QueuedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.frame.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.frame.is_empty() {
+            return Ok(());
+        }
+        match self.tx.try_send(std::mem::take(&mut self.frame)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(std::io::Error::other(format!(
+                "the harness left {OUTPUT_QUEUE} frames unread"
+            ))),
+            Err(TrySendError::Disconnected(_)) => Err(std::io::ErrorKind::BrokenPipe.into()),
+        }
+    }
+}
+
 /// Runs a [`Protocol`] over the pipes of a harness.
 pub(crate) struct LineDriver<P> {
     protocol: P,
@@ -133,10 +178,15 @@ pub(crate) struct LineDriver<P> {
 impl<P: Protocol> LineDriver<P> {
     /// The driver for `protocol` and the sender its controls arrive through.
     pub fn boxed(protocol: P) -> (Box<dyn Driver>, ControlTx) {
-        let (tx, controls) = mpsc::channel();
+        let (tx, controls) = mpsc::sync_channel(CONTROL_QUEUE);
         (
             Box::new(Self { protocol, controls }),
-            Box::new(move |control| tx.send(control).is_ok()),
+            Box::new(move |control| {
+                tx.try_send(control).map_err(|error| match error {
+                    TrySendError::Full(_) => Undelivered::Full,
+                    TrySendError::Disconnected(_) => Undelivered::Closed,
+                })
+            }),
         )
     }
 }
@@ -144,8 +194,8 @@ impl<P: Protocol> LineDriver<P> {
 impl<P: Protocol> Driver for LineDriver<P> {
     fn run(self: Box<Self>, io: ChildIo, sink: EventSink) -> Result<(), LaunchError> {
         let Self { mut protocol, controls } = *self;
-        let mut out = io.stdin;
-        let stdout = io.stdout;
+        let mut out = QueuedWriter::start(pipe::Writer::new(io.stdin, io.abandon.clone())?);
+        let stdout = pipe::Reader::new(io.stdout, io.abandon);
         let (tx, lines) = mpsc::sync_channel(16);
         std::thread::spawn(move || {
             let mut reader = FrameReader::new(stdout);

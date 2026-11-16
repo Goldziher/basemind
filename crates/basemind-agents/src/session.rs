@@ -7,14 +7,15 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::error::LaunchError;
 use crate::event::{ApprovalRequest, ApprovalSource, Control, Event, FinishStatus};
+use crate::pipe;
 use crate::process;
 use crate::queue::EventQueue;
 use crate::spec::{ApprovalPolicy, ApprovalVerdict, LaunchSpec, Limits};
@@ -39,19 +40,35 @@ pub struct CommandPlan {
     pub cwd: PathBuf,
 }
 
-/// The pipes of a started harness.
+/// The pipes of a started harness, and the flag that tells their readers and writers to give
+/// up (see [`crate::pipe`]).
 pub(crate) struct ChildIo {
     pub stdin: ChildStdin,
     pub stdout: ChildStdout,
+    pub abandon: Arc<AtomicBool>,
 }
+
+/// Why a control message did not reach the driver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Undelivered {
+    /// The driver's control queue is full.
+    Full,
+    /// The driver is gone.
+    Closed,
+}
+
+/// How many control messages may wait for the driver.
+pub(crate) const CONTROL_QUEUE: usize = 64;
+/// How long dropping a session waits for its supervisor before leaving it to finish alone.
+const DROP_WAIT: Duration = Duration::from_secs(2);
 
 /// The protocol side of one session. `run` returns when the session's turns are over.
 pub(crate) trait Driver: Send + 'static {
     fn run(self: Box<Self>, io: ChildIo, sink: EventSink) -> Result<(), LaunchError>;
 }
 
-/// Hands a control message to the driver; `false` when the driver is gone.
-pub(crate) type ControlTx = Box<dyn Fn(Control) -> bool + Send + Sync>;
+/// Hands a control message to the driver without waiting.
+pub(crate) type ControlTx = Box<dyn Fn(Control) -> Result<(), Undelivered> + Send + Sync>;
 
 struct State {
     finished: bool,
@@ -72,6 +89,8 @@ struct Shared {
     prompts: AtomicU32,
     /// The events on their way to the caller.
     events: Arc<EventQueue>,
+    /// Set once the session is over or its group was killed: pipe I/O gives up.
+    abandon: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -90,6 +109,7 @@ impl Shared {
             turns: AtomicU32::new(0),
             prompts: AtomicU32::new(1),
             events: Arc::default(),
+            abandon: Arc::default(),
         })
     }
 
@@ -173,7 +193,7 @@ impl EventSink {
             max_turns,
             ..Limits::default()
         };
-        let shared = Shared::new(0, limits, policy, Box::new(|_| false));
+        let shared = Shared::new(0, limits, policy, Box::new(|_| Err(Undelivered::Closed)));
         let events = shared.events.clone();
         (Self { shared }, events)
     }
@@ -186,6 +206,8 @@ impl EventSink {
 pub struct Session {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
+    /// Disconnects when the supervisor thread ends.
+    worker_done: Receiver<()>,
 }
 
 impl std::fmt::Debug for Session {
@@ -283,10 +305,14 @@ impl Session {
     }
 
     fn send(&self, control: Control) -> Result<(), LaunchError> {
-        if self.shared.state().finished || !(self.shared.control)(control) {
+        if self.shared.state().finished {
             return Err(LaunchError::SessionClosed);
         }
-        Ok(())
+        match (self.shared.control)(control) {
+            Ok(()) => Ok(()),
+            Err(Undelivered::Full) => Err(LaunchError::ControlQueueFull),
+            Err(Undelivered::Closed) => Err(LaunchError::SessionClosed),
+        }
     }
 
     fn request_stop(&self, grace: Duration) {
@@ -301,15 +327,22 @@ impl Session {
         }
         self.shared.events.drain();
         self.shared.wake.notify_all();
-        (self.shared.control)(Control::Stop);
+        // Not delivered when the queue is full or the driver is gone: the watchdog still kills
+        // the group at the stop deadline and then abandons the pipes.
+        let _ = (self.shared.control)(Control::Stop);
     }
 }
 
 impl Drop for Session {
+    /// Kills the process group at once and waits up to two seconds for the supervisor to
+    /// reap it. A supervisor stuck beyond that (in a caller's approval policy, say) is left to
+    /// finish on its own thread; the group is killed either way.
     fn drop(&mut self) {
         self.request_stop(Duration::ZERO);
         self.shared.events.close();
-        if let Some(worker) = self.worker.take() {
+        if let Some(worker) = self.worker.take()
+            && !matches!(self.worker_done.recv_timeout(DROP_WAIT), Err(RecvTimeoutError::Timeout))
+        {
             let _ = worker.join();
         }
     }
@@ -337,13 +370,13 @@ pub(crate) fn start(
         source,
     })?;
     let piped = "the child was spawned with piped stdio";
+    let shared = Shared::new(child.id(), spec.limits, spec.approval_policy.clone(), control);
     let io = ChildIo {
         stdin: child.stdin.take().expect(piped),
         stdout: child.stdout.take().expect(piped),
+        abandon: shared.abandon.clone(),
     };
-    let mut stderr = child.stderr.take().expect(piped);
-
-    let shared = Shared::new(child.id(), spec.limits, spec.approval_policy.clone(), control);
+    let mut stderr = pipe::Reader::new(child.stderr.take().expect(piped), shared.abandon.clone());
     let sink = EventSink { shared: shared.clone() };
 
     let tail = Arc::new(Mutex::new(Vec::new()));
@@ -371,9 +404,11 @@ pub(crate) fn start(
         move || watchdog(&shared, started)
     });
 
+    let (worker_alive, worker_done) = mpsc::channel::<()>();
     let worker = std::thread::spawn({
         let shared = shared.clone();
         move || {
+            let _alive = worker_alive;
             let run = std::panic::AssertUnwindSafe(|| driver.run(io, sink.clone()));
             let result = std::panic::catch_unwind(run)
                 .unwrap_or_else(|_| Err(LaunchError::Protocol("the adapter panicked".to_owned())));
@@ -407,12 +442,14 @@ pub(crate) fn start(
                 }));
             }
             shared.events.push_last(Event::Finished(status));
+            shared.abandon.store(true, Ordering::SeqCst);
         }
     });
 
     Ok(Session {
         shared,
         worker: Some(worker),
+        worker_done,
     })
 }
 
@@ -450,8 +487,10 @@ fn watchdog(shared: &Shared, started: Instant) {
             drop(state);
             shared.events.drain();
             // A descendant that left the group can hold the pipes open; the adapter is told
-            // to stop instead of being left to wait for an end of output that never comes.
-            (shared.control)(Control::Stop);
+            // to stop and its pipe I/O gives up, instead of waiting for an end of output or
+            // room in a pipe that never comes.
+            shared.abandon.store(true, Ordering::SeqCst);
+            let _ = (shared.control)(Control::Stop);
             return;
         }
         let until = state.stop_deadline.map_or(wall, |at| at.min(wall));

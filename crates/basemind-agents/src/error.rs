@@ -100,6 +100,10 @@ pub enum LaunchError {
     /// The session already ran the number of turns its limits allow.
     #[error("turn limit of {0} reached")]
     TurnLimit(u32),
+    /// The session's control queue is full; the harness is not taking control messages as
+    /// fast as they are sent.
+    #[error("the session's control queue is full")]
+    ControlQueueFull,
     /// The session has finished and accepts no more control.
     #[error("the session has finished")]
     SessionClosed,

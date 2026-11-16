@@ -526,3 +526,37 @@ fn launch_errors_are_typed() {
     ));
     assert!(Registry::with_defaults().adapter(HarnessKind::Codex).is_some());
 }
+
+#[test]
+fn dropping_a_session_does_not_wait_on_a_harness_that_stopped_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("escaped");
+    // Answers the handshake without reading anything, so the brief's turn/start fills the
+    // pipe. The escaped job keeps both pipes open after the group is killed.
+    let body = format!(
+        r#"set -m
+sleep 300 &
+kill -0 $! && echo "$! alive" > '{}'
+printf '%s\n' '{{"id":1,"result":{{}}}}'
+printf '%s\n' '{{"id":2,"result":{{"thread":{{"id":"thread-1"}}}}}}'
+while :; do sleep 1; done
+"#,
+        pidfile.display()
+    );
+    let mut spec = spec(HarnessKind::Codex, dir.path(), &body);
+    spec.brief = "x".repeat(4 * 1024 * 1024);
+    let session = launch(&spec);
+    let escaped = grandchild(&pidfile);
+    let leader = session.pid().to_string();
+    // Let the adapter reach the write that cannot complete.
+    std::thread::sleep(Duration::from_millis(500));
+    let (dropped, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(session);
+        let _ = dropped.send(());
+    });
+    let returned = done.recv_timeout(Duration::from_secs(10)).is_ok();
+    Command::new("/bin/kill").arg(&escaped).status().unwrap();
+    assert!(returned, "dropping the session blocked");
+    assert_gone(&leader);
+}

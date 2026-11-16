@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::thread::JoinHandle;
 
-use futures::channel::mpsc::{UnboundedSender, unbounded};
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde_json::{Value, json};
 
 use super::*;
@@ -510,16 +510,13 @@ fn malformed_and_truncated_lines_do_not_derail_the_turn() {
 #[test]
 fn stop_cancels_the_turn_through_the_protocol() {
     let root = tempfile::tempdir().unwrap();
-    let run = converse_with(
-        &acp_spec(AcpFlavor::Cursor, root.path()),
-        vec![Control::Stop],
-        |agent| {
-            agent.open();
-            agent.expect("session/prompt");
-            let cancel = agent.expect("session/cancel");
-            assert_eq!(cancel["params"]["sessionId"], "sess-1");
-        },
-    );
+    let run = converse_with(&acp_spec(AcpFlavor::Cursor, root.path()), Vec::new(), |agent| {
+        agent.open();
+        agent.expect("session/prompt");
+        agent.controls.unbounded_send(Control::Stop).unwrap();
+        let cancel = agent.expect("session/cancel");
+        assert_eq!(cancel["params"]["sessionId"], "sess-1");
+    });
     run.result.unwrap();
     assert!(!run.events.contains(&Event::TurnCompleted { turn: 1 }));
 }
@@ -725,4 +722,20 @@ fn deferred_requests_are_capped_and_the_end_of_the_turn_withdraws_them() {
         })
         .count();
     assert_eq!(withdrawn, cap);
+}
+
+#[test]
+fn a_stop_ends_a_session_whose_agent_never_answers_initialize() {
+    let root = tempfile::tempdir().unwrap();
+    let started = std::time::Instant::now();
+    let run = converse_with(
+        &acp_spec(AcpFlavor::Cursor, root.path()),
+        vec![Control::Stop],
+        |agent| {
+            agent.expect("initialize");
+            // No answer: the agent hangs while the session opens.
+        },
+    );
+    run.result.unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }

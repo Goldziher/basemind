@@ -42,6 +42,7 @@ mod guard;
 mod harness;
 mod identity;
 mod line;
+mod pipe;
 mod process;
 mod queue;
 mod registry;
