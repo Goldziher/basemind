@@ -90,6 +90,45 @@ async fn stop_is_refused_while_a_relay_session_is_still_being_set_up() {
     );
 }
 
+/// A relay link that never sends its hello (a suspended client, a half-open pipe) must not hold
+/// the daemon for good: every `Stop` would be refused and no newer build could ever replace it.
+/// The link is dropped once the handshake's time is up, whether it stalled before or after the
+/// preamble.
+#[tokio::test(start_paused = true)]
+async fn a_relay_link_that_never_sends_its_hello_stops_holding_the_daemon() {
+    use tokio::io::AsyncWriteExt as _;
+
+    let (_dir, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let mut session = Session::default();
+    for preamble in [&crate::comms::relay::RELAY_MAGIC[..], &[]] {
+        let (mut client, server) = tokio::io::duplex(4096);
+        client.write_all(preamble).await.expect("send the preamble");
+        let handshake = broker.clone().serve_relay_connection(server, broker.register_link());
+        tokio::pin!(handshake);
+        let nearly = crate::comms::relay::HELLO_TIMEOUT - Duration::from_secs(1);
+        assert!(
+            tokio::time::timeout(nearly, &mut handshake).await.is_err(),
+            "a client slow to send its hello is waited for"
+        );
+        let refused = broker.handle(CommsRequest::Stop, &mut session, &tx).await;
+        assert!(
+            matches!(refused, CommsResponse::Error { ref code, .. } if code == "daemon_busy"),
+            "{refused:?}"
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), &mut handshake)
+            .await
+            .expect("the link is dropped when the handshake's time is up");
+        drop(client);
+    }
+    assert_eq!(
+        broker.handle(CommsRequest::Stop, &mut session, &tx).await,
+        CommsResponse::Ok,
+        "the stalled links no longer hold the daemon"
+    );
+}
+
 /// The other order of the same race: the daemon accepted a `Stop` first. The session is told the
 /// daemon is draining, which its relay retries against the successor.
 #[tokio::test]

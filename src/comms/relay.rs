@@ -30,6 +30,11 @@ use super::ids::AgentId;
 /// length whose high byte is `0x00`, so it can never collide with the `0x42` first byte here.
 pub const RELAY_MAGIC: [u8; 8] = *b"BMRELAY1";
 
+/// How long the daemon waits for a relay link's preamble and [`RelayHello`]. A link counts as a
+/// session being set up from its accept, which makes the daemon refuse `Stop`; one that never
+/// says hello must not do that for good.
+pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The relay handshake's own protocol version, negotiated in [`RelayHello`] / [`RelayWelcome`].
 ///
 /// Independent of [`super::protocol::PROTO_VER`]: the relay envelope can change shape without a
@@ -173,6 +178,28 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
 pub async fn read_hello<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<RelayHello> {
     let body = read_frame(reader).await?;
     decode_io(&body)
+}
+
+/// Daemon side, phase 1 — consume the [`RELAY_MAGIC`] preamble the accept loop peeked and read
+/// the [`RelayHello`], both within [`HELLO_TIMEOUT`].
+pub async fn accept_hello<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<RelayHello> {
+    let hello = async {
+        let mut magic = [0u8; RELAY_MAGIC.len()];
+        reader.read_exact(&mut magic).await?;
+        if magic != RELAY_MAGIC {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "relay preamble mismatch",
+            ));
+        }
+        read_hello(reader).await
+    };
+    tokio::time::timeout(HELLO_TIMEOUT, hello).await.map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("no relay hello within {}s", HELLO_TIMEOUT.as_secs()),
+        )
+    })?
 }
 
 /// Daemon side, phase 1 — send the [`RelayWelcome`] reply. After this the daemon drops the frame

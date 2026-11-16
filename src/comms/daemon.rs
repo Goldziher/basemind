@@ -395,7 +395,8 @@ impl Broker {
     /// [`SharedReadStack`](crate::mcp::SharedReadStack) across every connection.
     ///
     /// The accept loop routes a connection here after peeking [`relay::RELAY_MAGIC`](super::relay::RELAY_MAGIC);
-    /// this consumes the magic, reads the [`RelayHello`](super::relay::RelayHello), and validates it.
+    /// this consumes the magic, reads the [`RelayHello`](super::relay::RelayHello) within
+    /// [`HELLO_TIMEOUT`](super::relay::HELLO_TIMEOUT), and validates it.
     /// A proto/view mismatch, or a failure to build the workspace's shared stack, is answered with a
     /// non-accepting [`RelayWelcome`](super::relay::RelayWelcome) whose token tells the client
     /// whether to retry. `link` is the accept-loop link guard, held for the whole session so the
@@ -405,23 +406,13 @@ impl Broker {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         use super::relay;
-        use tokio::io::AsyncReadExt as _;
 
         let handshake = self.begin_relay_handshake();
         self.mark_active().await;
-        let mut magic = [0u8; relay::RELAY_MAGIC.len()];
-        if let Err(error) = stream.read_exact(&mut magic).await {
-            tracing::warn!(%error, "relay: reading preamble failed");
-            return;
-        }
-        if magic != relay::RELAY_MAGIC {
-            tracing::warn!("relay: preamble mismatch after peek; dropping");
-            return;
-        }
-        let hello = match relay::read_hello(&mut stream).await {
+        let hello = match relay::accept_hello(&mut stream).await {
             Ok(hello) => hello,
             Err(error) => {
-                tracing::warn!(%error, "relay: reading hello failed");
+                tracing::warn!(%error, "relay: reading the preamble and hello failed; dropping the link");
                 return;
             }
         };
