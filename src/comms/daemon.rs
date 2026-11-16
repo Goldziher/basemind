@@ -46,10 +46,10 @@ pub const MAX_LIMIT: u32 = 1000;
 
 /// Idle window after which a daemon with no connected links and no work in flight self-terminates.
 ///
-/// Note what "idle" costs here: nothing holds a link between requests — every caller (`serve`, the
-/// CLI verbs, the MCP comms helpers) connects, does its RPC, and drops the client — so
-/// `link_count == 0` is the steady state even DURING an active session, and this window is really
-/// "N minutes since anyone last called us". Reaping early is cheap (a respawn re-OPENS the on-disk
+/// A `basemind serve` session holds one relay link for as long as it lasts, so the window starts
+/// when the last session closes. The other callers (the CLI verbs, the MCP comms helpers) connect,
+/// do their RPC and drop the client; with only those, `link_count == 0` between requests and the
+/// window is "N minutes since anyone last called us". Reaping early is cheap (a respawn re-OPENS the on-disk
 /// fjall indexes rather than rebuilding them), so this is deliberately short: ten minutes keeps an
 /// interactive session's daemon warm across normal pauses while shrinking the standing population a
 /// machine running the suite carries. The complementary [`BOOTSTRAP_TIMEOUT`] handles the other leak
@@ -435,8 +435,8 @@ impl Broker {
             return;
         }
 
-        // ~keep Build/fetch the shared stack BEFORE accepting, so a build failure still lets the client
-        // ~keep fall back rather than being told "accepted" against a stack we cannot serve.
+        // ~keep Build/fetch the shared stack BEFORE accepting, so a build failure reaches the client
+        // ~keep as a decline it can act on rather than "accepted" against a stack we cannot serve.
         let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
         let git_history_host = Arc::clone(&self) as Arc<dyn crate::git_history::remote::HistoryHost>;
         let shared = match self

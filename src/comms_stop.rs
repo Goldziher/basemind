@@ -287,7 +287,7 @@ pub(crate) fn cmd_comms_stop_all(json: bool) -> Result<()> {
         .collect();
     anyhow::ensure!(
         still_running.is_empty(),
-        "{} daemon(s) are still running and were not signalled: {}",
+        "{} daemon(s) are still running: {}",
         still_running.len(),
         still_running.join("; ")
     );
