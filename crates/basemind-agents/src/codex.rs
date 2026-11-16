@@ -44,7 +44,7 @@ impl CodexAdapter {
     pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
         let prepared = spec.prepare()?;
         let mut args = vec!["app-server".to_owned()];
-        if let Some(server) = &spec.mcp_server {
+        if let (Some(server), Some(command)) = (&spec.mcp_server, &prepared.mcp_command) {
             // Codex approves a server's tools all at once; single tools cannot be named here.
             if !server.allow_tools.is_empty() {
                 return Err(LaunchError::Unsupported {
@@ -54,7 +54,7 @@ impl CodexAdapter {
             }
             // Codex hands a server only the variables named in `env_vars`.
             let settings = [
-                ("command", toml_string(utf8(&server.command)?)),
+                ("command", toml_string(utf8(command)?)),
                 ("args", toml_array(&server.args)),
                 ("env_vars", toml_array(&spec.mcp_env_names())),
             ];

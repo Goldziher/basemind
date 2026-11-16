@@ -3,7 +3,7 @@ use serde_json::json;
 use super::*;
 use crate::event::{ApprovalKind, ApprovalRequest, ApprovalSource};
 use crate::spec::{BypassOptIn, McpServerSpec};
-use crate::test_support::{always, spec, written};
+use crate::test_support::{MCP_COMMAND, always, spec, written};
 
 fn protocol(mode: PermissionMode, bypass: bool) -> CodexProtocol {
     CodexProtocol::new(
@@ -443,7 +443,7 @@ fn a_follow_up_starts_a_second_turn_with_its_own_request_id() {
 fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = spec(HarnessKind::Codex, root.path());
-    let mut server = McpServerSpec::basemind_serve("/opt/basemind/bin/basemind");
+    let mut server = McpServerSpec::basemind_serve(MCP_COMMAND);
     server.env.insert("SEARCH_API_KEY".to_owned(), "key".to_owned());
     spec.mcp_server = Some(server);
     let plan = CodexAdapter.plan_spec(&spec).unwrap();
@@ -459,7 +459,7 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
     assert_eq!(
         overrides,
         [
-            "mcp_servers.basemind.command=\"/opt/basemind/bin/basemind\"",
+            format!("mcp_servers.basemind.command=\"{MCP_COMMAND}\"").as_str(),
             "mcp_servers.basemind.args=[\"serve\"]",
         ]
     );
@@ -593,7 +593,7 @@ fn config_values_are_written_as_toml_strings() {
     assert_eq!(toml_array(&["serve".to_owned(), "é".to_owned()]), "[\"serve\",\"é\"]");
     let root = tempfile::tempdir().unwrap();
     let mut spec = spec(HarnessKind::Codex, root.path());
-    let mut server = McpServerSpec::basemind_serve("/opt/basemind");
+    let mut server = McpServerSpec::basemind_serve(MCP_COMMAND);
     server.args = vec!["se\u{7f}rve".to_owned()];
     spec.mcp_server = Some(server);
     let plan = CodexAdapter.plan_spec(&spec).unwrap();

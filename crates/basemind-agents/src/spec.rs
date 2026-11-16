@@ -351,15 +351,23 @@ impl LaunchSpec {
             });
         }
         let model_args = model_args(kind, self.model.as_deref(), self.effort.as_deref())?;
-        let cwd = confine(&self.root, self.working_dir.as_deref())?;
+        let (root, cwd) = confine(&self.root, self.working_dir.as_deref())?;
         check_project_config(kind, &cwd, std::env::var_os("HOME").as_deref().map(Path::new))?;
+        let search = std::env::var_os("PATH");
+        let program = resolve_executable(&self.harness.executable, search.as_deref(), &root)?;
+        let mcp_command = match &self.mcp_server {
+            Some(server) => Some(resolve_executable(&server.command, search.as_deref(), &root)?),
+            None => None,
+        };
         // Every harness receives these paths inside JSON or TOML, which carry UTF-8 only.
         utf8(&cwd)?;
-        if let Some(server) = &self.mcp_server {
-            utf8(&server.command)?;
+        if let Some(command) = &mcp_command {
+            utf8(command)?;
         }
         Ok(Prepared {
             cwd,
+            program,
+            mcp_command,
             bypass_mode: authorized,
             model_args,
         })
@@ -398,7 +406,7 @@ impl LaunchSpec {
             env.entry((*name).to_owned()).or_insert_with(|| value.into());
         }
         Ok(CommandPlan {
-            program: self.harness.executable.clone(),
+            program: prepared.program.clone(),
             args,
             env,
             cwd: prepared.cwd.clone(),
@@ -425,9 +433,15 @@ impl LaunchSpec {
     pub fn child_env(&self, parent: impl IntoIterator<Item = (OsString, OsString)>) -> BTreeMap<String, OsString> {
         let mut env = BTreeMap::new();
         for (name, value) in parent {
-            if let Some(name) = name.to_str().filter(|name| ENV_ALLOWLIST.contains(name)) {
-                env.insert(name.to_owned(), value);
-            }
+            let Some(name) = name.to_str().filter(|name| ENV_ALLOWLIST.contains(name)) else {
+                continue;
+            };
+            let value = if name == "PATH" {
+                absolute_search_path(&value)
+            } else {
+                value
+            };
+            env.insert(name.to_owned(), value);
         }
         let server_env = self.mcp_server.iter().flat_map(|server| &server.env);
         for (name, value) in self.env.iter().chain(server_env) {
@@ -445,6 +459,10 @@ impl LaunchSpec {
 pub(crate) struct Prepared {
     /// The canonical working directory, inside the canonical root.
     pub cwd: PathBuf,
+    /// The harness executable, absolute and outside the root.
+    pub program: PathBuf,
+    /// The MCP server's command, absolute and outside the root.
+    pub mcp_command: Option<PathBuf>,
     /// The authorized bypass mode, when the spec carries a valid opt-in.
     pub bypass_mode: Option<String>,
     /// The harness's arguments for the request's model and effort.
@@ -459,7 +477,8 @@ impl Prepared {
 }
 
 /// The variables a child inherits from its launcher. Everything else, credentials included,
-/// reaches it only through [`LaunchSpec::env`].
+/// reaches it only through [`LaunchConfig::env`]. `PATH` is passed on without its empty and
+/// relative entries, which would resolve against the agent's working directory.
 pub const ENV_ALLOWLIST: &[&str] = &[
     "PATH",
     "HOME",
@@ -506,7 +525,63 @@ fn mcp_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
-fn confine(root: &Path, working_dir: Option<&Path>) -> Result<PathBuf, LaunchError> {
+/// `value` as a search path without its empty and relative entries.
+fn absolute_search_path(value: &std::ffi::OsStr) -> OsString {
+    let kept = std::env::split_paths(value).filter(|dir| dir.is_absolute());
+    std::env::join_paths(kept).unwrap_or_default()
+}
+
+/// The absolute path `executable` names: itself when absolute, else the first match on the
+/// absolute entries of `search`. A relative path with a directory part is refused, and so is
+/// an executable that lies inside `root` (as given or after resolving links), where the
+/// launched agent, or one before it, may have written it. The returned path keeps its links:
+/// some harnesses find their own files from the path they were started by.
+pub(crate) fn resolve_executable(
+    executable: &Path,
+    search: Option<&std::ffi::OsStr>,
+    root: &Path,
+) -> Result<PathBuf, LaunchError> {
+    let invalid = |reason| LaunchError::InvalidExecutable {
+        path: executable.to_owned(),
+        reason,
+    };
+    let found = if executable.is_absolute() {
+        executable.to_owned()
+    } else if executable.components().count() == 1 && executable.file_name().is_some() {
+        let dirs = search.map(std::env::split_paths).into_iter().flatten();
+        dirs.filter(|dir| dir.is_absolute())
+            .map(|dir| dir.join(executable))
+            .find(|candidate| is_executable(candidate))
+            .ok_or_else(|| invalid("it is not on the launcher's PATH"))?
+    } else {
+        return Err(invalid("a relative path would resolve against the working directory"));
+    };
+    let canonical = found.canonicalize().map_err(|source| LaunchError::Path {
+        path: found.clone(),
+        source,
+    })?;
+    if found.starts_with(root) || canonical.starts_with(root) {
+        return Err(invalid("it lies inside the root, where the agent can write"));
+    }
+    Ok(found)
+}
+
+/// Whether `path` is a file this process could execute.
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    metadata.is_file()
+}
+
+/// The canonical root and the canonical working directory inside it.
+fn confine(root: &Path, working_dir: Option<&Path>) -> Result<(PathBuf, PathBuf), LaunchError> {
     let resolve = |path: &Path| {
         path.canonicalize().map_err(|source| LaunchError::Path {
             path: path.to_owned(),
@@ -522,7 +597,7 @@ fn confine(root: &Path, working_dir: Option<&Path>) -> Result<PathBuf, LaunchErr
     if !dir.starts_with(&root) {
         return Err(LaunchError::WorkingDirOutsideRoot { dir, root });
     }
-    Ok(dir)
+    Ok((root, dir))
 }
 
 #[cfg(test)]

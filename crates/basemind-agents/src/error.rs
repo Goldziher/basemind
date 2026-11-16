@@ -33,7 +33,16 @@ pub enum LaunchError {
     /// directory after changing into it was not the checked canonical path.
     #[error("working directory {0} changed before the harness started")]
     WorkingDirChanged(PathBuf),
-    /// A path of the spec could not be resolved.
+    /// The harness executable or the MCP server's command cannot be run safely: it is a
+    /// relative path, it is not on the launcher's `PATH`, or it lies inside the root.
+    #[error("cannot run {path}: {reason}")]
+    InvalidExecutable {
+        /// The path as configured.
+        path: PathBuf,
+        /// Why it was refused.
+        reason: &'static str,
+    },
+    /// A path of the launch could not be resolved.
     #[error("cannot resolve {path}: {source}")]
     Path {
         /// The path as given.

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::spec::{ApprovalPolicy, BypassOptIn, McpServerSpec};
-use crate::test_support::{always, spec};
+use crate::test_support::{EXECUTABLE, MCP_COMMAND, always, spec};
 
 /// The agent's end of an in-memory connection. A test scripts it frame by frame, so every
 /// message the client sends is the real serialization of the protocol crate.
@@ -197,13 +197,13 @@ fn a_turn_carries_the_brief_and_reports_text_and_tool_calls() {
 fn the_mcp_server_is_passed_in_session_new_with_the_identity_by_value() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = acp_spec(AcpFlavor::Cursor, root.path());
-    spec.mcp_server = Some(McpServerSpec::basemind_serve("/opt/basemind/bin/basemind"));
+    spec.mcp_server = Some(McpServerSpec::basemind_serve(MCP_COMMAND));
     let run = converse_with(&spec, Vec::new(), |agent| {
         let new_session = agent.open();
         let servers = new_session["params"]["mcpServers"].as_array().unwrap();
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0]["name"], "basemind");
-        assert_eq!(servers[0]["command"], "/opt/basemind/bin/basemind");
+        assert_eq!(servers[0]["command"], MCP_COMMAND);
         assert_eq!(servers[0]["args"], json!(["serve"]));
         let env = servers[0]["env"].as_array().unwrap();
         assert!(
@@ -420,7 +420,8 @@ fn launch_arguments_follow_the_flavor_and_unsupported_modes_are_refused() {
         (AcpFlavor::Generic, "acp", vec![]),
     ] {
         let plan = AcpAdapter.plan_spec(&acp_spec(flavor, root.path())).unwrap();
-        assert_eq!(plan.program, PathBuf::from(program));
+        assert_eq!(HarnessKind::Acp(flavor).default_executable(), program);
+        assert_eq!(plan.program, PathBuf::from(EXECUTABLE));
         assert_eq!(plan.args, args);
     }
     let mut read_only = acp_spec(AcpFlavor::Grok, root.path());

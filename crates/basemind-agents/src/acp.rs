@@ -169,9 +169,10 @@ impl Config {
         let mcp_servers = spec
             .mcp_server
             .iter()
-            .map(|server| {
+            .zip(&prepared.mcp_command)
+            .map(|(server, command)| {
                 McpServer::Stdio(
-                    McpServerStdio::new(&server.name, &server.command)
+                    McpServerStdio::new(&server.name, command)
                         .args(server.args.clone())
                         .env(env.clone()),
                 )

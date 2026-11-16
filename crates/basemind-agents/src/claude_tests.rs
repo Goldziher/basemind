@@ -3,7 +3,7 @@ use serde_json::json;
 use super::*;
 use crate::event::ApprovalKind;
 use crate::spec::{BypassOptIn, McpServerSpec};
-use crate::test_support::{always, spec, value_of, written};
+use crate::test_support::{EXECUTABLE, MCP_COMMAND, always, spec, value_of, written};
 
 fn protocol() -> ClaudeProtocol {
     ClaudeProtocol::new("Summarize the README.".to_owned())
@@ -326,7 +326,7 @@ fn a_supervised_plan_carries_the_stream_flags_and_no_bypass() {
     let plan = ClaudeCodeAdapter
         .plan_spec(&spec(HarnessKind::ClaudeCode, root.path()))
         .unwrap();
-    assert_eq!(plan.program, std::path::PathBuf::from("claude"));
+    assert_eq!(plan.program, std::path::PathBuf::from(EXECUTABLE));
     assert_eq!(value_of(&plan.args, "--input-format"), Some("stream-json"));
     assert_eq!(value_of(&plan.args, "--output-format"), Some("stream-json"));
     assert_eq!(value_of(&plan.args, "--permission-prompt-tool"), Some("stdio"));
@@ -422,13 +422,13 @@ fn a_model_and_effort_are_the_only_request_values_on_the_command_line() {
 fn an_mcp_server_becomes_mcp_config_and_only_named_tools_are_pre_approved() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = spec(HarnessKind::ClaudeCode, root.path());
-    spec.mcp_server = Some(McpServerSpec::basemind_serve("/opt/basemind/bin/basemind"));
+    spec.mcp_server = Some(McpServerSpec::basemind_serve(MCP_COMMAND));
     let plan = ClaudeCodeAdapter.plan_spec(&spec).unwrap();
     let config: Value = serde_json::from_str(value_of(&plan.args, "--mcp-config").unwrap()).unwrap();
     assert_eq!(
         config,
         json!({"mcpServers": {"basemind": {
-            "type": "stdio", "command": "/opt/basemind/bin/basemind", "args": ["serve"],
+            "type": "stdio", "command": MCP_COMMAND, "args": ["serve"],
         }}})
     );
     assert_eq!(value_of(&plan.args, "--allowedTools"), None);

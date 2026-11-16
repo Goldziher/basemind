@@ -75,11 +75,11 @@ impl ClaudeCodeAdapter {
         .map(str::to_owned)
         .into();
         let mut servers = serde_json::Map::new();
-        if let Some(server) = &spec.mcp_server {
+        if let (Some(server), Some(command)) = (&spec.mcp_server, &prepared.mcp_command) {
             // The server inherits the harness's environment, which carries the identity.
             servers.insert(
                 server.name.clone(),
-                json!({"type": "stdio", "command": utf8(&server.command)?, "args": server.args}),
+                json!({"type": "stdio", "command": utf8(command)?, "args": server.args}),
             );
         }
         // Always given, so `--strict-mcp-config` leaves exactly these servers.

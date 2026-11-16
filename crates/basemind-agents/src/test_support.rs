@@ -23,9 +23,19 @@ pub fn always(verdict: ApprovalVerdict) -> Option<Arc<dyn ApprovalPolicy>> {
     Some(Arc::new(move |_: &ApprovalRequest| verdict))
 }
 
+/// An executable that exists outside every test root. Plans name it; no test that only
+/// plans runs it, so no real harness is ever started.
+pub const EXECUTABLE: &str = "/bin/sh";
+/// A stand-in for the MCP server's command, under the same terms.
+pub const MCP_COMMAND: &str = "/bin/echo";
+
 /// The default config for `kind` rooted at `root`.
 pub fn config(kind: HarnessKind, root: &Path) -> LaunchConfig {
-    LaunchConfig::new(Harness::new(kind), root, AgentIdentity::new("launched-agent").unwrap())
+    LaunchConfig::new(
+        Harness::new(kind).with_executable(EXECUTABLE),
+        root,
+        AgentIdentity::new("launched-agent").unwrap(),
+    )
 }
 
 /// A default spec for `kind` rooted at `root`.

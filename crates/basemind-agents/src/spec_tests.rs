@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{config, spec};
+use crate::test_support::{MCP_COMMAND, config, spec};
 
 fn os(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
     pairs.iter().map(|(name, value)| (name.into(), value.into())).collect()
@@ -79,7 +79,7 @@ fn additions_that_would_redirect_the_child_are_refused_from_the_spec_and_the_ser
 
 fn spec_with_server(root: &Path) -> LaunchSpec {
     let mut spec = spec(HarnessKind::Codex, root);
-    spec.mcp_server = Some(McpServerSpec::basemind_serve("/opt/basemind"));
+    spec.mcp_server = Some(McpServerSpec::basemind_serve(MCP_COMMAND));
     spec
 }
 
@@ -269,24 +269,31 @@ fn the_default_spec_is_supervised_single_turn_and_denies() {
 #[test]
 fn paths_that_are_not_utf8_are_refused_rather_than_serialized() {
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
     let outer = tempfile::tempdir().unwrap();
     let odd = std::ffi::OsStr::from_bytes(b"caf\xe9");
     let root = outer.path().join(odd);
     if std::fs::create_dir(&root).is_err() {
-        // Some file systems (APFS among them) refuse names that are not UTF-8: then no
-        // working directory can be one, and only the server command is checked.
+        // Some file systems (APFS among them) refuse names that are not UTF-8: then neither
+        // a working directory nor a command can carry one, and nothing is left to check.
         assert!(std::str::from_utf8(odd.as_bytes()).is_err());
-    } else {
-        let spec = spec(HarnessKind::Codex, &root);
-        assert!(matches!(spec.prepare(), Err(LaunchError::NonUtf8Path(_))));
+        return;
     }
+    let spec = spec(HarnessKind::Codex, &root);
+    assert!(matches!(spec.prepare(), Err(LaunchError::NonUtf8Path(_))));
+    let command = outer.path().join("bin").join(odd);
+    std::fs::create_dir(outer.path().join("bin")).unwrap();
+    std::fs::write(&command, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plain_root = outer.path().join("root");
+    std::fs::create_dir(&plain_root).unwrap();
     for kind in [
         HarnessKind::ClaudeCode,
         HarnessKind::Codex,
         HarnessKind::Acp(crate::harness::AcpFlavor::Cursor),
     ] {
-        let mut config = config(kind, outer.path());
-        config.mcp_server = Some(McpServerSpec::basemind_serve(Path::new(odd)));
+        let mut config = config(kind, &plain_root);
+        config.mcp_server = Some(McpServerSpec::basemind_serve(&command));
         assert!(
             matches!(
                 crate::Registry::with_defaults().plan(&config, &LaunchRequest::new("x")),
@@ -295,4 +302,50 @@ fn paths_that_are_not_utf8_are_refused_rather_than_serialized() {
             "{kind} accepted the path"
         );
     }
+}
+
+#[cfg(unix)]
+fn executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_executable_is_found_on_absolute_path_entries_and_never_inside_the_root() {
+    let outer = tempfile::tempdir().unwrap();
+    let outer = outer.path().canonicalize().unwrap();
+    let root = outer.join("root");
+    let bin = outer.join("bin");
+    executable(&bin.join("harness"));
+    executable(&root.join("tools/harness"));
+    executable(&root.join("harness"));
+    let search = std::env::join_paths([Path::new(""), Path::new("tools"), Path::new("."), &bin]).unwrap();
+    let resolve = |path: &str| resolve_executable(Path::new(path), Some(&search), &root);
+    // The relative entries would find the copies in the root first, were they searched.
+    assert_eq!(resolve("harness").unwrap(), bin.join("harness"));
+    assert_eq!(
+        resolve(bin.join("harness").to_str().unwrap()).unwrap(),
+        bin.join("harness")
+    );
+    let refused = |path: &str| matches!(resolve(path), Err(LaunchError::InvalidExecutable { .. }));
+    assert!(refused("missing"));
+    assert!(refused("./harness"));
+    assert!(refused("tools/harness"));
+    assert!(refused(root.join("harness").to_str().unwrap()));
+    // A link outside the root that leads into it is refused too.
+    std::os::unix::fs::symlink(root.join("harness"), bin.join("linked")).unwrap();
+    assert!(refused(bin.join("linked").to_str().unwrap()));
+    assert!(refused("linked"));
+}
+
+#[test]
+fn the_child_search_path_keeps_only_absolute_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let spec = spec(HarnessKind::Codex, root.path());
+    let search = std::env::join_paths(["", "bin", ".", "/usr/bin", "/bin"]).unwrap();
+    let env = spec.child_env([(OsString::from("PATH"), search)]);
+    assert_eq!(env["PATH"], std::env::join_paths(["/usr/bin", "/bin"]).unwrap());
 }

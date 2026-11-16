@@ -525,7 +525,19 @@ fn launch_errors_are_typed() {
     missing.config.harness.executable = dir.path().join("no-such-harness");
     assert!(matches!(
         Registry::with_defaults().launch(&missing.config, &missing.request),
+        Err(LaunchError::Path { .. })
+    ));
+    let not_executable = dir.path().join("not-executable");
+    std::fs::write(&not_executable, "").unwrap();
+    missing.config.harness.executable = not_executable;
+    assert!(matches!(
+        Registry::with_defaults().launch(&missing.config, &missing.request),
         Err(LaunchError::Spawn { .. })
+    ));
+    missing.config.harness.executable = dir.path().join("root");
+    assert!(matches!(
+        Registry::with_defaults().launch(&missing.config, &missing.request),
+        Err(LaunchError::InvalidExecutable { .. })
     ));
     let known = spec(HarnessKind::Codex, dir.path(), "");
     assert!(matches!(
