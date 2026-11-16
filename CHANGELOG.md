@@ -554,7 +554,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carried in one daemon frame, by its save or by any later read. Reads of several notes or stamps
   sent to the daemon are split by the bytes of their keys as well as by count, so keys saved
   before the limit cannot make a request larger than a frame; read in the process itself, such a
-  key is read as before.
+  key is read as before. A note saved before the limit and too long for a daemon reply is refused
+  by name, with how to fix it, instead of breaking the connection.
 - The daemon protocol version is 6 (was 5): a search by meaning reads the `updated_at` of its
   hits' notes, and whole only the notes it may serve, in batches (at most 256 keys and 8 MiB of
   notes per reply, which the daemon enforces), and a rescan says whether its paths were named or

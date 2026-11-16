@@ -505,6 +505,37 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
     })
 }
 
+/// Room a daemon reply keeps beside the notes it carries, for its framing and the entries' numbers.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+const REPLY_FRAME_SLACK: usize = 1024 * 1024;
+
+/// Why `outcome` cannot cross the daemon's socket: it carries a note saved before notes were
+/// capped ([`NOTE_MAX_BYTES`]) that is too long for one frame. Sent as it is, the reply would break
+/// the link and say nothing of the note.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) fn too_long_for_a_frame(outcome: &crate::comms::memory_proto::MemoryOutcome) -> Option<String> {
+    use crate::comms::memory_proto::MemoryOutcome;
+    let most = crate::comms::transport::MAX_FRAME_BYTES - REPLY_FRAME_SLACK;
+    let entries: &[Option<WireMemoryEntry>] = match outcome {
+        MemoryOutcome::Got(entry) => std::slice::from_ref(entry),
+        MemoryOutcome::GotMany(entries) => entries,
+        _ => return None,
+    };
+    entries
+        .iter()
+        .flatten()
+        .find(|entry| wire_bytes(entry) > most)
+        .map(|entry| {
+            format!(
+                "the memory note `{}` is {} bytes, more than a reply from the daemon carries ({most}); it was \
+             saved before notes were capped at {NOTE_MAX_BYTES} bytes. Save it again under the same key with \
+             shorter text to read it",
+                entry.key,
+                wire_bytes(entry)
+            )
+        })
+}
+
 /// Dispatch a wire [`MemoryOp`](crate::comms::memory_proto::MemoryOp) against a workspace's
 /// read-write index, returning the wire outcome. This is the entry point the daemon calls; the local
 /// serve path calls the per-op cores directly so it can interleave the LanceDB half without a second
@@ -799,6 +830,27 @@ mod tests {
             request_chunk(&too_long, 2, true),
             Err(MemoryOpError::TooLong { what: "key", .. })
         ));
+    }
+
+    /// A note saved before the cap and too long for a frame is refused by name instead of breaking
+    /// the link; one that fits is sent.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    #[test]
+    fn a_note_too_long_for_a_frame_is_refused_by_name() {
+        use crate::comms::memory_proto::MemoryOutcome;
+        let note = |value: String| WireMemoryEntry {
+            key: "huge".into(),
+            value,
+            tags: Vec::new(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let long = note("x".repeat(crate::comms::transport::MAX_FRAME_BYTES));
+        let refused = too_long_for_a_frame(&MemoryOutcome::GotMany(vec![None, Some(long.clone())]));
+        assert!(refused.is_some_and(|message| message.contains("`huge`")));
+        assert!(too_long_for_a_frame(&MemoryOutcome::Got(Some(long))).is_some());
+        let fits = note("x".repeat(NOTE_MAX_BYTES * 2));
+        assert_eq!(too_long_for_a_frame(&MemoryOutcome::Got(Some(fits))), None);
     }
 
     /// A request answered in this process has no frame: a key saved before the key limit is read

@@ -140,7 +140,13 @@ impl Broker {
         })
         .await;
         match outcome {
-            Ok(Ok(Ok(outcome))) => CommsResponse::Memory(outcome),
+            Ok(Ok(Ok(outcome))) => match crate::mcp::memory_ops::too_long_for_a_frame(&outcome) {
+                Some(message) => CommsResponse::Error {
+                    code: "memory_op_failed".to_string(),
+                    message,
+                },
+                None => CommsResponse::Memory(outcome),
+            },
             Ok(Ok(Err(error))) => CommsResponse::Error {
                 code: "memory_op_failed".to_string(),
                 message: error.to_string(),
