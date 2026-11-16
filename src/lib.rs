@@ -39,6 +39,7 @@ pub mod query;
 pub mod registry;
 pub mod render;
 pub mod scan_evidence;
+mod scan_evidence_hosts;
 pub mod scan_phase_peaks;
 pub mod scanner;
 pub(crate) mod scanner_candidates;
