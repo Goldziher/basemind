@@ -585,20 +585,28 @@ impl Store {
     /// leaving it vectorless forever and re-embedding on every entry-less encounter. A `Deferred`
     /// pass cannot downgrade an embedded blob this way, because `cached_doc_is_reusable` accepts any
     /// readable blob when embedding is off (the reuse branch returns before this write).
+    ///
+    /// Generic over the document type, which the retrieval layer owns (`extract::doc::DocBlobs`).
     #[cfg(feature = "documents")]
-    pub fn write_doc(&self, hash: &Hash, map: &crate::extract::doc::FileMapDoc) -> Result<(), StoreError> {
+    pub fn write_doc_blob<T: serde::Serialize>(&self, hash: &Hash, map: &T) -> Result<(), StoreError> {
         write_blob_overwrite(self.blob_path_doc(hash), map)
     }
 
+    /// Read the document blob of `hash_hex` as `T`, refusing a blob whose schema version
+    /// (`schema_ver` of the decoded value) is not this build's.
     #[cfg(feature = "documents")]
-    pub fn read_doc_by_hex(&self, hash_hex: &str) -> Result<Option<crate::extract::doc::FileMapDoc>, StoreError> {
+    pub fn read_doc_blob_by_hex<T: serde::de::DeserializeOwned>(
+        &self,
+        hash_hex: &str,
+        schema_ver: impl FnOnce(&T) -> u16,
+    ) -> Result<Option<T>, StoreError> {
         let path = self.blob_path_doc_hex(hash_hex);
         let Some(bytes) = read_if_exists(&path)? else {
             return Ok(None);
         };
         let decoded = decode_single_or_legacy(&path, &bytes, BlobKind::Single)?;
-        let map: crate::extract::doc::FileMapDoc = rmp_serde::from_slice(&decoded)?;
-        check_schema(map.schema_ver)?;
+        let map: T = rmp_serde::from_slice(&decoded)?;
+        check_schema(schema_ver(&map))?;
         Ok(Some(map))
     }
 

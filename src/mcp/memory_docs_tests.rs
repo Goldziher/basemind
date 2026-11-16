@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use super::{DocMeta, apply_doc_metadata, read_doc_metadata};
-use crate::extract::doc::{DocEntity, DocKeyword, DocSummary, FileMapDoc};
+use crate::extract::doc::{DocBlobs, DocEntity, DocKeyword, DocSummary, FileMapDoc};
 use crate::mcp::types_documents::DocumentSearchHit;
 use crate::store::{DocEntry, Store, VIEW_WORKING};
 

@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use crate::config::{Config, DocumentsConfig};
+use crate::extract::doc::DocBlobs;
 use crate::hashing;
 use crate::scan_retrieval::{DocumentSink, PendingDocBatch};
 use crate::scanner::{EmbedMode, FileResult, FileStatus};

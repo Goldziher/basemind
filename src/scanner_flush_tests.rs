@@ -2,7 +2,7 @@ use std::path::Path;
 
 use super::*;
 use crate::config::Config;
-use crate::extract::doc::{DocChunk, FileMapDoc};
+use crate::extract::doc::{DocBlobs, DocChunk, FileMapDoc};
 use crate::scanner::{EmbedMode, ScanSource, scan, scan_paths};
 use crate::scanner_flush::{REQUEUE_PER_INCREMENTAL, flush_vector_lanes};
 use crate::store::{DocEntry, VIEW_WORKING};

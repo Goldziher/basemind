@@ -31,7 +31,7 @@ use xberg::core::mime;
 use xberg::embeddings::{EMBEDDING_PRESETS, EmbeddingPreset};
 
 use crate::config::{DocumentsConfig, ResourcesConfig};
-use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
+use crate::extract::doc::{DocBlobs, DocConfig, FileMapDoc, extract_doc};
 use crate::extract::doc_guard::ChunkCutovers;
 use crate::hashing::{self, Hash};
 use crate::lance::{DocumentRow, PendingBatch};

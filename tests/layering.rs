@@ -138,8 +138,6 @@ const KNOWN_VIOLATIONS: &[&str] = &[
     "src/config/validate.rs -> extern jsonschema",
     "src/scanner_filter.rs -> retrieval_wiring",
     "src/store.rs -> lance",
-    "src/store_blob.rs -> extract::doc",
-    "src/store_blob_tests.rs -> extract::doc [test]",
 ];
 
 /// One module of the library: its path, the file holding it, whether it is test-only, the names of

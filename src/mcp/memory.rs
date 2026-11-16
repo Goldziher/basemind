@@ -21,7 +21,7 @@ use super::types_memory::{
     MemoryPutParams, MemoryPutResponse, MemorySearchParams, Visibility,
 };
 #[cfg(feature = "documents")]
-use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
+use crate::extract::doc::{DocBlobs, DocEntity, DocKeyword, DocSummary};
 
 /// The shared embedding engine, loaded on first use. Loading reads the model from disk (or
 /// downloads it), so it runs on a blocking thread and never stalls the async runtime.

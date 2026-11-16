@@ -24,6 +24,7 @@
 #![cfg(all(feature = "documents", feature = "code-search"))]
 
 use basemind::config::ConfigV1;
+use basemind::extract::doc::DocBlobs;
 use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
 

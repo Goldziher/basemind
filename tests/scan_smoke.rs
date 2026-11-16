@@ -75,6 +75,7 @@ fn scan_preserves_notebook_code_cell_text_in_document_index() {
     )
     .unwrap();
 
+    use basemind::extract::doc::DocBlobs;
     let entry = store.lookup_doc(path).expect("notebook indexed as a document");
     let doc = store.read_doc_by_hex(&entry.hash_hex).unwrap().expect("notebook blob");
     assert_eq!(doc.mime_type, "application/x-ipynb+json");

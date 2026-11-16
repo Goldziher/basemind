@@ -461,6 +461,7 @@ mod documents {
         // Which settings the stored blob was extracted under. (Chunk counts are not asserted: xberg
         // sizes chunks from the embedding preset when one is set, so `max_characters` alone need not
         // change them.)
+        use basemind::extract::doc::DocBlobs;
         let digest_of = |store: &Store| {
             let entry = store.lookup_doc("table.eml").expect("tracked").clone();
             store
