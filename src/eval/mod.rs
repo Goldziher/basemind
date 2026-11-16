@@ -11,7 +11,9 @@
 //! Gold generators that are repo-agnostic live under `benchmarks/eval/`.
 
 mod baseline;
+mod baseline_items;
 mod extract;
+mod gate;
 mod report;
 mod run;
 mod score;
@@ -26,6 +28,7 @@ use clap::Args;
 use crate::mcp::BasemindServer;
 use crate::mcp::tokens::TOKENS_ARE_COUNTED;
 
+pub use gate::{GATE_MIN_CREDITED, GATE_MIN_RATIO, GateVerdict};
 pub use report::{Regression, Report, TaskResult, aggregate, compare, markdown};
 pub use score::{Item, Score, score};
 pub use task::{EvalMode, Scoring, Task, parse_tasks};
@@ -68,7 +71,10 @@ pub struct EvalArgs {
 
 fn parse_mode(s: &str) -> std::result::Result<EvalMode, String> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
-        format!("unknown mode `{s}` (symbols, outline, references, callers, grep, find, dependents, git_search, docs)")
+        format!(
+            "unknown mode `{s}` (symbols, outline, references, callers, implementations, dependents, grep, \
+             find, read, git_search, git_path, git_symbol, blame, blame_symbol, diff, diff_structural, docs)"
+        )
     })
 }
 

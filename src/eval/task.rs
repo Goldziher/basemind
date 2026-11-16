@@ -5,11 +5,14 @@
 //!  "scoring":"set","k":10,"baseline":{"grep":"git grep -n Widget","read":["src/w.py"]}}
 //! ```
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Retrieval modes the harness can drive. Each maps onto one MCP tool (several onto `code_refs`).
+/// Retrieval modes (ADR-0022 "task kinds") the harness can drive. Each maps onto one MCP tool;
+/// several share `code_refs`, `git_log`, `git_blame` or `git_diff`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalMode {
@@ -22,6 +25,22 @@ pub enum EvalMode {
     Dependents,
     GitSearch,
     Docs,
+    /// `code_refs` with `relation: "implementations"`: `path:line` of each trait impl.
+    Implementations,
+    /// `code_read` with `symbol`: every `path:line` of the symbol's span.
+    Read,
+    /// `git_log` with `path`: the commits touching the file.
+    GitPath,
+    /// `git_log` with `path` + `symbol`: the commits that changed the symbol's body.
+    GitSymbol,
+    /// `git_blame` over a line span: `sha:line` per line.
+    Blame,
+    /// `git_blame` with `symbol`: `sha:line` per line of the symbol.
+    BlameSymbol,
+    /// `git_diff` between two revisions: `+path:line` added, `-path:line` removed.
+    Diff,
+    /// `git_diff` with `structural`: `+name` symbols added, `-name` removed.
+    DiffStructural,
 }
 
 impl EvalMode {
@@ -36,6 +55,11 @@ impl EvalMode {
             Self::Find => "find_files",
             Self::GitSearch => "git_log",
             Self::Docs => "docs_search",
+            Self::Implementations => "code_refs",
+            Self::Read => "code_read",
+            Self::GitPath | Self::GitSymbol => "git_log",
+            Self::Blame | Self::BlameSymbol => "git_blame",
+            Self::Diff | Self::DiffStructural => "git_diff",
         }
     }
 
@@ -50,6 +74,14 @@ impl EvalMode {
             Self::Dependents => "dependents",
             Self::GitSearch => "git_search",
             Self::Docs => "docs",
+            Self::Implementations => "implementations",
+            Self::Read => "read",
+            Self::GitPath => "git_path",
+            Self::GitSymbol => "git_symbol",
+            Self::Blame => "blame",
+            Self::BlameSymbol => "blame_symbol",
+            Self::Diff => "diff",
+            Self::DiffStructural => "diff_structural",
         }
     }
 }
@@ -82,6 +114,27 @@ impl OneOrMany {
     }
 }
 
+/// How the baseline's output is turned into items scored against the same gold as the tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaselineItems {
+    /// `path:line:text` lines (`git grep -n`, `rg -n`): `path:line`.
+    GrepLines,
+    /// One path per line (`git ls-files | grep`, `git grep -l`): `path`.
+    Paths,
+    /// A commit sha (full or abbreviated) first on each line (`git log --oneline`): the full sha.
+    Shas,
+    /// `git blame` default output: `sha:line` per blamed line.
+    Blame,
+    /// A unified diff: `+path:line` per added line, `-path:line` per removed line.
+    Diff,
+    /// A unified diff: `+name` / `-name` per definition whose name appears only on added / removed
+    /// lines.
+    DiffSymbols,
+    /// Every line of every file in `read`: the agent holds the whole file.
+    Read,
+}
+
 /// What an agent would do without basemind: shell command(s) run in the workspace root plus whole
 /// files read. The output of all of it is what the token comparison charges.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -92,6 +145,10 @@ pub struct BaselineSpec {
     /// Repo-relative files read in full.
     #[serde(default)]
     pub read: Vec<String>,
+    /// How to read the output as items, so the baseline is scored against the gold too. Absent:
+    /// the baseline is charged for tokens only.
+    #[serde(default)]
+    pub items: Option<BaselineItems>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -115,6 +172,10 @@ pub struct Task {
     pub line_slack: u32,
     #[serde(default)]
     pub baseline: Option<BaselineSpec>,
+    /// `grep` only: `path:line` -> the name of the definition the line sits in. Scored as the
+    /// share of returned gold hits whose attached symbol carries that name.
+    #[serde(default)]
+    pub annotations: BTreeMap<String, String>,
 }
 
 impl Task {
@@ -170,5 +231,19 @@ mod tests {
         assert!(parse_tasks("{\"id\":\"a\",\"mode\":\"grep\"}\n{\"id\":\"a\",\"mode\":\"grep\"}").is_err());
         assert!(parse_tasks("{\"id\":\"a\",\"mode\":\"nope\"}").is_err());
         assert!(parse_tasks("{\"id\":\"a\",\"mode\":\"grep\",\"args\":[1]}").is_err());
+    }
+
+    #[test]
+    fn parses_new_kinds_and_baseline_item_readers() {
+        let t = parse_tasks(
+            "{\"id\":\"a\",\"mode\":\"blame_symbol\",\"baseline\":{\"grep\":\"git blame f\",\"items\":\"blame\"}}\n\
+             {\"id\":\"b\",\"mode\":\"diff_structural\"}",
+        )
+        .unwrap();
+        assert_eq!(t[0].mode, EvalMode::BlameSymbol);
+        assert_eq!(t[0].mode.tool_key(), "git_blame");
+        assert_eq!(t[0].baseline.as_ref().unwrap().items, Some(BaselineItems::Blame));
+        assert_eq!(t[1].mode.as_str(), "diff_structural");
+        assert!(parse_tasks("{\"id\":\"a\",\"mode\":\"grep\",\"baseline\":{\"items\":\"nope\"}}").is_err());
     }
 }

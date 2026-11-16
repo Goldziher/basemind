@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+use super::gate::{GateVerdict, verdict};
 use super::score::Score;
 use super::task::EvalMode;
 
@@ -41,8 +42,17 @@ pub struct TaskResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub elapsed_us: u64,
-    /// Tokens of the response text an agent would receive.
+    /// Tokens of the response text an agent would receive, summed over every page read.
     pub tokens: u64,
+    /// Pages read (set-scored tasks follow `next_cursor`).
+    #[serde(default)]
+    pub pages: u32,
+    /// Paging stopped at the page cap with a `next_cursor` still offered.
+    #[serde(default)]
+    pub pages_cut: bool,
+    /// `grep` with `annotations`: share of the judged hits whose attached symbol was right.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation_accuracy: Option<f64>,
     pub score: Score,
     /// Ranked only: whether this task used rank metrics.
     pub ranked: bool,
@@ -50,6 +60,9 @@ pub struct TaskResult {
     pub returned: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub savings: Option<SavingsOutcome>,
+    /// The baseline's output scored against the same gold (tasks whose baseline names `items`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_score: Option<Score>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline_error: Option<String>,
 }
@@ -95,6 +108,19 @@ pub struct ModeReport {
     pub ndcg: Option<f64>,
     pub mean_tokens: f64,
     pub savings: Option<ModeSavings>,
+    /// The baseline scored against the same gold: tasks scored, mean recall and F1, and how many
+    /// reached the credit recall.
+    #[serde(default)]
+    pub baseline_scored: usize,
+    #[serde(default)]
+    pub baseline_mean_recall: Option<f64>,
+    #[serde(default)]
+    pub baseline_mean_f1: Option<f64>,
+    #[serde(default)]
+    pub baseline_recall_met: usize,
+    /// Mean of the tasks' `annotation_accuracy` (grep tasks with annotations only).
+    #[serde(default)]
+    pub mean_annotation_accuracy: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -107,6 +133,9 @@ pub struct Report {
     pub min_recall: f64,
     pub modes: BTreeMap<EvalMode, ModeReport>,
     pub overall: ModeReport,
+    /// ADR-0022 verdict per task kind.
+    #[serde(default)]
+    pub gate: BTreeMap<EvalMode, GateVerdict>,
 }
 
 /// Nearest-rank percentile of an ascending slice (`p` in 0..=100); 0 for an empty slice.
@@ -168,7 +197,7 @@ fn savings_for(results: &[&TaskResult]) -> Option<ModeSavings> {
     })
 }
 
-fn mode_report(results: &[&TaskResult]) -> ModeReport {
+fn mode_report(results: &[&TaskResult], min_recall: f64) -> ModeReport {
     let mut lat: Vec<u64> = results.iter().map(|r| r.elapsed_us).collect();
     lat.sort_unstable();
     let ranked: Vec<&&TaskResult> = results.iter().filter(|r| r.ranked).collect();
@@ -189,6 +218,22 @@ fn mode_report(results: &[&TaskResult]) -> ModeReport {
         ndcg: rm(|s| s.ndcg),
         mean_tokens: mean(results.iter().map(|r| r.tokens as f64)).unwrap_or(0.0),
         savings: savings_for(results),
+        baseline_scored: results.iter().filter(|r| r.baseline_score.is_some()).count(),
+        baseline_mean_recall: mean(
+            results
+                .iter()
+                .filter_map(|r| r.baseline_score.as_ref().map(|s| s.recall)),
+        ),
+        baseline_mean_f1: mean(results.iter().filter_map(|r| r.baseline_score.as_ref().map(|s| s.f1))),
+        baseline_recall_met: results
+            .iter()
+            .filter(|r| {
+                r.baseline_score
+                    .as_ref()
+                    .is_some_and(|s| s.recall >= min_recall && s.gold > 0)
+            })
+            .count(),
+        mean_annotation_accuracy: mean(results.iter().filter_map(|r| r.annotation_accuracy)),
     }
 }
 
@@ -199,13 +244,14 @@ pub fn aggregate(results: &[TaskResult], tokenizer: &str, root: &str, tasks_file
     }
     let all: Vec<&TaskResult> = results.iter().collect();
     Report {
-        version: 1,
+        version: 2,
         tokenizer: tokenizer.to_string(),
         root: root.to_string(),
         tasks_file: tasks_file.to_string(),
         min_recall,
-        modes: by_mode.iter().map(|(m, v)| (*m, mode_report(v))).collect(),
-        overall: mode_report(&all),
+        modes: by_mode.iter().map(|(m, v)| (*m, mode_report(v, min_recall))).collect(),
+        overall: mode_report(&all, min_recall),
+        gate: by_mode.iter().map(|(m, v)| (*m, verdict(v, tokenizer))).collect(),
     }
 }
 
@@ -214,6 +260,12 @@ fn pct(v: Option<f64>) -> String {
 }
 
 pub fn markdown(r: &Report) -> String {
+    let mut s = markdown_tables(r);
+    s.push_str(&super::gate::gate_markdown(r));
+    s
+}
+
+fn markdown_tables(r: &Report) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "# basemind eval\n");
     let _ = writeln!(
@@ -390,7 +442,11 @@ mod tests {
             },
             ranked,
             returned: vec![],
+            pages: 1,
+            pages_cut: false,
+            annotation_accuracy: None,
             savings: None,
+            baseline_score: None,
             baseline_error: None,
         }
     }
