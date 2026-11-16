@@ -381,8 +381,22 @@ pub(crate) fn enforce_cache_budget_at(
     hot_floor: Duration,
     grace: Duration,
 ) -> Result<EvictReport, GcError> {
+    // Within budget counting a newer basemind's workspaces, the cache is within it without them:
+    // telling them apart reads a view of every workspace, so only a cache over budget pays for it.
+    let raw = cache_footprint(workspaces_dir, blobs_root, schema, &[])?;
+    if raw <= budget_bytes {
+        return Ok(EvictReport {
+            total_bytes_before: raw,
+            total_bytes_after: raw,
+            ..EvictReport::default()
+        });
+    }
     let newer = workspaces_of_a_newer_basemind(workspaces_dir);
-    let total = cache_footprint(workspaces_dir, blobs_root, schema, &newer)?;
+    let total = if newer.is_empty() {
+        raw
+    } else {
+        cache_footprint(workspaces_dir, blobs_root, schema, &newer)?
+    };
     let mut report = EvictReport {
         total_bytes_before: total,
         total_bytes_after: total,
@@ -537,14 +551,58 @@ fn evict_workspace(dir: &Path) -> Result<Eviction, GcError> {
 /// version's live index over blobs this binary cannot read, not cache this one may rebuild.
 fn holds_a_newer_view(workspace: &Path) -> bool {
     let views = workspace.join(crate::store::VIEWS_DIR);
-    std::fs::read_dir(views).is_ok_and(|entries| {
-        entries.flatten().any(|view| {
-            matches!(
-                crate::store::read_index(&view.path()),
-                Err(crate::store::StoreError::NewerSchema { .. })
-            )
-        })
-    })
+    std::fs::read_dir(views).is_ok_and(|entries| entries.flatten().any(|view| view_is_newer(&view.path())))
+}
+
+/// Bytes of a file map that hold its header and first field.
+const FILE_MAP_HEAD_BYTES: u64 = 32;
+
+/// Whether the file map of `view_dir` was written by a newer basemind, from its first bytes: the
+/// map's first field is `schema_ver`, and a file map can run to many megabytes. A head of another
+/// shape is decoded whole, as [`crate::store::read_index`] does.
+fn view_is_newer(view_dir: &Path) -> bool {
+    use std::io::Read as _;
+    #[cfg(test)]
+    tests::VIEW_READS.with(|reads| reads.set(reads.get() + 1));
+    let mut head = Vec::new();
+    let read = std::fs::File::open(view_dir.join(crate::store::INDEX_FILE))
+        .and_then(|file| file.take(FILE_MAP_HEAD_BYTES).read_to_end(&mut head));
+    if read.is_err() {
+        return false;
+    }
+    match leading_schema_ver(&head) {
+        Some(found) => found > crate::extract::SCHEMA_VER,
+        None => matches!(
+            crate::store::read_index(view_dir),
+            Err(crate::store::StoreError::NewerSchema { .. })
+        ),
+    }
+}
+
+/// The value of a msgpack map's first entry when its key is `schema_ver` and the value an
+/// unsigned integer that fits a `u16`; `None` for any other head.
+fn leading_schema_ver(head: &[u8]) -> Option<u16> {
+    let entries = match *head.first()? {
+        0x80..=0x8f => head.get(1..)?,
+        0xde => head.get(3..)?,
+        0xdf => head.get(5..)?,
+        _ => return None,
+    };
+    let (len, key_and_rest) = match *entries.first()? {
+        marker @ 0xa0..=0xbf => (usize::from(marker & 0x1f), entries.get(1..)?),
+        0xd9 => (usize::from(*entries.get(1)?), entries.get(2..)?),
+        _ => return None,
+    };
+    if key_and_rest.get(..len)? != b"schema_ver" {
+        return None;
+    }
+    let value = key_and_rest.get(len..)?;
+    match *value.first()? {
+        small @ 0x00..=0x7f => Some(u16::from(small)),
+        0xcc => value.get(1).copied().map(u16::from),
+        0xcd => Some(u16::from_be_bytes([*value.get(1)?, *value.get(2)?])),
+        _ => None,
+    }
 }
 
 /// Derived state that can be rebuilt from source. Stable identity, the workspace marker and the
@@ -580,7 +638,7 @@ fn remove_cache_path(path: &Path) -> Result<(), GcError> {
 }
 
 /// The workspace dirs holding a view a newer basemind wrote, which [`evict_workspace`] refuses.
-/// Decided once per pass: each check decodes every view's file map.
+/// Decided once per pass, and only by a pass over budget: each check reads every view's file map.
 fn workspaces_of_a_newer_basemind(workspaces_dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(workspaces_dir).map_or_else(
         |_| Vec::new(),

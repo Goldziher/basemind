@@ -2,7 +2,27 @@
 
 use super::*;
 use crate::store::{FileEntry, INDEX_FILE, Index, VIEWS_DIR, ensure_workspace_marker};
+use std::cell::Cell;
 use std::fs;
+
+/// A day, for ages and the hot floor.
+const DAY_AGO: Duration = Duration::from_secs(24 * 3600);
+
+thread_local! {
+    /// File maps [`view_is_newer`] opened on this thread.
+    pub(super) static VIEW_READS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Write a file map of a newer basemind into `workspace`'s working view, cut short after its first
+/// bytes: whatever follows the version need not decode as this version's map.
+fn write_newer_head(workspace: &Path) {
+    let mut index = Index::empty();
+    index.schema_ver = crate::extract::SCHEMA_VER + 1;
+    let encoded = rmp_serde::to_vec_named(&index).expect("encode index");
+    let working = workspace.join(VIEWS_DIR).join("working");
+    fs::create_dir_all(&working).expect("mk view");
+    fs::write(working.join(INDEX_FILE), &encoded[..24]).expect("write head");
+}
 
 /// Seed `<workspaces>/<key>/` with a marker + a working view whose index references `stem`,
 /// then force every activity-bearing file's mtime to `age` ago.
@@ -392,4 +412,47 @@ fn cache_budget_env_parses_default_zero_and_garbage() {
     unsafe { std::env::set_var(VAR, "not-a-number") };
     assert_eq!(cache_budget_bytes(), None, "garbage disables enforcement (logged)");
     unsafe { std::env::remove_var(VAR) };
+}
+
+/// A pass within budget evicts nothing, so it has no reason to read any workspace's file map.
+#[test]
+fn a_pass_within_budget_reads_no_file_map() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (workspaces, blobs) = (tmp.path().join("workspaces"), tmp.path().join("blobs"));
+    fs::create_dir_all(&blobs).expect("mk blobs");
+    let newer = seed_workspace_aged(&workspaces, "key-newer", &"a".repeat(64), DAY_AGO);
+    write_newer_head(&newer);
+    seed_workspace_aged(&workspaces, "key-other", &"b".repeat(64), DAY_AGO);
+
+    VIEW_READS.with(|reads| reads.set(0));
+    let report = enforce_cache_budget_in(&workspaces, &blobs, u64::MAX, DAY_AGO, Duration::ZERO).expect("enforce");
+
+    assert_eq!(report.evicted, 0);
+    assert_eq!(VIEW_READS.with(Cell::get), 0, "no view was read");
+}
+
+/// The version is the file map's first field: a newer map is told from its head, however long the
+/// rest and whether or not the rest decodes as this version's map.
+#[test]
+fn a_newer_file_map_is_told_from_its_head() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace = tmp.path().join("key-newer");
+    write_newer_head(&workspace);
+    let view = workspace.join(VIEWS_DIR).join("working");
+
+    assert!(view_is_newer(&view));
+    assert!(holds_a_newer_view(&workspace));
+    let current = rmp_serde::to_vec_named(&Index::empty()).expect("encode index");
+    fs::write(view.join(INDEX_FILE), current).expect("write current");
+    assert!(!view_is_newer(&view), "a map of this version");
+    assert_eq!(
+        leading_schema_ver(&[
+            0x81, 0xaa, b's', b'c', b'h', b'e', b'm', b'a', b'_', b'v', b'e', b'r', 0xcd, 1, 2
+        ]),
+        Some(0x0102)
+    );
+    assert_eq!(
+        leading_schema_ver(&[0x81, 0xa5, b'f', b'i', b'l', b'e', b's', 0x01]),
+        None
+    );
 }
