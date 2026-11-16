@@ -58,8 +58,7 @@ pub const HANDSHAKE_TIMEOUT_ENV: &str = "BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS";
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 10;
 /// What an agent request may wait beyond the request bound for the daemon's agent store to open.
 const AGENT_STORE_OPEN_ALLOWANCE: std::time::Duration = std::time::Duration::from_secs(60);
-/// Generous because `Hello` is the first store-dependent request: a cold daemon answers it only once
-/// its store has finished opening, which on a large store takes tens of seconds.
+/// Generous because a cold client may first have to spawn the daemon and wait for its socket.
 const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 
 /// A positive whole-second duration from `var`, else `default_secs`.
@@ -75,6 +74,18 @@ fn timeout_from_env(var: &str, default_secs: u64) -> std::time::Duration {
 /// How long `req` may wait for its reply. Forwarded work (scans, embeds, memory, git-history and
 /// index reads) legitimately runs for minutes and is unbounded here; everything else is a quick
 /// broker round trip, so silence past the timeout means the broker is wedged, not busy.
+/// Whether a request may be sent again after the connection broke mid-request: not an agent
+/// request that writes, which carries no replay key from a CLI or hook caller.
+fn retry_safe(req: &CommsRequest) -> bool {
+    match req {
+        CommsRequest::AgentPost { .. } | CommsRequest::AgentThreadUpdate { .. } | CommsRequest::AgentCleanup { .. } => {
+            false
+        }
+        CommsRequest::AgentInbox { body, .. } => body.kind().is_ok_and(|kind| !kind.writes()),
+        _ => true,
+    }
+}
+
 fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
     match req {
         // ~keep The daemon opens its agent store on a thread of its own, and a request made while it
@@ -389,18 +400,14 @@ impl CommsClient {
     /// (or any non-connection error) is surfaced. This single-shot bound rules out an infinite
     /// reconnect loop against a daemon that keeps dying.
     ///
-    /// Replay safety: the retry only fires when the connection broke, and most requests are
-    /// trivially replayable — history / inbox / status / get_body are pure reads, and ack only
-    /// advances a monotonic per-agent cursor idempotently. The dominant failure this fixes is a
-    /// dead/stale daemon: the WRITE fails before any daemon sees the request, so the post-reconnect
-    /// replay is the *first* delivery, not a duplicate.
+    /// Replay safety: the retry only fires when the connection broke, and only for a request that
+    /// changes nothing or that the daemon makes idempotent itself (the index and status requests).
+    /// The dominant failure this fixes is a dead or stale daemon: the write fails before any daemon
+    /// sees the request, so the retry is the first delivery.
     ///
-    /// The one residual window is a `Post` (or other mutation) that the old daemon committed to the
-    /// shared, persistent Fjall log and *then* crashed before its reply reached us: because the
-    /// reconnected daemon reads that same log, the replay would append a SECOND copy. This window
-    /// is narrow (a crash between store-commit and socket-write) and the worst case is a duplicate
-    /// coordination message — not corruption — which is an accepted trade-off for making `thread_post`
-    /// survive the daemon dying at all. (A client-supplied idempotency key would close it; deferred.)
+    /// An agent request that writes (a post, a thread change, a read that marks or announces, a
+    /// cleanup) is never retried: a CLI or hook call carries no replay key, so a daemon that
+    /// committed it and died before replying would act on it twice. Its caller sees the error.
     ///
     /// Cancel safety: every request is a correlated [`CommsRequest::Call`] and only the reply
     /// echoing its id is accepted. If a previous request future was dropped after its frame was
@@ -415,7 +422,7 @@ impl CommsClient {
         let what = req.method();
         match bounded(what, timeout, self.send_correlated(req.clone())).await {
             Ok(resp) => Ok(resp),
-            Err(err) if is_connection_lost(&err) => {
+            Err(err) if is_connection_lost(&err) && retry_safe(&req) => {
                 self.reconnect().await?;
                 bounded(what, timeout, self.send_correlated(req)).await
             }

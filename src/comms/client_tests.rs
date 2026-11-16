@@ -170,3 +170,92 @@ async fn handshake_against_a_mute_listener_times_out() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A broker that answers `Hello` on every link, counts each correlated request it reads, and
+/// hangs up without replying: a daemon that committed the request and died before its answer.
+fn hanging_up_broker() -> (
+    CommsPaths,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+    std::path::PathBuf,
+) {
+    let dir = std::env::temp_dir().join(format!("bm-client-{}-{}", std::process::id(), rand_suffix()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let socket_path = dir.join("c.sock");
+    let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+    let paths = CommsPaths {
+        comms_dir: dir.clone(),
+        socket_path,
+    };
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&seen);
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut codec = LengthDelimitedCodec::new();
+            let mut buf = BytesMut::new();
+            loop {
+                let frame = loop {
+                    if let Some(f) = codec.decode(&mut buf).expect("decode") {
+                        break Some(f);
+                    }
+                    if stream.read_buf(&mut buf).await.unwrap_or(0) == 0 {
+                        break None;
+                    }
+                };
+                let Some(frame) = frame else { break };
+                match rmp_serde::from_slice::<CommsRequest>(&frame).expect("req") {
+                    CommsRequest::Hello { .. } => {
+                        let out = CommsOut::Response(CommsResponse::Welcome {
+                            proto_ver: PROTO_VER,
+                            daemon_version: "test".to_string(),
+                        });
+                        let mut framed = BytesMut::new();
+                        codec
+                            .encode(Bytes::from(rmp_serde::to_vec_named(&out).expect("encode")), &mut framed)
+                            .expect("frame");
+                        stream.write_all(&framed).await.expect("write");
+                    }
+                    _ => {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (paths, seen, handle, dir)
+}
+
+/// A CLI post carries no replay key, so a link lost after the daemon read it must not send it
+/// again: the daemon may have committed it.
+#[tokio::test]
+async fn a_post_whose_link_broke_is_not_sent_twice() {
+    let (paths, seen, server, dir) = hanging_up_broker();
+    let mut client = CommsClient::connect_with_respawn(&paths, ClientHello::anonymous(), |_| Ok(()))
+        .await
+        .expect("connect");
+    let body = super::super::v2::api::PostBody {
+        target: super::super::v2::api::PostTarget::Thread(
+            super::super::v2::api::ThreadId::parse("t-aaaaaa").expect("thread id"),
+        ),
+        body: "once".to_string(),
+    };
+    assert!(client.agent_post(None, body).await.is_err());
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the post reached the daemon once"
+    );
+
+    assert!(client.ping().await.is_err());
+    assert!(
+        seen.load(std::sync::atomic::Ordering::SeqCst) > 2,
+        "a ping, which changes nothing, is sent again after the link breaks"
+    );
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
