@@ -140,10 +140,14 @@ pub enum ApprovalKind {
     Command,
     /// Create, edit, move or delete files.
     FileChange,
-    /// Grant the harness further permissions, such as network access or writable paths.
+    /// Grant the harness further permissions, such as network access or writable paths, or
+    /// switch it into a mode that asks less (Claude Code's `ExitPlanMode`, an ACP mode switch).
     Permissions,
-    /// Call a tool of an MCP server.
+    /// Call a tool of an MCP server. Claude Code reports these; ACP does not say which tool
+    /// calls are MCP calls, so an ACP request is never of this kind.
     McpTool,
+    /// Fetch from the network or search the web.
+    Fetch,
     /// Call another tool of the harness.
     Tool,
 }

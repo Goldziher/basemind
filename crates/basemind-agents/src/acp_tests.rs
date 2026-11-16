@@ -827,3 +827,19 @@ fn a_mode_whose_behaviour_is_unverified_needs_an_opt_in_naming_harness_and_mode(
         })
     ));
 }
+
+#[test]
+fn a_mode_switch_and_a_fetch_are_not_plain_tool_calls() {
+    let request = |kind: &str| {
+        let request: RequestPermissionRequest = serde_json::from_value(json!({
+            "sessionId": "sess-1",
+            "toolCall": {"toolCallId": "t1", "kind": kind},
+            "options": standard_options(),
+        }))
+        .unwrap();
+        approval_request("acp-1".to_owned(), &request).kind
+    };
+    assert_eq!(request("switch_mode"), crate::event::ApprovalKind::Permissions);
+    assert_eq!(request("fetch"), crate::event::ApprovalKind::Fetch);
+    assert_eq!(request("read"), crate::event::ApprovalKind::Tool);
+}

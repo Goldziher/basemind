@@ -112,10 +112,6 @@ fn is_turn_result(frame: &Value) -> bool {
     frame["type"] == "result" && !(frame["origin"]["kind"] == "task-notification" && frame["num_turns"] == 0)
 }
 
-fn request_id(wire: &Value) -> String {
-    wire.as_str().map_or_else(|| wire.to_string(), str::to_owned)
-}
-
 /// The request for a `can_use_tool` control request. An allow answers with the request's own
 /// `input`, so that input, and the path Claude Code flagged, are the grant shown.
 fn approval_request(id: String, request: &Value) -> ApprovalRequest {
@@ -123,6 +119,9 @@ fn approval_request(id: String, request: &Value) -> ApprovalRequest {
     let kind = match tool {
         "Bash" => ApprovalKind::Command,
         "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => ApprovalKind::FileChange,
+        // Leaving plan mode lifts its restrictions for the rest of the session.
+        "ExitPlanMode" => ApprovalKind::Permissions,
+        "WebFetch" | "WebSearch" => ApprovalKind::Fetch,
         _ if tool.starts_with("mcp__") => ApprovalKind::McpTool,
         _ => ApprovalKind::Tool,
     };
@@ -154,6 +153,9 @@ pub(crate) struct ClaudeProtocol {
     partial_tools: HashMap<u64, (String, Option<String>)>,
     /// Pending approvals: the wire id and the request, by event id.
     approvals: HashMap<String, (Value, Value)>,
+    /// The number of approval requests seen, which names the next one. The wire id is the
+    /// harness's to reuse; the event id is not, so a late answer cannot reach a newer request.
+    approval_sequence: u64,
 }
 
 impl ClaudeProtocol {
@@ -168,6 +170,7 @@ impl ClaudeProtocol {
             tools: Tools::default(),
             partial_tools: HashMap::new(),
             approvals: HashMap::new(),
+            approval_sequence: 0,
         }
     }
 
@@ -327,15 +330,16 @@ impl ClaudeProtocol {
                 }}),
             );
         }
-        let id = request_id(wire);
-        if self.approvals.contains_key(&id) {
-            // A second request under a pending id would take the caller's answer to the
-            // first one: it is denied unseen.
+        if self.approvals.values().any(|(pending, _)| pending == wire) {
+            // A cancel or an answer by this wire id could not tell the two apart: the second
+            // request is denied unseen.
             sink.emit(Event::Status(format!(
-                "Denied an approval request reusing the pending id {id:?}"
+                "Denied an approval request reusing the pending id {wire}"
             )));
             return self.respond(wire, request, false, out);
         }
+        self.approval_sequence += 1;
+        let id = format!("claude-{}", self.approval_sequence);
         let verdict = sink.request_approval(approval_request(id.clone(), request), self.approvals.len());
         match verdict {
             ApprovalVerdict::Ask => {
@@ -358,8 +362,10 @@ impl Protocol for ClaudeProtocol {
     fn frame(&mut self, frame: Value, out: &mut dyn Write, sink: &EventSink) -> Result<Step, LaunchError> {
         let kind = frame["type"].as_str().unwrap_or("");
         if kind == "control_cancel_request" {
-            let id = request_id(&frame["request_id"]);
-            if self.approvals.remove(&id).is_some() {
+            let wire = &frame["request_id"];
+            let cancelled = self.approvals.iter().find(|(_, (pending, _))| pending == wire);
+            if let Some(id) = cancelled.map(|(id, _)| id.clone()) {
+                self.approvals.remove(&id);
                 sink.resolved(id, false, ApprovalSource::Withdrawn);
             }
             return Ok(Step::Continue);

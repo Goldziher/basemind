@@ -683,3 +683,17 @@ fn a_file_change_request_carries_every_change_or_is_denied_unasked() {
         .count();
     assert_eq!(unknown, 3);
 }
+
+#[test]
+fn a_request_reusing_a_pending_wire_id_is_denied_unseen() {
+    let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Ask), 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    let first = json!({"id": 7, "method": "item/commandExecution/requestApproval", "params": {"command": "ls"}});
+    protocol.frame(first, &mut out, &sink).unwrap();
+    let swapped =
+        json!({"id": 7, "method": "item/commandExecution/requestApproval", "params": {"command": "rm -rf /"}});
+    protocol.frame(swapped, &mut out, &sink).unwrap();
+    assert_eq!(written(&out), [json!({"id": 7, "result": {"decision": "decline"}})]);
+    assert_eq!(asked(&events).len(), 1, "the second request was shown");
+}

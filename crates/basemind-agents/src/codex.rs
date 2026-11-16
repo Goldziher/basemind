@@ -225,6 +225,14 @@ impl CodexProtocol {
         out: &mut dyn Write,
         sink: &EventSink,
     ) -> Result<(), LaunchError> {
+        if self.approvals.values().any(|(pending, _, _)| pending == wire) {
+            // The harness's answer to this wire id could not tell the two apart: the second
+            // request is denied unseen.
+            sink.emit(Event::Status(format!(
+                "Denied an approval request reusing the pending id {wire}"
+            )));
+            return self.respond(wire, method, params, false, out);
+        }
         self.approval_sequence += 1;
         let id = format!("codex-{}", self.approval_sequence);
         let (request, shown) = self.approval_request(id.clone(), method, params);

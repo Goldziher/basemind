@@ -376,6 +376,9 @@ fn approval_request(id: String, request: &RequestPermissionRequest) -> ApprovalR
     let (kind, title) = match request.tool_call.fields.kind {
         Some(ToolKind::Edit | ToolKind::Delete | ToolKind::Move) => (ApprovalKind::FileChange, "Allow file changes?"),
         Some(ToolKind::Execute) => (ApprovalKind::Command, "Allow this command?"),
+        Some(ToolKind::Fetch) => (ApprovalKind::Fetch, "Allow this network request?"),
+        // Switching the session mode changes what the agent may do unasked from then on.
+        Some(ToolKind::SwitchMode) => (ApprovalKind::Permissions, "Allow a change of permission mode?"),
         _ => (ApprovalKind::Tool, "Allow this tool call?"),
     };
     let mut grant = serde_json::to_string_pretty(&request.tool_call).unwrap_or_default();
