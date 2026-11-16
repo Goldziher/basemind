@@ -179,29 +179,59 @@ pub(crate) fn check_env_name(name: &str) -> Result<(), LaunchError> {
 }
 
 /// Project files through which `kind` loads permissions, hooks, MCP servers or plugins from
-/// the directory it works in or an ancestor of it. Claude Code is absent because its adapter
-/// switches those sources off by flag; Grok, Hermes and a generic ACP agent are absent
-/// because their project files are not known here.
-fn project_config(kind: HarnessKind) -> &'static [&'static str] {
+/// the directory it works in or an ancestor of it, each with the entries of it that are
+/// allowed. Claude Code is absent because its adapter switches those sources off by flag;
+/// Grok, Hermes and a generic ACP agent are absent because their project files are not known
+/// here. Cursor's directory is refused whole but for `rules`, as its list of files that
+/// configure the agent (`cli.json`, `mcp.json`, `hooks.json`, ...) is not known to be complete.
+fn project_config(kind: HarnessKind) -> &'static [(&'static str, &'static [&'static str])] {
     match kind {
-        HarnessKind::Codex => &[".codex"],
-        HarnessKind::Acp(AcpFlavor::Gemini) => &[".gemini"],
-        HarnessKind::Acp(AcpFlavor::Cursor) => &[".cursor/cli.json", ".cursor/mcp.json"],
-        HarnessKind::Acp(AcpFlavor::OpenCode) => &["opencode.json", "opencode.jsonc", ".opencode"],
+        HarnessKind::Codex => &[(".codex", &[])],
+        HarnessKind::Acp(AcpFlavor::Gemini) => &[(".gemini", &[])],
+        HarnessKind::Acp(AcpFlavor::Cursor) => &[(".cursor", &["rules"])],
+        HarnessKind::Acp(AcpFlavor::OpenCode) => &[("opencode.json", &[]), ("opencode.jsonc", &[]), (".opencode", &[])],
         HarnessKind::ClaudeCode | HarnessKind::Acp(_) => &[],
     }
+}
+
+/// The first thing at `path` the harness may load: `path` itself, or, for a directory with
+/// `allowed` entries, its first entry not among them. Anything that cannot be looked at counts
+/// as present, so an unreadable directory refuses the launch rather than passing it.
+fn loadable(path: &Path, allowed: &[&str]) -> Option<std::path::PathBuf> {
+    let metadata = match path.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => return Some(path.to_owned()),
+    };
+    if allowed.is_empty() || !metadata.is_dir() {
+        return Some(path.to_owned());
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Some(path.to_owned());
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return Some(path.to_owned());
+        };
+        if !allowed.iter().any(|name| entry.file_name() == *name) {
+            return Some(entry.path());
+        }
+    }
+    None
 }
 
 /// Refuses a launch whose working directory, or an ancestor of it, holds a project file that
 /// `kind` would load: a file the launched agent (or anyone else) wrote there could approve
 /// tools, add MCP servers or run hooks behind the approval policy's back. `home` is skipped,
 /// because the same names there are the user's own configuration.
+///
+/// The check is a snapshot taken when the launch is planned: a file written between the plan
+/// and the harness reading its configuration, or during the session, is not seen.
 pub(crate) fn check_project_config(kind: HarnessKind, cwd: &Path, home: Option<&Path>) -> Result<(), LaunchError> {
     let home = home.and_then(|home| home.canonicalize().ok());
     for dir in cwd.ancestors().filter(|dir| Some(*dir) != home.as_deref()) {
-        for name in project_config(kind) {
-            let path = dir.join(name);
-            if path.symlink_metadata().is_ok() {
+        for (name, allowed) in project_config(kind) {
+            if let Some(path) = loadable(&dir.join(name), allowed) {
                 return Err(LaunchError::ProjectConfig {
                     harness: kind.id(),
                     path,

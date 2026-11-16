@@ -110,6 +110,7 @@ fn a_harness_project_file_in_the_working_directory_or_above_refuses_the_launch()
         refused(HarnessKind::Acp(AcpFlavor::Cursor), None),
         Some(outer.join(".cursor/cli.json"))
     );
+    std::fs::remove_file(outer.join(".cursor/cli.json")).unwrap();
     assert_eq!(
         refused(HarnessKind::Acp(AcpFlavor::OpenCode), None),
         Some(outer.join("repo/opencode.json"))
@@ -122,4 +123,39 @@ fn a_harness_project_file_in_the_working_directory_or_above_refuses_the_launch()
         refused(HarnessKind::Codex, Some(&PathBuf::from(&outer))),
         Some(outer.join("repo/.codex"))
     );
+}
+
+#[test]
+fn cursor_may_find_only_its_rules_and_an_unreadable_place_counts_as_present() {
+    let outer = tempfile::tempdir().unwrap();
+    let outer = outer.path().canonicalize().unwrap();
+    let cwd = outer.join("repo");
+    std::fs::create_dir_all(cwd.join(".cursor/rules")).unwrap();
+    let cursor = HarnessKind::Acp(AcpFlavor::Cursor);
+    assert!(check_project_config(cursor, &cwd, None).is_ok());
+    for name in ["hooks.json", "anything-new.json"] {
+        std::fs::write(cwd.join(".cursor").join(name), "{}").unwrap();
+        assert!(
+            matches!(
+                check_project_config(cursor, &cwd, None),
+                Err(LaunchError::ProjectConfig { path, .. }) if path == cwd.join(".cursor").join(name)
+            ),
+            "{name} was not refused"
+        );
+        std::fs::remove_file(cwd.join(".cursor").join(name)).unwrap();
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = outer.join("locked");
+        std::fs::create_dir_all(locked.join("work")).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = check_project_config(HarnessKind::Codex, &locked.join("work"), None);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(result, Err(LaunchError::ProjectConfig { .. })),
+            "a directory that cannot be searched passed: {result:?}"
+        );
+    }
 }
