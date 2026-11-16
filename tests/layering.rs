@@ -132,7 +132,6 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 const KNOWN_VIOLATIONS: &[&str] = &[
     "src/config/mod.rs -> config::overrides",
     "src/config/validate.rs -> extern jsonschema",
-    "src/index/layered_view.rs -> mcp [test]",
     "src/scanner.rs -> lance::shared_snapshot",
     "src/scanner.rs -> scanner_docs",
     "src/scanner_code.rs -> embeddings",
