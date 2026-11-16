@@ -560,7 +560,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `\r`) no longer matches a lone `\r`, which is masked as that character to keep it from ending a line: `a\vb`
   matched `a\rb`, and `[^\x00-\x0B]` missed a `\r`.
 - A `code_search` or `docs_search` ranking that finishes after a rescan no longer evicts the rankings of the
-  newer index generation.
+  newer index generation, and neither does a lookup that started before the rescan.
 - `code_symbols`, `code_grep` and `code_read` leave `truncated` out when it is false, as every other tool but
   a `memory_search` listing does.
 - The parsed-outline cache behind symbol history, `git_blame {symbol}` and the outline of an edited file is

@@ -66,8 +66,12 @@ impl RankedCache {
 
     fn get_at(&self, key: &str, generation: u32, now: Instant) -> Option<Value> {
         let mut entries = self.entries.lock().ok()?;
-        entries.retain(|entry| entry.generation == generation && now.duration_since(entry.stored) < MAX_AGE);
-        let at = entries.iter().position(|entry| entry.key == key)?;
+        // A lookup that started before a rescan asks with the older generation: it drops what is
+        // older still, and leaves the newer generation's rankings to the calls that will want them.
+        entries.retain(|entry| entry.generation >= generation && now.duration_since(entry.stored) < MAX_AGE);
+        let at = entries
+            .iter()
+            .position(|entry| entry.generation == generation && entry.key == key)?;
         let entry = entries.remove(at)?;
         let body = entry.body.clone();
         entries.push_back(entry);
@@ -164,6 +168,18 @@ mod tests {
             "a put that finished after the rescan keeps the newer ranking"
         );
         assert_eq!(cache.held().0, 1, "and the older one is not kept");
+    }
+
+    #[test]
+    fn a_lookup_at_an_older_generation_evicts_nothing_newer() {
+        let cache = RankedCache::default();
+        cache.put(key("retry"), 5, &ranking("new.rs"));
+        assert_eq!(cache.get(&key("retry"), 4), None, "a lookup from before the rescan");
+        assert_eq!(
+            cache.get(&key("retry"), 5),
+            Some(ranking("new.rs")),
+            "leaves the newer generation's ranking in place"
+        );
     }
 
     #[test]
