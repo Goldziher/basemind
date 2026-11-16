@@ -71,9 +71,6 @@ fn timeout_from_env(var: &str, default_secs: u64) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-/// How long `req` may wait for its reply. Forwarded work (scans, embeds, memory, git-history and
-/// index reads) legitimately runs for minutes and is unbounded here; everything else is a quick
-/// broker round trip, so silence past the timeout means the broker is wedged, not busy.
 /// Whether a request may be sent again after the connection broke mid-request: not an agent
 /// request that writes, which carries no replay key from a CLI or hook caller.
 fn retry_safe(req: &CommsRequest) -> bool {
@@ -86,6 +83,9 @@ fn retry_safe(req: &CommsRequest) -> bool {
     }
 }
 
+/// How long `req` may wait for its reply. Forwarded work (scans, embeds, memory, git-history and
+/// index reads) legitimately runs for minutes and is unbounded here; everything else is a quick
+/// broker round trip, so silence past the timeout means the broker is wedged, not busy.
 fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
     match req {
         // ~keep The daemon opens its agent store on a thread of its own, and a request made while it
