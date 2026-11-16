@@ -39,8 +39,10 @@ Rules for honest numbers:
 Every generator takes `--repo`, `--seed`, `--n`, `--exclude GLOB` (repeatable), `--ext`, `--max-bytes`, `--out`.
 
 `mode` below is the eval task kind (the task file's `mode` field), not an MCP argument. Each maps to one
-tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `references` / `callers` / `dependents` to
-`code_refs`, `grep` to `code_grep`, `find` to `find_files`, `git_search` to `git_log`, `docs` to `docs_search`.
+tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_read`, `references` / `callers` /
+`implementations` / `dependents` to `code_refs`, `grep` to `code_grep`, `find` to `find_files`, `git_search` /
+`git_path` / `git_symbol` to `git_log`, `blame` / `blame_symbol` to `git_blame`, `diff` / `diff_structural` to
+`git_diff`, `docs` to `docs_search`.
 
 | generator | mode(s) | gold |
 |---|---|---|
@@ -48,7 +50,9 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `references` / `
 | `gen_outline.py` | `outline` | `path:line` of every module- and class-level def, class and assignment (never function locals) |
 | `gen_references.py` | `references`, `callers` | `path:line` of every `ast.Call` whose callee identifier is the name, cross-checked with `git grep -n -w` |
 | `gen_dependents.py` | `dependents` | files whose import statement text contains the module string |
-| `gen_grep.py` | `grep` | `git grep -n -E` lines with the same path/language filters (tasks set `regex: true`) |
+| `gen_rust.py` | `symbols`, `outline`, `references`, `callers`, `implementations`, `dependents`, `read` | Rust gold from `rust_gold` (syn, not tree-sitter); see its docstring and `_rust.py` |
+| `gen_git.py` | `git_path`, `git_symbol`, `blame`, `blame_symbol`, `diff`, `diff_structural` | git's own output on the pinned commit; symbol bodies and names from `rust_gold` |
+| `gen_grep.py` | `grep` | `git grep -n -F` (literal) or `-E` (regex, `regex: true`) lines with the same path/language filters; Rust tasks also carry the enclosing definition per line (`annotations`) |
 | `gen_find.py` | `find` | the source path of a basename / typo / consonant-skeleton query (ranked) |
 | `gen_git_search.py` | `git_search` | shas of all commits whose message tokens contain the query's rare subject tokens (ranked) |
 | `gen_docs.py` | `docs` | the markdown file holding a sentence that names backticked code (ranked) |
@@ -73,24 +77,39 @@ One JSON object per line (blank lines and `#` lines are skipped; ids are unique)
  "baseline":{"grep":"git grep -n ...","read":["pkg/widget.py"]}}
 ```
 
-- `mode`: `symbols`, `outline`, `references`, `callers`, `grep`, `find`, `dependents`, `git_search`, `docs`.
+- `mode`: `symbols`, `outline`, `read`, `references`, `callers`, `implementations`, `dependents`, `grep`, `find`,
+  `git_search`, `git_path`, `git_symbol`, `blame`, `blame_symbol`, `diff`, `diff_structural`, `docs`.
 - `args`: the arguments of the tool the mode maps to, exactly as the MCP tool takes them; an unknown argument fails
   the task. `symbols`: `{name, limit}`. `outline`: `{path}`. `references`: `{name, limit}`. `callers`:
   `{path, name, limit}`. `dependents`: `{name, relation: "importers"}`. `grep`: `{pattern, regex: true, language,
   path, limit}` (`pattern` is literal text without `regex`; `path` is a path substring). `find`: `{query, limit}`.
-  `git_search`: `{query, limit}`. `docs`: `{query}`.
+  `git_search`: `{query, limit}`. `docs`: `{query}`. The other kinds take their tool's arguments the same way
+  (`implementations`: `{name, relation: "implementations"}`; `read`: `{path, symbol}`; `git_path`: `{path}`;
+  `git_symbol`: `{path, symbol}`; `blame`: `{path, line, end_line}`; `blame_symbol`: `{path, symbol}`; `diff`:
+  `{path, from, to}`; `diff_structural`: `{path, from, structural: true}`).
 - `gold`: expected items. `path` or `path:line`; see the item table below. Gold with any `path:line` entry is scored at line level.
 - `scoring`: `set` (order-insensitive) or `ranked`. `k` is the rank cut-off (default 10). `line_slack` tolerates off-by-n lines.
 - `baseline` (optional): what an agent would do without basemind. `grep` is one shell command or a list, run with `sh -c`
   in the workspace root (exit 0 or 1 are fine; anything else fails the baseline); `read` lists files read whole.
+  `items` names how the output is read as items, so the baseline is scored against the same gold: `grep_lines`
+  (`path:line:` prefixes), `paths`, `shas` (first token of each line, abbreviations resolved with `git rev-parse`),
+  `blame` (`git blame` default output), `diff` (a unified diff's added/removed lines), `diff_symbols` (definition names
+  on added/removed lines), `read` (every line of the files read). Without `items` the baseline is charged for tokens only.
+- `annotations` (`grep`, optional): `path:line` -> the definition that line sits in; scored as the share of returned
+  gold hits whose attached `symbol` has that name (`annotation_accuracy`, not part of the gate).
 - Unknown fields (for example `meta`) are ignored.
 
-What a returned item is, per mode: `symbols` / `outline` / `references` / `callers` / `grep` give `path:line`
-(1-based), `find` / `dependents` / `docs` give `path`, `git_search` gives the commit sha.
+What a returned item is, per mode: `symbols` / `outline` / `references` / `callers` / `implementations` / `grep`
+give `path:line` (1-based), `read` every `path:line` of the span, `find` / `dependents` / `docs` give `path`,
+`git_search` / `git_path` / `git_symbol` the commit sha, `blame` / `blame_symbol` `sha:line` per line, `diff`
+`+path:line` / `-path:line` per added / removed line, `diff_structural` `+name` / `-name`.
 
 ## Metrics
 
-Per task (NDJSON row): `elapsed_us` (the in-process tool call), `tokens` (the response text as an agent receives it), `score`.
+Per task (NDJSON row): `elapsed_us` (the in-process tool call), `tokens` (the response text as an agent receives it), `score`,
+and `baseline_score` when the baseline names `items`. A set-scored task follows `next_cursor` (up to 50 pages, `pages`;
+`pages_cut` when the cap stopped it) and is charged the tokens of every page, as an agent that wants the whole answer
+must page; a ranked task reads one page.
 
 - **Set**: precision, recall, F1 over de-duplicated items. Items are de-duplicated by path, or by `(path, line)` when
   the gold has lines, so ten hits in one file do not count ten times against a path-level gold. Empty gold: recall 1,
@@ -137,13 +156,16 @@ over 1 ms), errors increase, or a mode disappeared. Use the same task file for b
 
 ## Tests
 
-`python3 -m unittest discover benchmarks/eval` runs the generator tests (a throwaway git repo with known gold, determinism
-across hash seeds, the cross-language guard). The harness itself is covered by `cargo test --lib eval::` and
-`cargo test --test eval_smoke`.
+`uv run --no-project --with pytest python -m pytest benchmarks/eval -q` runs the generator, gate-summary and fetch tests
+(throwaway git repositories with known gold, determinism across hash seeds, the cross-language guard). The harness is
+covered by `cargo test --lib eval::`, `cargo test --test eval_smoke` and `cargo test --test eval_gate_smoke` (every
+kind and its baseline on a hand-worked fixture, and the same tasks with a wrong gold scoring zero), `rust_gold` by
+`cargo test --offline --manifest-path benchmarks/eval/rust_gold/Cargo.toml`.
 
 ## Limitations
 
-- The AST generators (`symbols`, `outline`, `references`, `dependents`) emit Python gold only. The harness and the other generators are language-agnostic.
+- The AST generators (`gen_symbols.py`, `gen_outline.py`, `gen_references.py`, `gen_dependents.py`) emit Python gold only;
+  `gen_rust.py` and `gen_git.py` cover Rust. The harness and the other generators are language-agnostic.
 - `outline`/`symbols` gold encodes basemind's Python symbol rules: module- and class-scope definitions and assignments only. Names bound inside a function or lambda (locals, nested defs) are not indexed, so the generators never descend into function bodies.
 - `find` covers every path basemind indexes (code map plus document tier). Pass `--indexed FILE` to `gen_find.py` (one indexed path per line) so tasks are never drawn from files the scan config leaves out; use `--ext md,rst,...` for a documents-only batch.
 - `docs` and semantic lookups need the `documents` build; without it those tasks error.
@@ -179,3 +201,75 @@ for this cache and avoid modifying the checkout or cache during capture. Each su
 one query and contributes exactly one matching semantic route diagnostic, so fallback or ambiguous
 evidence fails the capture. The runner compares the semantic code lane and configured document
 search results.
+
+## Value gate (ADR-0022)
+
+The gate runs the committed task files over a pinned corpus and gives each tool a verdict: a task kind passes on a
+corpus when at least 0.70 of its tasks are credited (tool recall >= 0.8) and the median baseline/tool token ratio over
+the credited tasks is at least 1.5, counted with o200k; a tool passes when every one of its kinds passes on every corpus.
+
+### Reproduce
+
+```sh
+cargo build --release --features tokenizer --bin basemind     # o200k counts; bytes/4 gives no verdict
+corpus=/path/outside/the/repo/eval-corpus
+benchmarks/eval/fetch_corpus.sh "$corpus"                     # clone, check out and verify every pin
+benchmarks/eval/gen_tasks.sh "$corpus" /tmp/tasks && diff -r /tmp/tasks benchmarks/eval/tasks   # optional: the
+                                                              # committed tasks regenerate byte-identically
+BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
+  benchmarks/eval/run_gate.sh target/release/basemind "$corpus" /tmp/gate-results
+```
+
+- `corpus.tsv` is the corpus: each repository's URL, pinned commit, the sha256 of its `git ls-tree -r` listing and its
+  file count. basemind is pinned at v0.33.0 and `tokio` at tokio-1.54.1 (the harden harness clones `tokio` at whatever
+  its default branch holds, so the pin lives here). Nothing is vendored; `fetch_corpus.sh` refuses a directory inside the
+  repository and runs no hooks. The clones are data: nothing in them is executed.
+- `tasks/<corpus>.jsonl` are the task files (`gen_tasks.sh`, `--seed 1`, 25 per kind or variant), regenerated only when
+  a pin moves. Gold never comes from basemind: Rust structure from `rust_gold` (syn), git, grep and find gold from git's
+  own output on the pinned commit.
+- `run_gate.sh` refuses to start unless `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` are set to existing, empty
+  directories outside the default cache, refuses a binary without the `tokenizer` feature, scans each repository,
+  runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
+- `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
+
+### Read the table
+
+`results/gate.md` lists each tool's verdict, then one row per tool, kind and corpus: task and error counts, credited
+tasks (fraction), the tool's and the baseline's mean recall against the same gold, the tool's precision, median tokens of
+each arm over all the kind's tasks, the median ratio over the credited tasks, and for `grep` the share of hits whose
+attached symbol was right. A ratio below 1 means the shell answer was cheaper. Latency is in the per-corpus markdown and
+`run.tsv` with the load average next to it; the machine is shared, so it is reported, never gated.
+
+### Baseline per kind
+
+The baseline is the cheapest shell command a competent agent would run to get the same items, scored against the same
+gold. `fd` is not installed and `rg` is not pinned by the repository's mise toolchain, so `git grep -n` (the output shape
+of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a targeted `git grep` too.
+
+| kind | baseline |
+|---|---|
+| `symbols` | `git grep -n -E` for a definition keyword followed by a name matching the query (substring, exact, prefix, or a subsequence for `fuzzy`) |
+| `outline`, `read` | reading the whole file (`read` greps for the `fn` line first) |
+| `references`, `callers` | `git grep -n -w -F NAME -- '*.rs'` |
+| `implementations` | `git grep -n -E 'impl ... TRAIT ... for '` |
+| `dependents` | `git grep -l -E 'use .*a::b'` |
+| `grep` | the same `git grep -n -F` / `-E` the gold comes from |
+| `find` | `git ls-files \| grep -i -F NAME`, or a case-insensitive subsequence regex for typos and skeletons |
+| `git_search` | `git log --oneline -i --all-match --grep=...` |
+| `git_path` | `git log --follow --oneline -- PATH` |
+| `git_symbol` | `git log -s -L '/fn NAME[(<]/,/^INDENT}/:PATH'` |
+| `blame`, `blame_symbol` | `git blame -L A,B` / `git blame -L '/fn NAME[(<]/,/^INDENT}/'` |
+| `diff`, `diff_structural` | `git diff FROM TO -- PATH` / `git diff FROM -- PATH` |
+
+### What the gold cannot cover
+
+- Name-based, not scope-resolved (`rust-analyzer` is not pinned and not installed here): `callers` gold is every call of
+  the name, so a call that binds to another item of the same name counts.
+- Macro bodies are re-parsed as items, statements or expressions; bodies none of those parse (`select!`, `json!`,
+  `tracing` field syntax) only contribute calls found lexically (`ident(`), and no definitions.
+- Gold is Rust-only for the code kinds: hits in other languages cost the tool precision, never recall.
+- `git_path` and `git_symbol` do not follow renames; `git_symbol` skips merges and compares by name within one file.
+- `find` gold is every tracked file, including assets (`.png`, `.svg`) `find_files` does not index.
+- `docs_search` and `code_search` are not run: both need an embedding model download, and this harness only uses the
+  network to clone the corpus. `code_read` spans are judged against the definition's first non-attribute line to its
+  last line.
