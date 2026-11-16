@@ -296,7 +296,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   either, naming each with its reason, as a single `stop` does. A daemon is signalled only while
   its generation's `daemon.lock` still reads held: one that died inside the exit window leaves a
   pid the system may have given to another process, and a free lock now means nothing is
-  signalled. A `Stop` is refused while a relay session is still being set up, not only once it is
+  signalled. Nor is a process that started after the pidfile naming it was written (macOS, Linux
+  and Windows), which is what a pid given out again looks like while a new daemon already holds
+  the lock. A `Stop` is refused while a relay session is still being set up, not only once it is
   registered; a relay link that has not sent its hello within 30 s is dropped, so a stalled client
   cannot hold a daemon in place. A `basemind rescan` running through the daemon makes it refuse
   `Stop` as well, where a takeover's `Stop` was accepted and cancelled the scan half way.

@@ -31,6 +31,11 @@ struct Scripted {
     lock: LockState,
     process_live: bool,
     holder: Option<u32>,
+    /// Whether the process under the recorded pid is old enough to have written the record.
+    holder_predates_record: bool,
+    /// What the lock reads once the pidfile has been read, when that differs from `lock`.
+    lock_after_pidfile: Option<LockState>,
+    pidfile_read: Cell<bool>,
     asked: RefCell<Vec<&'static str>>,
     signalled: Cell<Option<u32>>,
 }
@@ -47,6 +52,9 @@ impl Scripted {
             lock: LockState::Held,
             process_live: true,
             holder: Some(DAEMON_PID),
+            holder_predates_record: true,
+            lock_after_pidfile: None,
+            pidfile_read: Cell::new(false),
             asked: RefCell::default(),
             signalled: Cell::new(None),
         }
@@ -90,7 +98,14 @@ impl Generation for Scripted {
     }
 
     fn lock_state(&self) -> LockState {
-        self.lock
+        match self.lock_after_pidfile {
+            Some(later) if self.pidfile_read.get() => later,
+            _ => self.lock,
+        }
+    }
+
+    fn can_have_written(&self, _holder: &DaemonRecord) -> bool {
+        self.holder_predates_record
     }
 
     fn pid_is_live(&self, _pid: u32) -> bool {
@@ -98,6 +113,7 @@ impl Generation for Scripted {
     }
 
     fn recorded_holder(&self) -> Option<DaemonRecord> {
+        self.pidfile_read.set(true);
         self.holder.map(|pid| DaemonRecord {
             pid,
             kind: DaemonKind::Comms,
@@ -270,6 +286,40 @@ async fn a_silent_daemon_is_not_signalled_without_the_lock_and_the_pidfile() {
         "the pidfile must name the pid the daemon reported"
     );
     assert_eq!(another_pid.signalled.get(), None);
+}
+
+/// A pidfile outlives a daemon that was killed, and its pid is handed out again. The lock can
+/// read held all the same: a new daemon between taking it and writing its record, or another
+/// process testing it at that instant. A process younger than the record did not write it, and a
+/// lock that reads free once the pidfile is read vouches for nobody.
+#[tokio::test]
+async fn a_process_given_the_dead_daemons_pid_is_not_signalled_though_the_lock_reads_held() {
+    let reused_pid = Scripted {
+        holder_predates_record: false,
+        ..Scripted::silent_holder()
+    };
+    for reported in [Some(DAEMON_PID), None] {
+        assert_eq!(
+            reclaim(&reused_pid, reported, operator()).await,
+            Reclaimed::Unidentified
+        );
+    }
+    assert_eq!(
+        reused_pid.signalled.get(),
+        None,
+        "it started after the record was written"
+    );
+
+    let released = Scripted {
+        lock_after_pidfile: Some(LockState::Free),
+        ..Scripted::silent_holder()
+    };
+    assert_eq!(reclaim(&released, None, operator()).await, Reclaimed::Unidentified);
+    assert_eq!(
+        released.signalled.get(),
+        None,
+        "the lock is read again after the pidfile"
+    );
 }
 
 /// A daemon that left during the exit window is gone, and nothing is asked or signalled.

@@ -184,14 +184,22 @@ fn store_error() -> CommsResponse {
     }
 }
 
-/// Write `dir`'s `daemon.pid` naming `pid`, as the lock holder would have.
+/// Write `dir`'s `daemon.pid` naming `pid`, as the lock holder would have just now.
 fn record_holder(dir: &Path, pid: u32) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after 1970");
+    record_holder_since(dir, pid, i64::try_from(now.as_secs()).expect("seconds fit"));
+}
+
+/// Write `dir`'s `daemon.pid` naming `pid`, as a daemon that took the lock at `started_unix`.
+fn record_holder_since(dir: &Path, pid: u32, started_unix: i64) {
     let record = DaemonRecord {
         pid,
         kind: DaemonKind::Comms,
         dir: dir.to_path_buf(),
         version: OLDER.to_string(),
-        started_unix: 0,
+        started_unix,
     };
     std::fs::write(
         dir.join("daemon.pid"),
@@ -746,6 +754,26 @@ async fn a_live_process_under_the_daemons_old_pid_is_not_signalled_once_the_lock
         );
         assert!(reused.alive(), "reported pid {reported}: nothing is signalled");
     }
+}
+
+/// The pidfile of a daemon killed long ago names a pid that a younger process now has, and the
+/// lock reads held (a new daemon that has not written its record yet). The process did not write
+/// that pidfile, so it is not signalled.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_process_younger_than_the_pidfile_is_not_signalled_though_the_lock_is_held() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let reused = StandIn::spawn();
+    let paths = generation(dir.path(), None);
+    record_holder_since(dir.path(), reused.0, 1);
+    let _lock = hold_lock(dir.path());
+    let _silent = Scripted::serve(&paths.socket_path, |_| None);
+
+    assert_eq!(reclaim_holder(&paths, None, QUICK).await, Reclaimed::Unidentified);
+    assert!(
+        reused.alive(),
+        "a process that started after the record is not its daemon"
+    );
 }
 
 /// Something is plainly still there — it holds the lock, or its socket still accepts — and the

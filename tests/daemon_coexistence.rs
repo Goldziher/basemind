@@ -94,7 +94,7 @@ impl Machine {
             "kind": "comms",
             "dir": self.generation,
             "version": OLDER,
-            "started_unix": 0,
+            "started_unix": now_unix(),
         })
         .to_string();
         std::fs::write(self.generation.join("daemon.pid"), &record).expect("write pidfile");
@@ -421,6 +421,15 @@ fn serve_started_under_an_older_daemon_that_will_not_stop_says_so_and_keeps_runn
     let stops = daemon.asked().iter().filter(|asked| **asked == "stop").count();
     assert_eq!(stops, 1, "the daemon is asked to stop once, not on every retry");
     assert!(stand_in.alive());
+}
+
+/// The time a daemon recording itself now would write: a record older than the process under its
+/// pid is not taken for that process's.
+fn now_unix() -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after 1970");
+    i64::try_from(now.as_secs()).expect("seconds fit")
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -806,7 +815,7 @@ fn hold_index_lock(machine: &Machine, root: &Path, version: &str) -> std::fs::Fi
     let meta = serde_json::json!({ "command": "basemind rescan", "pid": pid, "acquired_unix": 0 });
     std::fs::write(dir.join(LOCK_META_FILE), meta.to_string()).expect("write the lock sidecar");
     let record = serde_json::json!({
-        "pid": pid, "kind": "comms", "dir": machine.comms_dir, "version": version, "started_unix": 0,
+        "pid": pid, "kind": "comms", "dir": machine.comms_dir, "version": version, "started_unix": now_unix(),
     });
     let registry = machine.data_home.join("daemons");
     std::fs::create_dir_all(&registry).expect("mkdir registry");

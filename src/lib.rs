@@ -33,6 +33,7 @@ pub mod lang;
 pub mod lang_rules;
 pub mod mcp;
 pub mod path;
+pub mod process_start;
 pub mod query;
 pub mod registry;
 pub mod render;

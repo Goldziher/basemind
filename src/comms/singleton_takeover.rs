@@ -117,6 +117,8 @@ pub(super) trait Generation {
     fn pid_is_live(&self, pid: u32) -> bool;
     /// The live process `daemon.pid` names.
     fn recorded_holder(&self) -> Option<DaemonRecord>;
+    /// Whether the process now under `holder.pid` can be the daemon that wrote `holder`.
+    fn can_have_written(&self, holder: &DaemonRecord) -> bool;
     /// Signal `pid` to terminate; whether it is gone afterwards.
     fn terminate(&self, pid: u32, grace: Duration) -> bool;
 }
@@ -155,6 +157,10 @@ impl Generation for Live<'_> {
 
     fn recorded_holder(&self) -> Option<DaemonRecord> {
         daemon_lock::recorded_holder(&self.0.comms_dir)
+    }
+
+    fn can_have_written(&self, holder: &DaemonRecord) -> bool {
+        crate::process_start::can_have_written(holder)
     }
 
     fn terminate(&self, pid: u32, grace: Duration) -> bool {
@@ -339,6 +345,14 @@ async fn settle(
 /// in-process test broker reports its host. And a pid, reported or recorded, outlives its process:
 /// a daemon that died inside the exit window leaves both naming a number the system may have given
 /// to something else, whereas its lock went with it.
+///
+/// The lock names nobody, though, and it can read held with a stale pidfile beside it: a new
+/// daemon holds it before it writes its record, and another process testing it holds it for an
+/// instant. So the process the pidfile names must also be no younger than the record (where the
+/// platform tells a process's start time: macOS, Linux and Windows), and the lock is read again
+/// after the pidfile. What remains is a process that already ran when the dead daemon took the
+/// lock and was given its pid afterwards, which pid allocation makes unlikely and nothing here
+/// rules out.
 pub async fn reclaim_holder(paths: &CommsPaths, reported_pid: Option<u32>, rules: ReclaimRules) -> Reclaimed {
     reclaim(&Live(paths), reported_pid, rules).await
 }
@@ -379,9 +393,15 @@ async fn reclaim(generation: &impl Generation, reported_pid: Option<u32>, rules:
     let Some(holder) = generation
         .recorded_holder()
         .filter(|holder| holder.kind == DaemonKind::Comms && reported_pid.is_none_or(|pid| holder.pid == pid))
+        .filter(|holder| generation.can_have_written(holder))
     else {
         return Reclaimed::Unidentified;
     };
+    // The lock was held a moment ago by someone; it must still be once the pidfile has named
+    // the process, or that record is what a daemon left behind.
+    if generation.lock_state() != LockState::Held {
+        return Reclaimed::Unidentified;
+    }
     tracing::warn!(
         daemon_version = %holder.version,
         daemon_pid = holder.pid,
