@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result};
-use basemind::comms::ids::AgentId;
 use basemind::comms::{relay, singleton};
 
 use crate::relay_refusal::RelayRefusal;
@@ -23,10 +22,15 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
         .context("build tokio runtime")?;
 
     let served = runtime.block_on(async move {
-        let principal = basemind::comms::v2::identity::resolve_for_root(root)
-            .context("resolve this session's agent identity")?
-            .principal;
-        let agent = AgentId::parse(principal.as_str()).context("name this session's agent")?;
+        let identity =
+            basemind::comms::v2::identity::resolve_for_root(root).context("resolve this session's agent identity")?;
+        let agent = Identity {
+            principal: identity.principal.clone(),
+            host: std::env::var(basemind::comms::v2::identity::HOST_ENV)
+                .ok()
+                .filter(|host| !host.is_empty()),
+            notices: identity.notices(),
+        };
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let view = view.to_owned();
         let pacing = Arc::new(Mutex::new(StopPacing::default()));
@@ -48,6 +52,14 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
     served
 }
 
+/// Who this session is, sent in every relay hello (ADR-0021).
+#[derive(Clone)]
+struct Identity {
+    principal: basemind::comms::v2::Principal,
+    host: Option<String>,
+    notices: Vec<String>,
+}
+
 #[cfg(unix)]
 type RelayStream = tokio::net::UnixStream;
 
@@ -59,7 +71,7 @@ type RelayStream = tokio::net::windows::named_pipe::NamedPipeClient;
 async fn open_relay_connection(
     root: PathBuf,
     view: String,
-    agent: AgentId,
+    agent: Identity,
     pacing: Arc<Mutex<StopPacing>>,
 ) -> Result<RelayStream> {
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
@@ -76,7 +88,9 @@ async fn open_relay_connection(
         relay_proto_ver: relay::RELAY_PROTO_VER,
         root,
         view,
-        agent,
+        principal: agent.principal,
+        host: agent.host,
+        notices: agent.notices,
     };
     let welcome = relay::client_handshake(&mut stream, &hello)
         .await

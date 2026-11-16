@@ -155,28 +155,15 @@ const REPLAYABLE_METHODS: &[&str] = &[
 fn is_read_only_tool(tool: &str) -> bool {
     basemind::mcp::replay::REPLAY_SAFE_TOOLS.contains(&tool)
 }
-/// `agents` modes that are reads or naturally idempotent. `post` is made so by a key, and `inbox`
-/// is one only while it marks nothing read.
-const REPLAYABLE_AGENTS_MODES: &[&str] = &[
-    "list",
-    "thread_list",
-    "members",
-    "history",
-    "message",
-    "ack",
-    "wait",
-    "status",
-];
-
 /// A request the relay may re-send once after a backend restart.
 struct Replayable {
     line: String,
     replayed: bool,
 }
 
-/// Decide whether a `tools/call` / read request is safe to replay, rewriting an `agents` `post` to
-/// carry a relay-generated `idempotency_key` (when the caller gave none) so the replay cannot store
-/// a second copy. Returns the line to forward and whether it is replayable.
+/// Decide whether a `tools/call` / read request is safe to replay, stamping an agent tool's call
+/// with a relay-generated replay key in its `_meta` (ADR-0021) so a replay returns the first
+/// result instead of acting twice. Returns the line to forward and whether it is replayable.
 fn classify_request(message: &mut Value, line: &str) -> (String, bool) {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return (line.to_owned(), false);
@@ -191,39 +178,31 @@ fn classify_request(message: &mut Value, line: &str) -> (String, bool) {
         .pointer("/params/name")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let mode = message
-        .pointer("/params/arguments/mode")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if is_read_only_tool(tool) || (tool == "agents" && REPLAYABLE_AGENTS_MODES.contains(&mode)) {
+    if is_read_only_tool(tool) {
         return (line.to_owned(), true);
     }
-    if tool == "agents" && mode == "inbox" {
-        let marks_read = message
-            .pointer("/params/arguments/mark_read")
-            .is_some_and(|mark| !matches!(mark, Value::Null | Value::Bool(false)));
-        return (line.to_owned(), !marks_read);
+    if !basemind::mcp::replay::KEYED_REPLAY_TOOLS.contains(&tool) {
+        return (line.to_owned(), false);
     }
-    if tool == "agents" && mode == "post" {
-        let has_key = message
-            .pointer("/params/arguments/idempotency_key")
-            .is_some_and(|key| !key.is_null());
-        if has_key {
-            return (line.to_owned(), true);
-        }
-        if let Some(arguments) = message.pointer_mut("/params/arguments").and_then(Value::as_object_mut) {
-            arguments.insert("idempotency_key".to_owned(), Value::String(relay_idempotency_key()));
-            let mut rewritten = message.to_string();
-            if line.ends_with('\n') {
-                rewritten.push('\n');
-            }
-            return (rewritten, true);
-        }
+    let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) else {
+        return (line.to_owned(), false);
+    };
+    let meta = params
+        .entry("_meta")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(meta) = meta.as_object_mut() else {
+        return (line.to_owned(), false);
+    };
+    meta.entry(basemind::mcp::replay::REPLAY_KEY_META)
+        .or_insert_with(|| Value::String(relay_replay_key()));
+    let mut rewritten = message.to_string();
+    if line.ends_with('\n') {
+        rewritten.push('\n');
     }
-    (line.to_owned(), false)
+    (rewritten, true)
 }
 
-fn relay_idempotency_key() -> String {
+fn relay_replay_key() -> String {
     format!("relay-{}", basemind::comms::new_idempotency_key())
 }
 

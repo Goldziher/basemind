@@ -150,7 +150,9 @@ async fn a_relay_handshake_that_loses_to_a_stop_is_declined_as_draining() {
         relay_proto_ver: crate::comms::relay::RELAY_PROTO_VER,
         root: workspace.path().to_path_buf(),
         view: crate::store::VIEW_WORKING.to_string(),
-        agent: crate::comms::ids::AgentId::parse("claude-code").expect("agent"),
+        principal: crate::comms::v2::Principal::parse("claude-code").expect("principal"),
+        host: None,
+        notices: Vec::new(),
     };
     let welcome = crate::comms::relay::client_handshake(&mut client, &hello)
         .await

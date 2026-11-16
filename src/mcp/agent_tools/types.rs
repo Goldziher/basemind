@@ -81,8 +81,6 @@ pub struct AgentInboxParams {
     pub unread: Option<bool>,
     /// Return unread messages without marking them read.
     pub peek: Option<bool>,
-    /// For hooks: list unread messages not announced yet, without bodies; marks nothing read.
-    pub announce: Option<bool>,
     /// When nothing is unread, wait up to this many seconds (0-40) for a message.
     pub wait_secs: Option<u32>,
     /// Max messages (default 20, max 100).

@@ -437,6 +437,7 @@ impl HttpRouter {
                 shared.clone(),
                 agent_id.clone(),
                 Arc::clone(&heavy_admission),
+                None,
             ))
         };
         let config = StreamableHttpServerConfig::default()

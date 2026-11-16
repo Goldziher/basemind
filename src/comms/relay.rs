@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::ids::AgentId;
+use super::v2::api::Principal;
 
 /// The 8-byte preamble a relay client writes first, before any [`RelayHello`], so the daemon's
 /// accept loop can distinguish a relay (rmcp JSON-RPC) connection from a legacy msgpack comms
@@ -37,13 +37,16 @@ pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30
 /// The relay handshake's own protocol version, negotiated in [`RelayHello`] / [`RelayWelcome`].
 ///
 /// Independent of [`super::protocol::PROTO_VER`]: the relay envelope can change shape without a
-/// comms-protocol bump, and vice versa. Bumped on any breaking change to the relay handshake.
-pub const RELAY_PROTO_VER: u32 = 1;
+/// comms-protocol bump, and vice versa. Bumped on any breaking change to the relay handshake: 1→2
+/// when [`RelayHello`] began naming the session's principal and host (ADR-0021) in place of a
+/// per-connection agent id.
+pub const RELAY_PROTO_VER: u32 = 2;
 
 /// The relay client's opening message, sent immediately after [`RELAY_MAGIC`].
 ///
-/// Identifies the rmcp session's target workspace (`root` + `view`) and the connecting agent
-/// identity so the daemon can bind the forwarded JSON-RPC session to the right hot workspace.
+/// Identifies the rmcp session's target workspace (`root` + `view`) and who the session is, so the
+/// daemon can bind the forwarded JSON-RPC session to the right hot workspace and serve its agent
+/// tools as that principal (ADR-0021).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayHello {
     /// The relay-handshake protocol version the client speaks.
@@ -52,8 +55,15 @@ pub struct RelayHello {
     pub root: std::path::PathBuf,
     /// The view name within that workspace.
     pub view: String,
-    /// The connecting agent's identity.
-    pub agent: AgentId,
+    /// The principal the session resolved, through the resolver the CLI and the hooks use.
+    pub principal: Principal,
+    /// The agent harness (`BASEMIND_HOST`).
+    #[serde(default)]
+    pub host: Option<String>,
+    /// What the session's first agent-tool reply tells the agent about its identity: a
+    /// configured id that was refused.
+    #[serde(default)]
+    pub notices: Vec<String>,
 }
 
 /// The daemon's reply to a [`RelayHello`].
@@ -224,7 +234,9 @@ mod tests {
             relay_proto_ver: RELAY_PROTO_VER,
             root: std::path::PathBuf::from("/repo/root"),
             view: "main".to_string(),
-            agent: AgentId::parse("claude-code").expect("agent"),
+            principal: Principal::parse("claude-code").expect("principal"),
+            host: None,
+            notices: Vec::new(),
         };
         let bytes = encode(&hello).expect("encode");
         let back: RelayHello = decode(&bytes).expect("decode");
@@ -307,7 +319,9 @@ mod tests {
             relay_proto_ver: RELAY_PROTO_VER,
             root: std::path::PathBuf::from("/repo/root"),
             view: "main".to_string(),
-            agent: AgentId::parse("claude-code").expect("agent"),
+            principal: Principal::parse("claude-code").expect("principal"),
+            host: None,
+            notices: Vec::new(),
         };
         let welcome = RelayWelcome {
             relay_proto_ver: RELAY_PROTO_VER,

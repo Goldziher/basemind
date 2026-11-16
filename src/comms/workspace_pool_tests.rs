@@ -582,6 +582,7 @@ async fn code_response(shared: &std::sync::Arc<crate::mcp::SharedReadStack>, que
         std::sync::Arc::clone(shared),
         "read-stack-tester".to_string(),
         std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
+        None,
     );
     let result = match query {
         CodeQuery::Symbols => {

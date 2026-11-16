@@ -9,6 +9,9 @@
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
 pub(crate) mod admission;
+/// Who a daemon-hosted session is to the agent tools.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod agent_context;
 pub mod agent_tools;
 mod background;
 mod budget;
@@ -96,6 +99,8 @@ pub(crate) mod tokens;
 mod tool_contract;
 mod tools;
 mod tools_admin;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod tools_agents;
 mod tools_git;
 mod tools_memory;
 pub(crate) mod toon;
@@ -117,6 +122,8 @@ use rmcp::task_manager::TaskManager;
 use crate::extract::FileMapL1;
 use crate::store::Store;
 
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub use agent_context::AgentContext;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) use host::HostBackend;
 #[cfg(all(feature = "test-support", feature = "comms", any(unix, windows)))]
@@ -339,6 +346,8 @@ impl BasemindServer {
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             daemon_client: tokio::sync::OnceCell::new(),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            agents: None,
             lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
             task_threshold_ms: std::sync::atomic::AtomicU64::new(tasks::TASK_THRESHOLD.as_millis() as u64),
         });
@@ -397,8 +406,13 @@ impl BasemindServer {
     /// they go through [`router_cache::cached_tool_router`], which builds it once behind a
     /// `OnceLock` and hands back a clone. This is the one-time builder the cache calls into.
     fn assemble_router() -> ToolRouter<Self> {
-        let router =
+        #[allow(unused_mut)] // ~keep only a `comms` build adds the agent tools
+        let mut router =
             Self::tool_router_core() + Self::tool_router_git() + Self::tool_router_memory() + Self::tool_router_admin();
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        {
+            router += Self::tool_router_agents();
+        }
         tool_contract::finalize_router(router)
     }
 
@@ -410,14 +424,18 @@ impl BasemindServer {
     /// client. Spawns NO background facilities: freshness is owned by the workspace's single warden
     /// (built alongside the shared stack), never per connection. `agent_id` comes from the
     /// connection's [`RelayHello`](crate::comms::relay::RelayHello), so each client keeps its own
-    /// memory-owner identity even while sharing the read stack.
+    /// memory-owner identity even while sharing the read stack. `agents` is the session's identity
+    /// to the agent tools; a server without one (the HTTP front-end) refuses them.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn from_shared(
         shared: Arc<SharedReadStack>,
         agent_id: String,
         heavy_admission: Arc<admission::HeavyAdmission>,
+        agents: Option<Arc<AgentContext>>,
     ) -> Self {
-        let state = Arc::new(ServerState::for_connection(shared, agent_id));
+        let mut state = ServerState::for_connection(shared, agent_id);
+        state.agents = agents;
+        let state = Arc::new(state);
         Self {
             state,
             _watcher: None,

@@ -383,9 +383,30 @@ impl Broker {
             return;
         }
 
-        let agent = hello.agent.to_string();
-        tracing::info!(agent = %agent, root = %hello.root.display(), "relay: hosting rmcp session");
-        let server = crate::mcp::BasemindServer::from_shared(shared, agent, Arc::clone(&self.heavy_admission));
+        let principal = hello.principal.clone();
+        tracing::info!(principal = %principal, host = ?hello.host, root = %hello.root.display(), "relay: hosting rmcp session");
+        let agents = {
+            let (hub, root) = (Arc::clone(&self.agents), hello.root.clone());
+            let repo = tokio::task::spawn_blocking(move || hub.repo_for(&root)).await;
+            match repo {
+                Ok(Ok(repo)) => Some(Arc::new(crate::mcp::AgentContext::new(
+                    Arc::clone(&self.agents),
+                    principal.clone(),
+                    repo,
+                    hello.notices.clone(),
+                ))),
+                _ => {
+                    tracing::warn!(root = %hello.root.display(), "relay: no repository for the root; agent tools refuse");
+                    None
+                }
+            }
+        };
+        let server = crate::mcp::BasemindServer::from_shared(
+            shared,
+            principal.as_str().to_string(),
+            Arc::clone(&self.heavy_admission),
+            agents,
+        );
         let (read_half, write_half) = tokio::io::split(stream);
         match rmcp::ServiceExt::serve(server, (read_half, write_half)).await {
             Ok(running) => {

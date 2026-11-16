@@ -3210,7 +3210,7 @@ async fn layered_semantic_mcp_falls_back_after_standalone_mutation() {
 /// advertising one fails here until it is put in one of the lists in `basemind::mcp::replay`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_advertised_tool_has_a_replay_decision() {
-    use basemind::mcp::replay::{NEVER_REPLAY_TOOLS, REPLAY_BY_MODE_TOOLS, REPLAY_SAFE_TOOLS, decisions};
+    use basemind::mcp::replay::{KEYED_REPLAY_TOOLS, NEVER_REPLAY_TOOLS, REPLAY_SAFE_TOOLS, decisions};
 
     let dir = build_repo();
     let root = dir.path();
@@ -3224,7 +3224,7 @@ async fn every_advertised_tool_has_a_replay_decision() {
             decisions(&tool.name),
             1,
             "`{}` is advertised and must be in exactly one of REPLAY_SAFE_TOOLS, NEVER_REPLAY_TOOLS and \
-             REPLAY_BY_MODE_TOOLS (src/mcp/replay.rs): decide whether the relay may send it twice",
+             KEYED_REPLAY_TOOLS (src/mcp/replay.rs): decide whether the relay may send it twice",
             tool.name
         );
     }
@@ -3233,7 +3233,7 @@ async fn every_advertised_tool_has_a_replay_decision() {
         assert!(advertised(listed), "`{listed}` has a replay decision and is not a tool");
     }
     if cfg!(feature = "comms") {
-        for listed in REPLAY_BY_MODE_TOOLS {
+        for listed in KEYED_REPLAY_TOOLS {
             assert!(advertised(listed), "`{listed}` has a replay decision and is not a tool");
         }
     }

@@ -22,9 +22,9 @@ fn refuse(error: CommsError) -> McpError {
 ///
 /// A call without `wait_secs`, or with 0, is answered by `ops` at once and `waiting_read` is not
 /// called. Refused before either is asked: an invalid `as`, `wait_secs` over 40, `thread` beside
-/// `id`, any of `unread`, `peek`, `announce`, `limit`, `cursor` or `wait_secs` beside `id`,
-/// `wait_secs` beside `unread: false`, `peek`, `unread: false` or `wait_secs` beside `announce`,
-/// and `cursor` on a read that marks or announces.
+/// `id`, any of `unread`, `peek`, `limit`, `cursor` or `wait_secs` beside `id`, `wait_secs`
+/// beside `unread: false`, and `cursor` on a read that marks. The announcing read is not the
+/// tool's: the hooks ask for it through the CLI.
 ///
 /// The messages are the store's, uncut and undropped here: a read that marks has already moved
 /// the read position past every one of them.
@@ -45,7 +45,7 @@ pub fn run_agent_inbox(
             limit: params.limit,
             cursor: params.cursor,
         },
-        params.announce.unwrap_or(false),
+        false,
     )
     .map_err(refuse)?;
     let mut reply = inbox_read(ops, &caller, call, waiting_read).map_err(refuse)?;

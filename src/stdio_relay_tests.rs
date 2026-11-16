@@ -191,27 +191,50 @@ fn call_line(id: u64, tool: &str, mode: &str) -> String {
     )
 }
 
-#[test]
-fn keyless_post_is_stamped_with_an_idempotency_key_and_is_replayable() {
-    let mut state = SessionState::default();
-    let forwarded = state.observe_client(&call_line(1, "agents", "post"));
-    let message: Value = serde_json::from_str(&forwarded).expect("forwarded JSON");
-    let key = message["params"]["arguments"]["idempotency_key"].as_str().expect("key");
-    assert!(key.starts_with("relay-"));
-    assert!(forwarded.ends_with('\n'));
-    assert_eq!(state.replay.get("1").expect("replayable").line, forwarded);
-
-    let keyed = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"agents\",\"arguments\":{\"mode\":\"post\",\"idempotency_key\":\"mine\"}}}\n";
-    assert_eq!(state.observe_client(keyed), keyed);
-    assert!(state.replay.contains_key("2"));
+fn replay_key(forwarded: &str) -> Option<String> {
+    let message: Value = serde_json::from_str(forwarded).expect("forwarded JSON");
+    message["params"]["_meta"][basemind::mcp::replay::REPLAY_KEY_META]
+        .as_str()
+        .map(str::to_owned)
 }
 
 #[test]
-fn only_reads_and_keyed_posts_are_replayable() {
+fn every_agent_tool_call_is_stamped_with_a_replay_key_and_is_replayable() {
+    let mut state = SessionState::default();
+    let tools = ["agent_post", "agent_inbox", "agent_threads"];
+    let mut keys = Vec::new();
+    for (id, tool) in tools.into_iter().enumerate() {
+        let forwarded = state.observe_client(&call_line(id as u64, tool, ""));
+        assert!(forwarded.ends_with('\n'));
+        let key = replay_key(&forwarded).expect("a replay key");
+        assert!(key.starts_with("relay-"), "{key}");
+        assert_eq!(state.replay.get(&id.to_string()).expect("replayable").line, forwarded);
+        keys.push(key);
+    }
+    keys.dedup();
+    assert_eq!(keys.len(), tools.len(), "a key per request");
+
+    let with_meta = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"agent_post\",\
+                     \"arguments\":{\"body\":\"b\"},\"_meta\":{\"progressToken\":1}}}\n";
+    let forwarded = state.observe_client(with_meta);
+    let message: Value = serde_json::from_str(&forwarded).expect("JSON");
+    assert_eq!(
+        message["params"]["_meta"]["progressToken"], 1,
+        "the host's _meta is kept"
+    );
+    assert!(replay_key(&forwarded).is_some());
+    assert!(
+        message["params"]["arguments"].get("idempotency_key").is_none(),
+        "no tool field carries it"
+    );
+}
+
+#[test]
+fn only_reads_and_keyed_agent_calls_are_replayable() {
     let mut state = SessionState::default();
     state.observe_client(&request_line(1));
     state.observe_client(&call_line(2, "code_outline", ""));
-    state.observe_client(&call_line(3, "agents", "inbox"));
+    state.observe_client(&call_line(3, "agent_inbox", ""));
     state.observe_client(&call_line(4, "agents", "thread_start"));
     state.observe_client(&call_line(5, "index_rescan", ""));
     state.observe_client(&call_line(6, "memory_save", ""));
@@ -229,42 +252,16 @@ fn only_reads_and_keyed_posts_are_replayable() {
     assert_eq!(state.drain_restart_errors().len(), 3);
 }
 
-/// `inbox` with `mark_read` changes what the next `inbox` returns. Replayed after the daemon
-/// marked and died before replying, it would come back without the messages nobody read.
-#[test]
-fn an_inbox_read_that_marks_messages_read_is_not_replayed() {
-    let inbox = |id: u64, mark_read: &str| {
-        format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"agents\",\
-             \"arguments\":{{\"mode\":\"inbox\",\"mark_read\":{mark_read}}}}}}}\n"
-        )
-    };
-    let mut state = SessionState::default();
-    state.observe_client(&inbox(1, "true"));
-    state.observe_client(&inbox(2, "\"true\""));
-    state.observe_client(&inbox(3, "false"));
-    state.observe_client(&inbox(4, "null"));
-    state.observe_client(&call_line(5, "agents", "inbox"));
-    assert_eq!(
-        state.replay.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["3", "4", "5"],
-        "only a read that marks nothing is safe to send twice"
-    );
-}
-
-/// A tool that is not listed as safe is not replayed, whatever else is true of it: the agent tools
-/// of the next release are not in the list, and a post sent twice is a message delivered twice.
+/// A tool that is in no replay list is not replayed, whatever else is true of it: a post sent
+/// twice is a message delivered twice.
 #[test]
 fn a_tool_without_a_replay_decision_is_not_replayed() {
     let mut state = SessionState::default();
-    for (id, tool) in ["agent_post", "agent_inbox", "agent_threads", "a_tool_added_later"]
-        .into_iter()
-        .enumerate()
-    {
+    for (id, tool) in ["agents", "a_tool_added_later"].into_iter().enumerate() {
         state.observe_client(&call_line(id as u64, tool, ""));
     }
     assert!(state.replay.is_empty(), "{:?}", state.replay.keys());
-    assert_eq!(state.drain_restart_errors().len(), 4);
+    assert_eq!(state.drain_restart_errors().len(), 2);
 }
 
 /// An in-flight keyed post survives a backend restart: the replacement backend receives the
@@ -284,7 +281,7 @@ async fn in_flight_post_is_replayed_once_on_the_replacement_backend() {
     let mut client_write = client_input;
     let mut client_read = BufReader::new(client_output);
     client_write
-        .write_all(call_line(9, "agents", "post").as_bytes())
+        .write_all(call_line(9, "agent_post", "").as_bytes())
         .await
         .expect("send post");
 
@@ -297,7 +294,7 @@ async fn in_flight_post_is_replayed_once_on_the_replacement_backend() {
     let mut read = BufReader::new(read);
     let mut replayed = String::new();
     read.read_line(&mut replayed).await.expect("replayed post");
-    assert_eq!(replayed, sent, "same line, same idempotency key");
+    assert_eq!(replayed, sent, "same line, same replay key");
     write.write_all(response_line(9).as_bytes()).await.expect("reply");
 
     let mut line = String::new();

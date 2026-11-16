@@ -259,7 +259,8 @@ pub(super) fn server_config() -> ServerConfig {
          narrow the call); a failure is a \
          tool result with isError naming the fix; a notice field means the result is incomplete \
          and says why. An unknown argument is rejected, never ignored.\n\
-         Only when collaborating with other agents in this repository: the agents tool (mode inbox, \
-         thread_list, message, post) carries scoped threads. Skip it when working alone.",
+         Only when collaborating with other agents in this repository: the deferred tools agent_post, \
+         agent_inbox and agent_threads (find them by tool search) carry threads of messages; reading \
+         marks read, and a subagent passes `as` to keep its own inbox. Skip them when working alone.",
     )
 }
