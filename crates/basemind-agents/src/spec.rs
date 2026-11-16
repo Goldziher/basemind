@@ -43,6 +43,19 @@ pub struct BypassOptIn {
     pub mode: String,
 }
 
+/// The explicit consent to run an ACP agent in a permission mode whose behaviour this crate
+/// has not verified: what the agent does without asking is then up to the agent and its
+/// user-level configuration. It names the harness and the mode, so consent for one does not
+/// cover another. Claude Code and Codex never need it: their adapters set the mode
+/// explicitly, and Claude Code's is checked against what it reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnverifiedModeOptIn {
+    /// The harness the consent is for.
+    pub harness: HarnessKind,
+    /// The permission mode the consent is for.
+    pub mode: PermissionMode,
+}
+
 /// The answer of an [`ApprovalPolicy`] to one request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApprovalVerdict {
@@ -170,6 +183,8 @@ pub struct LaunchConfig {
     pub permission_mode: PermissionMode,
     /// Consent for [`PermissionMode::Bypass`].
     pub bypass: Option<BypassOptIn>,
+    /// Consent to an ACP agent's permission mode that was not verified to ask.
+    pub unverified_mode: Option<UnverifiedModeOptIn>,
     /// Who answers approval requests. `None` denies all of them.
     pub approval_policy: Option<Arc<dyn ApprovalPolicy>>,
 }
@@ -185,6 +200,7 @@ impl std::fmt::Debug for LaunchConfig {
             .field("limits", &self.limits)
             .field("permission_mode", &self.permission_mode)
             .field("bypass", &self.bypass)
+            .field("unverified_mode", &self.unverified_mode)
             .field("approval_policy", &self.approval_policy.is_some())
             .finish_non_exhaustive()
     }
@@ -204,6 +220,7 @@ impl LaunchConfig {
             limits: Limits::default(),
             permission_mode: PermissionMode::default(),
             bypass: None,
+            unverified_mode: None,
             approval_policy: None,
         }
     }
@@ -259,6 +276,7 @@ pub(crate) struct LaunchSpec {
     pub limits: Limits,
     pub permission_mode: PermissionMode,
     pub bypass: Option<BypassOptIn>,
+    pub unverified_mode: Option<UnverifiedModeOptIn>,
     pub approval_policy: Option<Arc<dyn ApprovalPolicy>>,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -302,6 +320,7 @@ impl LaunchSpec {
             limits,
             permission_mode: config.permission_mode,
             bypass: config.bypass.clone(),
+            unverified_mode: config.unverified_mode,
             approval_policy: config.approval_policy.clone(),
             model: request.model.clone(),
             effort: request.effort.clone(),

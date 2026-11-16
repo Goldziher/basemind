@@ -91,5 +91,5 @@ pub use registry::{Adapter, Registry};
 pub use session::{CommandPlan, Session};
 pub use spec::{
     ApprovalPolicy, ApprovalVerdict, BypassOptIn, ENV_ALLOWLIST, LaunchConfig, LaunchRequest, Limits, McpServerSpec,
-    PermissionMode,
+    PermissionMode, UnverifiedModeOptIn,
 };

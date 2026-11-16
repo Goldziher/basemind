@@ -52,21 +52,49 @@ fn flavor(spec: &LaunchSpec) -> Result<AcpFlavor, LaunchError> {
 }
 
 /// The session mode to set after `session/new`, if the permission mode needs one.
+///
+/// What an ACP agent does without asking, in any mode but an authorized bypass, was not
+/// verified against a live agent: Cursor, Gemini, Grok and Hermes are run in their default
+/// mode, Grok's and OpenCode's read-only modes and Hermes's accept-edits mode are monocode's
+/// names, and a generic agent is unknown. Each needs an [`UnverifiedModeOptIn`] naming the
+/// harness and the mode. OpenCode's default is documented to edit files and run commands
+/// without asking, so it is never launched supervised.
+///
+/// [`UnverifiedModeOptIn`]: crate::UnverifiedModeOptIn
 fn session_mode(spec: &LaunchSpec, prepared: &Prepared, flavor: AcpFlavor) -> Result<Option<String>, LaunchError> {
+    let kind = spec.harness.kind;
     let unsupported = |feature| LaunchError::Unsupported {
-        harness: spec.harness.kind.id(),
+        harness: kind.id(),
         feature,
     };
-    match (spec.permission_mode, flavor) {
-        (PermissionMode::Supervised, _) => Ok(None),
-        // Grok takes these as launch arguments instead of a session mode.
-        (PermissionMode::ReadOnly | PermissionMode::Bypass, AcpFlavor::Grok) => Ok(None),
-        (PermissionMode::ReadOnly, AcpFlavor::OpenCode) => Ok(Some("plan".to_owned())),
-        (PermissionMode::ReadOnly, _) => Err(unsupported("a read-only mode")),
-        (PermissionMode::AcceptEdits, AcpFlavor::Hermes) => Ok(Some("accept_edits".to_owned())),
-        (PermissionMode::AcceptEdits, _) => Err(unsupported("an accept-edits mode")),
-        (PermissionMode::Bypass, _) => Ok(prepared.bypass_mode.clone()),
+    let mode = match (spec.permission_mode, flavor) {
+        // Grok takes its bypass as a launch argument and a `_meta` switch instead.
+        (PermissionMode::Bypass, AcpFlavor::Grok) => return Ok(None),
+        (PermissionMode::Bypass, _) => return Ok(prepared.bypass_mode.clone()),
+        (PermissionMode::Supervised, AcpFlavor::OpenCode) => {
+            return Err(unsupported(
+                "a supervised mode: its default edits and runs commands unasked",
+            ));
+        }
+        (PermissionMode::Supervised, _) => None,
+        // Grok takes this as a launch argument instead of a session mode.
+        (PermissionMode::ReadOnly, AcpFlavor::Grok) => None,
+        (PermissionMode::ReadOnly, AcpFlavor::OpenCode) => Some("plan".to_owned()),
+        (PermissionMode::ReadOnly, _) => return Err(unsupported("a read-only mode")),
+        (PermissionMode::AcceptEdits, AcpFlavor::Hermes) => Some("accept_edits".to_owned()),
+        (PermissionMode::AcceptEdits, _) => return Err(unsupported("an accept-edits mode")),
+    };
+    let consented = spec
+        .unverified_mode
+        .as_ref()
+        .is_some_and(|opt_in| opt_in.harness == kind && opt_in.mode == spec.permission_mode);
+    if !consented {
+        return Err(LaunchError::UnverifiedMode {
+            harness: kind.id(),
+            mode: spec.permission_mode,
+        });
     }
+    Ok(mode)
 }
 
 impl Adapter for AcpAdapter {

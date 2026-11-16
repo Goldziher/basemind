@@ -70,6 +70,16 @@ pub enum LaunchError {
         /// The offending value.
         argument: String,
     },
+    /// The ACP agent's behaviour in this permission mode was not verified to ask before it
+    /// acts, and the config carries no
+    /// [`UnverifiedModeOptIn`](crate::UnverifiedModeOptIn) for that harness and mode.
+    #[error("{harness} in {mode:?} mode was not verified to ask before acting; it needs an explicit opt-in")]
+    UnverifiedMode {
+        /// The harness the launch targets.
+        harness: &'static str,
+        /// The permission mode requested.
+        mode: crate::PermissionMode,
+    },
     /// The harness has no equivalent of the requested feature.
     #[error("{harness} does not support {feature}")]
     Unsupported {

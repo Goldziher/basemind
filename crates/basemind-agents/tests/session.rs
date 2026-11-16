@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use basemind_agents::{
     AcpFlavor, AgentIdentity, ApprovalRequest, ApprovalVerdict, Event, FinishStatus, Harness, HarnessKind,
-    LaunchConfig, LaunchError, LaunchRequest, Registry, Session,
+    LaunchConfig, LaunchError, LaunchRequest, PermissionMode, Registry, Session, UnverifiedModeOptIn,
 };
 
 const HANDSHAKE: &str = r#"read -r init
@@ -647,7 +647,11 @@ while [ $i -lt 200000 ]; do
 done
 while :; do sleep 1; done
 "#;
-    let spec = spec(HarnessKind::Acp(AcpFlavor::Generic), dir.path(), body);
+    let mut spec = spec(HarnessKind::Acp(AcpFlavor::Generic), dir.path(), body);
+    spec.config.unverified_mode = Some(UnverifiedModeOptIn {
+        harness: HarnessKind::Acp(AcpFlavor::Generic),
+        mode: PermissionMode::Supervised,
+    });
     let started = Instant::now();
     let session = launch(&spec);
     let deadline = started + Duration::from_secs(15);

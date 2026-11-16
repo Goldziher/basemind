@@ -5,7 +5,7 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::spec::{ApprovalPolicy, BypassOptIn, McpServerSpec};
+use crate::spec::{ApprovalPolicy, BypassOptIn, McpServerSpec, UnverifiedModeOptIn};
 use crate::test_support::{EXECUTABLE, MCP_COMMAND, always, spec};
 
 /// The agent's end of an in-memory connection. A test scripts it frame by frame, so every
@@ -131,8 +131,24 @@ fn converse_with(
     }
 }
 
+/// A spec for `flavor`, with the consent its supervised mode needs.
 fn acp_spec(flavor: AcpFlavor, root: &Path) -> LaunchSpec {
-    spec(HarnessKind::Acp(flavor), root)
+    let mut spec = spec(HarnessKind::Acp(flavor), root);
+    spec.unverified_mode = Some(UnverifiedModeOptIn {
+        harness: HarnessKind::Acp(flavor),
+        mode: PermissionMode::Supervised,
+    });
+    spec
+}
+
+/// `spec` in `mode`, with the consent that mode needs.
+fn in_mode(mut spec: LaunchSpec, mode: PermissionMode) -> LaunchSpec {
+    spec.permission_mode = mode;
+    spec.unverified_mode = Some(UnverifiedModeOptIn {
+        harness: spec.harness.kind,
+        mode,
+    });
+    spec
 }
 
 fn with_policy(mut spec: LaunchSpec, policy: Option<Arc<dyn ApprovalPolicy>>) -> LaunchSpec {
@@ -419,13 +435,20 @@ fn launch_arguments_follow_the_flavor_and_unsupported_modes_are_refused() {
         (AcpFlavor::Gemini, "gemini", vec!["--experimental-acp"]),
         (AcpFlavor::Generic, "acp", vec![]),
     ] {
-        let plan = AcpAdapter.plan_spec(&acp_spec(flavor, root.path())).unwrap();
+        // OpenCode is never supervised; its read-only mode has the same arguments.
+        let mode = if flavor == AcpFlavor::OpenCode {
+            PermissionMode::ReadOnly
+        } else {
+            PermissionMode::Supervised
+        };
+        let plan = AcpAdapter
+            .plan_spec(&in_mode(acp_spec(flavor, root.path()), mode))
+            .unwrap();
         assert_eq!(HarnessKind::Acp(flavor).default_executable(), program);
         assert_eq!(plan.program, PathBuf::from(EXECUTABLE));
         assert_eq!(plan.args, args);
     }
-    let mut read_only = acp_spec(AcpFlavor::Grok, root.path());
-    read_only.permission_mode = PermissionMode::ReadOnly;
+    let read_only = in_mode(acp_spec(AcpFlavor::Grok, root.path()), PermissionMode::ReadOnly);
     let plan = AcpAdapter.plan_spec(&read_only).unwrap();
     assert_eq!(plan.args[..3], ["--no-auto-update", "--permission-mode", "plan"]);
 
@@ -753,4 +776,54 @@ fn a_stop_ends_a_session_whose_agent_never_answers_initialize() {
     );
     run.result.unwrap();
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn a_mode_whose_behaviour_is_unverified_needs_an_opt_in_naming_harness_and_mode() {
+    let root = tempfile::tempdir().unwrap();
+    for flavor in [
+        AcpFlavor::Cursor,
+        AcpFlavor::Gemini,
+        AcpFlavor::Grok,
+        AcpFlavor::Hermes,
+        AcpFlavor::Generic,
+    ] {
+        let mut spec = spec(HarnessKind::Acp(flavor), root.path());
+        assert!(
+            matches!(AcpAdapter.plan_spec(&spec), Err(LaunchError::UnverifiedMode { .. })),
+            "{flavor:?} launched supervised without consent"
+        );
+        for (harness, mode) in [
+            (HarnessKind::Codex, PermissionMode::Supervised),
+            (HarnessKind::Acp(flavor), PermissionMode::ReadOnly),
+        ] {
+            spec.unverified_mode = Some(UnverifiedModeOptIn { harness, mode });
+            assert!(
+                matches!(AcpAdapter.plan_spec(&spec), Err(LaunchError::UnverifiedMode { .. })),
+                "consent for {harness} / {mode:?} launched {flavor:?}"
+            );
+        }
+        assert!(AcpAdapter.plan_spec(&acp_spec(flavor, root.path())).is_ok());
+    }
+    for (flavor, mode) in [
+        (AcpFlavor::Grok, PermissionMode::ReadOnly),
+        (AcpFlavor::OpenCode, PermissionMode::ReadOnly),
+        (AcpFlavor::Hermes, PermissionMode::AcceptEdits),
+    ] {
+        let mut spec = spec(HarnessKind::Acp(flavor), root.path());
+        spec.permission_mode = mode;
+        assert!(matches!(
+            AcpAdapter.plan_spec(&spec),
+            Err(LaunchError::UnverifiedMode { .. })
+        ));
+        assert!(AcpAdapter.plan_spec(&in_mode(spec, mode)).is_ok());
+    }
+    // OpenCode's default does not ask, so no consent makes it a supervised launch.
+    assert!(matches!(
+        AcpAdapter.plan_spec(&acp_spec(AcpFlavor::OpenCode, root.path())),
+        Err(LaunchError::Unsupported {
+            harness: "opencode",
+            ..
+        })
+    ));
 }
