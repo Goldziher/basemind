@@ -1,6 +1,8 @@
 //! The checks a launch spec's free-form parts pass before any adapter uses them: the caller's
 //! extra arguments, the environment additions and the arguments the adapter itself built.
 
+use std::path::Path;
+
 use crate::error::LaunchError;
 use crate::harness::{AcpFlavor, HarnessKind};
 
@@ -187,6 +189,40 @@ pub(crate) fn check_env_name(name: &str) -> Result<(), LaunchError> {
     } else {
         Err(LaunchError::EnvNotAllowed(name.to_owned()))
     }
+}
+
+/// Project files through which `kind` loads permissions, hooks, MCP servers or plugins from
+/// the directory it works in or an ancestor of it. Claude Code is absent because its adapter
+/// switches those sources off by flag; Grok, Hermes and a generic ACP agent are absent
+/// because their project files are not known here.
+fn project_config(kind: HarnessKind) -> &'static [&'static str] {
+    match kind {
+        HarnessKind::Codex => &[".codex"],
+        HarnessKind::Acp(AcpFlavor::Gemini) => &[".gemini"],
+        HarnessKind::Acp(AcpFlavor::Cursor) => &[".cursor/cli.json", ".cursor/mcp.json"],
+        HarnessKind::Acp(AcpFlavor::OpenCode) => &["opencode.json", "opencode.jsonc", ".opencode"],
+        HarnessKind::ClaudeCode | HarnessKind::Acp(_) => &[],
+    }
+}
+
+/// Refuses a launch whose working directory, or an ancestor of it, holds a project file that
+/// `kind` would load: a file the launched agent (or anyone else) wrote there could approve
+/// tools, add MCP servers or run hooks behind the approval policy's back. `home` is skipped,
+/// because the same names there are the user's own configuration.
+pub(crate) fn check_project_config(kind: HarnessKind, cwd: &Path, home: Option<&Path>) -> Result<(), LaunchError> {
+    let home = home.and_then(|home| home.canonicalize().ok());
+    for dir in cwd.ancestors().filter(|dir| Some(*dir) != home.as_deref()) {
+        for name in project_config(kind) {
+            let path = dir.join(name);
+            if path.symlink_metadata().is_ok() {
+                return Err(LaunchError::ProjectConfig {
+                    harness: kind.id(),
+                    path,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

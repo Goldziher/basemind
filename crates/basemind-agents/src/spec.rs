@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::error::LaunchError;
 use crate::event::ApprovalRequest;
-use crate::guard::{check_env_name, check_extra_args, guard_bypass};
+use crate::guard::{check_env_name, check_extra_args, check_project_config, guard_bypass};
 use crate::harness::{AcpFlavor, Harness, HarnessKind};
 use crate::identity::AgentIdentity;
 use crate::session::CommandPlan;
@@ -229,8 +229,10 @@ impl LaunchSpec {
             });
         }
         check_extra_args(kind, &self.harness.args)?;
+        let cwd = confine(&self.root, self.working_dir.as_deref())?;
+        check_project_config(kind, &cwd, std::env::var_os("HOME").as_deref().map(Path::new))?;
         Ok(Prepared {
-            cwd: confine(&self.root, self.working_dir.as_deref())?,
+            cwd,
             bypass_mode: authorized,
             extra_args: self.harness.args.clone(),
         })

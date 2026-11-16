@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::*;
 
 fn args(list: &[&str]) -> Vec<String> {
@@ -172,4 +174,56 @@ fn environment_additions_are_limited_to_provider_credentials_and_settings() {
             "{name:?} was accepted"
         );
     }
+}
+
+#[test]
+fn a_harness_project_file_in_the_working_directory_or_above_refuses_the_launch() {
+    let outer = tempfile::tempdir().unwrap();
+    let outer = outer.path().canonicalize().unwrap();
+    let cwd = outer.join("repo/crates/app");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let refused = |kind, home: Option<&Path>| match check_project_config(kind, &cwd, home) {
+        Err(LaunchError::ProjectConfig { path, .. }) => Some(path),
+        Ok(()) => None,
+        Err(other) => panic!("unexpected error {other}"),
+    };
+    for kind in [
+        HarnessKind::Codex,
+        HarnessKind::Acp(AcpFlavor::Gemini),
+        HarnessKind::Acp(AcpFlavor::Cursor),
+        HarnessKind::Acp(AcpFlavor::OpenCode),
+    ] {
+        assert_eq!(refused(kind, None), None, "{kind} refused a clean tree");
+    }
+
+    std::fs::create_dir_all(outer.join("repo/.codex")).unwrap();
+    std::fs::write(outer.join("repo/.codex/config.toml"), "").unwrap();
+    std::fs::create_dir_all(cwd.join(".gemini")).unwrap();
+    std::fs::create_dir_all(outer.join(".cursor")).unwrap();
+    std::fs::write(outer.join(".cursor/cli.json"), "{}").unwrap();
+    std::fs::write(outer.join("repo/opencode.json"), "{}").unwrap();
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    std::fs::write(cwd.join(".mcp.json"), "{}").unwrap();
+
+    assert_eq!(refused(HarnessKind::Codex, None), Some(outer.join("repo/.codex")));
+    assert_eq!(
+        refused(HarnessKind::Acp(AcpFlavor::Gemini), None),
+        Some(cwd.join(".gemini"))
+    );
+    assert_eq!(
+        refused(HarnessKind::Acp(AcpFlavor::Cursor), None),
+        Some(outer.join(".cursor/cli.json"))
+    );
+    assert_eq!(
+        refused(HarnessKind::Acp(AcpFlavor::OpenCode), None),
+        Some(outer.join("repo/opencode.json"))
+    );
+    // Claude Code's project sources are switched off by flag instead.
+    assert_eq!(refused(HarnessKind::ClaudeCode, None), None);
+    // The user's own configuration lives under the same names in the home directory.
+    assert_eq!(refused(HarnessKind::Acp(AcpFlavor::Cursor), Some(&outer)), None);
+    assert_eq!(
+        refused(HarnessKind::Codex, Some(&PathBuf::from(&outer))),
+        Some(outer.join("repo/.codex"))
+    );
 }

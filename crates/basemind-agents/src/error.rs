@@ -64,6 +64,15 @@ pub enum LaunchError {
     /// may not set: see [`LaunchSpec::env`](crate::LaunchSpec::env).
     #[error("environment variable {0:?} may not be set by a launch spec")]
     EnvNotAllowed(String),
+    /// The working directory or an ancestor of it holds a project file through which the
+    /// harness would load permissions, hooks or MCP servers the launch does not control.
+    #[error("{harness} would load the project configuration at {path}")]
+    ProjectConfig {
+        /// The harness the launch targets.
+        harness: &'static str,
+        /// The file or directory found.
+        path: PathBuf,
+    },
     /// A limit is zero.
     #[error("invalid limits: {0}")]
     InvalidLimits(&'static str),
