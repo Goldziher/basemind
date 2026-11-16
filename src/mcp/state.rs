@@ -420,11 +420,6 @@ impl MapCache {
         self.files.contains(path)
     }
 
-    /// Whether `path` is a tracked document (non-code file in the document tier).
-    pub(crate) fn contains_doc(&self, path: &crate::path::RelPath) -> bool {
-        self.doc_paths.binary_search(path).is_ok()
-    }
-
     /// The language recorded for `path` at scan time, without faulting in its outline.
     pub(crate) fn language_of(&self, path: &crate::path::RelPath) -> Option<&str> {
         self.files.get(path).map(|meta| &*meta.language)

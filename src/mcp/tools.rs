@@ -52,9 +52,10 @@ impl BasemindServer {
     #[tool(
         title = "Find a definition",
         description = "Use for \"where is X defined\" when you know (part of) the name: finds \
-        functions, types, constants and other symbols by name across the repository and returns \
-        path, line and signature. Ranked: the exact name first, then prefix, then substring, then \
-        (with `fuzzy`) fuzzy matches. Definitions only: for any text use `code_grep`. \
+        functions, types, constants and other symbols by name across the repository; a row is \
+        `path`, `line`, `kind`, `name`, `signature`. Ranked: the exact name first, then prefix, \
+        then substring, then (with `fuzzy`) fuzzy matches. Definitions only: for any text use \
+        `code_grep`. \
         Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
         annotations(
             read_only_hint = true,
@@ -95,9 +96,10 @@ impl BasemindServer {
     #[tool(
         title = "Search code text",
         description = "Use instead of `rg`/`grep` to find exact text (a string, identifier or \
-        comment) anywhere in the indexed code. `pattern` is literal unless `regex` is true. Each \
-        hit is its line plus the symbol it sits in; a hit in a file edited since it was indexed \
-        has `stale` and no symbol. `skipped_files` counts files that could not be searched. A \
+        comment) anywhere in the indexed code. `pattern` is literal unless `regex` is true. `hits` \
+        maps each file to its hits: `line`, `text` and the `symbol` it sits in; a hit in a file \
+        edited since it was indexed has `stale` and no symbol. `skipped_files` counts files that \
+        could not be searched. A \
         `path` or `language` no indexed file has is an error. Code files only: search documents \
         with `docs_search`. \
         Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
@@ -141,7 +143,8 @@ impl BasemindServer {
         title = "Find usages",
         description = "Use for \"what calls X\", \"what implements X\", \"what imports X\" and \
         \"which definition does this reference bind to\". `relation` picks the question; the name \
-        is matched exactly. `path` pins the definition in that file; a hit then has `resolved` \
+        is matched exactly. `hits` maps each file to its hits, each a `line` (plus `callee` when \
+        it is not `name`). `path` pins the definition in that file; a hit then has `resolved` \
         true (proven to bind to it), false (checked, not proven) or absent (not checked: \
         `resolution` says why). A pinned file edited since it was indexed is an error naming \
         `index_rescan`. \
@@ -163,9 +166,9 @@ impl BasemindServer {
     #[tool(
         title = "Find files",
         description = "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of \
-        its name or path, or to list indexed files when `query` is omitted. Covers code and \
-        documents (markdown, config, PDFs). A `path_prefix` or `language` no indexed file has is \
-        an error. \
+        its name or path, or to list indexed files when `query` is omitted; `files` holds paths. \
+        Covers code and documents (markdown, config, PDFs). A `path_prefix` or `language` no \
+        indexed file has is an error. \
         Example: {\"query\":\"readme\"}",
         annotations(
             read_only_hint = true,

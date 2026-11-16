@@ -15,7 +15,7 @@ use super::helpers::{
     head_snapshot_id, json_result, require_git_repo,
 };
 use super::helpers_git_by_path::{LIVE_WALK, by_path};
-use super::helpers_git_show::{budget_commits, commit_to_hit, resolve_body_chars, run_show};
+use super::helpers_git_show::{budget_commits, run_show};
 use super::index_route::blocking;
 use super::tool_contract::budget;
 use super::types::{
@@ -97,7 +97,6 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 limit: p.limit,
                 cursor: p.cursor,
                 max_tokens,
-                body_chars: None,
                 author,
             },
         );
@@ -315,7 +314,6 @@ const STATUS_PATHS_MAX: usize = 200;
 /// The `status` operation: the working tree's staged / unstaged / untracked buckets, for the whole
 /// tree or for the paths under the directory `within`.
 fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     // A narrowed status lists every untracked file: a wholly untracked directory collapsed into one
     // entry is an ancestor of the paths asked about, or hides them behind its own name.
@@ -367,7 +365,6 @@ fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolRe
         truncated_reason: (omitted > 0).then_some("path_cap"),
         omitted,
         is_clean: !any,
-        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -434,7 +431,6 @@ fn on_disk(repo: &crate::git::Repo, path: &RelPath) -> bool {
 
 /// The `recent` operation: HEAD's ancestry, newest first, one page at a time.
 fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
@@ -446,7 +442,6 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
             next_cursor: None,
             budgeted: false,
             cursor_invalidated: true,
-            elapsed_us: elapsed_us(started),
         });
     };
     let skip = usize::try_from(skip).unwrap_or(usize::MAX);
@@ -481,26 +476,22 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
         truncated_reason: truncated.then_some("shallow_clone"),
         next_cursor,
         cursor_invalidated: false,
-        elapsed_us: elapsed_us(started),
     })
 }
 
 /// The `touching` operation: commits whose tree differs from the parent's at `path`, a page at a time.
 fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
     let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
         return json_result(&CommitsTouchingResponse {
-            path: params.path,
             commits: Vec::new(),
             truncated: false,
             truncated_reason: None,
             next_cursor: None,
             budgeted: false,
             cursor_invalidated: true,
-            elapsed_us: elapsed_us(started),
         });
     };
     let skip = usize::try_from(skip).unwrap_or(usize::MAX);
@@ -529,14 +520,12 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
         (more || budgeted).then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
     json_result(&CommitsTouchingResponse {
-        path: params.path,
         commits: page,
         budgeted,
         truncated,
         truncated_reason: truncated.then_some("shallow_clone"),
         next_cursor,
         cursor_invalidated: false,
-        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -638,7 +627,6 @@ fn by_author(
 /// full body; otherwise degrades to a bounded live walk over the recent window, flagged
 /// `truncated` with reason `live_walk` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
 fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let scope = FtsScope::parse(params.field.as_deref());
@@ -656,7 +644,6 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
                     next_cursor: None,
                     budgeted: false,
                     cursor_invalidated: true,
-                    elapsed_us: elapsed_us(started),
                 });
             }
             offset as usize
@@ -711,8 +698,7 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
     let has_more = hits.len() > limit;
     hits.truncate(limit);
 
-    let body_chars = resolve_body_chars(params.body_chars);
-    let commits = hits.into_iter().map(|c| commit_to_hit(c, body_chars)).collect();
+    let commits = hits.into_iter().map(|c| commit_to_view(c, false)).collect();
     let (commits, budgeted) = budget_commits(commits, params.max_tokens);
     let has_more = has_more || budgeted;
     let kept = commits.len();
@@ -724,7 +710,6 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
         truncated_reason,
         next_cursor,
         cursor_invalidated: false,
-        elapsed_us: elapsed_us(started),
     })
 }
 

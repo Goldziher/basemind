@@ -95,6 +95,28 @@ fn decode_text(result: &CallToolResult) -> Value {
     serde_json::from_str(&raw).unwrap_or(Value::Null)
 }
 
+/// The hits of a `code_refs` response as rows, each with its `path`: the tool lists them under their
+/// file (`{"<path>": [hit, ...]}`).
+#[cfg(all(
+    feature = "comms",
+    any(feature = "code-intel-js", feature = "code-intel-stack"),
+    any(unix, windows)
+))]
+fn hit_rows(body: &Value) -> Vec<Value> {
+    body.get("hits")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("hits are grouped by file: {body}"))
+        .iter()
+        .flat_map(|(path, rows)| {
+            rows.as_array().expect("a file's hits").iter().map(move |row| {
+                let mut row = row.clone();
+                row["path"] = json!(path);
+                row
+            })
+        })
+        .collect()
+}
+
 fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     let mut params = CallToolRequestParams::new(name);
     if let Some(obj) = args.as_object() {
@@ -692,15 +714,10 @@ async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
         resolved_total >= 1,
         "find_callers must resolve cross-file through the daemon (not degrade to the name scan): {body}"
     );
-    let hit_paths: Vec<String> = body
-        .get("hits")
-        .and_then(Value::as_array)
-        .map(|hits| {
-            hits.iter()
-                .filter_map(|h| h.get("path").and_then(Value::as_str).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
+    let hit_paths: Vec<String> = hit_rows(&body)
+        .iter()
+        .filter_map(|h| h.get("path").and_then(Value::as_str).map(str::to_string))
+        .collect();
     assert!(
         hit_paths.iter().any(|p| p == "main.ts"),
         "the resolved caller in main.ts must be reported, got hit paths: {hit_paths:?}"
@@ -750,15 +767,10 @@ async fn daemon_writer_serve_resolves_cross_file_python_callers_through_the_daem
         resolved_total >= 1,
         "Python find_callers must resolve cross-file through the daemon: {body}"
     );
-    let hit_paths: Vec<String> = body
-        .get("hits")
-        .and_then(Value::as_array)
-        .map(|hits| {
-            hits.iter()
-                .filter_map(|h| h.get("path").and_then(Value::as_str).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
+    let hit_paths: Vec<String> = hit_rows(&body)
+        .iter()
+        .filter_map(|h| h.get("path").and_then(Value::as_str).map(str::to_string))
+        .collect();
     assert!(
         hit_paths.iter().any(|p| p == "main.py"),
         "the resolved caller in main.py must be reported, got hit paths: {hit_paths:?}"

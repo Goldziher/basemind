@@ -138,6 +138,7 @@ pub fn run(
         let opts = Emit {
             json,
             startup_us: u64::try_from(process_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            called: Instant::now(),
         };
         match cmd {
             ToolCmd::Code(c) => code::run(&server, c, &opts, &mut out).await?,

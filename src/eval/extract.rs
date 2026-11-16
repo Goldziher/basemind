@@ -5,8 +5,8 @@
 //! |---|---|
 //! | symbols | `path:line` of each definition (1-based) |
 //! | outline | `args.path:line` of each symbol in the file |
-//! | references, callers | `path:line` of each call site |
-//! | grep | `path:line` of each match |
+//! | references, callers | `path:line` of each call site (listed under its file) |
+//! | grep | `path:line` of each match (listed under its file) |
 //! | find, dependents | `path` |
 //! | docs | `path` of each hit chunk |
 //! | git_search, git_path | the commit `sha` |
@@ -46,6 +46,21 @@ fn located(entries: &[Value], line: impl Fn(&Value) -> Option<u32>) -> Vec<Item>
         .collect()
 }
 
+/// `path:line` of each row of a list grouped by file: `{"<path>": [{"line": n, ...}, ...]}`.
+fn grouped(body: &Value, key: &str) -> Vec<Item> {
+    body.get(key)
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .flat_map(|(path, rows)| {
+            rows.as_array().into_iter().flatten().map(move |row| Item {
+                path: path.clone(),
+                line: u(row, "line"),
+            })
+        })
+        .collect()
+}
+
 /// Items for `mode` from response `body`; `args` supplies the file for `outline`.
 pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
     match mode {
@@ -60,9 +75,15 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
                 })
                 .collect()
         }
-        EvalMode::References | EvalMode::Callers => located(array(body, "hits"), |e| u(e, "line")),
-        EvalMode::Grep => located(array(body, "hits"), |e| u(e, "line")),
-        EvalMode::Find => located(array(body, "files"), |_| None),
+        EvalMode::References | EvalMode::Callers | EvalMode::Grep => grouped(body, "hits"),
+        EvalMode::Find => array(body, "files")
+            .iter()
+            .filter_map(|p| p.as_str())
+            .map(|p| Item {
+                path: p.to_string(),
+                line: None,
+            })
+            .collect(),
         EvalMode::Dependents => array(body, "paths")
             .iter()
             .filter_map(|p| p.as_str())
@@ -196,19 +217,31 @@ mod tests {
             }]
         );
 
-        let refs = extract_items(
-            EvalMode::References,
-            &Value::Null,
-            &json!({"hits":[{"path":"x","line":7}]}),
-        );
+        let refs = extract_items(EvalMode::References, &Value::Null, &json!({"hits":{"x":[{"line":7}]}}));
         assert_eq!(refs[0].line, Some(7));
-        let grep = extract_items(EvalMode::Grep, &Value::Null, &json!({"hits":[{"path":"x","line":3}]}));
-        assert_eq!(grep[0].line, Some(3));
-        let find = extract_items(
-            EvalMode::Find,
+        let grep = extract_items(
+            EvalMode::Grep,
             &Value::Null,
-            &json!({"files":[{"path":"p/q.py","score":1}]}),
+            &json!({"hits":{"x":[{"line":3},{"line":9}],"y":[{"line":1}]}}),
         );
+        assert_eq!(
+            grep,
+            vec![
+                Item {
+                    path: "x".into(),
+                    line: Some(3)
+                },
+                Item {
+                    path: "x".into(),
+                    line: Some(9)
+                },
+                Item {
+                    path: "y".into(),
+                    line: Some(1)
+                }
+            ]
+        );
+        let find = extract_items(EvalMode::Find, &Value::Null, &json!({"files":["p/q.py"]}));
         assert_eq!(
             find[0],
             Item {

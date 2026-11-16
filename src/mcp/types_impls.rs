@@ -35,10 +35,6 @@ pub struct FindImplementationsParams {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct FindImplementationsResponse {
-    pub trait_name: String,
-    /// How the name was matched against trait names: `exact` or `substring`.
-    #[serde(rename = "match")]
-    pub matching: &'static str,
     /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
     /// predates exact matching answered, whose substring hits are dropped page by page.
     pub total: usize,
@@ -52,6 +48,8 @@ pub struct FindImplementationsResponse {
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// The implementations under the file each is in.
+    #[serde(serialize_with = "super::by_path::serialize")]
     pub hits: Vec<ImplementationHit>,
     /// Opaque cursor to pass back on the next call when more results are available.
     /// Stable across rescans.
@@ -61,42 +59,67 @@ pub struct FindImplementationsResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<super::types::LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
-    /// search + response construction), excluding MCP transport, argument
-    /// deserialization, and response serialization. A first call against a cold server also
-    /// includes index warm-up; such responses carry a `notice`. See
-    /// [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, schemars::JsonSchema)]
 pub struct ImplementationHit {
+    /// The file the implementation is in: the key it is listed under.
     pub path: RelPath,
+    /// The trait implemented. Written only when it is not the name asked for (a `substring`
+    /// match); [`ImplementationHit::named`] clears it otherwise.
     pub trait_name: String,
     pub impl_type: String,
     /// 1-based row of the `impl`/`class`/`extends` declaration, written as `line`; `0` when the
     /// outline holds no record of it.
     pub start_row: u32,
-    /// Byte column from the start of the line: 0-based here, written as the 1-based `column`.
+    /// Byte column from the start of the line: 0-based here, written 1-based as `column`, and only
+    /// when another implementation is on the same line.
     pub start_col: u32,
 }
 
-/// Written by hand so an implementation with no recorded position omits `line` and `column`
-/// together instead of reporting line 0.
-impl Serialize for ImplementationHit {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl ImplementationHit {
+    /// This hit as listed for a query of `name`: the trait is left out when it is `name`.
+    pub(super) fn named(mut self, name: &str) -> Self {
+        if self.trait_name == name {
+            self.trait_name.clear();
+        }
+        self
+    }
+}
+
+/// Written by hand so an implementation with no recorded position omits `line` instead of
+/// reporting line 0, and so a trait that is the name asked for is not repeated on every row.
+impl super::by_path::Located for ImplementationHit {
+    fn located(&self) -> &RelPath {
+        &self.path
+    }
+
+    fn line(&self) -> u32 {
+        self.start_row
+    }
+
+    fn serialize_row<S: serde::Serializer>(&self, serializer: S, column: bool) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
 
         let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("path", &self.path)?;
-        map.serialize_entry("trait_name", &self.trait_name)?;
-        map.serialize_entry("impl_type", &self.impl_type)?;
         if self.start_row != 0 {
             map.serialize_entry("line", &self.start_row)?;
-            map.serialize_entry("column", &self.start_col.saturating_add(1))?;
+            if column {
+                map.serialize_entry("column", &self.start_col.saturating_add(1))?;
+            }
+        }
+        map.serialize_entry("impl_type", &self.impl_type)?;
+        if !self.trait_name.is_empty() {
+            map.serialize_entry("trait_name", &self.trait_name)?;
         }
         map.end()
+    }
+}
+
+/// An implementation on its own, as the token budget costs it.
+impl Serialize for ImplementationHit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        super::by_path::Located::serialize_row(self, serializer, false)
     }
 }
 
@@ -107,7 +130,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_hit_with_a_position_writes_it_one_based() {
+    fn a_hit_writes_its_line_and_leaves_its_file_to_the_group() {
         let implementation = ImplementationHit {
             path: "a.rs".into(),
             trait_name: "T".to_string(),
@@ -117,7 +140,12 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(&implementation).unwrap(),
-            json!({ "path": "a.rs", "trait_name": "T", "impl_type": "S", "line": 4, "column": 1 })
+            json!({ "line": 4, "impl_type": "S", "trait_name": "T" })
+        );
+        assert_eq!(
+            serde_json::to_value(implementation.named("T")).unwrap(),
+            json!({ "line": 4, "impl_type": "S" }),
+            "the trait asked for is not repeated"
         );
         let call = ReferenceHit {
             path: "a.rs".into(),
@@ -128,7 +156,12 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(&call).unwrap(),
-            json!({ "path": "a.rs", "line": 9, "column": 3, "callee": "f", "resolved": false })
+            json!({ "line": 9, "callee": "f", "resolved": false })
+        );
+        assert_eq!(
+            serde_json::to_value(call.named("f")).unwrap(),
+            json!({ "line": 9, "resolved": false }),
+            "the callee asked for is not repeated"
         );
     }
 
@@ -143,7 +176,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(&implementation).unwrap(),
-            json!({ "path": "a.rs", "trait_name": "T", "impl_type": "S" })
+            json!({ "impl_type": "S", "trait_name": "T" })
         );
         let call = ReferenceHit {
             path: "a.rs".into(),
@@ -152,9 +185,6 @@ mod tests {
             callee: "f".to_string(),
             resolved: None,
         };
-        assert_eq!(
-            serde_json::to_value(&call).unwrap(),
-            json!({ "path": "a.rs", "callee": "f" })
-        );
+        assert_eq!(serde_json::to_value(&call).unwrap(), json!({ "callee": "f" }));
     }
 }

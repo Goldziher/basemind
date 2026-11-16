@@ -173,12 +173,13 @@ async fn exact_code_refs_are_not_starved_by_substring_only_callees() {
 
     let exact = call(&client, "code_refs", json!({ "name": "zap", "max_tokens": 100000 })).await;
     assert_eq!(exact["total"], 2, "{exact}");
-    assert_eq!(exact["hits"].as_array().map(Vec::len), Some(2), "{exact}");
-    assert_eq!(exact["hits"][0]["callee"], "zap", "{exact}");
+    let hits = super::rows(&exact["hits"]);
+    assert_eq!(hits.len(), 2, "{exact}");
     assert!(
-        exact["hits"][0]["line"].as_u64().is_some_and(|line| line > 17_000),
-        "{exact}"
+        hits[0].get("callee").is_none(),
+        "the callee is the name asked for: {exact}"
     );
+    assert!(hits[0]["line"].as_u64().is_some_and(|line| line > 17_000), "{exact}");
     assert!(
         exact.get("truncated").is_none() && exact.get("total_is_partial").is_none(),
         "{exact}"
@@ -314,10 +315,10 @@ async fn code_refs_leaves_hits_unannotated_when_resolution_knows_nothing_of_the_
 
     let proven = call(&client, "code_refs", json!({ "name": "target", "path": "util.ts" })).await;
     assert_eq!(proven["resolved_total"], 1, "resolution covers util.ts: {proven}");
-    assert_eq!(proven["hits"][0]["resolved"], true, "{proven}");
+    assert_eq!(super::rows(&proven["hits"])[0]["resolved"], true, "{proven}");
 
     let unknown = call(&client, "code_refs", json!({ "name": "lonely", "path": "util.ts" })).await;
-    let hits = unknown["hits"].as_array().expect("hits");
+    let hits = super::rows(&unknown["hits"]);
     assert_eq!(hits.len(), 1, "the name scan still reports other.ts: {unknown}");
     assert_eq!(hits[0]["path"], "other.ts", "{unknown}");
     assert!(

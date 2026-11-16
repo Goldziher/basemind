@@ -38,13 +38,12 @@ const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
 /// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped and counted in
 /// `skipped_files`), and applies the compiled regex. `limit` caps returned HITS, never files
-/// scanned, so `total_matches` and `total_files_matched` are exact for the scanned window. Supports
+/// scanned, so `total` is exact for the scanned window. Supports
 /// in-memory pagination via `cursor` / `next_cursor` on the same
 /// `encode_in_memory(offset, generation)` scheme as `list_files`.
 pub(super) async fn run_workspace_grep(
     state: &ServerState,
     params: WorkspaceGrepParams,
-    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
@@ -56,10 +55,7 @@ pub(super) async fn run_workspace_grep(
             if snapshot_id != generation {
                 return super::toon::format_result(
                     &WorkspaceGrepResponse {
-                        pattern: params.pattern,
-                        regex: !params.literal,
-                        total_files_matched: 0,
-                        total_matches: 0,
+                        total: 0,
                         truncated: false,
                         truncated_reason: None,
                         budgeted: false,
@@ -68,7 +64,6 @@ pub(super) async fn run_workspace_grep(
                         skipped_files: 0,
                         cursor_invalidated: true,
                         notice: state.lifecycle_notice(),
-                        elapsed_us: super::helpers::elapsed_us(started),
                     },
                     format,
                 );
@@ -154,8 +149,7 @@ pub(super) async fn run_workspace_grep(
         count_all(&sweep, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits)
     });
 
-    let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
-    let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
+    let total = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
 
     let (selected, limit_resume) = select_hits(&counts, limit, skip_files, skip_hits);
     // Judged against the file the bytes were read from: an external path is not under `root`.
@@ -199,10 +193,7 @@ pub(super) async fn run_workspace_grep(
 
     super::toon::format_result(
         &WorkspaceGrepResponse {
-            pattern: params.pattern,
-            regex: !params.literal,
-            total_files_matched,
-            total_matches,
+            total,
             truncated: byte_budget_hit,
             truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
             budgeted,
@@ -211,7 +202,6 @@ pub(super) async fn run_workspace_grep(
             skipped_files,
             cursor_invalidated: false,
             notice: state.lifecycle_notice(),
-            elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
     )

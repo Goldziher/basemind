@@ -1,7 +1,7 @@
 //! `run_list_files` + `run_find_files` — kept in their own file so `tools.rs` and `helpers.rs`
-//! stay under the 1000-line cap as the MCP surface grows. Both enumerate indexed paths and
-//! share the same limit/cursor/token-budget pagination shape; `find_files` additionally scores
-//! each candidate with `nucleo-matcher` before paginating.
+//! stay under the 1000-line cap as the MCP surface grows. Both enumerate indexed paths and share the
+//! same limit/cursor/token-budget pagination shape; `find_files` additionally scores each candidate
+//! with `nucleo-matcher` before paginating.
 
 use std::sync::atomic::Ordering;
 
@@ -12,16 +12,26 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers_filters::{Filters, PathFilter, Tally};
-use super::types::{
-    FindFilesEntry, FindFilesParams, FindFilesResponse, ListFilesEntry, ListFilesParams, ListFilesResponse,
-};
+use super::types::{FilesResponse, FindFilesParams, ListFilesParams};
+use crate::path::RelPath;
 
-/// Body of the `code` tool's `files` mode: enumerate indexed paths with optional substring
-/// (`path_contains`) and `language` filters, then paginate.
+/// The response for a cursor minted on another in-RAM snapshot: restart from the top.
+fn invalidated(state: &ServerState, limit_clamped: bool) -> Result<CallToolResult, McpError> {
+    super::helpers::json_result(&FilesResponse {
+        total: 0,
+        limit_clamped,
+        budgeted: false,
+        files: Vec::new(),
+        next_cursor: None,
+        cursor_invalidated: true,
+        notice: state.lifecycle_notice(),
+    })
+}
+
+/// Body of `find_files` without a query: enumerate indexed paths with optional substring
+/// (`path_contains`), prefix and `language` filters, then paginate.
 pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     state.await_cache_ready().await;
-    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
     let generation = state.shared.cache_generation.load(Ordering::Relaxed);
 
@@ -29,26 +39,14 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return super::toon::format_result(
-                    &ListFilesResponse {
-                        total: 0,
-                        returned: 0,
-                        limit_clamped,
-                        budgeted: false,
-                        files: Vec::new(),
-                        next_cursor: None,
-                        cursor_invalidated: true,
-                        notice: state.lifecycle_notice(),
-                        elapsed_us: super::helpers::elapsed_us(started),
-                    },
-                    format,
-                );
+                return invalidated(state, limit_clamped);
             }
             offset as usize
         }
         None => 0,
     };
     let store = state.shared.store.read().await;
+    let cache = state.shared.cache.load_full();
 
     let path_finder = params
         .path_contains
@@ -57,31 +55,20 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
     let prefix_filter = params.path_prefix.as_deref().map(str::as_bytes);
     let lang_filter = params.language.as_deref();
 
-    let mut files: Vec<ListFilesEntry> = Vec::with_capacity(limit.min(256));
-    let mut total: usize = 0;
-    let mut seen: usize = 0;
     // Code map first, then the document tier (markdown, config, data, PDFs ...) in sorted order:
     // a file listing covers every indexed path, not just the code-mapped ones.
     // The index map iterates in hash order, which differs per process; a cursor is an offset into
     // this listing, so the order must be stable across calls.
     let mut code_sorted: Vec<_> = store.index.files.iter().collect();
     code_sorted.sort_unstable_by(|a, b| a.0.cmp(b.0));
-    let code = code_sorted
-        .into_iter()
-        .map(|(p, e)| (p, e.language.clone(), e.size_bytes));
-    let doc_paths = std::sync::Arc::clone(&state.shared.cache.load().doc_paths);
-    let docs = doc_paths
-        .iter()
-        .map(|p| {
-            (
-                p.clone(),
-                language_of_doc(p),
-                store.lookup_doc(p).map_or(0, |d| d.size_bytes),
-            )
-        })
-        .collect::<Vec<_>>();
-    let docs = docs.iter().map(|(p, l, sz)| (p, l.clone(), *sz));
-    for (p, language, size_bytes) in code.chain(docs) {
+    let code = code_sorted.into_iter().map(|(p, e)| (p, e.language.clone()));
+    let doc_paths = std::sync::Arc::clone(&cache.doc_paths);
+    let docs = doc_paths.iter().map(|p| (p, language_of_doc(p)));
+
+    let mut files: Vec<RelPath> = Vec::with_capacity(limit.min(256));
+    let mut total: usize = 0;
+    let mut seen: usize = 0;
+    for (p, language) in code.chain(docs) {
         let path_ok = path_finder.as_ref().is_none_or(|f| f.find(p.as_bytes()).is_some())
             && prefix_filter.is_none_or(|prefix| p.as_bytes().starts_with(prefix));
         let lang_ok = lang_filter.is_none_or(|l| language == l);
@@ -95,11 +82,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
         seen += 1;
         total += 1;
         if files.len() < limit {
-            files.push(ListFilesEntry {
-                path: p.clone(),
-                language,
-                size_bytes,
-            });
+            files.push(p.clone());
         }
     }
     if total == 0 && skip == 0 {
@@ -122,44 +105,43 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
             return Err(refusal);
         }
     }
-    let budget = super::budget::apply_budget(files, params.max_tokens);
-    let files = budget.items;
-    let budgeted = budget.budgeted;
-    let next_cursor = if total > files.len() {
-        Some(super::cursor::Cursor::encode_in_memory(
-            (skip + files.len()) as u64,
-            generation,
-        ))
-    } else {
-        None
-    };
-
-    super::toon::format_result(
-        &ListFilesResponse {
-            total,
-            returned: files.len(),
-            limit_clamped,
-            budgeted,
-            files,
-            next_cursor,
-            cursor_invalidated: false,
-            notice: state.lifecycle_notice(),
-            elapsed_us: super::helpers::elapsed_us(started),
-        },
-        format,
-    )
+    respond(state, files, total, skip, limit_clamped, generation, params.max_tokens)
 }
 
-/// Body of the `code` tool's `find` mode: fuzzy subsequence match over indexed paths (fzf/fd-style),
-/// ranked by `nucleo-matcher` score, with optional `path_prefix` / `language` pre-filters.
+/// The page of `files` (`total` of them from `skip` on), held to `max_tokens`.
+fn respond(
+    state: &ServerState,
+    files: Vec<RelPath>,
+    total: usize,
+    skip: usize,
+    limit_clamped: bool,
+    generation: u32,
+    max_tokens: Option<u32>,
+) -> Result<CallToolResult, McpError> {
+    let budget = super::budget::apply_budget(files, max_tokens);
+    let files = budget.items;
+    let next_cursor =
+        (total > files.len()).then(|| super::cursor::Cursor::encode_in_memory((skip + files.len()) as u64, generation));
+    super::helpers::json_result(&FilesResponse {
+        total,
+        limit_clamped,
+        budgeted: budget.budgeted,
+        files,
+        next_cursor,
+        cursor_invalidated: false,
+        notice: state.lifecycle_notice(),
+    })
+}
+
+/// Body of `find_files` with a query: fuzzy subsequence match over indexed paths (fzf/fd-style),
+/// ranked by `nucleo-matcher` score, with optional `path_prefix` / `language`
+/// pre-filters.
 ///
 /// Sourced from the `MapCache` file view (already sorted, in-RAM, no store lock needed) — the
 /// `await_cache_ready()` call above guarantees it is populated before this runs. Paths that
 /// aren't valid UTF-8 are skipped — `nucleo-matcher` scores `str`, not raw bytes.
 pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     state.await_cache_ready().await;
-    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
     let generation = state.shared.cache_generation.load(Ordering::Relaxed);
 
@@ -167,20 +149,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return super::toon::format_result(
-                    &FindFilesResponse {
-                        total: 0,
-                        returned: 0,
-                        limit_clamped,
-                        budgeted: false,
-                        files: Vec::new(),
-                        next_cursor: None,
-                        cursor_invalidated: true,
-                        notice: state.lifecycle_notice(),
-                        elapsed_us: super::helpers::elapsed_us(started),
-                    },
-                    format,
-                );
+                return invalidated(state, limit_clamped);
             }
             offset as usize
         }
@@ -191,69 +160,21 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
     let prefix_filter = params.path_prefix.as_deref();
     let lang_filter = params.language.as_deref();
 
-    let pattern = Pattern::parse(&params.query, CaseMatching::Ignore, Normalization::Smart);
-    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
-    let mut utf32_buf: Vec<char> = Vec::new();
+    // Language and path are all the fuzzy-file search needs, and both live in the symbol-free file
+    // view — so this whole scan reads no outline and touches no blob. The document tier (markdown,
+    // JSON, YAML, PDFs ...) is not code-mapped, but a file finder must cover every indexed path.
+    let code = cache.file_metas().map(|(p, meta)| (p, meta.language.to_string()));
+    let docs = cache.doc_paths.iter().map(|p| (p, language_of_doc(p)));
+    let candidates: Vec<&RelPath> = code
+        .chain(docs)
+        .filter(|(p, language)| {
+            lang_filter.is_none_or(|l| *language == l)
+                && prefix_filter.is_none_or(|pre| p.as_bytes().starts_with(pre.as_bytes()))
+        })
+        .map(|(p, _)| p)
+        .collect();
 
-    let mut scored: Vec<(u32, FindFilesEntry)> = Vec::new();
-    // Whether any file passed the filters, whatever the query then made of its name.
-    let mut selected = false;
-    // Language, size and path are all the fuzzy-file search needs, and all three live in the
-    // symbol-free file view — so this whole scan reads no outline and touches no blob.
-    for (p, meta) in cache.file_metas() {
-        let lang_ok = lang_filter.is_none_or(|l| *meta.language == *l);
-        if !lang_ok {
-            continue;
-        }
-        let Some(path_str) = p.as_str() else {
-            continue;
-        };
-        let prefix_ok = prefix_filter.is_none_or(|pre| path_str.starts_with(pre));
-        if !prefix_ok {
-            continue;
-        }
-        selected = true;
-        let haystack = Utf32Str::new(path_str, &mut utf32_buf);
-        let Some(score) = pattern.score(haystack, &mut matcher) else {
-            continue;
-        };
-        scored.push((
-            score,
-            FindFilesEntry {
-                path: p.clone(),
-                language: meta.language.to_string(),
-                size_bytes: meta.size_bytes,
-                score,
-            },
-        ));
-    }
-    // The document tier (markdown, JSON, YAML, PDFs ...) is not code-mapped, but a file finder
-    // must cover every indexed path. Docs carry no size in the cache view; it is filled from the
-    // store for the returned page below.
-    for p in cache.doc_paths.iter() {
-        let Some(path_str) = p.as_str() else {
-            continue;
-        };
-        let language = doc_language(path_str);
-        if lang_filter.is_some_and(|l| l != language) || prefix_filter.is_some_and(|pre| !path_str.starts_with(pre)) {
-            continue;
-        }
-        selected = true;
-        let haystack = Utf32Str::new(path_str, &mut utf32_buf);
-        let Some(score) = pattern.score(haystack, &mut matcher) else {
-            continue;
-        };
-        scored.push((
-            score,
-            FindFilesEntry {
-                path: p.clone(),
-                language,
-                size_bytes: 0,
-                score,
-            },
-        ));
-    }
-    if !selected {
+    if candidates.is_empty() {
         let filters = Filters {
             tool: "find_files",
             path: prefix_filter.map(PathFilter::Prefix),
@@ -273,56 +194,35 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
             return Err(refusal);
         }
     }
+    let mut scored = score(&params.query, &candidates);
     rank_and_cut(&mut scored);
 
     // ~keep: `total` mirrors `list_files`'s convention: matches remaining from `skip` onward
     // ~keep: (not the grand total across all pages), so `total > limit` / `total > files.len()`
     // ~keep: read the same way.
     let total = scored.len().saturating_sub(skip);
-    let page: Vec<FindFilesEntry> = scored
+    let page: Vec<RelPath> = scored
         .into_iter()
         .skip(skip)
         .take(limit)
-        .map(|(_, entry)| entry)
+        .map(|(_, path)| path.clone())
         .collect();
-    let page = {
-        let mut page = page;
-        if page.iter().any(|e| cache.contains_doc(&e.path)) {
-            let store = state.shared.store.read().await;
-            for e in &mut page {
-                if let Some(doc) = store.lookup_doc(&e.path) {
-                    e.size_bytes = doc.size_bytes;
-                }
-            }
-        }
-        page
-    };
-    let budget = super::budget::apply_budget(page, params.max_tokens);
-    let files = budget.items;
-    let budgeted = budget.budgeted;
-    let next_cursor = if total > files.len() {
-        Some(super::cursor::Cursor::encode_in_memory(
-            (skip + files.len()) as u64,
-            generation,
-        ))
-    } else {
-        None
-    };
+    respond(state, page, total, skip, limit_clamped, generation, params.max_tokens)
+}
 
-    super::toon::format_result(
-        &FindFilesResponse {
-            total,
-            returned: files.len(),
-            limit_clamped,
-            budgeted,
-            files,
-            next_cursor,
-            cursor_invalidated: false,
-            notice: state.lifecycle_notice(),
-            elapsed_us: super::helpers::elapsed_us(started),
-        },
-        format,
-    )
+/// Every candidate `query` matches as a fuzzy subsequence, with nucleo's score.
+fn score<'a>(query: &str, candidates: &[&'a RelPath]) -> Vec<(u32, &'a RelPath)> {
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let mut utf32_buf: Vec<char> = Vec::new();
+    candidates
+        .iter()
+        .filter_map(|&path| {
+            let path_str = path.as_str()?;
+            let score = pattern.score(Utf32Str::new(path_str, &mut utf32_buf), &mut matcher)?;
+            Some((score, path))
+        })
+        .collect()
 }
 
 /// A candidate must score at least this fraction of the best candidate's score to be returned.
@@ -337,10 +237,10 @@ const RELATIVE_SCORE_FLOOR_PCT: u32 = 85;
 
 /// Order candidates by descending score (path ascending on ties, so pages are deterministic) and
 /// drop everything scoring below [`RELATIVE_SCORE_FLOOR_PCT`] percent of the top score.
-fn rank_and_cut(scored: &mut Vec<(u32, FindFilesEntry)>) {
+fn rank_and_cut(scored: &mut Vec<(u32, &RelPath)>) {
     // ~keep: descending score, stable tie-break on path (ascending) so identically-scored
     // ~keep: entries have a deterministic order across calls/pages.
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
     if let Some(&(top, _)) = scored.first() {
         let floor = (u64::from(top) * u64::from(RELATIVE_SCORE_FLOOR_PCT) / 100) as u32;
         let keep = scored.partition_point(|(s, _)| *s >= floor);
@@ -435,40 +335,23 @@ mod tests {
         }
     }
 
-    fn entry(path: &str, score: u32) -> (u32, FindFilesEntry) {
-        (
-            score,
-            FindFilesEntry {
-                path: path.into(),
-                language: "x".into(),
-                size_bytes: 0,
-                score,
-            },
-        )
-    }
-
     #[test]
     fn cut_drops_far_below_top_and_orders_deterministically() {
-        let mut v = vec![entry("b", 100), entry("a", 100), entry("z", 85), entry("low", 84)];
+        let [a, b, z, low] = ["a", "b", "z", "low"].map(RelPath::from);
+        let mut v = vec![(100, &b), (100, &a), (85, &z), (84, &low)];
         rank_and_cut(&mut v);
-        let paths: Vec<_> = v.iter().map(|(_, e)| e.path.to_string()).collect();
+        let paths: Vec<_> = v.iter().map(|(_, path)| path.to_string()).collect();
         assert_eq!(paths, ["a", "b", "z"], "85 is kept (>= floor), 84 is cut");
     }
 
     #[test]
     fn cut_keeps_everything_when_scores_are_close_and_handles_empty() {
-        let mut v = vec![entry("a", 10), entry("b", 9)];
+        let [a, b] = ["a", "b"].map(RelPath::from);
+        let mut v = vec![(10, &a), (9, &b)];
         rank_and_cut(&mut v);
         assert_eq!(v.len(), 2);
-        let mut e: Vec<(u32, FindFilesEntry)> = Vec::new();
+        let mut e: Vec<(u32, &RelPath)> = Vec::new();
         rank_and_cut(&mut e);
         assert!(e.is_empty());
-    }
-
-    #[test]
-    fn doc_language_labels() {
-        assert_eq!(doc_language("docs/README.md"), "markdown");
-        assert_eq!(doc_language("a/b.pdf"), "pdf");
-        assert_eq!(doc_language("LICENSEFILE"), "document");
     }
 }

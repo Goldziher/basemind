@@ -38,7 +38,6 @@ pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
 ) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let max_bytes = state.shared.config.scan.max_file_bytes;
     // The index is consulted before the file is read, so a path that is not indexed cannot be
     // probed for existence or contents through the errors below.
@@ -108,7 +107,6 @@ pub(super) async fn run_goto_definition(
         column: column + 1,
         definition,
         resolution,
-        elapsed_us: super::helpers::elapsed_us(started),
     })
 }
 

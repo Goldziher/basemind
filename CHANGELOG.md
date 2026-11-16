@@ -288,6 +288,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_archive_entries` still apply: they bound the zip containers that Office files (docx, pptx, xlsx,
   odt) are. A config that set `extract_archives = true` has its documents extracted again once, on the
   first scan after upgrading.
+- **BREAKING: lean rows on the locating tools.** `code_symbols`, `code_grep`, `code_refs`,
+  `find_files`, `git_log` and `git_diff` answer with what the shell would print plus what they add,
+  and drop what repeated per row or echoed the call (ADR-0031 holds a locating tool to 1.5 times the
+  shell's tokens). None of them carries `elapsed_us` any more; the CLI times the call itself.
+  `code_grep` and `code_refs` list hits under their file (`{"<path>": [hit, ...]}`), with a
+  `column` only where two hits of the page share a line; a grep hit's `symbol` is the enclosing symbol's name, `total_matches` is `total`, and
+  `pattern`, `regex` and `total_files_matched` are gone; a call site writes `callee` and an
+  implementation `trait_name` only when it is not the name asked for, and `name`, `match` and
+  `module` are no longer echoed. A `code_symbols` row is `path`, `line`, `kind`, `name` and
+  `signature` (no `column`, no `match`). `find_files` lists paths alone (no `language`,
+  `size_bytes`, `score` or `returned`). A `git_log` row is `sha` (its first 12 hex digits),
+  `summary`, `author` and `author_time_unix`, with `files` as `{"<path>": "<change>"}`; `short_sha`,
+  the `path` / `pattern` / `name` echoes and a search hit's `body`, `author_email`,
+  `body_truncated` and `body_bytes` are gone (`git_log {rev}` keeps the full sha, body and email).
+  `git_diff` drops a hunk's `kind`, writes `present_at_from` / `present_at_to` only when false, and
+  leaves an empty status list out. The CLI's `--json` output has the same shapes;
+  [`docs/UPGRADING.md`](docs/UPGRADING.md) lists every field.
 - **LLM summarization and the `[llm]` table.** LLM-backed (abstractive) summarization and the LLM NER
   backend are gone. `[documents.summarization] strategy = "abstractive"` is still accepted, logs a one-time
   deprecation warning and produces extractive (TextRank) summaries. `[documents.ner] backend = "llm"` is

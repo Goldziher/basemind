@@ -125,7 +125,6 @@ pub(super) async fn run_find_references(
     params: super::types::FindReferencesParams,
     cache: &super::MapCache,
     notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
-    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     use super::types::FindReferencesResponse;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
@@ -140,16 +139,13 @@ pub(super) async fn run_find_references(
     let budgeted = budget_call_page(scan, params.max_tokens);
     super::toon::format_result(
         &FindReferencesResponse {
-            name: params.name,
-            matching: matching.as_str(),
             total,
             truncated: total_is_partial,
             truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
             budgeted: budgeted.budgeted,
-            hits: budgeted.hits,
+            hits: budgeted.hits.into_iter().map(|hit| hit.named(&params.name)).collect(),
             next_cursor: budgeted.next_cursor,
             notice: notice(),
-            elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
     )
@@ -190,7 +186,6 @@ pub(super) async fn run_find_callers(
     cache: &super::MapCache,
     params: super::types::FindCallersParams,
     notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
-    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     use super::types::{DefinitionView, FindCallersResponse};
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
@@ -274,17 +269,15 @@ pub(super) async fn run_find_callers(
     let budgeted = budget_call_page(page, params.max_tokens);
     json_result(&FindCallersResponse {
         definition,
-        matching: matching.as_str(),
         resolution,
         resolved_total,
         total,
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
         budgeted: budgeted.budgeted,
-        hits: budgeted.hits,
+        hits: budgeted.hits.into_iter().map(|hit| hit.named(&params.name)).collect(),
         next_cursor: budgeted.next_cursor,
         notice: notice(),
-        elapsed_us: super::helpers::elapsed_us(started),
     })
 }
 

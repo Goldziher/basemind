@@ -100,7 +100,6 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 },
                 &cache,
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("find_references"),
     );
@@ -129,7 +128,6 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                     cursor: None,
                 },
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("find_callers"),
     );
@@ -139,10 +137,12 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
         Some(4),
         "find_callers must NOT shrink to the resolution-visible subset: {callers}"
     );
-    let hits = callers.get("hits").and_then(serde_json::Value::as_array).expect("hits");
-    let paths: Vec<&str> = hits
-        .iter()
-        .filter_map(|h| h.get("path").and_then(serde_json::Value::as_str))
+    let paths: Vec<&str> = callers
+        .get("hits")
+        .and_then(serde_json::Value::as_object)
+        .expect("hits grouped by file")
+        .keys()
+        .map(String::as_str)
         .collect();
     assert!(
         paths.contains(&"caller_a.py") && paths.contains(&"caller_b.py"),
@@ -216,7 +216,6 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
                     cursor: None,
                 },
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("find_callers"),
     );
@@ -343,7 +342,6 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
                     cursor: None,
                 },
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("find_callers"),
     );

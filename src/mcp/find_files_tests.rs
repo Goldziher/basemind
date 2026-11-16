@@ -1,5 +1,5 @@
-//! `find_files` covers every indexed path: the code map UNION the document tier, with a
-//! language label for documents, a relative-score cutoff and a deterministic order.
+//! `find_files` covers every indexed path: the code map UNION the document tier, filtered by
+//! language, cut at a relative score and in a deterministic order.
 
 use std::sync::Arc;
 
@@ -65,54 +65,43 @@ fn listing(query: Option<&str>, language: Option<&str>) -> FindFilesToolParams {
     }
 }
 
-async fn find(server: &BasemindServer, query: &str, language: Option<&str>) -> Vec<(String, String)> {
+/// The paths of a `find_files` page, which lists each file by its path alone.
+fn paths(payload: &Value) -> Vec<String> {
+    payload["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .map(|f| f.as_str().expect("a file is its path").to_string())
+        .collect()
+}
+
+async fn find(server: &BasemindServer, query: &str, language: Option<&str>) -> Vec<String> {
     let result = server
         .find_files_call(listing(Some(query), language))
         .await
         .expect("find");
-    json_of(&result)["files"]
-        .as_array()
-        .expect("files")
-        .iter()
-        .map(|f| {
-            (
-                f["path"].as_str().unwrap().to_string(),
-                f["language"].as_str().unwrap().to_string(),
-            )
-        })
-        .collect()
+    paths(&json_of(&result))
 }
 
 #[tokio::test]
-async fn find_covers_code_and_documents_with_language_labels() {
+async fn find_covers_code_and_documents_and_filters_by_language() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let server = server(tmp.path());
 
-    let readme = find(&server, "README.md", None).await;
-    assert_eq!(
-        readme.first(),
-        Some(&("README.md".to_string(), "markdown".to_string())),
-        "{readme:?}"
-    );
-    let yaml = find(&server, "deploy_settings.yaml", None).await;
-    assert_eq!(yaml.first().map(|f| f.1.as_str()), Some("yaml"), "{yaml:?}");
-    let json = find(&server, "package_manifest", None).await;
-    assert_eq!(
-        json.first().map(|f| f.0.as_str()),
-        Some("package_manifest.json"),
-        "{json:?}"
-    );
-    let code = find(&server, "widget_factory", None).await;
-    assert_eq!(
-        code.first(),
-        Some(&("widget_factory.rs".to_string(), "rust".to_string())),
-        "{code:?}"
-    );
+    for (query, path) in [
+        ("README.md", "README.md"),
+        ("deploy_settings.yaml", "deploy_settings.yaml"),
+        ("package_manifest", "package_manifest.json"),
+        ("widget_factory", "widget_factory.rs"),
+    ] {
+        let found = find(&server, query, None).await;
+        assert_eq!(found.first().map(String::as_str), Some(path), "{query}: {found:?}");
+    }
 
     // The language filter applies to the document label too.
-    let only_yaml = find(&server, "deploy", Some("yaml")).await;
-    assert_eq!(only_yaml.len(), 1, "{only_yaml:?}");
+    assert_eq!(find(&server, "deploy", Some("yaml")).await, ["deploy_settings.yaml"]);
     assert!(find(&server, "deploy", Some("rust")).await.is_empty());
+    assert_eq!(find(&server, "widget", Some("rust")).await, ["widget_factory.rs"]);
 }
 
 #[tokio::test]
@@ -120,11 +109,10 @@ async fn find_cuts_weak_matches_and_is_deterministic() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let server = server(tmp.path());
     let first = find(&server, "deploy_settings", None).await;
-    let paths: Vec<_> = first.iter().map(|f| f.0.as_str()).collect();
     assert_eq!(
-        paths,
+        first,
         ["deploy_settings.yaml"],
-        "weak subsequence matches must be cut: {paths:?}"
+        "weak subsequence matches must be cut: {first:?}"
     );
     for _ in 0..3 {
         assert_eq!(find(&server, "deploy_settings", None).await, first);
@@ -141,12 +129,12 @@ async fn files_lists_documents_alongside_code() {
         .await
         .expect("files");
     let payload = json_of(&result);
-    let paths: Vec<&str> = payload["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|f| f["path"].as_str())
-        .collect();
-    assert_eq!(paths, ["README.md"]);
-    assert!(payload["files"][0]["size_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(paths(&payload), ["README.md"]);
+    assert_eq!(payload["total"], 1, "{payload}");
+    let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
+    assert_eq!(
+        keys,
+        ["total", "files"],
+        "a whole listing carries nothing else: {payload}"
+    );
 }

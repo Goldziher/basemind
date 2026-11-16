@@ -132,7 +132,12 @@ pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, Mcp
 
 pub(super) use timing::elapsed_us;
 
-/// Canonical contract for the `elapsed_us` field carried by every latency-relevant response.
+/// Canonical contract for the `elapsed_us` field carried by the responses of the tools whose answer
+/// replaces reading content (`code_outline`, `code_read`, `code_search`, `docs_search`, `git_blame`,
+/// the memory tools, `index_status`). The locating tools (`code_symbols`, `code_grep`, `code_refs`,
+/// `find_files`, `git_log`, `git_diff`) leave it out: their answer is a few rows, the field cost as
+/// much as one, and ADR-0031 holds them to the shell's token cost. Telemetry records the latency of
+/// every call either way.
 ///
 /// basemind's index-backed queries are genuinely microsecond-scale (an indexed `commits_touching`
 /// is ~37 µs against ~2 ms for the equivalent live git walk), so latency is reported in
@@ -190,6 +195,17 @@ pub(super) mod timing {
     }
 }
 
+/// Hex digits of a commit sha in a `git_log` list. Twelve is the abbreviation the Linux kernel
+/// settled on: a prefix that long names one commit in any repository of a realistic size, and every
+/// tool that takes a revision resolves it.
+pub(super) const SHA_ABBREV: usize = 12;
+
+/// `sha` cut to [`SHA_ABBREV`] hex digits.
+pub(super) fn abbreviated_sha(mut sha: String) -> String {
+    sha.truncate(SHA_ABBREV);
+    sha
+}
+
 pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> CommitView {
     let files = if include_files {
         Some(
@@ -205,8 +221,7 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
         None
     };
     CommitView {
-        sha: c.sha,
-        short_sha: c.short_sha,
+        sha: abbreviated_sha(c.sha),
         summary: c.summary,
         author: c.author,
         author_time_unix: c.author_time_unix,

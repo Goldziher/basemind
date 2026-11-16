@@ -12,6 +12,7 @@ pub(crate) mod admission;
 pub mod agent_tools;
 mod background;
 mod budget;
+mod by_path;
 mod completions;
 pub(crate) mod cursor;
 mod cursor_bind;
