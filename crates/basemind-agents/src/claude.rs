@@ -491,9 +491,10 @@ impl Protocol for ClaudeProtocol {
         )
     }
 
-    fn interrupt(&mut self, out: &mut dyn Write) -> Result<(), LaunchError> {
-        for (wire, request) in std::mem::take(&mut self.approvals).into_values() {
+    fn interrupt(&mut self, out: &mut dyn Write, sink: &EventSink) -> Result<(), LaunchError> {
+        for (id, (wire, request)) in std::mem::take(&mut self.approvals) {
             self.respond(&wire, &request, false, out)?;
+            sink.resolved(id, false, ApprovalSource::Withdrawn);
         }
         write_json(
             out,

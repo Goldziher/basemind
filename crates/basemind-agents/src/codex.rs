@@ -695,8 +695,10 @@ impl Protocol for CodexProtocol {
         Ok(())
     }
 
-    fn interrupt(&mut self, out: &mut dyn Write) -> Result<(), LaunchError> {
-        self.deny_pending(out)?;
+    fn interrupt(&mut self, out: &mut dyn Write, sink: &EventSink) -> Result<(), LaunchError> {
+        for id in self.deny_pending(out)? {
+            sink.resolved(id, false, ApprovalSource::Withdrawn);
+        }
         match (&self.thread, &self.active_turn) {
             (Some(thread), Some(turn)) => write_json(
                 out,

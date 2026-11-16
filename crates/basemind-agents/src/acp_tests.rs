@@ -901,3 +901,36 @@ fn a_stop_declines_the_requests_still_pending() {
         source: ApprovalSource::Withdrawn,
     }));
 }
+
+#[test]
+fn a_stop_between_turns_declines_a_request_sent_after_the_turn() {
+    let root = tempfile::tempdir().unwrap();
+    let (asked_tx, asked) = std::sync::mpsc::channel();
+    let policy = move |_: &ApprovalRequest| {
+        asked_tx.send(()).unwrap();
+        ApprovalVerdict::Ask
+    };
+    let mut spec = with_policy(acp_spec(AcpFlavor::Cursor, root.path()), Some(Arc::new(policy)));
+    spec.limits.max_turns = 2;
+    let run = converse_with(&spec, Vec::new(), move |agent| {
+        agent.open();
+        let prompt = agent.expect("session/prompt");
+        agent.reply(&prompt, &json!({"stopReason": "end_turn"}));
+        // Let the client finish the turn first, so the request waits while it is idle.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        agent.request_permission(&standard_options());
+        asked.recv().unwrap();
+        agent.controls.unbounded_send(Control::Stop).unwrap();
+        assert_eq!(
+            agent.permission_outcome(),
+            json!({"outcome": "selected", "optionId": "no"})
+        );
+        while futures::executor::block_on(agent.from_client.next()).is_some() {}
+    });
+    run.result.unwrap();
+    assert!(run.events.contains(&Event::ApprovalResolved {
+        id: "acp-1".to_owned(),
+        allowed: false,
+        source: ApprovalSource::Withdrawn,
+    }));
+}

@@ -433,7 +433,7 @@ fn an_interrupted_turn_cancels_its_running_tools() {
     let mut out = Vec::new();
     let started = json!({"method": "item/started", "params": {"item": {"type": "commandExecution", "id": "c1", "command": "sleep 60"}}});
     protocol.frame(started, &mut out, &sink).unwrap();
-    protocol.interrupt(&mut out).unwrap();
+    protocol.interrupt(&mut out, &sink).unwrap();
     assert_eq!(
         written(&out)[0]["params"],
         json!({"threadId": "thread-1", "turnId": "turn-1"})
@@ -795,8 +795,16 @@ fn requests_still_pending_when_the_turn_ends_or_stops_are_declined_on_the_wire()
     let request = json!({"id": 3, "method": "item/commandExecution/requestApproval", "params": {"command": "ls"}});
     protocol.frame(request, &mut out, &sink).unwrap();
     out.clear();
-    protocol.interrupt(&mut out).unwrap();
+    protocol.interrupt(&mut out, &sink).unwrap();
     let frames = written(&out);
     assert_eq!(frames[0], json!({"id": 3, "result": {"decision": "decline"}}));
     assert_eq!(frames[1]["method"], "turn/interrupt");
+    assert!(matches!(
+        events.try_iter().last().unwrap(),
+        Event::ApprovalResolved {
+            allowed: false,
+            source: ApprovalSource::Withdrawn,
+            ..
+        }
+    ));
 }

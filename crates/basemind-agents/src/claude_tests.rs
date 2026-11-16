@@ -268,14 +268,22 @@ fn a_deferred_request_waits_for_the_caller_and_can_be_withdrawn() {
 
 #[test]
 fn interrupt_denies_what_is_pending_before_it_interrupts() {
-    let (sink, _events) = EventSink::for_test(always(ApprovalVerdict::Ask), 1);
+    let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Ask), 1);
     let mut protocol = started(&sink);
     let mut out = Vec::new();
     protocol.frame(permission_request("req-1"), &mut out, &sink).unwrap();
-    protocol.interrupt(&mut out).unwrap();
+    protocol.interrupt(&mut out, &sink).unwrap();
     let frames = written(&out);
     assert_eq!(frames[0]["response"]["response"]["behavior"], "deny");
     assert_eq!(frames[1]["request"]["subtype"], "interrupt");
+    assert_eq!(
+        events.try_iter().last().unwrap(),
+        Event::ApprovalResolved {
+            id: "claude-1".to_owned(),
+            allowed: false,
+            source: ApprovalSource::Withdrawn,
+        }
+    );
 }
 
 #[test]

@@ -35,8 +35,9 @@ pub(crate) trait Protocol: Send + 'static {
     fn answer(&mut self, id: &str, allow: bool, out: &mut dyn Write) -> Result<bool, LaunchError>;
     /// Starts the next turn with `text`.
     fn prompt(&mut self, text: &str, out: &mut dyn Write, sink: &EventSink) -> Result<(), LaunchError>;
-    /// Cancels the turn in progress through the harness's own protocol.
-    fn interrupt(&mut self, out: &mut dyn Write) -> Result<(), LaunchError>;
+    /// Cancels the turn in progress through the harness's own protocol, denying and reporting
+    /// withdrawn every request still pending.
+    fn interrupt(&mut self, out: &mut dyn Write, sink: &EventSink) -> Result<(), LaunchError>;
     /// Runs on every loop pass, for work that depends on elapsed time.
     fn tick(&mut self, _elapsed: Duration, _out: &mut dyn Write, _sink: &EventSink) -> Result<(), LaunchError> {
         Ok(())
@@ -234,7 +235,7 @@ impl<P: Protocol> Driver for LineDriver<P> {
                     Control::FollowUp(text) => queued.push_back(text),
                     Control::Stop => {
                         // The harness may already be gone; the supervisor ends it either way.
-                        let _ = protocol.interrupt(&mut out);
+                        let _ = protocol.interrupt(&mut out, &sink);
                         return Ok(());
                     }
                 }

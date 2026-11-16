@@ -574,7 +574,10 @@ where
                     control = controls.next() => match control {
                         Some(Control::FollowUp(text)) => next = Some(text),
                         Some(Control::Answer { id, allow }) => pending.answer(&id, allow, &sink),
-                        Some(Control::Stop) | None => return Ok(Ok(())),
+                        Some(Control::Stop) | None => {
+                            pending.withdraw_all(&sink);
+                            return Ok(Ok(()));
+                        }
                     },
                     () = closed => return Ok(Ok(())),
                 }
