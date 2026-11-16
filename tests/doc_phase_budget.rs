@@ -9,9 +9,9 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use basemind::backpressure::DocPhase;
 use basemind::extract::ExtractError;
 use basemind::extract::doc::{DocConfig, extract_doc};
-use basemind::extract::doc_guard::DocPhase;
 
 fn offline_doc_config() -> DocConfig {
     DocConfig {

@@ -141,7 +141,6 @@ const KNOWN_VIOLATIONS: &[&str] = &[
     "src/scanner_drive.rs -> scanner_docs",
     "src/scanner_file.rs -> extract::doc_cost",
     "src/scanner_file.rs -> scanner_docs",
-    "src/scanner_filter.rs -> extract::doc_guard",
     "src/scanner_filter.rs -> extract::doc_tiers",
     "src/scanner_flush.rs -> embeddings",
     "src/scanner_flush.rs -> lance",

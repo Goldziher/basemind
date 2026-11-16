@@ -22,8 +22,9 @@ use xberg::core::config::{ConcurrencyConfig, ExtractionConfig};
 use xberg::extractors::security::SecurityLimits;
 use xberg::{ExtractInput, extract};
 
-use super::doc_guard::{self, ChunkCutovers, DeadlineError, DocPhase};
+use super::doc_guard::{self, ChunkCutovers, DeadlineError};
 use super::{ExtractError, SCHEMA_VER};
+use crate::backpressure::DocPhase;
 use crate::config::{
     DocLanguageConfig, DocumentModelProfile, KeywordAlgorithm, KeywordsConfig, NerBackend, NerConfig, OnnxProvider,
     SummarizationConfig,

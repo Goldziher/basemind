@@ -12,12 +12,12 @@
 //!    wall-clock budget, so even an unforeseen stall costs one budget, not the scan. Abandoned threads
 //!    are counted and capped ([`AbandonedThreads`]), so stalls cannot accumulate into a pile of
 //!    burning cores.
-//! 3. [`DocPhase`] bounds the whole document phase of a scan, so several documents timing out
+//! 3. [`DocPhase`](crate::backpressure::DocPhase) bounds the whole document phase of a scan, so several documents timing out
 //!    together cost one total budget rather than one per-file budget each.
 
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, OnceLock, mpsc};
+use std::time::Duration;
 
 /// Size cutovers above which a text-like document skips the markdown splitter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,76 +267,11 @@ pub fn run_with_deadline<T: Send + 'static>(
     }
 }
 
-/// Wall-clock budget for the whole document phase of one scan (`[documents] phase_budget_secs`).
-///
-/// The clock starts at the first document that needs a real extraction (a cached blob never asks), so
-/// code files processed before the first document do not eat into it. Once spent, [`DocPhase::admit`]
-/// refuses every later document; the caller defers them to the next scan. Documents already running
-/// finish or hit their own per-file budget, so the phase can overshoot by up to one per-file budget.
-#[derive(Debug, Default)]
-pub struct DocPhase {
-    state: Mutex<PhaseState>,
-}
-
-#[derive(Debug, Default)]
-struct PhaseState {
-    budget: Option<Duration>,
-    started: Option<Instant>,
-}
-
-/// The document-phase budget is spent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PhaseSpent {
-    pub elapsed: Duration,
-    pub budget: Duration,
-}
-
-impl DocPhase {
-    /// A phase with `budget` that has not started its clock yet.
-    pub fn with_budget(budget: Duration) -> Self {
-        Self {
-            state: Mutex::new(PhaseState {
-                budget: Some(budget),
-                started: None,
-            }),
-        }
-    }
-
-    /// Re-arm for a new scan: new `budget`, clock not started. Filters outlive a single scan in the
-    /// watcher, so every scan begins by resetting its phase.
-    pub fn begin(&self, budget: Duration) {
-        *self.lock() = PhaseState {
-            budget: Some(budget),
-            started: None,
-        };
-    }
-
-    /// Admit one more document, starting the clock on the first call.
-    pub fn admit(&self) -> Result<(), PhaseSpent> {
-        self.admit_at(Instant::now())
-    }
-
-    fn admit_at(&self, now: Instant) -> Result<(), PhaseSpent> {
-        let mut state = self.lock();
-        let Some(budget) = state.budget else {
-            return Ok(());
-        };
-        let started = *state.started.get_or_insert(now);
-        let elapsed = now.saturating_duration_since(started);
-        if elapsed >= budget {
-            Err(PhaseSpent { elapsed, budget })
-        } else {
-            Ok(())
-        }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, PhaseState> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    use std::time::Instant;
+
     use super::*;
 
     const CUTOVERS: ChunkCutovers = ChunkCutovers {
@@ -518,29 +453,5 @@ mod tests {
             1,
             "capacity returns once the stuck threads finish"
         );
-    }
-
-    #[test]
-    fn phase_budget_starts_on_first_document_and_refuses_after_it_is_spent() {
-        let phase = DocPhase::with_budget(Duration::from_secs(10));
-        let t0 = Instant::now();
-        assert!(phase.admit_at(t0).is_ok(), "first document starts the clock");
-        assert!(phase.admit_at(t0 + Duration::from_secs(9)).is_ok());
-        let spent = phase.admit_at(t0 + Duration::from_secs(10)).unwrap_err();
-        assert_eq!(spent.budget, Duration::from_secs(10));
-        assert_eq!(spent.elapsed, Duration::from_secs(10));
-        assert!(phase.admit_at(t0 + Duration::from_secs(500)).is_err(), "stays spent");
-
-        phase.begin(Duration::from_secs(10));
-        assert!(
-            phase.admit_at(t0 + Duration::from_secs(500)).is_ok(),
-            "begin re-arms the phase"
-        );
-    }
-
-    #[test]
-    fn an_unarmed_phase_admits_everything() {
-        let phase = DocPhase::default();
-        assert!(phase.admit_at(Instant::now()).is_ok());
     }
 }

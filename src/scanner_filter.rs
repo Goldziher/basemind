@@ -224,7 +224,7 @@ pub(crate) struct Filters {
     /// The current scan's document-phase budget (`[documents] phase_budget_secs`), re-armed by every
     /// drive. Shared with extraction through [`crate::extract::doc::DocConfig::phase`].
     #[cfg(feature = "documents")]
-    pub(crate) doc_phase: std::sync::Arc<crate::extract::doc_guard::DocPhase>,
+    pub(crate) doc_phase: std::sync::Arc<crate::backpressure::DocPhase>,
     /// [`crate::config::DocumentsConfig::effective_phase_budget_secs`], to re-arm [`Self::doc_phase`].
     #[cfg_attr(not(feature = "documents"), allow(dead_code))]
     pub(crate) doc_phase_budget_secs: u64,
