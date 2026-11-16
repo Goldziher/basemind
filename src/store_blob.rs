@@ -595,7 +595,7 @@ impl Store {
     /// Read the document blob of `hash_hex` as `T`, refusing a blob whose schema version
     /// (`schema_ver` of the decoded value) is not this build's.
     #[cfg(feature = "documents")]
-    pub fn read_doc_blob_by_hex<T: serde::de::DeserializeOwned>(
+    pub(crate) fn read_doc_blob_by_hex<T: serde::de::DeserializeOwned>(
         &self,
         hash_hex: &str,
         schema_ver: impl FnOnce(&T) -> u16,

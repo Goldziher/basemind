@@ -98,7 +98,7 @@ pub fn defaults_only() -> LoadedConfig {
 /// Dotted-path keys for every `documents.*` field the override struct covers.
 /// Keeping this list explicit gives us a stable contract for the provenance
 /// ledger that tests can assert against.
-pub const DOCUMENT_LEAVES: &[&str] = &[
+pub(super) const DOCUMENT_LEAVES: &[&str] = &[
     "documents.enabled",
     "documents.max_characters",
     "documents.overlap",
