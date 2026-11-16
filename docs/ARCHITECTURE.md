@@ -955,7 +955,9 @@ then answers the host itself while it retries with a growing back-off: `initiali
 connects it replays the host's `initialize` to the daemon and sends
 `notifications/tools/list_changed`. A daemon that closed its socket gets the whole exit window to
 leave. SIGTERM and SIGKILL are reserved for a process still there after it, silent to `Stop` and
-`Ping` when asked once more, that the generation's `daemon.pid` names at that moment. `comms stop`
+`Ping` when asked once more, that the generation's `daemon.pid` names at that moment: the process
+whose start and boot are the ones the record holds (a record of an earlier release, which holds
+neither, names a process that started no later than it was written). `comms stop`
 and `comms stop --all` reclaim a daemon by the same steps and the same function. The full table is
 the module doc of `src/comms/singleton.rs`.
 
