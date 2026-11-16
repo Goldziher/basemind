@@ -454,13 +454,25 @@ mod tests {
         std::fs::write(workspace.join("status.json"), b"{}").expect("content");
         let remover = acquire_lock(&workspace).expect("the remover locks the workspace");
 
+        // The remover acts from the opener's second open, so the opener has waited out one
+        // contended attempt however slowly either thread is scheduled: a sleep here let a loaded
+        // machine spend the opener's whole retry budget before the remover let go.
         let opener = {
             let workspace = workspace.clone();
-            std::thread::spawn(move || acquire_lock_as(&workspace, LockHolder::Scan))
+            std::thread::spawn(move || {
+                let (mut remover, mut opens, removed) = (Some(remover), 0, workspace.clone());
+                let _hook = hook::after_open(move |_| {
+                    opens += 1;
+                    if opens == 2
+                        && let Some(remover) = remover.take()
+                    {
+                        remove_dir_under_lock(&removed).expect("remove");
+                        drop(remover);
+                    }
+                });
+                acquire_lock_as(&workspace, LockHolder::Scan)
+            })
         };
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        remove_dir_under_lock(&workspace).expect("remove");
-        drop(remover);
 
         let held = opener.join().expect("join").expect("the opener gets the lock");
         let at_path = std::fs::metadata(workspace.join(LOCK_FILE)).expect("a lock file is at the path");
