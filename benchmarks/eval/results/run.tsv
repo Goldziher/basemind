@@ -1,0 +1,3 @@
+corpus	commit	tasks	scan_s	eval_s	load_before	load_after	binary
+basemind	a144ebbf1108dfec8b98d81ac22d0984696a8a77	475	81	84	43.45 53.25 48.47	35.04 44.53 45.65	basemind 0.33.0
+tokio	b53b2001ed2ccfd9b87e32a0c6da1a1eebdc80b8	475	44	100	35.04 44.53 45.65	19.65 34.73 41.49	basemind 0.33.0

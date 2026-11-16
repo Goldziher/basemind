@@ -240,6 +240,14 @@ each arm over all the kind's tasks, the median ratio over the credited tasks, an
 attached symbol was right. A ratio below 1 means the shell answer was cheaper. Latency is in the per-corpus markdown and
 `run.tsv` with the load average next to it; the machine is shared, so it is reported, never gated.
 
+### First run
+
+`results/` holds the first run (2026-11-16): a dev-profile `--features tokenizer` binary built from this branch at
+`52991f35` (version 0.33.0 plus unreleased commits), over a fresh fetch of the corpus. A second run from a separate
+cache gave the same scores and token counts. Only `code_read` passes. `code_outline` passes on basemind and fails on
+tokio (credited 0.68); `git_blame` fails `blame_symbol` on tokio (1.11x); `git_diff` passes `diff_structural` and fails
+`diff` (1.0x); `code_symbols`, `code_grep`, `code_refs`, `find_files` and `git_log` fail every kind on token ratio.
+
 ### Baseline per kind
 
 The baseline is the cheapest shell command a competent agent would run to get the same items, scored against the same
