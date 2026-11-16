@@ -101,7 +101,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
             },
         );
     }
-    match p.path {
+    match p.path.map(|path| as_directory(state, path)) {
         Some(path) if path.as_bytes().ends_with(b"/") => {
             let mut page = by_path(
                 state,
@@ -150,6 +150,25 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
             },
         ),
     }
+}
+
+/// `path` with a trailing slash when it names a directory on disk or at HEAD. A commit's file list
+/// holds files, never directories, so a directory's history is the commits that change a file under
+/// it whether or not the caller wrote the slash.
+fn as_directory(state: &ServerState, path: RelPath) -> RelPath {
+    if path.as_bytes().ends_with(b"/") || path.as_bytes().is_empty() {
+        return path;
+    }
+    let Ok(repo) = require_git_repo(state) else {
+        return path;
+    };
+    let on_disk = crate::path::contained_file(repo.workdir(), &path).is_ok_and(|file| file.is_dir());
+    if !on_disk && !repo.is_directory_at("HEAD", path.as_ref()) {
+        return path;
+    }
+    let mut slashed = path.as_bytes().to_vec();
+    slashed.push(b'/');
+    RelPath::from(slashed.as_slice())
 }
 
 /// `git_blame`: who last changed each line of a file, a line span, or one symbol.

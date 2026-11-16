@@ -138,6 +138,21 @@ async fn git_log_index_catches_up_with_a_commit_made_after_the_server_started() 
     assert_eq!(summaries(&caught_up), ["tune the zeppelin"], "{caught_up}");
 }
 
+/// A directory named without its trailing slash is still a directory: with the git-history index
+/// answering, its history is the commits under it, as with the slash, not an empty page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_of_a_directory_without_its_slash_lists_the_commits_under_it() {
+    let (_dir, client) = started().await;
+    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| value == "0") {
+        return;
+    }
+    indexed_search(&client, "init").await;
+    let slashed = call(&client, "git_log", json!({ "path": "src/" })).await;
+    let bare = call(&client, "git_log", json!({ "path": "src" })).await;
+    assert_eq!(summaries(&slashed), ["init"], "{slashed}");
+    assert_eq!(bare["commits"], slashed["commits"], "{bare}");
+}
+
 const STEADY_RS: &str = "pub fn stable() -> u32 {\n    7\n}\n\npub fn churn() -> u32 {\n    0\n}\n";
 
 /// A symbol's history is read from a bounded window of the commits touching its file. The oldest
