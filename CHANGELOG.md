@@ -552,8 +552,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `memory_save` refuses a key longer than 1024 bytes and a note whose text and tags pass 4 MiB,
   with an invalid-params error naming the limit: a longer one could be saved locally but not
   carried in one daemon frame, by its save or by any later read. Reads of several notes or stamps
-  are split by the bytes of their keys as well as by count, so keys saved before the limit cannot
-  make a request larger than a frame.
+  sent to the daemon are split by the bytes of their keys as well as by count, so keys saved
+  before the limit cannot make a request larger than a frame; read in the process itself, such a
+  key is read as before.
 - The daemon protocol version is 6 (was 5): a search by meaning reads the `updated_at` of its
   hits' notes, and whole only the notes it may serve, in batches (at most 256 keys and 8 MiB of
   notes per reply, which the daemon enforces), and a rescan says whether its paths were named or

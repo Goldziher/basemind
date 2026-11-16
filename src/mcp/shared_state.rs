@@ -279,6 +279,16 @@ impl SharedReadStack {
 }
 
 impl SharedReadStack {
+    /// Whether a memory request crosses the daemon's socket, whose frame bounds its size, rather
+    /// than being answered in this process.
+    #[cfg(feature = "memory")]
+    pub(crate) fn memory_is_framed(&self) -> bool {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        return self.daemon_writer && self.host.is_none();
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        false
+    }
+
     /// The compiled `[languages]` overrides. A table that does not compile was already reported
     /// when the config was loaded; detection then falls back to the built-in rules.
     pub(crate) fn lang_rules(&self) -> &crate::lang_rules::LangRules {

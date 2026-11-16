@@ -88,14 +88,15 @@ pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), 
     Ok(())
 }
 
-/// The leading keys of `keys` one request may carry: at most `most` of them and
-/// [`REQUEST_KEY_MAX_BYTES`] of them, and always the first, unless it alone is longer than that.
-pub(crate) fn request_chunk(keys: &[String], most: usize) -> Result<&[String], MemoryOpError> {
+/// The leading keys of `keys` one request may carry: at most `most` of them and, when the request
+/// crosses the daemon's socket (`framed`), [`REQUEST_KEY_MAX_BYTES`] of them, and always the first,
+/// unless it alone is longer than that. A request answered in this process has no frame to fit.
+pub(crate) fn request_chunk(keys: &[String], most: usize, framed: bool) -> Result<&[String], MemoryOpError> {
     let mut bytes = 0_usize;
     let mut taken = 0;
     for key in keys.iter().take(most) {
         bytes = bytes.saturating_add(key.len());
-        if bytes > REQUEST_KEY_MAX_BYTES {
+        if framed && bytes > REQUEST_KEY_MAX_BYTES {
             break;
         }
         taken += 1;
@@ -790,13 +791,21 @@ mod tests {
     fn a_request_carries_keys_up_to_its_byte_budget() {
         let long = "k".repeat(REQUEST_KEY_MAX_BYTES / 3);
         let keys = vec![long.clone(), long.clone(), long.clone(), long.clone()];
-        assert_eq!(request_chunk(&keys, STAMPS_MAX_KEYS).unwrap().len(), 3);
-        assert_eq!(request_chunk(&keys, 2).unwrap().len(), 2, "and by count");
-        assert!(request_chunk(&[], 2).unwrap().is_empty());
+        assert_eq!(request_chunk(&keys, STAMPS_MAX_KEYS, true).unwrap().len(), 3);
+        assert_eq!(request_chunk(&keys, 2, true).unwrap().len(), 2, "and by count");
+        assert!(request_chunk(&[], 2, true).unwrap().is_empty());
         let too_long = vec!["k".repeat(REQUEST_KEY_MAX_BYTES + 1)];
         assert!(matches!(
-            request_chunk(&too_long, 2),
+            request_chunk(&too_long, 2, true),
             Err(MemoryOpError::TooLong { what: "key", .. })
         ));
+    }
+
+    /// A request answered in this process has no frame: a key saved before the key limit is read
+    /// there whatever its length, and the keys are cut by count alone.
+    #[test]
+    fn a_request_answered_here_is_cut_by_count_alone() {
+        let too_long = vec!["k".repeat(REQUEST_KEY_MAX_BYTES + 1); 3];
+        assert_eq!(request_chunk(&too_long, 2, false).unwrap().len(), 2);
     }
 }
