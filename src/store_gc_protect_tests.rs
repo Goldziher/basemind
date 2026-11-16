@@ -294,6 +294,34 @@ fn a_blob_written_after_the_lock_probe_survives_the_sweep_that_follows_an_evicti
     assert!(!orphaned.exists(), "older than the probe: reclaimed at once");
 }
 
+/// With the slack of a real sweep, a blob whose whole-second mtime was rounded to just before the
+/// probe survives; one written well before it is reclaimed.
+#[test]
+fn the_sweep_after_an_eviction_spares_a_blob_within_the_mtime_slack_of_the_probe() {
+    let (_tmp, workspaces, blobs) = roots();
+    fs::create_dir_all(&workspaces).expect("mk workspaces");
+    let probed = SystemTime::now();
+    let age = |path: &std::path::Path, by: Duration| {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_modified(probed - by))
+            .expect("age blob");
+    };
+    let rounded = blobs.join(format!("{}.fm.msgpack", "a".repeat(64)));
+    fs::write(&rounded, b"written just after the probe, its mtime rounded down").expect("blob");
+    age(&rounded, PROBE_MTIME_SLACK / 2);
+    let orphaned = blobs.join(format!("{}.fm.msgpack", "b".repeat(64)));
+    fs::write(&orphaned, b"orphaned by the eviction").expect("blob");
+    age(&orphaned, PROBE_MTIME_SLACK * 3);
+
+    let grace = orphan_grace_with(&workspaces, probed, PROBE_MTIME_SLACK);
+    gc_global_blobs_in(&workspaces, &blobs, grace).expect("sweep");
+
+    assert!(rounded.exists(), "within the slack: possibly a scan's fresh blob");
+    assert!(!orphaned.exists(), "older than the slack: reclaimed");
+}
+
 fn write_index(workspace_dir: &std::path::Path, index: &crate::store::Index) {
     let working = workspace_dir.join(crate::store::VIEWS_DIR).join("working");
     fs::create_dir_all(&working).expect("mk view");

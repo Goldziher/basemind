@@ -43,7 +43,11 @@ const BUDGET_EVICTION_HOT_FLOOR: Duration = Duration::from_secs(24 * 60 * 60);
 /// How much older than the probe a blob must be before the sweep after an eviction takes it for
 /// one the eviction orphaned: file systems that keep whole-second mtimes round a blob written just
 /// after the probe to just before it.
-const PROBE_MTIME_SLACK: Duration = Duration::from_secs(if cfg!(test) { 0 } else { 2 });
+const PROBE_MTIME_SLACK: Duration = Duration::from_secs(2);
+
+/// The slack the budget tests sweep with, whose blobs are all written within a second.
+#[cfg(test)]
+const TEST_PROBE_MTIME_SLACK: Duration = Duration::ZERO;
 
 /// The grace the sweep after an eviction gives unreferenced blobs. Budget eviction runs holding
 /// the daemon's blob-GC gate, so blobs the eviction orphaned can go at once without racing a scan
@@ -54,6 +58,15 @@ const PROBE_MTIME_SLACK: Duration = Duration::from_secs(if cfg!(test) { 0 } else
 /// - otherwise only blobs older than `probed`, the instant before the locks were looked at, go.
 ///   Whatever a scan that started since has written is younger than that.
 fn orphan_grace(workspaces_dir: &Path, probed: SystemTime) -> Duration {
+    #[cfg(not(test))]
+    let slack = PROBE_MTIME_SLACK;
+    #[cfg(test)]
+    let slack = TEST_PROBE_MTIME_SLACK;
+    orphan_grace_with(workspaces_dir, probed, slack)
+}
+
+/// [`orphan_grace`] with `slack` for [`PROBE_MTIME_SLACK`].
+fn orphan_grace_with(workspaces_dir: &Path, probed: SystemTime, slack: Duration) -> Duration {
     let foreign_writer = std::fs::read_dir(workspaces_dir).is_ok_and(|entries| {
         entries
             .flatten()
@@ -65,7 +78,7 @@ fn orphan_grace(workspaces_dir: &Path, probed: SystemTime) -> Duration {
     if foreign_writer {
         crate::store_gc::blob_gc_grace()
     } else {
-        probed.elapsed().unwrap_or(Duration::ZERO) + PROBE_MTIME_SLACK
+        probed.elapsed().unwrap_or(Duration::ZERO) + slack
     }
 }
 
