@@ -172,6 +172,10 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   A cursor of any `git_log` list (recent commits, a file's, a directory's or a symbol's history)
   is refused when the git-history index came up (or stopped answering) since it was issued,
   because the index and the live walk order commits differently: restart without `cursor`.
+- **A moved file lists its source.** A commit's `files` (`git_log {}`, `git_log {rev}`) lists the
+  source of a move as `deleted` beside its destination as `renamed`, so a directory's history holds
+  the commit that moved its last file out. A git-history index built by an earlier version keeps
+  the old file lists for the commits it already holds.
 - **`code_refs` leaves `resolved` absent where nothing was checked.** With `path`, a hit has
   `resolved: true` (proven to bind to the definition), `resolved: false` (checked and not proven)
   or no `resolved` at all; `resolution` gains `no resolution facts for this definition`.

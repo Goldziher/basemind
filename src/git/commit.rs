@@ -95,7 +95,7 @@ pub(super) fn commit_files(
             Err(_) => continue,
         };
         let _ = platform.for_each_to_obtain_tree(&tree, |change| {
-            if let Some((path, kind)) = classify_tree_change(&change) {
+            let mut record = |path, kind| {
                 union
                     .entry(path)
                     .and_modify(|existing| {
@@ -104,6 +104,21 @@ pub(super) fn commit_files(
                         }
                     })
                     .or_insert(kind);
+            };
+            if let Some((path, kind)) = classify_tree_change(&change) {
+                record(path, kind);
+            }
+            // A move names its destination as `renamed`; its source is gone from this commit's tree,
+            // so it is listed as deleted too. Without it the history of the source's directory
+            // missed the commit that moved the last file out of it.
+            if let gix::object::tree::diff::Change::Rewrite {
+                source_location,
+                copy: false,
+                ..
+            } = &change
+                && let Some(source) = decode_path(source_location)
+            {
+                record(source, ChangeKind::Deleted);
             }
             Ok(gix::object::tree::diff::Action::Continue(()))
         });

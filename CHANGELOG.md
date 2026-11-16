@@ -550,6 +550,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A commit the history walk cannot read (missing from the object store or corrupt) is an error from `git_log`
   and the git-history index build. It was skipped, which ended the history there with nothing to say the list
   was short. A shallow clone's boundary is not such a commit: the walk honours `.git/shallow`.
+- A commit's file list on `git_log` lists the source of a moved file as `deleted` beside its destination as
+  `renamed`. Only the destination was listed, so the history of the directory a file moved out of missed the
+  move, and the git-history index's history of the old path missed it where the live walk listed it.
 - `basemind git by-path` refuses `--window 0` and `--limit 0`, which returned the same `next_cursor`
   forever.
 - `code_refs` answered by a daemon that predates exact matching no longer sets `truncated_reason:

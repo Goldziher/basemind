@@ -300,3 +300,33 @@ fn a_cursor_of_any_git_log_list_from_the_other_walk_is_refused() {
         );
     }
 }
+
+/// A directory's history holds the commit that moved its last file out: the move lists its source
+/// as deleted, where it listed only the destination.
+#[test]
+fn a_directory_history_holds_the_commit_that_moved_a_file_out() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let root = repo_dir.path();
+    crate::store::init_isolated_cache();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::create_dir_all(root.join("old")).unwrap();
+    std::fs::write(root.join("old/a.rs"), "pub fn moved() -> u32 {\n    42\n}\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "add"]);
+    git(root, &["mv", "old", "new"]);
+    git(root, &["commit", "-qm", "move"]);
+    let state = state_over(root, cache_dir.path());
+
+    let mut moved = params(None, None, None);
+    moved.pattern = "^old/".to_string();
+    let page = by_path(&state, "git_log", moved).expect("page");
+    let summaries: Vec<&str> = page
+        .response
+        .commits
+        .iter()
+        .map(|commit| commit.summary.as_str())
+        .collect();
+    assert_eq!(summaries, ["move", "add"], "the move out of `old/` touches it");
+}
