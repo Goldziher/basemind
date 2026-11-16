@@ -342,7 +342,8 @@ pub(super) struct SearchResponse {
     /// Matching symbols in the corpus, across every page.
     pub total: usize,
     /// True when a fuzzy sweep stopped at its candidate cap, so `total` is a lower bound. Never
-    /// true because `limit` cut the page: that is paging, and `next_cursor` says it.
+    /// true because `limit` cut the page: that is paging, and `next_cursor` says it. Absent when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `scan_cap` whenever `truncated` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -601,9 +602,9 @@ pub(super) struct FindReferencesResponse {
     /// How `name` was matched against callee identifiers: `exact` or `substring`.
     #[serde(rename = "match")]
     pub matching: &'static str,
-    pub total: u32,
     /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
     /// predates exact matching answered, whose substring hits are dropped page by page.
+    pub total: u32,
     /// True when the scan stopped at its cap before the end of the matches: `total` is then a
     /// lower bound, and `next_cursor` resumes the scan.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -646,9 +647,9 @@ pub(super) struct FindCallersResponse {
     /// Hits proven to bind to `definition`. Absent, not 0, when resolution did not run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_total: Option<u32>,
-    pub total: u32,
     /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
     /// predates exact matching answered, whose substring hits are dropped page by page.
+    pub total: u32,
     /// As on a `code_refs` name scan: the scan stopped at its cap, so `total` is a lower bound.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
@@ -815,7 +816,8 @@ pub(super) struct WorkspaceGrepResponse {
     pub total_matches: u32,
     /// True when files were left unread, so `total_matches` does not cover them. Never true
     /// because `limit` cut the page or because the corpus is large: grep scans every candidate
-    /// file it may read.
+    /// file it may read. Absent when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `byte_budget` whenever `truncated` is true. There is no `omitted`: the matches in the
     /// unread files were never counted. `next_cursor` continues with those files.

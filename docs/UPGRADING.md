@@ -198,7 +198,8 @@ Every cut is reported in the same words:
   counting the items left out where the count is known. Follow `next_cursor` when the response has
   one, otherwise narrow the call.
 
-A client that read `truncated` as "there is another page" must read `next_cursor` instead.
+A client that read `truncated` as "there is another page" must read `next_cursor` instead. A false
+`truncated` is left out on every tool, so a client that requires the field must default it to false.
 
 Four fields keep their own names because they say something else: `skipped_files` (`code_grep`:
 files that could not be searched), `limit_clamped` (`find_files`: an over-large `limit` was

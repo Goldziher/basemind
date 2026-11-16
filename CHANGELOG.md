@@ -543,6 +543,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[\x0d]`) matches a lone `\r` again; only a literal `\r` or the `\r` escape was recognised.
 - A `code_search` or `docs_search` ranking that finishes after a rescan no longer evicts the rankings of the
   newer index generation.
+- `code_symbols` and `code_grep` leave `truncated` out when it is false, as every other tool does.
 - `code_refs` leaves `resolved` absent when nothing was checked, instead of `false`.
 - `code_grep` and `code_refs` definition no longer read through a file swapped for a link out of the
   repository, and `code_grep` no longer counts matches through a directory swapped for one: the count

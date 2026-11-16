@@ -293,6 +293,10 @@ async fn mcp_server_exercises_representative_tools() {
             .is_some_and(|results| !results.is_empty()),
         "expected draw hits: {body:?}"
     );
+    assert!(
+        body.get("truncated").is_none(),
+        "no sweep hit its cap, and a false flag is left out: {body}"
+    );
 
     let body = decode_text(
         &service
@@ -837,10 +841,9 @@ async fn mcp_server_exercises_representative_tools() {
         body.get("next_cursor").is_some_and(Value::is_string),
         "limit=1 with multiple matches pages: {body}"
     );
-    assert_eq!(
-        body.get("truncated").and_then(Value::as_bool),
-        Some(false),
-        "a `limit` cut is paging, not truncation: {body}"
+    assert!(
+        body.get("truncated").is_none(),
+        "a `limit` cut is paging, not truncation, and a false flag is left out: {body}"
     );
     assert!(body.get("truncated_reason").is_none(), "{body}");
     let capped_total = body
@@ -2850,6 +2853,8 @@ async fn elapsed_us_is_additive_for_older_clients() {
     #[derive(serde::Deserialize)]
     struct LegacySearchResponse {
         total: usize,
+        // Left out when false since the verb tools (docs/UPGRADING.md, Response fields).
+        #[serde(default)]
         truncated: bool,
         results: Vec<Value>,
     }
@@ -2960,9 +2965,8 @@ async fn workspace_grep_finds_a_rare_token_past_the_old_scan_cap() {
         Some(1),
         "exactly one file contains the rare token: {body}"
     );
-    assert_eq!(
-        body.get("truncated").and_then(Value::as_bool),
-        Some(false),
+    assert!(
+        body.get("truncated").is_none(),
         "every match was returned, so nothing was truncated: {body}"
     );
 
@@ -2992,9 +2996,8 @@ async fn paging_a_grep_one_hit_at_a_time_reconstructs_the_whole_result() {
             .await
             .expect("code_grep(unpaged)"),
     );
-    assert_eq!(
-        whole.get("truncated").and_then(Value::as_bool),
-        Some(false),
+    assert!(
+        whole.get("truncated").is_none(),
         "limit=1000 covers the fixture, so the baseline must be complete: {whole}"
     );
     let expected: Vec<(String, u64)> = grep_keys(&whole);

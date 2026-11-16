@@ -459,7 +459,6 @@ mod tests {
         let out = render_grep(&json!({
             "pattern": "OptimizationStatus",
             "total_matches": 101,
-            "truncated": false,
             "next_cursor": "b3BhcXVl",
             "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
         }));
@@ -485,7 +484,6 @@ mod tests {
         let out = render_grep(&json!({
             "pattern": "OptimizationStatus",
             "total_matches": 1,
-            "truncated": false,
             "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
         }));
         assert!(
