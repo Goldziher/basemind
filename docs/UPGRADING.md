@@ -249,7 +249,8 @@ the response has none. The CLI's `--json` output has the same shapes.
 
 A commit's file list no longer names directories, and a merge lists only the files it changed
 against every parent, as `git log --cc` does; so `git_log {path}` no longer lists a merge that took
-the path unchanged from one side.
+the path unchanged from one side. It still lists every other commit that changed the path: unlike
+`git log -- <path>`, it prunes no side of a merge.
 
 ## Running two basemind versions side by side
 

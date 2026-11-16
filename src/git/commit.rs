@@ -61,8 +61,9 @@ fn listable(local: &gix::Repository, id: gix::ObjectId) -> bool {
 /// Diff `commit_id`'s tree against its parent(s) and return (path, change-kind) pairs.
 ///
 /// A merge (including an octopus merge) lists only the files it changed against **every** parent,
-/// as `git log --cc` and `git log -- <path>` do: a file the merge took unchanged from one branch
-/// was changed by that branch's own commits, which the walk lists. When a file is reported with
+/// as `git log --cc` does: a file the merge took unchanged from one branch was changed by that
+/// branch's own commits, which the walk lists. Unlike `git log -- <path>`, the walk prunes no side
+/// of a merge, so a commit on the side a merge did not keep is still listed. When a file is reported with
 /// different statuses against different parents, the higher-severity kind wins (Added > Modified ≈
 /// Renamed > Deleted).
 pub(super) fn commit_files(
@@ -172,8 +173,8 @@ pub(super) fn commit_touches_path(local: &gix::Repository, commit_id: gix::Objec
     if parents.is_empty() {
         return current.is_some();
     }
-    // A merge touches the path only when it differs there from every parent, as `git log --
-    // <path>` shows it: one that took the path unchanged from a branch did not change it.
+    // A merge touches the path only when it differs there from every parent: one that took the path
+    // unchanged from a branch did not change it. No side is pruned, unlike `git log -- <path>`.
     parents.into_iter().all(|pid| {
         let parent = local
             .find_commit(pid)

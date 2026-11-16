@@ -618,8 +618,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `renamed`. Only the destination was listed, so the history of the directory a file moved out of missed the
   move, and the git-history index's history of the old path missed it where the live walk listed it.
 - `git_log {path}` no longer lists a merge that took the path unchanged from one side: a merge touches a
-  path, and lists it among its files, only when it differs there from every parent, as `git log -- <path>`
-  and `git log --cc` have it. On tokio, a file's history was more than half such merges.
+  path, and lists it among its files, only when it differs there from every parent, as `git log --cc`
+  has it. Every other commit that changes the path is listed: unlike `git log -- <path>`, no side of a
+  merge is pruned. On tokio, a file's history was more than half such merges.
 - A commit's file list on `git_log` no longer names the directories above a changed file (`src` as
   `modified`).
 - The git-history index and the git cache rebuild their file lists once, so the three fixes above (and the
