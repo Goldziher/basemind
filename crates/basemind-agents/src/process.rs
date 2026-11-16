@@ -41,8 +41,11 @@ pub(crate) fn isolate(command: &mut Command) {
                 // fails, so std does not reset the mask on every spawn path.
                 let mut signals = std::mem::zeroed();
                 libc::sigemptyset(&mut signals);
-                if libc::sigprocmask(libc::SIG_SETMASK, &signals, std::ptr::null_mut()) != 0 {
-                    return Err(std::io::Error::last_os_error());
+                // pthread_sigmask, as sigprocmask is unspecified in a multithreaded process;
+                // it returns the error number instead of setting errno.
+                let status = libc::pthread_sigmask(libc::SIG_SETMASK, &signals, std::ptr::null_mut());
+                if status != 0 {
+                    return Err(std::io::Error::from_raw_os_error(status));
                 }
                 Ok(())
             });
