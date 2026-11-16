@@ -358,6 +358,13 @@ pub(crate) fn start(
     driver: Box<dyn Driver>,
     control: ControlTx,
 ) -> Result<Session, LaunchError> {
+    #[cfg(unix)]
+    if process::children_reaped_automatically() {
+        return Err(LaunchError::Unsupported {
+            harness: spec.harness.kind.id(),
+            feature: "launching while SIGCHLD is ignored",
+        });
+    }
     let mut command = Command::new(&plan.program);
     command
         .args(&plan.args)

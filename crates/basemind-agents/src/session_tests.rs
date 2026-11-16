@@ -44,3 +44,39 @@ fn a_working_directory_swapped_for_a_symlink_after_the_check_is_refused() {
         start(&plan, &spec, Box::new(Idle), Box::new(|_| Ok(()))).expect("the unchanged directory was refused");
     assert_eq!(session.wait(), FinishStatus::Completed);
 }
+
+#[test]
+fn nothing_is_launched_while_sigchld_is_ignored() {
+    const CHILD: &str = "BASEMIND_AGENTS_SIGCHLD_IGNORED_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        // SAFETY: this re-executed test process sets its own SIGCHLD disposition.
+        unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+        let root = tempfile::tempdir().unwrap();
+        let spec = spec(HarnessKind::Codex, root.path());
+        let plan = CommandPlan {
+            program: "/bin/sh".into(),
+            args: vec!["-c".to_owned(), "true".to_owned()],
+            env: BTreeMap::new(),
+            cwd: spec.prepare().unwrap().cwd,
+        };
+        let started = start(&plan, &spec, Box::new(Idle), Box::new(|_| Ok(())));
+        assert!(
+            matches!(started, Err(LaunchError::Unsupported { .. })),
+            "{:?}",
+            started.err()
+        );
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "session::tests::nothing_is_launched_while_sigchld_is_ignored",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("1 passed"), "the child ran no test: {stdout}");
+}

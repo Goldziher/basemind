@@ -79,6 +79,20 @@ pub(crate) fn verify_cwd(command: &mut Command, expected: &std::path::Path) {
     }
 }
 
+/// Whether the kernel reaps this process's children by itself: SIGCHLD is ignored or
+/// `SA_NOCLDWAIT` is set. Then a leader can be reaped before its group is signalled, and the
+/// group id may belong to someone else by the time it is, so no harness is started.
+#[cfg(unix)]
+pub(crate) fn children_reaped_automatically() -> bool {
+    // SAFETY: sigaction with a null new action only reads the current one into `current`,
+    // which is plain data and valid all-zero.
+    unsafe {
+        let mut current: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut current) == 0
+            && (current.sa_sigaction == libc::SIG_IGN || current.sa_flags & libc::SA_NOCLDWAIT != 0)
+    }
+}
+
 /// Kills every process of the group `pid` leads. The caller must know the leader has not
 /// been reaped, or the id may belong to another process by now.
 pub(crate) fn kill_group(pid: u32) {
@@ -147,7 +161,16 @@ fn exited(pid: u32, within: Duration) -> bool {
             );
             (status, info.si_pid())
         };
-        if status != 0 || reported != 0 {
+        if status != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            // ECHILD: the child was reaped behind our back, which only happens when SIGCHLD
+            // is ignored; `start` refuses to launch then. Either way it is gone.
+            return true;
+        }
+        if reported != 0 {
             return true;
         }
         if Instant::now() >= deadline {
