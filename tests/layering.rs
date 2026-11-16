@@ -136,7 +136,6 @@ const KNOWN_VIOLATIONS: &[&str] = &[
     "src/git_history/mod.rs -> comms::ids",
     "src/git_history/mod.rs -> git_history::remote",
     "src/index/layered_view.rs -> mcp [test]",
-    "src/path.rs -> extern rmcp",
     "src/scanner.rs -> lance::shared_snapshot",
     "src/scanner.rs -> scanner_docs",
     "src/scanner_code.rs -> embeddings",

@@ -385,7 +385,7 @@ impl<'de> Deserialize<'de> for RelPath {
     }
 }
 
-impl rmcp::schemars::JsonSchema for RelPath {
+impl schemars::JsonSchema for RelPath {
     /// Inlined rather than referenced: a `$ref` into `$defs` (especially one carrying a sibling
     /// `description`, as every path parameter does) is rejected by the Anthropic `input_schema`
     /// subset, and that rejection drops the server's ENTIRE tool registry silently — see the module
@@ -405,8 +405,8 @@ impl rmcp::schemars::JsonSchema for RelPath {
     /// But advertising that arm as a schema `oneOf` is what made every tool carrying a path
     /// unregistrable: `oneOf` at a property type is outside the accepted subset, and no MCP caller
     /// would ever send the byte form anyway.
-    fn json_schema(_: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
-        rmcp::schemars::json_schema!({
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
             "type": "string"
         })
     }
