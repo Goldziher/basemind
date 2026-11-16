@@ -403,7 +403,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signalled. Nor is a process other than the one the pidfile names (macOS, Linux and Windows),
   which is what a pid given out again looks like while a new daemon already holds the lock: the
   record holds the daemon's process start and boot, so a wall-clock step does not make a live
-  daemon unidentifiable; a record from an earlier release is judged by start time. A `Stop` is refused while a relay session is still being set up, not only once it is
+  daemon unidentifiable; a record from an earlier release is judged by start time. On Windows a
+  recorded pid whose process refuses to be opened (a SYSTEM or another user's process given the
+  pid) is no longer read as a live daemon, scan or host, so the stale record is pruned. A `Stop` is
+  refused while a relay session is still being set up, not only once it is
   registered; a relay link that has not sent its hello within 30 s is dropped, so a stalled client
   cannot hold a daemon in place. A `basemind rescan` running through the daemon makes it refuse
   `Stop` as well, where a takeover's `Stop` was accepted and cancelled the scan half way.

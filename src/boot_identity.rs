@@ -181,24 +181,71 @@ fn valid_pid(pid: u32) -> Option<i32> {
     i32::try_from(pid).ok().filter(|pid| *pid > 0)
 }
 
-/// Whether a process id is still live. Unix: `kill(pid, 0)`, where `0` (signalable) and `EPERM`
-/// (exists, not ours) both mean alive and `ESRCH` means gone. Windows: a process that
-/// has not exited, including one that may not be opened. A pid no process can have (see [`valid_pid`]) is never live.
+/// What runs as a pid, as far as this process may tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PidState {
+    /// A process runs as the pid.
+    Live,
+    /// No process runs as the pid, or the one there has exited.
+    Gone,
+    /// Windows only: a process runs as the pid and refuses to be opened (`ERROR_ACCESS_DENIED`), so
+    /// neither its exit nor its start time can be read.
+    #[cfg_attr(
+        not(any(windows, test)),
+        allow(dead_code, reason = "only Windows refuses to open a process")
+    )]
+    Unopenable,
+}
+
+/// What runs as `pid`. Unix: `kill(pid, 0)`, where `0` (signalable) and `EPERM` (exists, not ours)
+/// are [`PidState::Live`] and `ESRCH` is [`PidState::Gone`]; Unix gives every process's start time
+/// to anyone, so a stranger given a recorded pid is told apart by its start instead. Windows: see
+/// `win::state`. A pid no process can have (see [`valid_pid`]) is gone.
 #[cfg(any(unix, windows))]
-pub fn pid_is_live(pid: u32) -> bool {
+pub fn pid_state(pid: u32) -> PidState {
     let Some(pid) = valid_pid(pid) else {
-        return false;
+        return PidState::Gone;
     };
     #[cfg(unix)]
     {
         // SAFETY: `kill` with signal 0 performs only an existence/permission check and sends no
         // signal; `pid` is positive, so it names one process, never a group.
         let rc = unsafe { libc::kill(pid, 0) };
-        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        if rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
+            PidState::Live
+        } else {
+            PidState::Gone
+        }
     }
     #[cfg(windows)]
     {
-        win::is_live(pid.unsigned_abs())
+        win::state(pid.unsigned_abs())
+    }
+}
+
+/// Whether the process a basemind record names may still be running. Every pid asked about here
+/// comes from a record basemind wrote (a daemon or lock record, a scan breadcrumb, a hosting marker,
+/// a parked directory's name), and basemind's processes can open each other, so a process that
+/// refuses to be opened is not the one recorded: [`PidState::Unopenable`] is not live. Without
+/// this a stale record whose pid Windows gave to a SYSTEM or another user's process would read
+/// live, and could not be pruned, for as long as that process ran.
+#[cfg(any(unix, windows))]
+pub fn pid_is_live(pid: u32) -> bool {
+    pid_state(pid) == PidState::Live
+}
+
+/// [`PidState`] from what Windows answered: `opened` is the exit code `GetExitCodeProcess` read
+/// (`None` when it failed) of a process `OpenProcess` opened, or the error `OpenProcess` failed with.
+#[cfg(any(windows, test))]
+fn windows_state(opened: Result<Option<u32>, Option<i32>>) -> PidState {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    /// The exit code `GetExitCodeProcess` reports for a process that has not exited.
+    const STILL_ACTIVE: u32 = 259;
+    match opened {
+        Ok(Some(STILL_ACTIVE) | None) => PidState::Live,
+        Ok(Some(_)) => PidState::Gone,
+        Err(Some(ERROR_ACCESS_DENIED)) => PidState::Unopenable,
+        Err(_) => PidState::Gone,
     }
 }
 
@@ -333,22 +380,21 @@ mod win {
         (handle != 0).then_some(Process(handle))
     }
 
-    /// Whether `pid` names a process that has not exited. One `OpenProcess` refuses with
-    /// `ERROR_ACCESS_DENIED` exists and is not ours (the `EPERM` of `kill`), so it is live; one it
-    /// opens is live only until it exits, because a handle anyone still holds keeps an exited
-    /// process openable.
-    pub(super) fn is_live(pid: u32) -> bool {
-        const ERROR_ACCESS_DENIED: i32 = 5;
-        /// The exit code `GetExitCodeProcess` reports for a process that has not exited.
-        const STILL_ACTIVE: u32 = 259;
+    /// What runs as `pid`. One `OpenProcess` refuses with `ERROR_ACCESS_DENIED` exists and is not
+    /// ours (the `EPERM` of `kill`): [`super::PidState::Unopenable`]. One it opens is live until it
+    /// exits, not merely while it can be opened, because a handle anyone still holds keeps an
+    /// exited process openable. Two cases read live although the process may have exited: one
+    /// that exited with code 259, the code `GetExitCodeProcess` reserves for a running process,
+    /// while a handle to it is open anywhere; and one whose exit code cannot be read.
+    pub(super) fn state(pid: u32) -> super::PidState {
         let Some(process) = open_process(pid) else {
-            return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+            return super::windows_state(Err(std::io::Error::last_os_error().raw_os_error()));
         };
         let mut code = 0;
         // SAFETY: `process` holds an open handle, and `GetExitCodeProcess` writes the `u32` it is
         // given, which lives until it returns.
         let read = unsafe { GetExitCodeProcess(process.0, &raw mut code) };
-        read == 0 || code == STILL_ACTIVE
+        super::windows_state(Ok((read != 0).then_some(code)))
     }
 
     /// When the process `pid` was created, in `FILETIME` intervals.
@@ -474,6 +520,28 @@ mod tests {
         assert!(!pid_is_live(u32::MAX), "-1 is every process");
         assert!(!pid_is_live(u32::MAX - 11), "a negative pid is a process group");
         assert!(!pid_is_live(0x8000_0000), "past i32::MAX");
+    }
+
+    /// Windows tells a pid's state by whether `OpenProcess` opens it and, once open, by its exit
+    /// code. A process that refuses to be opened exists but is not one basemind started, so a
+    /// record naming its pid is stale.
+    #[test]
+    fn windows_answers_map_to_a_pid_state() {
+        const STILL_ACTIVE: u32 = 259;
+        assert_eq!(windows_state(Ok(Some(STILL_ACTIVE))), PidState::Live);
+        assert_eq!(
+            windows_state(Ok(None)),
+            PidState::Live,
+            "an unreadable exit code reads live"
+        );
+        assert_eq!(windows_state(Ok(Some(0))), PidState::Gone, "exited");
+        assert_eq!(windows_state(Err(Some(5))), PidState::Unopenable, "ERROR_ACCESS_DENIED");
+        assert_eq!(
+            windows_state(Err(Some(87))),
+            PidState::Gone,
+            "ERROR_INVALID_PARAMETER: no such pid"
+        );
+        assert_eq!(windows_state(Err(None)), PidState::Gone);
     }
 
     /// A Linux start counts ticks from the boot, so a process of a later boot can carry the start
