@@ -257,6 +257,17 @@ pub(super) fn decode_path(bstr: &gix::bstr::BStr) -> Option<crate::path::RelPath
     )))
 }
 
+/// One step of a history walk, as a result. A commit the walk cannot read (missing or corrupt) is an
+/// error: skipping it would end the history there, its ancestors never queued, with nothing to say
+/// the list is short. A shallow clone's boundary is not such a step, since gix's walk honours
+/// `.git/shallow` and never asks for the parents the clone lacks.
+pub(super) fn walk_step<T, E: std::fmt::Display>(step: Result<T, E>) -> Result<T, GitError> {
+    step.map_err(|error| GitError::Read {
+        what: "rev walk".to_string(),
+        msg: error.to_string(),
+    })
+}
+
 impl Repo {
     /// Resolve a rev-spec (sha / branch / HEAD) to a detached gix [`ObjectId`].
     fn resolve_oid(local: &gix::Repository, rev: &str) -> Option<gix::ObjectId> {
@@ -281,7 +292,8 @@ impl Repo {
                 what: "rev walk".to_string(),
                 msg: e.to_string(),
             })?;
-        Ok(walk.filter_map(|i| i.ok()).map(|i| i.id.to_string()).collect())
+        walk.map(|step| walk_step(step).map(|info| info.id.to_string()))
+            .collect()
     }
 
     /// The commits at `skip..skip + take` of [`Repo::log_paths`]' list for `head`, with their
@@ -307,14 +319,24 @@ impl Repo {
             })?;
         // Offsets count the commits `log_paths` lists: one that does not decode is skipped there,
         // so it is not counted here either.
-        let listed = walk
-            .filter_map(Result::ok)
-            .filter(|info| build_commit_info(&local, info.id, false).is_some());
-        Ok(listed
-            .skip(skip)
-            .take(take)
-            .filter_map(|info| build_commit_info(&local, info.id, true))
-            .collect())
+        let mut listed = 0usize;
+        let mut out = Vec::new();
+        for step in walk {
+            if out.len() >= take {
+                break;
+            }
+            let info = walk_step(step)?;
+            if build_commit_info(&local, info.id, false).is_none() {
+                continue;
+            }
+            listed += 1;
+            if listed > skip
+                && let Some(commit) = build_commit_info(&local, info.id, true)
+            {
+                out.push(commit);
+            }
+        }
+        Ok(out)
     }
 
     /// Commit shas reachable from HEAD but **not** from `hidden` (the previously-indexed head),
@@ -338,7 +360,8 @@ impl Repo {
             what: "rev walk (hidden)".to_string(),
             msg: e.to_string(),
         })?;
-        Ok(walk.filter_map(|i| i.ok()).map(|i| i.id.to_string()).collect())
+        walk.map(|step| walk_step(step).map(|info| info.id.to_string()))
+            .collect()
     }
 
     /// Full record (header + per-file change list, union-across-parents) for one commit sha — the

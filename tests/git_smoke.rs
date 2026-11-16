@@ -435,3 +435,30 @@ fn staged_and_rev_scans_do_not_sweep_grep_bloom_rows() {
     .unwrap();
     assert!(planted(&rev), "a rev scan must not sweep");
 }
+
+/// A commit the history walk cannot read ends the walk with an error. Dropped, it ended the history
+/// at that commit, its ancestors never visited, and every list read as whole.
+#[test]
+fn a_commit_missing_from_the_object_store_fails_the_history_walk() {
+    let (dir, _cfg) = init_repo();
+    let root = dir.path();
+    for round in 0..3 {
+        fs::write(root.join("a.rs"), format!("pub fn round_{round}() {{}}\n")).unwrap();
+        run(root, &["add", "a.rs"]);
+        run(root, &["commit", "-qm", &format!("round {round}")]);
+    }
+    let middle = Command::new("git")
+        .args(["rev-parse", "HEAD~1"])
+        .current_dir(root)
+        .output()
+        .expect("git rev-parse");
+    let middle = String::from_utf8(middle.stdout).unwrap().trim().to_string();
+    fs::remove_file(root.join(".git/objects").join(&middle[..2]).join(&middle[2..])).expect("a loose commit");
+
+    let repo = Repo::discover(root).expect("repo discover");
+    let head = repo.resolve_rev("HEAD").expect("HEAD");
+    assert!(repo.log_paths(10, false).is_err(), "the recent-commits walk");
+    assert!(repo.log_for_path("a.rs", 10).is_err(), "a file's history");
+    assert!(repo.log_window(&head, 0, 10).is_err(), "a directory's history window");
+    assert!(repo.all_commit_shas().is_err(), "the git-history index build");
+}

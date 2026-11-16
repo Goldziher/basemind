@@ -543,6 +543,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `git_log` cursor for a directory's or a symbol's history is refused when the git-history index came up
   (or stopped answering) since it was issued, and the error says to restart without `cursor`: the index and
   the live walk order the commits a sync appended differently, so the offset could skip or repeat commits.
+- A commit the history walk cannot read (missing from the object store or corrupt) is an error from `git_log`
+  and the git-history index build. It was skipped, which ended the history there with nothing to say the list
+  was short. A shallow clone's boundary is not such a commit: the walk honours `.git/shallow`.
 - `basemind git by-path` refuses `--window 0` and `--limit 0`, which returned the same `next_cursor`
   forever.
 - `code_refs` answered by a daemon that predates exact matching no longer sets `truncated_reason:

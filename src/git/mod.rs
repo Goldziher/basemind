@@ -638,7 +638,7 @@ impl Repo {
             })?;
         let mut out = Vec::with_capacity(max_commits.min(1024));
         for info in walk.take(max_commits) {
-            let Ok(info) = info else { continue };
+            let info = commit::walk_step(info)?;
             if let Some(ci) = build_commit_info(&local, info.id, include_files) {
                 out.push(ci);
             }
@@ -675,7 +675,7 @@ impl Repo {
             if out.len() >= max_commits {
                 break;
             }
-            let Ok(info) = info else { continue };
+            let info = commit::walk_step(info)?;
             if !commit_touches_path(&local, info.id, rel) {
                 continue;
             }
