@@ -703,3 +703,32 @@ while :; do sleep 0.05; done
     let took = done.elapsed();
     assert!(took < Duration::from_millis(1200), "retiring took {took:?}");
 }
+
+#[test]
+fn a_refused_init_frame_lets_the_harness_finish_on_the_end_of_its_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("saved");
+    // Reports a mode nobody asked for, then saves something once its input ends; a signal
+    // would cut the save off.
+    let body = format!(
+        r#"read -r init
+printf '%s\n' '{{"type":"control_response","response":{{"request_id":"basemind-init"}}}}'
+read -r prompt
+printf '%s\n' '{{"type":"system","subtype":"init","permissionMode":"bypassPermissions","mcp_servers":[]}}'
+trap '' TERM
+cat > /dev/null
+echo saved > '{}'
+"#,
+        marker.display()
+    );
+    let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), &body));
+    let events: Vec<Event> = session.events().collect();
+    assert_eq!(events.last(), Some(&Event::Finished(FinishStatus::Failed)));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Error(error) if error.contains("permission mode"))),
+        "{events:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "saved");
+}
