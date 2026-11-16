@@ -116,3 +116,4 @@ them.
 | [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted |
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted |
 | [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted |
+| [0033](0033-lean-locating-rows.md) | Lean rows for the locating tools | Proposed |
