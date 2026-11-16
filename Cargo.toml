@@ -184,7 +184,9 @@ http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
-jsonschema = "0.61"
+# ~keep Every `$ref` in the bundled config schema is internal, so no HTTP or file resolver (and no
+# ~keep reqwest/rustls in the core's graph, ADR-0032); drafts are built in, and no `idn-*` format is used.
+jsonschema = { version = "0.61", default-features = false }
 # ~keep `remote` is enabled only because lancedb 0.38-0.41 do not compile without it: `error.rs`
 # ~keep gates `Error::Http` behind `#[cfg(feature = "remote")]` while `job.rs` uses it unconditionally.
 # ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
