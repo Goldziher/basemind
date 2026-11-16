@@ -496,7 +496,7 @@ fn global_gc_heals_an_unreadable_workspace_index_without_blocking_other_workspac
     let stale_view = stale_workspace.join(VIEWS_DIR).join("working");
     fs::create_dir_all(&stale_view).expect("mk view");
     fs::write(
-        stale_workspace.join(crate::comms::identity::AGENT_ID_FILE),
+        stale_workspace.join(crate::store_layout::AGENT_ID_FILE),
         b"session-stable",
     )
     .expect("write stable identity");
@@ -517,7 +517,7 @@ fn global_gc_heals_an_unreadable_workspace_index_without_blocking_other_workspac
     );
     assert!(!stale_view.exists(), "the unreadable rebuildable view is quarantined");
     assert_eq!(
-        fs::read_to_string(stale_workspace.join(crate::comms::identity::AGENT_ID_FILE)).unwrap(),
+        fs::read_to_string(stale_workspace.join(crate::store_layout::AGENT_ID_FILE)).unwrap(),
         "session-stable",
         "healing a view must preserve stable identity metadata"
     );

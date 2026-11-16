@@ -38,13 +38,13 @@ use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
-use crate::comms::identity::AGENT_ID_FILE;
 use crate::store::{
     CACHE_DIR, LOCK_FILE, LOCK_META_FILE, WORKSPACES_DIR, acquire_lock, cache_root, read_workspace_marker,
     writer_lock_is_held,
 };
 use crate::store_cache_admin::TELEMETRY_FILENAME;
 use crate::store_gc::{GcError, dir_size};
+use crate::store_layout::AGENT_ID_FILE;
 
 /// The only files a marker-less workspace dir may hold and still be reaped: the persisted CLI
 /// identity, the telemetry log, and the store lock with its holder sidecar. None of them is index

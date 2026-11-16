@@ -36,7 +36,7 @@ pub const AGENT_ID_ENV: &str = "BASEMIND_AGENT_ID";
 
 /// File holding the generated-and-persisted per-workspace agent id, written under the workspace's
 /// machine-global cache dir the first time resolution reaches [`IdentitySource::Workspace`].
-pub const AGENT_ID_FILE: &str = "agent-id";
+pub use crate::store_layout::AGENT_ID_FILE;
 
 /// Directory holding the claim ledger, one file per agent id, under the machine-global cache root.
 /// See [`IdentityCollision`] for what it buys.

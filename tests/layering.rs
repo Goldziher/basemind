@@ -157,9 +157,6 @@ const KNOWN_VIOLATIONS: &[&str] = &[
     "src/store.rs -> lance",
     "src/store_blob.rs -> extract::doc",
     "src/store_blob_tests.rs -> extract::doc [test]",
-    "src/store_gc_budget_tests.rs -> comms::identity [test]",
-    "src/store_gc_tests.rs -> comms::identity [test]",
-    "src/store_gc_workspace.rs -> comms::identity",
 ];
 
 /// One module of the library: its path, the file holding it, whether it is test-only, the names of

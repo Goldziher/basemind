@@ -199,7 +199,7 @@ fn budget_eviction_preserves_identity_and_durable_memory() {
     fs::create_dir_all(&blobs).expect("mk blobs");
     let workspace = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), Duration::from_secs(9999));
     let _newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
-    fs::write(workspace.join(crate::comms::identity::AGENT_ID_FILE), b"session-stable").expect("agent id");
+    fs::write(workspace.join(crate::store_layout::AGENT_ID_FILE), b"session-stable").expect("agent id");
     let memory = workspace.join(LANCE_WORKSPACE_DIR).join("memory.lance");
     fs::create_dir_all(&memory).expect("memory table");
     fs::write(memory.join("data.bin"), b"durable-memory").expect("memory data");
@@ -209,7 +209,7 @@ fn budget_eviction_preserves_identity_and_durable_memory() {
 
     assert_eq!(report.evicted, 1);
     assert_eq!(
-        fs::read_to_string(workspace.join(crate::comms::identity::AGENT_ID_FILE)).unwrap(),
+        fs::read_to_string(workspace.join(crate::store_layout::AGENT_ID_FILE)).unwrap(),
         "session-stable"
     );
     assert_eq!(fs::read(memory.join("data.bin")).unwrap(), b"durable-memory");

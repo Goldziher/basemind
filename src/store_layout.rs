@@ -48,6 +48,11 @@ pub const STATUS_SIDECAR_FILE: &str = "status.json";
 /// Schema version of [`StatusSidecar`]. Bump on any incompatible field change; [`read_status_sidecar`]
 /// ignores a sidecar whose `schema_ver` it does not recognize (forward-compat, like a schema wipe).
 pub const STATUS_SIDECAR_SCHEMA_VER: u32 = 1;
+/// File holding the generated-and-persisted per-workspace agent id, in the workspace's cache dir
+/// beside [`WORKSPACE_MARKER_FILE`]. Named here, with the rest of the layout, because the store's
+/// orphan reaper ([`crate::store_gc_workspace`]) must recognize it; the identity resolver in
+/// `crate::comms::identity` reads and writes it.
+pub const AGENT_ID_FILE: &str = "agent-id";
 pub const VIEWS_DIR: &str = "views";
 /// Lazy-opened LanceDB store directory under `.basemind/`. Created on first use.
 #[cfg(feature = "intelligence")]
