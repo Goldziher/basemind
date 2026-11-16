@@ -322,8 +322,11 @@ impl Session {
                 return;
             }
             state.forced.get_or_insert(FinishStatus::Stopped);
-            let deadline = Instant::now() + grace;
-            state.stop_deadline = Some(state.stop_deadline.map_or(deadline, |at| at.min(deadline)));
+            // `prepare` refused a grace that overflows; a stop without a deadline would still
+            // end at the wall-time limit.
+            if let Some(deadline) = Instant::now().checked_add(grace) {
+                state.stop_deadline = Some(state.stop_deadline.map_or(deadline, |at| at.min(deadline)));
+            }
         }
         self.shared.events.drain();
         self.shared.wake.notify_all();
@@ -470,7 +473,8 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
 
 /// Kills the process group at the wall-time deadline, or once a stop has had its grace.
 fn watchdog(shared: &Shared, started: Instant) {
-    let wall = started + shared.limits.wall_time;
+    // `prepare` refused a wall time that overflows; without a deadline only a stop ends it.
+    let wall = started.checked_add(shared.limits.wall_time);
     let mut state = shared.state();
     loop {
         if state.finished {
@@ -478,7 +482,8 @@ fn watchdog(shared: &Shared, started: Instant) {
         }
         let now = Instant::now();
         let stop_due = state.stop_deadline.is_some_and(|at| now >= at);
-        if now >= wall || stop_due {
+        let wall_due = wall.is_some_and(|at| now >= at);
+        if wall_due || stop_due {
             if !stop_due {
                 state.forced.get_or_insert(FinishStatus::WallTimeExceeded);
             }
@@ -493,11 +498,22 @@ fn watchdog(shared: &Shared, started: Instant) {
             let _ = (shared.control)(Control::Stop);
             return;
         }
-        let until = state.stop_deadline.map_or(wall, |at| at.min(wall));
-        state = shared
-            .wake
-            .wait_timeout(state, until - now)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0;
+        let until = match (state.stop_deadline, wall) {
+            (Some(stop), Some(wall)) => Some(stop.min(wall)),
+            (stop, wall) => stop.or(wall),
+        };
+        state = match until {
+            Some(until) => {
+                shared
+                    .wake
+                    .wait_timeout(state, until - now)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0
+            }
+            None => shared
+                .wake
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        };
     }
 }

@@ -133,6 +133,19 @@ fn a_symlink_out_of_the_root_does_not_widen_the_confinement() {
 }
 
 #[test]
+fn limits_that_overflow_a_deadline_are_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let mut spec = spec(HarnessKind::Codex, root.path());
+    spec.limits.wall_time = Duration::MAX;
+    assert!(matches!(spec.prepare(), Err(LaunchError::InvalidLimits(_))));
+    spec.limits.wall_time = Duration::from_secs(60);
+    spec.limits.stop_grace = Duration::MAX;
+    assert!(matches!(spec.prepare(), Err(LaunchError::InvalidLimits(_))));
+    spec.limits.stop_grace = Duration::from_secs(365 * 24 * 3600);
+    assert!(spec.prepare().is_ok());
+}
+
+#[test]
 fn zero_limits_are_refused() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = spec(HarnessKind::Codex, root.path());

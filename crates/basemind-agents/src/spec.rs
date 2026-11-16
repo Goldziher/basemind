@@ -206,6 +206,14 @@ impl LaunchSpec {
         if self.limits.max_turns == 0 {
             return Err(LaunchError::InvalidLimits("max_turns is zero"));
         }
+        // The supervisor adds these to the current instant; one that overflows would panic.
+        let now = std::time::Instant::now();
+        if now.checked_add(self.limits.wall_time.saturating_mul(2)).is_none() {
+            return Err(LaunchError::InvalidLimits("wall_time is too long to schedule"));
+        }
+        if now.checked_add(self.limits.stop_grace.saturating_mul(2)).is_none() {
+            return Err(LaunchError::InvalidLimits("stop_grace is too long to schedule"));
+        }
         for name in self
             .env
             .keys()
