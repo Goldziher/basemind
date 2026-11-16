@@ -85,10 +85,18 @@ impl LocalDb {
 
     fn recent_commits(&self, skip: usize, take: usize, include_files: bool) -> Vec<CommitInfo> {
         let mut cache = PathCache::new();
-        self.commits_desc(include_files)
+        // The skipped commits are decoded head-only; only the page's file lists are decoded.
+        self.commits_desc(false)
             .skip(skip)
             .take(take)
-            .map(|(_, meta)| self.meta_to_info(meta, &mut cache))
+            .filter_map(|(ord, head)| {
+                if include_files {
+                    self.commit_meta(ord, true)
+                } else {
+                    Some(head)
+                }
+            })
+            .map(|meta| self.meta_to_info(meta, &mut cache))
             .collect()
     }
 
