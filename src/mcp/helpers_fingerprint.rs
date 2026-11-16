@@ -123,40 +123,52 @@ fn structural_hash_of_symbol(
     range: (usize, usize),
     include_literals: bool,
 ) -> Option<[u8; 32]> {
-    let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source)).ok()?;
-    let tree = match outcome {
-        ParseOutcome::Ok(t) => t,
-        _ => return None,
-    };
-    let node = find_node_for_range(tree.root_node(), range.0, range.1)?;
-    let mut hasher = blake3::Hasher::new();
-    walk_structural(node, source, include_literals, lang, &mut hasher);
-    Some(*hasher.finalize().as_bytes())
+    let tree = parse(lang, source)?;
+    if let Some(node) = find_node_for_range(tree.root_node(), range.0, range.1) {
+        return Some(hash_node(node, source, include_literals, lang));
+    }
+    // No node spans exactly the symbol when it was read out of a macro body, which the file's own
+    // parse leaves as an opaque token tree. Parse the symbol's text alone and hash the item it
+    // holds; hashing the smallest enclosing node would fingerprint the whole macro body instead.
+    let text = &source[range.0..range.1];
+    let sub = parse(lang, text)?;
+    let root = sub.root_node();
+    let mut cursor = root.walk();
+    let item = root
+        .named_children(&mut cursor)
+        .find(|n| !n.is_extra())
+        .filter(|_| !root.has_error());
+    Some(match item {
+        Some(item) => hash_node(item, text, include_literals, lang),
+        None => *blake3::hash(&normalize_for_history(lang, text)).as_bytes(),
+    })
 }
 
+fn parse(lang: LangId, source: &[u8]) -> Option<tree_sitter::Tree> {
+    match with_parser(lang, |p| parse_with_default_timeout(p, source)).ok()? {
+        ParseOutcome::Ok(t) => Some(t),
+        _ => None,
+    }
+}
+
+fn hash_node(node: tree_sitter::Node, source: &[u8], include_literals: bool, lang: LangId) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    walk_structural(node, source, include_literals, lang, &mut hasher);
+    *hasher.finalize().as_bytes()
+}
+
+/// The node spanning exactly `start..end`, if the tree has one.
 fn find_node_for_range(root: tree_sitter::Node, start: usize, end: usize) -> Option<tree_sitter::Node> {
-    let mut best: Option<tree_sitter::Node> = None;
+    let mut node = root;
     let mut cursor = root.walk();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
+    loop {
         if node.start_byte() == start && node.end_byte() == end {
             return Some(node);
         }
-        if node.start_byte() <= start && node.end_byte() >= end {
-            if best
-                .map(|b| (node.end_byte() - node.start_byte()) < (b.end_byte() - b.start_byte()))
-                .unwrap_or(true)
-            {
-                best = Some(node);
-            }
-            for child in node.children(&mut cursor) {
-                if child.start_byte() <= start && child.end_byte() >= end {
-                    stack.push(child);
-                }
-            }
-        }
+        node = node
+            .children(&mut cursor)
+            .find(|c| c.start_byte() <= start && c.end_byte() >= end)?;
     }
-    best
 }
 
 fn walk_structural(
@@ -252,5 +264,48 @@ fn is_literal_kind(lang: LangId, kind: &str) -> bool {
                 | "imaginary_literal"
         ),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(src: &str) -> OutlineEntry {
+        OutlineEntry {
+            map: Arc::new(crate::extract::l1::extract_l1("rust", src.as_bytes()).expect("extract")),
+            source: Arc::new(src.as_bytes().to_vec()),
+        }
+    }
+
+    fn fingerprint(src: &str, name: &str, mode: HashMode) -> Vec<u8> {
+        symbol_fingerprint(&entry(src), name, None, 0, "rust", mode).expect("fingerprint")
+    }
+
+    #[test]
+    fn a_symbol_inside_a_macro_body_is_fingerprinted_on_its_own() {
+        let before = "cfg_x! {\n    fn a() { one() }\n    fn b() { two() }\n}\n";
+        let b_changed = "cfg_x! {\n    fn a() { one() }\n    fn b() { three() }\n}\n";
+        let a_changed = "cfg_x! {\n    fn a() { four() }\n    fn b() { two() }\n}\n";
+        for mode in [HashMode::Structural, HashMode::StructuralLoose] {
+            let a = fingerprint(before, "a", mode);
+            assert_ne!(a, fingerprint(before, "b", mode), "a and b hash the whole macro body");
+            assert_eq!(a, fingerprint(b_changed, "a", mode), "a sibling's edit moved a's hash");
+            assert_ne!(
+                a,
+                fingerprint(a_changed, "a", mode),
+                "a's own edit did not move its hash"
+            );
+        }
+    }
+
+    #[test]
+    fn a_macro_body_symbol_hashes_like_the_same_item_written_at_file_level() {
+        let in_macro = "cfg_x! {\n    fn a() { one(1) }\n}\n";
+        let top = "fn a() { one(1) }\n";
+        assert_eq!(
+            fingerprint(in_macro, "a", HashMode::Structural),
+            fingerprint(top, "a", HashMode::Structural)
+        );
     }
 }
