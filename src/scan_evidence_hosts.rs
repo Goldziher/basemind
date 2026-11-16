@@ -223,6 +223,6 @@ impl Drop for HostingMarker {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(unix, windows)))]
 #[path = "scan_evidence_hosts_tests.rs"]
 mod tests;

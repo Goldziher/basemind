@@ -1,15 +1,12 @@
-//! Tests of hosting markers and how a later process judges them.
+//! Tests of hosting markers and how a later process judges them, on every platform that writes
+//! them.
 
 use super::*;
-#[cfg(unix)]
 use crate::scan_evidence::blobs_need_verifying;
 
-#[cfg(unix)]
 const THIS_BOOT_ID: &str = "id:this";
-#[cfg(unix)]
 const EARLIER_BOOT_ID: &str = "id:earlier";
 
-#[cfg(unix)]
 fn this_boot() -> ThisBoot<'static> {
     ThisBoot {
         id: Some(THIS_BOOT_ID),
@@ -18,7 +15,6 @@ fn this_boot() -> ThisBoot<'static> {
 }
 
 /// Plant the marker of a host with `pid`, started in `boot` at `started`.
-#[cfg(unix)]
 fn plant_host(hosting: &Path, pid: u32, boot: Option<&str>, started: Option<u64>) -> PathBuf {
     std::fs::create_dir_all(hosting).expect("hosting dir");
     let path = hosting.join(pid.to_string());
@@ -30,7 +26,6 @@ fn plant_host(hosting: &Path, pid: u32, boot: Option<&str>, started: Option<u64>
     path
 }
 
-#[cfg(unix)]
 fn two_workspaces(root: &Path) -> (PathBuf, [PathBuf; 2]) {
     let workspaces = root.join("workspaces");
     let pair = [workspaces.join("a"), workspaces.join("b")];
@@ -41,13 +36,13 @@ fn two_workspaces(root: &Path) -> (PathBuf, [PathBuf; 2]) {
 }
 
 /// A pid no process has. Not past `i32::MAX`, which `kill` would take for a process group.
-#[cfg(unix)]
 const DEAD_PID: u32 = 0x7FFF_FFFE;
-/// A pid some other process always has.
-#[cfg(unix)]
-const LIVE_PID: u32 = 1;
+/// A pid some other process always has: `init` on unix. Windows has no such pid this process may
+/// open, so there it is this process's own, with no start recorded.
+fn live_pid() -> u32 {
+    if cfg!(windows) { std::process::id() } else { 1 }
+}
 
-#[cfg(unix)]
 #[test]
 fn a_clean_stop_retracts_the_marker_and_the_marker_names_its_boot_and_start() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -67,13 +62,12 @@ fn a_clean_stop_retracts_the_marker_and_the_marker_names_its_boot_and_start() {
 
 /// The power went with a host at some pid, and after the restart another process has that
 /// number. The pid being alive says nothing: the marker is of an earlier boot.
-#[cfg(unix)]
 #[test]
 fn a_marker_of_an_earlier_boot_is_a_dead_host_even_when_its_pid_is_alive() {
     let dir = tempfile::tempdir().expect("tempdir");
     let hosting = dir.path().join("hosting");
     let (workspaces, pair) = two_workspaces(dir.path());
-    let stale = plant_host(&hosting, LIVE_PID, Some(EARLIER_BOOT_ID), None);
+    let stale = plant_host(&hosting, live_pid(), Some(EARLIER_BOOT_ID), None);
 
     assert!(settle_dead_hosts_in(&hosting, &workspaces, this_boot()));
 
@@ -92,7 +86,7 @@ fn a_marker_of_an_earlier_boot_is_a_dead_host_even_when_its_pid_is_alive() {
 
 /// A boot reading that changed while the host kept running is not a restart: the process at the
 /// pid is the one that wrote the marker, so the host is live and nothing is verified.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn a_live_host_whose_start_matches_is_live_whatever_its_boot_reads() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -115,7 +109,7 @@ fn a_live_host_whose_start_matches_is_live_whatever_its_boot_reads() {
 /// A Linux start counts clock ticks from the boot, so after a power loss a process can hold the
 /// host's pid with the host's start. Two boot ids that differ settle it: the host went down with
 /// the machine, and its evidence is not overwritten as a live host's.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn a_matching_start_under_another_boot_id_is_a_dead_host() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -132,7 +126,7 @@ fn a_matching_start_under_another_boot_id_is_a_dead_host() {
 }
 
 /// A live pid whose process started after the host did is another process given the number.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn a_live_pid_with_another_start_is_a_dead_host() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -150,7 +144,6 @@ fn a_live_pid_with_another_start_is_a_dead_host() {
 
 /// A process killed after it asked for verification but before it removed the markers leaves them
 /// for the next process, which asks again; killed before asking, the evidence must not be gone.
-#[cfg(unix)]
 #[test]
 fn markers_outlive_a_process_killed_before_it_asked_for_verification() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -171,7 +164,6 @@ fn markers_outlive_a_process_killed_before_it_asked_for_verification() {
 
 /// A verification request that could not be written must not cost the evidence: the markers stay
 /// for the next process, which asks again.
-#[cfg(unix)]
 #[test]
 fn markers_outlive_a_verification_request_that_could_not_be_written() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -194,7 +186,6 @@ fn markers_outlive_a_verification_request_that_could_not_be_written() {
 
 /// A marker that names no boot (written before markers did) under a pid no process has is the
 /// marker of a host that died: it is noticed, once, and a clean stop leaves nothing to notice.
-#[cfg(unix)]
 #[test]
 fn a_host_that_died_is_noticed_once_and_a_clean_stop_is_not() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -216,13 +207,12 @@ fn a_host_that_died_is_noticed_once_and_a_clean_stop_is_not() {
 
 /// A marker that names no boot, under a pid that a process of this boot now holds, was written
 /// before this boot began: its host went down with the machine.
-#[cfg(unix)]
 #[test]
 fn a_marker_naming_no_boot_written_before_this_boot_is_a_dead_host_though_its_pid_lives() {
     let dir = tempfile::tempdir().expect("tempdir");
     let hosting = dir.path().join("hosting");
     let (workspaces, pair) = two_workspaces(dir.path());
-    let legacy = hosting.join(LIVE_PID.to_string());
+    let legacy = hosting.join(live_pid().to_string());
     std::fs::create_dir_all(&hosting).expect("hosting dir");
     std::fs::write(&legacy, b"{}").expect("plant");
     let now = SystemTime::now();
@@ -250,7 +240,6 @@ fn a_marker_naming_no_boot_written_before_this_boot_is_a_dead_host_though_its_pi
 
 /// A host killed while the machine stayed up cannot have torn a blob: its marker goes and
 /// nothing is verified.
-#[cfg(unix)]
 #[test]
 fn a_host_that_died_in_this_boot_asks_for_no_verification() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -264,13 +253,12 @@ fn a_host_that_died_in_this_boot_asks_for_no_verification() {
     assert!(pair.iter().all(|workspace| !blobs_need_verifying(workspace)));
 }
 
-#[cfg(unix)]
 #[test]
 fn a_live_host_of_this_boot_keeps_its_marker() {
     let dir = tempfile::tempdir().expect("tempdir");
     let hosting = dir.path().join("hosting");
     let (workspaces, pair) = two_workspaces(dir.path());
-    let live = plant_host(&hosting, LIVE_PID, Some(THIS_BOOT_ID), None);
+    let live = plant_host(&hosting, live_pid(), Some(THIS_BOOT_ID), None);
 
     assert!(!settle_dead_hosts_in(&hosting, &workspaces, this_boot()));
 
@@ -280,7 +268,6 @@ fn a_live_host_of_this_boot_keeps_its_marker() {
 
 /// The marker of an earlier boot can carry this very pid: the number was handed out again, to
 /// this process. It is still a dead host's.
-#[cfg(unix)]
 #[test]
 fn a_marker_of_an_earlier_boot_under_this_process_own_pid_is_a_dead_host() {
     let dir = tempfile::tempdir().expect("tempdir");
