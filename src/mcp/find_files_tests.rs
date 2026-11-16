@@ -104,6 +104,21 @@ async fn find_covers_code_and_documents_and_filters_by_language() {
     assert_eq!(find(&server, "widget", Some("rust")).await, ["widget_factory.rs"]);
 }
 
+/// A transposed letter matches nothing as a subsequence; the file it names is still found first.
+#[tokio::test]
+async fn find_names_the_file_a_transposed_or_dropped_letter_meant() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let server = server(tmp.path());
+    for (typo, meant) in [
+        ("wdiget_factory", "widget_factory.rs"),
+        ("deploy_setings", "deploy_settings.yaml"),
+        ("REDAME", "README.md"),
+    ] {
+        let found = find(&server, typo, None).await;
+        assert_eq!(found.first().map(String::as_str), Some(meant), "{typo}: {found:?}");
+    }
+}
+
 #[tokio::test]
 async fn find_cuts_weak_matches_and_is_deterministic() {
     let tmp = tempfile::tempdir().expect("tempdir");

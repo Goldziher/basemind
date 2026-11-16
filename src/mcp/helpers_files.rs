@@ -1,7 +1,8 @@
 //! `run_list_files` + `run_find_files` — kept in their own file so `tools.rs` and `helpers.rs`
 //! stay under the 1000-line cap as the MCP surface grows. Both enumerate indexed paths and share the
 //! same limit/cursor/token-budget pagination shape; `find_files` additionally scores each candidate
-//! with `nucleo-matcher` before paginating.
+//! with `nucleo-matcher`, and with [`within_one_edit`] for a query that names nothing as typed,
+//! before paginating.
 
 use std::sync::atomic::Ordering;
 
@@ -135,7 +136,8 @@ fn respond(
 
 /// Body of `find_files` with a query: fuzzy subsequence match over indexed paths (fzf/fd-style),
 /// ranked by `nucleo-matcher` score, with optional `path_prefix` / `language`
-/// pre-filters.
+/// pre-filters. A query no path contains as typed may be a typo: files it names up to one edit
+/// ([`within_one_edit`]) rank first.
 ///
 /// Sourced from the `MapCache` file view (already sorted, in-RAM, no store lock needed) — the
 /// `await_cache_ready()` call above guarantees it is populated before this runs. Paths that
@@ -210,19 +212,87 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
     respond(state, page, total, skip, limit_clamped, generation, params.max_tokens)
 }
 
-/// Every candidate `query` matches as a fuzzy subsequence, with nucleo's score.
+/// Every candidate `query` matches, with its score. A fuzzy subsequence match scores what nucleo
+/// gives it. When no candidate holds `query` as typed (case aside), a file the query names up to one
+/// edit outranks every fuzzy match: a transposed or dropped letter otherwise matches nothing, or
+/// only paths that happen to hold the letters in order.
 fn score<'a>(query: &str, candidates: &[&'a RelPath]) -> Vec<(u32, &'a RelPath)> {
     let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let mut utf32_buf: Vec<char> = Vec::new();
-    candidates
+    let needle = query.to_ascii_lowercase();
+    let finder = memchr::memmem::Finder::new(needle.as_bytes());
+    let mut lowered: Vec<u8> = Vec::new();
+    let mut literal = false;
+    let mut scored: Vec<(u32, &RelPath)> = Vec::new();
+    for &path in candidates {
+        let Some(path_str) = path.as_str() else {
+            continue;
+        };
+        if !literal {
+            lowered.clear();
+            lowered.extend(path_str.bytes().map(|b| b.to_ascii_lowercase()));
+            literal = finder.find(&lowered).is_some();
+        }
+        if let Some(score) = pattern.score(Utf32Str::new(path_str, &mut utf32_buf), &mut matcher) {
+            scored.push((score, path));
+        }
+    }
+    if literal || needle.chars().count() < TYPO_MIN_CHARS {
+        return scored;
+    }
+    let typo_score = scored
         .iter()
-        .filter_map(|&path| {
-            let path_str = path.as_str()?;
-            let score = pattern.score(Utf32Str::new(path_str, &mut utf32_buf), &mut matcher)?;
-            Some((score, path))
-        })
-        .collect()
+        .map(|(score, _)| *score)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let query: Vec<char> = needle.chars().collect();
+    for &path in candidates {
+        if path.as_str().is_some_and(|path| names_with_typo(&query, path)) {
+            match scored.iter_mut().find(|(_, scored)| *scored == path) {
+                Some(entry) => entry.0 = typo_score,
+                None => scored.push((typo_score, path)),
+            }
+        }
+    }
+    scored
+}
+
+/// Shortest query a typo is looked for in: a shorter one is one edit away from too many names.
+const TYPO_MIN_CHARS: usize = 4;
+
+/// Whether `query` (lowercase) names the file at `path` up to one edit: against the file name, the
+/// file name without its extension, or, for a query holding `/`, the path's last segments.
+fn names_with_typo(query: &[char], path: &str) -> bool {
+    let lowered = path.to_lowercase();
+    let segments = query.iter().filter(|c| **c == '/').count() + 1;
+    let tail = lowered.rsplitn(segments + 1, '/').take(segments).collect::<Vec<_>>();
+    let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("/");
+    let name = lowered.rsplit('/').next().unwrap_or(&lowered);
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    [tail.as_str(), name, stem]
+        .iter()
+        .any(|target| within_one_edit(query, &target.chars().collect::<Vec<_>>()))
+}
+
+/// Whether `a` turns into `b` with at most one edit: two adjacent characters swapped, or one
+/// character inserted, dropped or replaced.
+fn within_one_edit(a: &[char], b: &[char]) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if long.len() - short.len() > 1 {
+        return false;
+    }
+    let Some(i) = short.iter().zip(long).position(|(x, y)| x != y) else {
+        return true;
+    };
+    if short.len() == long.len() {
+        let swapped = i + 1 < short.len() && short[i] == long[i + 1] && short[i + 1] == long[i];
+        let rest = if swapped { i + 2 } else { i + 1 };
+        short[rest..] == long[rest..]
+    } else {
+        short[i..] == long[i + 1..]
+    }
 }
 
 /// A candidate must score at least this fraction of the best candidate's score to be returned.
@@ -353,5 +423,71 @@ mod tests {
         let mut e: Vec<(u32, &RelPath)> = Vec::new();
         rank_and_cut(&mut e);
         assert!(e.is_empty());
+    }
+
+    fn chars(text: &str) -> Vec<char> {
+        text.chars().collect()
+    }
+
+    #[test]
+    fn one_edit_is_a_swap_an_insertion_a_deletion_or_a_replacement() {
+        for (typed, meant) in [
+            ("buidl", "build"),
+            ("sceurity", "security"),
+            ("baner", "banner"),
+            ("bannner", "banner"),
+            ("bamner", "banner"),
+            ("build", "build"),
+        ] {
+            assert!(within_one_edit(&chars(typed), &chars(meant)), "{typed} -> {meant}");
+        }
+        for (typed, meant) in [("bdiul", "build"), ("bnr", "banner"), ("tset", "testing")] {
+            assert!(!within_one_edit(&chars(typed), &chars(meant)), "{typed} -> {meant}");
+        }
+    }
+
+    #[test]
+    fn a_typo_names_a_file_by_its_name_its_stem_or_its_last_segments() {
+        assert!(names_with_typo(
+            &chars("blocking_cehck"),
+            "tokio/src/util/blocking_check.rs"
+        ));
+        assert!(names_with_typo(&chars("sceurity"), "SECURITY.md"));
+        assert!(names_with_typo(&chars("favcion-32"), "website/public/favicon-32.png"));
+        assert!(names_with_typo(
+            &chars("util/blocking_chekc.rs"),
+            "tokio/src/util/blocking_check.rs"
+        ));
+        assert!(!names_with_typo(&chars("blocking_cehck"), "tokio/src/util/blocking.rs"));
+    }
+
+    #[test]
+    fn a_typo_outranks_paths_that_only_hold_its_letters_in_order() {
+        let paths = [
+            "SECURITY.md",
+            "tokio/src/runtime/scheduler/inject/synced.rs",
+            "src/lib.rs",
+        ]
+        .map(RelPath::from);
+        let candidates: Vec<&RelPath> = paths.iter().collect();
+        let mut scored = score("SCEURITY", &candidates);
+        rank_and_cut(&mut scored);
+        assert_eq!(scored[0].1.to_string(), "SECURITY.md", "{scored:?}");
+
+        // `synced` is one edit from `syncer`, but a path holds it as typed: not a typo.
+        let paths = ["a/synced.rs", "b/syncer.rs"].map(RelPath::from);
+        let candidates: Vec<&RelPath> = paths.iter().collect();
+        let typed_right: Vec<String> = score("synced", &candidates)
+            .iter()
+            .map(|(_, path)| path.to_string())
+            .collect();
+        assert_eq!(typed_right, ["a/synced.rs"]);
+    }
+
+    #[test]
+    fn doc_language_labels() {
+        assert_eq!(doc_language("docs/README.md"), "markdown");
+        assert_eq!(doc_language("a/b.pdf"), "pdf");
+        assert_eq!(doc_language("LICENSEFILE"), "document");
     }
 }
