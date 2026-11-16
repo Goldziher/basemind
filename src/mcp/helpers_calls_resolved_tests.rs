@@ -17,6 +17,7 @@ fn page_of(paths: &[&str]) -> CallScanPage {
                 column: 0,
                 callee: "f".to_string(),
                 resolved: None,
+                shared_line: false,
             })
             .collect(),
         next_cursor: None,

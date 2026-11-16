@@ -330,3 +330,35 @@ async fn code_refs_leaves_hits_unannotated_when_resolution_knows_nothing_of_the_
         "a count that was never computed must not be reported as 0: {unknown}"
     );
 }
+
+/// Two call sites of a name on one line keep their columns when a page boundary splits them, and a
+/// call alone on its line writes none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_pages_split_on_a_shared_line_keep_their_columns() {
+    let (_dir, client) = started_with(&[(
+        "src/twice.rs",
+        "pub fn ping() {}\n\npub fn a() {\n    ping(); ping();\n    ping();\n}\n",
+    )])
+    .await;
+    let mut seen = Vec::new();
+    let mut args = json!({ "name": "ping", "limit": 1 });
+    for _ in 0..4 {
+        let page = call(&client, "code_refs", args.clone()).await;
+        for row in super::rows(&page["hits"]) {
+            seen.push((row["line"].clone(), row.get("column").cloned()));
+        }
+        match page["next_cursor"].as_str() {
+            Some(cursor) => args["cursor"] = json!(cursor),
+            None => break,
+        }
+    }
+    assert_eq!(
+        seen,
+        [
+            (json!(4), Some(json!(5))),
+            (json!(4), Some(json!(13))),
+            (json!(5), None)
+        ],
+        "{seen:?}"
+    );
+}

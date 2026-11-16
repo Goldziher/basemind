@@ -500,8 +500,8 @@ pub(crate) struct ReferenceHit {
     pub path: RelPath,
     /// 1-based line of the call site; `0` when the index holds no position for it.
     pub line: u32,
-    /// Byte column of the call site: 0-based here, written 1-based, and only when another hit is
-    /// on the same line.
+    /// Byte column of the call site: 0-based here, written 1-based, and only when
+    /// [`shared_line`](Self::shared_line) is set.
     pub column: u32,
     /// The name called. Written only when it is not the name asked for (a `substring` match, or an
     /// alias the definition is called by); [`ReferenceHit::named`] clears it otherwise.
@@ -511,6 +511,11 @@ pub(crate) struct ReferenceHit {
     /// no definition was pinned, resolution has no facts about the definition (`resolution` on the
     /// response says why), or the site's file lies past the probe cap.
     pub resolved: Option<bool>,
+    /// Another call site of the same callee is on this line of this file, in the whole result and
+    /// not only this page, so the line alone does not tell them apart and `column` is written. Set
+    /// by [`super::helpers_calls_scan::mark_shared_lines`].
+    #[schemars(skip)]
+    pub shared_line: bool,
 }
 
 impl ReferenceHit {
@@ -528,6 +533,10 @@ impl ReferenceHit {
 impl super::by_path::Located for ReferenceHit {
     fn located(&self) -> &RelPath {
         &self.path
+    }
+
+    fn writes_column(&self) -> Option<bool> {
+        Some(self.shared_line)
     }
 
     fn line(&self) -> u32 {
@@ -710,8 +719,14 @@ pub(super) struct GrepHit {
     pub path: RelPath,
     /// 1-based line number of the match.
     pub line: u32,
-    /// 1-based byte column of the match, written only when another hit is on the same line.
+    /// 1-based byte column of the match, written only when [`write_column`](Self::write_column)
+    /// is set.
     pub column: u32,
+    /// The file holds another match on this line, or `text` is a clipped window of the line: the
+    /// line alone does not place the match, so `column` is written. Decided over every match in
+    /// the file, so a page boundary does not change it.
+    #[schemars(skip)]
+    pub write_column: bool,
     /// The matching line, so the hit can be read without opening the file. A line over 400 bytes is
     /// cut to a window around the match, `…` marking each cut side.
     pub text: String,
@@ -734,6 +749,10 @@ pub(super) struct GrepHit {
 impl super::by_path::Located for GrepHit {
     fn located(&self) -> &RelPath {
         &self.path
+    }
+
+    fn writes_column(&self) -> Option<bool> {
+        Some(self.write_column)
     }
 
     fn line(&self) -> u32 {

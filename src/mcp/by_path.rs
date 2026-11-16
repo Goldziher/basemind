@@ -4,8 +4,10 @@
 //! Written flat, every row repeats its path and the `"path":` key; grouped, a file's path is written
 //! once. The rows stay in the order they were found, and the files in the order of their first row.
 //!
-//! A row is located by its line. Its `column` is written only when another row of the page is on the
-//! same line of the same file, which is the only case where the line alone does not tell them apart.
+//! A row is located by its line. Its `column` is written only where the line alone does not place it.
+//! A grep hit and a call site decide that over the whole result ([`Located::writes_column`]), so a
+//! page boundary never changes a row; any other row writes it when another row of the page is on
+//! the same line of the same file.
 
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
@@ -17,6 +19,11 @@ pub(super) trait Located {
     fn located(&self) -> &RelPath;
     /// 1-based line, `0` when the row has no recorded position.
     fn line(&self) -> u32;
+    /// Whether the row writes its column, when the row decided it over the whole result. `None`
+    /// leaves it to the page: written when another row of the page is on the same line.
+    fn writes_column(&self) -> Option<bool> {
+        None
+    }
     /// Write the row without its path, and with its 1-based column when `column` is set.
     fn serialize_row<S: Serializer>(&self, serializer: S, column: bool) -> Result<S::Ok, S::Error>;
 }
@@ -48,7 +55,9 @@ pub(super) fn serialize<S: Serializer, T: Located>(rows: &[T], serializer: S) ->
             groups.push((path, Vec::new()));
             groups.len() - 1
         });
-        let column = on_line.get(&(path, row.line())).is_some_and(|rows| *rows > 1);
+        let column = row
+            .writes_column()
+            .unwrap_or_else(|| on_line.get(&(path, row.line())).is_some_and(|rows| *rows > 1));
         groups[index].1.push(Listed { row, column });
     }
     let mut map = serializer.serialize_map(Some(groups.len()))?;
@@ -127,6 +136,24 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&page).unwrap(),
             r#"{"hits":{"a.rs":[{"line":2,"column":5},{"line":2,"column":14},{"line":3}],"b.rs":[{"line":2}]}}"#
+        );
+    }
+
+    #[test]
+    fn a_budgeted_page_is_written_within_its_budget_when_every_row_is_in_its_own_file() {
+        let rows: Vec<Row> = (0..200)
+            .map(|i| row(&format!("src/some/deeply/nested/module_{i}/file.rs"), 3, 1))
+            .collect();
+        let budget = 100;
+        let kept = super::super::budget::apply_budget_by_path(rows, Some(budget));
+        assert!(kept.budgeted);
+        assert!(kept.items.len() > 1, "more than the one row a page always keeps");
+        let written = serde_json::to_string(&Page { hits: kept.items }).unwrap();
+        let hits = written.strip_prefix(r#"{"hits":"#).unwrap();
+        assert!(
+            hits.len() as u64 <= u64::from(budget) * 4 + 4,
+            "{} bytes written for a {budget}-token budget",
+            hits.len()
         );
     }
 }

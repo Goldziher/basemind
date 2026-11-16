@@ -310,3 +310,27 @@ async fn code_grep_and_code_read_agree_that_a_lone_carriage_return_ends_no_line(
     let inside = call(&client, "code_grep", json!({ "pattern": "1\rb" , "path": "cr.py" })).await;
     assert_eq!(inside["total"], 1, "a literal still finds the byte: {inside}");
 }
+
+/// Two matches on one line keep their columns when a page boundary splits them: a page of one hit
+/// still says where on the line its match is, so the pages together tell the two apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_pages_split_on_a_shared_line_keep_their_columns() {
+    let (_dir, client) = started_with(&[("src/twice.rs", "pub fn a() {\n    twice_x(); twice_x();\n}\n")]).await;
+    let mut columns = Vec::new();
+    let mut args = json!({ "pattern": "twice_x\\(", "limit": 1 });
+    for _ in 0..3 {
+        let page = call(&client, "code_grep", args.clone()).await;
+        for row in rows(&page["hits"]) {
+            assert_eq!(row["line"], 2, "{page}");
+            columns.push(row["column"].clone());
+        }
+        match page["next_cursor"].as_str() {
+            Some(cursor) => args["cursor"] = json!(cursor),
+            None => break,
+        }
+    }
+    assert_eq!(columns, [json!(5), json!(16)], "each page writes its hit's column");
+    let whole = call(&client, "code_grep", json!({ "pattern": "twice_x\\(" })).await;
+    let whole: Vec<_> = rows(&whole["hits"]).iter().map(|row| row["column"].clone()).collect();
+    assert_eq!(whole, columns, "paged and whole agree");
+}

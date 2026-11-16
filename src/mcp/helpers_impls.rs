@@ -87,7 +87,8 @@ pub(super) async fn run_find_implementations(
     } else {
         stopped_after.as_deref().map(Cursor::encode_fjall)
     };
-    let budget = super::budget::apply_budget(hits, params.max_tokens);
+    let hits: Vec<_> = hits.into_iter().map(|hit| hit.named(&params.trait_name)).collect();
+    let budget = super::budget::apply_budget_by_path(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
         let cursor = hit_keys.get(kept - 1).map(|k| Cursor::encode_fjall(k));
@@ -96,7 +97,6 @@ pub(super) async fn run_find_implementations(
         (budget.items, false, next_cursor)
     };
 
-    let hits = hits.into_iter().map(|hit| hit.named(&params.trait_name)).collect();
     json_result(&FindImplementationsResponse {
         total,
         truncated: total_is_partial,

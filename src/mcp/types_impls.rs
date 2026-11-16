@@ -153,6 +153,7 @@ mod tests {
             column: 2,
             callee: "f".to_string(),
             resolved: Some(false),
+            shared_line: false,
         };
         assert_eq!(
             serde_json::to_value(&call).unwrap(),
@@ -184,6 +185,7 @@ mod tests {
             column: 0,
             callee: "f".to_string(),
             resolved: None,
+            shared_line: false,
         };
         assert_eq!(serde_json::to_value(&call).unwrap(), json!({ "callee": "f" }));
     }

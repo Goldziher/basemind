@@ -11,7 +11,7 @@ use super::MapCache;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
 pub(crate) use super::helpers_calls_scan::InRamCallIndex;
-use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page};
+use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, mark_shared_lines};
 use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
@@ -131,19 +131,20 @@ pub(super) async fn run_find_references(
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let matching = Matching::from_substring(params.substring);
-    let scan = route
+    let mut scan = route
         .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
         .await?;
+    mark_shared_lines(route, cache, &mut scan.hits).await;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
-    let budgeted = budget_call_page(scan, params.max_tokens);
+    let budgeted = budget_call_page(scan, &params.name, params.max_tokens);
     super::toon::format_result(
         &FindReferencesResponse {
             total,
             truncated: total_is_partial,
             truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
             budgeted: budgeted.budgeted,
-            hits: budgeted.hits.into_iter().map(|hit| hit.named(&params.name)).collect(),
+            hits: budgeted.hits,
             next_cursor: budgeted.next_cursor,
             notice: notice(),
         },
@@ -263,10 +264,11 @@ pub(super) async fn run_find_callers(
         )
     };
 
-    let page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());
+    let mut page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());
+    mark_shared_lines(route, cache, &mut page.hits).await;
     let total = page.total;
     let total_is_partial = page.total_is_partial;
-    let budgeted = budget_call_page(page, params.max_tokens);
+    let budgeted = budget_call_page(page, &params.name, params.max_tokens);
     json_result(&FindCallersResponse {
         definition,
         resolution,
@@ -275,7 +277,7 @@ pub(super) async fn run_find_callers(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
         budgeted: budgeted.budgeted,
-        hits: budgeted.hits.into_iter().map(|hit| hit.named(&params.name)).collect(),
+        hits: budgeted.hits,
         next_cursor: budgeted.next_cursor,
         notice: notice(),
     })
@@ -441,6 +443,7 @@ async fn resolved_callers(
                             column: site.column,
                             callee: site.callee.clone(),
                             resolved: Some(true),
+                            shared_line: false,
                         },
                     ));
                 }

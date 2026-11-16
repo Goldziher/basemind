@@ -289,6 +289,10 @@ async fn code_grep_clips_long_lines_around_the_match() {
     assert!(text.contains("WIDE_NEEDLE"), "the window holds the match: {text}");
     assert!(text.len() <= 420, "{} bytes", text.len());
     assert!(text.starts_with('…') && text.ends_with('…'), "{text}");
+    assert_eq!(
+        hit["column"], 1_505,
+        "a clipped line still places its one match, counted from the start of the line"
+    );
     for key in ["context_before", "context_after"] {
         let context = hit[key].as_str().expect("context line");
         assert!(context.len() <= 420, "{key}: {} bytes", context.len());

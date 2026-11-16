@@ -411,6 +411,7 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
         column: 0,
         callee: "g".to_string(),
         resolved: Some(true),
+        shared_line: false,
     };
     let scan = scan_calls_in_ram(
         &super::super::helpers_calls_scan::InRamCallIndex::empty(),
