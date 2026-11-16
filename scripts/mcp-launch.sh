@@ -17,19 +17,31 @@ die_incomplete_release() {
   die "$1 — the basemind v${VERSION} release looks incomplete (a missing platform asset or checksums file). Update the basemind plugin to a complete release (Claude Code: run \`/plugin update\`); if it persists, report it at https://github.com/Goldziher/basemind/issues"
 }
 
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
-if [ -z "$PLUGIN_ROOT" ]; then
-  PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LAUNCH_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+if [ -z "$LAUNCH_ROOT" ]; then
+  LAUNCH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
 # Name the harness once, for `serve` and for the hooks (which run through this launcher), so both ~keep
 # derive the same agent id. An explicit BASEMIND_HOST wins; none is set when no harness is found. ~keep
+# Observed (docs/comms-v2.md): Claude Code sets CLAUDECODE for its hooks and MCP servers. Codex ~keep
+# 0.169 sets PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT (never CLAUDECODE) for plugin hooks and nothing ~keep
+# for MCP servers, which it starts itself, so `serve` knows it by its parent process. ~keep
+parent_is_codex() {
+  local parent
+  parent="$(ps -o comm= -p "$PPID" 2>/dev/null)" || return 1
+  [ "${parent##*/}" = codex ]
+}
 if [ -z "${BASEMIND_HOST:-}" ]; then
   if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
     export BASEMIND_HOST=cursor
   elif [ -n "${COPILOT_CLI:-}" ]; then
     export BASEMIND_HOST=copilot
-  elif [ -n "${CLAUDECODE:-}" ] || [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  elif [ -n "${CLAUDECODE:-}" ]; then
+    export BASEMIND_HOST=claude
+  elif [ -n "${CODEX_PLUGIN_ROOT:-}" ] || { [ -n "${PLUGIN_ROOT:-}" ] && [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; } || parent_is_codex; then
+    export BASEMIND_HOST=codex
+  elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
     export BASEMIND_HOST=claude
   elif [ -n "${GEMINI_CLI:-}" ]; then
     export BASEMIND_HOST=gemini
@@ -60,12 +72,12 @@ else
   # so whichever exists yields the same pinned version. ~keep
   MANIFEST=""
   for cand in .claude-plugin/plugin.json .codex-plugin/plugin.json .cursor-plugin/plugin.json; do
-    if [ -f "$PLUGIN_ROOT/$cand" ]; then
-      MANIFEST="$PLUGIN_ROOT/$cand"
+    if [ -f "$LAUNCH_ROOT/$cand" ]; then
+      MANIFEST="$LAUNCH_ROOT/$cand"
       break
     fi
   done
-  [ -n "$MANIFEST" ] || die "plugin manifest not found under $PLUGIN_ROOT (.claude-plugin/, .codex-plugin/, or .cursor-plugin/)"
+  [ -n "$MANIFEST" ] || die "plugin manifest not found under $LAUNCH_ROOT (.claude-plugin/, .codex-plugin/, or .cursor-plugin/)"
   VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | head -n1)"
   [ -n "$VERSION" ] || die "could not read version from $MANIFEST"
 fi
@@ -299,11 +311,15 @@ if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
 fi
 if [ -x "$MANAGED_BIN" ] && [ "$(binary_version "$MANAGED_BIN")" = "$VERSION" ]; then
   mark_used "$CACHE_ROOT"
-  prune_stale_versions
-  cleanup_stale_state
+  # The agent commands run from hooks on every prompt and agent-tool call, under a time limit; ~keep
+  # pruning lists every process and is left to the other launches. ~keep
+  if [ "${1:-}" != agent ]; then
+    prune_stale_versions
+    cleanup_stale_state
+  fi
   exec "$MANAGED_BIN" "$@"
 fi
-try_exec "$PLUGIN_ROOT/bin/$BINARY_NAME" "$@"
+try_exec "$LAUNCH_ROOT/bin/$BINARY_NAME" "$@"
 if have "$BINARY_NAME"; then
   try_exec "$(command -v "$BINARY_NAME")" "$@"
 fi

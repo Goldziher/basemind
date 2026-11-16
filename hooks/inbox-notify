@@ -3,9 +3,10 @@
 #
 # Names this session (`basemind agent hook name`, the same name the agent-as hook gives its tool
 # calls), then asks the daemon for an announcing read of that actor's inbox: front matter only,
-# never a body, and it never marks anything read. A message is announced once; it stays unread
-# until the agent reads it with agent_inbox. The daemon keeps the announcement mark, so this hook
-# holds no state of its own.
+# never a body, and it never marks anything read. On a host whose hook cannot rewrite a tool call's
+# input the binary names nothing, the tool calls act as the principal, and so does this read. A
+# message is announced once; it stays unread until the agent reads it with agent_inbox. The daemon
+# keeps the announcement mark, so this hook holds no state of its own.
 #
 # Hard rule: this must NEVER block or fail the user's turn. Every step is time-boxed and
 # fail-open: any error (no daemon, no jq, no messages) exits 0 with no output.
@@ -21,19 +22,43 @@ command -v jq >/dev/null 2>&1 || exit 0
 
 STDIN_JSON="$(cat 2>/dev/null || true)"
 
-# macOS has no coreutils `timeout` by default; run unbounded there rather than failing every turn.
-run_launcher() {
+# Run "$@" for at most $1 seconds. Uses `timeout` where installed; macOS has none by default, so a
+# watchdog kills the command and its children there. Standard input is passed through.
+run_bounded() {
+  local secs="$1"
+  shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout 6 "$LAUNCHER" "$@" 2>/dev/null
-  else
-    "$LAUNCHER" "$@" 2>/dev/null
+    timeout "$secs" "$@"
+    return
   fi
+  "$@" <&0 &
+  local pid=$!
+  (
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    sleep "$secs" &
+    nap=$!
+    wait "$nap" || exit 0
+    # Its children too: one left holding stdout would keep the caller waiting. ~keep
+    command -v pkill >/dev/null 2>&1 && pkill -TERM -P "$pid" 2>/dev/null
+    kill -TERM "$pid" 2>/dev/null
+  ) &
+  local watchdog=$!
+  wait "$pid"
+  local rc=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  return "$rc"
 }
 
-NAME="$(printf '%s' "$STDIN_JSON" | run_launcher agent hook name | tr -cd 'a-z0-9_-')" || exit 0
-[ -n "$NAME" ] || exit 0
+run_launcher() {
+  run_bounded 6 "$LAUNCHER" "$@" 2>/dev/null
+}
 
-INBOX_JSON="$(run_launcher agent inbox --announce --as "$NAME" --json --limit 10 --root "$PWD")" || exit 0
+NAME="$(printf '%s' "$STDIN_JSON" | run_launcher agent hook name | tr -cd 'a-z0-9_-')" || NAME=""
+AS=()
+[ -n "$NAME" ] && AS=(--as "$NAME")
+
+INBOX_JSON="$(run_launcher agent inbox --announce ${AS[@]+"${AS[@]}"} --json --limit 10 --root "$PWD" </dev/null)" || exit 0
 [ -n "$INBOX_JSON" ] || exit 0
 
 LINES="$(printf '%s' "$INBOX_JSON" |
@@ -49,25 +74,14 @@ CONTEXT="Unread basemind agent messages (announced once, not yet read):
 ${LINES}${MORE}
 Read them with agent_inbox (bodies inline; {\"id\":\"<id>\"} reads one whole message). The agent tools are deferred: find agent_post, agent_inbox and agent_threads by tool search. Reply with agent_post if warranted."
 
-# Escape for JSON embedding (single-pass parameter substitutions; mirrors session-start).
-escape_for_json() {
-  local s="$1"
-  s="${s//\\/\\\\}"
-  s="${s//\"/\\\"}"
-  s="${s//$'\n'/\\n}"
-  s="${s//$'\r'/\\r}"
-  s="${s//$'\t'/\\t}"
-  printf '%s' "$s"
-}
-CTX="$(escape_for_json "${CONTEXT}")"
-
-# Emit the field the current harness consumes (same tri-format branch as session-start).
+# Emit the field the current harness consumes (same tri-format branch as session-start). jq builds
+# the JSON: the subjects and senders come from other agents.
 if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
-  printf '{\n  "additional_context": "%s"\n}\n' "${CTX}"
+  jq -n --arg ctx "$CONTEXT" '{additional_context: $ctx}'
 elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
-  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "UserPromptSubmit",\n    "additionalContext": "%s"\n  }\n}\n' "${CTX}"
+  jq -n --arg ctx "$CONTEXT" '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}'
 else
-  printf '{\n  "additionalContext": "%s"\n}\n' "${CTX}"
+  jq -n --arg ctx "$CONTEXT" '{additionalContext: $ctx}'
 fi
 
 exit 0

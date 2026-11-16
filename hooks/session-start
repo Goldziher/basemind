@@ -15,6 +15,42 @@ PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 WORKSPACE="${CLAUDE_PROJECT_DIR:-$PWD}"
 
+# The host's event (it carries the session id the agent hooks name the session by). Not read from a
+# terminal, where nothing would ever arrive.
+STDIN_JSON=""
+if [ ! -t 0 ]; then
+  STDIN_JSON="$(cat 2>/dev/null || true)"
+fi
+
+# Run "$@" for at most $1 seconds. Uses `timeout` where installed; macOS has none by default, so a
+# watchdog kills the command and its children there. Standard input is passed through.
+run_bounded() {
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+    return
+  fi
+  "$@" <&0 &
+  local pid=$!
+  (
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    sleep "$secs" &
+    nap=$!
+    wait "$nap" || exit 0
+    # Its children too: one left holding stdout would keep the caller waiting. ~keep
+    command -v pkill >/dev/null 2>&1 && pkill -TERM -P "$pid" 2>/dev/null
+    kill -TERM "$pid" 2>/dev/null
+  ) &
+  local watchdog=$!
+  wait "$pid"
+  local rc=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  return "$rc"
+}
+
+
 # 1. PROBE before advertising. A hook that tells the agent to prefer tools that are not there is
 #    worse than no hook at all: the agent burns calls hunting for them, then falls back to grep and
 #    reports basemind as broken. Ask the CLI, through the same launcher the MCP server uses, for
@@ -94,17 +130,25 @@ if ! statusline_wired; then
   CONTEXT="${CONTEXT} The basemind status line is not enabled in the user's Claude Code settings; if the user asks about the status line or basemind activity, tell them they can enable a live status line (indexed files, scan age, tool calls, tokens saved) by running the /bm-statusline command once."
 fi
 
-# 3. Agent messaging is opt-in and secondary to code navigation: name the deferred tools and, when
-#    the daemon already holds unread messages for this actor, say how many. A peek moves no read
-#    position. Best-effort and time-boxed; comms never blocks or fails session startup. Requires jq
-#    to parse the inbox JSON.
-CONTEXT="${CONTEXT} Agent messaging is opt-in through the deferred tools agent_post, agent_inbox and agent_threads (find them by tool search); a subagent that wants a separate inbox passes \`as\`."
-if command -v jq >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-  INBOX_JSON="$(timeout 8 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agent inbox --peek --json --limit 5 --root "${WORKSPACE}" 2>/dev/null || true)"
-  MSG_COUNT="$(printf '%s' "${INBOX_JSON}" | jq -er '.messages | arrays | length' 2>/dev/null || true)"
-  if [ -n "${MSG_COUNT}" ] && [ "${MSG_COUNT}" -gt 0 ]; then
-    MORE="$(printf '%s' "${INBOX_JSON}" | jq -r 'if .more == true then "at least " else "" end' 2>/dev/null || true)"
-    CONTEXT="${CONTEXT} You have ${MORE}${MSG_COUNT} unread agent message(s); read them with agent_inbox."
+# 3. Agent messaging is opt-in and secondary to code navigation. In a build that has it (the
+#    `agent` command answers), name the deferred tools and, when the daemon already holds unread
+#    messages for the actor this session's tool calls act as, say how many. That actor is the one
+#    the agent-as hook names (`agent hook name`), or the principal on a host whose hook cannot
+#    rewrite a call. A peek moves no read position. Best-effort and time-boxed; comms never blocks
+#    or fails session startup. Requires jq to parse the inbox JSON.
+AGENT_RC=0
+NAME="$(printf '%s' "${STDIN_JSON}" | run_bounded 6 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agent hook name 2>/dev/null | tr -cd 'a-z0-9_-')" || AGENT_RC=$?
+if [ "${AGENT_RC}" -eq 0 ]; then
+  CONTEXT="${CONTEXT} Agent messaging is opt-in through the deferred tools agent_post, agent_inbox and agent_threads (find them by tool search); a subagent that wants a separate inbox passes \`as\`."
+  if command -v jq >/dev/null 2>&1; then
+    AS=()
+    [ -n "${NAME}" ] && AS=(--as "${NAME}")
+    INBOX_JSON="$(run_bounded 8 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agent inbox --peek ${AS[@]+"${AS[@]}"} --json --limit 5 --root "${WORKSPACE}" </dev/null 2>/dev/null || true)"
+    MSG_COUNT="$(printf '%s' "${INBOX_JSON}" | jq -er '.messages | arrays | length' 2>/dev/null || true)"
+    if [ -n "${MSG_COUNT}" ] && [ "${MSG_COUNT}" -gt 0 ]; then
+      MORE="$(printf '%s' "${INBOX_JSON}" | jq -r 'if .more == true then "at least " else "" end' 2>/dev/null || true)"
+      CONTEXT="${CONTEXT} You have ${MORE}${MSG_COUNT} unread agent message(s); read them with agent_inbox."
+    fi
   fi
 fi
 
