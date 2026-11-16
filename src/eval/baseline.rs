@@ -29,14 +29,19 @@ pub fn run_baseline(root: &Path, spec: &BaselineSpec, count: fn(&str) -> u64) ->
     let mut files: Vec<(String, String)> = Vec::new();
     if let Some(cmds) = &spec.grep {
         for cmd in cmds.items() {
-            let out = Command::new("sh")
+            let mut command = Command::new("sh");
+            command
                 .arg("-c")
                 .arg(cmd)
                 .current_dir(root)
                 .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .with_context(|| format!("spawn baseline `{cmd}`"))?;
+                .stderr(Stdio::null());
+            // Git for Windows' `sh` rewrites an argument that looks like a POSIX path into a
+            // Windows path before it runs a native program, so `git blame -L '/fn alpha/,/^}/'`
+            // reached git as a path and exited 129. A baseline means its arguments verbatim.
+            #[cfg(windows)]
+            command.env("MSYS_NO_PATHCONV", "1").env("MSYS2_ARG_CONV_EXCL", "*");
+            let out = command.output().with_context(|| format!("spawn baseline `{cmd}`"))?;
             match out.status.code() {
                 Some(0 | 1) => {}
                 other => bail!("baseline `{cmd}` failed (exit {other:?})"),
