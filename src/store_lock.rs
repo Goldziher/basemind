@@ -311,11 +311,24 @@ pub(crate) fn remove_dir_under_lock(workspace_dir: &Path) -> std::io::Result<()>
     }
 }
 
-/// The pid in a parked directory's name (`<workspace>-<pid>-<stamp>`).
-fn parked_by(name: &str) -> Option<u32> {
+/// How long after parking a directory its remover is taken to be still deleting it. A delete that
+/// failed is never retried by the remover, and after a restart the pid may belong to another
+/// process: past this, the directory is anyone's to delete.
+const PARKED_REMOVAL_WINDOW: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// The pid and the parking instant in a parked directory's name (`<workspace>-<pid>-<stamp>`).
+fn parked_by(name: &str) -> Option<(u32, std::time::SystemTime)> {
     let mut parts = name.rsplitn(3, '-');
-    let _stamp = parts.next()?;
-    parts.next()?.parse().ok()
+    let stamp: u64 = parts.next()?.parse().ok()?;
+    let pid = parts.next()?.parse().ok()?;
+    Some((pid, std::time::UNIX_EPOCH + std::time::Duration::from_nanos(stamp)))
+}
+
+/// Whether a directory parked at `parked` may still be being deleted by its remover. A stamp
+/// ahead of the clock by more than the window is as old as one behind it: the clock was moved.
+fn parked_recently(parked: std::time::SystemTime, now: std::time::SystemTime) -> bool {
+    let apart = now.duration_since(parked).unwrap_or_else(|ahead| ahead.duration());
+    apart < PARKED_REMOVAL_WINDOW
 }
 
 /// Whether the process that parked a directory may still be deleting it.
@@ -331,19 +344,21 @@ fn remover_is_live(pid: u32) -> bool {
     }
 }
 
-/// Delete what a remover that died mid-delete left parked beside `workspaces_dir`. A directory
-/// parked by a process that is still alive is that process's to finish: deleting under it would
-/// fail its own delete on a file that is suddenly gone.
+/// Delete what a remover that died or gave up mid-delete left parked beside `workspaces_dir`. A
+/// directory parked within [`PARKED_REMOVAL_WINDOW`] by a process that is still alive is that
+/// process's to finish: deleting under it would fail its own delete on a file that is suddenly
+/// gone.
 pub(crate) fn purge_reaped(workspaces_dir: &Path) {
     let Some(reaped) = workspaces_dir.parent().map(|cache| cache.join(REAPED_DIR)) else {
         return;
     };
+    let now = std::time::SystemTime::now();
     for entry in std::fs::read_dir(&reaped).into_iter().flatten().flatten() {
         let live = entry
             .file_name()
             .to_str()
             .and_then(parked_by)
-            .is_some_and(remover_is_live);
+            .is_some_and(|(pid, parked)| parked_recently(parked, now) && remover_is_live(pid));
         if !live {
             let _ = std::fs::remove_dir_all(entry.path());
         }
@@ -535,10 +550,19 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspaces = tmp.path().join("workspaces");
         let reaped = tmp.path().join(REAPED_DIR);
-        let live = reaped.join(format!("key-with-dash-{}-17", std::process::id()));
+        let stamp = |ago: std::time::Duration| {
+            (std::time::SystemTime::now() - ago)
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("after the epoch")
+                .as_nanos()
+        };
+        let pid = std::process::id();
+        let live = reaped.join(format!("key-with-dash-{pid}-{}", stamp(std::time::Duration::ZERO)));
         // No process has this pid: above every platform's pid range, below `pid_t`'s sign bit.
-        let dead = reaped.join("key-2147483646-17");
-        for dir in [&workspaces, &live, &dead] {
+        let dead = reaped.join(format!("key-2147483646-{}", stamp(std::time::Duration::ZERO)));
+        // A failed delete is not retried, and after a restart the pid may be another process's.
+        let abandoned = reaped.join(format!("key-{pid}-{}", stamp(PARKED_REMOVAL_WINDOW * 2)));
+        for dir in [&workspaces, &live, &dead, &abandoned] {
             std::fs::create_dir_all(dir).expect("mkdir");
         }
 
@@ -546,10 +570,27 @@ mod tests {
 
         assert!(live.exists(), "a live remover is still deleting this one");
         assert!(!dead.exists(), "the remover of this one died mid-delete");
+        assert!(
+            !abandoned.exists(),
+            "a live pid does not hold a directory parked long ago"
+        );
 
         std::fs::remove_dir_all(&live).expect("the live remover finishes");
         purge_reaped(&workspaces);
         assert!(!reaped.exists(), "the empty parking directory goes too");
+    }
+
+    #[test]
+    fn a_parking_stamp_far_from_the_clock_either_way_is_old() {
+        let now = std::time::SystemTime::now();
+        let minute = std::time::Duration::from_secs(60);
+        assert!(parked_recently(now - minute, now));
+        assert!(parked_recently(now + minute, now), "a little skew");
+        assert!(!parked_recently(now - PARKED_REMOVAL_WINDOW - minute, now));
+        assert!(
+            !parked_recently(now + PARKED_REMOVAL_WINDOW + minute, now),
+            "the clock was set back"
+        );
     }
 
     /// A lock released by closing its file alone stays held while a child another thread forked
