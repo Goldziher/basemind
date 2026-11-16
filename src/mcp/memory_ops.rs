@@ -59,6 +59,17 @@ pub(crate) enum MemoryOpError {
     /// memory; the operation must go through that process.
     #[error("memory store is held by another process; use the basemind daemon for memory operations")]
     MemoryDetached,
+    /// A newer basemind wrote the group memory store in a layout this binary does not know.
+    #[error(
+        "memory store written by a newer basemind (version {stored}); this binary understands {current} \
+         — upgrade basemind to read or write memory notes here"
+    )]
+    NewerStore {
+        /// The version the store carries.
+        stored: u32,
+        /// The version this binary writes.
+        current: u32,
+    },
     /// A fjall get / insert / remove failed.
     #[error("fjall {op}: {source}")]
     Fjall {
@@ -81,14 +92,15 @@ impl From<MemoryOpError> for rmcp::ErrorData {
     }
 }
 
-/// Refuse memory access on a handle whose group store is owned by another process, instead of
-/// serving the empty placeholder.
-pub(crate) fn require_memory(idx: &IndexDb) -> Result<(), MemoryOpError> {
-    if idx.memory_detached() {
-        Err(MemoryOpError::MemoryDetached)
-    } else {
-        Ok(())
-    }
+/// The notes store behind `idx`, or the refusal for a handle that holds none: the store is owned
+/// by another process, or a newer basemind wrote it.
+pub(crate) fn require_memory(idx: &IndexDb) -> Result<&crate::index::memory_store::MemoryDb, MemoryOpError> {
+    use crate::index::MemoryUnavailable;
+
+    idx.memory().map_err(|why| match why {
+        MemoryUnavailable::HeldElsewhere => MemoryOpError::MemoryDetached,
+        MemoryUnavailable::NewerStore { stored, current } => MemoryOpError::NewerStore { stored, current },
+    })
 }
 
 /// Read the raw record for `(scope, vis_byte, owner, key)`, or `None` when absent / undecodable.
@@ -100,7 +112,7 @@ fn read_record(
     key: &str,
 ) -> Result<Option<MemoryRecord>, MemoryOpError> {
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
-    let bytes = idx
+    let bytes = require_memory(idx)?
         .memory_by_key
         .get(raw_key)
         .map_err(|source| MemoryOpError::Fjall { op: "get", source })?;
@@ -118,7 +130,8 @@ fn write_record(
 ) -> Result<(), MemoryOpError> {
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
     let bytes = rmp_serde::to_vec_named(record).map_err(MemoryOpError::Serialize)?;
-    idx.memory_by_key
+    require_memory(idx)?
+        .memory_by_key
         .insert(raw_key, bytes)
         .map_err(|source| MemoryOpError::Fjall { op: "insert", source })?;
     sync_memory(idx)
@@ -127,7 +140,7 @@ fn write_record(
 /// Make the write just issued durable before it is acknowledged (see
 /// [`MemoryDb::sync`](crate::index::memory_store::MemoryDb::sync)).
 fn sync_memory(idx: &IndexDb) -> Result<(), MemoryOpError> {
-    idx.memory_db()
+    require_memory(idx)?
         .sync()
         .map_err(|error| MemoryOpError::Sync(error.to_string()))
 }
@@ -135,13 +148,13 @@ fn sync_memory(idx: &IndexDb) -> Result<(), MemoryOpError> {
 /// Remove the record at `(scope, vis_byte, owner, key)`; returns whether it existed.
 fn remove_record(idx: &IndexDb, scope: &str, vis_byte: u8, owner: &str, key: &str) -> Result<bool, MemoryOpError> {
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
-    let existed = idx
-        .memory_by_key
+    let notes = &require_memory(idx)?.memory_by_key;
+    let existed = notes
         .get(raw_key.as_slice())
         .map_err(|source| MemoryOpError::Fjall { op: "get", source })?
         .is_some();
     if existed {
-        idx.memory_by_key
+        notes
             .remove(raw_key)
             .map_err(|source| MemoryOpError::Fjall { op: "remove", source })?;
         sync_memory(idx)?;
@@ -298,7 +311,10 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
     let mut total: usize = 0;
     let mut last_emitted_key: Option<Vec<u8>> = None;
     let mut has_more = false;
-    for guard in idx.memory_by_key.range::<Vec<u8>, _>((lower, upper_bound)) {
+    for guard in require_memory(idx)?
+        .memory_by_key
+        .range::<Vec<u8>, _>((lower, upper_bound))
+    {
         let (raw_key, raw_val) = guard
             .into_inner()
             .map_err(|source| MemoryOpError::Fjall { op: "iter", source })?;
@@ -413,7 +429,7 @@ mod tests {
     fn a_put_and_a_delete_are_fsynced_before_they_are_acknowledged() {
         let dir = tempfile::tempdir().unwrap();
         let idx = IndexDb::open(dir.path()).unwrap();
-        let syncs = || idx.memory_db().syncs.load(Ordering::Acquire);
+        let syncs = || idx.memory().expect("notes").syncs.load(Ordering::Acquire);
         let before = syncs();
 
         put_core(&idx, "scope", 0, "", "k", "v", &[]).unwrap();
@@ -461,5 +477,29 @@ mod tests {
         };
         assert_eq!(read.len(), 2);
         assert!(read[0].as_ref().is_some_and(|note| note.value == "one") && read[1].is_none());
+    }
+
+    /// The notes of a newer basemind are refused by name, for a read and for a write.
+    #[test]
+    fn memory_operations_on_a_store_of_a_newer_version_are_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().join("memory.fjall");
+        drop(IndexDb::open_with_memory(dir.path(), &memory_dir).unwrap());
+        crate::index::memory_store::stamp_newer_for_test(&memory_dir);
+        let idx = IndexDb::open_with_memory(dir.path(), &memory_dir).expect("the code index opens");
+
+        for refused in [
+            get_core(&idx, "scope", 0, "", "k").map(|_| ()).unwrap_err(),
+            put_core(&idx, "scope", 0, "", "k", "v", &[]).map(|_| ()).unwrap_err(),
+            delete_core(&idx, "scope", 0, "", "k").map(|_| ()).unwrap_err(),
+        ] {
+            let message = refused.to_string();
+            assert!(
+                matches!(refused, MemoryOpError::NewerStore { .. })
+                    && message.contains("written by a newer basemind")
+                    && message.contains("upgrade basemind"),
+                "{message}"
+            );
+        }
     }
 }

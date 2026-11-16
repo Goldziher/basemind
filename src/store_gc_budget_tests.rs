@@ -145,9 +145,7 @@ fn budget_eviction_keeps_group_memory_readable() {
     {
         let db = crate::index::IndexDb::open_with_memory(&cold.join(VIEWS_DIR).join("working"), &memory_dir)
             .expect("open index");
-        db.memory_by_key
-            .insert(b"k".to_vec(), b"v".to_vec())
-            .expect("write memory");
+        db.notes().insert(b"k".to_vec(), b"v".to_vec()).expect("write memory");
     }
 
     let report =
@@ -157,7 +155,7 @@ fn budget_eviction_keeps_group_memory_readable() {
     assert!(!cold.join(VIEWS_DIR).exists(), "the cold workspace's views are evicted");
     let db = crate::index::IndexDb::open_with_memory(&cold.join(VIEWS_DIR).join("working"), &memory_dir)
         .expect("reopen after eviction");
-    assert_eq!(db.memory_by_key.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
+    assert_eq!(db.notes().get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
 }
 
 #[test]

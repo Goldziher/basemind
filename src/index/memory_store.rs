@@ -28,17 +28,28 @@ use super::{FJALL_MAX_JOURNAL_BYTES, FJALL_WORKER_THREADS, IndexError, open_keys
 const MEMORY_CACHE_BYTES: u64 = 8 * 1_024 * 1_024;
 const MEMORY_BY_KEY: &str = "memory_by_key";
 
+/// What an open does about the store's version.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Version {
+    /// A writer: refuse a newer store, stamp one that carries no version.
+    Stamp,
+    /// A reader: refuse a newer store and write nothing.
+    Check,
+}
+
 /// An open group memory database plus its keyspace.
 pub(crate) struct MemoryDb {
     db: Database,
     pub(crate) memory_by_key: Keyspace,
+    /// Whether a writer open has held this handle to its version.
+    stamped: std::sync::atomic::AtomicBool,
     /// How many times [`MemoryDb::sync`] ran.
     #[cfg(all(test, feature = "memory"))]
     pub(crate) syncs: std::sync::atomic::AtomicU32,
 }
 
 impl MemoryDb {
-    fn open(dir: &Path) -> Result<Self, IndexError> {
+    fn open(dir: &Path, version: Version) -> Result<Self, IndexError> {
         std::fs::create_dir_all(dir).map_err(|source| IndexError::Io {
             path: dir.to_path_buf(),
             source,
@@ -48,14 +59,25 @@ impl MemoryDb {
             .worker_threads(FJALL_WORKER_THREADS)
             .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
             .open()?;
-        check_version(&db)?;
+        check_version(&db, version)?;
         let memory_by_key = open_keyspace(&db, MEMORY_BY_KEY)?;
         Ok(Self {
             db,
             memory_by_key,
+            stamped: std::sync::atomic::AtomicBool::new(version == Version::Stamp),
             #[cfg(all(test, feature = "memory"))]
             syncs: std::sync::atomic::AtomicU32::new(0),
         })
+    }
+
+    /// Stamp a handle a reader opened first, for the writer now joining it.
+    fn hold_to_version(&self, version: Version) -> Result<(), IndexError> {
+        use std::sync::atomic::Ordering;
+        if version == Version::Stamp && !self.stamped.load(Ordering::Acquire) {
+            check_version(&self.db, Version::Stamp)?;
+            self.stamped.store(true, Ordering::Release);
+        }
+        Ok(())
     }
 
     /// Fsync the journal. A note exists nowhere else, so unlike the code index (rebuilt from
@@ -87,9 +109,13 @@ pub(crate) const MEMORY_STORE_VER: u32 = 1;
 const STORE_META: &str = "store_meta";
 const STORE_VER_KEY: &[u8] = b"store_ver";
 
-/// Hold the store to its version. A store with none was written before the version existed and
-/// has the layout of version 1: it is stamped. A newer one is refused untouched.
-fn check_version(db: &Database) -> Result<(), IndexError> {
+/// Hold the store to its version. A newer one is refused untouched. A store with none was written
+/// before the version existed and has the layout of version 1: a writer stamps it, a reader takes
+/// it as it is and writes nothing, not even the keyspace the version lives in.
+fn check_version(db: &Database, version: Version) -> Result<(), IndexError> {
+    if version == Version::Check && !db.keyspace_exists(STORE_META) {
+        return Ok(());
+    }
     // Not one of the index's keyspaces, so not sized by their table: it holds one small key.
     let meta = db.keyspace(STORE_META, || super::index_keyspace_options(super::MEMTABLE_COLD_BYTES))?;
     let stored = meta
@@ -102,6 +128,7 @@ fn check_version(db: &Database) -> Result<(), IndexError> {
             current: MEMORY_STORE_VER,
         }),
         Some(stored) if stored == MEMORY_STORE_VER => Ok(()),
+        _ if version == Version::Check => Ok(()),
         // An older layout is migrated forward here, one step per version, before the stamp.
         _ => {
             meta.insert(STORE_VER_KEY, MEMORY_STORE_VER.to_be_bytes())?;
@@ -110,12 +137,24 @@ fn check_version(db: &Database) -> Result<(), IndexError> {
     }
 }
 
+/// Stamp the store at `dir` as written by a basemind one layout ahead of this one.
+#[cfg(all(test, feature = "memory"))]
+pub(crate) fn stamp_newer_for_test(dir: &Path) {
+    let db = Database::builder(dir).open().expect("open the store");
+    let meta = db
+        .keyspace(STORE_META, fjall::KeyspaceCreateOptions::default)
+        .expect("meta keyspace");
+    meta.insert(STORE_VER_KEY, (MEMORY_STORE_VER + 1).to_be_bytes())
+        .expect("stamp");
+    db.persist(PersistMode::SyncAll).expect("persist");
+}
+
 static OPEN_STORES: Mutex<Option<HashMap<PathBuf, Weak<MemoryDb>>>> = Mutex::new(None);
 
 /// Open (or join) the memory database at `dir`. Every caller in this process asking for the same
 /// directory gets the same handle, so several worktrees of one repo group never fight over the
 /// Fjall lock.
-pub(crate) fn open_shared(dir: &Path) -> Result<Arc<MemoryDb>, IndexError> {
+pub(crate) fn open_shared(dir: &Path, version: Version) -> Result<Arc<MemoryDb>, IndexError> {
     // Create the directory before canonicalising: a path that does not exist yet canonicalises to
     // itself, and to its resolved form (`/var` → `/private/var` on macOS) once it does, which would
     // register one store under two keys and make the second open hit the Fjall lock.
@@ -128,28 +167,29 @@ pub(crate) fn open_shared(dir: &Path) -> Result<Arc<MemoryDb>, IndexError> {
     let stores = guard.get_or_insert_with(HashMap::new);
     stores.retain(|_, weak| weak.strong_count() > 0);
     if let Some(open) = stores.get(&key).and_then(Weak::upgrade) {
+        open.hold_to_version(version)?;
         return Ok(open);
     }
-    let opened = Arc::new(MemoryDb::open(dir)?);
+    let opened = Arc::new(MemoryDb::open(dir, version)?);
     stores.insert(key, Arc::downgrade(&opened));
     Ok(opened)
 }
 
-/// Directory under a view for the empty placeholder store of a detached handle.
-const DETACHED_DIR: &str = "memory-detached.fjall";
+/// Directory under a view where builds before this one kept an empty stand-in store for a handle
+/// without memory. Nothing creates it any more; a writer open removes what is left of it.
+const RETIRED_PLACEHOLDER_DIR: &str = "memory-detached.fjall";
 
-/// A private, empty memory database for a view whose group store is held by another process. It is
-/// wiped on every open so nothing written to it can outlive the handle or be mistaken for real
-/// memory; callers gate memory operations on `IndexDb::memory_detached`.
-pub(crate) fn open_detached(view_dir: &Path) -> Result<Arc<MemoryDb>, IndexError> {
-    let dir = view_dir.join(DETACHED_DIR);
+/// Remove the stand-in store an older build left in `view_dir`. Best effort.
+pub(crate) fn remove_retired_placeholder(view_dir: &Path) {
+    let dir = view_dir.join(RETIRED_PLACEHOLDER_DIR);
     if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|source| IndexError::Io {
-            path: dir.clone(),
-            source,
-        })?;
+        let _ = std::fs::remove_dir_all(dir);
     }
-    open_shared(&dir)
+}
+
+/// Whether `view_db` still holds memory rows of the layout from before the group store.
+pub(crate) fn holds_legacy_rows(view_db: &Database) -> bool {
+    view_db.keyspace_exists(MEMORY_BY_KEY)
 }
 
 /// The only fields the merge needs; a `MemoryRecord` is stored as a named msgpack map, so unknown
@@ -194,7 +234,7 @@ fn merge_keyspace(from: &Keyspace, into: &Keyspace) -> Result<(), IndexError> {
 /// keyspace is a no-op, and the merge is commutative. The group store is persisted before the
 /// view's copy is deleted, so a crash between the two leaves duplicates, never a loss.
 pub(crate) fn migrate_legacy(view_db: &Database, memory: &MemoryDb) -> Result<(), IndexError> {
-    if !view_db.keyspace_exists(MEMORY_BY_KEY) {
+    if !holds_legacy_rows(view_db) {
         return Ok(());
     }
     let legacy = open_keyspace(view_db, MEMORY_BY_KEY)?;

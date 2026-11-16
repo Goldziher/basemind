@@ -298,7 +298,9 @@ pub enum IndexError {
     )]
     NewerSchema { stored: u32, current: u32 },
     /// The memory-notes store carries a version newer than this binary's. It is user-authored: never
-    /// wiped, never written by a binary that does not know its layout.
+    /// wiped, never written by a binary that does not know its layout. An open that meets one still
+    /// opens the code index ([`IndexDb::memory`] then refuses); this fails an open only when going
+    /// on would wipe memory rows that could not be moved into that store.
     #[error(
         "memory store written by a newer basemind (version {stored}); this binary understands {current} \
          — upgrade basemind"
@@ -381,28 +383,29 @@ pub struct IndexDb {
     pub(in crate::index) grep_bloom: Keyspace,
     #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
-    /// `memory_by_key`: scope + key → msgpack `MemoryRecord`. Lives in the per-repo-group
-    /// [`memory_store`], not in this view's database.
-    /// Always created for DB stability; used by `memory` feature tools.
-    #[allow(dead_code)]
-    pub(crate) memory_by_key: Keyspace,
     /// First fatal commit error (disk full, poisoned handle) seen through any clone of this handle;
     /// shared so the writers record it where it happens and the scan polls one place.
     pub(crate) fault: std::sync::Arc<fault::IndexFault>,
     /// The database sequence number as of the last journal fsync made through this handle; see
     /// [`IndexDb::sync_tail`].
     synced_seqno: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Keeps the shared group memory database open for as long as any `IndexDb` clone uses its
-    /// keyspaces above.
-    _memory: std::sync::Arc<memory_store::MemoryDb>,
-    /// True when the group memory store was held by another process at open and the three memory
-    /// keyspaces above are an empty private placeholder: the code index is fully usable, but memory
-    /// reads and writes must go through the process that owns the store (the daemon). See
-    /// [`IndexDb::open_tolerating_held_memory`].
-    memory_detached: bool,
+    /// The per-repo-group memory database (`memory_by_key`: scope + key → msgpack `MemoryRecord`),
+    /// kept open for as long as any clone of this handle lives, or why this handle has none. The
+    /// code index is fully usable either way.
+    memory: Result<std::sync::Arc<memory_store::MemoryDb>, MemoryUnavailable>,
     /// True when this open found an index written under another [`INDEX_SCHEMA_VER`] and discarded
     /// it, so the database is empty while the file map that fed it may still be populated.
     wiped_on_open: bool,
+}
+
+/// Why an [`IndexDb`] holds no memory notes. Memory operations on such a handle are refused with
+/// this reason, or forwarded to the process that owns the store; nothing else is affected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryUnavailable {
+    /// Another process (the daemon) holds the group store. Only a read-only open tolerates this.
+    HeldElsewhere,
+    /// A newer basemind wrote the group store in a layout this binary does not know.
+    NewerStore { stored: u32, current: u32 },
 }
 
 /// Flush/compaction threads per index database. fjall defaults to `min(cores, 4)` per `Database`, and
@@ -497,16 +500,22 @@ impl IndexDb {
         Self::open_inner(view_dir, memory_dir, true)
     }
 
-    /// Whether the memory keyspaces are an empty placeholder because another process owns the group
-    /// store. Memory operations on a detached handle must be refused or forwarded, never served.
+    /// Whether this handle holds no memory notes (see [`IndexDb::memory`]). Memory operations on
+    /// a detached handle must be refused or forwarded, never served.
     pub fn memory_detached(&self) -> bool {
-        self.memory_detached
+        self.memory.is_err()
     }
 
-    /// The group memory database behind [`Self::memory_by_key`].
-    #[cfg(feature = "memory")]
-    pub(crate) fn memory_db(&self) -> &memory_store::MemoryDb {
-        &self._memory
+    /// The group memory database, or why this handle has none.
+    #[cfg(any(test, feature = "memory"))]
+    pub(crate) fn memory(&self) -> Result<&memory_store::MemoryDb, MemoryUnavailable> {
+        self.memory.as_deref().map_err(|why| *why)
+    }
+
+    /// The notes keyspace of a handle that has one.
+    #[cfg(test)]
+    pub(crate) fn notes(&self) -> &Keyspace {
+        &self.memory().expect("this handle holds the notes").memory_by_key
     }
 
     /// True when this open discarded an index written under another schema revision; the caller
@@ -537,19 +546,36 @@ impl IndexDb {
             .max_journaling_size(journal_bytes)
             .open()
             .map_err(durability::classify_open_error)?;
-        let (memory, memory_detached) = match memory_store::open_shared(memory_dir) {
-            Ok(memory) => (memory, false),
+        let version = if tolerate_held_memory {
+            memory_store::Version::Check
+        } else {
+            memory_store::remove_retired_placeholder(view_dir);
+            memory_store::Version::Stamp
+        };
+        let memory = match memory_store::open_shared(memory_dir, version) {
+            Ok(memory) => Ok(memory),
             Err(IndexError::Fjall(fjall::Error::Locked)) if tolerate_held_memory => {
                 tracing::debug!(
                     memory_dir = %memory_dir.display(),
                     "group memory store is held by another process; memory is unavailable locally"
                 );
-                (memory_store::open_detached(view_dir)?, true)
+                Err(MemoryUnavailable::HeldElsewhere)
+            }
+            // The notes of a newer basemind are not this binary's to read or write, and no reason
+            // to refuse the code index of every worktree in the group. ~keep
+            Err(IndexError::NewerMemoryStore { stored, current }) => {
+                tracing::warn!(
+                    memory_dir = %memory_dir.display(),
+                    stored,
+                    current,
+                    "memory store written by a newer basemind; memory is unavailable until basemind is upgraded"
+                );
+                Err(MemoryUnavailable::NewerStore { stored, current })
             }
             Err(error) => return Err(error),
         };
-        if !memory_detached && !tolerate_held_memory {
-            memory_store::migrate_legacy(&db, &memory)?;
+        if let (Ok(memory), false) = (&memory, tolerate_held_memory) {
+            memory_store::migrate_legacy(&db, memory)?;
         }
         let mut meta = open_keyspace(&db, "meta")?;
         let on_disk_ver = meta
@@ -567,6 +593,15 @@ impl IndexDb {
             return Err(IndexError::NeedsRescan {
                 stored,
                 current: INDEX_SCHEMA_VER,
+            });
+        }
+        // Memory rows of the old layout that could not be moved out would go with the wipe. ~keep
+        if let (true, Err(MemoryUnavailable::NewerStore { stored, current })) = (wiped_on_open, &memory)
+            && memory_store::holds_legacy_rows(&db)
+        {
+            return Err(IndexError::NewerMemoryStore {
+                stored: *stored,
+                current: *current,
             });
         }
         if wiped_on_open {
@@ -600,11 +635,14 @@ impl IndexDb {
         let code_bm25_by_path = open_keyspace(&db, "code_bm25_by_path")?;
         let grep_bloom = open_keyspace(&db, "grep_bloom")?;
         let embeddings = open_keyspace(&db, "embeddings")?;
-        let memory_by_key = memory.memory_by_key.clone();
 
-        meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
+        // The read-only open writes nothing: no stamp, no flush. An index it finds unstamped is a
+        // new one, and the writer that fills it stamps it. ~keep
+        if !tolerate_held_memory {
+            meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
+        }
 
-        if db.journal_disk_space().unwrap_or(0) > JOURNAL_FLUSH_ON_OPEN_BYTES {
+        if !tolerate_held_memory && db.journal_disk_space().unwrap_or(0) > JOURNAL_FLUSH_ON_OPEN_BYTES {
             // Best-effort: the flush only spares the NEXT open a replay. On a full or read-only disk
             // it fails, and that must not make the workspace unopenable.
             if let Err(error) = durability::rotate_memtables([
@@ -651,11 +689,9 @@ impl IndexDb {
             code_bm25_by_path,
             grep_bloom,
             embeddings,
-            memory_by_key,
             fault: std::sync::Arc::default(),
             synced_seqno: std::sync::Arc::default(),
-            _memory: memory,
-            memory_detached,
+            memory,
             wiped_on_open,
         })
     }
@@ -817,135 +853,5 @@ impl IndexDb {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Bytes written into one keyspace to provoke a rotation. Above every tier in
-    /// [`KEYSPACE_MEMTABLE_BYTES`], and far below fjall's unconfigured 64 MiB default — so the
-    /// flush this triggers happens *because* the keyspace was sized, and would not happen at the
-    /// default. Also well below fjall's 512 MiB `max_journaling_size`, which is the only other
-    /// thing that could rotate a memtable here.
-    const ROTATION_PROBE_BYTES: usize = 24 * 1_024 * 1_024;
-
-    fn write_until_rotation_probe(keyspace: &Keyspace) {
-        let value = vec![0u8; 4_096];
-        for i in 0..(ROTATION_PROBE_BYTES / value.len()) {
-            keyspace
-                .insert(i.to_be_bytes(), value.as_slice())
-                .expect("probe insert");
-        }
-    }
-
-    /// True once fjall has flushed at least one memtable of `keyspace` to disk. Rotation is
-    /// requested synchronously on insert but performed by a background worker, so this polls.
-    fn flushed_within(keyspace: &Keyspace, timeout: std::time::Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            if keyspace.disk_space() > 0 {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        keyspace.disk_space() > 0
-    }
-
-    /// fjall has no getter for the compression policy, so observe it on disk: highly compressible
-    /// rows flushed to L0 (which the default policy leaves raw) must occupy far less than their
-    /// raw size, and must still read back after a reopen.
-    #[test]
-    fn index_keyspaces_compress_level_zero_and_round_trip() {
-        const ROWS: usize = 512;
-        const VALUE_LEN: usize = 4_096;
-        let dir = tempfile::tempdir().unwrap();
-        {
-            let db = IndexDb::open(dir.path()).unwrap();
-            for ks in [&db.code_bm25_postings, &db.refs_by_def, &db.memory_by_key] {
-                for i in 0..ROWS {
-                    ks.insert(i.to_be_bytes(), vec![7u8; VALUE_LEN]).unwrap();
-                }
-                ks.rotate_memtable_and_wait().unwrap();
-                let raw = (ROWS * VALUE_LEN) as u64;
-                assert!(
-                    ks.disk_space() < raw / 4,
-                    "L0 table of {raw} raw bytes occupies {} on disk; LZ4 is not applied",
-                    ks.disk_space()
-                );
-            }
-        }
-        let db = IndexDb::open(dir.path()).unwrap();
-        let row = db
-            .code_bm25_postings
-            .get(7usize.to_be_bytes())
-            .unwrap()
-            .expect("row survives reopen");
-        assert_eq!(&*row, vec![7u8; VALUE_LEN].as_slice());
-    }
-
-    #[test]
-    fn probe_candidates_walk_up_the_ancestor_directories() {
-        assert_eq!(
-            probe_candidates("a/b/c.ts").collect::<Vec<_>>(),
-            vec!["a/b/c.ts", "a/b", "a"]
-        );
-        assert_eq!(
-            probe_candidates("tsconfig.json").collect::<Vec<_>>(),
-            vec!["tsconfig.json"]
-        );
-    }
-
-    #[test]
-    fn keyspace_memtable_table_covers_every_partition() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = IndexDb::open(dir.path()).unwrap();
-        let mut opened: Vec<String> = db.db.list_keyspace_names().iter().map(ToString::to_string).collect();
-        opened.extend(db._memory.keyspace_names());
-        opened.sort();
-        let mut sized: Vec<String> = KEYSPACE_MEMTABLE_BYTES
-            .iter()
-            .map(|(name, _)| (*name).to_string())
-            .collect();
-        sized.sort();
-        assert_eq!(
-            opened, sized,
-            "every opened keyspace must be sized by the table, and the table must name no keyspace \
-             that is never opened — an unlisted name silently falls back to the cold tier"
-        );
-    }
-
-    #[test]
-    fn memtable_ceiling_is_bounded() {
-        let partitions = u64::try_from(KEYSPACE_MEMTABLE_BYTES.len()).expect("keyspace count fits a u64");
-        let unsized_ceiling = partitions * (1 + MEMTABLE_SEALED_LIMIT) * 64 * 1_024 * 1_024;
-        // A const block, because both sides are constants: this then fails the build rather than a
-        // test run, which is the right moment to learn that a new keyspace blew the ceiling. ~keep
-        const { assert!(INDEX_MEMTABLE_CEILING_BYTES <= 1_024 * 1_024 * 1_024) };
-        assert!(
-            INDEX_MEMTABLE_CEILING_BYTES * 4 <= unsized_ceiling,
-            "sizing must buy at least a 4x cut against fjall's 64 MiB default"
-        );
-    }
-
-    /// The load-bearing half of the sizing: fjall persists `max_memtable_size` when the keyspace is
-    /// *created* and recovers it on every later open, ignoring the create options for a keyspace
-    /// that already exists. A test that only checked a freshly created DB would pass even if the
-    /// value never survived a restart — which is the state every long-lived index is actually in.
-    ///
-    /// `max_memtable_size` has no public getter, so this observes the size behaviourally: write
-    /// more than the configured size (but far less than fjall's 64 MiB default) into a cold-tier
-    /// keyspace *after* reopening, and require that fjall rotated and flushed it.
-    #[test]
-    fn configured_memtable_size_survives_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        {
-            let db = IndexDb::open(dir.path()).unwrap();
-            assert_eq!(db.memory_by_key.disk_space(), 0, "nothing written yet");
-        }
-        let db = IndexDb::open(dir.path()).unwrap();
-        write_until_rotation_probe(&db.memory_by_key);
-        assert!(
-            flushed_within(&db.memory_by_key, std::time::Duration::from_secs(30)),
-            "a reopened keyspace must still rotate at its configured {MEMTABLE_COLD_BYTES}-byte \
-             memtable size; no flush means fjall recovered the 64 MiB default instead"
-        );
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;
