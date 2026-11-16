@@ -1,0 +1,15 @@
+[package]
+name = "rust-gold"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Rust ground truth for the basemind eval, parsed with syn (independent of tree-sitter)"
+license = "MIT"
+
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+
+# Its own workspace: this crate is a benchmark tool, not a member of basemind's.
+[workspace]
