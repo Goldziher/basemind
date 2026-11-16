@@ -21,6 +21,8 @@ DAY = 24 * 3600
 MINUTE = 60
 # Past the launcher's default of 14 unused days.
 LONG_AGO = 30 * DAY
+# What a fake `basemind` is run with: keep running, as a `serve` or a daemon would.
+RUN_FOR_A_WHILE = ["-c", "import time; time.sleep(300)"]
 
 
 def alive(pid: int) -> bool:
@@ -46,6 +48,16 @@ def wait_until_started_from(pid: int, binary: Path) -> None:
             return
         time.sleep(0.02)
     raise AssertionError(f"process {pid} never showed {binary} as its command: {out.stdout!r}")
+
+
+def fake_basemind(binary: Path) -> None:
+    """Make `binary` a long-running stand-in for a `basemind`, started as `binary RUN_FOR_A_WHILE`.
+
+    A symlink to this test's Python, which ignores the name it runs under. Not `sleep`: the uutils
+    coreutils of Ubuntu 26.04 refuse to run under a name other than their own, and macOS kills a
+    copied system binary at exec.
+    """
+    binary.symlink_to(os.path.realpath(sys.executable))
 
 
 def windows_path(path: Path) -> str:
@@ -89,8 +101,7 @@ class OtherVersionsTests(unittest.TestCase):
         """
         directory = self.version_dir(version)
         binary = directory / "basemind"
-        # A symlink, not a copy: macOS kills a copied system binary at exec.
-        binary.symlink_to(shutil.which("sleep"))
+        fake_basemind(binary)
         if last_used_secs_ago is not None:
             (directory / ".last-used").write_text("")
             age(directory / ".last-used", last_used_secs_ago)
@@ -98,7 +109,7 @@ class OtherVersionsTests(unittest.TestCase):
 
     def session(self, binary: Path) -> subprocess.Popen:
         """A `serve`: a child of its host, which this test stands in for."""
-        process = subprocess.Popen([binary, "300"])
+        process = subprocess.Popen([binary, *RUN_FOR_A_WHILE])
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
         wait_until_started_from(process.pid, binary)
@@ -107,7 +118,7 @@ class OtherVersionsTests(unittest.TestCase):
     def daemon(self, binary: Path) -> int:
         """A daemon: started by a shell that exits at once, so it has no parent to speak for it."""
         out = subprocess.run(
-            ["sh", "-c", '"$1" 300 >/dev/null 2>&1 & echo $!', "sh", str(binary)],
+            ["sh", "-c", '"$@" >/dev/null 2>&1 & echo $!', "sh", str(binary), *RUN_FOR_A_WHILE],
             capture_output=True,
             text=True,
             check=True,
@@ -279,7 +290,7 @@ class OtherVersionsTests(unittest.TestCase):
         directory = self.cache / "basemind/bin" / version
         directory.mkdir(parents=True)
         binary = directory / "basemind"
-        binary.symlink_to(shutil.which("sleep"))
+        fake_basemind(binary)
         age(directory, installed_secs_ago)
         return binary
 
