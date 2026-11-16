@@ -24,9 +24,12 @@ fi
 
 # Name the harness once, for `serve` and for the hooks (which run through this launcher), so both ~keep
 # derive the same agent id. An explicit BASEMIND_HOST wins; none is set when no harness is found. ~keep
-# Observed (docs/comms-v2.md): Claude Code sets CLAUDECODE for its hooks and MCP servers. Codex ~keep
-# 0.169 sets PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT (never CLAUDECODE) for plugin hooks and nothing ~keep
-# for MCP servers, which it starts itself, so `serve` knows it by its parent process. ~keep
+# Observed (docs/comms-v2.md): Claude Code sets CLAUDECODE for its hooks and MCP servers, and never ~keep
+# PLUGIN_ROOT. Codex 0.169 sets PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT for plugin hooks, which also ~keep
+# inherit the environment Codex was started in (CLAUDECODE, when started from Claude Code), so ~keep
+# its markers are tested first. Codex gives MCP servers no marker: its shipped config starts them ~keep
+# through node, which sets BASEMIND_HOST; a config that starts this launcher directly is known by ~keep
+# its parent process. ~keep
 parent_is_codex() {
   local parent
   parent="$(ps -o comm= -p "$PPID" 2>/dev/null)" || return 1
@@ -37,9 +40,11 @@ if [ -z "${BASEMIND_HOST:-}" ]; then
     export BASEMIND_HOST=cursor
   elif [ -n "${COPILOT_CLI:-}" ]; then
     export BASEMIND_HOST=copilot
+  elif [ -n "${CODEX_PLUGIN_ROOT:-}" ] || { [ -n "${PLUGIN_ROOT:-}" ] && [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; }; then
+    export BASEMIND_HOST=codex
   elif [ -n "${CLAUDECODE:-}" ]; then
     export BASEMIND_HOST=claude
-  elif [ -n "${CODEX_PLUGIN_ROOT:-}" ] || { [ -n "${PLUGIN_ROOT:-}" ] && [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; } || parent_is_codex; then
+  elif parent_is_codex; then
     export BASEMIND_HOST=codex
   elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
     export BASEMIND_HOST=claude

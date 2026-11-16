@@ -514,6 +514,12 @@ class HostDetectionTests(unittest.TestCase):
         codex.symlink_to("/bin/bash")
         self.assertEqual(self.host(parent=str(codex)), "codex")
 
+    def test_codex_started_from_claude_code_names_codex_for_its_hooks(self) -> None:
+        plugin = str(self.root / "plugin")
+        # Codex hooks inherit the environment Codex was started in, CLAUDECODE included.
+        self.assertEqual(self.host(CLAUDECODE="1", PLUGIN_ROOT=plugin, CLAUDE_PLUGIN_ROOT=plugin), "codex")
+        self.assertEqual(self.host(CLAUDECODE="1", CODEX_PLUGIN_ROOT=plugin), "codex")
+
     def test_no_harness_leaves_the_host_unset(self) -> None:
         self.assertEqual(self.host(), "unset")
 

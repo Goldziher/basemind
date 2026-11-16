@@ -33,11 +33,11 @@ code follows this document. Where the document leaves a point open, the code doe
   then runs one retention sweep. The `archive` change of `agent_threads` stays creator-only.
 - `BASEMIND_HOST` is set identically for `serve` and the hooks by the plugin launcher
   `plugin/.ai-rulez/scripts/mcp-launch.sh`. An existing value is kept; else `cursor`
-  (`CURSOR_PLUGIN_ROOT`), `copilot` (`COPILOT_CLI`), `claude` (`CLAUDECODE`), `codex`
-  (`CODEX_PLUGIN_ROOT`, or `PLUGIN_ROOT` together with `CLAUDE_PLUGIN_ROOT`, or the launcher's
-  parent process is `codex`), `claude` (`CLAUDE_PLUGIN_ROOT` alone), `gemini` (`GEMINI_CLI`); none
-  otherwise. `scripts/codex-mcp-launch.mjs` sets `codex` for the repository's own development
-  config.
+  (`CURSOR_PLUGIN_ROOT`), `copilot` (`COPILOT_CLI`), `codex` (`CODEX_PLUGIN_ROOT`, or `PLUGIN_ROOT`
+  together with `CLAUDE_PLUGIN_ROOT`: tested before `CLAUDECODE`, which a Codex started from Claude
+  Code passes on to its hooks), `claude` (`CLAUDECODE`), `codex` (the launcher's parent process is
+  `codex`), `claude` (`CLAUDE_PLUGIN_ROOT` alone), `gemini` (`GEMINI_CLI`); none otherwise.
+  `scripts/codex-mcp-launch.mjs` sets `codex` for the repository's own development config.
 
 ## Terms
 
