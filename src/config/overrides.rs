@@ -9,9 +9,17 @@
 //! so a new field added here lights up in all four surfaces (TOML / CLI /
 //! MCP / env) without any further wiring.
 
+use std::path::Path;
+
 use clap::Args;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use super::documents::{ApiKey, SummarizationStrategy};
+use super::layered::OverrideLayer;
+use super::source::{ConfigSource, ProvenanceMap};
+use super::v1::ConfigV1;
+use super::{ConfigError, LoadedConfig, OutputFormat};
 
 /// Optional per-call overrides for the document tier. Backs `#[command(flatten)]`
 /// on `ScanArgs` / `ServeArgs`. Never flattened into an MCP request type: every
@@ -183,5 +191,248 @@ impl DocumentsCliOverrides {
             || self.llm_timeout_secs.is_some()
             || self.llm_max_retries.is_some()
             || self.llm_max_tokens.is_some()
+    }
+}
+
+impl OverrideLayer for DocumentsCliOverrides {
+    fn apply(&self, config: &mut ConfigV1, source: ConfigSource, provenance: Option<&mut ProvenanceMap>) {
+        apply_documents_overrides(config, self, source, provenance);
+    }
+}
+
+/// [`load_with_layers`](super::load_with_layers) over the clap-parsed override struct: the TOML
+/// config (if present) plus optional env / CLI layers, fully resolved with provenance.
+///
+/// `env_overrides` and `cli_overrides` are accepted separately so future
+/// tooling can report "this came from `BASEMIND_*`" vs "this came from
+/// `--flag`" distinctly. Today clap collapses both into a single
+/// `DocumentsCliOverrides` per command — callers typically pass the parsed
+/// `args.documents` as `cli_overrides` and `None` as `env_overrides`.
+pub fn load_with_overrides(
+    root: &Path,
+    env_overrides: Option<DocumentsCliOverrides>,
+    cli_overrides: Option<DocumentsCliOverrides>,
+) -> Result<LoadedConfig, ConfigError> {
+    super::load_with_layers(root, env_overrides, cli_overrides)
+}
+
+/// Apply a `DocumentsCliOverrides` layer onto `config`, optionally recording per-field
+/// provenance into `provenance`. Pass `None` for `provenance` when the caller does not
+/// care about the ledger (e.g. the MCP per-query override path, which throws the ledger
+/// away — skipping the [`ProvenanceMap`] allocation entirely on the common path).
+fn apply_documents_overrides(
+    config: &mut ConfigV1,
+    overrides: &DocumentsCliOverrides,
+    source: ConfigSource,
+    mut provenance: Option<&mut ProvenanceMap>,
+) {
+    let d = &mut config.documents;
+    if let Some(v) = overrides.enabled {
+        d.enabled = v;
+        record_provenance(&mut provenance, source, "documents.enabled");
+    }
+    if let Some(v) = overrides.max_characters {
+        d.max_characters = v;
+        record_provenance(&mut provenance, source, "documents.max_characters");
+    }
+    if let Some(v) = overrides.overlap {
+        d.overlap = v;
+        record_provenance(&mut provenance, source, "documents.overlap");
+    }
+    if let Some(v) = overrides.embedding_preset.clone() {
+        d.embedding_preset = v;
+        record_provenance(&mut provenance, source, "documents.embedding_preset");
+    }
+    if let Some(v) = overrides.embed {
+        d.embed = v;
+        record_provenance(&mut provenance, source, "documents.embed");
+    }
+    if let Some(v) = overrides.language_auto_detect {
+        d.language.auto_detect = v;
+        record_provenance(&mut provenance, source, "documents.language.auto_detect");
+    }
+    if let Some(v) = overrides.language_min_confidence {
+        d.language.min_confidence = v;
+        record_provenance(&mut provenance, source, "documents.language.min_confidence");
+    }
+    if let Some(v) = overrides.language_detect_multiple {
+        d.language.detect_multiple = v;
+        record_provenance(&mut provenance, source, "documents.language.detect_multiple");
+    }
+    if let Some(v) = overrides.reranker_enabled {
+        d.reranker.enabled = v;
+        record_provenance(&mut provenance, source, "documents.reranker.enabled");
+    }
+    if let Some(v) = overrides.reranker_preset.clone() {
+        d.reranker.preset = v;
+        record_provenance(&mut provenance, source, "documents.reranker.preset");
+    }
+    if let Some(v) = overrides.reranker_top_k {
+        d.reranker.top_k = v;
+        record_provenance(&mut provenance, source, "documents.reranker.top_k");
+    }
+    if let Some(v) = overrides.keywords_enabled {
+        d.keywords.enabled = v;
+        record_provenance(&mut provenance, source, "documents.keywords.enabled");
+    }
+    if let Some(v) = overrides.keywords_max_keywords {
+        d.keywords.max_keywords = v;
+        record_provenance(&mut provenance, source, "documents.keywords.max_keywords");
+    }
+    if let Some(v) = overrides.keywords_min_score {
+        d.keywords.min_score = v;
+        record_provenance(&mut provenance, source, "documents.keywords.min_score");
+    }
+    if let Some(v) = overrides.ner_enabled {
+        d.ner.enabled = v;
+        record_provenance(&mut provenance, source, "documents.ner.enabled");
+    }
+    if let Some(v) = overrides.summarization_enabled {
+        d.summarization.enabled = v;
+        record_provenance(&mut provenance, source, "documents.summarization.enabled");
+    }
+    if let Some(v) = overrides.summarization_strategy.as_deref() {
+        let applied = match v.to_ascii_lowercase().as_str() {
+            "extractive" => {
+                d.summarization.strategy = SummarizationStrategy::Extractive;
+                true
+            }
+            "abstractive" => {
+                d.summarization.strategy = SummarizationStrategy::Abstractive;
+                true
+            }
+            _ => {
+                tracing::warn!(value = %v, "unknown summarization_strategy value; ignoring");
+                false
+            }
+        };
+        if applied {
+            record_provenance(&mut provenance, source, "documents.summarization.strategy");
+        }
+    }
+    if let Some(v) = overrides.summarization_max_tokens {
+        d.summarization.max_tokens = Some(v);
+        record_provenance(&mut provenance, source, "documents.summarization.max_tokens");
+    }
+    if let Some(v) = overrides.output_format.as_deref() {
+        let applied = match v.to_ascii_lowercase().as_str() {
+            "json" => {
+                d.output.format = OutputFormat::Json;
+                true
+            }
+            "toon" => {
+                d.output.format = OutputFormat::Toon;
+                true
+            }
+            _ => {
+                tracing::warn!(value = %v, "unknown output_format value; ignoring");
+                false
+            }
+        };
+        if applied {
+            record_provenance(&mut provenance, source, "documents.output.format");
+        }
+    }
+    apply_llm_overrides(config, overrides, source, provenance);
+}
+
+/// Apply the `llm.*` slice of `DocumentsCliOverrides` onto `config.llm`. Split
+/// out so `apply_documents_overrides` stays readable and the LLM branches are
+/// easy to audit in isolation (api_key carries the secret-handling rule).
+fn apply_llm_overrides(
+    config: &mut ConfigV1,
+    overrides: &DocumentsCliOverrides,
+    source: ConfigSource,
+    mut provenance: Option<&mut ProvenanceMap>,
+) {
+    let llm = &mut config.llm;
+    if let Some(v) = overrides.llm_model.clone() {
+        llm.model = v;
+        record_provenance(&mut provenance, source, "llm.model");
+    }
+    if let Some(v) = overrides.llm_api_key.clone() {
+        llm.api_key = ApiKey::Literal(v);
+        record_provenance(&mut provenance, source, "llm.api_key");
+    }
+    if let Some(v) = overrides.llm_base_url.clone() {
+        llm.base_url = Some(v);
+        record_provenance(&mut provenance, source, "llm.base_url");
+    }
+    if let Some(v) = overrides.llm_temperature {
+        llm.temperature = Some(v);
+        record_provenance(&mut provenance, source, "llm.temperature");
+    }
+    if let Some(v) = overrides.llm_timeout_secs {
+        llm.timeout_secs = Some(v);
+        record_provenance(&mut provenance, source, "llm.timeout_secs");
+    }
+    if let Some(v) = overrides.llm_max_retries {
+        llm.max_retries = Some(v);
+        record_provenance(&mut provenance, source, "llm.max_retries");
+    }
+    if let Some(v) = overrides.llm_max_tokens {
+        llm.max_tokens = Some(v);
+        record_provenance(&mut provenance, source, "llm.max_tokens");
+    }
+}
+
+/// Record `source` for a single config leaf into the provenance ledger, skipping
+/// the bookkeeping entirely when the caller passed `None` (the MCP override path).
+fn record_provenance(provenance: &mut Option<&mut ProvenanceMap>, source: ConfigSource, key: &'static str) {
+    if let Some(p) = provenance.as_mut() {
+        p.insert(key, source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::layered::DOCUMENT_LEAVES;
+    use super::*;
+
+    /// Regression for I8: an unknown `output_format` must skip only that field —
+    /// it must NOT short-circuit `apply_documents_overrides` before the tail call
+    /// to `apply_llm_overrides`, which would silently drop every `llm.*` override.
+    #[test]
+    fn invalid_output_format_still_applies_llm_overrides() {
+        let mut config = ConfigV1::with_defaults();
+        let mut overrides = DocumentsCliOverrides::empty();
+        overrides.output_format = Some("garbage".to_string());
+        overrides.llm_model = Some("gpt-test".to_string());
+
+        let mut provenance = ProvenanceMap::new();
+        for path in DOCUMENT_LEAVES {
+            provenance.insert(path, ConfigSource::Default);
+        }
+        apply_documents_overrides(&mut config, &overrides, ConfigSource::Cli, Some(&mut provenance));
+
+        assert_eq!(config.llm.model, "gpt-test");
+        assert_eq!(provenance.get("llm.model").copied(), Some(ConfigSource::Cli));
+        assert_eq!(
+            provenance.get("documents.output.format").copied(),
+            Some(ConfigSource::Default)
+        );
+    }
+
+    /// A valid `output_format` applies the field and records its provenance, and
+    /// still threads through to the llm overrides.
+    #[test]
+    fn valid_output_format_applies_field_and_llm_overrides() {
+        let mut config = ConfigV1::with_defaults();
+        let mut overrides = DocumentsCliOverrides::empty();
+        overrides.output_format = Some("TOON".to_string());
+        overrides.llm_model = Some("gpt-test".to_string());
+
+        let mut provenance = ProvenanceMap::new();
+        for path in DOCUMENT_LEAVES {
+            provenance.insert(path, ConfigSource::Default);
+        }
+        apply_documents_overrides(&mut config, &overrides, ConfigSource::Cli, Some(&mut provenance));
+
+        assert_eq!(config.documents.output.format, OutputFormat::Toon);
+        assert_eq!(
+            provenance.get("documents.output.format").copied(),
+            Some(ConfigSource::Cli)
+        );
+        assert_eq!(config.llm.model, "gpt-test");
     }
 }

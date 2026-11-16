@@ -137,7 +137,7 @@ pub fn clamp_daemon_config(config: &mut Config) {
 /// `basemind.toml` falls back to defaults; only a genuine parse / IO / validation error propagates.
 /// The daemon caps are applied either way.
 pub fn load_daemon(root: &Path) -> Result<Config, ConfigError> {
-    let mut config = match super::load_with_overrides(root, None, None) {
+    let mut config = match super::load_with_layers::<super::NoOverrides>(root, None, None) {
         Ok(loaded) => loaded.config,
         Err(ConfigError::NotFound(_)) => super::default_for_root(root),
         Err(error) => return Err(error),

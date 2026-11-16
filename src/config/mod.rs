@@ -24,8 +24,8 @@ pub use documents::{
     OcrBackend, OcrConfig, OutputConfig, OutputFormat, RerankerConfig, SecretString, SummarizationConfig,
     SummarizationStrategy,
 };
-pub use layered::{ConfigLayers, LoadedConfig, defaults_only, merge_layers};
-pub use overrides::DocumentsCliOverrides;
+pub use layered::{ConfigLayers, LoadedConfig, NoOverrides, OverrideLayer, defaults_only, merge_layers};
+pub use overrides::{DocumentsCliOverrides, load_with_overrides};
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
 pub use source::{ConfigSource, ProvenanceMap};
 pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig, Visibility};
@@ -98,17 +98,12 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
 }
 
 /// Load the TOML config (if present) plus optional env / CLI override layers,
-/// produce a fully-resolved `LoadedConfig` with provenance.
-///
-/// `env_overrides` and `cli_overrides` are accepted separately so future
-/// tooling can report "this came from `BASEMIND_*`" vs "this came from
-/// `--flag`" distinctly. Today clap collapses both into a single
-/// `DocumentsCliOverrides` per command — callers typically pass the parsed
-/// `args.documents` as `cli_overrides` and `None` as `env_overrides`.
-pub fn load_with_overrides(
+/// produce a fully-resolved `LoadedConfig` with provenance. A caller with no
+/// override layer passes `None` for both, typed [`NoOverrides`].
+pub fn load_with_layers<O: OverrideLayer>(
     root: &Path,
-    env_overrides: Option<DocumentsCliOverrides>,
-    cli_overrides: Option<DocumentsCliOverrides>,
+    env_overrides: Option<O>,
+    cli_overrides: Option<O>,
 ) -> Result<LoadedConfig, ConfigError> {
     let toml_file = match load(root) {
         Ok(cfg) => Some(cfg),
