@@ -1,16 +1,27 @@
 //! Upgrade path: an index built by an OLDER released binary, opened by this build against the SAME
 //! data home.
 //!
-//! The old binary comes from the per-version cache of the plugin launchers up to 0.33
-//! (`$XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind`; later launchers install under
-//! `versions/`, which holds no release this test drives) or from `BASEMIND_UPGRADE_FROM_BIN`.
-//! When none is present the test checks nothing and says so in a `SKIP:` line on stderr that the
-//! harness does not capture; a `BASEMIND_UPGRADE_FROM_BIN` that names no file fails it. It is a
-//! developer / release-gate check, not a hermetic one. Per old binary it asserts that:
+//! The old binaries come from `BASEMIND_UPGRADE_FROM_BIN` (a path list: `:` separated on Unix, `;` on
+//! Windows) or from the plugin launcher's per-version cache
+//! (`$XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind`, written by launchers up to 0.33;
+//! later launchers install under `versions/`, which holds no release this test drives). CI downloads
+//! checksum-verified release binaries into the variable (`scripts/fetch-release-binaries.sh`). With
+//! no binary the test
+//! checks nothing: locally it says so in a `SKIP:` line on stderr that the harness does not capture;
+//! under `CI` it fails, so a pipeline that stops supplying binaries cannot go green. A
+//! `BASEMIND_UPGRADE_FROM_BIN` entry that names no file fails it either way.
 //!
-//! - prose, data and config files left the code map and live only in the document tier;
+//! The index shape changed once inside the supported window: through 0.28 the code map held prose,
+//! data and config files; from 0.29 it holds code only and those files live in the document tier
+//! (measured against the published binaries: 0.27.0, 0.27.4 and 0.28.0 outline `README.md`, 0.29.0
+//! through 0.33.0 refuse it). Each old binary is therefore checked against the premise its release
+//! actually has, then the upgrade is asserted:
+//!
+//! - an old release that code-maps prose has it migrated to the document tier, and the migrating
+//!   scan reports what it reclaimed;
+//! - prose, data and config files are out of the code map and code files stay in it;
 //! - symbol signatures are the short, header-only form;
-//! - the blobs and rows the old shape left behind are reclaimed (no orphan blobs);
+//! - no orphan blobs remain;
 //! - a second rescan is a no-op and the blob set stops changing;
 //! - opening the upgraded data with the old binary again fails safe (it works, never corrupts) and
 //!   converges once more on re-upgrade.
@@ -35,18 +46,58 @@ const NON_CODE: &[&str] = &[
     "Cargo.toml",
 ];
 
-/// Env var naming one old release binary to upgrade from, instead of the launcher's cache.
+/// Env var naming the old release binaries to upgrade from (a path list), instead of the
+/// launcher's cache.
 const PIN_ENV: &str = "BASEMIND_UPGRADE_FROM_BIN";
 
+/// Oldest release minor whose CLI shape this test drives (`--root`, `--json`, `code files`).
+const OLDEST_MINOR: u32 = 27;
+
+/// First release minor whose code map holds code only; older ones also map prose, data and config.
+const FIRST_CODE_ONLY_MINOR: u32 = 29;
+
+/// Minor of the build under test: a release of the same minor is the newest one to upgrade from.
+fn current_minor() -> u32 {
+    env!("CARGO_PKG_VERSION")
+        .split('.')
+        .nth(1)
+        .and_then(|minor| minor.parse().ok())
+        .expect("CARGO_PKG_VERSION has a minor component")
+}
+
+/// `basemind --version` prints `basemind X.Y.Z`; this is Y.
+fn release_minor(bin: &Path) -> u32 {
+    let out = Command::new(bin)
+        .arg("--version")
+        .output()
+        .unwrap_or_else(|e| panic!("run {} --version: {e}", bin.display()));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.split_whitespace()
+        .nth(1)
+        .and_then(|version| version.split('.').nth(1))
+        .and_then(|minor| minor.parse().ok())
+        .unwrap_or_else(|| {
+            panic!(
+                "{} --version printed {text:?}, expected `basemind X.Y.Z`",
+                bin.display()
+            )
+        })
+}
+
 fn old_binaries() -> Vec<PathBuf> {
-    if let Some(pin) = std::env::var_os(PIN_ENV) {
-        let pin = PathBuf::from(pin);
-        assert!(
-            pin.is_file(),
-            "{PIN_ENV}={} is not a file: the upgrade it asks for cannot be exercised",
-            pin.display()
-        );
-        return vec![pin];
+    if let Some(pins) = std::env::var_os(PIN_ENV) {
+        let pins: Vec<PathBuf> = std::env::split_paths(&pins)
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        assert!(!pins.is_empty(), "{PIN_ENV} is set but names no binary");
+        for pin in &pins {
+            assert!(
+                pin.is_file(),
+                "{PIN_ENV} entry {} is not a file: the upgrade it asks for cannot be exercised",
+                pin.display()
+            );
+        }
+        return pins;
     }
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -60,14 +111,11 @@ fn old_binaries() -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = entries
         .flatten()
         .filter(|entry| {
-            // 0.27 is the oldest CLI shape this test drives (`--root`, `--json`, `code files`);
-            // from 0.33 a release already keeps prose and config out of the code map, so it has no
-            // old shape to upgrade from.
             let name = entry.file_name().to_string_lossy().into_owned();
             name.split('.')
                 .nth(1)
                 .and_then(|minor| minor.parse::<u32>().ok())
-                .is_some_and(|minor| (27..33).contains(&minor))
+                .is_some_and(|minor| (OLDEST_MINOR..=current_minor()).contains(&minor))
                 && name.starts_with("0.")
         })
         .map(|entry| entry.path().join("basemind"))
@@ -207,28 +255,43 @@ fn fixture(tmp: &Path) -> Env {
     Env { repo, data, comms }
 }
 
-fn upgrade_from(old: &Path) {
+/// Upgrades one old release to this build and returns whether that release mapped prose into the
+/// code map (the migration path) rather than already keeping it in the document tier.
+fn upgrade_from(old: &Path) -> bool {
     let tmp = tempfile::tempdir().unwrap();
     let env = fixture(tmp.path());
     let new = Path::new(NEW_BIN);
+    let minor = release_minor(old);
+    let maps_prose = minor < FIRST_CODE_ONLY_MINOR;
 
     env.ok(old, &["scan"], None);
     let before = env.code_paths(old);
     for name in NON_CODE {
-        assert!(
+        assert_eq!(
             before.iter().any(|p| p == name),
-            "{}: the old release code-maps {name} (premise of the test), got {before:?}",
+            maps_prose,
+            "{}: release 0.{minor} {} {name} in its code map, got {before:?}",
+            old.display(),
+            if maps_prose { "should hold" } else { "should not hold" }
+        );
+    }
+    for code in ["src/lib.rs", "src/app.py", "src/main.ts"] {
+        assert!(
+            before.iter().any(|p| p == code),
+            "{}: the old release code-maps {code}, got {before:?}",
             old.display()
         );
     }
 
     // --- upgrade: first scan with the new build -------------------------------------------------
     let first = env.scan_after_stopping_daemons(old, new);
-    assert!(
-        first.contains("cleanup: reclaimed"),
-        "{}: the migrating scan reports what it reclaimed:\n{first}",
-        old.display()
-    );
+    if maps_prose {
+        assert!(
+            first.contains("cleanup: reclaimed"),
+            "{}: the migrating scan reports what it reclaimed:\n{first}",
+            old.display()
+        );
+    }
 
     let after = env.code_paths(new);
     for name in NON_CODE {
@@ -284,22 +347,52 @@ fn upgrade_from(old: &Path) {
     let stats = env.json(new, &["cache", "stats"]);
     assert_eq!(stats["orphan_blob_count"], 0, "re-upgrade converges again: {stats}");
     assert_eq!(env.code_paths(new).len(), 3);
+    maps_prose
 }
 
 #[test]
 fn upgrading_from_cached_releases_migrates_cleans_and_converges() {
     let olds = old_binaries();
     if olds.is_empty() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no old release binary under CI: {PIN_ENV} is unset and the launcher cache is empty, so the upgrade \
+             path was not exercised. The CI step that downloads release binaries did not run."
+        );
         // ~keep Written to the stream itself: the harness captures `eprintln!` of a passing test.
         let _ = writeln!(
             std::io::stderr().lock(),
             "SKIP: upgrading_from_cached_releases_migrates_cleans_and_converges checked nothing: no \
-             release 0.27 to 0.32 under $XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind and \
-             {PIN_ENV} is unset. Set {PIN_ENV} to the `basemind` binary of such a release to run it."
+             release 0.{OLDEST_MINOR} to 0.{} under $XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind and \
+             {PIN_ENV} is unset. Set {PIN_ENV} to the `basemind` binary of such a release to run it.",
+            current_minor()
         );
         return;
     }
-    for old in olds {
-        upgrade_from(&old);
+    let mut migrated = 0;
+    for old in &olds {
+        let migrates = upgrade_from(old);
+        migrated += usize::from(migrates);
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "upgrade-from-release: {} (0.{}) upgraded, {}",
+            old.display(),
+            release_minor(old),
+            if migrates {
+                "prose migrated to the document tier"
+            } else {
+                "code-only index kept"
+            }
+        );
+    }
+    if std::env::var_os("CI").is_some() {
+        assert!(
+            migrated > 0,
+            "CI exercised no release that code-maps prose, so the migration was not checked"
+        );
+        assert!(
+            migrated < olds.len(),
+            "CI exercised no release of the code-only shape, so the same-shape upgrade was not checked"
+        );
     }
 }

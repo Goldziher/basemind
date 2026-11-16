@@ -142,6 +142,23 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.features }}
 
+      # ~keep tests/upgrade_from_release.rs is compiled only with `documents`, which is these two legs
+      # ~keep on Linux and macOS. It upgrades an index built by an older release, so it needs that
+      # ~keep release's binary; under CI an absent binary fails the test rather than skipping it. 0.28.0
+      # ~keep is the newest release that still code-maps prose (the migration path), `latest` the
+      # ~keep same-shape upgrade.
+      - name: Fetch release binaries for the upgrade test
+        if: (runner.os == 'Linux' || runner.os == 'macOS') && (matrix.features == 'full' || matrix.features == 'comms documents')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux) triple=x86_64-unknown-linux-gnu ;;
+            macOS) triple=aarch64-apple-darwin ;;
+          esac
+          list="$(scripts/fetch-release-binaries.sh "$RUNNER_TEMP/release-binaries" "$triple" 0.28.0 latest)"
+          echo "BASEMIND_UPGRADE_FROM_BIN=$list" >> "$GITHUB_ENV"
+
       - name: cargo fmt
         run: cargo fmt --all --check
 
