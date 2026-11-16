@@ -81,7 +81,10 @@ jobs:
             features: "full"
             # ~keep Keep the cold-cache test budget independent of the full release build.
             timeout_minutes: 180
-            debug: "1"
+            # ~keep Debug info off, as on the Linux `full` leg: building the test binaries grew
+            # ~keep `target` from 15 to 65 GB and left 27 of 97 GiB free (run 43863171731), the
+            # ~keep pressure behind the earlier Fjall EIO on store open.
+            debug: "0"
           - os: windows-latest
             features: "comms"
             timeout_minutes: 180
