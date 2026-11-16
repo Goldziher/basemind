@@ -1,6 +1,6 @@
 //! The traits through which the scan reaches the document and vector stack (ADR-0023 rule 1): an
-//! [`Embedder`] for code chunks, a [`VectorStore`] the chunk rows are written to, and a
-//! [`DocumentSink`] that extracts, embeds and stores documents. The scan names no LanceDB, embedding
+//! `Embedder` for code chunks, a `VectorStore` the chunk rows are written to, and a
+//! `DocumentSink` that extracts, embeds and stores documents. The scan names no LanceDB, embedding
 //! or extraction type; the implementations live in the retrieval modules and are bound once per
 //! [`Filters`](crate::scanner_filter::Filters), so a scan resolves them once, never per file.
 //!
@@ -20,6 +20,7 @@ use crate::config::OnnxProvider;
 use crate::scanner::{EmbedMode, FileResult};
 #[cfg(feature = "code-search")]
 use crate::scanner_code::PendingCodeBatch;
+#[cfg(feature = "documents")]
 use crate::scanner_filter::Filters;
 use crate::store::Store;
 
