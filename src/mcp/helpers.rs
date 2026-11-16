@@ -632,10 +632,7 @@ pub(super) async fn scan_and_refresh(
         std::sync::Arc::new(cache)
     };
     state.shared.cache.store(new_cache);
-    state
-        .shared
-        .cache_generation
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    state.shared.note_index_changed();
 
     Ok(report)
 }

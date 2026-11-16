@@ -7,8 +7,9 @@
 //!   picks up immediately after the previous one. Stable across rescans because Fjall
 //!   keys are content-addressed.
 //! * **In-memory** cursors hold a `{ offset, snapshot_id }` pair. `snapshot_id` is whatever
-//!   the calling tool uses to detect that its view changed between pages — the source-index
-//!   tools use the `cache_generation` AtomicU32, the git-iterator tools derive it from the
+//!   the calling tool uses to detect that its view changed between pages — the map-reading
+//!   tools use the `cache_generation` AtomicU32, the tools whose list never comes from the boot
+//!   placeholder map use `index_generation`, the git-iterator tools derive it from the
 //!   first 4 bytes of the HEAD sha. On resume the helper checks the decoded `snapshot_id`
 //!   against the current one; on mismatch the response carries `cursor_invalidated = true`
 //!   and the caller must restart pagination from the top.

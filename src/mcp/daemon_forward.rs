@@ -10,7 +10,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use rmcp::ErrorData as McpError;
 
@@ -121,6 +120,6 @@ async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpErr
         state.shared.cache.store(Arc::clone(&cache));
         cache.warm_terms();
     }
-    state.shared.cache_generation.fetch_add(1, Ordering::Relaxed);
+    state.shared.note_index_changed();
     Ok(())
 }

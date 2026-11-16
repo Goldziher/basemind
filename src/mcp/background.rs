@@ -409,10 +409,7 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
                     "view watcher: rebuilt MapCache from refreshed index"
                 );
                 state.shared.cache.store(new_cache);
-                state
-                    .shared
-                    .cache_generation
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                state.shared.note_index_changed();
             }
             tracing::info!("view watcher: channel closed; exiting");
         })

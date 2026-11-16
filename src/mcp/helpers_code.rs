@@ -84,7 +84,7 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
     {
         use super::helpers_page::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval};
 
-        let generation = state.shared.cache_generation.load(std::sync::atomic::Ordering::Relaxed);
+        let generation = state.shared.index_generation.load(std::sync::atomic::Ordering::Relaxed);
         let offset = ranked_offset("code_search", p.cursor.as_ref(), generation)?;
         let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
         let ranking = serde_json::json!({ "query": &p.query, "lane": &p.lane });
@@ -356,7 +356,7 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
     use std::sync::atomic::Ordering;
 
     let started = std::time::Instant::now();
-    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
+    let generation = state.shared.index_generation.load(Ordering::Relaxed);
     // Path-keyed: served from the in-RAM map when it is warm, else from the one blob. Waiting for
     // the map here would make a one-shot CLI call decode the whole corpus to outline one file.
     let cache = state.shared.cache.load_full();

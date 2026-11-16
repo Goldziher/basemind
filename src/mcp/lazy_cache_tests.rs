@@ -219,3 +219,42 @@ async fn index_status_says_when_a_rescan_is_owed() {
     let note = payload["note"].as_str().expect("a note says what to run");
     assert!(note.contains("basemind scan"), "{note}");
 }
+
+/// Publishing the map of the index the server opened changes no outline: a cursor cut before the
+/// lazy build (on `serve`, the boot-time warm) must still page after it. Both used to bump the one
+/// generation every cursor is stamped with, so the next page read as a changed index.
+#[tokio::test]
+async fn an_outline_cursor_survives_the_map_being_built() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("c.rs"), b"pub fn one() {}\npub fn two() {}\n").expect("c.rs");
+    let server = oneshot_server(tmp.path());
+    let outline = |cursor| CodeOutlineParams {
+        path: crate::path::RelPath::from("c.rs"),
+        limit: Some(1),
+        cursor,
+        max_tokens: None,
+    };
+    let names = |payload: &Value| -> Vec<String> {
+        payload["symbols"]
+            .as_array()
+            .expect("symbols array")
+            .iter()
+            .filter_map(|symbol| symbol["name"].as_str().map(str::to_owned))
+            .collect()
+    };
+
+    let first = json_of(&server.code_outline_call(outline(None)).await.expect("first page"));
+    let cursor = first["next_cursor"].as_str().expect("a second page").to_owned();
+
+    server.state.await_cache_ready().await;
+    assert_eq!(mapped_files(&server.state), 3, "the barrier built the map");
+
+    let second = server
+        .code_outline_call(outline(Some(super::cursor::Cursor(cursor))))
+        .await
+        .expect("the cursor still pages after the map was built");
+    let second = json_of(&second);
+    assert_eq!(names(&first).len(), 1, "{first}");
+    assert_eq!(names(&second).len(), 1, "{second}");
+    assert_ne!(names(&first), names(&second), "the cursor advances: {second}");
+}

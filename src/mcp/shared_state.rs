@@ -70,6 +70,12 @@ pub(crate) struct SharedReadStack {
     /// against a stale generation can be detected and reported back as
     /// `cursor_invalidated = true`.
     pub(crate) cache_generation: AtomicU32,
+    /// Moves with `cache_generation` when the index may have changed (rescan, view watcher, daemon
+    /// refresh), but not when the map of the index the server opened is published (the boot warm,
+    /// the lazy build). Lists that never come from the empty boot placeholder stamp their cursors
+    /// with it — `code_search` / `docs_search` rank out of LanceDB, `code_outline` reads the map or
+    /// the one blob alike — so that publish landing between two pages is not a changed index.
+    pub(crate) index_generation: AtomicU32,
     /// Ranked lists of recent `code_search` / `docs_search` retrievals, keyed by query and
     /// `cache_generation`, so a later page does not rank the whole retrieval again.
     #[cfg_attr(
@@ -244,6 +250,7 @@ impl SharedReadStack {
             telemetry: telemetry_handle,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
+            index_generation: AtomicU32::new(1),
             ranked: Default::default(),
             scope,
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
@@ -277,6 +284,12 @@ impl SharedReadStack {
     pub(crate) fn lang_rules(&self) -> &crate::lang_rules::LangRules {
         self.lang_rules
             .get_or_init(|| crate::lang_rules::LangRules::from_config(&self.config.languages).unwrap_or_default())
+    }
+
+    /// Record that the index may have changed under the published map: both generations move.
+    pub(crate) fn note_index_changed(&self) {
+        self.cache_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.index_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

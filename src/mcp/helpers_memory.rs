@@ -119,7 +119,7 @@ pub(super) async fn memory_delete(_state: &ServerState, _p: MemoryDeleteParams) 
 pub(super) async fn docs_search(state: &ServerState, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
     use super::helpers_page::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval};
 
-    let generation = state.shared.cache_generation.load(std::sync::atomic::Ordering::Relaxed);
+    let generation = state.shared.index_generation.load(std::sync::atomic::Ordering::Relaxed);
     let offset = ranked_offset("docs_search", p.cursor.as_ref(), generation)?;
     let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
     let ranking = serde_json::json!({
