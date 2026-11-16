@@ -25,6 +25,10 @@ use tokio::net::TcpStream;
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
+/// How long a just-started daemon may take to publish its HTTP address. It binds HTTP after it has
+/// built its broker, which a contended disk delays well past the 10-15 s these tests used to allow.
+const HTTP_READY: Duration = Duration::from_secs(90);
+
 /// Owns a spawned daemon process so it is always reaped. Constructed twice per test to exercise a
 /// restart on the same `comms_dir` / `BASEMIND_DATA_HOME`.
 struct Daemon {
@@ -105,6 +109,22 @@ impl Drop for Daemon {
             }
         }
         let _ = self.child.wait();
+    }
+}
+
+/// Wait until a scan of `repo` by the daemon whose data home is `data_home` is in flight (its
+/// in-flight breadcrumb exists) or `done` says the request already finished. A fixed sleep raced the
+/// daemon under load: the signal could land before the scan had begun, or after it had ended.
+async fn scan_in_flight(data_home: &Path, repo: &Path, done: impl Fn() -> bool) {
+    let workspace = data_home
+        .join("cache")
+        .join("workspaces")
+        .join(basemind::store::workspace_key(repo));
+    let breadcrumb = basemind::scan_evidence::inflight_path(&workspace);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !breadcrumb.exists() && !done() {
+        assert!(Instant::now() < deadline, "the rescan never started");
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -263,7 +283,10 @@ async fn concurrent_cold_hosted_calls_use_the_running_daemon() {
     const MIN_IDENTITIES_PER_TOOL: usize = 8;
     const MAX_IDENTITIES_PER_TOOL: usize = 32;
     const IDENTITIES_PER_WORKER: usize = 2;
-    const COMPLETION_BOUND: Duration = Duration::from_secs(20);
+    // ~keep The regression this guards against ends every stalled call with a `SpawnTimeout` error
+    // ~keep after 30 s, which the per-response assertions below catch. The bound only stops a hang;
+    // ~keep at 20 s it raced a cold daemon building the workspace for 16-32 calls under load.
+    const COMPLETION_BOUND: Duration = Duration::from_secs(120);
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
@@ -275,7 +298,7 @@ async fn concurrent_cold_hosted_calls_use_the_running_daemon() {
     let mut observer = connect(&socket, "hosted-observer-before", &repo).await;
     let daemon_pid = observer.status().await.expect("status before hosted calls").pid;
     drop(observer);
-    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), Duration::from_secs(10))
+    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), HTTP_READY)
         .await
         .expect("daemon-hosted MCP transport ready");
     let token =
@@ -369,7 +392,7 @@ async fn hosted_keyword_search_reads_the_daemon_index_without_self_forwarding() 
     let mut observer = connect(&socket, "hosted-search-observer-before", &repo).await;
     let daemon_pid = observer.status().await.expect("status before hosted search").pid;
     drop(observer);
-    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), Duration::from_secs(10))
+    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), HTTP_READY)
         .await
         .expect("daemon-hosted MCP transport ready");
     let token =
@@ -683,8 +706,7 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
     let mut client = connect(&socket, "agent-sigterm", &repo).await;
     let rescan_repo = repo.clone();
     let rescan_task = tokio::spawn(async move { client.rescan(rescan_repo, None, true, false).await });
-    // Long enough for the scan to be well in flight, far shorter than the scan itself. ~keep
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    scan_in_flight(&comms_dir, &repo, || rescan_task.is_finished()).await;
 
     let term = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
@@ -692,7 +714,10 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
         .expect("run kill -TERM");
     assert!(term.success(), "kill -TERM must be delivered");
 
-    let exit_by = Instant::now() + Duration::from_secs(12);
+    // ~keep The drain may wait out its grace for a link and then bound the runtime teardown
+    // ~keep (`RUNTIME_SHUTDOWN_TIMEOUT`, 15 s); a fixed 12 s raced both under load. That a pre-fix
+    // ~keep daemon ran the scan to the end instead is caught below by the scan's status.
+    let exit_by = Instant::now() + basemind::comms::daemon::DRAIN_GRACE + Duration::from_secs(15 + 10);
     let mut exited = false;
     while Instant::now() < exit_by {
         if child.try_wait().expect("try_wait").is_some() {
@@ -704,7 +729,7 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
     if !exited {
         let _ = child.kill();
         let _ = child.wait();
-        panic!("daemon did not exit within 12s of SIGTERM with a scan in flight (the SIGKILL-only hang)");
+        panic!("daemon did not exit within its drain bound of SIGTERM with a scan in flight (the SIGKILL-only hang)");
     }
     let _ = child.wait();
 
@@ -717,6 +742,15 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
         Ok(Ok(_)) | Ok(Err(_)) => {}
         Err(join) => panic!("rescan task must not panic: {join}"),
     }
+    let workspace = comms_dir
+        .join("cache")
+        .join("workspaces")
+        .join(basemind::store::workspace_key(&repo));
+    let status = basemind::store_layout::read_status_sidecar(&workspace);
+    assert!(
+        status.as_ref().is_none_or(|status| status.is_degraded()),
+        "the scan was cancelled, not run to the end: {status:?}"
+    );
 
     // A fresh daemon reopens the partially-committed index cleanly and completes the full pass. ~keep
     let daemon = Daemon::start(&comms_dir);
@@ -1102,8 +1136,7 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
 
     let rescan_repo = repo.clone();
     let rescan_task = tokio::spawn(async move { client.rescan(rescan_repo, None, true, false).await });
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    scan_in_flight(&comms_dir, &repo, || rescan_task.is_finished()).await;
 
     let comms_dir_for_stop = comms_dir.clone();
     let stop_output = tokio::task::spawn_blocking(move || {
@@ -1124,7 +1157,8 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
         );
     }
 
-    let rescan_outcome = tokio::time::timeout(Duration::from_secs(15), rescan_task)
+    // ~keep A refused stop leaves the rescan to finish; a cold one under load outran 15 s.
+    let rescan_outcome = tokio::time::timeout(Duration::from_secs(120), rescan_task)
         .await
         .expect("in-flight rescan must resolve within the timeout, not hang");
     match rescan_outcome {
@@ -1382,7 +1416,7 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
     drop(client);
 
     // Daemon-hosted shape: the real MCP tool, paginated.
-    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), Duration::from_secs(10))
+    let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), HTTP_READY)
         .await
         .expect("daemon-hosted MCP transport ready");
     let token =
@@ -1472,7 +1506,7 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
     assert!(!working.join("index.fjall").exists());
 
     let _daemon = Daemon::start_with_layering(&comms, true);
-    let addr = http_frontend::await_http_ready(&generation_dir(&comms), Duration::from_secs(15))
+    let addr = http_frontend::await_http_ready(&generation_dir(&comms), HTTP_READY)
         .await
         .unwrap();
     let token = http_frontend::published_token(&generation_dir(&comms)).unwrap();
