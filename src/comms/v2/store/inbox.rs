@@ -1,17 +1,27 @@
 //! Reading: one message by id, or a page of the caller's threads merged in post order.
 //!
-//! A page holds at most `limit` messages, so no thread contributes more than `limit + 1`
-//! candidates. Each covered thread is walked that far from where the caller stands in it,
-//! reading message rows without bodies; the candidates are sorted by post position and a body is
-//! loaded only for a message the page takes.
+//! The threads a read covers are merged lazily: each is walked from where the caller stands in
+//! it, one message row at a time and without bodies, only as far as the merge needs to know which
+//! message comes next in the store-wide post order. A body is loaded only for a message the page
+//! takes. Rows walked are bounded by one per covered thread plus [`SCAN_BUDGET`]; a read that
+//! reaches the budget returns what it has with `more` set.
+//!
+//! What the budget mostly pays for is the caller's own posts, which no read returns. A read that
+//! writes records how far it walked over nothing else (`Position::pass_own`), so the next read
+//! starts past them; a peek continues past them with its cursor.
+
+use ahash::AHashSet;
 
 use super::records::{MessageMeta, Reader, ThreadRecord};
 use super::{Txn, keys};
 use crate::comms::v2::api::{
-    Actor, Caller, CommsError, InboxBody, InboxMessage, InboxReply, InboxSelect, MessageId, ReadKind, ThreadId,
-    effective_limit,
+    Actor, Caller, CommsError, Cursor, InboxBody, InboxMessage, InboxReply, InboxSelect, MAX_LIMIT, MessageId,
+    ReadKind, ThreadId,
 };
 use crate::comms::v2::rules::{self, BodyForm, Delivered, DeliveredRange, Position};
+
+/// Message rows one read may walk beyond the first of each thread it covers.
+pub(super) const SCAN_BUDGET: usize = 4 * MAX_LIMIT as usize;
 
 /// One inbox read. A read that moves a mark stages the caller's marks and, for a relayed
 /// marking read, the ranges it delivered; a relayed read that delivered before returns those.
@@ -42,41 +52,35 @@ pub(super) fn read(
     let only = body.thread();
     let after = rules::cursor_position(kind, body.cursor.as_ref(), actor, only)?;
     let covered = covered(reader, caller, only)?;
-    let per_thread = effective_limit(body.limit) + 1;
-    let mut candidates: Vec<(u64, &Covered, u64, MessageMeta)> = Vec::new();
-    for thread in &covered {
-        let (mut first, last) = (thread.position.floor(kind) + 1, thread.record.head);
-        if let Some(after) = after.filter(|_| first <= last) {
-            first = first_past(reader, &thread.id, first, last, after)?;
+    let mut merge = Merge::new(reader, &covered, kind, actor, after)?;
+    let rendered = std::iter::from_fn(|| match merge.next() {
+        Ok(Some((lane, seq, meta))) => {
+            count_row();
+            let thread = &covered[lane];
+            let message = reader.render(&thread.id, &thread.record, seq, &meta, BodyForm::of(kind));
+            Some(message.map(|message| (meta.order, message)))
         }
-        if first > last {
-            continue;
-        }
-        let mut found = 0;
-        for entry in reader.metas(&thread.id, first..=last) {
-            let (seq, meta) = entry?;
-            if rules::is_candidate(kind, &meta.from, actor) {
-                candidates.push((meta.order, thread, seq, meta));
-                found += 1;
-                if found == per_thread {
-                    break;
-                }
-            }
-        }
-    }
-    candidates.sort_by_key(|(order, ..)| *order);
-    let rendered = candidates.into_iter().map(|(order, thread, seq, meta)| {
-        let message = reader.render(&thread.id, &thread.record, seq, &meta, BodyForm::of(kind));
-        message.map(|message| (order, message))
+        Ok(None) => None,
+        Err(error) => Some(Err(error)),
     });
-    let (page, more) = rules::take_page(rendered, body.limit)?;
-    let next_cursor = rules::page_cursor(kind, &page, more, actor, only);
+    let (page, cut) = rules::take_page(rendered, body.limit)?;
+    let stopped_at = merge.stopped_at;
+    let more = cut || stopped_at.is_some();
+    let next_cursor = match (kind.paged(), cut, stopped_at) {
+        (Some(_), true, _) => rules::page_cursor(kind, &page, true, actor, only),
+        (Some(paged), false, Some(bound)) => {
+            let last = page.last().map_or(0, |(order, _)| *order);
+            Some(Cursor::for_inbox(actor, only, paged, bound.max(last)))
+        }
+        _ => None,
+    };
     let messages: Vec<InboxMessage> = page.into_iter().map(|(_, message)| message).collect();
     let mut read_to = Vec::new();
     let mut ranges = Vec::new();
     if kind.writes() {
         let last_delivered = rules::last_delivered(&messages);
-        for thread in &covered {
+        let delivered: AHashSet<&MessageId> = messages.iter().map(|message| &message.id).collect();
+        for (thread, lane) in covered.iter().zip(&merge.lanes) {
             let mut position = thread.position;
             if let Some(to) = last_delivered.get(&thread.id)
                 && position.advance(kind, *to)
@@ -87,6 +91,16 @@ pub(super) fn read(
                     after: thread.position.read_seq,
                     to: *to,
                 });
+            }
+            let passed = match kind {
+                ReadKind::Marking => lane.passed(&thread.id, &delivered)?,
+                ReadKind::Announcing if thread.position.notified_seq <= thread.position.floor(ReadKind::Marking) => {
+                    lane.passed(&thread.id, &AHashSet::new())?
+                }
+                _ => None,
+            };
+            if let Some(passed) = passed {
+                position.pass_own(passed);
             }
             if !thread.stored || position != thread.position {
                 txn.set_position(reader.ks, &thread.id, actor, position)?;
@@ -99,6 +113,142 @@ pub(super) fn read(
     Ok(rules::inbox_reply(messages, read_to, more, next_cursor))
 }
 
+/// The rows of one covered thread a read walks, in sequence order.
+type Rows = Box<dyn Iterator<Item = Result<(u64, MessageMeta), CommsError>>>;
+
+/// One covered thread in the merge.
+struct Lane {
+    rows: Option<Rows>,
+    /// The next message this read would return from the thread, not handed out yet.
+    front: Option<(u64, MessageMeta)>,
+    /// Post position of the last row walked: every message of the thread not walked yet comes
+    /// after it. `None` before the first row.
+    lower: Option<u64>,
+    /// The rows walked, in order, and whether each is one the read returns.
+    walked: Vec<(u64, bool)>,
+}
+
+impl Lane {
+    /// Whether the merge must walk this thread further before it knows what comes next.
+    fn unresolved(&self) -> bool {
+        self.front.is_none() && self.rows.is_some()
+    }
+
+    /// The last sequence number up to which every walked row is in `delivered` or is the
+    /// caller's own post, when there is one.
+    fn passed(&self, thread: &ThreadId, delivered: &AHashSet<&MessageId>) -> Result<Option<u64>, CommsError> {
+        let mut passed = None;
+        for (seq, candidate) in &self.walked {
+            if *candidate && !delivered.contains(&MessageId::new(thread.clone(), *seq)?) {
+                break;
+            }
+            passed = Some(*seq);
+        }
+        Ok(passed)
+    }
+}
+
+/// The covered threads merged in post order, walking no more rows than its budget.
+struct Merge {
+    lanes: Vec<Lane>,
+    kind: ReadKind,
+    actor: Actor,
+    budget: usize,
+    /// Set when the budget ran out: every message posted at or before this position that the read
+    /// returns has been handed out.
+    stopped_at: Option<u64>,
+}
+
+impl Merge {
+    fn new(
+        reader: &Reader<'_>,
+        covered: &[Covered],
+        kind: ReadKind,
+        actor: &Actor,
+        after: Option<u64>,
+    ) -> Result<Self, CommsError> {
+        let mut lanes = Vec::with_capacity(covered.len());
+        for thread in covered {
+            let (mut first, last) = (thread.position.floor(kind) + 1, thread.record.head);
+            if let Some(after) = after.filter(|_| first <= last) {
+                first = first_past(reader, &thread.id, first, last, after)?;
+            }
+            let rows: Option<Rows> = (first <= last).then(|| Box::new(reader.metas(&thread.id, first..=last)) as Rows);
+            lanes.push(Lane {
+                rows,
+                front: None,
+                lower: None,
+                walked: Vec::new(),
+            });
+        }
+        Ok(Self {
+            budget: covered.len() + SCAN_BUDGET,
+            lanes,
+            kind,
+            actor: actor.clone(),
+            stopped_at: None,
+        })
+    }
+
+    /// The next message in post order, as `(lane, seq, row)`, or `None` at the end or the budget.
+    fn next(&mut self) -> Result<Option<(usize, u64, MessageMeta)>, CommsError> {
+        loop {
+            let best = (0..self.lanes.len())
+                .filter_map(|lane| self.lanes[lane].front.as_ref().map(|(_, meta)| (meta.order, lane)))
+                .min();
+            let blocker = (0..self.lanes.len())
+                .filter(|lane| self.lanes[*lane].unresolved())
+                .min_by_key(|lane| self.lanes[*lane].lower);
+            match (best, blocker) {
+                (Some((order, _)), Some(lane)) if self.lanes[lane].lower.is_none_or(|lower| lower < order) => {
+                    self.walk(lane)?;
+                }
+                (None, Some(lane)) => self.walk(lane)?,
+                (Some((_, lane)), _) => {
+                    let (seq, meta) = self.lanes[lane].front.take().expect("the best lane has a front");
+                    return Ok(Some((lane, seq, meta)));
+                }
+                (None, None) => return Ok(None),
+            }
+            if self.stopped_at.is_some() {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Walk one row of `lane`, or stop the merge when the budget is spent.
+    fn walk(&mut self, lane: usize) -> Result<(), CommsError> {
+        if self.budget == 0 {
+            self.stopped_at = self
+                .lanes
+                .iter()
+                .filter(|lane| lane.unresolved())
+                .filter_map(|lane| lane.lower)
+                .min()
+                .or(Some(0));
+            return Ok(());
+        }
+        self.budget -= 1;
+        count_row();
+        let lane = &mut self.lanes[lane];
+        let Some(rows) = lane.rows.as_mut() else {
+            return Ok(());
+        };
+        match rows.next().transpose()? {
+            None => lane.rows = None,
+            Some((seq, meta)) => {
+                let candidate = rules::is_candidate(self.kind, &meta.from, &self.actor);
+                lane.lower = Some(meta.order);
+                lane.walked.push((seq, candidate));
+                if candidate {
+                    lane.front = Some((seq, meta));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A thread a read covers, with where the caller stands in it.
 struct Covered {
     id: ThreadId,
@@ -109,7 +259,7 @@ struct Covered {
 }
 
 /// The threads a read covers, in id order: the one thread named, or every active thread the
-/// caller's principal is a member of.
+/// caller's principal is a member of. An archived thread is passed over before its marks are read.
 fn covered(reader: &Reader<'_>, caller: &Caller, only: Option<&ThreadId>) -> Result<Vec<Covered>, CommsError> {
     let actor = &caller.actor;
     let ids = match only {
@@ -119,6 +269,9 @@ fn covered(reader: &Reader<'_>, caller: &Caller, only: Option<&ThreadId>) -> Res
     let mut covered = Vec::with_capacity(ids.len());
     for id in ids {
         let record = reader.thread(&id)?;
+        if only.is_none() && record.as_ref().is_none_or(|record| record.archived) {
+            continue;
+        }
         let position = match &record {
             Some(_) => reader.position(&id, actor)?,
             None => None,
@@ -127,9 +280,7 @@ fn covered(reader: &Reader<'_>, caller: &Caller, only: Option<&ThreadId>) -> Res
             let access = record.as_ref().map(|record| record.access(caller, position.is_some()));
             rules::authorize_read(&id, access.as_ref())?;
         }
-        if let (Some(record), Some((position, stored))) = (record, position)
-            && (only.is_some() || !record.archived)
-        {
+        if let (Some(record), Some((position, stored))) = (record, position) {
             covered.push(Covered {
                 id,
                 record,
@@ -192,4 +343,15 @@ fn first_past(reader: &Reader<'_>, thread: &ThreadId, first: u64, last: u64, aft
         }
     }
     Ok(low)
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Count one message row or body read, for the tests that bound what a read costs.
+fn count_row() {
+    #[cfg(test)]
+    ROWS_READ.with(|rows| rows.set(rows.get() + 1));
 }

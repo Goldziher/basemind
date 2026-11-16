@@ -16,6 +16,7 @@ use crate::comms::v2::api::{
 use crate::comms::v2::conformance::{ConformanceHarness, Repo, default_caller};
 
 mod concurrency;
+mod cost;
 mod lifecycle;
 mod retention;
 mod seen;

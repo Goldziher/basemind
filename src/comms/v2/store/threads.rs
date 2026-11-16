@@ -5,7 +5,7 @@ use ahash::AHashSet;
 use super::records::{Reader, ThreadRecord};
 use super::{Txn, keys};
 use crate::comms::v2::api::{
-    Actor, Caller, CommsError, Principal, ThreadAction, ThreadFilter, ThreadId, ThreadSummary, ThreadUpdate,
+    Actor, Caller, CommsError, Principal, ReadKind, ThreadAction, ThreadFilter, ThreadId, ThreadSummary, ThreadUpdate,
     ThreadsReply,
 };
 use crate::comms::v2::rules::{self, Change, Selection};
@@ -160,8 +160,8 @@ pub(super) fn update(
 
 /// One thread as `actor` sees it, given its `members` as they are after the call.
 ///
-/// The unread count reads message rows without bodies, from the actor's read position to the
-/// head. An actor that just left reads as a non-member although the snapshot still holds its
+/// The unread count reads message rows without bodies, from where the actor's reads start (past
+/// its read position and the own posts it has walked over) to the head. An actor that just left reads as a non-member although the snapshot still holds its
 /// member row.
 fn summarize(
     reader: &Reader<'_>,
@@ -174,10 +174,10 @@ fn summarize(
     let position = if member { reader.position(id, actor)? } else { None };
     // ~keep A principal that joins in this call has no member row in the snapshot yet: it
     // starts at the head, with nothing unread.
-    let read_seq = position.map_or(record.head, |(position, _)| position.read_seq);
+    let floor = position.map_or(record.head, |(position, _)| position.floor(ReadKind::Marking));
     let mut unread = 0;
-    if read_seq < record.head {
-        for entry in reader.metas(id, read_seq + 1..=record.head) {
+    if floor < record.head {
+        for entry in reader.metas(id, floor + 1..=record.head) {
             if entry?.1.from != *actor {
                 unread += 1;
             }
