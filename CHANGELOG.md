@@ -645,6 +645,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `macro_rules!` bodies. Like every call they match by name only.
 - Rust trait methods without a body and `extern` block functions (`function_signature_item`) are
   symbols of kind `function`.
+- Rust `fn` items nested in a function body are symbols; other function locals stay out of the outline.
 
 ## [0.33.0] - 2026-11-14
 

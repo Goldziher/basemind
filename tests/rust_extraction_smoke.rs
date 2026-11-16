@@ -115,6 +115,26 @@ fn turbofish_calls_are_recorded() {
 }
 
 #[test]
+fn functions_nested_in_function_bodies_are_symbols_but_locals_are_not() {
+    let src = "\
+fn outer() {
+    let x = 1;
+    const LOCAL: u32 = 2;
+    fn fixture() -> u32 { 3 }
+}
+";
+    let map = l1(src);
+    let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"fixture"), "{names:?}");
+    assert!(!names.contains(&"x") && !names.contains(&"LOCAL"), "{names:?}");
+    let fixture = map.symbols.iter().find(|s| s.name == "fixture").unwrap();
+    assert_eq!(
+        (fixture.start_row, fixture.start_col, fixture.kind),
+        (3, 4, SymbolKind::Function)
+    );
+}
+
+#[test]
 fn bodiless_trait_methods_are_symbols() {
     let src = "\
 pub trait Function {

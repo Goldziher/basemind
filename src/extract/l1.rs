@@ -201,7 +201,9 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
 
     // The outline is a map of what a file exposes, not of what its function bodies compute:
     // bindings and nested definitions inside a function/method/lambda are implementation detail.
-    if symbol_node.is_some_and(is_function_local) {
+    // A Rust `fn` item is the exception: it is a named item callable by path in its scope (test
+    // fixtures, helpers), and a call to it would otherwise resolve to nothing.
+    if symbol_node.is_some_and(|n| n.kind() != "function_item" && is_function_local(n)) {
         return None;
     }
 
@@ -728,10 +730,10 @@ pub fn locked() {}
         let src = b"const TOP: u32 = 1;\nstruct S { f: u32 }\nimpl S { fn m(&self) { const LOCAL: u32 = 2; fn inner() {} } }\nfn free() { let x = 1; fn nested() {} }\n";
         let map = extract_l1("rust", src).expect("extract");
         let names = names_of(&map);
-        for want in ["TOP", "S", "m", "free"] {
+        for want in ["TOP", "S", "m", "free", "inner", "nested"] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
-        for bad in ["LOCAL", "inner", "x", "nested"] {
+        for bad in ["LOCAL", "x"] {
             assert!(!names.contains(&bad), "{bad} must be excluded: {names:?}");
         }
     }
