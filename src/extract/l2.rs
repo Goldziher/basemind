@@ -192,22 +192,24 @@ fn is_attribute_body(tt: Node, source: &[u8]) -> bool {
 /// guard.
 fn in_pattern(tt: Node, at: usize, source: &[u8]) -> bool {
     let text = |n: Node| &source[n.start_byte()..n.end_byte()];
-    let name = match tt.parent().filter(|p| p.kind() == "macro_invocation") {
-        Some(invocation) => invocation.child_by_field_name("macro").map(|m| {
-            let last = m.child_by_field_name("name").unwrap_or(m);
-            text(last)
-        }),
-        None => tt
-            .prev_sibling()
-            .filter(|bang| text(*bang) == b"!")
-            .and_then(|bang| bang.prev_sibling())
-            .filter(|n| n.kind() == "identifier")
-            .map(text),
+    // Read the macro name off the bytes before `tt` (`name!(`, `name! (`): no sibling walk for the
+    // common case of a token tree that is no macro's argument list.
+    let before = source[..tt.start_byte()].trim_ascii_end();
+    let Some(before) = before.strip_suffix(b"!") else {
+        return false;
     };
-    match name {
-        Some(b"cfg") => return true,
-        Some(n) if PATTERN_MACROS.contains(&n) => {}
-        _ => return false,
+    let before = before.trim_ascii_end();
+    let ident = before
+        .iter()
+        .rev()
+        .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
+        .count();
+    let name = &before[before.len() - ident..];
+    if name == b"cfg" {
+        return true;
+    }
+    if !PATTERN_MACROS.contains(&name) {
+        return false;
     }
     let mut cursor = tt.walk();
     let mut after_comma = false;
