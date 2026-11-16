@@ -70,11 +70,11 @@ pub(crate) fn flush_vector_lanes(
 /// that dies leaves the loss to be found again, not a debt nobody knows of.
 #[cfg(any(feature = "documents", feature = "code-search"))]
 fn owe_rows_that_may_be_lost(store: &mut Store, filters: &Filters) -> Result<(), crate::store::StoreError> {
-    let Some(recorded) = crate::store_pending::recorded_store(&store.view_dir) else {
-        return Ok(());
-    };
+    // A view an earlier build last scanned records no store, so only the verifying pass can
+    // tell that its rows were lost.
     let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
-    let lost = crate::lance::store_id(&lance_dir).as_deref() != Some(recorded.as_str());
+    let lost = crate::store_pending::recorded_store(&store.view_dir)
+        .is_some_and(|recorded| crate::lance::store_id(&lance_dir).as_deref() != Some(recorded.as_str()));
     if !lost && !filters.vector_rows_unsure {
         return Ok(());
     }

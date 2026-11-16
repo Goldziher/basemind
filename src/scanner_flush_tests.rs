@@ -491,6 +491,28 @@ fn the_pass_that_verifies_blobs_rewrites_vector_rows_lost_with_the_machine() {
     assert!(owed_on_disk(&store).is_empty());
 }
 
+/// A view an earlier build last scanned records no vector store. The pass that verifies blobs owes
+/// its rows all the same: they were written with no fsync either way.
+#[test]
+fn the_verifying_pass_rewrites_lost_rows_of_a_view_that_records_no_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = open_store(tmp.path());
+    let config = config();
+    let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
+    inline_scan(tmp.path(), &mut store, &config);
+    let lance = store.lance_or_open(DIM, PRESET).unwrap().clone();
+    lance.replace_document(&scope, rel, Vec::new()).unwrap();
+    drop(lance);
+    std::fs::remove_file(store.view_dir.join(crate::store_pending::STORE_ID_FILE)).unwrap();
+    assert!(doc_rows(&mut store, &scope).is_empty(), "the rows are lost");
+
+    std::mem::forget(crate::scan_evidence::ScanBreadcrumb::begin_in(&store.basemind_dir, tmp.path()).unwrap());
+    inline_scan(tmp.path(), &mut store, &config);
+
+    assert_eq!(doc_rows(&mut store, &scope), [rel]);
+    assert!(owed_on_disk(&store).is_empty());
+}
+
 /// A full scan that is cancelled takes an incremental pass's share of what earlier scans left
 /// owing, not all of it: the daemon cancels its scans to stop, and must not then re-read every
 /// owed blob.
