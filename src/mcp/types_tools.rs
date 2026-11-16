@@ -262,8 +262,8 @@ pub struct DocsSearchParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitLogParams {
-    /// Only commits touching this file; a trailing `/` means a directory (last 200 commits). Not
-    /// with `query` or `author`.
+    /// Only commits touching this file; a trailing `/` means a directory (200 commits inspected per
+    /// page; follow `next_cursor`). Not with `query` or `author`.
     #[serde(default)]
     pub path: Option<RelPath>,
     /// Words the commit message must all contain. Combines with `author` only.
