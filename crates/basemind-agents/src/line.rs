@@ -125,6 +125,8 @@ impl TextStream {
     }
 }
 
+/// How many frames read from the harness may wait for the driver. Each may be 16 MiB.
+const FRAME_QUEUE: usize = 2;
 /// How many frames may wait for the harness to read them.
 const OUTPUT_QUEUE: usize = 64;
 
@@ -196,7 +198,7 @@ impl<P: Protocol> Driver for LineDriver<P> {
         let Self { mut protocol, controls } = *self;
         let mut out = QueuedWriter::start(pipe::Writer::new(io.stdin, io.abandon.clone())?);
         let stdout = pipe::Reader::new(io.stdout, io.abandon);
-        let (tx, lines) = mpsc::sync_channel(16);
+        let (tx, lines) = mpsc::sync_channel(FRAME_QUEUE);
         std::thread::spawn(move || {
             let mut reader = FrameReader::new(stdout);
             loop {

@@ -502,10 +502,14 @@ fn deferred_requests_are_capped_and_withdrawn_when_resolved_elsewhere_or_the_tur
             json!({"id": 100 + n, "method": "item/commandExecution/requestApproval", "params": {"command": "ls"}});
         protocol.frame(request, &mut out, &sink).unwrap();
     }
-    assert_eq!(written(&out), [json!({"id": 164, "result": {"decision": "decline"}})]);
+    let cap = crate::session::MAX_PENDING_APPROVALS;
+    assert_eq!(
+        written(&out),
+        [json!({"id": 100 + cap, "result": {"decision": "decline"}})]
+    );
     let events_now: Vec<_> = events.try_iter().collect();
     assert!(events_now.contains(&Event::ApprovalResolved {
-        id: "codex-65".to_owned(),
+        id: format!("codex-{}", cap + 1),
         allowed: false,
         source: ApprovalSource::TooManyPending,
     }));

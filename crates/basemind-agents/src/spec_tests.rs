@@ -349,3 +349,16 @@ fn the_child_search_path_keeps_only_absolute_entries() {
     let env = spec.child_env([(OsString::from("PATH"), search)]);
     assert_eq!(env["PATH"], std::env::join_paths(["/usr/bin", "/bin"]).unwrap());
 }
+
+#[test]
+fn a_brief_over_a_mebibyte_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let config = config(HarnessKind::Codex, root.path());
+    let fits = LaunchRequest::new("x".repeat(crate::session::MAX_PROMPT_BYTES));
+    assert!(LaunchSpec::new(&config, &fits).is_ok());
+    let over = LaunchRequest::new("x".repeat(crate::session::MAX_PROMPT_BYTES + 1));
+    assert!(matches!(
+        LaunchSpec::new(&config, &over),
+        Err(LaunchError::PromptTooLarge(len)) if len == crate::session::MAX_PROMPT_BYTES + 1
+    ));
+}

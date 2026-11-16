@@ -86,7 +86,7 @@ fn a_waiting_push_is_released_and_dropped_once_the_session_drains() {
 #[test]
 fn the_byte_bound_holds_back_large_events() {
     let queue = Arc::new(EventQueue::default());
-    let big = "s".repeat(8 * 1024 * 1024);
+    let big = "s".repeat(EVENT_BYTES / 8);
     for _ in 0..8 {
         queue.push(Event::Status(big.clone()));
     }

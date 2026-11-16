@@ -22,9 +22,9 @@ use crate::spec::{ApprovalPolicy, ApprovalVerdict, LaunchSpec, Limits};
 
 const STDERR_TAIL_BYTES: usize = 8192;
 /// How many approval requests may wait for the caller at once; a further one is denied.
-pub(crate) const MAX_PENDING_APPROVALS: usize = 64;
+pub(crate) const MAX_PENDING_APPROVALS: usize = 16;
 /// The largest request that may wait for the caller; a larger deferred one is denied, so the
-/// pending requests hold at most 64 MiB.
+/// pending requests hold at most 16 MiB.
 pub(crate) const MAX_PENDING_BYTES: usize = 1024 * 1024;
 
 /// The length of `value` as JSON, without building the text.
@@ -44,6 +44,8 @@ pub(crate) fn json_len(value: &serde_json::Value) -> usize {
     count.0
 }
 const STDERR_DRAIN: Duration = Duration::from_millis(200);
+/// The longest brief or follow-up a session takes.
+pub(crate) const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 
 /// The exact process an adapter would start: its program, arguments, environment and working
 /// directory. Built without side effects, so a caller can log or inspect a launch beforehand.
@@ -306,9 +308,14 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// [`LaunchError::TurnLimit`] when the limits allow no further turn, and
+    /// [`LaunchError::PromptTooLarge`] for a text over 1 MiB, [`LaunchError::TurnLimit`] when
+    /// the limits allow no further turn, and
     /// [`LaunchError::SessionClosed`] when the session has finished.
     pub fn send_follow_up(&self, text: impl Into<String>) -> Result<(), LaunchError> {
+        let text = text.into();
+        if text.len() > MAX_PROMPT_BYTES {
+            return Err(LaunchError::PromptTooLarge(text.len()));
+        }
         let max = self.shared.limits.max_turns;
         self.shared
             .prompts
@@ -316,7 +323,7 @@ impl Session {
                 (prompts < max).then_some(prompts + 1)
             })
             .map_err(|_| LaunchError::TurnLimit(max))?;
-        self.send(Control::FollowUp(text.into()))
+        self.send(Control::FollowUp(text))
     }
 
     /// Asks the harness to stop. It is interrupted through its own protocol and given the

@@ -229,10 +229,10 @@ struct AcpDriver {
 
 impl Driver for AcpDriver {
     fn run(self: Box<Self>, io: ChildIo, sink: EventSink) -> Result<(), LaunchError> {
-        let (line_tx, incoming) = channel(LINE_QUEUE);
+        let (line_tx, incoming) = channel(INCOMING_LINES);
         let stdout = pipe::Reader::new(io.stdout, io.abandon.clone());
         std::thread::spawn(move || pump_lines(stdout, line_tx));
-        let (out_tx, mut out_rx) = channel::<String>(LINE_QUEUE);
+        let (out_tx, mut out_rx) = channel::<String>(OUTGOING_LINES);
         let mut stdin = pipe::Writer::new(io.stdin, io.abandon)?;
         std::thread::spawn(move || {
             while let Some(line) = futures::executor::block_on(out_rx.next()) {
@@ -265,7 +265,7 @@ impl Sink<String> for FailFast {
     fn start_send(self: Pin<&mut Self>, line: String) -> Result<(), Self::Error> {
         self.get_mut().0.try_send(line).map_err(|error| {
             if error.is_full() {
-                std::io::Error::other(format!("the ACP agent left {LINE_QUEUE} lines unread"))
+                std::io::Error::other(format!("the ACP agent left {OUTGOING_LINES} lines unread"))
             } else {
                 std::io::ErrorKind::BrokenPipe.into()
             }
@@ -282,9 +282,11 @@ impl Sink<String> for FailFast {
     }
 }
 
-/// Answers one permission request; `Ok` carries whether the agent was allowed to proceed.
-/// How many lines read from the agent may wait for the connection.
-const LINE_QUEUE: usize = 16;
+/// How many lines read from the agent may wait for the connection. Each may be a 16 MiB
+/// frame, so the queue is kept short.
+const INCOMING_LINES: usize = 2;
+/// How many lines to the agent may wait for it to read them; beyond that the session fails.
+const OUTGOING_LINES: usize = 16;
 
 /// Reads the agent's output as lines of at most [`MAX_FRAME_BYTES`](crate::frames::MAX_FRAME_BYTES)
 /// into `tx`. A line over the limit or not in UTF-8 is passed on as an

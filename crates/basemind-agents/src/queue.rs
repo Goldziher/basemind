@@ -16,7 +16,7 @@ use crate::event::Event;
 /// How many events may wait for the caller.
 pub(crate) const EVENT_CAPACITY: usize = 1024;
 /// How many bytes of text the waiting events may hold, roughly.
-pub(crate) const EVENT_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const EVENT_BYTES: usize = 16 * 1024 * 1024;
 /// The largest increment two merged increments may make.
 const MERGED_BYTES: usize = 64 * 1024;
 

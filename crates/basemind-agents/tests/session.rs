@@ -453,6 +453,10 @@ fn stop_interrupts_the_harness_and_ends_its_group() {
         std::thread::sleep(Duration::from_millis(10));
     }
     session.stop();
+    assert!(matches!(
+        session.send_follow_up("x".repeat(1024 * 1024 + 1)),
+        Err(LaunchError::PromptTooLarge(_))
+    ));
     assert!(matches!(session.send_follow_up("more"), Err(LaunchError::TurnLimit(1))));
     assert_eq!(session.wait(), FinishStatus::Stopped);
     assert_gone(&grandchild);
@@ -564,7 +568,8 @@ while :; do sleep 1; done
         pidfile.display()
     );
     let mut spec = spec(HarnessKind::Codex, dir.path(), &body);
-    spec.request.brief = "x".repeat(4 * 1024 * 1024);
+    // Larger than any pipe buffer, so the write cannot complete.
+    spec.request.brief = "x".repeat(1024 * 1024);
     let session = launch(&spec);
     let escaped = grandchild(&pidfile);
     let leader = session.pid().to_string();

@@ -458,11 +458,12 @@ fn deferred_requests_are_capped_and_a_finished_turn_withdraws_them() {
     }
     let answered = written(&out);
     assert_eq!(answered.len(), 1, "{answered:?}");
-    assert_eq!(answered[0]["response"]["request_id"], "req-64");
+    let last = format!("req-{}", crate::session::MAX_PENDING_APPROVALS);
+    assert_eq!(answered[0]["response"]["request_id"], last.as_str());
     assert_eq!(answered[0]["response"]["response"]["behavior"], "deny");
     let so_far: Vec<_> = events.try_iter().collect();
     assert!(so_far.contains(&Event::ApprovalResolved {
-        id: "req-64".to_owned(),
+        id: last.clone(),
         allowed: false,
         source: ApprovalSource::TooManyPending,
     }));

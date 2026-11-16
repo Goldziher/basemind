@@ -128,6 +128,9 @@ pub enum LaunchError {
     /// The harness sent something its protocol does not allow, or reported a failure.
     #[error("harness protocol error: {0}")]
     Protocol(String),
+    /// A brief or follow-up is longer than the 1 MiB a session takes.
+    #[error("a prompt of {0} bytes is longer than 1 MiB")]
+    PromptTooLarge(usize),
     /// The session already ran the number of turns its limits allow.
     #[error("turn limit of {0} reached")]
     TurnLimit(u32),

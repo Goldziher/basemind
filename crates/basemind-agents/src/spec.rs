@@ -231,7 +231,7 @@ impl LaunchConfig {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LaunchRequest {
-    /// The brief: the first prompt the agent receives.
+    /// The brief: the first prompt the agent receives, at most 1 MiB.
     pub brief: String,
     /// The working directory, relative to the config's root; `None` means the root. An
     /// absolute path is refused with [`LaunchError::WorkingDirNotRelative`], and one that
@@ -286,6 +286,9 @@ impl LaunchSpec {
     /// Merges `request` into `config`: its limits are clamped to the config's caps, and a
     /// zero limit or an absolute working directory is refused.
     pub fn new(config: &LaunchConfig, request: &LaunchRequest) -> Result<Self, LaunchError> {
+        if request.brief.len() > crate::session::MAX_PROMPT_BYTES {
+            return Err(LaunchError::PromptTooLarge(request.brief.len()));
+        }
         if request.max_turns == Some(0) {
             return Err(LaunchError::InvalidLimits("max_turns is zero"));
         }

@@ -87,7 +87,7 @@ pub(crate) struct Tools {
 }
 
 /// How many tool calls an adapter remembers.
-pub(crate) const MAX_TRACKED_TOOLS: usize = 256;
+pub(crate) const MAX_TRACKED_TOOLS: usize = 64;
 
 impl Tools {
     /// The call `id`, created by `new` when it is not tracked.
@@ -196,7 +196,7 @@ pub enum ApprovalSource {
     Caller,
     /// The harness withdrew the request, or its turn or the session ended first.
     Withdrawn,
-    /// The policy deferred it while the most requests a session holds (64) were already
+    /// The policy deferred it while the most requests a session holds (16) were already
     /// pending, or it was too large (over 1 MiB) to hold, so it was denied.
     TooManyPending,
     /// What an allow would grant could not be shown in full (a Codex file change whose
