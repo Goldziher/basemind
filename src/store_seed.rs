@@ -423,7 +423,7 @@ mod tests {
     /// takes a torn blob for an unchanged file's because the blob exists.
     #[test]
     fn a_seed_from_a_sibling_that_must_verify_its_blobs_verifies_them_too() {
-        seeds_verify_blobs_the_sibling_may_have_torn(|main_dir| {
+        seeds_verify_blobs_the_sibling_may_have_torn("request", |main_dir| {
             std::fs::write(main_dir.join(crate::scan_evidence::VERIFY_BLOBS_FILE), b"").expect("request");
         });
     }
@@ -432,15 +432,30 @@ mod tests {
     /// becomes `verify-blobs` only when something next begins or clears a scan of the sibling.
     #[test]
     fn a_seed_from_a_sibling_whose_scan_died_verifies_its_blobs() {
-        seeds_verify_blobs_the_sibling_may_have_torn(|main_dir| {
+        seeds_verify_blobs_the_sibling_may_have_torn("breadcrumb", |main_dir| {
             std::fs::write(crate::scan_evidence::inflight_path(main_dir), b"{}").expect("breadcrumb");
         });
     }
 
     /// Tear a blob of the sibling, leave `evidence` of it in the sibling's cache directory, and
-    /// check that the worktree seeded from it rebuilds the blob on its first scan.
-    fn seeds_verify_blobs_the_sibling_may_have_torn(evidence: impl FnOnce(&Path)) {
+    /// check that the worktree seeded from it rebuilds the blob on its first scan. The blob store
+    /// is shared by every test of the process, so the torn file's content is the caller's own
+    /// (`tag`): no other test reads the blob while it is torn.
+    fn seeds_verify_blobs_the_sibling_may_have_torn(tag: &str, evidence: impl FnOnce(&Path)) {
         let (_tmp, main, wt) = fixture();
+        let own = format!("pub fn a() {{}} // {tag}\n");
+        std::fs::write(main.join("a.rs"), &own).expect("write main");
+        std::fs::write(wt.join("a.rs"), &own).expect("write wt");
+        let mut store = Store::open(&main, VIEW_WORKING).expect("open main");
+        scan(
+            &main,
+            &mut store,
+            &ConfigV1::with_defaults(),
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+        )
+        .expect("rescan main");
+        drop(store);
         let main_dir = workspace_cache_dir(&main);
         let torn = {
             let m = Store::open(&main, VIEW_WORKING).expect("open main");
