@@ -514,7 +514,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The vector store's `meta.json` is written atomically, before any table, and removed last in a
     wipe; one written by a newer basemind is refused even when this version cannot parse it. Two
     processes opening a new store at once no longer share a temp file or remove each other's
-    tables.
+    tables. An open that waits more than 30 s for another open of the store fails, and the next
+    search or scan tries again, instead of opening beside one that may be wiping the store.
 - The daemon protocol version is 6 (was 5): a search by meaning reads the `updated_at` of its
   hits' notes, and whole only the notes it may serve, in batches (at most 256 keys and 8 MiB of
   notes per reply, which the daemon enforces), and a rescan says whether its paths were named or

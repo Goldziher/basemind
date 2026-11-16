@@ -553,21 +553,43 @@ fn a_store_keeps_its_id_until_it_is_wiped() {
 #[test]
 fn the_open_lock_is_waited_for_within_a_bound_and_released_on_drop() {
     let dir = tempfile::tempdir().unwrap();
-    let held = lock_open(dir.path(), OPEN_LOCK_WAIT).expect("a free lock is taken");
+    let held = lock_open(dir.path(), OPEN_LOCK_WAIT)
+        .unwrap()
+        .expect("a free lock is taken");
 
     let path = dir.path().to_path_buf();
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = sender.send(lock_open(&path, std::time::Duration::from_millis(100)).is_some());
+        let _ = sender.send(lock_open(&path, std::time::Duration::from_millis(100)).is_err());
     });
-    let won = receiver
+    let refused = receiver
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("a held lock is waited for within the bound, not forever");
-    assert!(!won, "the lock was held throughout");
+    assert!(refused, "the lock was held throughout, so the wait ends in an error");
 
     drop(held);
     assert!(
-        lock_open(dir.path(), std::time::Duration::ZERO).is_some(),
+        lock_open(dir.path(), std::time::Duration::ZERO).unwrap().is_some(),
         "free once the guard drops"
     );
+}
+
+/// An open that cannot get the lock in time fails rather than open beside the holder, which may be
+/// wiping the store; it touches nothing, and the store opens once the lock is free.
+#[test]
+fn an_open_that_waits_out_a_held_lock_fails_and_touches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let held = lock_open(dir.path(), OPEN_LOCK_WAIT)
+        .unwrap()
+        .expect("a free lock is taken");
+
+    let refused = LanceStore::open_waiting(dir.path(), 4, "model", std::time::Duration::from_millis(100));
+
+    assert!(refused.is_err(), "an open beside the holder is refused");
+    assert!(
+        !dir.path().join(META_FILE).exists(),
+        "nothing was created beside the holder"
+    );
+    drop(held);
+    drop(LanceStore::open(dir.path(), 4, "model").expect("opens once the lock is free"));
 }

@@ -91,25 +91,32 @@ fn ensure_store_id(dir: &Path) -> Result<()> {
 /// only while it creates the store's files, so a holder past this is stuck, not busy.
 const OPEN_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Hold the open lock of the store at `dir`, waiting at most `wait` for it. `None` when the lock
-/// file cannot be created or locked in time: the open goes on unserialised, as it would on a
-/// directory it cannot write.
-fn lock_open(dir: &Path, wait: std::time::Duration) -> Option<crate::store_lock::LockGuard> {
+/// Hold the open lock of the store at `dir`, waiting at most `wait` for it. `Ok(None)` when the lock
+/// file cannot be created: the open goes on unserialised, as it would on a directory it cannot
+/// write. An error when another open holds the lock past `wait`: that open may be wiping the
+/// store, and opening beside it would race the wipe, so this open fails and the next search or
+/// scan tries again.
+fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::store_lock::LockGuard>> {
     const RETRY: std::time::Duration = std::time::Duration::from_millis(20);
-    let file = std::fs::OpenOptions::new()
+    let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(dir.join(OPEN_LOCK_FILE))
-        .ok()?;
+    else {
+        return Ok(None);
+    };
     let deadline = std::time::Instant::now() + wait;
     loop {
         if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
-            return Some(crate::store_lock::LockGuard::held(file));
+            return Ok(Some(crate::store_lock::LockGuard::held(file)));
         }
         if std::time::Instant::now() >= deadline {
-            tracing::warn!(dir = %dir.display(), "another open of this vector store held its lock too long; opening without it");
-            return None;
+            return Err(anyhow!(
+                "another open of the vector store at {} held its lock for over {} s; not opening beside it",
+                dir.display(),
+                wait.as_secs_f32()
+            ));
         }
         std::thread::sleep(RETRY);
     }
@@ -251,6 +258,11 @@ impl LanceStore {
     /// is newer than this binary's, which fails the open and leaves the dir untouched. A dir
     /// with tables and no meta.json is emptied too.
     pub fn open(dir: &Path, dim: u16, embedding_model: &str) -> Result<Self> {
+        Self::open_waiting(dir, dim, embedding_model, OPEN_LOCK_WAIT)
+    }
+
+    /// [`Self::open`] waiting at most `wait` for another open of the store.
+    fn open_waiting(dir: &Path, dim: u16, embedding_model: &str, wait: std::time::Duration) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let meta_path = dir.join(META_FILE);
         let expected = LanceMeta {
@@ -259,7 +271,7 @@ impl LanceStore {
             schema_ver: MEMORY_SCHEMA_VER,
         };
         // Released when this function returns, tables created.
-        let _opening = lock_open(dir, OPEN_LOCK_WAIT);
+        let _opening = lock_open(dir, wait)?;
         wipe_on_mismatch(dir, &meta_path, &expected)?;
         // meta.json goes in before any table. Tables beside no meta.json have no known model: they
         // are what an open that died before its meta write left, and are removed, not adopted.
