@@ -36,6 +36,12 @@ impl InProcClientLink {
     pub async fn recv(&mut self) -> Option<CommsOut> {
         self.from_broker.recv().await
     }
+
+    /// Close the request side and keep reading replies: a half-closed socket.
+    #[cfg(test)]
+    fn half_close(self) -> mpsc::Receiver<CommsOut> {
+        self.from_broker
+    }
 }
 
 /// The broker-side half of an in-process link.
@@ -242,6 +248,55 @@ mod tests {
             }
             other => panic!("expected AgentRead, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod half_close_tests {
+    use super::*;
+    use crate::comms::protocol::{CommsResponse, PROTO_VER};
+    use crate::comms::v2::api::{InboxBody, Principal};
+
+    /// A client that pipelines requests and then closes its write side still gets every reply.
+    #[tokio::test]
+    async fn requests_queued_before_a_half_close_are_still_answered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let frontend = InProcFrontend::new(broker);
+        let link = frontend.connect();
+        link.send_request(CommsRequest::Hello {
+            proto_ver: PROTO_VER,
+            principal: Some(Principal::parse("reader").expect("principal")),
+            root: Some(dir.path().to_path_buf()),
+            host: None,
+        })
+        .await
+        .expect("hello");
+        link.send_request(CommsRequest::AgentInbox {
+            sub: None,
+            body: InboxBody::default(),
+            wait_secs: 5,
+        })
+        .await
+        .expect("waiting inbox");
+        link.send_request(CommsRequest::Ping).await.expect("ping");
+        link.send_request(CommsRequest::Ping).await.expect("ping");
+        let mut replies = link.half_close();
+        let mut answered = Vec::new();
+        while let Some(frame) = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .expect("a reply or the end")
+        {
+            match frame {
+                CommsOut::Response(response) | CommsOut::Reply { response, .. } => answered.push(response),
+                CommsOut::Notification(_) => {}
+            }
+        }
+        assert_eq!(answered.len(), 4, "{answered:?}");
+        assert!(matches!(answered[0], CommsResponse::Welcome { .. }));
+        assert!(matches!(answered[1], CommsResponse::AgentRead(_)), "{:?}", answered[1]);
+        assert!(matches!(answered[2], CommsResponse::Pong), "{:?}", answered[2]);
+        assert!(matches!(answered[3], CommsResponse::Pong), "{:?}", answered[3]);
     }
 }
 

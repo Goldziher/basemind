@@ -27,9 +27,55 @@ use super::protocol::{CommsOut, CommsRequest};
 /// message body while bounding worst-case memory.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
-/// Requests a link reads ahead while one runs. Past it the link is not read until the queue drains,
-/// so a client that pipelines more than this and then hangs up is noticed only when it is reached.
+/// Requests a link reads ahead while one runs. Past it, or past [`MAX_READ_AHEAD_BYTES`], the link
+/// is not read until the queue drains, so a client that pipelines more than this and then hangs up
+/// is noticed only when it is reached.
 const MAX_PIPELINED: usize = 64;
+
+/// The encoded size of the requests a link reads ahead while one runs. The request that crosses it
+/// is still queued, so a link holds at most this plus one frame of read-ahead.
+const MAX_READ_AHEAD_BYTES: usize = MAX_FRAME_BYTES;
+
+/// Counts the bytes written to it: the encoded size of a request, without a buffer.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The requests a link read while another ran, bounded by count and by encoded size.
+#[derive(Default)]
+struct ReadAhead {
+    queued: VecDeque<(CommsRequest, usize)>,
+    bytes: usize,
+}
+
+impl ReadAhead {
+    fn has_room(&self) -> bool {
+        self.queued.len() < MAX_PIPELINED && self.bytes < MAX_READ_AHEAD_BYTES
+    }
+
+    fn push(&mut self, req: CommsRequest) {
+        let mut size = ByteCount(0);
+        // A request that came off the wire encodes again; a failure only leaves it uncounted.
+        let _ = rmp_serde::encode::write_named(&mut size, &req);
+        self.bytes += size.0;
+        self.queued.push_back((req, size.0));
+    }
+
+    fn pop(&mut self) -> Option<CommsRequest> {
+        let (req, size) = self.queued.pop_front()?;
+        self.bytes -= size;
+        Some(req)
+    }
+}
 
 /// Peer credentials of a connected link, used to reject cross-user connections. On platforms
 /// without a peer-cred mechanism the fields are `None` and the daemon falls back to filesystem
@@ -81,28 +127,31 @@ pub trait CommsFrontend: Send {
 pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, guard: LinkGuard) {
     let _link_guard = guard;
     let mut session = Session::default();
-    let mut queued: VecDeque<CommsRequest> = VecDeque::new();
+    let mut ahead = ReadAhead::default();
+    // ~keep The read side ended. A client that half-closed its write side still reads, so what it
+    // ~keep queued is served; the link ends once that is done or a reply cannot be sent.
+    let mut hung_up = false;
     loop {
-        let req = match queued.pop_front() {
+        let req = match ahead.pop() {
             Some(req) => req,
+            None if hung_up => break,
             None => match link.recv().await {
                 Ok(Some(req)) => req,
                 Ok(None) | Err(_) => break,
             },
         };
         // ~keep A waiting inbox read must know when its client hung up, so the link is read while a
-        // ~keep request runs, pipelined requests included: an end of stream cancels `gone`, and each
-        // ~keep pipelined request waits its turn in the queue, up to a bound.
+        // ~keep request runs, pipelined requests included: an end of stream cancels `gone` for the
+        // ~keep request running then, and each pipelined request waits its turn, up to a bound.
         let gone = CancellationToken::new();
-        let mut hung_up = false;
         let out = {
             let handled = broker.handle_framed(req, &mut session, &gone);
             tokio::pin!(handled);
             loop {
                 tokio::select! {
                     out = &mut handled => break out,
-                    inbound = link.recv(), if queued.len() < MAX_PIPELINED && !hung_up => match inbound {
-                        Ok(Some(next)) => queued.push_back(next),
+                    inbound = link.recv(), if ahead.has_room() && !hung_up => match inbound {
+                        Ok(Some(next)) => ahead.push(next),
                         Ok(None) | Err(_) => {
                             hung_up = true;
                             gone.cancel();
@@ -111,8 +160,47 @@ pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, g
                 }
             }
         };
-        if hung_up || link.send(out).await.is_err() {
+        if link.send(out).await.is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::comms::v2::api::{PostBody, PostTarget, ThreadId};
+
+    fn post(body_bytes: usize) -> CommsRequest {
+        CommsRequest::AgentPost {
+            sub: None,
+            body: PostBody {
+                target: PostTarget::Thread(ThreadId::parse("t-abcdef").expect("thread")),
+                body: "x".repeat(body_bytes),
+            },
+        }
+    }
+
+    #[test]
+    fn read_ahead_is_bounded_by_encoded_size() {
+        let mut ahead = ReadAhead::default();
+        ahead.push(post(MAX_FRAME_BYTES / 2));
+        assert!(ahead.has_room(), "half a frame queued");
+        ahead.push(post(MAX_FRAME_BYTES / 2));
+        assert!(!ahead.has_room(), "a frame's worth queued: {} bytes", ahead.bytes);
+        assert!(ahead.pop().is_some());
+        assert!(ahead.has_room(), "room again once one is served");
+        assert!(ahead.pop().is_some());
+        assert_eq!(ahead.bytes, 0);
+    }
+
+    #[test]
+    fn read_ahead_is_bounded_by_count() {
+        let mut ahead = ReadAhead::default();
+        for _ in 0..MAX_PIPELINED {
+            assert!(ahead.has_room());
+            ahead.push(CommsRequest::Ping);
+        }
+        assert!(!ahead.has_room());
     }
 }
