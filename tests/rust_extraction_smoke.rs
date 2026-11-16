@@ -269,3 +269,31 @@ fn an_epoch_refresh_re_extracts_the_calls_of_an_old_blob_with_eager_l2_off() {
     let calls: Vec<&str> = l2.calls.iter().map(|c| c.callee.as_str()).collect();
     assert!(calls.contains(&"parse"), "stale calls were carried over: {calls:?}");
 }
+
+#[test]
+fn macro_body_positions_on_the_opening_line_carry_its_column() {
+    let one = l1("m! { pub fn one() {} }\n");
+    let sym = one.symbols.iter().find(|s| s.name == "one").expect("one");
+    assert_eq!((sym.start_byte, sym.start_row, sym.start_col), (5, 0, 5));
+
+    let nested = l1("a! { b! { fn c() {} } }\n");
+    let c = nested.symbols.iter().find(|s| s.name == "c").expect("c");
+    assert_eq!((c.start_byte, c.start_row, c.start_col), (10, 0, 10));
+}
+
+#[test]
+fn trait_impls_inside_macro_bodies_are_implementations() {
+    let map = l1("m! {\n    impl Tr for S {}\n}\n");
+    let pairs = impl_pairs(&map);
+    assert_eq!(pairs, vec![("Tr", "S")]);
+    let imp = &map.implementations[0];
+    assert_eq!((imp.start_byte, imp.start_row, imp.start_col), (9, 1, 4));
+}
+
+#[test]
+fn macro_bodies_open_three_layers_deep_and_no_further() {
+    let map = l1("a! { b! { c! { fn in3() {} d! { fn deep4() {} } } } }\n");
+    let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"in3"), "{names:?}");
+    assert!(!names.contains(&"deep4"), "{names:?}");
+}

@@ -1,6 +1,7 @@
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryMatch};
 
+use super::rust_macro_items::MacroBodies;
 use super::{ExtractError, FileMapL1, Implementation, Import, SCHEMA_VER, Symbol, SymbolKind, capture_name};
 use crate::lang::{
     CaptureClass, LangId, ParseOutcome, parse_with_default_timeout, try_get_classified_combined_l1_query, with_parser,
@@ -15,16 +16,18 @@ pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError
             return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
         }
     };
-    extract_l1_from_tree(lang, &tree, source)
+    let bodies = MacroBodies::collect(lang, tree.root_node(), source)?;
+    extract_l1_from_tree(lang, &tree, source, &bodies)
 }
 
 /// Extract L1 data from a pre-parsed tree-sitter `Tree`. Separated from `extract_l1` so the
 /// scanner can share one parse between L1 and L2 when eager L2 is enabled, avoiding a second
-/// full parse per file on the hot path.
-pub(crate) fn extract_l1_from_tree(
+/// full parse per file on the hot path. `bodies` are the file's parsed macro bodies, shared with L2.
+pub(super) fn extract_l1_from_tree(
     lang: LangId,
     tree: &tree_sitter::Tree,
     source: &[u8],
+    bodies: &MacroBodies,
 ) -> Result<FileMapL1, ExtractError> {
     let root = tree.root_node();
 
@@ -35,9 +38,7 @@ pub(crate) fn extract_l1_from_tree(
     };
 
     let mut combined = run_combined(lang, root, source)?;
-    if lang == "rust" {
-        super::rust_macro_items::extend_with_macro_items(lang, root, source, &mut combined)?;
-    }
+    bodies.extend_l1(lang, source, &mut combined)?;
     let (symbols, imports, implementations) = combined;
     let rationale = super::rationale::extract_rationale(root, source);
 

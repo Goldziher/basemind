@@ -53,9 +53,10 @@ pub fn extract_l1_l2(
             return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
         }
     };
-    let l1 = extract_l1_from_tree(lang, &tree, source)?;
+    let bodies = rust_macro_items::MacroBodies::collect(lang, tree.root_node(), source)?;
+    let l1 = extract_l1_from_tree(lang, &tree, source, &bodies)?;
     let l2 = if eager_l2 {
-        extract_l2_from_tree(lang, &tree, source).ok()
+        extract_l2_from_tree(lang, &tree, source, &bodies).ok()
     } else {
         None
     };

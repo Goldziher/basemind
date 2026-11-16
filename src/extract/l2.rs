@@ -1,6 +1,7 @@
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryMatch};
 
+use super::rust_macro_items::MacroBodies;
 use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER, capture_name};
 use crate::lang::{LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser};
 
@@ -13,20 +14,27 @@ pub fn extract_l2(lang: LangId, source: &[u8]) -> Result<FileMapL2, ExtractError
             return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
         }
     };
-    extract_l2_from_tree(lang, &tree, source)
+    let bodies = MacroBodies::collect(lang, tree.root_node(), source)?;
+    extract_l2_from_tree(lang, &tree, source, &bodies)
 }
 
 /// Extract L2 data (calls + docs) from a pre-parsed tree-sitter `Tree`. Separated from
 /// `extract_l2` so the scanner can share one parse between L1 and L2 when eager L2 is
-/// enabled, avoiding a second full parse per file on the hot path.
-pub(crate) fn extract_l2_from_tree(
+/// enabled, avoiding a second full parse per file on the hot path. `bodies` are the file's parsed
+/// macro bodies, shared with L1: their calls come from the calls query over their own parse, so the
+/// lexical token-tree match skips them.
+pub(super) fn extract_l2_from_tree(
     lang: LangId,
     tree: &tree_sitter::Tree,
     source: &[u8],
+    bodies: &MacroBodies,
 ) -> Result<FileMapL2, ExtractError> {
     let root = tree.root_node();
 
-    let mut calls = run_calls(lang, root, source)?;
+    let mut calls = run_calls(lang, root, source, &|at| bodies.covers(at, 0))?;
+    bodies.extend_calls(source, &mut calls, |body_root, text, skip| {
+        run_calls(lang, body_root, text, skip)
+    })?;
     if lang == "markdown" {
         calls.extend(markdown_references(source));
     }
@@ -40,7 +48,13 @@ pub(crate) fn extract_l2_from_tree(
     })
 }
 
-fn run_calls(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>, ExtractError> {
+/// The calls under `root`. `skip_lexical(byte)` drops a lexical token-tree match at that byte.
+fn run_calls(
+    lang: LangId,
+    root: tree_sitter::Node,
+    source: &[u8],
+    skip_lexical: &dyn Fn(usize) -> bool,
+) -> Result<Vec<Call>, ExtractError> {
     let Some(q) = try_get_query(lang, QueryKind::Calls)? else {
         return Ok(Vec::new());
     };
@@ -48,7 +62,7 @@ fn run_calls(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec
     crate::lang::with_query_cursor(|cursor| {
         let mut iter = cursor.matches(&q, root, source);
         while let Some(m) = iter.next() {
-            if let Some(call) = build_call(&q, m, source) {
+            if let Some(call) = build_call(&q, m, source, skip_lexical) {
                 out.push(call);
             }
         }
@@ -72,7 +86,7 @@ fn run_docs(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<
     Ok(out)
 }
 
-fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
+fn build_call(q: &Query, m: &QueryMatch, source: &[u8], skip_lexical: &dyn Fn(usize) -> bool) -> Option<Call> {
     let mut callee: Option<String> = None;
     let mut range_node = None;
     let mut lexical: (Option<Node>, Option<Node>) = (None, None);
@@ -89,6 +103,9 @@ fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
         }
     }
     if let (Some(name), Some(args)) = lexical {
+        if skip_lexical(name.start_byte()) {
+            return None;
+        }
         return lexical_macro_call(name, args, source);
     }
     let node = range_node?;
