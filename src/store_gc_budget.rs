@@ -143,7 +143,9 @@ pub struct GcState {
     /// Cache budget applied by the most recent completed sweep.
     #[serde(default)]
     pub cache_budget_bytes: Option<u64>,
-    /// Measured cache footprint after the most recent completed budget pass.
+    /// Measured cache footprint after the most recent completed budget pass. Over budget it leaves
+    /// out a newer basemind's workspaces; within budget it may count them (see
+    /// [`EvictReport::total_bytes_before`]).
     #[serde(default)]
     pub cache_bytes_after: Option<u64>,
     /// Hot workspaces evicted after cold candidates were exhausted.
@@ -162,9 +164,12 @@ pub struct GcState {
 /// Result of one budget-enforcement pass.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EvictReport {
-    /// Combined cache footprint (workspaces + blobs) measured before eviction.
+    /// Combined cache footprint (workspaces + blobs) measured before eviction, without what a newer
+    /// basemind wrote. A pass that finds the cache within budget does not tell a newer basemind's
+    /// workspaces apart (that reads a view of every workspace) and counts them here.
     pub total_bytes_before: u64,
-    /// Combined cache footprint measured after the final eviction/reclamation step.
+    /// Combined cache footprint measured after the final eviction/reclamation step, counted as
+    /// [`Self::total_bytes_before`] is.
     pub total_bytes_after: u64,
     /// Workspace dirs evicted.
     pub evicted: usize,
