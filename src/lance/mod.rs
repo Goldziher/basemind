@@ -57,6 +57,49 @@ struct LanceMeta {
 
 const META_FILE: &str = "meta.json";
 
+/// File beside `meta.json` naming this store: written when the store is created, gone with it when
+/// it is wiped or removed. A scan records the id of the store it wrote a view's rows to, so a
+/// store that was wiped or deleted since is told from the one that holds those rows.
+const STORE_ID_FILE: &str = "store-id";
+
+/// Lock file inside the store directory, held while an open decides whether to wipe the store and
+/// creates what is missing. Without it one process can remove, as "tables beside no meta.json",
+/// the tables another process created a moment after writing its own.
+const OPEN_LOCK_FILE: &str = ".open.lock";
+
+/// The id of the store at `dir`, or `None` when there is no store there or it carries none.
+pub fn store_id(dir: &Path) -> Option<String> {
+    let id = std::fs::read_to_string(dir.join(STORE_ID_FILE)).ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Give the store at `dir` an id when it has none: a new store, or one an earlier build created.
+fn ensure_store_id(dir: &Path) -> Result<()> {
+    if store_id(dir).is_some() {
+        return Ok(());
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let path = dir.join(STORE_ID_FILE);
+    std::fs::write(&path, format!("{nanos:x}-{:x}", std::process::id()))
+        .with_context(|| format!("write {}", path.display()))
+}
+
+/// Hold the open lock of the store at `dir`. `None` when the lock file cannot be created or
+/// locked: the open goes on unserialised, as it would on a directory it cannot write.
+fn lock_open(dir: &Path) -> Option<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(OPEN_LOCK_FILE))
+        .ok()?;
+    fs2::FileExt::lock_exclusive(&file).ok()?;
+    Some(file)
+}
+
 /// Schema version of the lance Arrow tables, bound to the release minor exactly like
 /// `INDEX_SCHEMA_VER` and the blob `SCHEMA_VER`. Bump `RELEASE_MINOR` whenever the
 /// `memory` or `documents` table column set changes; the resulting `LanceMeta` mismatch
@@ -200,6 +243,8 @@ impl LanceStore {
             embedding_model: embedding_model.to_string(),
             schema_ver: MEMORY_SCHEMA_VER,
         };
+        // Released when this function returns, tables created.
+        let _opening = lock_open(dir);
         wipe_on_mismatch(dir, &meta_path, &expected)?;
         // meta.json goes in before any table. Tables beside no meta.json have no known model: they
         // are what an open that died before its meta write left, and are removed, not adopted.
@@ -207,6 +252,7 @@ impl LanceStore {
             remove_entries(dir, &meta_path, &remove_entry)?;
             write_meta(&meta_path, &expected)?;
         }
+        ensure_store_id(dir)?;
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -480,7 +526,8 @@ fn write_meta(meta_path: &Path, meta: &LanceMeta) -> Result<()> {
     use std::io::Write;
 
     let body = serde_json::to_vec_pretty(meta).context("serialize lance meta.json")?;
-    let tmp = meta_path.with_extension("json.tmp");
+    // Named by pid: two processes opening a new store at once must not write one temp file.
+    let tmp = meta_path.with_extension(format!("json.{}.tmp", std::process::id()));
     let mut file = std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
     file.write_all(&body)
         .and_then(|()| file.sync_all())
@@ -533,11 +580,11 @@ fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Resul
     std::fs::remove_file(meta_path).with_context(|| format!("remove {}", meta_path.display()))
 }
 
-/// Remove every entry of `dir` but `keep`, through `remove`.
+/// Remove every entry of `dir` but `keep` and the open lock, through `remove`.
 fn remove_entries(dir: &Path, keep: &Path, remove: &dyn Fn(&Path) -> std::io::Result<()>) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
         let path = entry.context("entry")?.path();
-        if path != keep {
+        if path != keep && path.file_name().is_none_or(|name| name != OPEN_LOCK_FILE) {
             remove(&path).with_context(|| format!("remove {}", path.display()))?;
         }
     }

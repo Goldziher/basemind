@@ -10,6 +10,12 @@
 //!
 //! The set is its own file, not a field of the file map, so settling a path costs one small write
 //! and never a second seal of the index and rewrite of the whole map.
+//!
+//! Beside it, [`STORE_ID_FILE`] names the LanceDB store the view's rows were last written to
+//! ([`crate::lance::store_id`]). LanceDB commits are not fsynced by basemind and the store can be
+//! wiped or deleted on its own, so two events put every embedded path back in the set, to be
+//! rewritten from the cached blobs: a scan that finds another store, or none, where that one was,
+//! and the scan that verifies blobs after the machine went down.
 
 use std::io::Write;
 use std::path::Path;
@@ -22,6 +28,32 @@ use crate::store::StoreError;
 
 /// File name of the owed set inside a view directory, beside `index.msgpack`.
 pub const PENDING_FILE: &str = "pending-vectors.msgpack";
+
+/// File name, inside a view directory, of the id of the LanceDB store the view's rows are in.
+pub const STORE_ID_FILE: &str = "vector-store-id";
+
+/// The id of the LanceDB store the rows of the view at `view_dir` were last written to, or `None`
+/// when no scan of the view has opened one.
+#[cfg(any(test, feature = "documents", feature = "code-search"))]
+pub(crate) fn recorded_store(view_dir: &Path) -> Option<String> {
+    let id = std::fs::read_to_string(view_dir.join(STORE_ID_FILE)).ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// Record `id` as the store the view's rows are in. Best effort: unrecorded, a later loss of the
+/// store goes unnoticed for this view, which is where every view was before the record existed.
+#[cfg(any(test, feature = "documents", feature = "code-search"))]
+pub(crate) fn record_store(view_dir: &Path, id: &str) {
+    if recorded_store(view_dir).as_deref() == Some(id) {
+        return;
+    }
+    let path = view_dir.join(STORE_ID_FILE);
+    let tmp = view_dir.join(format!("{STORE_ID_FILE}.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, id).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
 
 /// Paths owed vector rows, per LanceDB table.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,7 +107,9 @@ impl PendingVectors {
                 Err(error) => return Err(io(&path)(error)),
             }
         } else {
-            let tmp = view_dir.join(format!("{PENDING_FILE}.tmp"));
+            // Named by pid: a store scanned in place holds no workspace lock, so two processes can
+            // be here at once.
+            let tmp = view_dir.join(format!("{PENDING_FILE}.{}.tmp", std::process::id()));
             let bytes = rmp_serde::to_vec_named(self)?;
             let mut file = std::fs::File::create(&tmp).map_err(io(&tmp))?;
             file.write_all(&bytes)
@@ -85,6 +119,20 @@ impl PendingVectors {
         }
         self.dirty = false;
         Ok(())
+    }
+
+    /// Take in what `other` owes, keeping what this set owes. For a store that was opened without
+    /// the workspace lock and is now scanned in place: the set it loaded at open may be behind
+    /// what another process has recorded since, and persisting it as it is would drop those debts.
+    /// A debt the other process settled since may come back with this; the next flush settles it
+    /// again.
+    pub(crate) fn absorb(&mut self, other: Self) {
+        for rel in other.docs {
+            self.dirty |= self.docs.insert(rel);
+        }
+        for rel in other.code {
+            self.dirty |= self.code.insert(rel);
+        }
     }
 
     /// The documents owed rows.
@@ -155,7 +203,7 @@ mod tests {
         let reread = PendingVectors::load(dir.path());
         assert_eq!((reread.docs().len(), reread.code().len()), (1, 1));
         assert!(reread.docs().contains(bstr::BStr::new("docs/a.pdf")));
-        assert!(!dir.path().join(format!("{PENDING_FILE}.tmp")).exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left");
 
         pending.settle_docs(&["docs/a.pdf"]);
         pending.settle_code(&["src/a.rs"]);
@@ -168,5 +216,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(PENDING_FILE), b"\xc1 not msgpack").unwrap();
         assert!(PendingVectors::load(dir.path()).is_empty());
+    }
+
+    /// A set loaded before another process recorded a debt must not, once persisted, drop it.
+    #[test]
+    fn absorbing_what_is_on_disk_keeps_the_debts_of_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut loaded_early = PendingVectors::load(dir.path());
+        let mut other_process = PendingVectors::default();
+        other_process.owe_code("src/theirs.rs");
+        other_process.persist(dir.path()).unwrap();
+        loaded_early.owe_doc("docs/ours.pdf");
+
+        loaded_early.absorb(PendingVectors::load(dir.path()));
+        loaded_early.persist(dir.path()).unwrap();
+
+        let reread = PendingVectors::load(dir.path());
+        assert!(reread.code().contains(bstr::BStr::new("src/theirs.rs")));
+        assert!(reread.docs().contains(bstr::BStr::new("docs/ours.pdf")));
+    }
+
+    #[test]
+    fn the_recorded_store_round_trips_and_is_absent_until_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(recorded_store(dir.path()), None);
+        record_store(dir.path(), "abc-1");
+        assert_eq!(recorded_store(dir.path()).as_deref(), Some("abc-1"));
+        record_store(dir.path(), "def-2");
+        assert_eq!(recorded_store(dir.path()).as_deref(), Some("def-2"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left");
     }
 }

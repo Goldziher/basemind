@@ -43,6 +43,7 @@ pub(crate) fn flush_vector_lanes(
     mut code_batches: Vec<PendingCodeBatchOpt>,
     requeue: usize,
 ) -> Result<(), crate::store::StoreError> {
+    owe_rows_that_may_be_lost(store, filters)?;
     if owes_beyond(store, &doc_batches, &code_batches) && vector_store_opens(store, config) {
         let mut budget = requeue;
         requeue_pending_docs(store, config, filters, scope, &mut doc_batches, &mut budget);
@@ -54,8 +55,71 @@ pub(crate) fn flush_vector_lanes(
     run_optional_lane(LANE_CODE_BATCHES, || {
         flush_code_batches_if_any(store, config, scope, code_batches);
     });
+    record_vector_store(store);
     store.pending_vectors.persist(&store.view_dir)
 }
+
+/// Put every indexed path back in the owed set when the rows the file map counts on may not be in
+/// the vector store: the store this view's rows were written to is gone or was replaced (wiped
+/// for another model or schema, deleted, its `meta.json` unreadable), or this is the pass that
+/// verifies blobs after the machine went down, when LanceDB commits made shortly before may not
+/// have reached the disk although their debts were settled. The re-queue rebuilds the rows from
+/// the cached blobs and settles every path that has none.
+///
+/// The set is written before the record of the lost store is dropped: between the two, a process
+/// that dies leaves the loss to be found again, not a debt nobody knows of.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+fn owe_rows_that_may_be_lost(store: &mut Store, filters: &Filters) -> Result<(), crate::store::StoreError> {
+    let Some(recorded) = crate::store_pending::recorded_store(&store.view_dir) else {
+        return Ok(());
+    };
+    let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
+    let lost = crate::lance::store_id(&lance_dir).as_deref() != Some(recorded.as_str());
+    if !lost && !filters.vector_rows_unsure {
+        return Ok(());
+    }
+    if lost {
+        tracing::warn!(
+            view = %store.view,
+            "the vector store this view's rows were written to is gone; rewriting them from the cached blobs"
+        );
+        // A handle kept from an earlier scan is on the store that went.
+        store.lance = None;
+    }
+    #[cfg(feature = "documents")]
+    for rel in store.index.doc_files.keys() {
+        store.pending_vectors.owe_doc(&rel.to_str_lossy());
+    }
+    #[cfg(feature = "code-search")]
+    for rel in store.index.files.keys() {
+        store.pending_vectors.owe_code(&rel.to_str_lossy());
+    }
+    store.pending_vectors.persist(&store.view_dir)?;
+    if lost {
+        let _ = std::fs::remove_file(store.view_dir.join(crate::store_pending::STORE_ID_FILE));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(feature = "documents", feature = "code-search")))]
+fn owe_rows_that_may_be_lost(_store: &mut Store, _filters: &Filters) -> Result<(), crate::store::StoreError> {
+    Ok(())
+}
+
+/// Record, beside the file map, which vector store this scan had open: the one its rows went to.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+fn record_vector_store(store: &Store) {
+    if let Some(id) = store
+        .lance
+        .as_ref()
+        .and_then(|lance| crate::lance::store_id(lance.dir()))
+    {
+        crate::store_pending::record_store(&store.view_dir, &id);
+    }
+}
+
+#[cfg(not(any(feature = "documents", feature = "code-search")))]
+fn record_vector_store(_store: &Store) {}
 
 /// Whether an earlier scan left a path owing rows that this scan has no batch for.
 fn owes_beyond(store: &Store, doc_batches: &[PendingDocBatchOpt], code_batches: &[PendingCodeBatchOpt]) -> bool {

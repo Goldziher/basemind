@@ -235,7 +235,8 @@ fn the_owed_set_is_written_before_the_file_map_that_claims_its_files() {
     let map = store.view_dir.join(crate::store::INDEX_FILE);
     let before = std::fs::read(&map).unwrap();
     owe_doc(&mut store, "docs/a.txt", Some(&doc(2, DIM)));
-    std::fs::create_dir(store.view_dir.join(format!("{PENDING_FILE}.tmp"))).unwrap();
+    let temp = format!("{PENDING_FILE}.{}.tmp", std::process::id());
+    std::fs::create_dir(store.view_dir.join(temp)).unwrap();
 
     assert!(store.flush().is_err(), "the owed set cannot be written");
 
@@ -377,6 +378,171 @@ fn an_incremental_scan_requeues_a_bounded_number_of_owed_paths() {
     assert_eq!(doc_rows(&mut store, SCOPE).len(), REQUEUE_PER_INCREMENTAL);
     assert_eq!(store.pending_vectors.docs().len(), 6);
     assert_eq!(owed_on_disk(&store).len(), 6);
+}
+
+fn inline_scan(root: &Path, store: &mut Store, config: &Config) {
+    scan(root, store, config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+}
+
+/// The vector store can be wiped or deleted on its own (another model opened it, `cache clear`,
+/// an unreadable `meta.json`), while the file map and the blobs still say every file is embedded.
+/// The scan that finds another store where the one it wrote to was puts the rows back.
+#[test]
+fn a_vector_store_that_was_removed_gets_its_rows_back_from_the_next_scan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = open_store(tmp.path());
+    let config = config();
+    let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
+    inline_scan(tmp.path(), &mut store, &config);
+    assert_eq!(doc_rows(&mut store, &scope), [rel]);
+    let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
+    let first = crate::lance::store_id(&lance_dir).expect("the store has an id");
+    assert_eq!(
+        crate::store_pending::recorded_store(&store.view_dir).as_deref(),
+        Some(first.as_str()),
+        "the scan recorded the store its rows went to"
+    );
+
+    store.lance = None;
+    std::fs::remove_dir_all(&lance_dir).unwrap();
+    inline_scan(tmp.path(), &mut store, &config);
+
+    assert_eq!(
+        doc_rows(&mut store, &scope),
+        [rel],
+        "the unchanged file's rows are rewritten"
+    );
+    assert!(owed_on_disk(&store).is_empty());
+    let second = crate::lance::store_id(&lance_dir).expect("the new store has an id");
+    assert_ne!(first, second);
+    assert_eq!(
+        crate::store_pending::recorded_store(&store.view_dir).as_deref(),
+        Some(second.as_str())
+    );
+}
+
+/// The same loss found by an incremental scan of some other path.
+#[test]
+fn an_incremental_scan_also_finds_the_vector_store_gone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = open_store(tmp.path());
+    let config = config();
+    let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
+    inline_scan(tmp.path(), &mut store, &config);
+    store.lance = None;
+    std::fs::remove_dir_all(store.basemind_dir.join(crate::store::LANCE_DIR)).unwrap();
+
+    let other = tmp.path().join("lib.rs");
+    std::fs::write(&other, "fn other() {}\n").unwrap();
+    scan_paths(tmp.path(), &mut store, &config, &[other], EmbedMode::Inline).unwrap();
+
+    assert_eq!(doc_rows(&mut store, &scope), [rel]);
+}
+
+/// A view whose scans never opened a vector store has no rows anywhere: a store that is not
+/// there is not a lost one, and nothing is owed or created for it.
+#[test]
+fn a_view_that_never_wrote_rows_owes_nothing_for_a_store_that_is_not_there() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = open_store(tmp.path());
+    let config = config();
+    workspace_with_a_cached_document(tmp.path(), &store);
+
+    scan(
+        tmp.path(),
+        &mut store,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    lanes(&mut store, &config, usize::MAX);
+
+    assert_eq!(crate::store_pending::recorded_store(&store.view_dir), None);
+    assert!(store.pending_vectors.is_empty());
+    assert!(!store.basemind_dir.join(crate::store::LANCE_DIR).exists());
+}
+
+/// LanceDB commits are not fsynced by basemind, and a path's debt is settled once its commit
+/// returns. After the machine went down those rows may be gone with nothing owed. The pass that
+/// verifies blobs owes every path its rows again; an ordinary pass does not look.
+#[test]
+fn the_pass_that_verifies_blobs_rewrites_vector_rows_lost_with_the_machine() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = open_store(tmp.path());
+    let config = config();
+    let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
+    inline_scan(tmp.path(), &mut store, &config);
+    let lance = store.lance_or_open(DIM, PRESET).unwrap().clone();
+    lance.replace_document(&scope, rel, Vec::new()).unwrap();
+    drop(lance);
+    assert!(doc_rows(&mut store, &scope).is_empty(), "the rows are lost");
+
+    inline_scan(tmp.path(), &mut store, &config);
+    assert!(
+        doc_rows(&mut store, &scope).is_empty(),
+        "an ordinary pass trusts the file map"
+    );
+
+    std::mem::forget(crate::scan_evidence::ScanBreadcrumb::begin_in(&store.basemind_dir, tmp.path()).unwrap());
+    inline_scan(tmp.path(), &mut store, &config);
+
+    assert_eq!(doc_rows(&mut store, &scope), [rel]);
+    assert!(owed_on_disk(&store).is_empty());
+}
+
+/// A full scan that is cancelled takes an incremental pass's share of what earlier scans left
+/// owing, not all of it: the daemon cancels its scans to stop, and must not then re-read every
+/// owed blob.
+#[test]
+fn a_cancelled_full_scan_requeues_a_bounded_number_of_owed_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = open_store(tmp.path());
+    let config = config();
+    let blob = doc(1, DIM);
+    let total = REQUEUE_PER_INCREMENTAL + 6;
+    for index in 0..total {
+        owe_doc(&mut store, &format!("docs/{index:03}.txt"), Some(&blob));
+    }
+    let cancel = crate::scanner::ScanCancel::new();
+    cancel.cancel();
+
+    let report = crate::scanner::scan_with_cancel(
+        tmp.path(),
+        &mut store,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        &cancel,
+    )
+    .unwrap();
+
+    assert!(report.cancelled);
+    assert_eq!(store.pending_vectors.docs().len(), 6, "the rest stays owed");
+}
+
+/// A store opened without the workspace lock and scanned in place loaded the owed set at open.
+/// What another process recorded since must survive this scan writing the set.
+#[test]
+fn a_store_scanned_in_place_keeps_what_another_process_recorded_as_owed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = config();
+    let (rel, _scope) = {
+        let writer = open_store(tmp.path());
+        writer.ensure_dirs().unwrap();
+        workspace_with_a_cached_document(tmp.path(), &writer)
+    };
+    let mut in_place = Store::open_read_only(tmp.path(), VIEW_WORKING).unwrap();
+    assert!(in_place.pending_vectors.is_empty());
+    let mut other_process = PendingVectors::default();
+    other_process.owe_doc("docs/theirs.txt");
+    other_process.persist(&in_place.view_dir).unwrap();
+    // The scan's own rows cannot be written, so it has a debt of its own to record.
+    block_vector_store(&in_place);
+
+    inline_scan(tmp.path(), &mut in_place, &config);
+
+    assert_eq!(owed_on_disk(&in_place), ["docs/theirs.txt", rel]);
 }
 
 #[cfg(feature = "code-search")]

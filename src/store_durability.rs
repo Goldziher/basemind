@@ -111,6 +111,11 @@ impl Store {
         Ok(())
     }
 
+    /// Whether this store was opened holding the workspace lock, or has taken it since.
+    pub(crate) fn holds_writer_lock(&self) -> bool {
+        self._lock.is_some()
+    }
+
     /// Whether an incremental scan would be wrong for this store: a rebuild is pending, the file
     /// map lists nothing, or its blobs are to be verified, which only a full pass does. The pending rebuild is read from the file map itself
     /// ([`Index::rebuild_pending`]), so it outlives a process that died between writing the emptied

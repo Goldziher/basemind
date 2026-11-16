@@ -16,6 +16,7 @@ use crate::store::{ScanHealth, Store};
 /// index.
 pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
     crate::scan_evidence::settle_dead_hosts();
+    absorb_owed_rows(store);
     if let Some(db) = store.index_db.as_ref() {
         db.clear_recoverable_fault();
         if let Some(reason) = db.fatal_fault() {
@@ -25,6 +26,16 @@ pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
     store.open_index_owed_to_scan()?;
     store.rebuild_index_if_behind()?;
     ensure_space(store)
+}
+
+/// For a store opened without the workspace lock and now scanned in place: take in the owed set
+/// as it is on disk, which another process may have added to since this store loaded it. A store
+/// that holds the lock is the only writer of the set and has nothing to take in.
+pub(crate) fn absorb_owed_rows(store: &mut Store) {
+    if !store.holds_writer_lock() {
+        let on_disk = crate::store_pending::PendingVectors::load(&store.view_dir);
+        store.pending_vectors.absorb(on_disk);
+    }
 }
 
 /// Whether an incremental scan must hand over to a full one: only a full pass can rebuild an index

@@ -466,6 +466,7 @@ pub fn scan_with_observer(
         .filter(|p| matches!(embed, EmbedMode::Inline) && p.changed);
     filters.reflush_embeds = policy.as_ref().is_some_and(|p| p.reflush);
     filters.verify_blobs = crate::scan_evidence::blobs_need_verifying(&store.basemind_dir);
+    filters.vector_rows_unsure = filters.verify_blobs;
     advance(&mut breadcrumb, &phase_peaks, PHASE_CANDIDATES, None);
     let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
@@ -493,19 +494,13 @@ pub fn scan_with_observer(
     // wipe the entry of every candidate the cancellation skipped. The batch flushes still run: ~keep
     // the drive loop recorded the completed files' entries (embedded=true), so dropping their ~keep
     // LanceDB rows here would leave them tracked-but-rowless — quiescent, never re-flushed. The ~keep
-    // rows come from already-persisted blobs (no model inference), so this stays bounded. ~keep
+    // rows come from already-persisted blobs (no model inference), and of what earlier scans left ~keep
+    // owing only an incremental pass's share is taken, so a draining daemon is not held up. ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
         flush_code_map(store, &ScanHealth::partial("cancelled", seen_count, total_candidates))?;
-        flush_vector_lanes(
-            store,
-            config,
-            &filters,
-            &scope,
-            driven.doc_batches,
-            driven.code_batches,
-            usize::MAX,
-        )?;
+        let (docs, code) = (driven.doc_batches, driven.code_batches);
+        flush_vector_lanes(store, config, &filters, &scope, docs, code, REQUEUE_PER_INCREMENTAL)?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
@@ -597,7 +592,15 @@ pub fn scan_with_observer(
     // their rows would leave them tracked-but-rowless (blob-sourced, no inference; bounded). ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
-        flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, usize::MAX)?;
+        flush_vector_lanes(
+            store,
+            config,
+            &filters,
+            &scope,
+            doc_batches,
+            code_batches,
+            REQUEUE_PER_INCREMENTAL,
+        )?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
@@ -739,6 +742,7 @@ fn scan_paths_inner(
     if crate::scanner_integrity::needs_full_rebuild(store)? {
         return scan_with_observer(root, store, config, source, embed, cancel, observer);
     }
+    crate::scanner_integrity::absorb_owed_rows(store);
     let mut filter = IndexFilter::new(root, config)?;
     if verify_named {
         filter.verify_blobs();

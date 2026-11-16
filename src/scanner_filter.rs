@@ -254,9 +254,14 @@ pub(crate) struct Filters {
     /// since the last scan: unchanged files must then be re-flushed so their vector rows are rebuilt.
     #[cfg_attr(not(any(feature = "code-search", feature = "documents")), allow(dead_code))]
     pub(crate) reflush_embeds: bool,
-    /// Validate each blob the pass would otherwise trust for existing, because a scan of this
-    /// workspace never finished (see [`crate::scan_evidence::blobs_need_verifying`]).
+    /// Validate each blob the pass would otherwise trust for existing: a scan of this workspace
+    /// never finished (see [`crate::scan_evidence::blobs_need_verifying`]), or the caller named
+    /// these paths to have them looked at again.
     pub(crate) verify_blobs: bool,
+    /// Set by the full pass that verifies blobs after an unclean stop: the vector rows written
+    /// shortly before it may be lost too, so every indexed path is owed its rows again.
+    #[cfg_attr(not(any(feature = "code-search", feature = "documents")), allow(dead_code))]
+    pub(crate) vector_rows_unsure: bool,
 }
 
 impl Filters {
@@ -315,6 +320,7 @@ impl Filters {
             extra_prefixes,
             reflush_embeds: false,
             verify_blobs: false,
+            vector_rows_unsure: false,
         })
     }
 

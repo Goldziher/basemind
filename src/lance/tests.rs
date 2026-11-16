@@ -482,3 +482,68 @@ fn a_memory_search_by_tag_is_filtered_in_the_store() {
     assert_eq!(keys(Some("it's")), ["far"], "a quote in a tag is escaped");
     assert!(keys(Some("absent")).is_empty());
 }
+
+/// The temp file `meta.json` is written through is named by pid. Something another process has
+/// at the name every process once shared must not fail this write or be renamed into place.
+#[test]
+fn another_process_temp_file_does_not_get_in_the_way_of_writing_meta() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta_path = dir.path().join(META_FILE);
+    let foreign = dir.path().join("meta.json.tmp");
+    std::fs::create_dir(&foreign).unwrap();
+    let meta = LanceMeta {
+        dim: 4,
+        embedding_model: "test".to_string(),
+        schema_ver: MEMORY_SCHEMA_VER,
+    };
+
+    write_meta(&meta_path, &meta).expect("the write goes through its own temp file");
+
+    let written: LanceMeta = serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    assert_eq!(written, meta);
+    assert!(foreign.exists(), "the other process's file is left alone");
+    let own = dir.path().join(format!("meta.json.{}.tmp", std::process::id()));
+    assert!(!own.exists(), "the temp file is renamed away");
+}
+
+/// Opens of one new store from several threads at once all succeed and leave the tables in place:
+/// none removes, as tables without a meta, what another has just created.
+#[test]
+fn concurrent_opens_of_a_new_store_all_succeed() {
+    for _ in 0..4 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let opens: Vec<_> = (0..6)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    LanceStore::open(&path, 4, "test").map(|store| store.memory_stamps("s", "group", "").map(|_| ()))
+                })
+            })
+            .collect();
+        for open in opens {
+            open.join().unwrap().expect("open").expect("the memory table is there");
+        }
+    }
+}
+
+/// A store keeps its id for as long as it holds its rows, and a wiped or removed store comes back
+/// under another: that is how a scan tells the store it wrote to from one created since.
+#[test]
+fn a_store_keeps_its_id_until_it_is_wiped() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(store_id(dir.path()), None, "no store, no id");
+    drop(LanceStore::open(dir.path(), 4, "test").unwrap());
+    let first = store_id(dir.path()).expect("a new store has an id");
+
+    drop(LanceStore::open(dir.path(), 4, "test").unwrap());
+    assert_eq!(
+        store_id(dir.path()).as_deref(),
+        Some(first.as_str()),
+        "a reopen keeps it"
+    );
+
+    drop(LanceStore::open(dir.path(), 4, "another-model").unwrap());
+    let second = store_id(dir.path()).expect("the rebuilt store has an id");
+    assert_ne!(first, second, "a wipe starts a new store");
+}
