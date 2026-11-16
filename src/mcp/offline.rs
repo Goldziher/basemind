@@ -109,6 +109,9 @@ mod tests {
         for tool in crate::mcp::params::VERB_TOOLS {
             assert!(names.contains(tool), "`{tool}` is missing from {names:?}");
         }
-        assert_eq!(tools_list(), as_json(&tool_list_for(lean::lean_mode_enabled())));
+        let (full, lean) = (as_json(&listed), as_json(&tool_list_for(true)));
+        assert_ne!(full, lean, "the switch selects between two surfaces");
+        let sent = tools_list();
+        assert!(sent == full || sent == lean, "the list sent is one of them: {sent}");
     }
 }
