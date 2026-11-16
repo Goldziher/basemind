@@ -47,6 +47,10 @@ pub struct ResolvedDefinition {
     pub start: u32,
     /// The content hash the daemon's index holds for `path`, when it holds the file.
     pub landing_hash: Option<String>,
+    /// The content hash the daemon's index holds for the file the use is in. An edge read while
+    /// that file is being rescanned can be the old content's.
+    #[serde(default)]
+    pub use_hash: Option<String>,
     /// Whether the daemon's last resolve pass committed every edge. While one runs, an edge can
     /// still point into the content a file had before the rescan.
     pub settled: bool,
@@ -54,11 +58,13 @@ pub struct ResolvedDefinition {
 
 impl ResolvedDefinition {
     /// The definition as `(path, start)` when it belongs to a snapshot whose index holds
-    /// `session_hash` for the landing file: the daemon's pass is settled and both name one
-    /// content. Anything else is an edge from another snapshot, refused rather than served.
-    pub fn for_snapshot(self, session_hash: Option<&str>) -> Option<(RelPath, u32)> {
-        let same_content = self.landing_hash.is_some() && self.landing_hash.as_deref() == session_hash;
-        (self.settled && same_content).then_some((self.path, self.start))
+    /// `session_use` for the file the use is in and `session_landing` for the landing file: the
+    /// daemon's pass is settled and both files name one content on both sides. Anything else is
+    /// an edge from another snapshot, refused rather than served.
+    pub fn for_snapshot(self, session_use: Option<&str>, session_landing: Option<&str>) -> Option<(RelPath, u32)> {
+        let same = |daemon: &Option<String>, session: Option<&str>| daemon.is_some() && daemon.as_deref() == session;
+        (self.settled && same(&self.use_hash, session_use) && same(&self.landing_hash, session_landing))
+            .then_some((self.path, self.start))
     }
 }
 
@@ -71,6 +77,7 @@ mod tests {
             path: RelPath::from("src/lib.rs"),
             start: 42,
             landing_hash: landing_hash.map(str::to_owned),
+            use_hash: Some("use".to_owned()),
             settled,
         }
     }
@@ -78,7 +85,7 @@ mod tests {
     #[test]
     fn an_edge_of_the_sessions_snapshot_is_served() {
         assert_eq!(
-            definition(Some("abc"), true).for_snapshot(Some("abc")),
+            definition(Some("abc"), true).for_snapshot(Some("use"), Some("abc")),
             Some((RelPath::from("src/lib.rs"), 42))
         );
     }
@@ -86,30 +93,57 @@ mod tests {
     #[test]
     fn an_edge_into_other_content_is_refused() {
         assert_eq!(
-            definition(Some("old"), true).for_snapshot(Some("new")),
+            definition(Some("old"), true).for_snapshot(Some("use"), Some("new")),
             None,
             "the session rescanned first"
         );
         assert_eq!(
-            definition(Some("new"), true).for_snapshot(Some("old")),
+            definition(Some("new"), true).for_snapshot(Some("use"), Some("old")),
             None,
             "the daemon rescanned first"
         );
         assert_eq!(
-            definition(None, true).for_snapshot(Some("abc")),
+            definition(None, true).for_snapshot(Some("use"), Some("abc")),
             None,
             "the daemon no longer holds the file"
         );
         assert_eq!(
-            definition(Some("abc"), true).for_snapshot(None),
+            definition(Some("abc"), true).for_snapshot(Some("use"), None),
             None,
             "the session does not hold it"
         );
     }
 
     #[test]
+    fn an_edge_from_a_use_file_in_other_content_is_refused() {
+        let edge = || definition(Some("abc"), true);
+        assert_eq!(
+            edge().for_snapshot(Some("other"), Some("abc")),
+            None,
+            "the use file changed"
+        );
+        assert_eq!(
+            edge().for_snapshot(None, Some("abc")),
+            None,
+            "the session does not hold it"
+        );
+        let unstamped = ResolvedDefinition {
+            use_hash: None,
+            ..edge()
+        };
+        assert_eq!(
+            unstamped.for_snapshot(Some("use"), Some("abc")),
+            None,
+            "an older daemon's edge"
+        );
+    }
+
+    #[test]
     fn an_edge_read_while_the_resolve_pass_runs_is_refused() {
-        assert_eq!(definition(Some("abc"), false).for_snapshot(Some("abc")), None);
+        assert_eq!(
+            definition(Some("abc"), false).for_snapshot(Some("use"), Some("abc")),
+            None
+        );
     }
 
     #[test]
