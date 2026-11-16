@@ -20,6 +20,8 @@ use crate::queue::EventQueue;
 use crate::spec::{ApprovalPolicy, ApprovalVerdict, LaunchSpec, Limits};
 
 const STDERR_TAIL_BYTES: usize = 8192;
+/// How many approval requests may wait for the caller at once; a further one is denied.
+pub(crate) const MAX_PENDING_APPROVALS: usize = 64;
 const STDERR_DRAIN: Duration = Duration::from_millis(200);
 
 /// The exact process an adapter would start: its program, arguments, environment and working
@@ -129,21 +131,30 @@ impl EventSink {
     }
 
     /// Reports the request and answers it: denied without a policy, else the policy's verdict.
-    /// On `Ask` the adapter keeps the request pending for the caller.
-    pub fn request_approval(&self, request: ApprovalRequest) -> ApprovalVerdict {
-        self.request_approval_once(request, true)
+    /// On `Ask` the adapter keeps the request pending for the caller; with `pending` requests
+    /// already waiting, [`MAX_PENDING_APPROVALS`] or more, it is denied instead.
+    pub fn request_approval(&self, request: ApprovalRequest, pending: usize) -> ApprovalVerdict {
+        self.request_approval_once(request, true, pending)
     }
 
     /// As [`Self::request_approval`], for a harness that may have no way to allow just once:
     /// without `can_allow_once` an `Allow` verdict becomes `Deny`.
-    pub fn request_approval_once(&self, request: ApprovalRequest, can_allow_once: bool) -> ApprovalVerdict {
+    pub fn request_approval_once(
+        &self,
+        request: ApprovalRequest,
+        can_allow_once: bool,
+        pending: usize,
+    ) -> ApprovalVerdict {
         let id = request.id.clone();
-        let (mut verdict, source) = match &self.shared.policy {
+        let (mut verdict, mut source) = match &self.shared.policy {
             None => (ApprovalVerdict::Deny, ApprovalSource::DefaultDeny),
             Some(policy) => (policy.decide(&request), ApprovalSource::Policy),
         };
         if verdict == ApprovalVerdict::Allow && !can_allow_once {
             verdict = ApprovalVerdict::Deny;
+        }
+        if verdict == ApprovalVerdict::Ask && pending >= MAX_PENDING_APPROVALS {
+            (verdict, source) = (ApprovalVerdict::Deny, ApprovalSource::TooManyPending);
         }
         self.emit(Event::ApprovalRequest(request));
         if verdict != ApprovalVerdict::Ask {

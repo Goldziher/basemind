@@ -489,3 +489,51 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
         Err(LaunchError::InvalidMcpServerName(_))
     ));
 }
+
+#[test]
+fn deferred_requests_are_capped_and_withdrawn_when_resolved_elsewhere_or_the_turn_ends() {
+    let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Ask), 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    for n in 0..=crate::session::MAX_PENDING_APPROVALS {
+        let request =
+            json!({"id": 100 + n, "method": "item/commandExecution/requestApproval", "params": {"command": "ls"}});
+        protocol.frame(request, &mut out, &sink).unwrap();
+    }
+    assert_eq!(written(&out), [json!({"id": 164, "result": {"decision": "decline"}})]);
+    let events_now: Vec<_> = events.try_iter().collect();
+    assert!(events_now.contains(&Event::ApprovalResolved {
+        id: "codex-65".to_owned(),
+        allowed: false,
+        source: ApprovalSource::TooManyPending,
+    }));
+
+    let resolved = json!({"method": "serverRequest/resolved", "params": {"threadId": "thread-1", "requestId": 100}});
+    protocol.frame(resolved, &mut out, &sink).unwrap();
+    assert_eq!(
+        events.try_iter().collect::<Vec<_>>(),
+        [Event::ApprovalResolved {
+            id: "codex-1".to_owned(),
+            allowed: false,
+            source: ApprovalSource::Withdrawn,
+        }]
+    );
+    assert!(!protocol.answer("codex-1", true, &mut out).unwrap());
+
+    let completed = json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}});
+    protocol.frame(completed, &mut out, &sink).unwrap();
+    let withdrawn = events
+        .try_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::ApprovalResolved {
+                    source: ApprovalSource::Withdrawn,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(withdrawn, crate::session::MAX_PENDING_APPROVALS - 1);
+    assert!(!protocol.answer("codex-2", true, &mut out).unwrap());
+}

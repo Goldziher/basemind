@@ -281,6 +281,10 @@ impl ClaudeProtocol {
         }
         self.turn_active = false;
         self.begun = false;
+        // A request of a finished turn will not be acted on any more.
+        for id in std::mem::take(&mut self.approvals).into_keys() {
+            sink.resolved(id, false, ApprovalSource::Withdrawn);
+        }
         Ok(Step::TurnDone)
     }
 
@@ -296,7 +300,7 @@ impl ClaudeProtocol {
             );
         }
         let id = request_id(wire);
-        let verdict = sink.request_approval(approval_request(id.clone(), request));
+        let verdict = sink.request_approval(approval_request(id.clone(), request), self.approvals.len());
         match verdict {
             ApprovalVerdict::Ask => {
                 self.approvals.insert(id, (wire.clone(), request.clone()));

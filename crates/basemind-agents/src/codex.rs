@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::error::LaunchError;
-use crate::event::{ApprovalKind, ApprovalRequest, Event, ToolCall, ToolState, approval_detail};
+use crate::event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState, approval_detail};
 use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
@@ -182,7 +182,7 @@ impl CodexProtocol {
     ) -> Result<(), LaunchError> {
         self.approval_sequence += 1;
         let id = format!("codex-{}", self.approval_sequence);
-        let verdict = sink.request_approval(self.approval_request(id.clone(), method, params));
+        let verdict = sink.request_approval(self.approval_request(id.clone(), method, params), self.approvals.len());
         match verdict {
             ApprovalVerdict::Ask => {
                 self.approvals
@@ -231,6 +231,20 @@ impl CodexProtocol {
             title: title.to_owned(),
             detail: approval_detail(&grant, params["reason"].as_str()),
             params: params.clone(),
+        }
+    }
+
+    /// Drops the pending requests whose wire id `which` selects, reporting them withdrawn.
+    fn withdraw(&mut self, which: impl Fn(&Value) -> bool, sink: &EventSink) {
+        let ids: Vec<String> = self
+            .approvals
+            .iter()
+            .filter(|(_, (wire, _, _))| which(wire))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.approvals.remove(&id);
+            sink.resolved(id, false, ApprovalSource::Withdrawn);
         }
     }
 
@@ -350,6 +364,7 @@ impl CodexProtocol {
             }
         }
         self.active_turn = None;
+        self.withdraw(|_| true, sink);
         Ok(Step::TurnDone)
     }
 
@@ -391,6 +406,10 @@ impl CodexProtocol {
                 sink.emit(Event::ToolCall(tool.clone()));
             }
             "turn/completed" | "turn/aborted" => return self.turn_ended(method, params, sink),
+            "serverRequest/resolved" => {
+                let wire = &params["requestId"];
+                self.withdraw(|pending| pending == wire, sink);
+            }
             "error" if params["willRetry"] != true => return Err(failure(&params["error"], "Codex stream error")),
             "error" => sink.emit(Event::Status(error_message(&params["error"], "Codex is reconnecting"))),
             _ => {

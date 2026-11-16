@@ -672,3 +672,57 @@ fn a_read_error_mid_turn_fails_the_session() {
     });
     assert!(run.result.is_err(), "{:?}", run.events);
 }
+
+#[test]
+fn deferred_requests_are_capped_and_the_end_of_the_turn_withdraws_them() {
+    let root = tempfile::tempdir().unwrap();
+    let spec = with_policy(acp_spec(AcpFlavor::Cursor, root.path()), always(ApprovalVerdict::Ask));
+    let cap = crate::session::MAX_PENDING_APPROVALS;
+    let run = converse_with(&spec, Vec::new(), move |agent| {
+        agent.open();
+        let prompt = agent.expect("session/prompt");
+        for n in 0..=cap {
+            agent.send(
+                &json!({"jsonrpc": "2.0", "id": 1000 + n, "method": "session/request_permission", "params": {
+                    "sessionId": "sess-1",
+                    "toolCall": {"toolCallId": format!("t{n}"), "kind": "execute"},
+                    "options": standard_options(),
+                }}),
+            );
+        }
+        let answer = agent.recv();
+        assert_eq!(answer["id"], 1000 + cap, "unexpected frame {answer}");
+        assert_eq!(
+            answer["result"]["outcome"],
+            json!({"outcome": "selected", "optionId": "no"})
+        );
+        agent.reply(&prompt, &json!({"stopReason": "end_turn"}));
+        for _ in 0..cap {
+            let answer = agent.recv();
+            assert_eq!(
+                answer["result"]["outcome"]["optionId"], "no",
+                "unexpected frame {answer}"
+            );
+        }
+    });
+    run.result.unwrap();
+    assert!(run.events.contains(&Event::ApprovalResolved {
+        id: format!("acp-{}", cap + 1),
+        allowed: false,
+        source: ApprovalSource::TooManyPending,
+    }));
+    let withdrawn = run
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::ApprovalResolved {
+                    source: ApprovalSource::Withdrawn,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(withdrawn, cap);
+}

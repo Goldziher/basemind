@@ -467,3 +467,43 @@ fn an_mcp_server_becomes_mcp_config_and_only_named_tools_are_pre_approved() {
         Err(LaunchError::InvalidMcpToolName(_))
     ));
 }
+
+#[test]
+fn deferred_requests_are_capped_and_a_finished_turn_withdraws_them() {
+    let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Ask), 1);
+    let mut protocol = started(&sink);
+    let mut out = Vec::new();
+    for n in 0..=crate::session::MAX_PENDING_APPROVALS {
+        protocol
+            .frame(permission_request(&format!("req-{n}")), &mut out, &sink)
+            .unwrap();
+    }
+    let answered = written(&out);
+    assert_eq!(answered.len(), 1, "{answered:?}");
+    assert_eq!(answered[0]["response"]["request_id"], "req-64");
+    assert_eq!(answered[0]["response"]["response"]["behavior"], "deny");
+    let so_far: Vec<_> = events.try_iter().collect();
+    assert!(so_far.contains(&Event::ApprovalResolved {
+        id: "req-64".to_owned(),
+        allowed: false,
+        source: ApprovalSource::TooManyPending,
+    }));
+
+    protocol
+        .frame(json!({"type": "result", "result": "Done."}), &mut out, &sink)
+        .unwrap();
+    let withdrawn = events
+        .try_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::ApprovalResolved {
+                    source: ApprovalSource::Withdrawn,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(withdrawn, crate::session::MAX_PENDING_APPROVALS);
+    assert!(!protocol.answer("req-0", true, &mut out).unwrap());
+}

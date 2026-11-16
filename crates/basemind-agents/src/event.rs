@@ -121,8 +121,11 @@ pub enum ApprovalSource {
     Policy,
     /// The caller answered through the session.
     Caller,
-    /// The harness withdrew the request, or the session ended first.
+    /// The harness withdrew the request, or its turn or the session ended first.
     Withdrawn,
+    /// The policy deferred it while the most requests a session holds were already pending,
+    /// so it was denied.
+    TooManyPending,
 }
 
 /// How a session ended.

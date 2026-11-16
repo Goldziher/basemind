@@ -243,6 +243,16 @@ impl Pending {
             None => sink.emit(Event::Error(format!("no approval request {id:?} is pending"))),
         }
     }
+
+    /// Denies every request still pending, as the turn they belong to has ended.
+    fn withdraw_all(&self, sink: &EventSink) {
+        let answers = std::mem::take(&mut *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for (id, answer) in answers {
+            // The agent may have dropped the request with its turn; it is moot either way.
+            let _ = answer(false);
+            sink.resolved(id, false, ApprovalSource::Withdrawn);
+        }
+    }
 }
 
 /// The option that answers `request`, and whether it lets the agent proceed. An allow takes
@@ -381,7 +391,12 @@ where
             sequence += 1;
             let id = format!("acp-{sequence}");
             let once = can_allow_once(&request);
-            let verdict = sink.request_approval_once(approval_request(id.clone(), &request), once);
+            let waiting = pending
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len();
+            let verdict = sink.request_approval_once(approval_request(id.clone(), &request), once, waiting);
             let answer: Answer = Box::new(move |allow| {
                 let (outcome, allowed) = outcome(&request, allow);
                 responder.respond(RequestPermissionResponse::new(outcome))?;
@@ -455,6 +470,7 @@ where
                     }
                 }
             }
+            pending.withdraw_all(&sink);
             let turn = sink.turns();
             sink.emit(Event::TurnCompleted { turn });
             if turn >= sink.max_turns() {
