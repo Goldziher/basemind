@@ -33,9 +33,9 @@ use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode, Prepared};
 
 /// Drives every [`HarnessKind::Acp`] harness.
 ///
-/// An approval is answered with the request's `allow_once` option, falling back to
-/// `allow_always` only when the agent offers nothing narrower; a denial with `reject_once`,
-/// then `reject_always`, then the protocol's `cancelled` outcome.
+/// An approval is answered with the request's `allow_once` option and never with
+/// `allow_always`: a request without `allow_once` is denied whatever the verdict. A denial
+/// takes `reject_once`, then `reject_always`, then the protocol's `cancelled` outcome.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AcpAdapter;
 
@@ -202,7 +202,8 @@ impl Driver for AcpDriver {
     }
 }
 
-type Answer = Box<dyn FnOnce(bool) -> Result<(), agent_client_protocol::Error> + Send>;
+/// Answers one permission request; `Ok` carries whether the agent was allowed to proceed.
+type Answer = Box<dyn FnOnce(bool) -> Result<bool, agent_client_protocol::Error> + Send>;
 
 /// Permission requests the policy left for the caller, by event id.
 #[derive(Clone, Default)]
@@ -216,25 +217,39 @@ impl Pending {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
         match answer.map(|answer| answer(allow)) {
-            Some(Ok(())) => sink.resolved(id.to_owned(), allow, ApprovalSource::Caller),
+            Some(Ok(allowed)) => sink.resolved(id.to_owned(), allowed, ApprovalSource::Caller),
             Some(Err(error)) => sink.emit(Event::Error(format!("could not answer approval {id:?}: {error}"))),
             None => sink.emit(Event::Error(format!("no approval request {id:?} is pending"))),
         }
     }
 }
 
-fn outcome(request: &RequestPermissionRequest, allow: bool) -> RequestPermissionOutcome {
-    let preference = if allow {
-        [PermissionOptionKind::AllowOnce, PermissionOptionKind::AllowAlways]
-    } else {
-        [PermissionOptionKind::RejectOnce, PermissionOptionKind::RejectAlways]
-    };
-    preference
+/// The option that answers `request`, and whether it lets the agent proceed. An allow takes
+/// the `allow_once` option and nothing broader: without one it is answered as a denial, so a
+/// single approval never becomes a standing one. A denial takes `reject_once`, then
+/// `reject_always`, then the protocol's `cancelled` outcome.
+fn outcome(request: &RequestPermissionRequest, allow: bool) -> (RequestPermissionOutcome, bool) {
+    let select =
+        |kind: PermissionOptionKind| {
+            request.options.iter().find(|option| option.kind == kind).map(|option| {
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option.option_id.clone()))
+            })
+        };
+    if allow && let Some(selected) = select(PermissionOptionKind::AllowOnce) {
+        return (selected, true);
+    }
+    let denial = select(PermissionOptionKind::RejectOnce)
+        .or_else(|| select(PermissionOptionKind::RejectAlways))
+        .unwrap_or(RequestPermissionOutcome::Cancelled);
+    (denial, false)
+}
+
+/// Whether `request` offers a way to allow it just once.
+fn can_allow_once(request: &RequestPermissionRequest) -> bool {
+    request
+        .options
         .iter()
-        .find_map(|kind| request.options.iter().find(|option| option.kind == *kind))
-        .map_or(RequestPermissionOutcome::Cancelled, |option| {
-            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option.option_id.clone()))
-        })
+        .any(|option| option.kind == PermissionOptionKind::AllowOnce)
 }
 
 /// The request for a `session/request_permission`. The grant is the tool call the agent
@@ -245,14 +260,15 @@ fn approval_request(id: String, request: &RequestPermissionRequest) -> ApprovalR
         Some(ToolKind::Execute) => (ApprovalKind::Command, "Allow this command?"),
         _ => (ApprovalKind::Tool, "Allow this tool call?"),
     };
+    let mut grant = serde_json::to_string_pretty(&request.tool_call).unwrap_or_default();
+    if !can_allow_once(request) {
+        grant.push_str("\nThe agent offers no allow-once option: an allow is answered as a denial.");
+    }
     ApprovalRequest {
         id,
         kind,
         title: title.to_owned(),
-        detail: approval_detail(
-            &serde_json::to_string_pretty(&request.tool_call).unwrap_or_default(),
-            None,
-        ),
+        detail: approval_detail(&grant, None),
         params: serde_json::to_value(request).unwrap_or_default(),
     }
 }
@@ -343,16 +359,20 @@ where
                     _connection: ConnectionTo<Agent>| {
             sequence += 1;
             let id = format!("acp-{sequence}");
-            let verdict = sink.request_approval(approval_request(id.clone(), &request));
-            let answer: Answer =
-                Box::new(move |allow| responder.respond(RequestPermissionResponse::new(outcome(&request, allow))));
+            let once = can_allow_once(&request);
+            let verdict = sink.request_approval_once(approval_request(id.clone(), &request), once);
+            let answer: Answer = Box::new(move |allow| {
+                let (outcome, allowed) = outcome(&request, allow);
+                responder.respond(RequestPermissionResponse::new(outcome))?;
+                Ok(allowed)
+            });
             match verdict {
                 ApprovalVerdict::Ask => {
                     let mut pending = pending.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     pending.insert(id, answer);
                     Ok(())
                 }
-                verdict => answer(verdict == ApprovalVerdict::Allow),
+                verdict => answer(verdict == ApprovalVerdict::Allow).map(drop),
             }
         }
     };

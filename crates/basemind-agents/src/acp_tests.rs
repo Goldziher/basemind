@@ -572,9 +572,78 @@ fn permission_outcomes_prefer_the_narrowest_option() {
         ("always", PermissionOptionKind::AllowAlways),
         ("never", PermissionOptionKind::RejectAlways),
     ]);
-    assert_eq!(selected(outcome(&only_always, true)).as_deref(), Some("always"));
-    assert_eq!(selected(outcome(&only_always, false)).as_deref(), Some("never"));
+    let (allowed_outcome, allowed) = outcome(&only_always, true);
+    assert_eq!(selected(allowed_outcome).as_deref(), Some("never"));
+    assert!(!allowed, "an allow without allow_once went through");
+    let (denied, allowed) = outcome(&only_always, false);
+    assert_eq!(selected(denied).as_deref(), Some("never"));
+    assert!(!allowed);
+    let once = request(&[
+        ("always", PermissionOptionKind::AllowAlways),
+        ("once", PermissionOptionKind::AllowOnce),
+    ]);
+    let (allowed_outcome, allowed) = outcome(&once, true);
+    assert_eq!(selected(allowed_outcome).as_deref(), Some("once"));
+    assert!(allowed);
     let none = request(&[]);
-    assert_eq!(selected(outcome(&none, true)), None);
-    assert_eq!(selected(outcome(&none, false)), None);
+    assert_eq!(selected(outcome(&none, true).0), None);
+    assert_eq!(selected(outcome(&none, false).0), None);
+}
+
+#[test]
+fn an_allow_without_an_allow_once_option_is_answered_as_a_denial() {
+    let only_always = json!([
+        {"optionId": "always", "name": "Always allow", "kind": "allow_always"},
+        {"optionId": "no", "name": "Reject", "kind": "reject_once"},
+    ]);
+    let root = tempfile::tempdir().unwrap();
+    let spec = with_policy(acp_spec(AcpFlavor::Cursor, root.path()), always(ApprovalVerdict::Allow));
+    let options = only_always.clone();
+    let run = converse_with(&spec, Vec::new(), move |agent| {
+        agent.open();
+        let prompt = agent.expect("session/prompt");
+        assert_eq!(
+            agent.ask_permission(&options),
+            json!({"outcome": "selected", "optionId": "no"})
+        );
+        agent.reply(&prompt, &json!({"stopReason": "end_turn"}));
+    });
+    run.result.unwrap();
+    assert!(run.events.contains(&Event::ApprovalResolved {
+        id: "acp-1".to_owned(),
+        allowed: false,
+        source: ApprovalSource::Policy,
+    }));
+
+    // As in the deferred test above: the policy's signal says the request is pending.
+    let (asked_tx, asked) = std::sync::mpsc::channel();
+    let policy = move |_: &ApprovalRequest| {
+        asked_tx.send(()).unwrap();
+        ApprovalVerdict::Ask
+    };
+    let spec = with_policy(acp_spec(AcpFlavor::Cursor, root.path()), Some(Arc::new(policy)));
+    let run = converse_with(&spec, Vec::new(), move |agent| {
+        agent.open();
+        let prompt = agent.expect("session/prompt");
+        agent.request_permission(&only_always);
+        asked.recv().unwrap();
+        agent
+            .controls
+            .unbounded_send(Control::Answer {
+                id: "acp-1".to_owned(),
+                allow: true,
+            })
+            .unwrap();
+        assert_eq!(
+            agent.permission_outcome(),
+            json!({"outcome": "selected", "optionId": "no"})
+        );
+        agent.reply(&prompt, &json!({"stopReason": "end_turn"}));
+    });
+    run.result.unwrap();
+    assert!(run.events.contains(&Event::ApprovalResolved {
+        id: "acp-1".to_owned(),
+        allowed: false,
+        source: ApprovalSource::Caller,
+    }));
 }

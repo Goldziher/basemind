@@ -127,11 +127,20 @@ impl EventSink {
     /// Reports the request and answers it: denied without a policy, else the policy's verdict.
     /// On `Ask` the adapter keeps the request pending for the caller.
     pub fn request_approval(&self, request: ApprovalRequest) -> ApprovalVerdict {
+        self.request_approval_once(request, true)
+    }
+
+    /// As [`Self::request_approval`], for a harness that may have no way to allow just once:
+    /// without `can_allow_once` an `Allow` verdict becomes `Deny`.
+    pub fn request_approval_once(&self, request: ApprovalRequest, can_allow_once: bool) -> ApprovalVerdict {
         let id = request.id.clone();
-        let (verdict, source) = match &self.shared.policy {
+        let (mut verdict, source) = match &self.shared.policy {
             None => (ApprovalVerdict::Deny, ApprovalSource::DefaultDeny),
             Some(policy) => (policy.decide(&request), ApprovalSource::Policy),
         };
+        if verdict == ApprovalVerdict::Allow && !can_allow_once {
+            verdict = ApprovalVerdict::Deny;
+        }
         self.emit(Event::ApprovalRequest(request));
         if verdict != ApprovalVerdict::Ask {
             self.resolved(id, verdict == ApprovalVerdict::Allow, source);
