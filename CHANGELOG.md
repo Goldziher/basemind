@@ -646,6 +646,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rust trait methods without a body and `extern` block functions (`function_signature_item`) are
   symbols of kind `function`.
 - Rust `fn` items nested in a function body are symbols; other function locals stay out of the outline.
+- Items declared inside item-position Rust macro bodies (tokio's `cfg_time! { pub(crate) fn … }`,
+  `thread_local!`, `lazy_static!`) are symbols, imports and implementations. Such a body is re-parsed
+  on its own and kept only when it parses without errors (at most 256 KiB, 3 macro layers and 256 bodies
+  per file). `EXTRACT_EPOCH` is 2, so unchanged files are re-extracted on the next scan.
 
 ## [0.33.0] - 2026-11-14
 

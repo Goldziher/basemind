@@ -13,6 +13,7 @@ pub mod l2;
 pub mod l3;
 pub mod locals;
 mod rationale;
+mod rust_macro_items;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -85,7 +86,9 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 ///
 /// History:
 /// - 1: symbol `signature` stops at the grammar's body field (`extract::l1::header_text`).
-pub const EXTRACT_EPOCH: u16 = 1;
+/// - 2: Rust outlines gain bodiless trait methods, nested `fn` items, items inside item-position
+///   macro bodies, and trait impls written with a path or generic trait.
+pub const EXTRACT_EPOCH: u16 = 2;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

@@ -115,6 +115,73 @@ fn turbofish_calls_are_recorded() {
 }
 
 #[test]
+fn items_inside_item_position_macro_bodies_are_symbols() {
+    let src = "\
+cfg_time! {
+    #[track_caller]
+    pub(crate) fn caller_location() -> u32 { 0 }
+
+    pub struct Sleep;
+    use std::time::Duration;
+}
+mod inner {
+    cfg_rt! {
+        cfg_net! {
+            pub fn deep() {}
+        }
+    }
+}
+";
+    let map = l1(src);
+    let sym = map
+        .symbols
+        .iter()
+        .find(|s| s.name == "caller_location")
+        .expect("caller_location symbol");
+    assert_eq!(sym.kind, SymbolKind::Function);
+    assert_eq!((sym.start_row, sym.start_col), (2, 4));
+    let body = &src[sym.start_byte as usize..sym.end_byte as usize];
+    assert!(body.starts_with("pub(crate) fn caller_location"), "{body}");
+    assert!(body.ends_with("{ 0 }"), "{body}");
+    assert_eq!(sym.signature.as_deref(), Some("pub(crate) fn caller_location() -> u32"));
+
+    let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
+    for want in ["Sleep", "inner", "deep"] {
+        assert!(names.contains(&want), "{want} missing from {names:?}");
+    }
+    let deep = map.symbols.iter().find(|s| s.name == "deep").expect("deep");
+    assert_eq!((deep.start_row, deep.start_col), (10, 12));
+    assert!(src[deep.start_byte as usize..].starts_with("pub fn deep"));
+    assert!(
+        map.imports
+            .iter()
+            .any(|i| i.raw == "use std::time::Duration;" && src[i.start_byte as usize..i.end_byte as usize] == i.raw),
+        "{:?}",
+        map.imports
+    );
+    let starts: Vec<u32> = map.symbols.iter().map(|s| s.start_byte).collect();
+    let mut sorted = starts.clone();
+    sorted.sort_unstable();
+    assert_eq!(starts, sorted, "symbols stay in document order");
+}
+
+#[test]
+fn only_item_position_macro_bodies_that_parse_cleanly_add_symbols() {
+    let src = "\
+cfg_if::cfg_if! {
+    if #[cfg(unix)] { fn unix_only() {} } else { fn other() {} }
+}
+lazy_static! { static ref TABLE: u32 = 1; }
+fn f() { let v = vec![1, 2]; my_items! { fn local_macro_fn() {} } }
+";
+    let map = l1(src);
+    let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
+    // `static ref` is in the grammar, so a `lazy_static!` table is a real definition; `cfg_if!`
+    // is not Rust and the macro inside `f` is in expression position.
+    assert_eq!(names, vec!["TABLE", "f"], "{names:?}");
+}
+
+#[test]
 fn functions_nested_in_function_bodies_are_symbols_but_locals_are_not() {
     let src = "\
 fn outer() {

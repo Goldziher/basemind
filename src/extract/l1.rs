@@ -34,7 +34,11 @@ pub(crate) fn extract_l1_from_tree(
         (false, 0)
     };
 
-    let (symbols, imports, implementations) = run_combined(lang, root, source)?;
+    let mut combined = run_combined(lang, root, source)?;
+    if lang == "rust" {
+        super::rust_macro_items::extend_with_macro_items(lang, root, source, &mut combined)?;
+    }
+    let (symbols, imports, implementations) = combined;
     let rationale = super::rationale::extract_rationale(root, source);
 
     Ok(FileMapL1 {
@@ -69,13 +73,13 @@ fn count_error_nodes(root: Node) -> u32 {
 }
 
 /// Output triple of `run_combined`: symbols, imports, and implementations extracted in one pass.
-type CombinedL1 = (Vec<Symbol>, Vec<Import>, Vec<Implementation>);
+pub(super) type CombinedL1 = (Vec<Symbol>, Vec<Import>, Vec<Implementation>);
 
 /// Walk the combined L1 query (symbols + imports + implementations) once, dispatching each
 /// match by pre-classified capture index. Allocates one `QueryCursor` instead of three, cutting
 /// the per-file tree-walk cost to one pass. Dispatch is an integer array lookup
 /// (`classes[first_cap.index]`) instead of three `starts_with` comparisons per match.
-fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<CombinedL1, ExtractError> {
+pub(super) fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<CombinedL1, ExtractError> {
     let Some(cq) = try_get_classified_combined_l1_query(lang)? else {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     };
