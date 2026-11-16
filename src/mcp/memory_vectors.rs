@@ -10,9 +10,10 @@
 //! The rows are derived from the notes and rebuilt from them ([`backfill`]): a search embeds the
 //! notes whose row is missing or stale and removes the rows whose note is gone or has no text, a
 //! bounded amount per call, until the namespace is level. Level is a belief of this process, and
-//! other processes save notes too, so it lapses after [`LEVEL_TTL`] and is dropped at once by a
-//! save here that wrote no row. The table is empty after every release minor (its `schema_ver`
-//! follows the minor) and for every embedding preset opened for the first time.
+//! other processes save notes too, so it lapses after [`LEVEL_TTL`], longer each time a look finds
+//! nothing to do up to [`LEVEL_TTL_MAX`], and is dropped at once by a save here that wrote no row.
+//! The table is empty after every release minor (its `schema_ver` follows the minor) and for every
+//! embedding preset opened for the first time.
 //!
 //! A row holds a note's vector and tags, never its text.
 //!
@@ -51,6 +52,9 @@ const BACKFILL_TIME_BUDGET: Duration = Duration::from_secs(3);
 /// How long a namespace found level is taken to be level. Another process may have saved a note
 /// whose embedding failed, or one saved with `embed: false`; after this long a search looks again.
 const LEVEL_TTL: Duration = Duration::from_secs(300);
+/// The longest a namespace is taken to be level. Each look that finds nothing to do doubles the
+/// wait up to this, since a look lists every note and every row inside a search.
+const LEVEL_TTL_MAX: Duration = Duration::from_secs(60 * 60);
 /// Rows fetched beyond twice the limit, and the most a search fetches while the join keeps
 /// dropping rows.
 const FETCH_SLACK: usize = 8;
@@ -67,16 +71,26 @@ pub(crate) enum Backfill {
     /// A search is embedding the namespace's notes now.
     Running,
     /// Every note had a current row and no row lacked a note when last looked, which is believed
-    /// until this instant.
-    Level { until: Instant },
+    /// until this instant, `ttl` after the look.
+    Level { until: Instant, ttl: Duration },
 }
 
 impl Backfill {
-    /// Level as of now.
-    pub(crate) fn level() -> Self {
+    /// Level as of now, for `ttl`.
+    pub(crate) fn level(ttl: Duration) -> Self {
         Self::Level {
-            until: Instant::now() + LEVEL_TTL,
+            until: Instant::now() + ttl,
+            ttl,
         }
+    }
+}
+
+/// How long a namespace found level is believed level. A look after a lapse that found nothing to
+/// do waits twice as long as the one before; any work done starts over at [`LEVEL_TTL`].
+fn level_ttl(lapsed: Option<Duration>, found_work: bool) -> Duration {
+    match lapsed {
+        Some(ttl) if !found_work => ttl.saturating_mul(2).clamp(LEVEL_TTL, LEVEL_TTL_MAX),
+        _ => LEVEL_TTL,
     }
 }
 
@@ -236,14 +250,15 @@ pub(super) fn notes_behind(notes: Vec<WireMemoryEntry>, rows: &MemoryStamps) -> 
 struct RunningMark<'a> {
     state: &'a ServerState,
     namespace: (u8, String),
-    level: bool,
+    /// How long the namespace is level for, once the pass found it level.
+    level: Option<Duration>,
 }
 
 impl Drop for RunningMark<'_> {
     fn drop(&mut self) {
         let mut marks = backfill_marks(self.state);
-        if self.level {
-            marks.insert(self.namespace.clone(), Backfill::level());
+        if let Some(ttl) = self.level {
+            marks.insert(self.namespace.clone(), Backfill::level(ttl));
         } else {
             marks.remove(&self.namespace);
         }
@@ -264,18 +279,21 @@ fn backfill_marks(state: &ServerState) -> std::sync::MutexGuard<'_, AHashMap<(u8
 /// whatever rows exist.
 pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, vis_byte: u8, owner: &str) -> bool {
     let namespace = (vis_byte, owner.to_string());
-    {
+    let lapsed = {
         let mut marks = backfill_marks(state);
-        match marks.get(&namespace) {
-            Some(Backfill::Level { until }) if Instant::now() < *until => return false,
+        let lapsed = match marks.get(&namespace) {
+            Some(Backfill::Level { until, .. }) if Instant::now() < *until => return false,
             Some(Backfill::Running) => return true,
-            Some(Backfill::Level { .. }) | None => marks.insert(namespace.clone(), Backfill::Running),
+            Some(Backfill::Level { ttl, .. }) => Some(*ttl),
+            None => None,
         };
-    }
+        marks.insert(namespace.clone(), Backfill::Running);
+        lapsed
+    };
     let mut mark = RunningMark {
         state,
         namespace,
-        level: false,
+        level: None,
     };
     match backfill(state, visibility, vis_byte, owner).await {
         Ok(progress) => {
@@ -287,11 +305,12 @@ pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, v
                     "memory vector rows reconciled with the notes"
                 );
             }
-            mark.level = progress.level;
+            let found_work = progress.embedded > 0 || progress.pruned > 0;
+            mark.level = progress.level.then(|| level_ttl(lapsed, found_work));
         }
         Err(error) => tracing::warn!(error = %error.message, "memory vector backfill failed; the next search retries"),
     }
-    !mark.level
+    mark.level.is_none()
 }
 
 /// What one backfill pass did.

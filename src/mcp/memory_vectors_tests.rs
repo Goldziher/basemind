@@ -628,7 +628,13 @@ async fn a_level_mark_lapses_and_the_next_search_reconciles_again() {
         ["first"],
         "believed level: no listing, so the rowless note is not seen"
     );
-    backfill_marks(&state).insert((vis(), String::new()), Backfill::Level { until: Instant::now() });
+    backfill_marks(&state).insert(
+        (vis(), String::new()),
+        Backfill::Level {
+            until: Instant::now(),
+            ttl: LEVEL_TTL,
+        },
+    );
 
     assert_eq!(hit_keys(&search_json(&state, "a note", 10).await), ["first", "second"]);
 }
@@ -784,4 +790,40 @@ async fn a_save_and_a_delete_fsync_through_blocking() {
     };
     run_memory_delete(&state, params).await.unwrap();
     assert_eq!(blocking_calls(), after_save + 1, "and so do the delete's");
+}
+
+/// A look after a lapse that finds the namespace level costs a listing of every note and row, so
+/// the next one waits longer; one that found work starts over.
+#[test]
+fn each_look_that_finds_nothing_to_do_waits_longer_up_to_a_bound() {
+    assert_eq!(level_ttl(None, false), LEVEL_TTL, "the first look");
+    assert_eq!(level_ttl(Some(LEVEL_TTL), false), LEVEL_TTL * 2);
+    assert_eq!(level_ttl(Some(LEVEL_TTL * 2), false), LEVEL_TTL * 4);
+    assert_eq!(level_ttl(Some(LEVEL_TTL_MAX), false), LEVEL_TTL_MAX);
+    assert_eq!(
+        level_ttl(Some(LEVEL_TTL_MAX), true),
+        LEVEL_TTL,
+        "work found starts over"
+    );
+}
+
+/// The doubled wait reaches the mark a lapsed search leaves.
+#[tokio::test]
+async fn a_lapsed_look_that_finds_nothing_doubles_the_wait() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    save(&state, "k", "a note").await;
+    search_json(&state, "note", 5).await;
+    assert!(matches!(mark_of(&state), Some(Backfill::Level { ttl, .. }) if ttl == LEVEL_TTL));
+    backfill_marks(&state).insert(
+        (vis(), String::new()),
+        Backfill::Level {
+            until: Instant::now(),
+            ttl: LEVEL_TTL,
+        },
+    );
+
+    search_json(&state, "note", 5).await;
+
+    assert!(matches!(mark_of(&state), Some(Backfill::Level { ttl, .. }) if ttl == LEVEL_TTL * 2));
 }

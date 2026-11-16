@@ -1104,9 +1104,9 @@ is gone or has no text, a bounded number per call, which is also what fills a st
 wiped or first opened. A row holds the note's vector and tags, never its text. A save or a delete
 is fsynced before it is acknowledged.
 
-A process stops looking once it has found a namespace level, for five minutes: other processes save
-notes too. A save in the same process that wrote no row (the embedding failed, or was left for
-later) ends that at once. A note saved again while a backfill is embedding it keeps the row of the
+A process stops looking once it has found a namespace level, for five minutes, doubled after each
+look that found nothing to do up to an hour: other processes save notes too. A save in the same
+process that wrote no row (the embedding failed, or was left for later) ends that at once. A note saved again while a backfill is embedding it keeps the row of the
 later save: a write removes only rows of the same or an earlier write of the note, and the backfill
 reads the notes it embedded once more before it calls the namespace level. The join tells a current
 row from a stale one by the notes' `updated_at` alone and reads whole only the notes it may serve, in
