@@ -143,25 +143,31 @@ pub(crate) fn process_started_unix(pid: u32) -> Option<i64> {
     }
 }
 
-/// `pid` as the platform's signed pid.
+/// `pid` as the platform's signed pid, or `None` for one no process can have: `0` names the caller's
+/// process group to `kill`, and a value past `i32::MAX` turns negative, naming a group or every
+/// process.
 fn valid_pid(pid: u32) -> Option<i32> {
-    i32::try_from(pid).ok()
+    i32::try_from(pid).ok().filter(|pid| *pid > 0)
 }
 
 /// Whether a process id is still live. Unix: `kill(pid, 0)`, where `0` (signalable) and `EPERM`
 /// (exists, not ours) both mean alive and `ESRCH` means gone. Windows: `OpenProcess` succeeds for a
-/// live pid.
+/// live pid. A pid no process can have (see [`valid_pid`]) is never live.
 #[cfg(any(unix, windows))]
 pub fn pid_is_live(pid: u32) -> bool {
+    let Some(pid) = valid_pid(pid) else {
+        return false;
+    };
     #[cfg(unix)]
     {
-        // SAFETY: `kill` with signal 0 performs only an existence/permission check and sends no signal.
-        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        // SAFETY: `kill` with signal 0 performs only an existence/permission check and sends no
+        // signal; `pid` is positive, so it names one process, never a group.
+        let rc = unsafe { libc::kill(pid, 0) };
         rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(windows)]
     {
-        win::is_live(pid)
+        win::is_live(pid.unsigned_abs())
     }
 }
 
@@ -424,6 +430,19 @@ mod tests {
         let started = process_started_unix(std::process::id()).expect("this process has a start time");
         assert!(started <= now && started > now - A_DAY, "{started} against {now}");
         assert_eq!(process_started_unix(UNUSED_PID), None);
+    }
+
+    /// `kill(0, 0)` reaches the caller's process group and `kill(-1, 0)` every process it may
+    /// signal: either reads as live, and a marker or record named by such a pid would never go.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_pid_no_process_can_have_is_never_live() {
+        assert!(pid_is_live(std::process::id()), "our own pid is live");
+        assert!(!pid_is_live(UNUSED_PID), "an absent pid is not live");
+        assert!(!pid_is_live(0), "pid 0 is the caller's process group");
+        assert!(!pid_is_live(u32::MAX), "-1 is every process");
+        assert!(!pid_is_live(u32::MAX - 11), "a negative pid is a process group");
+        assert!(!pid_is_live(0x8000_0000), "past i32::MAX");
     }
 
     #[cfg(target_os = "linux")]

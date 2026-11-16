@@ -40,9 +40,9 @@ fn two_workspaces(root: &Path) -> (PathBuf, [PathBuf; 2]) {
     (workspaces, pair)
 }
 
-/// A pid no process has.
+/// A pid no process has. Not past `i32::MAX`, which `kill` would take for a process group.
 #[cfg(unix)]
-const DEAD_PID: u32 = u32::MAX - 11;
+const DEAD_PID: u32 = 0x7FFF_FFFE;
 /// A pid some other process always has.
 #[cfg(unix)]
 const LIVE_PID: u32 = 1;
