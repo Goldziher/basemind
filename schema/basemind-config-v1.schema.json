@@ -295,7 +295,7 @@
           "default": true
         },
         "eager_l2": {
-          "description": "When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.\nL2 populates the `calls_by_callee` Fjall partition that drives `code_refs`. Flipping to `false` halves the scan budget on large\nrepos at the cost\nof empty reference-search results until a foreground L2 pass is triggered (or the\nexisting on-demand `query::file_outline_l2` lazy path runs).",
+          "description": "When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.\nL2 populates the `calls_by_callee` Fjall partition that drives `code_refs`. Flipping to\n`false` halves the scan budget on large repos at the cost of empty reference-search results\nuntil a foreground L2 pass is triggered (or the existing on-demand\n`query::file_outline_l2` lazy path runs).",
           "type": "boolean",
           "default": true
         },
