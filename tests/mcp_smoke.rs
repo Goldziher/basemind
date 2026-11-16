@@ -3239,8 +3239,8 @@ async fn code_and_index_tools_reject_inexact_arguments() {
     );
     let message = refused(&service, "index_rescan", json!({ "component": "blobs" })).await;
     assert!(
-        message.contains("unknown field `component`") && message.contains("`paths`") && message.contains("`full`"),
-        "index_rescan must refuse a field it does not take and list the ones it does: {message}"
+        message.contains("unknown field `component`") && message.contains("`paths`") && !message.contains("`full`"),
+        "index_rescan must refuse a field it does not take and list the one it does: {message}"
     );
 
     let _ = service.cancel().await;
