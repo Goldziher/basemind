@@ -111,6 +111,9 @@ pub(crate) struct Access {
 
 impl Access {
     /// `bypass` is the checked consent of the spec; without it `Bypass` degrades to supervised.
+    /// `ReadOnly` uses approval policy `never`: the read-only sandbox is the only control,
+    /// nothing is asked, and whatever the sandbox blocks fails instead of becoming a request
+    /// an allowing policy could turn into a write.
     pub fn new(mode: PermissionMode, bypass: bool) -> Self {
         let (approval_policy, sandbox, sandbox_policy) = match mode {
             PermissionMode::ReadOnly => ("never", "read-only", "readOnly"),
@@ -473,7 +476,25 @@ impl CodexProtocol {
         Ok(())
     }
 
-    fn turn_ended(&mut self, method: &str, params: &Value, sink: &EventSink) -> Result<Step, LaunchError> {
+    /// Answers every pending request with a denial: the turn they belong to is over, and a
+    /// sub-agent thread's request would otherwise wait until the wall-time limit.
+    fn deny_pending(&mut self, out: &mut dyn Write) -> Result<Vec<String>, LaunchError> {
+        let pending: Vec<_> = self.approvals.drain().collect();
+        let mut ids = Vec::with_capacity(pending.len());
+        for (id, (wire, method, request)) in pending {
+            self.respond(&wire, &method, &request, false, out)?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    fn turn_ended(
+        &mut self,
+        method: &str,
+        params: &Value,
+        out: &mut dyn Write,
+        sink: &EventSink,
+    ) -> Result<Step, LaunchError> {
         self.report_output(true, sink);
         let turn = &params["turn"];
         let status = turn["status"].as_str().unwrap_or("completed");
@@ -491,7 +512,9 @@ impl CodexProtocol {
             }
         }
         self.active_turn = None;
-        self.withdraw(|_| true, sink);
+        for id in self.deny_pending(out)? {
+            sink.resolved(id, false, ApprovalSource::Withdrawn);
+        }
         Ok(Step::TurnDone)
     }
 
@@ -535,7 +558,7 @@ impl CodexProtocol {
                 }
                 self.report_output(false, sink);
             }
-            "turn/completed" | "turn/aborted" => return self.turn_ended(method, params, sink),
+            "turn/completed" | "turn/aborted" => return self.turn_ended(method, params, out, sink),
             "serverRequest/resolved" => {
                 let wire = &params["requestId"];
                 self.withdraw(|pending| pending == wire, sink);
@@ -643,7 +666,7 @@ impl Protocol for CodexProtocol {
     }
 
     fn interrupt(&mut self, out: &mut dyn Write) -> Result<(), LaunchError> {
-        self.approvals.clear();
+        self.deny_pending(out)?;
         match (&self.thread, &self.active_turn) {
             (Some(thread), Some(turn)) => write_json(
                 out,

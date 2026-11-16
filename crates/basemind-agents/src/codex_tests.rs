@@ -697,3 +697,53 @@ fn a_request_reusing_a_pending_wire_id_is_denied_unseen() {
     assert_eq!(written(&out), [json!({"id": 7, "result": {"decision": "decline"}})]);
     assert_eq!(asked(&events).len(), 1, "the second request was shown");
 }
+
+#[test]
+fn requests_still_pending_when_the_turn_ends_or_stops_are_declined_on_the_wire() {
+    let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Ask), 2);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    for (wire, thread) in [(1, "thread-1"), (2, "sub-agent")] {
+        let request = json!({"id": wire, "method": "item/commandExecution/requestApproval", "params": {
+            "threadId": thread, "command": "ls",
+        }});
+        protocol.frame(request, &mut out, &sink).unwrap();
+    }
+    assert!(out.is_empty());
+    let done = json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}});
+    protocol.frame(done, &mut out, &sink).unwrap();
+    let mut answered = written(&out);
+    answered.sort_by_key(|frame| frame["id"].as_u64());
+    assert_eq!(
+        answered,
+        [
+            json!({"id": 1, "result": {"decision": "decline"}}),
+            json!({"id": 2, "result": {"decision": "decline"}}),
+        ]
+    );
+    let withdrawn = events
+        .try_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::ApprovalResolved {
+                    source: ApprovalSource::Withdrawn,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(withdrawn, 2);
+
+    out.clear();
+    protocol.prompt("Go on.", &mut out, &sink).unwrap();
+    let announced = json!({"method": "turn/started", "params": {"turn": {"id": "turn-2"}}});
+    protocol.frame(announced, &mut out, &sink).unwrap();
+    let request = json!({"id": 3, "method": "item/commandExecution/requestApproval", "params": {"command": "ls"}});
+    protocol.frame(request, &mut out, &sink).unwrap();
+    out.clear();
+    protocol.interrupt(&mut out).unwrap();
+    let frames = written(&out);
+    assert_eq!(frames[0], json!({"id": 3, "result": {"decision": "decline"}}));
+    assert_eq!(frames[1]["method"], "turn/interrupt");
+}
