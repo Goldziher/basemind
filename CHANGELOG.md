@@ -353,8 +353,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `.last-used` marker; `BASEMIND_PRUNE_AFTER_DAYS` changes the number), no running process was
   started from it (matched on the whole command line, so a cache path with spaces counts, and on
   the resolved path) and no install holds its lock, and none at all when the process list cannot
-  be read. Install locks and staging directories of other versions are removed only after ten
-  minutes untouched, a staging directory only once the process installing into it is gone.
+  be read. A version directory that is a symlink is never removed, nor is anything behind it: on
+  macOS `rm -rf` on such an entry emptied the directory it pointed at. A cache path holding a
+  backslash is matched as it is. Install locks and staging directories of other versions are
+  removed only after ten minutes untouched, a staging directory only once the process installing
+  into it is gone.
 - `find_files` (previously `code` modes `find` and `files`) no longer misses document-tier files
   (markdown, config, PDFs) on a long-lived server.
 - `index_status.cache_dir` reports basemind's cache directory. It reported the tree-sitter grammar

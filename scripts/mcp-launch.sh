@@ -115,8 +115,12 @@ version_in_use() {
       [ -n "$physical" ] && physical="${physical%/}/"
     fi
   fi
-  printf '%s\n' "$listing" | awk -v dir="$dir" -v physical="$physical" -v windows="$MSYS_SHELL" '
+  # Through the environment, not -v: awk unescapes a -v value, and a path may hold a backslash. ~keep
+  printf '%s\n' "$listing" | PRUNE_DIR="$dir" PRUNE_PHYSICAL="$physical" PRUNE_WINDOWS="$MSYS_SHELL" awk '
     BEGIN {
+      dir = ENVIRON["PRUNE_DIR"]
+      physical = ENVIRON["PRUNE_PHYSICAL"]
+      windows = ENVIRON["PRUNE_WINDOWS"]
       if (windows != "") {
         dir = tolower(dir)
         physical = tolower(physical)
@@ -159,19 +163,21 @@ unused_long_enough() {
 # has launched for PRUNE_AFTER_DAYS and no running process was started from (another install, or a ~keep
 # session opened before an update, whose daemon re-executes the binary), and never one an install ~keep
 # holds the lock for. Nothing here stops a process of another version; daemons of different ~keep
-# versions coexist, and each exits on its own once idle. ~keep
+# versions coexist, and each exits on its own once idle. A symlinked entry is never touched: the ~keep
+# launcher did not create it, and removing through it would empty the directory it points at. ~keep
 prune_unused_under() {
   local parent="$1" keep="$2" entry base
   [ -d "$parent" ] || return 0
   for entry in "$parent"/*/; do
     [ -d "$entry" ] || continue
+    [ -L "${entry%/}" ] && continue
     base="$(basename "$entry")"
     [ "$base" = "$keep" ] && continue
     case "$base" in
     [0-9]*)
       [ -e "$parent/.lock-$base" ] && continue
       unused_long_enough "$entry" || continue
-      version_in_use "$entry" || rm -rf "$entry" 2>/dev/null || true
+      version_in_use "$entry" || rm -rf "${entry%/}" 2>/dev/null || true
       ;;
     esac
   done

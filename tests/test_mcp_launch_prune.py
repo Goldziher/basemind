@@ -179,6 +179,23 @@ class OtherVersionsTests(unittest.TestCase):
         self.assertFalse(unused.exists(), "an unused version directory is removed")
         self.assertTrue(self.version_dir(CURRENT).is_dir())
 
+    def test_a_symlinked_version_directory_is_left_alone_and_its_target_survives(self) -> None:
+        build = self.root / "a-build-directory"
+        build.mkdir()
+        (build / "basemind").write_text("built by hand\n")
+        (build / ".last-used").write_text("")
+        for path in (build / ".last-used", build / "basemind", build):
+            age(path, LONG_AGO)
+        self.versions.mkdir(parents=True, exist_ok=True)
+        link = self.versions / UNUSED
+        link.symlink_to(build, target_is_directory=True)
+        age(link, LONG_AGO)
+
+        self.launch()
+
+        self.assertTrue((build / "basemind").is_file(), "the launcher never deletes through a symlink")
+        self.assertTrue(link.is_symlink(), "a version directory it did not create is not its to remove")
+
     def test_a_version_started_through_the_resolved_cache_path_is_kept(self) -> None:
         link = self.root / "linked-cache"
         link.symlink_to(self.cache, target_is_directory=True)
@@ -392,6 +409,16 @@ class CachePathWithSpacesTests(OtherVersionsTests):
     """The same contract when the cache directory's path contains spaces."""
 
     CACHE_NAME = "cache with spaces"
+
+
+class CachePathWithBackslashTests(OtherVersionsTests):
+    """The same contract when the cache directory's name holds a backslash, which awk would unescape."""
+
+    CACHE_NAME = "ca\\che\\new"
+
+    @unittest.skip("a Windows path has no backslash in a name: there it separates directories")
+    def test_git_bash_prunes_an_unused_version_and_keeps_one_a_process_runs_from(self) -> None:
+        pass
 
 
 if __name__ == "__main__":
