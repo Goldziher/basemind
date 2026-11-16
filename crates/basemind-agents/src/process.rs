@@ -93,6 +93,18 @@ pub(crate) fn children_reaped_automatically() -> bool {
     }
 }
 
+/// Refuses a launch on a platform whose process containment is not in place. On Windows a
+/// launched harness's tree would be ended with `taskkill /T`, which misses descendants whose
+/// parent already exited, and the stop has no grace period; a Job Object is the real fix and
+/// is not implemented, so nothing is launched there.
+pub(crate) fn platform_supported() -> Result<(), &'static str> {
+    if cfg!(unix) {
+        Ok(())
+    } else {
+        Err("launching a harness on this platform, which has no process-tree containment yet")
+    }
+}
+
 /// Kills every process of the group `pid` leads. The caller must know the leader has not
 /// been reaped, or the id may belong to another process by now.
 pub(crate) fn kill_group(pid: u32) {
@@ -104,7 +116,10 @@ pub(crate) fn kill_group(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let mut kill = Command::new("taskkill");
+        // By full path: a `taskkill` found through PATH or the working directory could be
+        // anything.
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let mut kill = Command::new(std::path::Path::new(&root).join("System32").join("taskkill.exe"));
         kill.args(["/PID", &pid.to_string(), "/T", "/F"]);
         kill.creation_flags(CREATE_NO_WINDOW);
         let _ = kill.status();
@@ -180,6 +195,14 @@ fn exited(pid: u32, within: Duration) -> bool {
     }
 }
 
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #[test]
+    fn nothing_is_launched_on_windows() {
+        assert!(super::platform_supported().is_err());
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -207,6 +230,11 @@ mod tests {
         while group_alive(pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn unix_launches_are_supported() {
+        assert_eq!(platform_supported(), Ok(()));
     }
 
     #[test]
