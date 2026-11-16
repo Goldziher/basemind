@@ -233,7 +233,10 @@ impl EventSink {
 ///
 /// The launcher must not ignore SIGCHLD or set `SA_NOCLDWAIT`: the group is signalled while
 /// its leader is known to be unreaped, which an automatic reap breaks. A launch is refused
-/// in that state.
+/// in that state. Nor may it reap children it did not start (`waitpid(-1)`): a leader reaped
+/// that way is not signalled again, so its group is left running until it exits. SIGPIPE
+/// must be ignored, as it is in a Rust binary, or a write to an exited harness kills the
+/// launcher.
 pub struct Session {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,

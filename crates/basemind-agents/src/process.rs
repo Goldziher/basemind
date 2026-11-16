@@ -110,13 +110,33 @@ pub(crate) fn platform_supported() -> Result<(), &'static str> {
     }
 }
 
+/// The pids this process signalled, so a test can tell a signal that should not have been
+/// sent from one that found nobody.
+#[cfg(all(test, unix))]
+pub(crate) static SIGNALLED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// Sends `signal` to `target` (a negative target is a process group), recording it in tests.
+#[cfg(unix)]
+fn signal(target: libc::pid_t, signal: libc::c_int) {
+    #[cfg(test)]
+    SIGNALLED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(target.unsigned_abs());
+    // SAFETY: kill takes plain integers.
+    unsafe {
+        libc::kill(target, signal);
+    }
+}
+
 /// Kills every process of the group `pid` leads. The caller must know the leader has not
-/// been reaped, or the id may belong to another process by now.
+/// been reaped by the session. A leader reaped by someone else (a `waitpid(-1)` elsewhere in
+/// the launcher) is not ours any more: its id, and so its group's, may already name another
+/// process, so nothing is signalled.
 pub(crate) fn kill_group(pid: u32) {
     #[cfg(unix)]
-    // SAFETY: kill takes plain integers; a negative pid addresses the process group.
-    unsafe {
-        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+    if leader(pid) != Leader::Gone {
+        signal(-(pid as libc::pid_t), libc::SIGKILL);
     }
     #[cfg(windows)]
     {
@@ -131,8 +151,12 @@ pub(crate) fn kill_group(pid: u32) {
     }
 }
 
-/// Kills the group at once and reaps the leader.
+/// Kills the group at once and reaps the leader, unless someone else reaped it already.
 pub(crate) fn terminate(child: &mut Child) {
+    #[cfg(unix)]
+    if leader(child.id()) == Leader::Gone {
+        return;
+    }
     kill_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
@@ -153,11 +177,15 @@ pub(crate) fn retire(child: &mut Child, budget: Duration, kill_now: &AtomicBool)
     {
         let pid = child.id();
         let started = Instant::now();
-        if !exited(pid, EXIT_GRACE.min(budget), kill_now) && !kill_now.load(Ordering::SeqCst) {
-            // SAFETY: kill takes plain integers; the leader is unreaped, so the id is ours.
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        let mut state = settle(pid, EXIT_GRACE.min(budget), kill_now);
+        if state == Leader::Running && !kill_now.load(Ordering::SeqCst) {
+            // The leader is unreaped, so the id is ours.
+            signal(pid as libc::pid_t, libc::SIGTERM);
             let left = budget.saturating_sub(started.elapsed());
-            exited(pid, TERM_GRACE.min(left), kill_now);
+            state = settle(pid, TERM_GRACE.min(left), kill_now);
+        }
+        if state == Leader::Gone {
+            return;
         }
     }
     #[cfg(not(unix))]
@@ -165,9 +193,27 @@ pub(crate) fn retire(child: &mut Child, budget: Duration, kill_now: &AtomicBool)
     terminate(child);
 }
 
-/// Whether the child `pid` exits within `within`, observed without reaping it.
+/// Where a group leader stands, observed without reaping it.
 #[cfg(unix)]
-fn exited(pid: u32, within: Duration, abort: &AtomicBool) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Leader {
+    /// Still running.
+    Running,
+    /// Exited and not yet reaped: its id, and its group's, are still ours.
+    Exited,
+    /// Reaped by someone else: its id may name another process by now.
+    Gone,
+}
+
+/// The leader `pid`'s state now.
+#[cfg(unix)]
+fn leader(pid: u32) -> Leader {
+    settle(pid, Duration::ZERO, &AtomicBool::new(false))
+}
+
+/// The leader `pid`'s state once it leaves [`Leader::Running`], or after `within`.
+#[cfg(unix)]
+fn settle(pid: u32, within: Duration, abort: &AtomicBool) -> Leader {
     let deadline = Instant::now() + within;
     loop {
         // SAFETY: siginfo_t is plain data that waitid fills in, and all-zero is a valid value
@@ -187,15 +233,15 @@ fn exited(pid: u32, within: Duration, abort: &AtomicBool) -> bool {
             if error.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            // ECHILD: the child was reaped behind our back, which only happens when SIGCHLD
-            // is ignored; `start` refuses to launch then. Either way it is gone.
-            return true;
+            // ECHILD: the child was reaped behind the session's back, by an ignored SIGCHLD
+            // (refused at launch) or a foreign `waitpid`.
+            return Leader::Gone;
         }
         if reported != 0 {
-            return true;
+            return Leader::Exited;
         }
         if Instant::now() >= deadline || abort.load(Ordering::SeqCst) {
-            return false;
+            return Leader::Running;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -325,6 +371,37 @@ mod tests {
             libc::pthread_sigmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut());
             let output = result.unwrap();
             assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod reaped_elsewhere {
+    use super::*;
+
+    #[test]
+    fn a_leader_reaped_by_someone_else_is_never_signalled() {
+        for retiring in [false, true] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "exit 0"]);
+            isolate(&mut command);
+            let mut child = command.spawn().unwrap();
+            let pid = child.id();
+            // A foreign reaper, such as a `waitpid(-1)` loop elsewhere in the launcher.
+            let mut status = 0;
+            // SAFETY: waitpid writes the status into a valid integer.
+            assert_eq!(
+                unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) },
+                pid as libc::pid_t
+            );
+            if retiring {
+                retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false));
+            } else {
+                terminate(&mut child);
+            }
+            kill_group(pid);
+            let signalled = SIGNALLED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(!signalled.contains(&pid), "the reused id {pid} was signalled");
         }
     }
 }
