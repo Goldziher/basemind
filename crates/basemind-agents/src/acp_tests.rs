@@ -951,3 +951,50 @@ fn the_outgoing_queue_holds_exactly_its_limit() {
     }
     assert!(tx.try_send(0).unwrap_err().is_full());
 }
+
+#[test]
+fn an_agent_that_switches_its_own_mode_fails_the_session() {
+    let root = tempfile::tempdir().unwrap();
+    let run = converse_with(&acp_spec(AcpFlavor::Cursor, root.path()), Vec::new(), |agent| {
+        let initialize = agent.expect("initialize");
+        agent.reply(&initialize, &json!({"protocolVersion": 1}));
+        let new_session = agent.expect("session/new");
+        agent.reply(
+            &new_session,
+            &json!({"sessionId": "sess-1", "modes": {"currentModeId": "default", "availableModes": [
+                {"id": "default", "name": "Default"}, {"id": "yolo", "name": "YOLO"},
+            ]}}),
+        );
+        agent.expect("session/prompt");
+        // Reporting the mode it is in is fine; switching away from it is not.
+        agent.update(&json!({"sessionUpdate": "current_mode_update", "currentModeId": "default"}));
+        agent.update(&json!({"sessionUpdate": "current_mode_update", "currentModeId": "yolo"}));
+        agent.expect("session/cancel");
+        while futures::executor::block_on(agent.from_client.next()).is_some() {}
+    });
+    let error = run.result.unwrap_err();
+    assert!(
+        error.to_string().contains("switched itself to session mode \"yolo\""),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_mode_report_matching_the_mode_set_is_accepted() {
+    let root = tempfile::tempdir().unwrap();
+    let spec = in_mode(
+        spec(HarnessKind::Acp(AcpFlavor::OpenCode), root.path()),
+        PermissionMode::ReadOnly,
+    );
+    let run = converse_with(&spec, Vec::new(), |agent| {
+        agent.open();
+        let set_mode = agent.expect("session/set_mode");
+        assert_eq!(set_mode["params"]["modeId"], "plan");
+        agent.update(&json!({"sessionUpdate": "current_mode_update", "currentModeId": "plan"}));
+        agent.reply(&set_mode, &json!({}));
+        let prompt = agent.expect("session/prompt");
+        agent.update(&json!({"sessionUpdate": "current_mode_update", "currentModeId": "plan"}));
+        agent.reply(&prompt, &json!({"stopReason": "end_turn"}));
+    });
+    run.result.unwrap();
+}

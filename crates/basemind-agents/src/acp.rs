@@ -414,9 +414,67 @@ fn approval_request(id: String, request: &RequestPermissionRequest) -> ApprovalR
     }
 }
 
-/// The tool calls seen so far, so an update can be reported as the whole call.
-#[derive(Clone, Default)]
-struct Updates(Arc<Mutex<Tools>>);
+/// The session mode the agent reports, against the one the session runs in: the mode the
+/// adapter set, else the one `session/new` returned. A switch the agent makes by itself
+/// changes what it does unasked, so it ends the session.
+struct ModeWatch {
+    state: Mutex<ModeState>,
+    switched: Sender<String>,
+}
+
+#[derive(Default)]
+struct ModeState {
+    /// Whether the session is open and `expected` is known.
+    opened: bool,
+    expected: Option<String>,
+    /// The mode last reported before the session opened.
+    reported: Option<String>,
+}
+
+impl ModeWatch {
+    fn new() -> (Self, Receiver<String>) {
+        let (switched, switches) = channel(1);
+        let watch = Self {
+            state: Mutex::default(),
+            switched,
+        };
+        (watch, switches)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ModeState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Records a `current_mode_update`.
+    fn report(&self, mode: String) {
+        let mut state = self.lock();
+        if !state.opened {
+            state.reported = Some(mode);
+        } else if state.expected.as_deref() != Some(mode.as_str()) {
+            // One switch is enough to end the session; a full channel already holds one.
+            let _ = self.switched.clone().try_send(mode);
+        }
+    }
+
+    /// Marks the session open in mode `expected` (`None` when no mode is known).
+    fn open(&self, expected: Option<String>) {
+        let mut state = self.lock();
+        state.opened = true;
+        if let Some(reported) = state
+            .reported
+            .take()
+            .filter(|mode| expected.as_deref() != Some(mode.as_str()))
+        {
+            let _ = self.switched.clone().try_send(reported);
+        }
+        state.expected = expected;
+    }
+}
+
+/// The tool calls seen so far, so an update can be reported as the whole call, and the mode
+/// the agent reports.
+#[derive(Clone)]
+struct Updates(Arc<Mutex<Tools>>, Arc<ModeWatch>);
 
 impl Updates {
     fn apply(&self, update: SessionUpdate, sink: &EventSink) {
@@ -441,6 +499,7 @@ impl Updates {
                 self.merge(&call.tool_call_id.0, fields, sink);
             }
             SessionUpdate::ToolCallUpdate(update) => self.merge(&update.tool_call_id.0, update.fields, sink),
+            SessionUpdate::CurrentModeUpdate(update) => self.1.report(update.current_mode_id.0.to_string()),
             _ => {}
         }
     }
@@ -468,6 +527,14 @@ impl Updates {
     }
 }
 
+/// The error for an agent that switched its session mode by itself.
+fn self_switch(mode: Option<String>) -> LaunchError {
+    LaunchError::Protocol(format!(
+        "the ACP agent switched itself to session mode {:?}",
+        mode.unwrap_or_default()
+    ))
+}
+
 fn protocol_error(error: &agent_client_protocol::Error) -> LaunchError {
     LaunchError::Protocol(format!("the ACP agent reported: {error}"))
 }
@@ -486,7 +553,9 @@ where
     C: Stream<Item = Control> + FusedStream + Unpin + Send + 'static,
 {
     let pending = Pending::default();
-    let updates = Updates::default();
+    let (watch, mut switches) = ModeWatch::new();
+    let watch = Arc::new(watch);
+    let updates = Updates(Arc::default(), watch.clone());
     let on_update = {
         let sink = sink.clone();
         async move |notification: SessionNotification, _connection: ConnectionTo<Agent>| {
@@ -539,15 +608,17 @@ where
                 .block_task()
                 .await?;
             let new_session = NewSessionRequest::new(cwd).mcp_servers(mcp_servers).meta(session_meta);
-            let session = connection.send_request(new_session).block_task().await?.session_id;
+            let opened = connection.send_request(new_session).block_task().await?;
+            let session = opened.session_id;
             sink.emit(Event::HarnessSession(session.0.to_string()));
-            if let Some(mode) = mode {
+            let current = opened.modes.map(|modes| modes.current_mode_id.0.to_string());
+            if let Some(mode) = &mode {
                 connection
-                    .send_request(SetSessionModeRequest::new(session.clone(), mode))
+                    .send_request(SetSessionModeRequest::new(session.clone(), mode.clone()))
                     .block_task()
                     .await?;
             }
-            Ok::<_, agent_client_protocol::Error>(session)
+            Ok::<_, agent_client_protocol::Error>((session, mode.or(current)))
         };
         let mut queued = VecDeque::new();
         // A stop, or an agent that hangs up, must end the session while it is still opening.
@@ -556,7 +627,11 @@ where
             let mut closed = pin!(connection.incoming_closed().fuse());
             loop {
                 futures::select_biased! {
-                    session = setup => break session?,
+                    opened = setup => {
+                        let (session, mode) = opened?;
+                        watch.open(mode);
+                        break session;
+                    }
                     control = controls.next() => match control {
                         Some(Control::FollowUp(text)) => queued.push_back(text),
                         Some(Control::Answer { id, allow }) => pending.answer(&id, allow, &sink),
@@ -577,6 +652,10 @@ where
             let Some(text) = next.take().or_else(|| queued.pop_front()) else {
                 let mut closed = pin!(connection.incoming_closed().fuse());
                 futures::select_biased! {
+                    mode = switches.next() => {
+                        pending.withdraw_all(&sink);
+                        return Ok(Err(self_switch(mode)));
+                    }
                     control = controls.next() => match control {
                         Some(Control::FollowUp(text)) => next = Some(text),
                         Some(Control::Answer { id, allow }) => pending.answer(&id, allow, &sink),
@@ -597,6 +676,11 @@ where
             let mut closed = pin!(connection.incoming_closed().fuse());
             loop {
                 futures::select_biased! {
+                    mode = switches.next() => {
+                        pending.withdraw_all(&sink);
+                        connection.send_notification(CancelNotification::new(session.clone()))?;
+                        return Ok(Err(self_switch(mode)));
+                    }
                     response = response => {
                         response?;
                         break;
