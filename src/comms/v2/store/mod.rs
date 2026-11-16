@@ -298,6 +298,17 @@ impl Txn<'_> {
     }
 }
 
+/// How a refused open says another process holds the store: Fjall keeps an OS file lock on the
+/// directory for as long as a process has it open, so a second daemon cannot open it beside the
+/// first. During a takeover the old daemon holds it until it exits.
+pub const STORE_LOCKED: &str = "another basemind process has it open";
+
+/// Whether an open failed only because another process holds the store, so that trying again once
+/// it has exited may succeed.
+pub fn is_locked(error: &CommsError) -> bool {
+    matches!(error, CommsError::Backend { detail } if detail.ends_with(STORE_LOCKED))
+}
+
 impl FjallAgents {
     /// Open the store in `dir`, creating it at the current version when the directory is new,
     /// with the system clock and random thread ids.

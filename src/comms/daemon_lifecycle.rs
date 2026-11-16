@@ -76,6 +76,8 @@ impl Broker {
         // Trip the scan token FIRST: a mid-flight rescan must start winding down before the ~keep
         // runtime teardown, or the teardown blocks on it. ~keep
         self.scan_cancel.cancel();
+        // A waiting `agent_inbox` can wait 40 s, longer than the drain grace: end it now. ~keep
+        self.agents.shut_down();
         if let Some(shutdown) = self.shutdown.get() {
             let _ = shutdown.send(true);
         }

@@ -3,7 +3,8 @@
 //! Each tool is one function over [`AgentOps`](crate::comms::v2::AgentOps): it turns the flat
 //! arguments into a request and builds the [`Caller`] from what the server holds about the
 //! session, both through [`front`](crate::comms::v2::front), which the CLI uses as well, calls the
-//! store, and shapes the reply. Nothing here is registered with the router yet, and nothing here knows a transport.
+//! store, and shapes the reply. Nothing here knows a
+//! transport.
 //!
 //! Who is calling never comes from the arguments. The principal, the repository and the replay
 //! key are the session's ([`AgentSession`]); the only thing a caller chooses is `as`, which can
@@ -27,7 +28,7 @@ use crate::comms::v2::api::{Caller, CommsError};
 use crate::comms::v2::front::{self, Refusal};
 
 pub use crate::comms::v2::front::{Session as AgentSession, WaitingRead};
-pub use inbox::{AGENT_INBOX_DESCRIPTION, run_agent_inbox};
+pub use inbox::{AGENT_INBOX_DESCRIPTION, finish_agent_inbox, inbox_refusal, prepare_agent_inbox, run_agent_inbox};
 pub use post::{AGENT_POST_DESCRIPTION, run_agent_post};
 pub use threads::{AGENT_THREADS_DESCRIPTION, run_agent_threads};
 pub use types::{

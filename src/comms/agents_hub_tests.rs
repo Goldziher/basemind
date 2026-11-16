@@ -312,6 +312,7 @@ fn an_unreadable_store_is_reported_and_refuses_agent_calls() {
     let dir = tempfile::tempdir().expect("temporary directory");
     std::fs::write(dir.path().join(STORE_DIR), b"not a directory").expect("block the store");
     let hub = AgentHub::open(dir.path());
+    tokio::runtime::Runtime::new().expect("runtime").block_on(hub.opened());
     assert!(matches!(
         hub.ops().post(&caller("a"), new_thread(&["b"])),
         Err(CommsError::Backend { .. })
@@ -319,4 +320,224 @@ fn an_unreadable_store_is_reported_and_refuses_agent_calls() {
     let status = hub.status(None, None);
     assert_eq!(status.state, "unreadable");
     assert!(status.error.is_some());
+}
+
+/// A relayed marking read that waited, delivered and finished, then replayed with a wait on the
+/// hub `reopen` returns.
+async fn keyed_wait_then_replay(first: Arc<AgentHub>, reopen: impl FnOnce(Arc<AgentHub>) -> Arc<AgentHub>) {
+    let thread = first.post(caller("a"), new_thread(&["b"])).await.expect("start").thread;
+    first
+        .read(
+            caller("b"),
+            InboxBody::default(),
+            Duration::ZERO,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("b reads the first post");
+    first.post(caller("a"), into(&thread, "once")).await.expect("post");
+    let keyed = caller("b").with_replay_key(ReplayKey::parse("relay-after").expect("key"));
+    let delivered = first
+        .read(
+            keyed.clone(),
+            InboxBody::default(),
+            Duration::from_secs(5),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("read");
+    assert_eq!(delivered.messages.len(), 1);
+
+    let hub = reopen(first);
+    let replayed = tokio::time::timeout(
+        Duration::from_secs(3),
+        hub.read(
+            keyed,
+            InboxBody::default(),
+            Duration::from_secs(30),
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("a replay of a read that delivered answers at once")
+    .expect("read");
+    assert_eq!(
+        replayed.messages, delivered.messages,
+        "the replay returns what the first delivered"
+    );
+}
+
+#[tokio::test]
+async fn a_replayed_waiting_read_that_finished_returns_what_it_delivered() {
+    let (hub, _dir) = hub();
+    keyed_wait_then_replay(hub, |same| same).await;
+}
+
+#[tokio::test]
+async fn a_replayed_waiting_read_on_a_restarted_daemon_returns_what_it_delivered() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().to_path_buf();
+    let first = Arc::new(AgentHub::open(&path));
+    keyed_wait_then_replay(first, move |first| {
+        drop(first);
+        Arc::new(AgentHub::open(&path))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_replay_that_joined_a_waiter_whose_client_left_keeps_waiting() {
+    let (hub, _dir) = hub();
+    let thread = hub.post(caller("a"), new_thread(&["b"])).await.expect("start").thread;
+    hub.read(
+        caller("b"),
+        InboxBody::default(),
+        Duration::ZERO,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("b reads");
+    let keyed = caller("b").with_replay_key(ReplayKey::parse("relay-gone").expect("key"));
+    let left = CancellationToken::new();
+    let first = {
+        let (hub, keyed, left) = (Arc::clone(&hub), keyed.clone(), left.clone());
+        tokio::spawn(async move {
+            hub.read(keyed, InboxBody::default(), Duration::from_secs(20), &left)
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let replay = {
+        let hub = Arc::clone(&hub);
+        tokio::spawn(async move {
+            hub.read(
+                keyed,
+                InboxBody::default(),
+                Duration::from_secs(20),
+                &CancellationToken::new(),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    left.cancel();
+    let first = first.await.expect("first").expect("read");
+    assert!(
+        first.messages.is_empty(),
+        "the first's client left before anything arrived"
+    );
+    hub.post(caller("a"), into(&thread, "later")).await.expect("post");
+
+    let replay = replay.await.expect("replay").expect("read");
+    assert_eq!(replay.messages.len(), 1, "the replay waited on after the first left");
+    assert_eq!(replay.messages[0].body, "later");
+}
+
+#[tokio::test]
+async fn a_waiting_peek_behind_the_callers_own_posts_returns_its_cursor() {
+    let (hub, _dir) = hub();
+    let thread = hub.post(caller("b"), new_thread(&["a"])).await.expect("start").thread;
+    // Past the store's scan budget of 4 * MAX_LIMIT rows a read walks beyond each thread's first.
+    let own = 4 * crate::comms::v2::api::MAX_LIMIT as usize + 8;
+    {
+        let hub = Arc::clone(&hub);
+        let thread = thread.clone();
+        tokio::task::spawn_blocking(move || {
+            for n in 0..own {
+                hub.ops()
+                    .post(&caller("b"), into(&thread, &format!("own {n}")))
+                    .expect("own post");
+            }
+        })
+        .await
+        .expect("posts");
+    }
+    hub.post(caller("a"), into(&thread, "reply")).await.expect("reply");
+    let peek = InboxBody {
+        mark: Mark::Peek,
+        ..InboxBody::default()
+    };
+
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        let reply = tokio::time::timeout(
+            Duration::from_secs(5),
+            hub.read(
+                caller("b"),
+                InboxBody {
+                    cursor: cursor.take(),
+                    ..peek.clone()
+                },
+                Duration::from_secs(30),
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("a peek that stopped at its budget answers at once")
+        .expect("peek");
+        seen.extend(reply.messages.iter().map(|message| message.body.clone()));
+        if !seen.is_empty() {
+            break;
+        }
+        assert!(
+            reply.more && reply.next_cursor.is_some(),
+            "an empty stop says where to go on"
+        );
+        cursor = reply.next_cursor;
+    }
+    assert_eq!(seen, ["reply"]);
+}
+
+#[tokio::test]
+async fn a_drain_ends_every_wait() {
+    let (hub, _dir) = hub();
+    hub.post(caller("a"), new_thread(&["b"])).await.expect("start");
+    hub.read(
+        caller("b"),
+        InboxBody::default(),
+        Duration::ZERO,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("b reads");
+    let waiting = {
+        let hub = Arc::clone(&hub);
+        tokio::spawn(async move {
+            hub.read(
+                caller("b"),
+                InboxBody::default(),
+                Duration::from_secs(40),
+                &CancellationToken::new(),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    hub.shut_down();
+    let reply = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .expect("the drain ended the wait")
+        .expect("waiter")
+        .expect("read");
+    assert_eq!(reply.wait, WaitOutcome::TimedOut);
+}
+
+#[tokio::test]
+async fn a_store_another_process_holds_opens_once_it_is_released() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let holder = FjallAgents::open(dir.path()).expect("the first opener holds the store");
+    let hub = Arc::new(AgentHub::open(dir.path()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        hub.status(None, None).state,
+        "opening",
+        "a held store is waited for, not refused"
+    );
+    drop(holder);
+    tokio::time::timeout(Duration::from_secs(10), hub.opened())
+        .await
+        .expect("the store opens once released");
+    assert_eq!(hub.status(None, None).state, "open");
+    hub.post(caller("a"), new_thread(&["b"])).await.expect("post");
 }

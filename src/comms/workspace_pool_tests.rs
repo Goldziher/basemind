@@ -975,3 +975,7 @@ fn a_populated_workspace_with_an_intact_index_is_not_queued_for_rebuild() {
     let entry = pool.get_or_open(ws.path()).expect("open");
     assert!(!entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire));
 }
+
+#[cfg(feature = "comms")]
+#[path = "workspace_pool_agent_tests.rs"]
+mod agent_tests;

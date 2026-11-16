@@ -3,12 +3,13 @@
 //! root, and the count of live `serve` sessions per principal behind the shared-identity notice.
 //!
 //! The store never blocks and is synchronous; the hub runs it on the blocking pool for async
-//! callers and wakes waiters through a `watch` of the store-wide post counter. It is opened on a
-//! thread of its own, so a daemon whose store takes seconds to create answers everything else
-//! meanwhile; an agent request waits for the open.
+//! callers and wakes waiters through a `watch` of the store-wide post counter. A wait itself is
+//! async and holds no blocking thread. The store is opened on a thread of its own, so a daemon
+//! whose store takes seconds to create answers everything else meanwhile; an agent request awaits
+//! the open without holding a blocking thread either.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use ahash::AHashMap;
@@ -21,11 +22,35 @@ use super::v2::api::{
     RepoKey, ThreadId, ThreadQuery, ThreadUpdate, ThreadsReply, WaitOutcome, shared_identity_notice,
 };
 use super::v2::rules;
-use super::v2::store::{FjallAgents, STORE_DIR};
+use super::v2::store::{FjallAgents, STORE_DIR, is_locked};
 
 /// Reads a wait may make back to back, without waiting, while each walks only the caller's own
 /// posts: a read that stopped at its scan budget passes them, so a few reach what follows.
 const MAX_READS_WITHOUT_WAITING: usize = 8;
+
+/// How long the open keeps trying a store another process holds. A daemon taking over from an
+/// older one finds its store held until that one has drained and exited.
+const LOCKED_STORE_PATIENCE: Duration = Duration::from_secs(120);
+
+/// The longest pause between two tries of a held store.
+const LOCKED_STORE_MAX_PAUSE: Duration = Duration::from_secs(2);
+
+/// Open the store in `dir`, trying again with a growing pause while another process holds it, for
+/// up to [`LOCKED_STORE_PATIENCE`]. Any other failure is final at once.
+fn open_waiting_for_lock(dir: &Path) -> Result<FjallAgents, CommsError> {
+    let started = std::time::Instant::now();
+    let mut pause = Duration::from_millis(50);
+    loop {
+        match FjallAgents::open(dir) {
+            Err(error) if is_locked(&error) && started.elapsed() < LOCKED_STORE_PATIENCE => {
+                tracing::info!(%error, "comms: the agent store is held by another process; trying again");
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(LOCKED_STORE_MAX_PAUSE);
+            }
+            result => return result,
+        }
+    }
+}
 
 /// What `basemind agent status` reports about the store.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,33 +93,56 @@ pub struct AgentCleanupReport {
     pub more: bool,
 }
 
-/// Where the first of a relayed read's requests publishes its result for a replay that joins it.
-type WaitResult = watch::Receiver<Option<Result<InboxReply, CommsError>>>;
+/// What the first of a relayed read's requests publishes for a replay that joins it.
+#[derive(Clone)]
+enum Published {
+    /// Still waiting.
+    Pending,
+    /// Its reply, which the replay returns as its own.
+    Done(Result<InboxReply, CommsError>),
+    /// Its client went away before anything was read: the replay waits on its own.
+    Abandoned,
+}
+
+/// Where the first of a relayed read's requests publishes its result.
+type WaitResult = watch::Receiver<Published>;
 
 /// The store, or why it did not open, once its open has finished.
-#[derive(Default)]
 struct StoreSlot {
     value: OnceLock<Result<Arc<FjallAgents>, CommsError>>,
-    lock: Mutex<()>,
-    ready: Condvar,
+    ready: watch::Sender<bool>,
+}
+
+impl Default for StoreSlot {
+    fn default() -> Self {
+        Self {
+            value: OnceLock::new(),
+            ready: watch::Sender::new(false),
+        }
+    }
 }
 
 impl StoreSlot {
     fn set(&self, value: Result<Arc<FjallAgents>, CommsError>) {
-        let _held = lock(&self.lock);
         let _ = self.value.set(value);
-        self.ready.notify_all();
+        self.ready.send_replace(true);
     }
 
-    /// The store, waiting for its open to finish. For a blocking thread only.
-    fn wait(&self) -> Result<Arc<FjallAgents>, CommsError> {
-        let mut held = lock(&self.lock);
-        loop {
-            if let Some(value) = self.value.get() {
-                return value.clone();
-            }
-            held = self.ready.wait(held).unwrap_or_else(PoisonError::into_inner);
-        }
+    /// The store, once its open has finished. Holds no thread while it waits.
+    async fn opened(&self) -> Result<Arc<FjallAgents>, CommsError> {
+        let mut ready = self.ready.subscribe();
+        // The sender lives as long as the slot, so the wait ends only when the open has.
+        let _ = ready.wait_for(|opened| *opened).await;
+        self.get()
+    }
+
+    /// The store, or a refusal while it is still opening. Callers await [`Self::opened`] first.
+    fn get(&self) -> Result<Arc<FjallAgents>, CommsError> {
+        self.value.get().cloned().unwrap_or_else(|| {
+            Err(CommsError::Backend {
+                detail: "the agent store is still opening; try again in a moment".to_string(),
+            })
+        })
     }
 }
 
@@ -106,6 +154,8 @@ pub struct AgentHub {
     waits: Mutex<AHashMap<Vec<u8>, WaitResult>>,
     repos: Mutex<AHashMap<PathBuf, RepoKey>>,
     sessions: Mutex<AHashMap<Principal, usize>>,
+    /// Cancelled when the daemon drains: every wait ends at once.
+    shutdown: CancellationToken,
 }
 
 /// One live `serve` session of a principal, counted while it lives.
@@ -158,7 +208,7 @@ impl AgentHub {
             .name("agent-store-open".to_string())
             .spawn(move || {
                 std::thread::sleep(delay);
-                let store = FjallAgents::open(&dir).map(Arc::new);
+                let store = open_waiting_for_lock(&dir).map(Arc::new);
                 if let Err(error) = &store {
                     tracing::error!(%error, "comms: the agent store did not open; agent tools will refuse until it is fixed");
                 }
@@ -187,12 +237,25 @@ impl AgentHub {
             waits: Mutex::new(AHashMap::new()),
             repos: Mutex::new(AHashMap::new()),
             sessions: Mutex::new(AHashMap::new()),
+            shutdown: CancellationToken::new(),
         }
     }
 
-    /// The store, waiting for its open. Called on blocking threads only.
+    /// The store, once its open has finished.
     fn store(&self) -> Result<Arc<FjallAgents>, CommsError> {
-        self.store.wait()
+        self.store.get()
+    }
+
+    /// Wait for the store's open to finish, without holding a thread. Every async entry point
+    /// awaits it before it hands work to the blocking pool, so a blocking thread never waits on
+    /// the open.
+    pub async fn opened(&self) {
+        let _ = self.store.opened().await;
+    }
+
+    /// End every wait now and refuse to start new ones: the daemon is draining.
+    pub fn shut_down(&self) {
+        self.shutdown.cancel();
     }
 
     /// The repository `root` belongs to: its registry id (the normalised `origin` remote) when it
@@ -247,6 +310,7 @@ impl AgentHub {
 
     /// Post, on the blocking pool.
     pub async fn post(self: &Arc<Self>, caller: Caller, body: PostBody) -> Result<PostReply, CommsError> {
+        self.opened().await;
         let hub = Arc::clone(self);
         joined(tokio::task::spawn_blocking(move || hub.ops().post(&caller, body)).await)
     }
@@ -257,6 +321,7 @@ impl AgentHub {
         caller: Caller,
         query: ThreadQuery,
     ) -> Result<ThreadsReply, CommsError> {
+        self.opened().await;
         let hub = Arc::clone(self);
         joined(tokio::task::spawn_blocking(move || hub.ops().threads_query(&caller, query)).await)
     }
@@ -267,21 +332,25 @@ impl AgentHub {
         caller: Caller,
         update: ThreadUpdate,
     ) -> Result<ThreadsReply, CommsError> {
+        self.opened().await;
         let hub = Arc::clone(self);
         joined(tokio::task::spawn_blocking(move || hub.ops().threads_update(&caller, update)).await)
     }
 
     async fn inbox_now(self: &Arc<Self>, caller: &Caller, body: InboxBody) -> Result<InboxReply, CommsError> {
+        self.opened().await;
         let (hub, caller) = (Arc::clone(self), caller.clone());
         joined(tokio::task::spawn_blocking(move || hub.ops().inbox(&caller, body)).await)
     }
 
     /// Read the inbox, waiting up to `wait` while nothing is unread. `gone` is cancelled when the
     /// client has gone: a waiting read checks it immediately before it marks anything read, so a
-    /// waiter nobody is listening to advances nothing.
+    /// waiter nobody is listening to advances nothing. The wait holds no thread: only each read of
+    /// the store runs on the blocking pool.
     ///
     /// A relayed marking read is registered under its replay key before it waits, and a replay of
-    /// it that arrives meanwhile gets the same reply.
+    /// it that arrives meanwhile gets the same reply. A replay that arrives after the first has
+    /// finished gets the ranges the store remembered for the key.
     pub async fn read(
         self: &Arc<Self>,
         caller: Caller,
@@ -299,28 +368,63 @@ impl AgentHub {
             .filter(|_| kind == ReadKind::Marking)
             .map(|key| [caller.actor.as_str().as_bytes(), b"\0", key.as_str().as_bytes()].concat());
         let Some(key) = key else {
-            return self.wait_and_read(&caller, body, kind, wait, gone).await;
+            return self.waited(&caller, body, kind, wait, gone).await;
         };
-        let joining = lock(&self.waits).get(&key).cloned();
-        if let Some(mut first) = joining {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let (done, joining) = {
+                let mut waits = lock(&self.waits);
+                match waits.entry(key.clone()) {
+                    std::collections::hash_map::Entry::Occupied(first) => (None, Some(first.get().clone())),
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        let (done, receiver) = watch::channel(Published::Pending);
+                        slot.insert(receiver);
+                        (Some(done), None)
+                    }
+                }
+            };
+            if let Some(done) = done {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let result = self.wait_and_read(&caller, body, kind, left, gone).await;
+                lock(&self.waits).remove(&key);
+                return match result {
+                    Ok(Some(reply)) => {
+                        done.send_replace(Published::Done(Ok(reply.clone())));
+                        Ok(reply)
+                    }
+                    Ok(None) => {
+                        done.send_replace(Published::Abandoned);
+                        Ok(self.ended(&caller, WaitOutcome::TimedOut, None))
+                    }
+                    Err(error) => {
+                        done.send_replace(Published::Done(Err(error.clone())));
+                        Err(error)
+                    }
+                };
+            }
+            let Some(mut first) = joining else {
+                unreachable!("a key is either joined or registered");
+            };
             loop {
-                if let Some(result) = first.borrow_and_update().clone() {
-                    return result;
+                let published = first.borrow_and_update().clone();
+                match published {
+                    Published::Done(result) => return result,
+                    Published::Abandoned => break,
+                    Published::Pending => {}
                 }
                 if first.changed().await.is_err() {
-                    return self.inbox_now(&caller, body).await;
+                    break;
                 }
             }
+            if gone.is_cancelled() || tokio::time::Instant::now() >= deadline {
+                return Ok(self.ended(&caller, WaitOutcome::TimedOut, None));
+            }
         }
-        let (done, receiver) = watch::channel(None);
-        lock(&self.waits).insert(key.clone(), receiver);
-        let result = self.wait_and_read(&caller, body, kind, wait, gone).await;
-        done.send_replace(Some(result.clone()));
-        lock(&self.waits).remove(&key);
-        result
     }
 
-    async fn wait_and_read(
+    /// [`Self::wait_and_read`] for a read no replay can join: a client that went away ends it like
+    /// a timeout.
+    async fn waited(
         self: &Arc<Self>,
         caller: &Caller,
         body: InboxBody,
@@ -328,6 +432,22 @@ impl AgentHub {
         wait: Duration,
         gone: &CancellationToken,
     ) -> Result<InboxReply, CommsError> {
+        Ok(self
+            .wait_and_read(caller, body, kind, wait, gone)
+            .await?
+            .unwrap_or_else(|| self.ended(caller, WaitOutcome::TimedOut, None)))
+    }
+
+    /// Read, and while nothing comes back, wait for a post and read again until `wait` has passed.
+    /// `None` when the client went away before anything was read.
+    async fn wait_and_read(
+        self: &Arc<Self>,
+        caller: &Caller,
+        body: InboxBody,
+        kind: ReadKind,
+        wait: Duration,
+        gone: &CancellationToken,
+    ) -> Result<Option<InboxReply>, CommsError> {
         let deadline = tokio::time::Instant::now() + wait;
         let mut arrivals = self.arrivals.subscribe();
         let probe = InboxBody {
@@ -336,31 +456,40 @@ impl AgentHub {
             cursor: None,
             ..body.clone()
         };
+        // A relayed marking read goes to the store at once: the store answers a replay of a read
+        // that already delivered with what it delivered, which a peek would not see.
+        let mut probe_first = caller.replay_key.is_none();
         let mut waited = false;
         let mut reads = 0;
         loop {
             arrivals.borrow_and_update();
             let reply = if kind == ReadKind::Marking {
-                let found = self.inbox_now(caller, probe.clone()).await?;
-                if found.messages.is_empty() && !found.more {
-                    found
-                } else if gone.is_cancelled() {
-                    return Ok(self.ended(caller, WaitOutcome::TimedOut));
+                let found = if probe_first {
+                    Some(self.inbox_now(caller, probe.clone()).await?)
                 } else {
-                    self.inbox_now(caller, body.clone()).await?
+                    None
+                };
+                probe_first = true;
+                match found {
+                    Some(found) if found.messages.is_empty() && !found.more => found,
+                    _ if gone.is_cancelled() => return Ok(None),
+                    _ => self.inbox_now(caller, body.clone()).await?,
                 }
             } else {
                 self.inbox_now(caller, body.clone()).await?
             };
+            let outcome = if waited {
+                WaitOutcome::Arrived
+            } else {
+                WaitOutcome::NotWaited
+            };
             if !reply.messages.is_empty() {
-                return Ok(InboxReply {
-                    wait: if waited {
-                        WaitOutcome::Arrived
-                    } else {
-                        WaitOutcome::NotWaited
-                    },
-                    ..reply
-                });
+                return Ok(Some(InboxReply { wait: outcome, ..reply }));
+            }
+            // A peek that stopped at its scan budget hands back a cursor past what it walked;
+            // reading again from the same place would walk the same rows, so the caller continues.
+            if kind != ReadKind::Marking && reply.more {
+                return Ok(Some(InboxReply { wait: outcome, ..reply }));
             }
             reads += 1;
             if kind == ReadKind::Marking && reply.more && reads < MAX_READS_WITHOUT_WAITING {
@@ -370,17 +499,21 @@ impl AgentHub {
             waited = true;
             let woken = tokio::select! {
                 changed = arrivals.changed() => changed.is_ok(),
-                () = gone.cancelled() => false,
+                () = gone.cancelled() => return Ok(None),
+                () = self.shutdown.cancelled() => false,
                 () = tokio::time::sleep_until(deadline) => false,
             };
             if !woken {
-                return Ok(self.ended(caller, WaitOutcome::TimedOut));
+                return Ok(Some(self.ended(caller, WaitOutcome::TimedOut, Some(reply))));
             }
         }
     }
 
-    fn ended(&self, caller: &Caller, wait: WaitOutcome) -> InboxReply {
-        let mut reply = rules::inbox_reply(Vec::new(), Vec::new(), false, None);
+    /// The reply of a wait that ended with nothing to return, carrying whether the last read left
+    /// more behind and where it stopped.
+    fn ended(&self, caller: &Caller, wait: WaitOutcome, last: Option<InboxReply>) -> InboxReply {
+        let (more, next_cursor) = last.map_or((false, None), |last| (last.more, last.next_cursor));
+        let mut reply = rules::inbox_reply(Vec::new(), Vec::new(), more, next_cursor);
         reply.wait = wait;
         reply.notices = self.notices_for(&caller.actor);
         reply
@@ -430,6 +563,7 @@ impl AgentHub {
 
     /// Archive `threads` whoever created them, then sweep once: the operator's `agent cleanup`.
     pub async fn cleanup(self: &Arc<Self>, threads: Vec<ThreadId>) -> Result<AgentCleanupReport, CommsError> {
+        self.opened().await;
         let hub = Arc::clone(self);
         joined(
             tokio::task::spawn_blocking(move || {

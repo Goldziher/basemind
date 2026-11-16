@@ -144,9 +144,10 @@ pub fn run() -> Result<()> {
             Err(e) => return Err(anyhow::anyhow!("bind comms socket: {e}")),
         };
 
-        // Answer `Ping` (and park everything else) while the store opens: the open is fsync-heavy
-        // and can take tens of seconds on a contended disk, and a liveness probe must not read that
-        // as a dead daemon. Unix only; the Windows pipe front-end still starts after the open.
+        // Answer `Ping` (and park everything else) while the broker is built: opening the machine
+        // registry can stall on a contended disk, and a liveness probe must not read that as a dead
+        // daemon. The agent store opens on a thread of its own and parks only agent requests. Unix
+        // only; the Windows pipe front-end starts once the broker exists.
         #[cfg(unix)]
         let early = crate::comms::frontend_uds::EarlyAccept::start(listener, paths.socket_path.clone());
 
@@ -167,7 +168,12 @@ pub fn run() -> Result<()> {
             }
         };
         let broker = Arc::new(Broker::with_registry(agents, machine_registry));
-        broker.maintain_agents().await;
+        // The first sweep runs as soon as the store has opened, not on the first maintenance tick.
+        let broker_for_first_sweep = broker.clone();
+        tokio::spawn(async move {
+            broker_for_first_sweep.agents_opened().await;
+            broker_for_first_sweep.maintain_agents().await;
+        });
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         broker.install_shutdown(shutdown_tx);

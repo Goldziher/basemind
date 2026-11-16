@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, OwnedWriteBatch, PersistMode};
 
 use super::records::{backend, corrupt, decode_u64};
-use super::{FjallAgents, Keyspaces, META_POSTS, META_STORE_VER, STORE_DIR, StoreOptions, Writer};
+use super::{FjallAgents, Keyspaces, META_POSTS, META_STORE_VER, STORE_DIR, STORE_LOCKED, StoreOptions, Writer};
 use crate::comms::v2::api::{COMMS_STORE_VER, CommsError};
 
 /// Block cache of the store, in bytes. Coordination traffic is small and recent.
@@ -106,7 +106,12 @@ impl FjallAgents {
             .cache_size(CACHE_BYTES)
             .max_journaling_size(JOURNAL_BYTES)
             .open()
-            .map_err(|error| backend(untouched("open"), error))?;
+            .map_err(|error| match error {
+                fjall::Error::Locked => CommsError::Backend {
+                    detail: format!("{}: {STORE_LOCKED}", untouched("open")),
+                },
+                error => backend(untouched("open"), error),
+            })?;
         let keyspace = |name: &str| -> Result<Keyspace, CommsError> {
             db.keyspace(name, || {
                 KeyspaceCreateOptions::default().max_memtable_size(MEMTABLE_BYTES)

@@ -39,4 +39,15 @@ impl AgentContext {
     pub fn take_notices(&self) -> Vec<String> {
         std::mem::take(&mut *self.notices.lock().unwrap_or_else(PoisonError::into_inner))
     }
+
+    /// Put back notices a call took and could not deliver, because it was refused, so the next
+    /// reply carries them.
+    pub fn restore_notices(&self, mut notices: Vec<String>) {
+        if notices.is_empty() {
+            return;
+        }
+        let mut held = self.notices.lock().unwrap_or_else(PoisonError::into_inner);
+        notices.append(&mut held);
+        *held = notices;
+    }
 }

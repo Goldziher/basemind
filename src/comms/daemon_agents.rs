@@ -142,6 +142,11 @@ impl Broker {
         CommsResponse::AgentStatus(self.agents.status(principal, session.repo.clone()))
     }
 
+    /// Wait until the agent store's open has finished, whether it opened or not.
+    pub async fn agents_opened(&self) {
+        self.agents.opened().await;
+    }
+
     /// The agent store's periodic sweep and flush: the maintenance tick and the shutdown.
     pub async fn maintain_agents(&self) {
         self.agents.maintain().await;

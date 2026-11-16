@@ -4,7 +4,7 @@ use rmcp::ErrorData as McpError;
 
 use super::types::{AGENT_INBOX, AgentInboxParams, AgentInboxResponse};
 use super::{AgentSession, WaitingRead, caller, refusal};
-use crate::comms::v2::api::{AgentOps, CommsError, InboxFields};
+use crate::comms::v2::api::{AgentOps, Caller, CommsError, InboxCall, InboxFields, InboxReply};
 use crate::comms::v2::front::{inbox_call, inbox_read};
 
 /// What an agent reads to decide whether `agent_inbox` is the tool it wants.
@@ -15,7 +15,7 @@ pub const AGENT_INBOX_DESCRIPTION: &str = "Use to read messages other agents sen
      Example: {\"wait_secs\":30}";
 
 fn refuse(error: CommsError) -> McpError {
-    refusal(AGENT_INBOX, &error)
+    inbox_refusal(&error)
 }
 
 /// Body of `agent_inbox`.
@@ -34,6 +34,17 @@ pub fn run_agent_inbox(
     params: AgentInboxParams,
     waiting_read: &WaitingRead<'_>,
 ) -> Result<AgentInboxResponse, McpError> {
+    let (caller, call) = prepare_agent_inbox(session, params)?;
+    let reply = inbox_read(ops, &caller, call, waiting_read).map_err(refuse)?;
+    Ok(finish_agent_inbox(session, reply))
+}
+
+/// The caller and the read of one `agent_inbox` call, refused as [`run_agent_inbox`] refuses
+/// them. For a front end that makes the read itself, such as the daemon's async wait.
+pub fn prepare_agent_inbox(
+    session: &AgentSession<'_>,
+    params: AgentInboxParams,
+) -> Result<(Caller, InboxCall), McpError> {
     let caller = caller(session, AGENT_INBOX, params.as_.as_deref())?;
     let call = inbox_call(
         InboxFields {
@@ -48,9 +59,18 @@ pub fn run_agent_inbox(
         false,
     )
     .map_err(refuse)?;
-    let mut reply = inbox_read(ops, &caller, call, waiting_read).map_err(refuse)?;
+    Ok((caller, call))
+}
+
+/// The tool's answer to a read [`prepare_agent_inbox`] prepared, or its refusal.
+pub fn finish_agent_inbox(session: &AgentSession<'_>, mut reply: InboxReply) -> AgentInboxResponse {
     let notices = session.notices(std::mem::take(&mut reply.notices));
-    Ok(AgentInboxResponse::from_reply(reply, notices))
+    AgentInboxResponse::from_reply(reply, notices)
+}
+
+/// A refused read, worded for `agent_inbox`.
+pub fn inbox_refusal(error: &CommsError) -> McpError {
+    refusal(AGENT_INBOX, error)
 }
 
 #[cfg(all(test, feature = "comms", any(unix, windows)))]
