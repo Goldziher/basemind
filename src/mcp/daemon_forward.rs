@@ -33,10 +33,11 @@ pub(super) async fn forward_rescan_and_refresh(
     paths: Option<Vec<PathBuf>>,
     full: bool,
     embed: bool,
+    verify: bool,
 ) -> Result<RescanReport, McpError> {
     let mut client = connect_ephemeral_client(state).await?;
     let report = client
-        .rescan(state.shared.root.clone(), paths, full, embed)
+        .rescan_as(state.shared.root.clone(), paths, full, embed, verify)
         .await
         .map_err(comms_err)?;
     refresh_cache_after_scan(state).await?;
@@ -51,19 +52,26 @@ pub(super) async fn forward_rescan_and_refresh(
 /// and [`forward_rescan_and_refresh`] ships the scan over the socket. Both then rebuild the read-only
 /// map from the index the writer just wrote via the shared [`refresh_cache_after_scan`] tail — so the
 /// refresh half is written once.
+///
+/// `verify` says the paths were named by a person or an agent (`index_rescan paths`), not seen
+/// changing by the watcher: the writer validates the blob of a named file it would skip.
 pub(super) async fn writer_rescan_and_refresh(
     state: &Arc<ServerState>,
     paths: Option<Vec<PathBuf>>,
     full: bool,
     embed: bool,
+    verify: bool,
 ) -> Result<RescanReport, McpError> {
     if let Some(host) = &state.shared.host {
         let host = Arc::clone(host);
         let root = state.shared.root.clone();
-        let stats = tokio::task::spawn_blocking(move || host.host_rescan(&root, paths, full, embed))
-            .await
-            .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
-            .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
+        let stats = tokio::task::spawn_blocking(move || match paths {
+            Some(paths) if verify && !full && !paths.is_empty() => host.host_rescan_named(&root, paths, embed),
+            paths => host.host_rescan(&root, paths, full, embed),
+        })
+        .await
+        .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
+        .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
         refresh_cache_after_scan(state).await?;
         return Ok(RescanReport {
             scanned: stats.scanned,
@@ -76,7 +84,7 @@ pub(super) async fn writer_rescan_and_refresh(
             elapsed_ms: 0,
         });
     }
-    forward_rescan_and_refresh(state, paths, full, embed).await
+    forward_rescan_and_refresh(state, paths, full, embed, verify).await
 }
 
 /// Refresh serve's read-only view from the current (daemon-written) `index.msgpack`: reopen the

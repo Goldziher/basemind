@@ -15,6 +15,7 @@ impl Broker {
         paths: Option<Vec<std::path::PathBuf>>,
         full: bool,
         embed: bool,
+        verify: bool,
     ) -> CommsResponse {
         self.mark_active().await;
         // A tripped scan token means the daemon is draining (every drain route cancels first, ~keep
@@ -38,7 +39,7 @@ impl Broker {
         let pool = Arc::clone(&self.workspaces);
         let cancel = self.scan_cancel.clone();
         let started = Instant::now();
-        match tokio::task::spawn_blocking(move || pool.rescan(&root, paths, full, embed, &cancel)).await {
+        match tokio::task::spawn_blocking(move || pool.rescan_as(&root, paths, full, embed, verify, &cancel)).await {
             // A cancelled pass committed only part of the tree — surface it as an error so no ~keep
             // client mistakes the partial index for a completed rescan. ~keep
             Ok(Ok((_, true))) => CommsResponse::Error {

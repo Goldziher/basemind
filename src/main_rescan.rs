@@ -89,7 +89,7 @@ pub(super) fn cmd_rescan(
         .context("rescan (full)")?
     } else {
         let mut observer = render::ScanLineObserver::new(no_color, verbosity);
-        let report = basemind::scanner::scan_paths_with_observer(
+        let report = basemind::scanner::scan_named_paths_with_observer(
             root,
             &mut store,
             &config,

@@ -29,7 +29,9 @@ use super::model::{AgentCard, MessageMeta, Thread};
 /// connection and reconnects. Nothing else on the wire changed, so refusing every older client at
 /// Hello would cost more than the one call it protects. Bumped 5→6 for the batched memory read
 /// (`MemoryOp::GetMany` in `comms::memory_proto`): a daemon that predates it cannot decode the
-/// request, so a client that may send it is refused at Hello instead of failing mid-session.
+/// request, so a client that may send it is refused at Hello instead of failing mid-session. The
+/// same version carries the `verify` flag of [`CommsRequest::Rescan`], which a daemon that predates
+/// it would drop without a word.
 pub const PROTO_VER: u32 = 6;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
@@ -273,6 +275,11 @@ pub enum CommsRequest {
         /// vector-fill follow-up. `#[serde(default)]` keeps older front-ends wire-compatible.
         #[serde(default)]
         embed: bool,
+        /// The paths were named by a person or an agent (`basemind rescan <paths>`, `index_rescan
+        /// paths`), not seen changing by a watcher: a named file that reads as unchanged has its
+        /// blob validated instead of trusted for existing. Ignored by a full scan.
+        #[serde(default)]
+        verify: bool,
     },
     /// Forward a CORE memory operation to the daemon (the sole fjall writer). The namespace
     /// (`vis_byte` / `owner`) and `scope` are resolved serve-side; the daemon runs the op against

@@ -260,9 +260,10 @@ fn the_pass_after_an_unclean_shutdown_rebuilds_a_torn_blob() {
 }
 
 /// Naming a file in an incremental scan validates its blob, which makes "rescan this path" the
-/// repair for a damaged blob without a full pass: an ordinary pass would trust the blob for existing.
+/// repair for a damaged blob without a full pass. A watcher batch does not: it would pay a blob
+/// read, decompress and decode for every file a branch switch touches.
 #[test]
-fn rescanning_a_named_file_rebuilds_its_torn_blob() {
+fn rescanning_a_named_file_rebuilds_its_torn_blob_and_a_watcher_batch_trusts_it() {
     init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -272,18 +273,34 @@ fn rescanning_a_named_file_rebuilds_its_torn_blob() {
     assert_eq!(full_scan(root, &mut store).stats.updated, 1);
     let hash_hex = store.lookup("torn.rs").expect("entry").hash_hex.clone();
     std::fs::write(store.blob_path_fm_hex(&hash_hex), b"").expect("tear the blob");
+    let config = ConfigV1::with_defaults();
 
-    let report = crate::scanner::scan_paths(
+    let watched = crate::scanner::scan_paths(
         root,
         &mut store,
-        &ConfigV1::with_defaults(),
-        &[file],
+        &config,
+        std::slice::from_ref(&file),
         EmbedMode::Deferred,
     )
     .expect("scan_paths");
-
     assert_eq!(
-        report.stats.updated, 1,
+        (watched.stats.updated, watched.stats.skipped_unchanged),
+        (0, 1),
+        "a watcher batch asks only whether the blob exists"
+    );
+
+    let named = crate::scanner::scan_named_paths_with_observer(
+        root,
+        &mut store,
+        &config,
+        &[file],
+        EmbedMode::Deferred,
+        &crate::scanner::ScanCancel::new(),
+        &mut crate::scanner::NullObserver,
+    )
+    .expect("scan the named path");
+    assert_eq!(
+        named.stats.updated, 1,
         "the torn blob is rebuilt, not trusted for existing"
     );
     assert!(store.read_l1_by_hex(&hash_hex).expect("read").is_some());

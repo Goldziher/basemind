@@ -278,7 +278,7 @@ async fn fetch_rescan_stats(
 ) -> Result<RescanStats, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        let report = super::daemon_forward::writer_rescan_and_refresh(state, scoped_paths, false, true).await?;
+        let report = super::daemon_forward::writer_rescan_and_refresh(state, scoped_paths, false, true, true).await?;
         return Ok(RescanStats {
             scanned: report.scanned,
             updated: report.updated,
@@ -292,7 +292,7 @@ async fn fetch_rescan_stats(
             extract_failed: 0,
         });
     }
-    let report = scan_and_refresh(Arc::clone(state), scoped_paths, crate::scanner::EmbedMode::Inline).await?;
+    let report = scan_and_refresh(Arc::clone(state), scoped_paths, crate::scanner::EmbedMode::Inline, true).await?;
     Ok(RescanStats {
         scanned: report.stats.scanned,
         updated: report.stats.updated,

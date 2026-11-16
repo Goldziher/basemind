@@ -374,6 +374,7 @@ async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
                 paths: None,
                 full: true,
                 embed: false,
+                verify: false,
             },
             &mut session,
             &tx,

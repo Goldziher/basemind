@@ -569,11 +569,13 @@ impl crate::scanner::ScanObserver for RescanPaths {
 /// Holds the `state.shared.store` write lock for the duration of the scan; MCP query tools block
 /// while it runs (acceptable for small/medium repos — rescan is agent-triggered, not
 /// per-request). `scoped_paths` limits the scan to those repo-relative paths; `None` runs a
-/// full working-tree scan.
+/// full working-tree scan. `named` says the paths came from a person or an agent, not from the
+/// watcher: a named file that reads as unchanged has its blob validated.
 pub(super) async fn scan_and_refresh(
     state: Arc<ServerState>,
     scoped_paths: Option<Vec<std::path::PathBuf>>,
     embed: crate::scanner::EmbedMode,
+    named: bool,
 ) -> Result<crate::scanner::ScanReport, McpError> {
     if state.shared.read_only {
         return Err(McpError::invalid_request(
@@ -620,7 +622,12 @@ pub(super) async fn scan_and_refresh(
         let _embed_pass = (matches!(embed, crate::scanner::EmbedMode::Inline) && scoped_paths.is_none())
             .then(crate::embeddings::begin_embed_pass);
         let report = if let Some(paths) = scoped_paths {
-            crate::scanner::scan_paths_with_observer(&root, &mut store, &config, &paths, embed, &cancel, &mut observer)
+            let scan = if named {
+                crate::scanner::scan_named_paths_with_observer
+            } else {
+                crate::scanner::scan_paths_with_observer
+            };
+            scan(&root, &mut store, &config, &paths, embed, &cancel, &mut observer)
         } else {
             crate::scanner::scan_with_observer(
                 &root,

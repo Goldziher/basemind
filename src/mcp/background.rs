@@ -52,7 +52,7 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
             use std::sync::atomic::Ordering;
             state.shared.initial_scan_active.store(true, Ordering::Relaxed);
             let started = std::time::Instant::now();
-            match super::daemon_forward::writer_rescan_and_refresh(&state, None, false, false).await {
+            match super::daemon_forward::writer_rescan_and_refresh(&state, None, false, false, false).await {
                 Ok(report) => tracing::info!(
                     scanned = report.scanned,
                     updated = report.updated,
@@ -70,7 +70,7 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
             tokio::spawn(async move {
                 let embed_started = std::time::Instant::now();
                 tracing::info!("background embedding pass starting (forwarded to daemon)");
-                match super::daemon_forward::writer_rescan_and_refresh(&embed_state, None, false, true).await {
+                match super::daemon_forward::writer_rescan_and_refresh(&embed_state, None, false, true, false).await {
                     Ok(report) => tracing::info!(
                         scanned = report.scanned,
                         updated = report.updated,
@@ -87,7 +87,7 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
         use std::sync::atomic::Ordering;
         state.shared.initial_scan_active.store(true, Ordering::Relaxed);
         let started = std::time::Instant::now();
-        match helpers::scan_and_refresh(Arc::clone(&state), None, crate::scanner::EmbedMode::Deferred).await {
+        match helpers::scan_and_refresh(Arc::clone(&state), None, crate::scanner::EmbedMode::Deferred, false).await {
             Ok(report) => tracing::info!(
                 scanned = report.stats.scanned,
                 updated = report.stats.updated,
@@ -105,7 +105,9 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
         tokio::spawn(async move {
             let embed_started = std::time::Instant::now();
             tracing::info!("background embedding pass starting");
-            match helpers::scan_and_refresh(Arc::clone(&embed_state), None, crate::scanner::EmbedMode::Inline).await {
+            match helpers::scan_and_refresh(Arc::clone(&embed_state), None, crate::scanner::EmbedMode::Inline, false)
+                .await
+            {
                 Ok(report) => tracing::info!(
                     scanned = report.stats.scanned,
                     updated = report.stats.updated,
@@ -187,6 +189,7 @@ fn refresh_batch(
                 Some(paths),
                 false,
                 true,
+                false,
             ))
             .map_err(|error| error.to_string())?;
         return Ok((report.scanned, report.updated, report.removed));
@@ -196,6 +199,7 @@ fn refresh_batch(
             Arc::clone(state),
             Some(paths),
             crate::scanner::EmbedMode::Inline,
+            false,
         ))
         .map_err(|error| error.to_string())?;
     Ok((report.stats.scanned, report.stats.updated, report.stats.removed))

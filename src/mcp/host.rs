@@ -39,6 +39,15 @@ pub(crate) trait HostBackend: Send + Sync {
         embed: bool,
     ) -> Result<crate::scanner::ScanStats, String>;
 
+    /// [`host_rescan`](Self::host_rescan) of paths a person or an agent named: a named file that
+    /// reads as unchanged has its blob validated.
+    fn host_rescan_named(
+        &self,
+        root: &Path,
+        paths: Vec<PathBuf>,
+        embed: bool,
+    ) -> Result<crate::scanner::ScanStats, String>;
+
     /// Answer a precise resolved-reference query against the workspace's read-write fjall index (the
     /// pool holds it as the sole writer, so the cross-file `refs_by_def` / `refs_by_path` edges a
     /// read-only serve cannot see are present).

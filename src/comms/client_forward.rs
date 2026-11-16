@@ -25,12 +25,27 @@ impl CommsClient {
         full: bool,
         embed: bool,
     ) -> Result<RescanReport, CommsClientError> {
+        self.rescan_as(root, paths, full, embed, false).await
+    }
+
+    /// [`rescan`](Self::rescan), with `verify` set when `paths` were named by a person or an agent
+    /// rather than seen changing by a watcher: the daemon then validates the blob of a named file
+    /// it would skip as unchanged.
+    pub async fn rescan_as(
+        &mut self,
+        root: PathBuf,
+        paths: Option<Vec<PathBuf>>,
+        full: bool,
+        embed: bool,
+        verify: bool,
+    ) -> Result<RescanReport, CommsClientError> {
         match self
             .request(CommsRequest::Rescan {
                 root,
                 paths,
                 full,
                 embed,
+                verify,
             })
             .await?
         {

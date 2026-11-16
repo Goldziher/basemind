@@ -563,7 +563,7 @@ pub fn scan_with_observer(
     }
     // Only a working-tree pass writes bloom rows; a rev or staged pass would sweep them all away.
     if matches!(source, ScanSource::WorkingTree) {
-        sweep_grep_bloom_rows(store);
+        crate::scanner_integrity::sweep_grep_bloom_rows(store);
     }
 
     if let Some(change) = &policy {
@@ -644,45 +644,6 @@ pub fn scan_with_observer(
     Ok(report)
 }
 
-/// Drop the grep bloom rows of every content no indexed file references any more. Rows are shared by
-/// content, so a removed or edited file leaves its old row behind until this full-pass sweep (or, for
-/// a watcher batch, [`drop_unheld_grep_bloom_rows`]).
-fn sweep_grep_bloom_rows(store: &Store) {
-    let Some(idx) = store.index_db.as_ref() else {
-        return;
-    };
-    let live: ahash::AHashSet<&str> = store
-        .index
-        .files
-        .values()
-        .map(|entry| entry.hash_hex.as_str())
-        .collect();
-    if let Err(error) = idx.sweep_grep_bloom(&live) {
-        tracing::warn!(%error, "grep bloom sweep failed; unreferenced rows stay until the next full scan");
-    }
-}
-
-/// Drop the grep bloom rows of `hashes` that no indexed file holds any more. `hashes` are the
-/// contents the pass's changed or removed paths held before it ran, so the cost follows the batch,
-/// not the index; a hash another path still holds (or one the pass just wrote for a new path) stays.
-/// Runs after the pass has applied its entries and committed its rows, so it sees the final manifest.
-fn drop_unheld_grep_bloom_rows(store: &Store, hashes: &[String]) {
-    let Some(idx) = store.index_db.as_ref() else {
-        return;
-    };
-    let unheld: ahash::AHashSet<&str> = hashes
-        .iter()
-        .map(String::as_str)
-        .filter(|hash| !store.hash_is_held(hash))
-        .collect();
-    if unheld.is_empty() {
-        return;
-    }
-    if let Err(error) = idx.remove_grep_bloom_rows(unheld) {
-        tracing::warn!(%error, "grep bloom row removal failed; unreferenced rows stay until the next full scan");
-    }
-}
-
 /// Move the pass's breadcrumb (and the per-phase memory tally) to `phase`, if one could be written at all. Folding the `Option` in
 /// here keeps every phase boundary a single line and keeps "no breadcrumb" from being a condition
 /// the scan branches on: evidence is never a precondition for the work.
@@ -742,15 +703,46 @@ pub fn scan_paths_with_observer(
     cancel: &ScanCancel,
     observer: &mut dyn ScanObserver,
 ) -> Result<ScanReport, ScanError> {
+    scan_paths_inner(root, store, config, paths, embed, cancel, observer, false)
+}
+
+/// [`scan_paths_with_observer`] for paths a person or an agent named (`basemind rescan <paths>`,
+/// `index_rescan paths`), as opposed to paths a watcher saw change. They were named because
+/// something is thought to be wrong with them, so a named file that reads as unchanged has its
+/// blob validated: that is what makes "rescan this path" the fix for a damaged blob. A watcher
+/// batch does not pay that read, decompress and decode per file; a branch switch names thousands.
+#[allow(clippy::too_many_arguments)]
+pub fn scan_named_paths_with_observer(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    paths: &[PathBuf],
+    embed: EmbedMode,
+    cancel: &ScanCancel,
+    observer: &mut dyn ScanObserver,
+) -> Result<ScanReport, ScanError> {
+    scan_paths_inner(root, store, config, paths, embed, cancel, observer, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_paths_inner(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    paths: &[PathBuf],
+    embed: EmbedMode,
+    cancel: &ScanCancel,
+    observer: &mut dyn ScanObserver,
+    verify_named: bool,
+) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
     if crate::scanner_integrity::needs_full_rebuild(store)? {
         return scan_with_observer(root, store, config, source, embed, cancel, observer);
     }
-    // The paths were named because something is thought to be wrong or new about them: a named
-    // file that reads as unchanged has its blob validated, which is what makes "rescan this path"
-    // the fix for a damaged blob. Only such files pay the one blob read.
     let mut filter = IndexFilter::new(root, config)?;
-    filter.verify_blobs();
+    if verify_named {
+        filter.verify_blobs();
+    }
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
@@ -892,7 +884,7 @@ pub fn scan_paths_with_observer(
         report.stats.removed += 1;
     }
 
-    drop_unheld_grep_bloom_rows(store, &retired);
+    crate::scanner_integrity::drop_unheld_grep_bloom_rows(store, &retired);
     #[cfg(feature = "code-search")]
     crate::scanner_flush::retire_bm25_postings(store, bm25_candidates);
 

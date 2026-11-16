@@ -175,6 +175,45 @@ pub(crate) fn finish_index_writes(store: &Store) {
     }
 }
 
+/// Drop the grep bloom rows of every content no indexed file references any more. Rows are shared by
+/// content, so a removed or edited file leaves its old row behind until this full-pass sweep (or, for
+/// a watcher batch, [`drop_unheld_grep_bloom_rows`]).
+pub(crate) fn sweep_grep_bloom_rows(store: &Store) {
+    let Some(idx) = store.index_db.as_ref() else {
+        return;
+    };
+    let live: ahash::AHashSet<&str> = store
+        .index
+        .files
+        .values()
+        .map(|entry| entry.hash_hex.as_str())
+        .collect();
+    if let Err(error) = idx.sweep_grep_bloom(&live) {
+        tracing::warn!(%error, "grep bloom sweep failed; unreferenced rows stay until the next full scan");
+    }
+}
+
+/// Drop the grep bloom rows of `hashes` that no indexed file holds any more. `hashes` are the
+/// contents the pass's changed or removed paths held before it ran, so the cost follows the batch,
+/// not the index; a hash another path still holds (or one the pass just wrote for a new path) stays.
+/// Runs after the pass has applied its entries and committed its rows, so it sees the final manifest.
+pub(crate) fn drop_unheld_grep_bloom_rows(store: &Store, hashes: &[String]) {
+    let Some(idx) = store.index_db.as_ref() else {
+        return;
+    };
+    let unheld: ahash::AHashSet<&str> = hashes
+        .iter()
+        .map(String::as_str)
+        .filter(|hash| !store.hash_is_held(hash))
+        .collect();
+    if unheld.is_empty() {
+        return;
+    }
+    if let Err(error) = idx.remove_grep_bloom_rows(unheld) {
+        tracing::warn!(%error, "grep bloom row removal failed; unreferenced rows stay until the next full scan");
+    }
+}
+
 #[cfg(test)]
 #[path = "scanner_integrity_tests.rs"]
 mod tests;

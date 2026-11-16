@@ -86,6 +86,15 @@ impl HostBackend for StoreHost {
         Err("unused".into())
     }
 
+    fn host_rescan_named(
+        &self,
+        _root: &Path,
+        _paths: Vec<std::path::PathBuf>,
+        _embed: bool,
+    ) -> Result<crate::scanner::ScanStats, String> {
+        Err("unused".into())
+    }
+
     fn host_index_read(&self, _root: &Path, query: IndexReadQuery) -> Result<IndexReadResult, String> {
         if self.broken {
             return Err("daemon unavailable".into());

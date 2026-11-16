@@ -112,8 +112,9 @@ pub fn rescan_via_daemon(root: &Path, paths: Option<Vec<PathBuf>>, full: bool) -
         let mut client = CommsClient::ensure_and_connect(agent, remote, cwd)
             .await
             .map_err(|e| CliExit::unavailable(format!("connect to the basemind daemon: {e}")))?;
+        // Paths given on the command line were named, not watched: their blobs are validated.
         client
-            .rescan(root.to_path_buf(), paths, full, true)
+            .rescan_as(root.to_path_buf(), paths, full, true, true)
             .await
             .map_err(|e| anyhow::anyhow!("daemon rescan failed: {e}"))
     })
