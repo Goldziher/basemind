@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{Client, call, call_err, started, started_with};
+use super::{Client, call, call_err, fixture_with, scan, serve, started, started_with};
 
 /// Commit everything as `name <email>`.
 fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
@@ -50,16 +50,19 @@ async fn assert_author_scoping(client: &Client) {
 }
 
 /// A commit by bob whose message names alice is not a commit by alice. Checked on the live walk the
-/// search starts with and again once the git-history index answers it.
+/// search starts with and again once the git-history index answers it. The commits are made before
+/// the server starts, so the index it builds at start holds them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_log_matches_author_terms_against_the_author_only() {
-    let (dir, client) = started().await;
+    let dir = fixture_with(&[]);
     let root = dir.path();
     let outline = std::fs::read_to_string(root.join("src/outline.rs")).unwrap();
     std::fs::write(root.join("src/outline.rs"), outline.replace("    1\n", "    11\n")).unwrap();
     commit_as(root, "alice", "alice@e.x", "fix the parser");
     std::fs::write(root.join("src/outline.rs"), outline.replace("    1\n", "    12\n")).unwrap();
     commit_as(root, "bob", "bob@e.x", "thanks alice for the review");
+    scan(root);
+    let client = serve(root).await;
 
     assert_author_scoping(&client).await;
     // Before the git-history index has caught up the search is a bounded walk over subjects and
@@ -78,22 +81,25 @@ async fn git_log_matches_author_terms_against_the_author_only() {
         ),
     }
 
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut indexed = false;
-    while Instant::now() < deadline {
+    // The server is meant to build the git-history index, unless `BASEMIND_GH_INDEX=0` turns it off
+    // and every answer is the live walk; an index that never comes up fails the test.
+    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| value == "0") {
+        return;
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
         let probe = call(&client, "git_log", json!({ "query": "parser" })).await;
         assert!(probe.get("partial").is_none(), "{probe}");
         if probe.get("truncated").and_then(Value::as_bool) != Some(true) {
-            indexed = true;
             break;
         }
+        assert!(
+            Instant::now() < deadline,
+            "the git-history index did not answer the search within 60 s: {probe}"
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    if indexed {
-        assert_author_scoping(&client).await;
-    } else {
-        eprintln!("NOTE: the git-history index did not catch up; only the live walk was exercised");
-    }
+    assert_author_scoping(&client).await;
 }
 
 const STEADY_RS: &str = "pub fn stable() -> u32 {\n    7\n}\n\npub fn churn() -> u32 {\n    0\n}\n";
