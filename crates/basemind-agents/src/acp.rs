@@ -51,14 +51,20 @@ fn flavor(spec: &LaunchSpec) -> Result<AcpFlavor, LaunchError> {
     }
 }
 
+/// OpenCode's inline configuration that makes every permission `ask`. It takes precedence over
+/// the configuration files: OpenCode 2.3.0 asked under it even with a config file allowing
+/// edits and shell commands named by `OPENCODE_CONFIG`.
+pub(crate) const OPENCODE_ASK: (&str, &str) = ("OPENCODE_CONFIG_CONTENT", r#"{"permission":"ask"}"#);
+
 /// The session mode to set after `session/new`, if the permission mode needs one.
 ///
 /// What an ACP agent does without asking, in any mode but an authorized bypass, was not
 /// verified against a live agent: Cursor, Gemini, Grok and Hermes are run in their default
 /// mode, Grok's and OpenCode's read-only modes and Hermes's accept-edits mode are monocode's
 /// names, and a generic agent is unknown. Each needs an [`UnverifiedModeOptIn`] naming the
-/// harness and the mode. OpenCode's default is documented to edit files and run commands
-/// without asking, so it is never launched supervised.
+/// harness and the mode. OpenCode supervised needs none: its default wrote a file unasked,
+/// but under [`OPENCODE_ASK`] OpenCode 2.3.0 asked before an edit, a shell command and an
+/// MCP tool call.
 ///
 /// [`UnverifiedModeOptIn`]: crate::UnverifiedModeOptIn
 fn session_mode(spec: &LaunchSpec, prepared: &Prepared, flavor: AcpFlavor) -> Result<Option<String>, LaunchError> {
@@ -71,11 +77,7 @@ fn session_mode(spec: &LaunchSpec, prepared: &Prepared, flavor: AcpFlavor) -> Re
         // Grok takes its bypass as a launch argument and a `_meta` switch instead.
         (PermissionMode::Bypass, AcpFlavor::Grok) => return Ok(None),
         (PermissionMode::Bypass, _) => return Ok(prepared.bypass_mode.clone()),
-        (PermissionMode::Supervised, AcpFlavor::OpenCode) => {
-            return Err(unsupported(
-                "a supervised mode: its default edits and runs commands unasked",
-            ));
-        }
+        (PermissionMode::Supervised, AcpFlavor::OpenCode) => return Ok(None),
         (PermissionMode::Supervised, _) => None,
         // Grok takes this as a launch argument instead of a session mode.
         (PermissionMode::ReadOnly, AcpFlavor::Grok) => None,
@@ -130,7 +132,13 @@ impl AcpAdapter {
         let extra = prepared.model_args.iter().map(String::as_str);
         let args: Vec<&str> = match flavor {
             // `model_args` refuses a model or effort for these flavors.
-            AcpFlavor::Cursor | AcpFlavor::Hermes | AcpFlavor::OpenCode => vec!["acp"],
+            AcpFlavor::Cursor | AcpFlavor::Hermes => vec!["acp"],
+            AcpFlavor::OpenCode => {
+                // OpenCode's default edits files and runs commands unasked; it has no bypass
+                // mode here, so every launch asks.
+                env.push(OPENCODE_ASK);
+                vec!["acp"]
+            }
             AcpFlavor::Gemini => vec!["--experimental-acp"],
             AcpFlavor::Generic => Vec::new(),
             AcpFlavor::Grok => {

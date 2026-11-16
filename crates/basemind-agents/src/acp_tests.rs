@@ -435,15 +435,7 @@ fn launch_arguments_follow_the_flavor_and_unsupported_modes_are_refused() {
         (AcpFlavor::Gemini, "gemini", vec!["--experimental-acp"]),
         (AcpFlavor::Generic, "acp", vec![]),
     ] {
-        // OpenCode is never supervised; its read-only mode has the same arguments.
-        let mode = if flavor == AcpFlavor::OpenCode {
-            PermissionMode::ReadOnly
-        } else {
-            PermissionMode::Supervised
-        };
-        let plan = AcpAdapter
-            .plan_spec(&in_mode(acp_spec(flavor, root.path()), mode))
-            .unwrap();
+        let plan = AcpAdapter.plan_spec(&acp_spec(flavor, root.path())).unwrap();
         assert_eq!(HarnessKind::Acp(flavor).default_executable(), program);
         assert_eq!(plan.program, PathBuf::from(EXECUTABLE));
         assert_eq!(plan.args, args);
@@ -818,14 +810,50 @@ fn a_mode_whose_behaviour_is_unverified_needs_an_opt_in_naming_harness_and_mode(
         ));
         assert!(AcpAdapter.plan_spec(&in_mode(spec, mode)).is_ok());
     }
-    // OpenCode's default does not ask, so no consent makes it a supervised launch.
-    assert!(matches!(
-        AcpAdapter.plan_spec(&acp_spec(AcpFlavor::OpenCode, root.path())),
-        Err(LaunchError::Unsupported {
-            harness: "opencode",
-            ..
-        })
-    ));
+    // OpenCode is told to ask for everything, so its supervised launch needs no consent.
+    for mode in [PermissionMode::Supervised, PermissionMode::ReadOnly] {
+        let spec = in_mode(spec(HarnessKind::Acp(AcpFlavor::OpenCode), root.path()), mode);
+        let plan = AcpAdapter.plan_spec(&spec).unwrap();
+        assert_eq!(
+            plan.env.get(OPENCODE_ASK.0).and_then(|value| value.to_str()),
+            Some(OPENCODE_ASK.1),
+            "{mode:?}"
+        );
+    }
+    let supervised = spec(HarnessKind::Acp(AcpFlavor::OpenCode), root.path());
+    assert!(AcpAdapter.plan_spec(&supervised).is_ok());
+    // A Cursor launch does not carry it.
+    let cursor = AcpAdapter.plan_spec(&acp_spec(AcpFlavor::Cursor, root.path())).unwrap();
+    assert!(!cursor.env.contains_key(OPENCODE_ASK.0));
+}
+
+/// The request OpenCode 2.3.0 sent under [`OPENCODE_ASK`] before writing `probe.txt`.
+const LIVE_OPENCODE_PERMISSION: &str =
+    include_str!("../tests/fixtures/live/opencode-2.3.0-request-permission-edit.json");
+
+#[test]
+fn a_recorded_opencode_edit_request_is_rejected_once_without_a_policy() {
+    let root = tempfile::tempdir().unwrap();
+    let spec = spec(HarnessKind::Acp(AcpFlavor::OpenCode), root.path());
+    let run = converse_with(&spec, Vec::new(), |agent| {
+        agent.open();
+        let prompt = agent.expect("session/prompt");
+        let mut request: Value = serde_json::from_str(LIVE_OPENCODE_PERMISSION).unwrap();
+        request["id"] = json!(100);
+        request["params"]["sessionId"] = json!("sess-1");
+        agent.send(&request);
+        assert_eq!(
+            agent.permission_outcome(),
+            json!({"outcome": "selected", "optionId": "reject"})
+        );
+        agent.reply(&prompt, &json!({"stopReason": "cancelled"}));
+    });
+    run.result.unwrap();
+    let Event::ApprovalRequest(request) = &run.events[1] else {
+        panic!("unexpected event {:?}", run.events[1]);
+    };
+    assert_eq!(request.kind, crate::event::ApprovalKind::FileChange);
+    assert!(request.detail.contains("probe.txt"), "{}", request.detail);
 }
 
 #[test]
