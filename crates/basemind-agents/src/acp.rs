@@ -243,10 +243,10 @@ struct AcpDriver {
 
 impl Driver for AcpDriver {
     fn run(self: Box<Self>, io: ChildIo, sink: EventSink) -> Result<(), LaunchError> {
-        let (line_tx, incoming) = channel(INCOMING_LINES);
+        let (line_tx, incoming) = lines_channel(INCOMING_LINES);
         let stdout = pipe::Reader::new(io.stdout, io.abandon.clone());
         std::thread::spawn(move || pump_lines(stdout, line_tx));
-        let (out_tx, mut out_rx) = channel::<String>(OUTGOING_LINES);
+        let (out_tx, mut out_rx) = lines_channel::<String>(OUTGOING_LINES);
         let mut stdin = pipe::Writer::new(io.stdin, io.abandon)?.for_stdin(io.stdin_state);
         std::thread::spawn(move || {
             while let Some(line) = futures::executor::block_on(out_rx.next()) {
@@ -301,6 +301,12 @@ impl Sink<String> for FailFast {
 const INCOMING_LINES: usize = 2;
 /// How many lines to the agent may wait for it to read them; beyond that the session fails.
 const OUTGOING_LINES: usize = 16;
+
+/// A channel that holds at most `lines` items with its one sender: a `futures` channel holds
+/// its buffer plus one item per sender.
+fn lines_channel<T>(lines: usize) -> (Sender<T>, Receiver<T>) {
+    channel(lines - 1)
+}
 
 /// Reads the agent's output as lines of at most [`MAX_FRAME_BYTES`](crate::frames::MAX_FRAME_BYTES)
 /// into `tx`. A line over the limit or not in UTF-8 is passed on as an

@@ -934,3 +934,20 @@ fn a_stop_between_turns_declines_a_request_sent_after_the_turn() {
         source: ApprovalSource::Withdrawn,
     }));
 }
+
+#[test]
+fn the_outgoing_queue_holds_exactly_its_limit() {
+    let (tx, _rx) = lines_channel::<String>(OUTGOING_LINES);
+    let mut sink = FailFast(tx);
+    for n in 0..OUTGOING_LINES {
+        Pin::new(&mut sink).start_send(n.to_string()).unwrap();
+    }
+    let error = Pin::new(&mut sink).start_send("one more".to_owned()).unwrap_err();
+    assert!(error.to_string().contains("left 16 lines unread"), "{error}");
+
+    let (mut tx, _rx) = lines_channel::<u8>(INCOMING_LINES);
+    for _ in 0..INCOMING_LINES {
+        tx.try_send(0).unwrap();
+    }
+    assert!(tx.try_send(0).unwrap_err().is_full());
+}
