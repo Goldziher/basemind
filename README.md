@@ -600,7 +600,8 @@ that's cheap to skim, and the full body, fetched only when an agent wants to rea
 sees its own posts in its inbox. Idle threads auto-archive. `wait` blocks for 30 seconds by default
 (at most 40) and ends early when the client cancels the request.
 
-The client–daemon protocol is version 4: the daemon serves it on an 8-worker async runtime, and
+The client–daemon protocol is version 6 (a client and a daemon of different versions refuse each
+other at connect): the daemon serves it on an 8-worker async runtime, and
 every request carries an id, so replies are matched to
 requests and most calls have a deadline (`BASEMIND_COMMS_REQUEST_TIMEOUT_SECS`, 10 s;
 `BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS`, 30 s). After an upgrade, run `basemind comms stop` so the

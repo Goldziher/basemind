@@ -554,6 +554,45 @@ sweep's health (`gc-state.json`, shown as `last_gc` by `cache stats`) are in `sr
 Budget eviction never touches a locked, most-recently-used or recently built workspace (even over
 budget, which is reported instead); the rules live in `src/store_gc_protect.rs`.
 
+Two installed versions share the cache, and the older one must leave the newer one's data alone. A
+namespace of a blob schema newer than the binary's is not counted towards the budget that binary
+enforces (it could never free those bytes, and would evict a workspace every cycle to make up for
+them) and is never swept. A view whose file map a newer version wrote is never evicted (reported as
+`newer_version`), never healed away as damaged, and has no vote in the sweep of an older namespace,
+which it cannot reference. A file map's version is read on its own before the rest of it, so a newer
+map the binary cannot decode still reads as newer. The sweep of superseded namespaces needs no live
+set and runs even when the current namespace cannot be swept.
+
+A file map also records the layout of the blob store it was written for (`blob_layout`; `1` is
+the namespaced store). A map without it was written when blobs lay flat in `cache/blobs/`: it is
+discarded with the index built from it and the workspace is scanned again, whatever schema it carries.
+
+### Durability
+
+Blobs are written to a temporary file and renamed, without an fsync; the file map is fsynced, after
+the Fjall index sealed the same generation. So after a power loss a file map can name a blob whose
+bytes never reached the disk. Two records make the next scan a full one that decodes each combined
+and document blob instead of trusting it for existing (`verify-blobs` in the workspace cache
+directory): the breadcrumb of a scan that never finished, and the marker of a daemon
+(`hosting/<pid>`, holding the boot it was started in) left from an earlier boot of the machine. The
+second asks every workspace at once, since the marker does not say which ones its daemon served. A
+daemon killed while the machine stayed up tore nothing (a blob is renamed into place whole) and asks
+for nothing; a pid alone is not trusted, because after a restart another process has the number.
+Apart from that pass, only paths named in `basemind rescan <paths>` or `index_rescan paths` have
+their blobs validated; a watcher batch asks whether the blob exists.
+
+Vector rows are written after the file map. The paths whose rows are owed are kept beside it
+(`pending-vectors.msgpack`, written before the map that claims them, after embedding: the
+embeddings are in the blobs) and written by a later scan from the cached blobs: all of them by a
+full scan, 64 per incremental or cancelled one. Nothing drains them while no scan runs. LanceDB
+commits are not fsynced by basemind, and the vector store can be wiped or deleted on its own, so
+the view also records which store its rows went to (`vector-store-id`; the store's own id is in
+`lance/store-id`). A scan that finds another store there, or none, owes every indexed path its
+rows again, and so does the pass that verifies blobs.
+
+An open that does not hold the workspace lock writes nothing: it stamps no version in the index or
+in the notes store, flushes no journal and creates no placeholder.
+
 ## MCP surface
 
 The daemon hosts the MCP router (`rmcp`) over a per-workspace shared read stack; `basemind serve`
@@ -941,8 +980,10 @@ ceiling is real rather than merely configured — ships at `docs/systemd/basemin
 ### Request correlation, timeouts and the daemon log
 
 Every client request after `Hello` travels as a `Call { id, request }` and is answered by a
-`Reply { id, response }` (since protocol version 4; the current version is 5; `ensure_daemon` asks
-an older daemon to stop on its version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a request
+`Reply { id, response }` (since protocol version 4; the current version is 6, which added the batched
+memory read `MemoryOp::GetMany`, at most 256 keys per request, and the `verify` flag of `Rescan`;
+`ensure_daemon` asks an older daemon to stop on its version check, and a skewed peer fails `Hello`
+with `proto_skew`). A client that abandons a request
 mid-flight (a timeout, a cancelled tool call) therefore cannot mistake the late reply for the next
 request's answer: stale ids are discarded, and only a drop in the middle of writing a frame forces
 a reconnect. Bare requests (status probes, `Hello`) still get an uncorrelated `Response`.
@@ -1048,15 +1089,27 @@ plus an optional long body.
 Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key` Fjall key is
 `(scope, vis_byte, owner, key)` and the LanceDB memory table has `agent_id` + `visibility` columns.
 Group memory (`visibility=group`, default, `owner=""`) is shared across agents in a repo; individual
-memory (`visibility=individual`, `owner=agent_id`) is private to one agent. Schema is guarded by
-`MEMORY_SCHEMA_VER` (derives from `RELEASE_MINOR`); a mismatch wipes and rebuilds.
+memory (`visibility=individual`, `owner=agent_id`) is private to one agent. The vector tables are
+guarded by `MEMORY_SCHEMA_VER` (derives from `RELEASE_MINOR`); a mismatch wipes and rebuilds them.
+The notes are not: `memory.fjall` carries its own version (`store_meta`), is never wiped, and a
+store a newer basemind wrote is refused for memory operations only ("written by a newer
+basemind"), while the code index of the same workspace opens and serves as usual.
 
 The Fjall half (`memory_by_key`) is the truth for a note. Its vector row only makes the note findable
 by meaning: `memory_search` joins every hit against `memory_by_key`, drops a hit whose note is gone or
 was rewritten since the row was embedded, and answers from the note. The rows live beside the notes
-(`<cache>/cache/repos/<group>/memory.lance/<model>-<dim>/`, one store per embedding model) and are
-rebuilt from them: a search embeds the notes without a current row and removes the rows without a
-note, a bounded number per call, which is also what fills a store after it is wiped or first opened. A save or a delete is fsynced before it is acknowledged.
+(`<cache>/cache/repos/<group>/memory.lance/<model>-<dim>-<hash>/`, one store per embedding model) and are
+rebuilt from them: a search embeds the notes without a current row and removes the rows whose note
+is gone or has no text, a bounded number per call, which is also what fills a store after it is
+wiped or first opened. A row holds the note's vector and tags, never its text. A save or a delete
+is fsynced before it is acknowledged.
+
+A process stops looking once it has found a namespace level, for five minutes: other processes save
+notes too. A save in the same process that wrote no row (the embedding failed, or was left for
+later) ends that at once. A note saved again while a backfill is embedding it keeps the row of the
+later save: a write removes only rows of the same or an earlier write of the note, and the backfill
+reads the notes it embedded once more before it calls the namespace level. The join reads the notes
+of its hits in batches of at most 256 keys per request; the daemon refuses a larger one.
 
 The Fjall half is stored once per repo group, not per
 view: `<cache>/cache/repos/<group>/memory.fjall/`, where `<group>` is the blake3 of the canonical main
