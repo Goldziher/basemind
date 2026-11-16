@@ -43,6 +43,8 @@ fn seed_repo(root: &Path) {
     fs::write(root.join("gamma.rs"), b"pub struct Gamma { pub x: u32 }\n").unwrap();
 }
 
+/// Run in a child `basemind scan` so the fault variable reaches that process alone: set on this
+/// one, it would inject the panic into every scan the other tests of this binary run meanwhile.
 #[test]
 fn panicking_optional_lane_leaves_the_code_map_flushed_and_queryable() {
     basemind::store::init_isolated_cache();
@@ -50,32 +52,27 @@ fn panicking_optional_lane_leaves_the_code_map_flushed_and_queryable() {
     let root = dir.path();
     seed_repo(root);
 
-    // SAFETY: `TEST_FAULT_LANE_ENV` is read only by the scanner's lane guard, and the only scan in
-    unsafe { std::env::set_var(TEST_FAULT_LANE_ENV, LANE_RESOLVE) };
+    let output = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args(["--root", root.to_str().unwrap(), "scan", "--quiet"])
+        .env(TEST_FAULT_LANE_ENV, LANE_RESOLVE)
+        .output()
+        .expect("run basemind scan");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "a panicking optional lane must not fail the scan; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("injected fault in optional scan lane `{LANE_RESOLVE}`")),
+        "the fault must actually fire in the child; stderr: {stderr}"
+    );
 
-    let cfg = ConfigV1::with_defaults();
-    let mut store = Store::open(root, VIEW_WORKING).expect("open store");
-    let report = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline);
-
-    // SAFETY: see above.
-    unsafe { std::env::remove_var(TEST_FAULT_LANE_ENV) };
-
-    let report = report.expect("a panicking optional lane must not fail the scan");
-    assert_eq!(report.stats.updated, 3, "every source file is still extracted");
-
+    let store = Store::open(root, VIEW_WORKING).expect("open store after the degraded scan");
     let index_path = store.view_dir.join(INDEX_FILE);
     assert!(index_path.exists(), "the code map must be flushed to {index_path:?}");
-
+    assert_eq!(store.index.files.len(), 3, "every source file is still extracted");
     let hits = basemind::query::search_symbols(&store, "beta", None).unwrap();
     assert_eq!(hits.len(), 1, "the code map stays queryable after a degraded lane");
-
-    drop(store);
-    let reopened = Store::open(root, VIEW_WORKING).expect("reopen store");
-    assert_eq!(
-        reopened.index.files.len(),
-        3,
-        "the persisted code map must not be empty"
-    );
 }
 
 /// A lane killed mid-flight (hang → SIGKILL; here: `abort` inside the lane) must still leave the
