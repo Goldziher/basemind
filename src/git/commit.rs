@@ -113,9 +113,11 @@ pub(super) fn commit_files(
             // missed the commit that moved the last file out of it.
             if let gix::object::tree::diff::Change::Rewrite {
                 source_location,
+                source_entry_mode,
                 copy: false,
                 ..
             } = &change
+                && !source_entry_mode.is_tree()
                 && let Some(source) = decode_path(source_location)
             {
                 record(source, ChangeKind::Deleted);
@@ -260,16 +262,35 @@ fn line_byte_offsets(buf: &[u8]) -> Vec<(u32, u32)> {
     out
 }
 
+/// The file a tree change names, and how it changed. A directory is not a file: the tree diff
+/// reports every directory on the way to a changed file as modified, and those entries are left
+/// out. An entry that turned from a file into a directory is the file's deletion, and the reverse
+/// its addition.
 pub(super) fn classify_tree_change(
     change: &gix::object::tree::diff::Change<'_, '_, '_>,
 ) -> Option<(crate::path::RelPath, ChangeKind)> {
     use gix::object::tree::diff::Change::*;
-    match change {
-        Addition { location, .. } => Some((decode_path(location)?, ChangeKind::Added)),
-        Deletion { location, .. } => Some((decode_path(location)?, ChangeKind::Deleted)),
-        Modification { location, .. } => Some((decode_path(location)?, ChangeKind::Modified)),
-        Rewrite { location, .. } => Some((decode_path(location)?, ChangeKind::Renamed)),
-    }
+    let kind = match change {
+        Addition { entry_mode, .. } | Deletion { entry_mode, .. } | Rewrite { entry_mode, .. }
+            if entry_mode.is_tree() =>
+        {
+            return None;
+        }
+        Addition { .. } => ChangeKind::Added,
+        Deletion { .. } => ChangeKind::Deleted,
+        Rewrite { .. } => ChangeKind::Renamed,
+        Modification {
+            previous_entry_mode,
+            entry_mode,
+            ..
+        } => match (previous_entry_mode.is_tree(), entry_mode.is_tree()) {
+            (false, false) => ChangeKind::Modified,
+            (true, false) => ChangeKind::Added,
+            (false, true) => ChangeKind::Deleted,
+            (true, true) => return None,
+        },
+    };
+    Some((decode_path(change.location())?, kind))
 }
 
 pub(super) fn decode_path(bstr: &gix::bstr::BStr) -> Option<crate::path::RelPath> {

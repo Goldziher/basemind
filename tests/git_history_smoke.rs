@@ -206,6 +206,24 @@ fn merge_commit_union_across_parents_matches_git() {
     );
 }
 
+/// A commit's file list names files. The tree diff also reports each directory on the way to a
+/// changed file, and those are not changes of their own.
+#[test]
+fn a_commit_lists_the_files_it_changed_and_no_directory() {
+    let dir = init_repo();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src/deep")).unwrap();
+    commit_file(root, "src/deep/a.rs", "fn a1() {}\n", "add");
+    commit_file(root, "src/deep/a.rs", "fn a2() {}\n", "edit");
+    let head = capture(root, &["rev-parse", "HEAD"]);
+
+    let expected = [("src/deep/a.rs".into(), basemind::git::ChangeKind::Modified)];
+    let repo = Repo::discover(root).expect("repo discover");
+    assert_eq!(repo.commit_record(head.trim()).expect("record").files, expected);
+    let (index, _) = sync(root);
+    assert_eq!(index.recent_commits(0, 1, true)[0].files, expected, "indexed file list");
+}
+
 #[test]
 fn recent_commits_newest_first_matches_git() {
     let dir = init_repo();
