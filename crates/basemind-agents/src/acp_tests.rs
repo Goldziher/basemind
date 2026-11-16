@@ -843,3 +843,33 @@ fn a_mode_switch_and_a_fetch_are_not_plain_tool_calls() {
     assert_eq!(request("fetch"), crate::event::ApprovalKind::Fetch);
     assert_eq!(request("read"), crate::event::ApprovalKind::Tool);
 }
+
+#[test]
+fn a_stop_declines_the_requests_still_pending() {
+    let root = tempfile::tempdir().unwrap();
+    let (asked_tx, asked) = std::sync::mpsc::channel();
+    let policy = move |_: &ApprovalRequest| {
+        asked_tx.send(()).unwrap();
+        ApprovalVerdict::Ask
+    };
+    let spec = with_policy(acp_spec(AcpFlavor::Cursor, root.path()), Some(Arc::new(policy)));
+    let run = converse_with(&spec, Vec::new(), move |agent| {
+        agent.open();
+        agent.expect("session/prompt");
+        agent.request_permission(&standard_options());
+        asked.recv().unwrap();
+        agent.controls.unbounded_send(Control::Stop).unwrap();
+        assert_eq!(
+            agent.permission_outcome(),
+            json!({"outcome": "selected", "optionId": "no"})
+        );
+        agent.expect("session/cancel");
+        while futures::executor::block_on(agent.from_client.next()).is_some() {}
+    });
+    run.result.unwrap();
+    assert!(run.events.contains(&Event::ApprovalResolved {
+        id: "acp-1".to_owned(),
+        allowed: false,
+        source: ApprovalSource::Withdrawn,
+    }));
+}

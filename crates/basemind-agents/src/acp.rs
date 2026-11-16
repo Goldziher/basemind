@@ -546,7 +546,10 @@ where
                     control = controls.next() => match control {
                         Some(Control::FollowUp(text)) => queued.push_back(text),
                         Some(Control::Answer { id, allow }) => pending.answer(&id, allow, &sink),
-                        Some(Control::Stop) | None => return Ok(Ok(())),
+                        Some(Control::Stop) | None => {
+                            pending.withdraw_all(&sink);
+                            return Ok(Ok(()));
+                        }
                     },
                     () = closed => {
                         let message = "the ACP agent closed its output before the session opened";
@@ -585,6 +588,8 @@ where
                         Some(Control::FollowUp(text)) => queued.push_back(text),
                         Some(Control::Answer { id, allow }) => pending.answer(&id, allow, &sink),
                         Some(Control::Stop) | None => {
+                            // The protocol has the client answer what is pending when it cancels.
+                            pending.withdraw_all(&sink);
                             connection.send_notification(CancelNotification::new(session.clone()))?;
                             return Ok(Ok(()));
                         }
