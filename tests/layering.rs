@@ -13,13 +13,19 @@
 //! read: a feature-gated reference is still a reference. Paths are collected from `use` trees
 //! (grouped, renamed, glob, `pub use`), from paths in types and expressions, from macro bodies and
 //! from attribute arguments. A path counts when it starts with `crate`, `self`, `super`, a child
-//! module name, or a forbidden external crate. A path that resolves to the crate root itself (a
-//! re-export such as `crate::Config`) names no module and is not an edge.
+//! module name, or a forbidden external crate. A `cfg_attr(test, ..)` argument and a `#[cfg(test)]`
+//! trait or impl method are test code.
+//!
+//! A path is followed through re-exports: when the segment after its longest module prefix is a
+//! `pub use` of that module (named or glob), resolution continues at the re-exported path, and every
+//! module passed on the way is an edge. A `#[macro_export]` macro lives at the crate root, so
+//! `crate::name!` and a bare `name!` are edges to the module that defines it. The crate root
+//! (`src/lib.rs`) counts as core: its `pub use` items are edges like any other module's.
 //!
 //! `KNOWN_VIOLATIONS` lists the edges not yet cut; the test passes only on an exact match, so a new
 //! edge fails it and a cut edge must be removed from the list.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use proc_macro2::{TokenStream, TokenTree};
@@ -367,6 +373,12 @@ impl Collector {
                 j += 3;
             }
             if !preceded {
+                let bare_macro = segments.len() == 1
+                    && flat.get(j).and_then(|t| t.as_deref()) == Some("!")
+                    && flat.get(j + 1).and_then(|t| t.as_deref()) != Some("=");
+                if bare_macro {
+                    self.push(vec!["crate".to_string(), segments[0].clone()]);
+                }
                 self.push(segments);
             }
             i = j.max(i + 1);
@@ -442,6 +454,13 @@ impl<'ast> Visit<'ast> for Collector {
         self.test = saved;
     }
 
+    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+        let saved = self.test;
+        self.test |= is_cfg_test(&item.attrs);
+        syn::visit::visit_trait_item_fn(self, item);
+        self.test = saved;
+    }
+
     fn visit_item_mod(&mut self, _: &'ast syn::ItemMod) {}
 
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
@@ -455,6 +474,10 @@ impl<'ast> Visit<'ast> for Collector {
     }
 
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        // A bare `name!` may be a `#[macro_export]` macro, which lives at the crate root.
+        if let Some(name) = mac.path.get_ident() {
+            self.push(vec!["crate".to_string(), name.to_string()]);
+        }
         self.tokens(mac.tokens.clone());
         syn::visit::visit_macro(self, mac);
     }
@@ -462,6 +485,13 @@ impl<'ast> Visit<'ast> for Collector {
     fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
         // Doc comments are prose: a path named in one is not a dependency.
         if attr.path().is_ident("doc") {
+            return;
+        }
+        if let Some(rest) = cfg_attr_test_args(attr) {
+            let saved = self.test;
+            self.test = true;
+            self.tokens(rest);
+            self.test = saved;
             return;
         }
         match &attr.meta {
@@ -480,6 +510,25 @@ impl<'ast> Visit<'ast> for Collector {
         }
         syn::visit::visit_attribute(self, attr);
     }
+}
+
+/// The attributes a `cfg_attr` applies only in test builds, `None` for any other attribute.
+fn cfg_attr_test_args(attr: &syn::Attribute) -> Option<TokenStream> {
+    if !attr.path().is_ident("cfg_attr") {
+        return None;
+    }
+    let syn::Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    let (predicate, rest) = list
+        .parse_args_with(|input: syn::parse::ParseStream| {
+            let predicate: syn::Meta = input.parse()?;
+            input.parse::<syn::Token![,]>()?;
+            let rest: TokenStream = input.parse()?;
+            Ok((predicate, rest))
+        })
+        .ok()?;
+    cfg_requires_test(&predicate).then_some(rest)
 }
 
 fn layer_of(module: &[String]) -> Option<Layer> {
@@ -514,12 +563,177 @@ fn load_modules(root: &Path) -> (Vec<Module>, BTreeSet<PathBuf>) {
     (modules, files)
 }
 
+/// `segments` as a path from the crate root, or `None` when it starts with neither `crate`, `self`,
+/// `super` nor a child module name (an external crate, a prelude name or a local).
+fn absolutize(module: &Module, segments: &[String]) -> Option<Vec<String>> {
+    let first = segments.first()?.as_str();
+    Some(match first {
+        "crate" => segments[1..].to_vec(),
+        "self" => module.path.iter().chain(&segments[1..]).cloned().collect(),
+        "super" => {
+            let ups = segments.iter().take_while(|s| *s == "super").count();
+            let keep = module.path.len().saturating_sub(ups);
+            module.path[..keep].iter().chain(&segments[ups..]).cloned().collect()
+        }
+        _ if module.children.contains(first) => module.path.iter().chain(segments).cloned().collect(),
+        _ => return None,
+    })
+}
+
+/// What a module makes reachable under its own path: its `pub use` items (named and glob) and the
+/// names it defines; plus the crate's `#[macro_export]` macros with the module defining each.
+#[derive(Default)]
+struct Exports {
+    named: BTreeMap<(Vec<String>, String), Vec<String>>,
+    globs: BTreeMap<Vec<String>, Vec<Vec<String>>>,
+    defined: BTreeSet<(Vec<String>, String)>,
+    macros: BTreeMap<String, Vec<String>>,
+}
+
+fn item_name(item: &syn::Item) -> Option<String> {
+    let ident = match item {
+        syn::Item::Const(i) => &i.ident,
+        syn::Item::Enum(i) => &i.ident,
+        syn::Item::Fn(i) => &i.sig.ident,
+        syn::Item::Macro(i) => i.ident.as_ref()?,
+        syn::Item::Static(i) => &i.ident,
+        syn::Item::Struct(i) => &i.ident,
+        syn::Item::Trait(i) => &i.ident,
+        syn::Item::TraitAlias(i) => &i.ident,
+        syn::Item::Type(i) => &i.ident,
+        syn::Item::Union(i) => &i.ident,
+        _ => return None,
+    };
+    Some(ident.to_string())
+}
+
+/// The `(name, path)` pairs a `use` tree brings in; a glob has no name.
+fn use_pairs(prefix: &mut Vec<String>, tree: &syn::UseTree, out: &mut Vec<(Option<String>, Vec<String>)>) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            prefix.push(p.ident.to_string());
+            use_pairs(prefix, &p.tree, out);
+            prefix.pop();
+        }
+        syn::UseTree::Name(n) if n.ident == "self" => {
+            if let Some(last) = prefix.last() {
+                out.push((Some(last.clone()), prefix.clone()));
+            }
+        }
+        syn::UseTree::Name(n) => {
+            let mut full = prefix.clone();
+            full.push(n.ident.to_string());
+            out.push((Some(n.ident.to_string()), full));
+        }
+        syn::UseTree::Rename(r) => {
+            let mut full = prefix.clone();
+            if r.ident != "self" {
+                full.push(r.ident.to_string());
+            }
+            out.push((Some(r.rename.to_string()), full));
+        }
+        syn::UseTree::Glob(_) => out.push((None, prefix.clone())),
+        syn::UseTree::Group(g) => {
+            for item in &g.items {
+                use_pairs(prefix, item, out);
+            }
+        }
+    }
+}
+
+fn exports(modules: &[Module]) -> Exports {
+    let mut out = Exports::default();
+    for module in modules {
+        for item in &module.items {
+            if let Some(name) = item_name(item) {
+                out.defined.insert((module.path.clone(), name));
+            }
+            match item {
+                syn::Item::Macro(mac) if mac.attrs.iter().any(|a| a.path().is_ident("macro_export")) => {
+                    if let Some(ident) = &mac.ident {
+                        out.macros.insert(ident.to_string(), module.path.clone());
+                    }
+                }
+                syn::Item::Use(item_use) if !matches!(item_use.vis, syn::Visibility::Inherited) => {
+                    let mut pairs = Vec::new();
+                    use_pairs(&mut Vec::new(), &item_use.tree, &mut pairs);
+                    for (name, target) in pairs {
+                        let Some(target) = absolutize(module, &target) else {
+                            continue;
+                        };
+                        match name {
+                            Some(name) => {
+                                out.named.insert((module.path.clone(), name), target);
+                            }
+                            None => out.globs.entry(module.path.clone()).or_default().push(target),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Every module an absolute path passes through: its longest module prefix and, while the next
+/// segment is a re-export there (or a `#[macro_export]` macro at the root), each module along the
+/// re-export chain. Bounded, so a re-export cycle cannot loop.
+fn modules_passed(known: &BTreeSet<Vec<String>>, exports: &Exports, mut absolute: Vec<String>) -> Vec<Vec<String>> {
+    let mut passed = Vec::new();
+    for _ in 0..16 {
+        let depth = (0..=absolute.len())
+            .rev()
+            .find(|&n| known.contains(&absolute[..n]))
+            .unwrap_or(0);
+        let module = absolute[..depth].to_vec();
+        if !module.is_empty() {
+            passed.push(module.clone());
+        }
+        let Some(name) = absolute.get(depth).cloned() else {
+            break;
+        };
+        let key = (module.clone(), name.clone());
+        let provides = |target: &Vec<String>| {
+            let key = (target.clone(), name.clone());
+            exports.defined.contains(&key) || exports.named.contains_key(&key) || {
+                let mut child = target.clone();
+                child.push(name.clone());
+                known.contains(&child)
+            }
+        };
+        absolute = if let Some(target) = exports.named.get(&key) {
+            target.iter().chain(&absolute[depth + 1..]).cloned().collect()
+        } else if module.is_empty()
+            && let Some(defining) = exports.macros.get(&name)
+        {
+            defining.clone()
+        } else if !exports.defined.contains(&key)
+            && let Some(target) = exports
+                .globs
+                .get(&module)
+                .and_then(|globs| globs.iter().find(|g| provides(g)))
+        {
+            target.iter().chain(&absolute[depth..]).cloned().collect()
+        } else {
+            break;
+        };
+    }
+    passed
+}
+
 /// Every layering violation of the library under `root`, as sorted `"<file> -> <target>"` lines.
 fn violations(root: &Path, modules: &[Module]) -> BTreeSet<String> {
     let known: BTreeSet<Vec<String>> = modules.iter().map(|m| m.path.clone()).collect();
+    let exports = exports(modules);
     let mut found = BTreeSet::new();
-    for module in modules.iter().filter(|m| !m.path.is_empty()) {
-        let Some(from) = layer_of(&module.path) else { continue };
+    for module in modules {
+        let from = if module.path.is_empty() {
+            Core
+        } else {
+            let Some(from) = layer_of(&module.path) else { continue };
+            from
+        };
         let mut collector = Collector {
             test: module.test,
             refs: Vec::new(),
@@ -536,37 +750,18 @@ fn violations(root: &Path, modules: &[Module]) -> BTreeSet<String> {
             .replace('\\', "/");
         for raw in collector.refs {
             let tag = if raw.test { " [test]" } else { "" };
-            let first = raw.segments[0].as_str();
-            let absolute: Vec<String> = match first {
-                "crate" => raw.segments[1..].to_vec(),
-                "self" => module.path.iter().chain(&raw.segments[1..]).cloned().collect(),
-                "super" => {
-                    let ups = raw.segments.iter().take_while(|s| *s == "super").count();
-                    let keep = module.path.len().saturating_sub(ups);
-                    module.path[..keep]
-                        .iter()
-                        .chain(&raw.segments[ups..])
-                        .cloned()
-                        .collect()
+            let Some(absolute) = absolutize(module, &raw.segments) else {
+                let first = raw.segments[0].as_str();
+                if !raw.test && forbidden_for(from).contains(&first) {
+                    found.insert(format!("{file} -> extern {first}"));
                 }
-                _ if module.children.contains(first) => module.path.iter().chain(&raw.segments).cloned().collect(),
-                _ => {
-                    if !raw.test && forbidden_for(from).contains(&first) {
-                        found.insert(format!("{file} -> extern {first}"));
-                    }
-                    continue;
-                }
-            };
-            let target = (0..=absolute.len())
-                .rev()
-                .map(|n| &absolute[..n])
-                .find(|p| known.contains(*p));
-            let Some(target) = target.filter(|t| !t.is_empty()) else {
                 continue;
             };
-            let Some(to) = layer_of(target) else { continue };
-            if to > from {
-                found.insert(format!("{file} -> {}{tag}", target.join("::")));
+            for target in modules_passed(&known, &exports, absolute) {
+                let Some(to) = layer_of(&target) else { continue };
+                if to > from {
+                    found.insert(format!("{file} -> {}{tag}", target.join("::")));
+                }
             }
         }
     }
@@ -645,18 +840,21 @@ fn no_module_reaches_a_higher_layer() {
     );
 }
 
-/// The analyzer must see each reference shape it claims to handle; a fixture crate proves it.
+/// The analyzer must see each reference shape it claims to handle; a fixture crate proves it. Each
+/// core file below holds one shape, so each expected line proves that shape is seen.
 #[test]
 fn the_analyzer_flags_each_reference_shape() {
-    let dir = std::env::temp_dir().join(format!("basemind-layering-fixture-{}", std::process::id()));
-    let src = dir.join("src");
+    let dir = tempfile::tempdir().expect("fixture dir");
+    let src = dir.path().join("src");
     std::fs::create_dir_all(src.join("config")).expect("create fixture dirs");
+    std::fs::create_dir_all(src.join("git")).expect("create fixture dirs");
     let write = |rel: &str, body: &str| std::fs::write(src.join(rel), body).expect("write fixture file");
     write(
         "lib.rs",
-        "pub mod config;\npub mod mcp;\npub mod store;\npub mod cli;\npub mod lance;\npub mod git;\n",
+        "pub mod config;\npub mod mcp;\npub mod store;\npub mod cli;\npub mod lance;\npub mod git;\n\
+         pub mod index;\npub mod query;\npub mod textmatch;\npub mod path;\npub mod hashing;\npub mod version;\n\
+         pub use mcp::params::V as Laundered;\npub use lance::*;\n",
     );
-    std::fs::create_dir_all(src.join("git")).expect("create fixture dirs");
     write(
         "git.rs",
         "#[path = \"git/walk_impl.rs\"]\nmod walk;\nmod nested;\n/// Mentions crate::cli in prose only.\npub fn g() {}\n",
@@ -669,9 +867,15 @@ fn the_analyzer_flags_each_reference_shape() {
         "git/nested.rs",
         "use super::super::lance::*;\n#[cfg(any(feature = \"x\", test))]\nfn either() { tokio::spawn(async {}); }\n",
     );
-    write("mcp.rs", "pub mod params { pub struct V; }\n");
+    write(
+        "mcp.rs",
+        "pub mod params { pub struct V; }\n#[macro_export]\nmacro_rules! mcp_macro { () => { $crate::cli::run() }; }\n",
+    );
     write("cli.rs", "pub fn run() {}\n");
-    write("lance.rs", "pub struct L;\n");
+    write(
+        "lance.rs",
+        "pub struct L;\n#[macro_export]\nmacro_rules! lance_macro { () => {}; }\n",
+    );
     write("config/mod.rs", "pub mod overrides;\npub use overrides::O;\n");
     write("config/overrides.rs", "pub struct O;\n");
     write(
@@ -681,21 +885,48 @@ fn the_analyzer_flags_each_reference_shape() {
          #[derive(Default)] #[serde(with = \"crate::mcp\")] pub struct S;\n\
          #[cfg(test)] mod tests { #[tokio::test] async fn t() { let _ = crate::cli::run(); } }\n",
     );
-    let (modules, _) = load_modules(&dir);
-    let found = violations(&dir, &modules);
-    std::fs::remove_dir_all(&dir).expect("remove fixture");
+    // A bare invocation of a `#[macro_export]` macro, nested in another macro's arguments.
+    write("index.rs", "pub fn i() { let _ = vec![mcp_macro!()]; }\n");
+    // A bare top-level invocation of a `#[macro_export]` macro.
+    write("textmatch.rs", "pub fn t() { mcp_macro!(); }\n");
+    // A `crate::`-qualified invocation of a `#[macro_export]` macro.
+    write("query.rs", "pub fn q() { crate::lance_macro!(); }\n");
+    // A call through a lower-layer module's re-export, and a test-only trait method.
+    write(
+        "path.rs",
+        "pub fn p() { let _ = crate::config::O; }\npub trait T { #[cfg(test)] fn t() { crate::cli::run(); } }\n",
+    );
+    // A call through a renamed re-export in the crate root, and a test-only `cfg_attr`.
+    write(
+        "hashing.rs",
+        "pub fn h() { let _ = crate::Laundered; }\n#[cfg_attr(test, serde(with = \"crate::cli\"))] pub struct H;\n",
+    );
+    // A call through a glob re-export in the crate root.
+    write("version.rs", "pub fn v() -> crate::L { crate::L }\n");
+    let (modules, _) = load_modules(dir.path());
+    let found = violations(dir.path(), &modules);
     let expected: BTreeSet<String> = [
         "src/config/mod.rs -> config::overrides",
         "src/git/nested.rs -> extern tokio",
         "src/git/nested.rs -> lance",
         "src/git/walk_impl.rs -> cli",
         "src/git/walk_impl.rs -> extern tokio",
+        "src/hashing.rs -> cli [test]",
+        "src/hashing.rs -> mcp::params",
+        "src/index.rs -> mcp",
+        "src/lib.rs -> lance",
+        "src/lib.rs -> mcp::params",
+        "src/path.rs -> cli [test]",
+        "src/path.rs -> config::overrides",
+        "src/query.rs -> lance",
         "src/store.rs -> cli",
         "src/store.rs -> cli [test]",
         "src/store.rs -> extern tokio",
         "src/store.rs -> lance",
         "src/store.rs -> mcp",
         "src/store.rs -> mcp::params",
+        "src/textmatch.rs -> mcp",
+        "src/version.rs -> lance",
     ]
     .iter()
     .map(|s| (*s).to_string())
