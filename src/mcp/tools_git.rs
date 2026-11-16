@@ -1,6 +1,7 @@
 //! The git verb tools of `BasemindServer`: `git_log`, `git_blame` and `git_diff` (ADR-0018).
 //!
-//! Thin shims over `helpers_git.rs` / `helpers_git_file.rs`; see `tools.rs` for the shim contract.
+//! Thin shims over `helpers_git.rs` / `helpers_git_file.rs` / `helpers_git_by_path.rs`; see
+//! `tools.rs` for the shim contract.
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
@@ -9,11 +10,11 @@ use rmcp::tool;
 
 use super::BasemindServer;
 use super::cursor_bind::bound;
-use super::helpers_git;
 use super::index_route::blocking;
 use super::strict::Strict;
 use super::types::{FindCommitsByPathParams, HotFilesParams};
 use super::types_tools::{GitBlameParams, GitDiffParams, GitLogParams};
+use super::{helpers_git, helpers_git_by_path};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_git")]
 impl BasemindServer {
@@ -117,6 +118,6 @@ impl BasemindServer {
     /// Commits whose changed paths match a regex. No MCP tool of its own (`git_log` with a
     /// directory `path` covers the common case): `basemind git by-path`.
     pub(crate) fn git_by_path_call(&self, p: FindCommitsByPathParams) -> Result<CallToolResult, McpError> {
-        helpers_git::run_by_path(&self.state, p)
+        helpers_git_by_path::run_by_path(&self.state, p)
     }
 }

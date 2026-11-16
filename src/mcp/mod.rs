@@ -40,6 +40,7 @@ mod helpers_files;
 mod helpers_filters;
 mod helpers_fingerprint;
 mod helpers_git;
+mod helpers_git_by_path;
 mod helpers_git_file;
 mod helpers_git_show;
 mod helpers_grep;

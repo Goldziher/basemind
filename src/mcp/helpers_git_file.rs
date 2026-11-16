@@ -14,7 +14,8 @@ use super::helpers::{
     git_history_if_fresh, head_sha, head_snapshot_id, json_result, kind_to_str, outline_entry_for_blob,
     paginate_blame_hunks, parse_hash_mode, parse_kind, require_git_repo, symbol_fingerprint,
 };
-use super::helpers_git::{MATCHED_EARLIER, reject_external_path};
+use super::helpers_git::reject_external_path;
+use super::helpers_git_by_path::MATCHED_EARLIER;
 use super::helpers_pick::pick_symbol;
 use super::types::{
     BlameFileParams, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams, DiffFileResponse,
