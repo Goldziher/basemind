@@ -32,15 +32,16 @@ pub(super) fn reject_zero_limit(tool: &str, limit: Option<u32>) -> Result<(), Mc
 
 /// How a tool matches its path filter against a repo-relative path.
 pub(super) enum PathFilter<'a> {
-    /// `code_grep`'s `path`: a literal substring.
-    Contains(&'a str, Finder<'a>),
+    /// `code_grep`'s `path`: a literal substring. The finder is boxed: on x86_64 it carries its
+    /// vector searcher inline (~300 bytes), against 16 for a prefix.
+    Contains(&'a str, Box<Finder<'a>>),
     /// `find_files`' `path_prefix`.
     Prefix(&'a str),
 }
 
 impl<'a> PathFilter<'a> {
     pub(super) fn contains(needle: &'a str) -> Self {
-        Self::Contains(needle, Finder::new(needle.as_bytes()))
+        Self::Contains(needle, Box::new(Finder::new(needle.as_bytes())))
     }
 
     pub(super) fn matches(&self, path: &[u8]) -> bool {
