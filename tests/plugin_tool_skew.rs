@@ -115,7 +115,8 @@ fn collect_files(path: &Path, out: &mut Vec<PathBuf>) {
 ///   `find_`), the shape every verb tool has, and the three agent tools (`agent_post`,
 ///   `agent_inbox`, `agent_threads`);
 /// - `agents`, the removed coordination tool, named as a call (`agents {`, `agents mode`,
-///   `` `agents` ``), so content still teaching it fails.
+///   `` `agents` tool``), so content still teaching it fails. A bare `` `agents` `` is left alone:
+///   it also names the `AGENTS.md` rules target.
 ///
 /// An argument in a JSON call example (`code_grep {"pattern":"x","regex":true}`) is recorded as
 /// `<tool>.<argument>`, because the plugin can be wrong about an argument as well as a tool.
@@ -124,11 +125,10 @@ fn names_in(text: &str) -> BTreeSet<String> {
     let list = Regex::new(r#"TOOL_NAMES="([^"]*)""#).unwrap();
     let family =
         Regex::new(r"\b((?:code|git|docs|memory|index|find)_[a-z][a-z_]*|agent_(?:post|inbox|threads))\b").unwrap();
-    let agents = Regex::new(r"`agents`|\bagents\s*\{|\bagents mode\b").unwrap();
-    let call = Regex::new(
-        r"\b((?:code|git|docs|memory|index|find)_[a-z][a-z_]*|agent_(?:post|inbox|threads))\s*\{([^{}]*)\}",
-    )
-    .unwrap();
+    let agents = Regex::new(r"`agents` (?:tool|mode)|\bagents\s*\{|\bagents mode\b").unwrap();
+    let call =
+        Regex::new(r"\b((?:code|git|docs|memory|index|find)_[a-z][a-z_]*|agent_(?:post|inbox|threads))\s*\{([^{}]*)\}")
+            .unwrap();
     let key = Regex::new(r#"\\?"([a-z_]+)\\?"\s*:"#).unwrap();
 
     let mut names = BTreeSet::new();

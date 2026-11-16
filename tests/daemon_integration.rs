@@ -134,11 +134,7 @@ async fn hosted_tool_call(
     tool: &str,
     arguments: Value,
 ) -> Value {
-    // Only the mode-dispatched tool (`agents`) carries a `mode`.
-    let call = match arguments["mode"].as_str() {
-        Some(mode) => format!("{tool}/{mode}"),
-        None => tool.to_string(),
-    };
+    let call = tool.to_string();
     let target = format!("/mcp?root={}&agent={agent}", root.display());
     let body = json!({
         "jsonrpc": "2.0",
@@ -263,7 +259,7 @@ fn stress_knob(var: &str, default: usize) -> usize {
 /// broker. They must not enter the singleton ensure/probe path from inside the daemon, which can
 /// stall concurrent cold identities until `SpawnTimeout` while each request waits for a contender.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_cold_hosted_agents_calls_use_the_running_daemon() {
+async fn concurrent_cold_hosted_calls_use_the_running_daemon() {
     const MIN_IDENTITIES_PER_TOOL: usize = 8;
     const MAX_IDENTITIES_PER_TOOL: usize = 32;
     const IDENTITIES_PER_WORKER: usize = 2;
@@ -291,14 +287,14 @@ async fn concurrent_cold_hosted_agents_calls_use_the_running_daemon() {
         .clamp(MIN_IDENTITIES_PER_TOOL, MAX_IDENTITIES_PER_TOOL);
     let mut calls = tokio::task::JoinSet::new();
     for index in 0..identities_per_tool {
-        for (tool, mode) in [("agents", "inbox"), ("agents", "thread_list")] {
+        for tool in ["index_status", "find_files"] {
             let addr = addr.clone();
             let token = token.clone();
             let repo = repo.clone();
-            let agent = format!("hosted-{mode}-{index}");
+            let agent = format!("hosted-{tool}-{index}");
             calls.spawn(async move {
-                let response = hosted_tool_call(&addr, &token, &repo, &agent, index, tool, json!({"mode": mode})).await;
-                (agent, tool, mode, response)
+                let response = hosted_tool_call(&addr, &token, &repo, &agent, index, tool, json!({})).await;
+                (agent, tool, response)
             });
         }
     }
@@ -314,15 +310,15 @@ async fn concurrent_cold_hosted_agents_calls_use_the_running_daemon() {
     .expect("all concurrent cold hosted calls must complete within the bound");
 
     assert_eq!(responses.len(), identities_per_tool * 2);
-    for (agent, tool, mode, response) in responses {
+    for (agent, tool, response) in responses {
         assert!(
             response.get("error").is_none() && response["result"].is_object(),
-            "hosted {tool}/{mode} for {agent} must succeed: {response}"
+            "hosted {tool} for {agent} must succeed: {response}"
         );
         assert_ne!(
             response["result"]["isError"],
             Value::Bool(true),
-            "hosted {tool}/{mode} for {agent} returned a tool error: {response}"
+            "hosted {tool} for {agent} returned a tool error: {response}"
         );
     }
 

@@ -87,7 +87,6 @@ pub const GLOBAL_FLAGS: &[(&str, &str)] = &[
 
 const REPEATABLE: &str = "repeatable CLI flag for the MCP list";
 const TIER: &str = "CLI switch selects the `individual` tier; MCP takes the tier name";
-const AS: &str = "`as` is a Rust keyword, so the clap field is `as_name`; the flag is `--as`";
 const SYMBOL: &str = "the shorthand's positional `name` is the tool's `symbol`";
 
 pub fn all() -> Vec<Exception> {
@@ -113,9 +112,6 @@ pub fn all() -> Vec<Exception> {
             "the shorthand's `--rev` is the revision the working tree is compared against",
         ),
         alias("rescan", "path", "paths", "variadic positional for the MCP list"),
-        alias("agent post", "as_name", "as", AS),
-        alias("agent inbox", "as_name", "as", AS),
-        alias("agent threads", "as_name", "as", AS),
         // ---- CLI-only arguments ----
         cli_only(
             "agent inbox",

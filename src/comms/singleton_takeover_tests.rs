@@ -550,7 +550,7 @@ async fn a_daemon_refusing_with_a_store_error_is_reported_with_its_store_and_the
             "{error}"
         );
         let message = error.to_string();
-        let store = dir.path().join("store.fjall");
+        let store = dir.path().join(crate::comms::v2::store::STORE_DIR);
         assert!(message.contains(&store.display().to_string()), "{message}");
         assert!(message.contains("Poisoned"), "{message}");
         assert!(message.contains("basemind comms stop --all"), "{message}");

@@ -1,10 +1,6 @@
-//! End-to-end smoke test for the `basemind agents` CLI (thread model) against a REAL detached
-//! broker daemon.
-//!
-//! This exercises the actual `comms daemon` process path. It is the regression guard for the
-//! "bind the socket inside the tokio runtime" fix and pins the **condensation** contract end to
-//! end: `agents history --json` for a different agent returns the message front-matter (subject)
-//! but NEVER the body bytes. It also covers the human-admin `archive` verb.
+//! End-to-end smoke test of the `basemind agent` CLI against a REAL detached daemon: one agent
+//! starts an invitation-only thread, the other reads it (reading marks read), the operator's
+//! `cleanup --archive` closes a thread its caller did not create, and `status` reports the store.
 //!
 //! Runs on Unix and Windows.
 
@@ -13,32 +9,29 @@
 use std::path::Path;
 use std::process::Command;
 
+use serde_json::Value;
+
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
-/// Run `basemind <group> <args...>` as `agent` against the isolated `comms_dir`.
-fn run(group: &str, comms_dir: &Path, agent: &str, args: &[&str]) -> (bool, String, String) {
+/// Run `basemind --json --root <root> agent <args...>` as `agent` against the isolated `home`.
+fn agent(home: &Path, root: &Path, agent: &str, args: &[&str]) -> (bool, Value, String) {
     let out = Command::new(BIN)
-        .arg(group)
+        .arg("--json")
+        .arg("--root")
+        .arg(root)
+        .arg("agent")
         .args(args)
-        .env("BASEMIND_COMMS_DIR", comms_dir)
+        .env("BASEMIND_COMMS_DIR", home.join("comms"))
+        .env("BASEMIND_DATA_HOME", home)
         .env("BASEMIND_AGENT_ID", agent)
         .output()
         .expect("spawn basemind");
+    let stdout = String::from_utf8_lossy(&out.stdout);
     (
         out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
+        serde_json::from_str(stdout.trim()).unwrap_or(Value::Null),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
-}
-
-/// Broker daemon lifecycle — `basemind comms start|stop|status`.
-fn comms(comms_dir: &Path, agent: &str, args: &[&str]) -> (bool, String, String) {
-    run("comms", comms_dir, agent, args)
-}
-
-/// The agent verbs — `basemind agents <mode>`, the CLI half of the `agents` domain.
-fn agents(comms_dir: &Path, agent: &str, args: &[&str]) -> (bool, String, String) {
-    run("agents", comms_dir, agent, args)
 }
 
 /// Guard that stops the daemon on drop.
@@ -47,136 +40,67 @@ impl Drop for Stop<'_> {
     fn drop(&mut self) {
         let _ = Command::new(BIN)
             .args(["comms", "stop"])
-            .env("BASEMIND_COMMS_DIR", self.0)
+            .env("BASEMIND_COMMS_DIR", self.0.join("comms"))
+            .env("BASEMIND_DATA_HOME", self.0)
             .output();
     }
 }
 
-/// Extract a JSON string field's value, e.g. `"id": "th-..."` → `th-...`.
-fn json_str_field<'a>(haystack: &'a str, field: &str) -> Option<&'a str> {
-    let key = format!("\"{field}\":");
-    let after = haystack.split(&key).nth(1)?.trim_start();
-    after.strip_prefix('"')?.split('"').next()
-}
-
 #[test]
-fn comms_cli_scenarios_use_real_daemons_sequentially() {
-    comms_daemon_thread_history_is_front_matter_only();
-    thread_archive_removes_from_active_listing();
-}
+fn agents_talk_and_the_operator_archives_through_the_cli() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let repo = tempfile::tempdir().expect("repo");
+    let (home, root) = (home.path(), repo.path());
+    let _stop = Stop(home);
 
-fn comms_daemon_thread_history_is_front_matter_only() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let comms_dir = tmp.path().join("comms");
-    let root = tmp.path().to_string_lossy().into_owned();
-    const BODY: &str = "SECRET-BODY-must-never-appear-in-history-lookups";
-
-    let (ok, _out, err) = comms(&comms_dir, "agent-alice", &["start"]);
-    assert!(ok, "comms start failed: {err}");
-    let _stop = Stop(&comms_dir);
-
-    let (ok, start_out, e) = agents(
-        &comms_dir,
+    let (ok, posted, e) = agent(
+        home,
+        root,
         "agent-alice",
         &[
-            "thread-start",
-            "--root",
-            &root,
+            "post",
             "--subject",
-            "Hello team",
-            "--member",
+            "hand-off",
+            "--to",
             "agent-bob",
-            "--json",
+            "--body",
+            "take src/auth",
         ],
-    );
-    assert!(ok, "thread-start failed: {e}");
-    let thread = json_str_field(&start_out, "id")
-        .expect("thread id in start json")
-        .to_string();
-
-    let (ok, _o, e) = agents(
-        &comms_dir,
-        "agent-alice",
-        &["post", "--root", &root, "--body", BODY, &thread, "Hello team"],
     );
     assert!(ok, "post failed: {e}");
+    let thread = posted["thread"].as_str().expect("a thread id").to_string();
+    assert_eq!(posted["created"], true, "{posted}");
 
-    let (ok, history, e) = agents(
-        &comms_dir,
-        "agent-bob",
-        &["history", "--root", &root, &thread, "--json"],
-    );
-    assert!(ok, "history failed: {e}");
-    assert!(
-        history.contains("Hello team"),
-        "history carries the subject, got: {history}"
-    );
-    assert!(
-        history.contains("agent-alice"),
-        "history carries the sender, got: {history}"
-    );
-    assert!(
-        !history.contains(BODY),
-        "history lookup must be front-matter only — the body leaked: {history}"
+    let (ok, read, e) = agent(home, root, "agent-bob", &["inbox"]);
+    assert!(ok, "inbox failed: {e}");
+    assert_eq!(read["messages"][0]["body"], "take src/auth", "{read}");
+    assert_eq!(read["messages"][0]["from"], "agent-alice", "{read}");
+    let (ok, again, e) = agent(home, root, "agent-bob", &["inbox"]);
+    assert!(ok, "inbox failed: {e}");
+    assert_eq!(
+        again["messages"],
+        Value::Array(Vec::new()),
+        "reading marked read: {again}"
     );
 
-    let id = json_str_field(&history, "id")
-        .expect("message id in history json")
-        .to_string();
-    let (ok, body, e) = agents(&comms_dir, "agent-bob", &["message", "--root", &root, &id]);
-    assert!(ok, "read body failed: {e}");
-    assert!(
-        body.contains(BODY),
-        "the explicit body path must return the body, got: {body}"
-    );
-}
+    let (ok, refused, e) = agent(home, root, "agent-bob", &["threads", "--thread", &thread, "--archive"]);
+    assert!(!ok, "only the creator archives through the tool's command: {refused}");
+    assert!(e.contains("creator"), "{e}");
+    let (ok, cleaned, e) = agent(home, root, "agent-bob", &["cleanup", "--archive", &thread]);
+    assert!(ok, "cleanup failed: {e}");
+    assert_eq!(cleaned["archived"][0], thread.as_str(), "{cleaned}");
 
-/// The human-admin `archive` verb: the creator archives a thread, and it then only shows under
-/// `threads --include-archived`.
-fn thread_archive_removes_from_active_listing() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let comms_dir = tmp.path().join("comms");
-    let root = tmp.path().to_string_lossy().into_owned();
-
-    let (ok, _o, err) = comms(&comms_dir, "agent-alice", &["start"]);
-    assert!(ok, "comms start failed: {err}");
-    let _stop = Stop(&comms_dir);
-
-    let (ok, start_out, e) = agents(
-        &comms_dir,
+    let (ok, _, e) = agent(
+        home,
+        root,
         "agent-alice",
-        &[
-            "thread-start",
-            "--root",
-            &root,
-            "--subject",
-            "planning",
-            "--member",
-            "agent-bob",
-            "--json",
-        ],
+        &["post", "--thread", &thread, "--body", "late"],
     );
-    assert!(ok, "thread-start failed: {e}");
-    let thread = json_str_field(&start_out, "id").expect("thread id").to_string();
+    assert!(!ok, "an archived thread takes no posts");
+    assert!(e.contains("archived"), "{e}");
 
-    let (ok, _o, e) = agents(&comms_dir, "agent-alice", &["archive", "--root", &root, &thread]);
-    assert!(ok, "archive failed: {e}");
-
-    let (ok, active, e) = agents(&comms_dir, "agent-alice", &["thread-list", "--root", &root, "--json"]);
-    assert!(ok, "thread-list failed: {e}");
-    assert!(
-        active.contains("\"total\": 0"),
-        "archived thread must not be in the active listing: {active}"
-    );
-
-    let (ok, all, e) = agents(
-        &comms_dir,
-        "agent-alice",
-        &["thread-list", "--root", &root, "--include-archived", "--json"],
-    );
-    assert!(ok, "thread-list --include-archived failed: {e}");
-    assert!(
-        all.contains(&thread),
-        "include-archived must surface the archived thread: {all}"
-    );
+    let (ok, status, e) = agent(home, root, "agent-alice", &["status"]);
+    assert!(ok, "status failed: {e}");
+    assert_eq!(status["principal"], "agent-alice", "{status}");
+    assert_eq!(status["store"]["state"], "open", "{status}");
 }

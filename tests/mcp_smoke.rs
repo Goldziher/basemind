@@ -2130,10 +2130,10 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     let full = spawn_serve(root, None).await;
     let full_tools = full.list_all_tools().await.expect("list tools (full)");
     let full_names: Vec<&str> = full_tools.iter().map(|t| t.name.as_ref()).collect();
-    // The surface is the verb tools plus `agents` under `comms`. Hosts load every
-    // schema on every session, so a count that creeps up is a regression, not growth: asserted as
-    // a ceiling plus the always-on names, rather than a floor that any addition would satisfy.
-    let ceiling = basemind::mcp::params::VERB_TOOLS.len() + 1;
+    // The surface is the verb tools plus, under `comms`, the three deferred agent tools. A count
+    // that creeps up is a regression, not growth: asserted as a ceiling plus the always-on names,
+    // rather than a floor that any addition would satisfy.
+    let ceiling = basemind::mcp::params::VERB_TOOLS.len() + basemind::mcp::agent_tools::AGENT_TOOLS.len();
     assert!(
         full_tools.len() <= ceiling,
         "the surface must stay at {ceiling} tools or fewer, got {}: {full_names:?}",

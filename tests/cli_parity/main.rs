@@ -215,10 +215,15 @@ fn mapped_parameters_agree() {
         exact_pairs += usize::from(exact.is_some());
         violations.extend(params::compare(cmd, domain, exact.as_ref(), &exceptions));
     }
+    let tools = basemind::mcp::params::VERB_TOOLS.len()
+        + if cfg!(all(feature = "comms", any(unix, windows))) {
+            basemind::mcp::agent_tools::AGENT_TOOLS.len()
+        } else {
+            0
+        };
     assert_eq!(
-        exact_pairs,
-        basemind::mcp::params::VERB_TOOLS.len(),
-        "every verb tool must be compared against its exact schema"
+        exact_pairs, tools,
+        "every tool must be compared against its exact schema"
     );
     let failures = params::reconcile(&violations, &exceptions, &compared);
     assert!(
