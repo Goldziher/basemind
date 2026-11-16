@@ -61,7 +61,9 @@ pub(crate) fn check_prompt(text: &str) -> Result<(), LaunchError> {
 
 /// The exact process an adapter would start: its program, arguments, environment and working
 /// directory. Built without side effects, so a caller can log or inspect a launch beforehand.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Its `Debug` output names the environment variables without their values, which hold
+/// credentials.
+#[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CommandPlan {
     /// The executable.
@@ -72,6 +74,17 @@ pub struct CommandPlan {
     pub env: BTreeMap<String, OsString>,
     /// The working directory, canonical and inside the spec's root.
     pub cwd: PathBuf,
+}
+
+impl std::fmt::Debug for CommandPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandPlan")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("env_names", &self.env.keys().collect::<Vec<_>>())
+            .field("cwd", &self.cwd)
+            .finish()
+    }
 }
 
 /// The pipes of a started harness, and the flag that tells their readers and writers to give

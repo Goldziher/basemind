@@ -111,8 +111,9 @@ impl Default for Limits {
 /// An MCP stdio server the launched harness should start, normally `basemind serve`.
 ///
 /// It is data: each adapter turns it into that harness's own form (Claude Code's
-/// `--mcp-config`, Codex's `-c mcp_servers.<name>.*`, ACP's `mcpServers`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `--mcp-config`, Codex's `-c mcp_servers.<name>.*`, ACP's `mcpServers`). Its `Debug` output
+/// names the environment variables without their values.
+#[derive(Clone, PartialEq, Eq)]
 pub struct McpServerSpec {
     /// The server name, `[A-Za-z0-9_-]{1,64}`.
     pub name: String,
@@ -131,6 +132,18 @@ pub struct McpServerSpec {
     /// pre-approve single tools; for Codex and ACP agents a non-empty list fails the launch
     /// with [`LaunchError::Unsupported`].
     pub allow_tools: Vec<String>,
+}
+
+impl std::fmt::Debug for McpServerSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpServerSpec")
+            .field("name", &self.name)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env_names", &self.env.keys().collect::<Vec<_>>())
+            .field("allow_tools", &self.allow_tools)
+            .finish()
+    }
 }
 
 impl McpServerSpec {

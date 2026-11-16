@@ -399,3 +399,23 @@ fn a_brief_starting_with_a_slash_is_refused_for_every_harness() {
         assert!(LaunchSpec::new(&config, &LaunchRequest::new("Summarize src/main.rs, not /etc.")).is_ok());
     }
 }
+
+#[test]
+fn debug_output_names_environment_variables_without_their_values() {
+    let root = tempfile::tempdir().unwrap();
+    let mut spec = spec(HarnessKind::Codex, root.path());
+    spec.env
+        .insert("OPENAI_API_KEY".to_owned(), "sk-config-secret".to_owned());
+    let mut server = McpServerSpec::basemind_serve(MCP_COMMAND);
+    server
+        .env
+        .insert("GITHUB_TOKEN".to_owned(), "ghp-server-secret".to_owned());
+    spec.mcp_server = Some(server.clone());
+    let plan = crate::CodexAdapter.plan_spec(&spec).unwrap();
+    assert_eq!(plan.env["OPENAI_API_KEY"], "sk-config-secret");
+    for shown in [format!("{plan:?}"), format!("{server:?}")] {
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+    assert!(format!("{plan:?}").contains("OPENAI_API_KEY"));
+    assert!(format!("{server:?}").contains("GITHUB_TOKEN"));
+}
