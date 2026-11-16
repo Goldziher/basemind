@@ -560,9 +560,11 @@ fn absolute_search_path(value: &std::ffi::OsStr) -> OsString {
 
 /// The absolute path `executable` names: itself when absolute, else the first match on the
 /// absolute entries of `search`. A relative path with a directory part is refused, and so is
-/// an executable that lies inside `root` (as given or after resolving links), where the
-/// launched agent, or one before it, may have written it. The returned path keeps its links:
-/// some harnesses find their own files from the path they were started by.
+/// an executable that lies inside `root` as given, after resolving links, or through any link
+/// on the way, where the launched agent, or one before it, may have written it. The returned
+/// path keeps its links: some harnesses find their own files from the path they were started
+/// by. The check is not atomic with the exec, and outside the root is not the same as not
+/// writable by the agent.
 pub(crate) fn resolve_executable(
     executable: &Path,
     search: Option<&std::ffi::OsStr>,
@@ -587,10 +589,34 @@ pub(crate) fn resolve_executable(
         path: found.clone(),
         source,
     })?;
-    if found.starts_with(root) || canonical.starts_with(root) {
+    if canonical.starts_with(root) || link_through(&found, root) {
         return Err(invalid("it lies inside the root, where the agent can write"));
     }
     Ok(found)
+}
+
+/// The most links followed from an executable before it counts as reaching the root.
+const MAX_LINK_HOPS: usize = 40;
+
+/// Whether `path` or a link on the way from it to its target lies inside `root`, or in a
+/// directory that resolves into it: the agent could point such a link elsewhere before the
+/// launch execs the path. Each hop is checked as written and with its directory resolved.
+fn link_through(path: &Path, root: &Path) -> bool {
+    let mut hop = path.to_owned();
+    for _ in 0..MAX_LINK_HOPS {
+        let parent = hop.parent().map(|dir| dir.canonicalize());
+        if hop.starts_with(root) || parent.is_some_and(|dir| dir.map_or(true, |dir| dir.starts_with(root))) {
+            return true;
+        }
+        let Ok(target) = std::fs::read_link(&hop) else {
+            return false;
+        };
+        hop = match hop.parent() {
+            Some(dir) if target.is_relative() => dir.join(target),
+            _ => target,
+        };
+    }
+    true
 }
 
 /// Whether `path` is a file this process could execute.

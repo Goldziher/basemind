@@ -339,6 +339,21 @@ fn an_executable_is_found_on_absolute_path_entries_and_never_inside_the_root() {
     std::os::unix::fs::symlink(root.join("harness"), bin.join("linked")).unwrap();
     assert!(refused(bin.join("linked").to_str().unwrap()));
     assert!(refused("linked"));
+    // So is a chain that passes through the root and leaves it again: the agent could
+    // retarget the middle link.
+    std::os::unix::fs::symlink(bin.join("harness"), root.join("hop")).unwrap();
+    std::os::unix::fs::symlink(root.join("hop"), bin.join("chained")).unwrap();
+    assert!(refused(bin.join("chained").to_str().unwrap()));
+    // And a relative link in a directory that is itself a link into the root.
+    std::os::unix::fs::symlink(&root, outer.join("alias")).unwrap();
+    assert!(refused(outer.join("alias/hop").to_str().unwrap()));
+    // A chain that stays outside the root is fine.
+    std::os::unix::fs::symlink("harness", bin.join("relative")).unwrap();
+    std::os::unix::fs::symlink(bin.join("relative"), outer.join("outside")).unwrap();
+    assert_eq!(
+        resolve(outer.join("outside").to_str().unwrap()).unwrap(),
+        outer.join("outside")
+    );
 }
 
 #[test]
