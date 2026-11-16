@@ -50,17 +50,25 @@
 ;; Inherent impls (`impl Foo { … }`) have no trait — we emit only the type as @impl.implementor
 ;; and omit the trait_name so `build_implementation` skips the match (trait_name is required).
 
+;; The trait is keyed by its last path segment, so `impl crate::a::Observer for X` and
+;; `impl<T> Extend<T> for Vec<T>` both index under the bare trait name.
 (impl_item
-  trait: (type_identifier) @impl.trait_name
-  type: (type_identifier) @impl.implementor) @impl.range
-
-(impl_item
-  trait: (type_identifier) @impl.trait_name
-  type: (scoped_type_identifier name: (type_identifier) @impl.implementor)) @impl.range
-
-(impl_item
-  trait: (type_identifier) @impl.trait_name
-  type: (generic_type type: (type_identifier) @impl.implementor)) @impl.range
+  trait: [
+    (type_identifier) @impl.trait_name
+    (scoped_type_identifier name: (type_identifier) @impl.trait_name)
+    (generic_type type: [
+      (type_identifier) @impl.trait_name
+      (scoped_type_identifier name: (type_identifier) @impl.trait_name)
+    ])
+  ]
+  type: [
+    (type_identifier) @impl.implementor
+    (scoped_type_identifier name: (type_identifier) @impl.implementor)
+    (generic_type type: [
+      (type_identifier) @impl.implementor
+      (scoped_type_identifier name: (type_identifier) @impl.implementor)
+    ])
+  ]) @impl.range
 
 ;; section: docs
 

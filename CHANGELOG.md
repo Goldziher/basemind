@@ -635,6 +635,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity now refreshes `agent-id`'s mtime (at most daily), so an identity still in use is not reaped.
   `cache gc --dry-run` reports the candidates as `markerless_workspaces_reapable` and
   `markerless_workspace_bytes_reapable`.
+- Rust trait impls whose trait is written with a path or generics (`impl<T> Extend<T> for Vec<T>`,
+  `impl crate::scanner::ScanObserver for RescanPaths`) are implementations, keyed by the trait's last
+  path segment. Only bare trait names were matched before.
 
 ## [0.33.0] - 2026-11-14
 
