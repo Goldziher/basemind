@@ -601,9 +601,10 @@ pub(crate) fn resolve_executable(
     let found = if executable.is_absolute() {
         executable.to_owned()
     } else if executable.components().count() == 1 && executable.file_name().is_some() {
+        let names = command_names(executable);
         let dirs = search.map(std::env::split_paths).into_iter().flatten();
         dirs.filter(|dir| dir.is_absolute())
-            .map(|dir| dir.join(executable))
+            .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
             .find(|candidate| is_executable(candidate))
             .ok_or_else(|| invalid("it is not on the launcher's PATH"))?
     } else {
@@ -617,6 +618,50 @@ pub(crate) fn resolve_executable(
         return Err(invalid("it lies inside the root, where the agent can write"));
     }
     Ok(found)
+}
+
+/// The file names a bare command is looked up as in each search directory: the name itself, or
+/// on Windows the name with each of the launcher's `PATHEXT` extensions (`claude.cmd`,
+/// `codex.exe`) unless it already ends in one. The extensionless file an npm install puts beside
+/// its `.cmd` shim is a POSIX script Windows cannot start, so it is not a candidate there.
+fn command_names(name: &Path) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        with_pathext(name, std::env::var_os("PATHEXT").as_deref())
+    }
+    #[cfg(not(windows))]
+    {
+        vec![name.to_owned()]
+    }
+}
+
+/// `name` alone when its extension is one of `pathext` (`;`-separated, Windows' default when
+/// unset), compared without case, else `name` with each of them appended.
+#[cfg(any(windows, test))]
+fn with_pathext(name: &Path, pathext: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    let pathext = pathext
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or(".COM;.EXE;.BAT;.CMD");
+    let extensions: Vec<&str> = pathext.split(';').filter(|extension| !extension.is_empty()).collect();
+    let own = name.extension().and_then(std::ffi::OsStr::to_str);
+    let runnable = |own: &str| {
+        extensions.iter().any(|extension| {
+            extension
+                .strip_prefix('.')
+                .is_some_and(|extension| extension.eq_ignore_ascii_case(own))
+        })
+    };
+    if own.is_some_and(runnable) {
+        return vec![name.to_owned()];
+    }
+    extensions
+        .into_iter()
+        .map(|extension| {
+            let mut file = name.as_os_str().to_owned();
+            file.push(extension);
+            PathBuf::from(file)
+        })
+        .collect()
 }
 
 /// The most links followed from an executable before it counts as reaching the root.

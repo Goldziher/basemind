@@ -89,7 +89,8 @@ pub struct Harness {
     /// The harness family.
     pub kind: HarnessKind,
     /// The executable to run: an absolute path, or a bare name looked up on the absolute
-    /// entries of the launcher's `PATH` when the launch is planned. A relative path with a
+    /// entries of the launcher's `PATH` (on Windows, with its `PATHEXT` extensions) when the
+    /// launch is planned. A relative path with a
     /// directory part, or an executable inside the root, is refused with
     /// [`LaunchError::InvalidExecutable`](crate::LaunchError::InvalidExecutable). The
     /// harness's own lookups (an interpreter, its helpers) use the child's `PATH`.
