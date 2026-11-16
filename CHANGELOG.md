@@ -605,6 +605,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `git log --cc` have it. On tokio, a file's history was more than half such merges.
 - A commit's file list on `git_log` no longer names the directories above a changed file (`src` as
   `modified`).
+- The git-history index and the git cache rebuild their file lists once, so the three fixes above (and the
+  moved file's source) reach a repository indexed by an earlier build.
 - `basemind git by-path` refuses `--window 0` and `--limit 0`, which returned the same `next_cursor`
   forever.
 - `code_refs` answered by a daemon that predates exact matching no longer sets `truncated_reason:
