@@ -44,7 +44,7 @@ class GateSummary(unittest.TestCase):
             self.write(d, "b", {"blame": True, "symbols": True})
             tools = gate.verdicts(gate.load(d))
             self.assertEqual(tools["git_blame"]["verdict"], "no verdict")
-            self.assertEqual(tools["git_blame"]["missing"], ["blame_symbol"])
+            self.assertEqual(tools["git_blame"]["missing"], "blame_symbol@b")
             self.assertEqual(tools["code_symbols"]["verdict"], "PASS")
             self.assertEqual(tools["code_search"]["verdict"], "not run")
             self.write(d, "b", {"blame": None, "blame_symbol": True, "symbols": True})

@@ -81,7 +81,8 @@ def verdicts(data: dict[str, tuple[dict, list[dict]]]) -> dict:
                 if row is not None:
                     per[kind][corpus] = row
         passes = [row["pass"] for kind in kinds for row in per[kind].values()]
-        missing = [k for k in kinds for corpus in data if corpus not in per[k]]
+        # `kind@corpus` pairs with no result, as one string so gate.json stays free of arrays.
+        missing = ", ".join(f"{k}@{corpus}" for k in kinds for corpus in sorted(data) if corpus not in per[k])
         if not kinds or not passes:
             verdict = "not run"
         elif any(p is False for p in passes):
