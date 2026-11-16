@@ -1104,9 +1104,10 @@ files that became eligible from the cached blobs, without re-embedding.
 <summary><strong>Full command list</strong> — code · git · memory · admin · cache · agent · workspace</summary>
 
 Every MCP tool has a CLI command (enforced by `tests/cli_parity/`); the CLI also keeps shorthands
-and administrative commands that have no MCP tool. Add `--json` for
-machine-readable output (the same response types the MCP tools return, including `agent`). Human output prints source bodies, diffs and exports in full; only table cells are cut
-(to 200 characters, with a note on stderr), and the timing line goes to stderr. List commands take
+and administrative commands that have no MCP tool. Add `--json` for machine-readable output: the
+response types the MCP tools return. Human output prints source bodies, diffs and exports in full;
+only table cells are cut (to 200 characters, with a note on stderr), and the timing line goes to
+stderr. List commands take
 `--limit`, `--cursor` (resume from a previous `next_cursor`) and `--max-tokens`. Line and column
 arguments are 1-based.
 

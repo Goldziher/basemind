@@ -128,12 +128,12 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
     ().serve(transport).await.expect("rmcp handshake with basemind serve")
 }
 
-/// Every tool the harness may call: the verb tools plus the mode-dispatched comms tool.
+/// Every tool the harness may call: the verb tools plus the agent tools.
 ///
-/// A fixed list rather than the server's advertised one, because `agents` is cfg-gated: under a
-/// default-feature build it is absent, and the harness calls it deliberately so it can record it
-/// as skipped. ~keep
-const KNOWN_TOOLS: [&str; 16] = [
+/// A fixed list rather than the server's advertised one, because the agent tools are cfg-gated:
+/// under a default-feature build they are absent, and the harness calls them deliberately so it can
+/// record them as skipped. In-process they answer that the daemon serves them. ~keep
+const KNOWN_TOOLS: [&str; 17] = [
     "code_outline",
     "code_symbols",
     "code_read",
@@ -149,7 +149,8 @@ const KNOWN_TOOLS: [&str; 16] = [
     "memory_search",
     "index_status",
     "index_rescan",
-    "agents",
+    "agent_threads",
+    "agent_inbox",
 ];
 
 /// Tools whose retrieval stack is feature-gated. Gated off, they answer with an `isError` result
@@ -378,8 +379,8 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     let _ = svc.list_tools(None).await;
 
     call(svc, &mut records, "index_status", json!({})).await;
-    call(svc, &mut records, "agents", json!({ "mode": "status" })).await;
-    call(svc, &mut records, "agents", json!({ "mode": "cleanup" })).await;
+    call(svc, &mut records, "agent_threads", json!({})).await;
+    call(svc, &mut records, "agent_inbox", json!({ "peek": true })).await;
     call(svc, &mut records, "find_files", json!({ "limit": 50 })).await;
     call(svc, &mut records, "find_files", json!({ "query": "src", "limit": 50 })).await;
     call(

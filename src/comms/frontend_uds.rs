@@ -201,8 +201,8 @@ mod imp {
         }
     }
 
-    /// The accept loop that runs while the broker is still being built (the comms store open is
-    /// fsync-heavy and can take tens of seconds on a contended disk). A `Ping` is answered at once
+    /// The accept loop that runs while the broker is still being built (opening the machine registry
+    /// can take seconds on a contended disk). A `Ping` is answered at once
     /// so liveness probes (`ensure_daemon`) see a healthy daemon; every other request, and relay
     /// connections, park until [`EarlyAccept::finish`] publishes the broker and are then served
     /// exactly as if they had arrived afterwards. Nothing is dropped, nothing errors.
@@ -516,7 +516,7 @@ mod tests {
         );
     }
 
-    /// While the broker is still being built (slow store open) the early accept loop answers `Ping`
+    /// While the broker is still being built (a slow start) the early accept loop answers `Ping`
     /// at once and parks every other request, which is then served normally once the broker lands.
     #[tokio::test]
     async fn early_accept_pings_immediately_and_parks_other_requests_until_the_broker_is_ready() {

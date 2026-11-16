@@ -164,7 +164,7 @@ enum DaemonCmd {
 /// Subcommands for `basemind comms`: the broker daemon's lifecycle only.
 ///
 /// These manage the singleton broker process (`Daemon`/`Start`/`Stop`/`Status`/`Doctor`). The agent
-/// agent coordination commands live in their own group, `basemind agent` (see `cli::agent`).
+/// messaging commands live in their own group, `basemind agent` (see `cli::agent`).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 #[derive(Subcommand, Debug)]
 enum CommsLifecycleCmd {
