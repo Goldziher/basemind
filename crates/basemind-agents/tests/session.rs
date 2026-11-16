@@ -89,6 +89,22 @@ fn grandchild(pidfile: &Path) -> String {
     }
 }
 
+/// A command prefix that runs the rest of the line in a session of its own, so it leaves the
+/// stand-in's process group the way a daemonizing helper does. Resolved to an absolute path here,
+/// since the stand-in runs in the launcher's cleaned environment. `set -m` is no substitute: dash
+/// (Linux's `/bin/sh`) turns job control off without a terminal and keeps the job in the group.
+fn own_session_prefix() -> Option<String> {
+    let on_path = |name: &str| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    };
+    if let Some(setsid) = on_path("setsid") {
+        return Some(format!("'{}'", setsid.display()));
+    }
+    on_path("perl").map(|perl| format!("'{}' -MPOSIX -e 'POSIX::setsid() or die; exec @ARGV'", perl.display()))
+}
+
 fn assert_gone(pid: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while alive(pid) {
@@ -230,12 +246,16 @@ fn the_wall_time_limit_kills_the_whole_process_group() {
 
 #[test]
 fn the_wall_time_limit_ends_the_session_even_when_a_descendant_keeps_the_pipes() {
+    let Some(own_session) = own_session_prefix() else {
+        eprintln!("skipped: neither setsid nor perl is on PATH to move a descendant out of the group");
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let pidfile = dir.path().join("escaped");
-    // Job control gives the background job a process group of its own, as a daemonizing
-    // helper would have. It inherits the stand-in's stdout and outlives the group.
+    // The background job runs in a session of its own, as a daemonizing helper would. It
+    // inherits the stand-in's stdout and outlives the group.
     let body = format!(
-        "set -m\nsleep 300 &\nkill -0 $! && echo \"$! alive\" > '{}'\n{HANDSHAKE}cat > /dev/null\n",
+        "{own_session} sleep 300 &\nkill -0 $! && echo \"$! alive\" > '{}'\n{HANDSHAKE}cat > /dev/null\n",
         pidfile.display()
     );
     let mut spec = spec(HarnessKind::ClaudeCode, dir.path(), &body);
