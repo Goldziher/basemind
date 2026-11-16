@@ -641,15 +641,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rust turbofish calls (`s.parse::<u32>()`, `collect::<Vec<_>>()`, `a::b::make::<T>()`) are call sites.
 - Calls inside Rust macro arguments (`assert!(is_ok(x))`) are call sites. tree-sitter leaves a macro
   body unparsed, so they are recognised lexically: an identifier directly followed by `(` inside a
-  macro invocation, excluding `fn`/`struct`/`enum`/`union` definitions, nested macro names and
-  `macro_rules!` bodies. Like every call they match by name only.
+  macro invocation, excluding `fn`/`struct`/`enum`/`union` definitions, `let` patterns, attributes
+  (`#[cfg(all(..))]`), `cfg!` predicates, `Fn`/`FnMut`/`FnOnce` bounds, `matches!` patterns, nested
+  macro names and `macro_rules!` bodies. Like every call they match by name only.
 - Rust trait methods without a body and `extern` block functions (`function_signature_item`) are
   symbols of kind `function`.
 - Rust `fn` items nested in a function body are symbols; other function locals stay out of the outline.
 - Items declared inside item-position Rust macro bodies (tokio's `cfg_time! { pub(crate) fn … }`,
   `thread_local!`, `lazy_static!`) are symbols, imports and implementations. Such a body is re-parsed
-  on its own and kept only when it parses without errors (at most 256 KiB, 3 macro layers and 256 bodies
-  per file). `EXTRACT_EPOCH` is 2, so unchanged files are re-extracted on the next scan.
+  on its own once per file and kept only when it parses without errors (at most 256 KiB, 3 macro
+  layers and 256 bodies per file); its calls then come from the calls query over that parse instead of
+  the lexical match, so attributes, enum tuple variants and patterns there are not calls and turbofish
+  calls are. `EXTRACT_EPOCH` is 2, so unchanged files are re-extracted on the next scan, including the
+  calls of a blob that held them (also with `eager_l2 = false`) and code-search chunks the new outline
+  cuts differently.
+- `impl !Send for X {}` is not an implementation of `Send`, and `impl Tr for a::B<T>` is an `impl` symbol
+  named `B`.
+- A tool that pins a symbol by name without `line` (`code` `expand` and `callers`, `git` `blame_symbol`
+  and `symbol_history`) picks the item-level definition when the other same-named ones are `fn` items
+  nested in function bodies, and `symbol_history` follows a definition among those of the same
+  nesting, so a nested `fn` of the same name added in a revision no longer shifts it.
+- `symbol_history` with a structural `hash_mode` fingerprints a symbol declared inside a macro body on
+  its own instead of hashing the whole macro body.
+- A parse that hit its timeout no longer leaves the pooled parser to resume it on the next file.
 
 ## [0.33.0] - 2026-11-14
 
