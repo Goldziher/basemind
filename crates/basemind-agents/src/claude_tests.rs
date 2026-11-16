@@ -566,3 +566,37 @@ fn a_request_reusing_a_pending_id_is_denied_and_cannot_take_its_answer() {
     assert_eq!(allowed["behavior"], "allow");
     assert_eq!(allowed["updatedInput"]["command"], "rm -rf build");
 }
+
+#[test]
+fn partial_input_is_collected_for_a_bounded_number_of_blocks() {
+    let (sink, _events) = EventSink::for_test(None, 1);
+    let mut protocol = started(&sink);
+    let mut out = Vec::new();
+    for index in 0..1000_u64 {
+        let start = json!({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": index,
+            "content_block": {"type": "tool_use", "id": format!("toolu_{index}"), "name": "Bash"},
+        }});
+        protocol.frame(start, &mut out, &sink).unwrap();
+    }
+    assert_eq!(protocol.partial_tools.len(), PARTIAL_BLOCKS);
+}
+
+#[test]
+fn an_oversized_request_is_not_held_for_the_caller() {
+    let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Ask), 1);
+    let mut protocol = started(&sink);
+    let mut out = Vec::new();
+    let big = json!({"type": "control_request", "request_id": "req-big", "request": {
+        "subtype": "can_use_tool", "tool_name": "Write",
+        "input": {"file_path": "a", "content": "x".repeat(crate::session::MAX_PENDING_BYTES)},
+    }});
+    protocol.frame(big, &mut out, &sink).unwrap();
+    assert_eq!(written(&out)[0]["response"]["response"]["behavior"], "deny");
+    assert!(events.try_iter().any(|event| event
+        == Event::ApprovalResolved {
+            id: "req-big".to_owned(),
+            allowed: false,
+            source: ApprovalSource::TooManyPending,
+        }));
+}

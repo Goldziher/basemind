@@ -23,6 +23,26 @@ use crate::spec::{ApprovalPolicy, ApprovalVerdict, LaunchSpec, Limits};
 const STDERR_TAIL_BYTES: usize = 8192;
 /// How many approval requests may wait for the caller at once; a further one is denied.
 pub(crate) const MAX_PENDING_APPROVALS: usize = 64;
+/// The largest request that may wait for the caller; a larger deferred one is denied, so the
+/// pending requests hold at most 64 MiB.
+pub(crate) const MAX_PENDING_BYTES: usize = 1024 * 1024;
+
+/// The length of `value` as JSON, without building the text.
+pub(crate) fn json_len(value: &serde_json::Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
 const STDERR_DRAIN: Duration = Duration::from_millis(200);
 
 /// The exact process an adapter would start: its program, arguments, environment and working
@@ -173,7 +193,9 @@ impl EventSink {
         if verdict == ApprovalVerdict::Allow && !can_allow_once {
             verdict = ApprovalVerdict::Deny;
         }
-        if verdict == ApprovalVerdict::Ask && pending >= MAX_PENDING_APPROVALS {
+        if verdict == ApprovalVerdict::Ask
+            && (pending >= MAX_PENDING_APPROVALS || json_len(&request.params) > MAX_PENDING_BYTES)
+        {
             (verdict, source) = (ApprovalVerdict::Deny, ApprovalSource::TooManyPending);
         }
         self.emit(Event::ApprovalRequest(request));

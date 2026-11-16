@@ -194,8 +194,8 @@ pub enum ApprovalSource {
     Caller,
     /// The harness withdrew the request, or its turn or the session ended first.
     Withdrawn,
-    /// The policy deferred it while the most requests a session holds were already pending,
-    /// so it was denied.
+    /// The policy deferred it while the most requests a session holds (64) were already
+    /// pending, or it was too large (over 1 MiB) to hold, so it was denied.
     TooManyPending,
 }
 

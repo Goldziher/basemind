@@ -55,8 +55,9 @@ fn size(event: &Event) -> usize {
         | Event::Status(text)
         | Event::Error(text) => text.len(),
         Event::ToolCall(call) => call.id.len() + call.name.len() + call.input.len() + call.output.len(),
-        // `params` holds what `detail` renders, so the detail stands for both.
-        Event::ApprovalRequest(request) => request.title.len() + 2 * request.detail.len(),
+        Event::ApprovalRequest(request) => {
+            request.title.len() + request.detail.len() + crate::session::json_len(&request.params)
+        }
         _ => 0,
     }
 }

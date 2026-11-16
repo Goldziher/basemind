@@ -19,7 +19,10 @@ use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode, utf8};
 
 const INIT_REQUEST: &str = "basemind-init";
 /// The most partial tool input collected for one content block.
-const PARTIAL_INPUT_BYTES: usize = 4 * 1024 * 1024;
+const PARTIAL_INPUT_BYTES: usize = 1024 * 1024;
+/// The most content blocks whose partial input is collected at once; the block index is
+/// the harness's to choose, so the table is bounded here.
+const PARTIAL_BLOCKS: usize = 16;
 /// Older CLIs never acknowledge the initialize request; the prompt goes out regardless.
 const INIT_PATIENCE: Duration = Duration::from_secs(8);
 
@@ -196,7 +199,9 @@ impl ClaudeProtocol {
                 let block = &event["content_block"];
                 let id = block["id"].as_str().unwrap_or("");
                 let tool = ToolCall::new(id, block["name"].as_str().unwrap_or("Tool"));
-                self.partial_tools.insert(index, (id.to_owned(), Some(String::new())));
+                if self.partial_tools.len() < PARTIAL_BLOCKS || self.partial_tools.contains_key(&index) {
+                    self.partial_tools.insert(index, (id.to_owned(), Some(String::new())));
+                }
                 sink.emit(Event::ToolCall(self.tools.insert(tool).clone()));
             }
             ("content_block_delta", "input_json_delta") => {
