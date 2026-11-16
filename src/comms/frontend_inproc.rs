@@ -171,6 +171,78 @@ mod tests {
             other => panic!("expected AgentRead, got {other:?}"),
         }
     }
+
+    /// A client that pipelines a request behind a waiting read and then hangs up is noticed: the
+    /// wait's client is gone, so a post that arrives afterwards is not marked read for it.
+    #[tokio::test]
+    async fn a_hang_up_behind_a_pipelined_request_ends_the_wait_unmarked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let frontend = InProcFrontend::new(broker);
+        let mut writer = frontend.connect();
+        let mut reader = frontend.connect();
+        hello(&mut writer, "writer", dir.path()).await;
+        hello(&mut reader, "reader", dir.path()).await;
+        let to_reader = |body: &str, target: PostTarget| CommsRequest::AgentPost {
+            sub: None,
+            body: PostBody {
+                target,
+                body: body.to_string(),
+            },
+        };
+        writer
+            .send_request(to_reader(
+                "first",
+                PostTarget::NewThread {
+                    subject: "status".to_string(),
+                    to: vec![crate::comms::v2::api::Actor::parse("reader").expect("actor")],
+                    paths: Vec::new(),
+                },
+            ))
+            .await
+            .expect("post");
+        let thread = match expect_response(&mut writer).await {
+            CommsResponse::AgentPosted(reply) => reply.thread,
+            other => panic!("{other:?}"),
+        };
+        let read_now = CommsRequest::AgentInbox {
+            sub: None,
+            body: InboxBody::default(),
+            wait_secs: 0,
+        };
+        reader.send_request(read_now.clone()).await.expect("inbox");
+        expect_response(&mut reader).await;
+
+        reader
+            .send_request(CommsRequest::AgentInbox {
+                sub: None,
+                body: InboxBody::default(),
+                wait_secs: 30,
+            })
+            .await
+            .expect("waiting inbox");
+        reader.send_request(CommsRequest::Ping).await.expect("pipelined ping");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        drop(reader);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        writer
+            .send_request(to_reader("unseen", PostTarget::Thread(thread)))
+            .await
+            .expect("post");
+        expect_response(&mut writer).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let mut again = frontend.connect();
+        hello(&mut again, "reader", dir.path()).await;
+        again.send_request(read_now).await.expect("inbox");
+        match expect_response(&mut again).await {
+            CommsResponse::AgentRead(reply) => {
+                assert_eq!(reply.messages.len(), 1, "the message stayed unread");
+                assert_eq!(reply.messages[0].body, "unseen");
+            }
+            other => panic!("expected AgentRead, got {other:?}"),
+        }
+    }
 }
 
 /// The daemon-side wait over the framed socket protocol, end to end through a

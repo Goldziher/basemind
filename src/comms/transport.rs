@@ -12,6 +12,7 @@
 //! big-endian length prefix) and a msgpack body. The in-process link skips framing entirely
 //! and moves owned values across channels.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -25,6 +26,10 @@ use super::protocol::{CommsOut, CommsRequest};
 /// prefix cannot drive an unbounded allocation. 16 MiB comfortably exceeds any realistic
 /// message body while bounding worst-case memory.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// Requests a link reads ahead while one runs. Past it the link is not read until the queue drains,
+/// so a client that pipelines more than this and then hangs up is noticed only when it is reached.
+const MAX_PIPELINED: usize = 64;
 
 /// Peer credentials of a connected link, used to reject cross-user connections. On platforms
 /// without a peer-cred mechanism the fields are `None` and the daemon falls back to filesystem
@@ -76,9 +81,9 @@ pub trait CommsFrontend: Send {
 pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, guard: LinkGuard) {
     let _link_guard = guard;
     let mut session = Session::default();
-    let mut queued: Option<CommsRequest> = None;
+    let mut queued: VecDeque<CommsRequest> = VecDeque::new();
     loop {
-        let req = match queued.take() {
+        let req = match queued.pop_front() {
             Some(req) => req,
             None => match link.recv().await {
                 Ok(Some(req)) => req,
@@ -86,7 +91,8 @@ pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, g
             },
         };
         // ~keep A waiting inbox read must know when its client hung up, so the link is read while a
-        // ~keep request runs: an end of stream cancels `gone`, a pipelined request waits its turn.
+        // ~keep request runs, pipelined requests included: an end of stream cancels `gone`, and each
+        // ~keep pipelined request waits its turn in the queue, up to a bound.
         let gone = CancellationToken::new();
         let mut hung_up = false;
         let out = {
@@ -95,8 +101,8 @@ pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, g
             loop {
                 tokio::select! {
                     out = &mut handled => break out,
-                    inbound = link.recv(), if queued.is_none() && !hung_up => match inbound {
-                        Ok(Some(next)) => queued = Some(next),
+                    inbound = link.recv(), if queued.len() < MAX_PIPELINED && !hung_up => match inbound {
+                        Ok(Some(next)) => queued.push_back(next),
                         Ok(None) | Err(_) => {
                             hung_up = true;
                             gone.cancel();
