@@ -179,8 +179,8 @@ fn valid_pid(pid: u32) -> Option<i32> {
 }
 
 /// Whether a process id is still live. Unix: `kill(pid, 0)`, where `0` (signalable) and `EPERM`
-/// (exists, not ours) both mean alive and `ESRCH` means gone. Windows: `OpenProcess` succeeds for a
-/// live pid. A pid no process can have (see [`valid_pid`]) is never live.
+/// (exists, not ours) both mean alive and `ESRCH` means gone. Windows: a process that
+/// has not exited, including one that may not be opened. A pid no process can have (see [`valid_pid`]) is never live.
 #[cfg(any(unix, windows))]
 pub fn pid_is_live(pid: u32) -> bool {
     let Some(pid) = valid_pid(pid) else {
