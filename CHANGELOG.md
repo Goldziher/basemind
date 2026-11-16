@@ -353,6 +353,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `Debug` output leaves out the MCP server's arguments.
 - On Windows, `admin eval` baselines run their shell commands with Git for Windows' path
   conversion off, so an argument such as `-L '/fn alpha/,/^}/'` reaches git as written.
+- A daemon that stopped answering is SIGKILLed (`TerminateProcess` on Windows) only if, after the
+  SIGTERM grace, its generation's lock still reads held and the pidfile still names the same process.
+  One that released the lock while draining, or whose pid passed to another process, is not killed.
 - Two installed basemind versions no longer kill each other's daemon. The daemon's socket (named
   pipe on Windows), lock, pidfile, log, `http.addr` and comms store moved from the comms directory
   into a protocol-generation subdirectory, `comms/g1/`, and its record in the daemon registry moved
