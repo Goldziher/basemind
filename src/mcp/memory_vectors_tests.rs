@@ -684,6 +684,23 @@ async fn a_save_without_a_row_rewrites_the_group_stamp() {
     assert_ne!(rows_owed_here(&state).await, once, "every rowless save is a new stamp");
 }
 
+/// A stamp is renamed into place whole, so a reader never finds it empty, and nothing written
+/// aside is left next to it.
+#[test]
+fn a_stamp_is_renamed_into_place_and_leaves_nothing_aside() {
+    let root = tempfile::tempdir().unwrap();
+    owe_rows(root.path());
+    let first = rows_owed(root.path(), "table");
+    owe_rows(root.path());
+    assert_ne!(rows_owed(root.path(), "table"), first, "each save is a new stamp");
+    let mut names: Vec<String> = std::fs::read_dir(crate::store_layout::repo_group_dir(root.path()))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, [ROWS_OWED_FILE]);
+}
+
 /// Worktrees of one group configured with different presets search different tables. A save that
 /// wrote its row in its own preset's table wrote none in the others, and a process that believes
 /// another table level hears of the note at its next search, not when the belief lapses.

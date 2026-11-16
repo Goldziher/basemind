@@ -162,20 +162,25 @@ pub(super) async fn owe_rows_elsewhere(state: &ServerState) {
     }
 }
 
-/// Rewrite the rows-owed stamp at `path` with a value no earlier write of it held.
+/// Rewrite the rows-owed stamp at `path` with a value no earlier write of it held. Written aside
+/// and renamed into place: a reader between a truncate and a write would read no stamp, which
+/// equals a mark taken before any stamp existed, and trust a level that a save has broken.
 fn write_owed_stamp(path: &Path) {
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let stamp = format!(
-        "{} {} {}",
-        crate::lance::now_micros(),
-        std::process::id(),
-        SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
+    let save = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stamp = format!("{} {} {save}", crate::lance::now_micros(), std::process::id());
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(ROWS_OWED_FILE);
+    let temp = path.with_file_name(format!(".{name}.{}.{save}.tmp", std::process::id()));
     let written = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(path, stamp));
+        .and_then(|()| std::fs::write(&temp, stamp))
+        .and_then(|()| std::fs::rename(&temp, path));
     if let Err(error) = written {
+        let _ = std::fs::remove_file(&temp);
         tracing::debug!(%error, path = %path.display(), "the memory rows-owed stamp was not written");
     }
 }
