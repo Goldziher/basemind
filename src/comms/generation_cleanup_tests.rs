@@ -324,11 +324,12 @@ fn what_a_dead_sweep_left_aside_is_removed_and_a_running_sweeps_is_not() {
     let base = tempfile::tempdir().expect("tempdir");
     let dead_generation = removing(&other(), DEAD_PID);
     let dead_store = removing("store.fjall", DEAD_PID);
-    // The test runner's parent is some other process that is certainly running.
+    // A process other than this one that is certainly running: the test runner's parent, and on
+    // Windows, which names no parent, the System process.
     #[cfg(unix)]
     let running = removing(&other(), std::os::unix::process::parent_id());
-    #[cfg(not(unix))]
-    let running = removing(&other(), DEAD_PID - 1);
+    #[cfg(windows)]
+    let running = removing(&other(), 4);
     let unrelated = removing("notes", DEAD_PID);
     for name in [&dead_generation, &dead_store, &running, &unrelated] {
         std::fs::create_dir_all(base.path().join(name)).expect("mkdir");
@@ -343,14 +344,11 @@ fn what_a_dead_sweep_left_aside_is_removed_and_a_running_sweeps_is_not() {
     let findings = sweep(base.path(), DEFAULT_MAX_AGE, false, SystemTime::now());
 
     assert_eq!(findings, dry, "a dry run reports what a real run does");
-    #[cfg(unix)]
-    {
-        assert_eq!(findings.len(), 2, "{findings:?}");
-        assert!(
-            base.path().join(&running).join("data").exists(),
-            "another sweep is deleting that one"
-        );
-    }
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(
+        base.path().join(&running).join("data").exists(),
+        "another sweep is deleting that one"
+    );
     assert_eq!(findings[0].rendezvous, Rendezvous::Leftover(dead_generation.clone()));
     assert_eq!(findings[0].bytes, 5);
     assert!(findings.iter().all(|f| f.verdict == Verdict::Removed), "{findings:?}");

@@ -9,6 +9,27 @@ fn self_pid_is_live_and_a_bogus_pid_is_not() {
     assert!(!pid_is_live(0x7FFF_FFFE), "an absent pid is not live");
 }
 
+/// The pid of a process that has exited is not live, even while a handle to it is still held:
+/// `child` keeps one open on Windows until it is dropped.
+#[test]
+fn an_exited_process_is_not_live_while_its_handle_is_held() {
+    let mut child = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .arg("--list")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn a child");
+    assert!(child.wait().expect("wait for the child").success());
+    assert!(!pid_is_live(child.id()), "an exited process is not live");
+}
+
+/// A process that may not be opened exists: the System process, pid 4, is refused to most callers.
+#[cfg(windows)]
+#[test]
+fn a_process_that_may_not_be_opened_is_live() {
+    const SYSTEM_PID: u32 = 4;
+    assert!(pid_is_live(SYSTEM_PID));
+}
+
 #[test]
 fn a_live_daemon_is_found_by_pid_in_any_generation_and_a_dead_one_is_not() {
     let root = tempfile::tempdir().expect("tempdir");
