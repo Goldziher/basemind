@@ -65,9 +65,21 @@ fn current_minor() -> u32 {
         .expect("CARGO_PKG_VERSION has a minor component")
 }
 
+/// A command running `bin`. A Linux release loads the libraries bundled in its `lib/` through its
+/// RUNPATH, which `LD_LIBRARY_PATH` outranks: under a job that exports one for this build's own
+/// libraries (CI's libheif in `/usr/local/lib`), the loader mixes the two sets and refuses to start
+/// it. So a release runs without the variable; this build, which may need it, keeps it.
+fn command(bin: &Path) -> Command {
+    let mut cmd = Command::new(bin);
+    if bin != Path::new(NEW_BIN) {
+        cmd.env_remove("LD_LIBRARY_PATH");
+    }
+    cmd
+}
+
 /// `basemind --version` prints `basemind X.Y.Z`; this is Y.
 fn release_minor(bin: &Path) -> u32 {
-    let out = Command::new(bin)
+    let out = command(bin)
         .arg("--version")
         .output()
         .unwrap_or_else(|e| panic!("run {} --version: {e}", bin.display()));
@@ -133,7 +145,7 @@ struct Env {
 
 impl Env {
     fn run(&self, bin: &Path, args: &[&str], grace_secs: Option<&str>) -> Output {
-        let mut cmd = Command::new(bin);
+        let mut cmd = command(bin);
         cmd.args(["--root"])
             .arg(&self.repo)
             .args(["--no-color"])
