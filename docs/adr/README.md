@@ -114,3 +114,4 @@ them.
 | [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Proposed |
 | [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Proposed |
 | [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Proposed |
+| [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Proposed |
