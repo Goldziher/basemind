@@ -707,6 +707,10 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
     let rescan_repo = repo.clone();
     let rescan_task = tokio::spawn(async move { client.rescan(rescan_repo, None, true, false).await });
     scan_in_flight(&comms_dir, &repo, || rescan_task.is_finished()).await;
+    assert!(
+        !rescan_task.is_finished(),
+        "the scan finished before SIGTERM was sent, so nothing below would test a mid-scan signal"
+    );
 
     let term = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
@@ -746,9 +750,11 @@ async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
         .join("cache")
         .join("workspaces")
         .join(basemind::store::workspace_key(&repo));
+    // ~keep A cancelled pass flushes what it committed under a `cancelled` health, so a missing
+    // ~keep sidecar means the pass never reached its flush and proves nothing about the cancel.
     let status = basemind::store_layout::read_status_sidecar(&workspace);
     assert!(
-        status.as_ref().is_none_or(|status| status.is_degraded()),
+        status.as_ref().is_some_and(|status| status.is_degraded()),
         "the scan was cancelled, not run to the end: {status:?}"
     );
 
