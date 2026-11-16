@@ -13,17 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `stale` on `code_read` (a symbol found by parsing a file edited since it was indexed), on `code_outline`
-  (outlined from the file as it is) and on a `code_grep` hit in such a file.
+  (outlined from the file as it is) and on a `code_grep` hit in such a file (which then carries no
+  `symbol`).
 - `skipped_files` on `code_grep`: the files it could not search (deleted, not UTF-8, grown past
   `scan.max_file_bytes`, or leading out of the repository).
 - `budgeted` and `omitted` on `git_log {rev}`: the commit's file list is held to `max_tokens`.
 - `budgeted`, `truncated_reason: "window"` and a `next_cursor` that continues past the window on
-  `git_log {path, symbol}`.
+  `git_log {path, symbol}` and on `git_log` with a directory `path`. An empty page of either carries
+  `unmatched` while nothing inspected so far defines the symbol or touches the directory.
 - `resolution: "no resolution facts for this definition"` on `code_refs` with `path`.
 - `truncated` / `truncated_reason` on `code_search` and `docs_search` (`depth`, `rerank_top_k`,
-  `filter_depth`), and `truncated_reason` wherever `truncated` stood alone (`code_read`, `code_symbols`,
-  `find_files`).
-- `git_diff` with a `path` ending in `/` returns the working-tree status under that directory.
+  `filter_depth`), and `truncated_reason` wherever `truncated` stood alone (`code_read`: `size_cap`).
+- `git_diff` with a `path` ending in `/` returns the working-tree status under that directory, with
+  every untracked file listed on its own and `is_clean` scoped to the directory. A directory that is
+  not on disk and has no changed path under it is an error, and so is a directory given without the
+  trailing slash.
+- `code_search` and `docs_search` keep the ranked list of a query for up to two minutes (16 queries,
+  4 MiB), so a later page or a repeated call does not run retrieval and the reranker again. A rescan
+  drops the lists.
 
 ### Changed
 
@@ -111,8 +118,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     resolution (`unsupported for <language>`) from a file that bound nothing
     (`no resolution facts for this file`) and from an index whose resolve pass did not finish
     (``resolution has not finished for this index; a running scan will complete it, otherwise run
-    `index_rescan` ``). An exact scan stops after examining 200,000 index keys, sets `total_is_partial`
-    and returns a `next_cursor` that continues it.
+    `index_rescan` ``). An exact scan stops after examining 200,000 index keys, sets `truncated` with
+    `truncated_reason: "scan_cap"` and returns a `next_cursor` that continues it.
   - Every list takes `limit` and `cursor`, returns `next_cursor`, and honours a default `max_tokens` budget
     of 6000, setting `budgeted` when it trims.
   - A failure the caller can fix is a tool result with `isError: true` that names the fix, not a JSON-RPC
@@ -127,8 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `git_blame` takes `line` / `end_line` in place of `line_start` / `line_end`, returns 100 hunks per
     page by default and honours `max_tokens`.
   - `git_log` matches `query` against the commit message and `author` against the author, each on its
-    own field. A directory `path` reports `truncated` when history continues past its 200-commit
-    window.
+    own field. A directory `path` inspects 200 commits per page and returns a `next_cursor` to the
+    next window while history continues. A search answered before the git-history index is ready
+    sets `truncated` with `truncated_reason: "live_walk"` (subjects and authors of the newest 10,000
+    commits only) in place of `partial`.
   - `memory_save` reports `embedded`. When the note cannot be embedded the save still succeeds, with a
     `notice`, instead of answering with an error after the write.
   - A call rejected because the server is at its limit of heavy calls is an `isError` result
@@ -147,16 +156,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     maintenance and telemetry are CLI only.
 - **BREAKING: the verb tools refuse calls that can only come back empty, bound what they return, and say
   every cut in one vocabulary.** These change responses and behaviour of the tools above.
-  - One vocabulary for a cut: a hard bound sets `truncated: true` and `truncated_reason`, with `omitted`
-    counting what was left out where the count is known, and a cut made by the token budget sets
-    `budgeted`. `code_grep`'s `truncation_reason` is renamed `truncated_reason` and gains `omitted`;
+  - One vocabulary for a cut. A page that ends at `limit` is paging: `next_cursor` says there is more
+    and nothing else is set. A page trimmed to the token budget also sets `budgeted`. A cut the caller
+    did not ask for sets `truncated: true` and `truncated_reason`, with `omitted` counting the items
+    left out where the count is known. `code_grep`'s `truncation_reason` is renamed `truncated_reason`
+    and is only ever `byte_budget`; `code_symbols` and `code_grep` no longer set `truncated` on a
+    `limit` cut and `find_files` has no `truncated`; `total_is_partial` (`code_symbols`, `code_refs`)
+    and `git_log {query}`'s `partial` are `truncated` with a reason (`scan_cap`, `live_walk`);
     `git_diff`'s `total_hunks` is replaced by `truncated_reason` (`hunk_cap`, `byte_cap`) and `omitted`;
     `code_outline`'s `imports_truncated` is replaced by `truncated`, `truncated_reason: "imports"` and
-    `omitted`. `skipped_files` is not a cut and keeps its name.
+    `omitted`; `code_read` counts the bytes it left out in `omitted_bytes`. Four fields keep their own
+    names because they say something else: `skipped_files` (files that could not be searched),
+    `limit_clamped` (`find_files` lowered an over-large `limit`), `body_truncated` (one commit's
+    message in a `git_log` search hit) and `too_large` (`git_diff` did not diff a file over 4 MiB).
+    `memory_search` still sets a bare `truncated` on a listing.
   - `git_diff {structural}`: `common` is a count, not a list. Two definitions sharing a name and kind are
     counted once.
   - `git_diff {}`: each status list is cut at 200 paths, in path order; `omitted` counts the rest and the
-    cut sets `truncated` with `truncated_reason: "path_cap"`. A directory `path` narrows the status.
+    cut sets `truncated` with `truncated_reason: "path_cap"`. A directory `path` narrows the status and
+    lists every untracked file under it, whatever `status.showUntrackedFiles` collapses.
   - `code_grep`, `find_files`: a `path` / `path_prefix` / `language` filter that no indexed file passes is
     an error saying what would match; `code_grep` names `docs_search` when the filter matches only
     documents. While the index is still being built the empty page is returned with its `notice` instead.
@@ -164,17 +182,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     error, for a file and for a directory. An empty indexed answer is checked against the live walk first.
   - `limit: 0` is refused by every tool that takes `limit`.
   - `code_grep {regex}`: `^` / `$` match at every line, CRLF-aware, and no hit is reported past the last
-    line.
+    line. A line ends at `\n` (a `\r` before it is part of the ending), as in `code_read`; a `\r` on its
+    own ends no line and no anchor matches at it.
   - `git_blame {symbol}`: the span, and the `line` that picks one of several definitions, are taken from
     the blamed revision. An error names that revision, and a blob over `scan.max_file_bytes` is refused.
   - `code_read`: an oversized body ends at a whole line and `end_line` is the last line returned (read on
     from `end_line + 1`); a symbol read refuses a file over `scan.max_file_bytes`.
-  - `code_search` / `docs_search`: every page is cut from one 100-deep retrieval; a reranker scores up to
-    100 candidates per call. A ranking cut at that depth, by the reranker's `top_k` or by a filter that
-    saw only the 400 best chunks sets `truncated`, and a cursor issued before a rescan is refused.
+  - `code_search` / `docs_search`: every page is cut from one retrieval of 101 hits (the 100 that can be
+    paged and one that says whether the ranking goes on); a reranker scores up to 101 candidates per
+    retrieval. A ranking that goes on past that depth, that the reranker's `top_k` cut, or that a
+    `docs_search` filter could not see whole (more than 400 chunks) sets `truncated`, and a cursor issued
+    before a rescan is refused.
   - `git_log {rev}` and `{path, symbol}` now honour `max_tokens`. A symbol's history is paged by a cursor
     over the commits touching the file, so a change older than the first window can be reached, and a
-    symbol the working tree no longer defines has its history read.
+    symbol the working tree no longer defines has its history read. A name no commit defines either is
+    said on each empty page (`unmatched`, with the names the file does define) and is an error on the
+    last one.
   - A file edited since it was indexed: `code_outline` and `code_read` describe it as it is now and set
     `stale`; `code_refs` with `path`, and `relation: "definition"`, return an error naming `index_rescan`.
     A file deleted since the scan gets one error from every tool, naming `index_rescan`. No tool reads an

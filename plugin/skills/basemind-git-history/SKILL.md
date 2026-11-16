@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:1273befc1056465bb071416a3e411c08b79d97298b699d7fb2684448c39f61aa
-Source-Hash: blake3:fed0351e46a3a0a3e8f6635abb94f8ccfe8ba77968cf135c737f71cf3ed7c973
+Content-Hash: blake3:6ae680aebad5e89ae32f4009d9198c654a4d08bf57c4b839e09baa9fb80ecd29
+Source-Hash: blake3:5c3dcc2d1488dc1cc6734f63dd1a849c60ad82080a8f217667773b4cc43b2572
 Schema-Version: v1
 -->
 
@@ -79,7 +79,13 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
 - `git_log` with `path` + `symbol` reads one window of the commits touching the file per page.
   When older commits remain the page returns `next_cursor`, and says `truncated_reason: "window"`
   when it is short or empty: follow the cursor until it is absent to reach every change back to
-  the introduction. A symbol the working tree no longer defines still has its history read.
+  the introduction. A symbol the working tree no longer defines still has its history read. A
+  name no commit inspected so far defines either is named in `unmatched` (with the names the file
+  does define) on each empty page, and is an error on the last page.
+- `git_log` with a directory `path` (one ending in `/`) pages the same way, 200 commits per page:
+  an empty page with `truncated_reason: "window"` and a `next_cursor` is not the end of the
+  history, and `unmatched` says when nothing has touched the directory so far and it is not on
+  disk.
 - `git_log` with `rev` holds the commit's file list to `max_tokens` and then sets `budgeted`, with
   `omitted` counting the files left out.
 - `git_blame`: `line` and `end_line` are 1-based and inclusive, and `end_line` defaults to `line`.
@@ -97,22 +103,25 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   and `common`, the count of unchanged symbols.
 - `git_diff {}` lists at most 200 paths per status list, in path order. A cut status sets
   `truncated`, `truncated_reason: "path_cap"` and `omitted`; pass a directory `path` (one ending
-  in `/`) for the status under that directory.
+  in `/`) for the status under that directory. That narrowed status lists every untracked file on
+  its own and its `is_clean` is about the directory only. A directory that is not on disk and has
+  no changed path under it is an error; so is a directory given without the trailing slash.
 - All paths are repository-relative with forward-slash separators. Page with `next_cursor` ->
   `cursor`. A cursor continues only the call that returned it (same arguments apart from `limit`
   and `max_tokens`); on another query, or after HEAD moved, the call is an error: repeat it without
   `cursor`. A shallow clone sets `truncated` with `truncated_reason: "shallow_clone"`: absence is
-  then inconclusive. Every cut uses the same words: `truncated` + `truncated_reason` for a hard
-  bound, `budgeted` for the token budget, `omitted` for the count left out.
+  then inconclusive. Every cut uses the same words: `next_cursor` alone when a page ended at
+  `limit`, `budgeted` when the token budget trimmed it, and `truncated` + `truncated_reason` for a
+  cut the caller did not ask for, with `omitted` counting the items left out where known.
 - `query` is matched against the commit message and `author` against the author name and email,
   each on its own field: `{"query":"review","author":"alice"}` is commits by alice that mention a
-  review. A directory `path` inspects the last 200 commits and sets `truncated` with
-  `truncated_reason: "window"` when it used them all.
+  review. A search answered before the git-history index is ready covers only the subjects and
+  authors of the newest 10,000 commits and says so: `truncated` with
+  `truncated_reason: "live_walk"`; retry shortly.
 - When several definitions in the file share the name, `symbol` is an error listing each with its
   lines: add `line` (any line inside the one you mean).
-- `git_diff` returns at most 200 hunks or 128 KiB of hunk text and then sets `truncated` and
-  `total_hunks`; a binary file reports `binary: true` and no hunks. A path that leaves the
-  repository is refused.
+- A binary file reports `binary: true` and no hunks, a file over 4 MiB `too_large: true`. A path
+  that leaves the repository is refused.
 - An argument a tool does not take is rejected with a did-you-mean and the accepted list.
 
 For code structure see `basemind-code-search`; for document search see `basemind-documents`; for

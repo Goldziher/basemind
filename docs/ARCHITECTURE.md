@@ -474,8 +474,9 @@ without changing a single result:
 - **Name dictionary** (`src/index/name_dict.rs`). The distinct callee and trait names (orders of
   magnitude fewer than the keys; a few MB at monorepo scale) live in one contiguous allocation. A
   query is a `memmem` sweep over it, and only the matching names' key ranges are scanned; keys, order,
-  totals, the `total_is_partial` cap and cursors are those of the full walk. The writer records a name
-  before staging its key, so the dictionary is a superset and a stale name costs one empty range scan.
+  totals, the scan cap (`truncated_reason: "scan_cap"`) and cursors are those of the full walk. The
+  writer records a name before staging its key, so the dictionary is a superset and a stale name
+  costs one empty range scan.
   The first query after the index opens still walks the partition while a background pass builds it,
   and a needle matching over 5 % of the distinct names goes back to the walk.
 - **Term index** (`src/mcp/term_index.rs`). `code_symbols` and the `code_refs` importer lookup search
@@ -708,7 +709,7 @@ commit walk behind `path` + `symbol`, and full-text `query` / `author` search) a
     that forwards each history query over the socket rather than trying (and failing) to open it.
 - A process that can reach neither backend falls back to the live walk (`git_history: None`). The
   index is a pure accelerator: tools use it only when `last_indexed_head == HEAD` and otherwise
-  live-walk and report `partial: true`, so it can never serve stale results.
+  live-walk and report `truncated_reason: "live_walk"`, so it can never serve stale results.
 - A linked worktree shares the MAIN worktree's index (keyed on the main worktree root) rather than
   rebuilding its own, since the commit graph is identical across worktrees of one clone.
   The index tracks one head: a linked worktree whose HEAD descends from it appends the new commits,

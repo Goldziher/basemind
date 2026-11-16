@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:80008ab62a085f6b5bf2f554ef0b3b844c7bd3bcd196e4a7a176f303fe1c87d8
-Source-Hash: blake3:fed0351e46a3a0a3e8f6635abb94f8ccfe8ba77968cf135c737f71cf3ed7c973
+Content-Hash: blake3:a6209ed329403ff7bd0799e7b056f3bfbace6340a1fca19231a473658bf748c2
+Source-Hash: blake3:5c3dcc2d1488dc1cc6734f63dd1a849c60ad82080a8f217667773b4cc43b2572
 Schema-Version: v1
 -->
 
@@ -87,8 +87,8 @@ code_outline {"path":"src/mcp/tools.rs"}
   at `find_files`.
 - `path` is repo-relative with forward slashes. `line`, `end_line` and `column` are 1-based.
 - `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
-  not both. A body over 128 KiB is cut after a whole line and flagged `truncated`: read on from
-  `end_line + 1`. `stale: true` (also on `code_outline`) means the file changed since it was
+  not both. A body over 128 KiB is cut after a whole line and flagged `truncated`
+  (`omitted_bytes` is what was left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file changed since it was
   indexed and was read as it is now; a file deleted since the scan is an error naming
   `index_rescan`.
 - `code_outline` omits `imports` when the file has none.
@@ -126,7 +126,10 @@ code_outline {"path":"src/mcp/tools.rs"}
 - Every list takes `limit` and `cursor` and returns `next_cursor`. Defaults: `code_symbols` /
   `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500 symbols, `code_search` 10.
   A list is trimmed to a default budget of 6000 tokens and then sets `budgeted`: raise `max_tokens`
-  or follow `next_cursor`. Index scanners stop at a scan cap and set `total_is_partial`.
+  or follow `next_cursor`. A page that ended at `limit` sets nothing else: `next_cursor` is the
+  signal that there is more. `truncated` + `truncated_reason` mark a cut you did not ask for, such
+  as `scan_cap` on `code_refs` / `code_symbols` (the scan stopped early, `total` is a lower bound,
+  `next_cursor` resumes it) or `byte_budget` on `code_grep` (files left unread).
 - A cursor continues only the call that returned it, with the same arguments apart from `limit`
   and `max_tokens`. Passed to another query, or used after a rescan, the call is an error: repeat
   it without `cursor`.

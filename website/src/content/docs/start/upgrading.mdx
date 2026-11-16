@@ -138,10 +138,18 @@ The command groups keep their names, and the old subcommands stay as shorthands 
   as it is now and say `stale: true`; `code_refs` with `path` returns an error naming
   `index_rescan`, and so does every tool for a file deleted since the scan.
 - **`git_blame {symbol}`** locates the symbol in the file as it is at `rev`, not in the working tree.
-- **`git_log {path, symbol}`** pages past its window: follow `next_cursor` until it is absent.
-- **One vocabulary for a cut.** A hard bound sets `truncated` and `truncated_reason`, with `omitted`
-  counting what was left out; the token budget sets `budgeted`. `truncation_reason` (`code_grep`),
-  `total_hunks` (`git_diff`) and `imports_truncated` (`code_outline`) are gone. The full table is in
+- **`git_log {path, symbol}`** and `git_log` with a directory `path` page past their window: follow
+  `next_cursor` until it is absent. A symbol or directory nothing has matched so far is named in
+  `unmatched`, and is an error on the last page.
+- **`git_diff` with a directory.** A `path` ending in `/` returns the status under it; a directory
+  that does not exist, or one given without the slash, is an error.
+- **One vocabulary for a cut.** A page that ends at `limit` sets nothing but `next_cursor`; the
+  token budget also sets `budgeted`; a cut the caller did not ask for sets `truncated` and
+  `truncated_reason`, with `omitted` counting the items left out. A client that read `truncated` as
+  "there is another page" (`code_grep`, `code_symbols`, `find_files`) must read `next_cursor`.
+  `truncation_reason` (`code_grep`), `total_hunks` (`git_diff`), `imports_truncated`
+  (`code_outline`), `total_is_partial` (`code_refs`, `code_symbols`) and `partial` (`git_log`
+  search) are gone, and `code_read` counts bytes in `omitted_bytes`. The full table is in
   [`docs/UPGRADING.md`](https://github.com/Goldziher/basemind/blob/main/docs/UPGRADING.md).
 - **Telemetry keys are the tool names.**
 

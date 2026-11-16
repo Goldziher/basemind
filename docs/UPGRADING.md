@@ -149,7 +149,9 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   the empty page is returned with its `notice` instead. `git_log {path}` refuses a path that no
   commit reachable from HEAD touches and that is not on disk, for a file and for a directory.
 - **`code_grep {regex: true}` anchors per line.** `^` and `$` match at every line, CRLF-aware, as
-  in `grep`; they matched only at the ends of the file. No hit is reported past the last line.
+  in `grep`; they matched only at the ends of the file. No hit is reported past the last line. A
+  line ends at `\n`, with a `\r` before it counted into the ending, as `code_read` numbers lines;
+  a `\r` on its own is text inside its line.
 - **Edited and deleted files.** `code_outline` and a `code_read` symbol read describe a file edited
   since it was indexed as it is now and set `stale: true`; a `code_grep` hit in such a file has
   `stale: true` and no `symbol`. `code_refs` with `path` (and `relation: "definition"`) answers
@@ -164,16 +166,21 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 - **A symbol's history pages past its window.** `git_log {path, symbol}` inspects one window of
   the commits touching the file per page and returns `next_cursor` while older commits remain. A
   page can be short or empty and still not be the last (`truncated_reason: "window"`): follow the
-  cursor until it is absent. A symbol the working tree no longer defines has its history read.
+  cursor until it is absent. A symbol the working tree no longer defines has its history read; a
+  name that no inspected commit defines either is named in `unmatched` on each empty page and is an
+  error on the last. `git_log` with a directory `path` pages the same way, 200 commits per page.
 - **`code_refs` leaves `resolved` absent where nothing was checked.** With `path`, a hit has
   `resolved: true` (proven to bind to the definition), `resolved: false` (checked and not proven)
   or no `resolved` at all; `resolution` gains `no resolution facts for this definition`.
 - **Ranked searches are paged from one retrieval.** `code_search` and `docs_search` cut every page
-  from one retrieval 100 hits deep, so a reranker scores up to 100 candidates per call, and a
-  cursor issued before a rescan is refused. `truncated` says the ranking was cut.
+  from one retrieval of 101 hits (100 can be paged), so a reranker scores up to 101 candidates,
+  and a cursor issued before a rescan is refused. The ranked list is kept for up to two minutes, so
+  a later page or a repeated call does not rank again. `truncated` says the ranking was cut.
 - **`git_diff {}` is bounded.** Each status list is cut at 200 paths, in path order; a `path`
-  ending in `/` returns the status under that directory. `structural: true` returns `common` as a
-  count, not a list.
+  ending in `/` returns the status under that directory, listing every untracked file on its own,
+  with `is_clean` scoped to the directory. A directory that does not exist and has no changed path
+  under it is an error, and so is a directory `path` without the trailing slash.
+  `structural: true` returns `common` as a count, not a list.
 - **`index_rescan {}` is the whole workspace.** The `full` flag is gone (see Removed arguments).
 - **Telemetry keys are the tool names** (`code_grep`, not `code:grep`).
 - **Annotations are exact per tool.** Everything is read-only except `memory_save` and
@@ -181,23 +188,40 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 
 ### Response fields
 
-Every cut is reported in the same words: a hard bound sets `truncated: true` and
-`truncated_reason`, with `omitted` counting what was left out where the count is known; a cut made
-by the `max_tokens` budget sets `budgeted`.
+Every cut is reported in the same words:
+
+- A page that ends at `limit` is paging. `next_cursor` says there is more; nothing else is set.
+- A page trimmed to the `max_tokens` budget also sets `budgeted`.
+- A cut the caller did not ask for sets `truncated: true` and `truncated_reason`, with `omitted`
+  counting the items left out where the count is known. Follow `next_cursor` when the response has
+  one, otherwise narrow the call.
+
+A client that read `truncated` as "there is another page" must read `next_cursor` instead.
+
+Four fields keep their own names because they say something else: `skipped_files` (`code_grep`:
+files that could not be searched), `limit_clamped` (`find_files`: an over-large `limit` was
+lowered), `body_truncated` (`git_log` search: one commit's message was shortened; read it with
+`rev`) and `too_large` (`git_diff`: a file over 4 MiB was not diffed). `memory_search` still sets a
+bare `truncated` on a listing.
 
 | Tool | Before | Now |
 | --- | --- | --- |
-| `code_grep` | `truncation_reason` | `truncated_reason` (`limit`, `byte_budget`), plus `omitted` (matches not returned) |
+| `code_grep` | `truncated` on a `limit` cut, `truncation_reason` | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "byte_budget"` when files were left unread |
 | `code_grep` | none | `skipped_files` (files that could not be searched; not a cut), `stale` on a hit |
 | `code_outline` | `imports_truncated` | `truncated`, `truncated_reason: "imports"`, `omitted` |
-| `code_read` | `truncated` | `truncated`, `truncated_reason: "size_cap"`, `omitted` (bytes); `stale` on a symbol read |
-| `code_symbols`, `find_files` | `truncated` | `truncated`, `truncated_reason: "limit"` |
+| `code_read` | `truncated` | `truncated`, `truncated_reason: "size_cap"`, `omitted_bytes`; `stale` on a symbol read |
+| `code_symbols` | `truncated` on a `limit` cut, `total_is_partial` | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when a fuzzy sweep stopped at its cap |
+| `code_refs` | `total_is_partial` | `truncated`, `truncated_reason: "scan_cap"` (`total` is a lower bound; `next_cursor` resumes the scan) |
+| `find_files` | `truncated` | removed: `next_cursor` says a listing goes on |
 | `code_search`, `docs_search` | none | `truncated`, `truncated_reason` (`depth`, `rerank_top_k`, `filter_depth`) |
 | `git_diff {}` | none | `truncated`, `truncated_reason: "path_cap"`, `omitted` (paths), `path` |
 | `git_diff {path}` | `truncated`, `total_hunks` | `truncated`, `truncated_reason` (`hunk_cap`, `byte_cap`), `omitted` (hunks) |
 | `git_diff {structural}` | `common` (a list) | `common` (a count) |
 | `git_log {rev}` | none | `budgeted`, `omitted` (files left out of `files`) |
-| `git_log {path, symbol}` | none | `budgeted`, `truncated_reason: "window"`, `next_cursor` past the window |
+| `git_log {path, symbol}` | none | `budgeted`, `truncated_reason: "window"`, `next_cursor` past the window, `unmatched` |
+| `git_log {path: "dir/"}` | `truncated` at a fixed 200-commit window | `truncated_reason: "window"`, `next_cursor` past the window, `unmatched` |
+| `git_log {query}` | `partial` | `truncated`, `truncated_reason` (`live_walk`, `scan_cap`) |
+
 ## Running two basemind versions side by side
 
 The release after 0.33 moves the daemon's socket, lock, log and comms store from the comms directory

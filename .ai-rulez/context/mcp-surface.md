@@ -61,11 +61,11 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   component and a symlink leaving the repository, and consults the index before reading. `line`,
   `end_line` and `column` are 1-based; a position the index does not hold is omitted, never 0.
 - **Lists.** Every list takes `limit` and `cursor` and returns `next_cursor`. A list is trimmed to
-  a default budget of 6000 tokens (`DEFAULT_MAX_TOKENS`) and then sets `budgeted`. Index scans
-  stay bounded by a scan cap and report `total_is_partial`. `limit: 0` is refused in
-  `cursor_bind::bound`, once for every tool that takes `limit`.
-- **Cuts.** A hard bound sets `truncated` + `truncated_reason` (+ `omitted`); the token budget
-  sets `budgeted`. Add no other name. A filter no file passes is an error (`helpers_filters`).
+  a default budget of 6000 tokens (`DEFAULT_MAX_TOKENS`) and then sets `budgeted`. `limit: 0` is
+  refused in `cursor_bind::bound`, once for every tool that takes `limit`.
+- **Cuts.** A `limit` cut is paging: `next_cursor` alone. A cut the caller did not ask for sets
+  `truncated` + `truncated_reason` (+ `omitted`, items); the token budget sets `budgeted`. Add no
+  other name. A filter no file passes is an error (`helpers_filters`).
 - **Files changed since the scan.** Load through `freshness::load`: re-extract and set `stale`,
   else return `freshness::edited`; a deleted file gets `freshness::unloadable`.
 - **Cursors are bound to their query.** Every paginated `*_call` runs its body through
