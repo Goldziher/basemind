@@ -48,8 +48,9 @@ pub(crate) struct ServerState {
 impl ServerState {
     /// Build a fresh per-connection state that shares the given [`SharedReadStack`].
     ///
-    /// Each connection gets its own identity: no daemon link yet, and the default log verbosity. Not yet wired to a caller — the seam a future daemon-hosted transport
-    /// uses to hand every accepted connection the one shared read stack.
+    /// Each connection gets its own identity: no daemon link yet, no agent context, and the default
+    /// log verbosity. The daemon-hosted transports use it to hand every accepted connection the one
+    /// shared read stack.
     #[allow(dead_code)]
     pub(crate) fn for_connection(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
         Self {

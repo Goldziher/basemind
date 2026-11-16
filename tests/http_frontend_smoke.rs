@@ -273,6 +273,12 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         "tools/list must expose the full tool surface, got {}",
         tools.len()
     );
+    for agent_tool in ["agent_post", "agent_inbox", "agent_threads"] {
+        assert!(
+            !tools.iter().any(|tool| tool["name"] == agent_tool),
+            "agent messaging is not served over HTTP (ADR-0021 rule 17), so `{agent_tool}` is not listed: {parsed}"
+        );
+    }
 
     // --- routing: a non-/mcp path is a 404 ---
     let (status, _) = http_post(&addr, "/nope", b"{}", &headers).await;

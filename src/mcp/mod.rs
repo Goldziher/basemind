@@ -425,7 +425,8 @@ impl BasemindServer {
     /// (built alongside the shared stack), never per connection. `agent_id` comes from the
     /// connection's [`RelayHello`](crate::comms::relay::RelayHello), so each client keeps its own
     /// memory-owner identity even while sharing the read stack. `agents` is the session's identity
-    /// to the agent tools; a server without one (the HTTP front-end) refuses them.
+    /// to the agent tools; a server without one (the HTTP front-end, ADR-0021 rule 17) neither
+    /// advertises nor serves them.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn from_shared(
         shared: Arc<SharedReadStack>,
@@ -433,13 +434,19 @@ impl BasemindServer {
         heavy_admission: Arc<admission::HeavyAdmission>,
         agents: Option<Arc<AgentContext>>,
     ) -> Self {
+        let mut tool_router = router_cache::cached_tool_router();
+        if agents.is_none() {
+            for name in agent_tools::AGENT_TOOLS {
+                tool_router.remove_route(name);
+            }
+        }
         let mut state = ServerState::for_connection(shared, agent_id);
         state.agents = agents;
         let state = Arc::new(state);
         Self {
             state,
             _watcher: None,
-            tool_router: router_cache::cached_tool_router(),
+            tool_router,
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
             heavy_admission,
