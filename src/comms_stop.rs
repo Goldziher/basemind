@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use basemind::comms::client::{CommsClient, CommsClientError};
+use basemind::comms::client::{ClientHello, CommsClient, CommsClientError};
 use basemind::comms::singleton::{self, CommsPaths, Liveness, ReclaimRules, Reclaimed, StopOutcome};
 use basemind::daemon_lock::{self, DaemonKind};
 
@@ -94,10 +94,11 @@ pub(crate) fn cmd_comms_stop(json: bool) -> Result<()> {
 /// `daemon_busy` means persistent clients are still attached — so that is reported and nothing
 /// more is done.
 async fn ask_to_stop(paths: &CommsPaths) -> Result<Asked> {
-    let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let agent = basemind::comms::identity::cli_agent_id(&root);
     let rpc = tokio::time::timeout(STOP_RPC_TIMEOUT, async {
-        CommsClient::connect(paths, agent, None, None).await?.stop().await
+        CommsClient::connect(paths, ClientHello::anonymous())
+            .await?
+            .stop()
+            .await
     })
     .await;
     match rpc {

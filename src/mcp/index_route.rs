@@ -95,7 +95,7 @@ impl IndexRoute {
                 };
             }
             if state.shared.daemon_writer {
-                match super::helpers_comms::resolve_comms_client(state, None).await {
+                match super::helpers_daemon::daemon_client(state).await {
                     Ok(client) => {
                         return Self::Daemon {
                             client,

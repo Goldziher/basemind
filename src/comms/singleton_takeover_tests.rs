@@ -165,8 +165,7 @@ fn status(pid: u32, version: &str, proto_ver: u32) -> CommsResponse {
         build_id: "scripted".to_string(),
         proto_ver,
         uptime_secs: 1,
-        threads: 0,
-        subscribers: 0,
+        agent_store: "open".to_string(),
     })
 }
 

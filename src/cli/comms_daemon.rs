@@ -12,13 +12,16 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+use crate::comms::agents_hub::AgentHub;
 use crate::comms::daemon::Broker;
 use crate::comms::singleton;
-use crate::comms::store::CommsStore;
 
-/// How often the message-TTL sweep runs. Hourly is ample: messages already drop out of the
-/// default 24h recency reads long before [`MESSAGE_TTL`](crate::comms::store::MESSAGE_TTL).
+/// How often the registry prune and the hot-workspace eviction run.
 const PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// How often the agent store's sweep and flush run (ADR-0021). Each sweep removes a bounded batch,
+/// so it runs often enough to keep up with a busy store.
+const AGENT_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// How often the hosted-read-stack sweep runs. Two orders tighter than [`PRUNE_EVERY`] because it
 /// sheds something two orders larger: an hourly clock would leave an O(corpus) read stack resident
@@ -57,7 +60,7 @@ const STARTUP_GC_DELAY: std::time::Duration = std::time::Duration::from_secs(10 
 #[cfg(unix)]
 const OWNERSHIP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Test-only hook: artificially delay the comms store open by this many milliseconds, so tests can
+/// Test-only hook: artificially delay the agent store open by this many milliseconds, so tests can
 /// prove the daemon answers `Ping` while the store is still opening. Unset in production.
 const TEST_STORE_OPEN_DELAY_ENV: &str = "BASEMIND_TEST_COMMS_STORE_OPEN_DELAY_MS";
 
@@ -154,27 +157,14 @@ pub fn run() -> Result<()> {
         });
 
         let comms_dir = paths.comms_dir.clone();
-        let opened = tokio::task::spawn_blocking(move || {
+        let agents = tokio::task::spawn_blocking(move || {
             if let Some(delay) = test_store_open_delay() {
                 std::thread::sleep(delay);
             }
-            CommsStore::open(&comms_dir)
+            AgentHub::open(&comms_dir)
         })
         .await
-        .context("join comms store open")?;
-        let store = match opened {
-            Ok(store) => Arc::new(store),
-            // The store flock is the second per-comms-dir guard. If a peer holds it we lost the race
-            // (e.g. a socket false-reclaim): converge quietly rather than exiting non-zero.
-            Err(crate::comms::store::CommsStoreError::Locked(path)) => {
-                tracing::info!(
-                    path = %path.display(),
-                    "comms daemon: store already owned by another daemon; converging (exit 0)"
-                );
-                return Ok(());
-            }
-            Err(error) => return Err(anyhow::anyhow!("open comms store: {error}")),
-        };
+        .context("join agent store open")?;
         log_retention_policy();
         let machine_registry = match crate::registry::Registry::from_data_home() {
             Ok(registry) => registry,
@@ -184,9 +174,8 @@ pub fn run() -> Result<()> {
                     .context("open fallback machine registry")?
             }
         };
-        let broker = Arc::new(Broker::with_registry(store, machine_registry));
-        broker.install_comms_dir(paths.comms_dir.clone());
-        broker.run_retention_maintenance().await;
+        let broker = Arc::new(Broker::with_registry(agents, machine_registry));
+        broker.maintain_agents().await;
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         broker.install_shutdown(shutdown_tx);
@@ -253,12 +242,21 @@ pub fn run() -> Result<()> {
             prune_missing_registry_rows(&broker_for_prune).await;
             loop {
                 tick.tick().await;
-                broker_for_prune.run_retention_maintenance().await;
                 let evicted = broker_for_prune.evict_idle_workspaces(WORKSPACE_HOT_TTL);
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
                 }
                 prune_missing_registry_rows(&broker_for_prune).await;
+            }
+        });
+
+        let broker_for_agents = broker.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(AGENT_SWEEP_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                broker_for_agents.maintain_agents().await;
             }
         });
 
@@ -353,7 +351,10 @@ pub fn run() -> Result<()> {
 
         #[cfg(unix)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(UdsFrontendBox(
-            early.finish(broker.clone()).await.context("hand the socket to the front-end")?,
+            early
+                .finish(broker.clone())
+                .await
+                .context("hand the socket to the front-end")?,
         ));
         #[cfg(windows)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(NamedPipeFrontendBox(
@@ -367,18 +368,7 @@ pub fn run() -> Result<()> {
             .serve_obj(broker, shutdown_rx)
             .await
             .context("comms front-end serve loop")?;
-        // A daemon that gave up because its store became permanently unusable did NOT stop cleanly.
-        // Exiting non-zero is what distinguishes it from an idle reap or a `Stop` RPC for whatever
-        // supervises the process; the drain that got us here has already released the flock and the
-        // socket, so the next `comms start` gets a clean daemon. See `Broker::hit_fatal_store_failure`.
-        if broker_for_exit.hit_fatal_store_failure() {
-            let detail = crate::comms::store_health::read(&paths.comms_dir)
-                .map(|record| record.error)
-                .unwrap_or_else(|| "see the daemon log".to_string());
-            return Err(anyhow::anyhow!(
-                "comms store is permanently unusable ({detail}); released the daemon lock and exited so a clean daemon can take over"
-            ));
-        }
+        broker_for_exit.maintain_agents().await;
         Ok(())
     });
     // Bounded teardown instead of the implicit unbounded drop — see [`RUNTIME_SHUTDOWN_TIMEOUT`]. ~keep
@@ -435,19 +425,16 @@ async fn prune_missing_registry_rows(broker: &Broker) {
 }
 
 fn log_retention_policy() {
-    use crate::comms::store::{
-        EPHEMERAL_AGENT_TTL, MAX_ACTIVE_THREADS, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, THREAD_IDLE_TTL,
-        THREAD_RETENTION_TTL,
+    use crate::comms::v2::api::{
+        MAX_ACTIVE_THREADS_PER_REPO, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, REPLAY_TTL, SEEN_TTL,
     };
     tracing::info!(
         message_ttl_secs = MESSAGE_TTL.as_secs(),
         max_messages_per_thread = MAX_MESSAGES_PER_THREAD,
-        thread_idle_ttl_secs = THREAD_IDLE_TTL.as_secs(),
-        thread_retention_ttl_secs = THREAD_RETENTION_TTL.as_secs(),
-        ephemeral_agent_ttl_secs = EPHEMERAL_AGENT_TTL.as_secs(),
-        claim_ttl_secs = crate::comms::identity::CLAIM_TTL.as_secs(),
-        max_active_threads = MAX_ACTIVE_THREADS,
-        "comms: effective retention policy"
+        max_active_threads_per_repo = MAX_ACTIVE_THREADS_PER_REPO,
+        seen_ttl_secs = SEEN_TTL.as_secs(),
+        replay_ttl_secs = REPLAY_TTL.as_secs(),
+        "comms: agent store retention"
     );
 }
 

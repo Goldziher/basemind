@@ -239,8 +239,7 @@ fn daemon_status_decodes_the_commsout_response_envelope() {
         build_id: "deadbeef1234".to_string(),
         proto_ver: PROTO_VER,
         uptime_secs: 99,
-        threads: 3,
-        subscribers: 0,
+        agent_store: "open".to_string(),
     };
     let reply = want.clone();
     // A faithful daemon: read the framed request, reply with the SAME CommsOut::Response ~keep

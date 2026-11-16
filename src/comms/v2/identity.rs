@@ -251,6 +251,14 @@ pub fn resolve_from_env(config_agent_id: Option<String>, root: &Path) -> Result<
     Ok(resolved)
 }
 
+/// Resolve the principal of the checkout at `root`: the root every entry point discovered
+/// (`config::discover_root_with_basemind`), the process environment and that checkout's
+/// `comms.agent_id`. `serve`, the CLI and the hooks all call this, so they resolve one id.
+pub fn resolve_for_root(root: &Path) -> Result<ResolvedIdentity, IdentityError> {
+    let config_agent_id = crate::config::load_logged(root).and_then(|config| config.comms.agent_id);
+    resolve_from_env(config_agent_id, root)
+}
+
 /// [`resolve_from_env`] over an explicit environment lookup.
 fn resolve_with(
     env: impl Fn(&str) -> Option<String>,

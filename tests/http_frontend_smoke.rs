@@ -21,7 +21,6 @@ use std::time::Duration;
 
 use basemind::comms::daemon::Broker;
 use basemind::comms::http_frontend;
-use basemind::comms::store::CommsStore;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -189,8 +188,9 @@ impl ServedHttp {
 async fn serve() -> ServedHttp {
     grant_http_listener();
     let comms_dir = tempfile::tempdir().expect("comms tempdir");
-    let store = Arc::new(CommsStore::open(comms_dir.path()).expect("open comms store"));
-    let broker = Arc::new(Broker::new(store));
+    let broker = Arc::new(Broker::new(basemind::comms::agents_hub::AgentHub::open(
+        comms_dir.path(),
+    )));
 
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let broker_for_http = broker.clone();

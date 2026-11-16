@@ -30,61 +30,6 @@ async fn dial_missing_socket_reports_daemon_not_running_with_start_hint() {
     );
 }
 
-/// Nothing drains `pending_notifications` for a client that only issues ordinary requests, so
-/// the buffer itself has to be the bound: past the cap the queue must stay at the cap and shed
-/// its OLDEST entries, never grow with the broker's push volume.
-#[test]
-fn buffering_notifications_past_the_cap_holds_at_the_cap() {
-    let mut queue = std::collections::VecDeque::new();
-
-    for _ in 0..PENDING_NOTIFICATION_CAP {
-        buffer_notification(&mut queue, CommsNotification::Shutdown);
-    }
-    assert_eq!(
-        queue.len(),
-        PENDING_NOTIFICATION_CAP,
-        "the cap is reached but not exceeded"
-    );
-
-    for _ in 0..(PENDING_NOTIFICATION_CAP * 3) {
-        buffer_notification(&mut queue, CommsNotification::Shutdown);
-    }
-    assert_eq!(
-        queue.len(),
-        PENDING_NOTIFICATION_CAP,
-        "four times the cap of pushes must still leave exactly the cap resident"
-    );
-}
-
-/// The eviction has to be oldest-first: the newest notifications are the ones a `wait` caller
-/// would act on, so shedding those instead would make the bound cost correctness. The single
-/// `Message` is enqueued FIRST, so it is the one entry the cap must drop.
-#[test]
-fn buffering_evicts_the_oldest_notification_first() {
-    let mut queue = std::collections::VecDeque::new();
-
-    buffer_notification(&mut queue, CommsNotification::Message(test_message_meta()));
-    for _ in 0..(PENDING_NOTIFICATION_CAP - 1) {
-        buffer_notification(&mut queue, CommsNotification::Shutdown);
-    }
-    assert!(
-        matches!(queue.front(), Some(CommsNotification::Message(_))),
-        "precondition: the queue is exactly full and the Message is still the oldest entry"
-    );
-
-    buffer_notification(&mut queue, CommsNotification::Shutdown);
-
-    assert_eq!(queue.len(), PENDING_NOTIFICATION_CAP, "the cap still holds");
-    assert!(
-        matches!(queue.front(), Some(CommsNotification::Shutdown)),
-        "the oldest entry (the Message) must be the one dropped"
-    );
-    assert!(
-        !queue.iter().any(|n| matches!(n, CommsNotification::Message(_))),
-        "the evicted entry must be gone from the queue entirely"
-    );
-}
-
 /// A scripted broker on a Unix socket: answers `Hello` bare, then each correlated `Call` in
 /// order, sleeping `delays[i]` before reply `i`. Returns the paths to dial.
 fn scripted_broker(delays: Vec<std::time::Duration>) -> (CommsPaths, tokio::task::JoinHandle<()>, std::path::PathBuf) {
@@ -122,7 +67,7 @@ fn scripted_broker(delays: Vec<std::time::Duration>) -> (CommsPaths, tokio::task
                     }
                     served += 1;
                     let response = match *request {
-                        CommsRequest::ListAgents { .. } => CommsResponse::Agents(Vec::new()),
+                        CommsRequest::Ping => CommsResponse::Pong,
                         CommsRequest::AccessedPaths => CommsResponse::Accessed { workspaces: Vec::new() },
                         other => panic!("unscripted request {other:?}"),
                     };
@@ -157,12 +102,11 @@ fn rand_suffix() -> u128 {
 #[tokio::test]
 async fn dropped_request_does_not_poison_the_next_response() {
     let (paths, server, dir) = scripted_broker(vec![std::time::Duration::from_millis(200)]);
-    let agent = AgentId::parse("agent-1".to_string()).expect("agent");
-    let mut client = CommsClient::connect_with_respawn(&paths, agent, None, None, |_| Ok(()))
+    let mut client = CommsClient::connect_with_respawn(&paths, ClientHello::anonymous(), |_| Ok(()))
         .await
         .expect("connect");
 
-    let abandoned = tokio::time::timeout(std::time::Duration::from_millis(30), client.list_agents(None)).await;
+    let abandoned = tokio::time::timeout(std::time::Duration::from_millis(30), client.ping()).await;
     assert!(abandoned.is_err(), "the first request must be cut off mid-flight");
 
     let workspaces = client
@@ -180,22 +124,15 @@ async fn dropped_request_does_not_poison_the_next_response() {
 #[tokio::test]
 async fn silent_broker_yields_a_retryable_unresponsive_error() {
     let (paths, server, dir) = scripted_broker(vec![std::time::Duration::from_secs(30)]);
-    let agent = AgentId::parse("agent-1".to_string()).expect("agent");
-    let mut client = CommsClient::connect_with_respawn(&paths, agent, None, None, |_| Ok(()))
+    let mut client = CommsClient::connect_with_respawn(&paths, ClientHello::anonymous(), |_| Ok(()))
         .await
         .expect("connect")
         .with_request_timeout(std::time::Duration::from_millis(100));
 
     let started = std::time::Instant::now();
-    let err = client.list_agents(None).await.expect_err("no reply must time out");
+    let err = client.ping().await.expect_err("no reply must time out");
     assert!(
-        matches!(
-            err,
-            CommsClientError::Unresponsive {
-                what: "list_agents",
-                ..
-            }
-        ),
+        matches!(err, CommsClientError::Unresponsive { what: "ping", .. }),
         "{err:?}"
     );
     assert!(err.to_string().contains("broker unresponsive"), "{err}");
@@ -217,12 +154,9 @@ async fn handshake_against_a_mute_listener_times_out() {
         comms_dir: dir.clone(),
         socket_path,
     };
-    let agent = AgentId::parse("agent-1".to_string()).expect("agent");
     let Err(err) = CommsClient::connect_bounded(
         &paths,
-        agent,
-        None,
-        None,
+        ClientHello::anonymous(),
         |_| Ok(()),
         std::time::Duration::from_millis(100),
     )
@@ -235,19 +169,4 @@ async fn handshake_against_a_mute_listener_times_out() {
         "{err:?}"
     );
     let _ = std::fs::remove_dir_all(dir);
-}
-
-fn test_message_meta() -> crate::comms::model::MessageMeta {
-    crate::comms::model::MessageMeta {
-        id: "m1".to_string(),
-        thread: ThreadId::parse("t1".to_string()).expect("valid thread id"),
-        from: AgentId::parse("agent-1".to_string()).expect("valid agent id"),
-        from_name: None,
-        ts_micros: 0,
-        subject: "s".to_string(),
-        tags: Vec::new(),
-        reply_to: None,
-        body_len: 0,
-        body_sha: String::new(),
-    }
 }

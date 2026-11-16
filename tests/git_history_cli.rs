@@ -129,7 +129,6 @@ mod with_daemon {
     use std::time::Duration;
 
     use basemind::comms::client::CommsClient;
-    use basemind::comms::ids::AgentId;
     use basemind::comms::singleton::{CommsPaths, probe_alive};
     use basemind::git_history::GitHistoryIndex;
     use basemind::git_history::proto::{GitHistoryOp, GitHistoryReply};
@@ -193,14 +192,9 @@ mod with_daemon {
     /// every CLI invocation on a daemon machine actually runs in.
     async fn daemon_builds_index(root: &Path) {
         ensure_real_daemon();
-        let mut client = CommsClient::connect(
-            &comms_paths(),
-            AgentId::parse("gh-cli-probe").expect("agent id"),
-            None,
-            Some(root.to_path_buf()),
-        )
-        .await
-        .expect("connect to the daemon");
+        let mut client = CommsClient::connect(&comms_paths(), basemind::comms::client::ClientHello::anonymous())
+            .await
+            .expect("connect to the daemon");
         match client
             .git_history(root.to_path_buf(), GitHistoryOp::Sync)
             .await

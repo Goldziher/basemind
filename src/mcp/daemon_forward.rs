@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
 
-use super::helpers_comms::{comms_err, connect_ephemeral_client};
+use super::helpers_daemon::{comms_err, connect_ephemeral_client};
 use super::{MapCache, ServerState};
 use crate::comms::client::RescanReport;
 use crate::store::Store;

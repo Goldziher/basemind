@@ -318,7 +318,7 @@ async fn run_callers(
             root: state.shared.root.clone(),
         }
     } else if state.shared.daemon_writer {
-        let client = super::helpers_comms::resolve_comms_client(state, None).await?;
+        let client = super::helpers_daemon::daemon_client(state).await?;
         RefsSource::Daemon {
             client,
             root: state.shared.root.clone(),

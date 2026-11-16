@@ -129,13 +129,6 @@ enum Cmd {
         #[command(subcommand)]
         action: CommsLifecycleCmd,
     },
-    /// Multi-agent coordination: identities, scoped threads, messages, inbox (needs
-    /// `--features comms`). Talks to the broker daemon directly, like `comms`.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    Agents {
-        #[command(subcommand)]
-        action: basemind::cli::agents::AgentsCmd,
-    },
     /// Machine-registry listings: workspaces / worktrees / branches (needs `--features comms`).
     /// Talks to the broker daemon directly, like `comms`.
     #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -163,8 +156,7 @@ enum DaemonCmd {
 /// Subcommands for `basemind comms`: the broker daemon's lifecycle only.
 ///
 /// These manage the singleton broker process (`Daemon`/`Start`/`Stop`/`Status`/`Doctor`). The agent
-/// coordination verbs it used to carry now live in their own group, `basemind agents` (see
-/// `cli::agents`).
+/// agent coordination commands live in their own group, `basemind agent` (see `cli::agent`).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 #[derive(Subcommand, Debug)]
 enum CommsLifecycleCmd {
@@ -384,9 +376,7 @@ fn run() -> Result<()> {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => comms_cli::cmd_comms(action, json),
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        Cmd::Agents { action } => basemind::cli::agents::run(&root, json, action),
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        Cmd::Workspace { action } => basemind::cli::registry::run(&root, json, action),
+        Cmd::Workspace { action } => basemind::cli::registry::run(json, action),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Daemon { action } => comms_cli::cmd_daemon(action, json),
     }
@@ -402,11 +392,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
         Cmd::Code(_) | Cmd::Git(_) | Cmd::Memory(_) | Cmd::Admin(_) | Cmd::Cache(_) | Cmd::Status | Cmd::Doctor
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let consumes_json = consumes_json
-        || matches!(
-            cmd,
-            Cmd::Comms { .. } | Cmd::Agents { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. }
-        );
+    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. });
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve);
 
     if json && !consumes_json {

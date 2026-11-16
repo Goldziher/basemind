@@ -73,6 +73,7 @@ use super::api::{
 };
 use super::rules::{self, Position};
 
+mod admin;
 mod inbox;
 mod keys;
 mod open;

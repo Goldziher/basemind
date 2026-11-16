@@ -4,22 +4,9 @@
 //! The heavy, workspace-level read fields live on [`SharedReadStack`](super::SharedReadStack)
 //! (in `shared_state.rs`) so one stack can be shared — via an [`Arc`] — across many connections.
 //! `ServerState` keeps only what is specific to a single connection: the resolved agent identity,
-//! that identity's lazily-connected broker clients, and the client's requested log verbosity.
+//! its lazily-connected link to the daemon, and the client's requested log verbosity.
 
 use std::sync::Arc;
-
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) const DELIVERED_NOTIFICATION_CAP: usize = 4_096;
-
-/// Maximum simultaneously-cached comms-broker clients per connection. Each entry owns a live socket
-/// to the broker plus that client's read buffer and undrained notification queue, and the key is the
-/// caller-supplied `as_agent` — a free-form validated string, so the key space is unbounded and an
-/// insert-only map accumulates one fd + one growing queue per distinct identity a session ever names
-/// (and pins a broker `link` against the daemon's idle reaper). 32 is well above the handful of
-/// sub-identities a real session drives, and eviction only closes a connection that re-opens lazily
-/// on its next use.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) const COMMS_CLIENT_CAP: usize = 32;
 
 use super::{SharedReadStack, helpers_calls, helpers_impls, l1_cache, map_fingerprint, types};
 use crate::extract::FileMapL1;
@@ -29,37 +16,20 @@ use crate::store::Store;
 ///
 /// Holds one [`Arc<SharedReadStack>`](super::SharedReadStack) (the heavy read state, shared across
 /// connections) plus this connection's own identity. Field accesses to the shared read stack go
-/// through [`shared`](Self::shared); the identity fields (`agent_id`, `comms_clients`)
+/// through [`shared`](Self::shared); the identity fields (`agent_id`, `daemon_client`)
 /// are read directly.
 pub(crate) struct ServerState {
     /// The workspace-level read stack shared across every connection to this `(root, view)`.
     pub(crate) shared: Arc<SharedReadStack>,
-    /// Owner segment for the individual-memory tier. Resolved once at boot by
-    /// [`crate::comms::identity`] (validated through [`crate::comms::ids::AgentId`] so it is
-    /// NUL-free), which never yields a shared constant — so two sessions cannot land on one
-    /// memory owner. Group-tier writes ignore it. Per-connection identity.
+    /// Owner segment for the individual-memory tier: the session's principal, resolved by the one
+    /// identity resolver of agent comms (ADR-0021). Group-tier writes ignore it.
     #[allow(dead_code)]
     pub(crate) agent_id: String,
-    /// Per-identity registry of lazily-connected comms-broker clients, keyed by `AgentId`. The
-    /// server's own identity (`agent_id`) connects directly; a sub-identity (driven via a tool's
-    /// `as_agent` param) gets its own broker connection, so one `serve` process can act as many
-    /// named agents. Entries are created on first use; a connect failure surfaces as an MCP error
-    /// on the triggering call, never at server boot. Per-connection identity.
-    ///
-    /// Bounded at [`COMMS_CLIENT_CAP`] because the key comes off the wire — see that constant.
+    /// This session's link to the daemon for forwarded work, connected on first use (see
+    /// `helpers_daemon`). It names no agent.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) comms_clients: tokio::sync::Mutex<lru::LruCache<crate::comms::ids::AgentId, CommsClientCell>>,
-    /// Bounded per-session high-water cache for mailbox notices piggybacked onto tool responses.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) delivered_notifications: tokio::sync::Mutex<lru::LruCache<String, ()>>,
-    /// Messages already returned by a `wait`, so a poll loop that never acks is not answered instantly
-    /// with its own backlog on every call.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) waited_messages: tokio::sync::Mutex<lru::LruCache<String, ()>>,
-    /// Dedicated, rate-limited connection for the per-tool-call delivery-notice probe, so a slow or
-    /// abandoned probe can never desynchronise or head-of-line-block the shared `comms_clients`.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) delivery_probe: tokio::sync::Mutex<DeliveryProbe>,
+    pub(crate) daemon_client:
+        tokio::sync::OnceCell<std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>>,
     /// Whether this server advertises the lean three-tool surface (see [`super::lean`]). Resolved
     /// ONCE at construction from `BASEMIND_MCP_LEAN` (the value does not change mid-session), so the
     /// decision is stable and per-server rather than a per-request global-env read — which lets
@@ -72,25 +42,10 @@ pub(crate) struct ServerState {
     pub(crate) task_threshold_ms: std::sync::atomic::AtomicU64,
 }
 
-/// A lazily-initialised, shared handle to one identity's broker client. The cell is what a slow connect
-/// waits on, so the registry lock is held only to find or insert it.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) type CommsClientCell =
-    std::sync::Arc<tokio::sync::OnceCell<std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>>>;
-
-/// State of the delivery-notice probe: its own broker connection and the time of the last probe.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-#[derive(Default)]
-pub(crate) struct DeliveryProbe {
-    pub(crate) client: Option<crate::comms::client::CommsClient>,
-    pub(crate) last_probe: Option<std::time::Instant>,
-}
-
 impl ServerState {
     /// Build a fresh per-connection state that shares the given [`SharedReadStack`].
     ///
-    /// Each connection gets its own identity: a fresh (empty) `comms_clients` registry and the
-    /// default log verbosity. Not yet wired to a caller — the seam a future daemon-hosted transport
+    /// Each connection gets its own identity: no daemon link yet, and the default log verbosity. Not yet wired to a caller — the seam a future daemon-hosted transport
     /// uses to hand every accepted connection the one shared read stack.
     #[allow(dead_code)]
     pub(crate) fn for_connection(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
@@ -98,21 +53,7 @@ impl ServerState {
             shared,
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            comms_clients: tokio::sync::Mutex::new(lru::LruCache::new(
-                std::num::NonZeroUsize::new(COMMS_CLIENT_CAP).expect("comms client capacity is non-zero"),
-            )),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            delivered_notifications: tokio::sync::Mutex::new(lru::LruCache::new(
-                std::num::NonZeroUsize::new(DELIVERED_NOTIFICATION_CAP)
-                    .expect("notification cache capacity is non-zero"),
-            )),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            waited_messages: tokio::sync::Mutex::new(lru::LruCache::new(
-                std::num::NonZeroUsize::new(DELIVERED_NOTIFICATION_CAP)
-                    .expect("notification cache capacity is non-zero"),
-            )),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            delivery_probe: tokio::sync::Mutex::new(DeliveryProbe::default()),
+            daemon_client: tokio::sync::OnceCell::new(),
             lean: std::sync::atomic::AtomicBool::new(super::lean::lean_mode_enabled()),
             task_threshold_ms: std::sync::atomic::AtomicU64::new(super::tasks::TASK_THRESHOLD.as_millis() as u64),
         }

@@ -65,7 +65,6 @@ use tokio_util::sync::CancellationToken;
 
 use super::daemon::Broker;
 use super::http_auth::{self, HttpToken};
-use super::identity;
 use super::ids::AgentId;
 use crate::mcp::BasemindServer;
 
@@ -423,7 +422,10 @@ impl HttpRouter {
                     );
                 }
             },
-            None => identity::cli_agent_id(&root).into_string(),
+            None => match super::v2::identity::resolve_for_root(&root) {
+                Ok(resolved) => resolved.principal.as_str().to_string(),
+                Err(_) => super::v2::identity::DEFAULT_HOST.to_string(),
+            },
         };
         tracing::debug!(agent = %agent_id, root = %root.display(), "http: serving stateless mcp request");
 

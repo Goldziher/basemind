@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 use basemind::comms::client::CommsClient;
 use basemind::comms::http_frontend;
-use basemind::comms::ids::AgentId;
 use basemind::comms::singleton::{CommsPaths, comms_socket_path, generation_dir, probe_alive};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -115,14 +114,14 @@ async fn connect(socket: &Path, agent: &str, root: &Path) -> CommsClient {
         comms_dir: socket.parent().expect("socket parent").to_path_buf(),
         socket_path: socket.to_path_buf(),
     };
-    CommsClient::connect(
-        &paths,
-        AgentId::parse(agent).expect("agent id"),
+    let hello = basemind::comms::client::ClientHello::agent(
+        basemind::comms::v2::Principal::parse(agent).expect("principal"),
+        root.to_path_buf(),
         None,
-        Some(root.to_path_buf()),
-    )
-    .await
-    .unwrap_or_else(|e| panic!("connect {agent}: {e}"))
+    );
+    CommsClient::connect(&paths, hello)
+        .await
+        .unwrap_or_else(|e| panic!("connect {agent}: {e}"))
 }
 
 /// Send one stateless MCP JSON-RPC call to the daemon's hosted HTTP frontend.
@@ -1667,8 +1666,7 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
                 build_id: String::new(),
                 proto_ver: RELEASED_PROTO,
                 uptime_secs: 60,
-                threads: 1,
-                subscribers: 1,
+                agent_store: "open".to_string(),
             })))
             .expect("encode status");
             let _ = stream.write_all(&u32::try_from(reply.len()).expect("len fits").to_be_bytes());

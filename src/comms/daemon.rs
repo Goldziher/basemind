@@ -1,18 +1,13 @@
 //! The broker: the single owner of all comms state.
 //!
-//! [`Broker`] wraps the [`CommsStore`] and an in-RAM registry of live notification sinks. It
-//! handles each [`CommsRequest`] and fans out [`CommsNotification::Message`] to every link
-//! subscribed to the posted thread. The daemon is the sole writer to the store, so request
-//! handling needs no cross-process coordination beyond the store's flock.
-//!
-//! There is NO auto-join: `Hello` records identity and captures the scope chain for path-glob
-//! discovery only. Agents explicitly START a thread or JOIN one.
+//! [`Broker`] holds the agent store ([`AgentHub`]), the hot workspaces and the machine registry,
+//! and handles each [`CommsRequest`]. `Hello` fixes who a link speaks for (ADR-0021); the agent
+//! requests act as that identity and are answered in `daemon_agents.rs`.
 //!
 //! ## Lifecycle
 //!
-//! `Starting → Active ⇄ Idle → Draining → Stopped`. The subscriber refcount drives the
-//! Active⇄Idle edge; `Draining` stops accepting, flushes, then releases the flock and unlinks the
-//! socket on the way to `Stopped`.
+//! `Starting → Active → Draining → Stopped`. `Draining` stops accepting, flushes, then releases
+//! the flock and unlinks the socket on the way to `Stopped`.
 //!
 //! Four things enter `Draining`: a `Stop` RPC, SIGTERM, the socket-ownership watchdog (another
 //! daemon reclaimed our socket), and the **idle reaper** — the daemon is machine-wide and
@@ -26,22 +21,15 @@ use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
-use super::daemon_handlers::PostFields;
+use super::agents_hub::AgentHub;
 use super::git_history_ops::HistoryEntry;
-use super::ids::{AgentId, ThreadId};
 use super::protocol::{CommsOut, CommsRequest, CommsResponse};
-use super::scope::ScopeChain;
-use super::store::{CommsStore, CommsStoreError};
+use super::v2::api::{Principal, RepoKey};
 use super::workspace_pool::{self, WorkspacePool};
 use crate::registry::Registry as MachineRegistry;
-
-/// Default page size when a client omits `limit`.
-pub const DEFAULT_LIMIT: u32 = 100;
-/// Hard cap on a page, mirroring the MCP `limit` ceiling.
-pub const MAX_LIMIT: u32 = 1000;
 
 /// Idle window after which a daemon with no connected links and no work in flight self-terminates.
 ///
@@ -116,8 +104,6 @@ const GC_LOCK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 pub use super::daemon_guards::{LinkGuard, RelayGuard, WorkGuard};
 
-pub use super::store::{THREAD_IDLE_TTL, THREAD_RETENTION_TTL};
-
 /// How long a hot workspace may sit unrequested before the daemon sheds it from RAM. Its on-disk
 /// cache survives; the next request re-opens it lazily.
 ///
@@ -133,55 +119,24 @@ pub const WORKSPACE_HOT_TTL: Duration = Duration::from_secs(15 * 60);
 pub enum LifecycleState {
     /// Booting: store opening, front-ends not yet accepting.
     Starting,
-    /// Serving with at least one live subscriber.
+    /// Serving.
     Active,
-    /// No live subscribers; socket + flock retained, caches may be shed.
-    Idle,
     /// Stop requested: refusing new work, flushing.
     Draining,
     /// Fully stopped; flock released, socket unlinked.
     Stopped,
 }
 
-/// What a [`SubSink`] wakes on. `Thread` is the original thread-scoped stream opened by
-/// [`CommsRequest::Subscribe`] (which also joins the thread); `Inbox` is the passive,
-/// membership-routed stream opened by [`CommsRequest::SubscribeInbox`] that backs `inbox_wait`.
-pub(super) enum SubScope {
-    /// Wake on every post to this one thread (the classic `Subscribe` behavior).
-    Thread(ThreadId),
-    /// Wake on a post to any thread the sink's agent is a member of, or — when `Some` — to just
-    /// that one thread. Self-authored posts never wake this scope (mirrors `on_inbox`).
-    Inbox {
-        /// Restrict the wake to this thread only. `None` = any joined thread.
-        thread: Option<ThreadId>,
-    },
-}
-
-/// A registered notification sink for one subscription. The link's writer half drains it.
-pub(super) struct SubSink {
-    /// What this sink wakes on.
-    pub(super) scope: SubScope,
-    /// The agent owning the subscription. `Thread` sinks retain it only for diagnostics; `Inbox`
-    /// sinks use it to route by membership and to exclude the agent's own posts.
-    pub(super) agent: AgentId,
-    /// Scope captured at Hello for live path-discovery notifications. Only inbox subscriptions
-    /// populate this; thread subscriptions do not need discovery routing.
-    pub(super) chain: Option<ScopeChain>,
-    /// Where notifications are pushed.
-    pub(super) tx: mpsc::Sender<CommsOut>,
-}
-
 /// In-RAM broker state behind a single async mutex.
 pub(super) struct Registry {
-    /// Live notification sinks keyed by subscription handle.
-    pub(super) sinks: AHashMap<u64, SubSink>,
     /// Current lifecycle state.
     pub(super) state: LifecycleState,
 }
 
 /// The broker. Cheap to share via `Arc`; every front-end and link holds one.
 pub struct Broker {
-    pub(super) store: Arc<CommsStore>,
+    /// The agent store and everything the daemon keeps beside it (ADR-0021).
+    pub(super) agents: Arc<AgentHub>,
     /// Process-wide heavy-work gate shared by every relay and HTTP MCP connection.
     pub(crate) heavy_admission: Arc<crate::mcp::admission::HeavyAdmission>,
     /// Hot read-write workspace indexes. The daemon is the machine's sole fjall writer; front-ends
@@ -200,30 +155,16 @@ pub struct Broker {
     /// The machine-wide repo/worktree/branch/workspace registry (distinct from the `registry` sink
     /// map above). The daemon is its sole writer; coordination tools read/mutate through it.
     machine_registry: Arc<Mutex<MachineRegistry>>,
-    /// Serializes store mutations (see [`Broker::store_write`]); held only on blocking threads.
-    pub(super) store_write_gate: Arc<std::sync::Mutex<()>>,
-    /// Test hook: milliseconds the NEXT store call sleeps for on its blocking thread, then resets.
-    #[cfg(test)]
-    pub(super) store_delay_ms: Arc<AtomicU64>,
     /// The accept-loop shutdown signal, installed by the daemon entry point after it builds the
     /// `watch` channel. `begin_drain` fires it so a `Stop` RPC (or any drain) actually breaks the
     /// front-end accept loop — not just notifies connected sinks. Absent in tests that drive the
     /// broker directly, where `begin_drain` still transitions state and notifies sinks.
     pub(super) shutdown: std::sync::OnceLock<watch::Sender<bool>>,
-    /// The comms dir this broker's store lives in, installed by the daemon entry point. Only needed
-    /// on the terminal-failure path, where it names the file the fatal error is written to. Absent
-    /// in tests that drive the broker directly, which then latch the failure without persisting it.
-    pub(super) comms_dir: std::sync::OnceLock<std::path::PathBuf>,
-    /// Latches the first terminal store failure (see [`super::store_health::is_fatal`]). Read by the
-    /// daemon entry point after the serve loop returns, so a daemon that gave up its store exits
-    /// non-zero rather than reporting a clean stop.
-    pub(super) fatal_store: AtomicBool,
     /// Cooperative cancellation for in-flight scans. Every drain route ends in `finish_drain`,
     /// which trips this FIRST — so a `Stop` RPC, SIGTERM, the idle reaper, and socket-ownership
     /// loss all interrupt a mid-scan `spawn_blocking` at per-file granularity instead of letting
     /// the runtime teardown block on it (previously only SIGKILL could end a scanning daemon).
     pub(super) scan_cancel: crate::scanner::ScanCancel,
-    pub(super) subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
     pub(super) relay_count: AtomicUsize,
     /// Relay links whose handshake has begun and not yet ended in a registered session or a
@@ -249,17 +190,16 @@ pub struct Broker {
     /// alive even though no persistent connection is held between requests. Initial `0` reads as
     /// "epoch" — identical to `last_activity_ms`, so an HTTP-idle daemon reaps on the normal window.
     pub(super) last_http_ms: AtomicU64,
-    pub(super) next_sub: AtomicU64,
     pub(super) started: Instant,
     pub(super) version: String,
 }
 
 impl Broker {
-    /// Construct a broker over an already-opened store, opening the machine registry from the
+    /// Construct a broker over an opened agent store, opening the machine registry from the
     /// machine-global cache. A registry-open failure degrades to an empty in-memory registry (rooted
     /// at a throwaway path) rather than failing the daemon — coordination tools then return empty
     /// until a workspace registers. Use [`Broker::with_registry`] to inject a registry (tests).
-    pub fn new(store: Arc<CommsStore>) -> Self {
+    pub fn new(agents: AgentHub) -> Self {
         let registry = MachineRegistry::from_data_home().unwrap_or_else(|error| {
             tracing::warn!(%error, "comms: machine registry open failed; using an empty in-memory registry");
             MachineRegistry::open(
@@ -267,37 +207,30 @@ impl Broker {
             )
             .expect("open fallback registry in temp dir")
         });
-        Self::with_registry(store, registry)
+        Self::with_registry(agents, registry)
     }
 
-    /// Construct a broker over an already-opened store and an explicit machine registry. The daemon
+    /// Construct a broker over an opened agent store and an explicit machine registry. The daemon
     /// owns the registry as its sole writer; the coordination tools read/mutate through it. Tests
     /// inject an isolated registry here.
-    pub fn with_registry(store: Arc<CommsStore>, machine_registry: MachineRegistry) -> Self {
+    pub fn with_registry(agents: AgentHub, machine_registry: MachineRegistry) -> Self {
         let workspaces = Arc::new(WorkspacePool::new(workspace_pool::DEFAULT_HOT_CAP));
         // Adopt the pool's drain token so `begin_drain`'s cancel reaches BOTH dispatch paths: the
         // socket path (which clones `self.scan_cancel` into `pool.rescan`) and the in-process host
         // seam (`WorkspacePool::host_rescan`, which uses the pool's own copy). One flag, every scan.
         let scan_cancel = workspaces.scan_cancel();
         Self {
-            store,
+            agents: Arc::new(agents),
             heavy_admission: Arc::new(crate::mcp::admission::HeavyAdmission::default()),
             workspaces,
             git_history: std::sync::Mutex::new(AHashMap::new()),
             git_history_open_lock: Mutex::new(()),
             registry: Mutex::new(Registry {
-                sinks: AHashMap::new(),
                 state: LifecycleState::Starting,
             }),
             machine_registry: Arc::new(Mutex::new(machine_registry)),
-            store_write_gate: Arc::new(std::sync::Mutex::new(())),
-            #[cfg(test)]
-            store_delay_ms: Arc::new(AtomicU64::new(0)),
             shutdown: std::sync::OnceLock::new(),
-            comms_dir: std::sync::OnceLock::new(),
-            fatal_store: AtomicBool::new(false),
             scan_cancel,
-            subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
             relay_count: AtomicUsize::new(0),
             relay_handshakes: AtomicUsize::new(0),
@@ -306,7 +239,6 @@ impl Broker {
             last_activity_ms: AtomicU64::new(0),
             http_inflight: AtomicUsize::new(0),
             last_http_ms: AtomicU64::new(0),
-            next_sub: AtomicU64::new(1),
             started: Instant::now(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
@@ -322,27 +254,8 @@ impl Broker {
     /// Mark the broker Active once front-ends are accepting.
     pub async fn mark_active(&self) {
         let mut reg = self.registry.lock().await;
-        if reg.state == LifecycleState::Starting || reg.state == LifecycleState::Idle {
+        if reg.state == LifecycleState::Starting {
             reg.state = LifecycleState::Active;
-        }
-    }
-
-    /// Current live subscriber count.
-    pub fn subscriber_count(&self) -> usize {
-        self.subscriber_count.load(Ordering::Relaxed)
-    }
-
-    /// Remove every subscription owned by a transport link that has closed.
-    pub async fn remove_link_subscriptions(&self, link_tx: &mpsc::Sender<CommsOut>) {
-        let removed = {
-            let mut registry = self.registry.lock().await;
-            let before = registry.sinks.len();
-            registry.sinks.retain(|_, sink| !sink.tx.same_channel(link_tx));
-            before.saturating_sub(registry.sinks.len())
-        };
-        if removed > 0 {
-            self.subscriber_count.fetch_sub(removed, Ordering::Relaxed);
-            self.maybe_idle().await;
         }
     }
 
@@ -576,7 +489,7 @@ impl Broker {
     /// registry lock on every accept — real contention on the hot path to close a window that the
     /// drain already closes for free.
     pub async fn try_begin_idle_drain(&self, idle_for: Duration) -> bool {
-        let sinks: Vec<mpsc::Sender<CommsOut>> = {
+        {
             let mut reg = self.registry.lock().await;
             if matches!(reg.state, LifecycleState::Draining | LifecycleState::Stopped) {
                 return false;
@@ -591,9 +504,8 @@ impl Broker {
                 return false;
             }
             reg.state = LifecycleState::Draining;
-            reg.sinks.values().map(|s| s.tx.clone()).collect()
-        };
-        self.finish_drain(sinks).await;
+        }
+        self.finish_drain().await;
         true
     }
 
@@ -629,19 +541,6 @@ impl Broker {
             }
             tokio::time::sleep(DRAIN_POLL_EVERY).await;
         }
-    }
-
-    /// Archive every active thread idle past `ttl`. Returns the count archived. Best-effort — a
-    /// store error is surfaced to the caller (the daemon logs it). This is the reaper hook.
-    pub fn archive_idle_threads(&self, ttl: Duration) -> Result<usize, CommsStoreError> {
-        self.store.archive_idle(ttl)
-    }
-
-    /// Permanently reclaim archived threads idle past `ttl` (row + messages + members + cursors).
-    /// Returns the count purged. The retention tail after [`archive_idle_threads`](Self::archive_idle_threads);
-    /// a store error is surfaced to the caller (the daemon logs it).
-    pub fn purge_archived_threads(&self, ttl: Duration) -> Result<usize, CommsStoreError> {
-        self.store.purge_archived(ttl)
     }
 
     /// Shed hot workspaces idle past `ttl` from RAM (their on-disk cache survives). Returns the
@@ -717,171 +616,73 @@ impl Broker {
 
     /// Handle one request on a link and frame its answer: a [`CommsRequest::Call`] is unwrapped and
     /// answered with a [`CommsOut::Reply`] echoing its id; a bare request gets the uncorrelated
-    /// [`CommsOut::Response`].
-    pub async fn handle_framed(
-        &self,
-        req: CommsRequest,
-        session: &mut Session,
-        link_tx: &mpsc::Sender<CommsOut>,
-    ) -> CommsOut {
+    /// [`CommsOut::Response`]. `gone` is cancelled when the client hangs up mid-request.
+    pub async fn handle_framed(&self, req: CommsRequest, session: &mut Session, gone: &CancellationToken) -> CommsOut {
         match req {
             CommsRequest::Call { id, request } => CommsOut::Reply {
                 id,
-                response: self.handle(*request, session, link_tx).await,
+                response: self.handle(*request, session, gone).await,
             },
-            bare => CommsOut::Response(self.handle(bare, session, link_tx).await),
+            bare => CommsOut::Response(self.handle(bare, session, gone).await),
         }
     }
 
     /// Handle one request on a link. Returns the direct response.
-    pub async fn handle(
-        &self,
-        req: CommsRequest,
-        session: &mut Session,
-        link_tx: &mpsc::Sender<CommsOut>,
-    ) -> CommsResponse {
+    pub async fn handle(&self, req: CommsRequest, session: &mut Session, gone: &CancellationToken) -> CommsResponse {
         self.touch();
-        if let Some(agent) = session.agent.clone() {
-            let touched = {
-                let agent = agent.clone();
-                self.store_write(move |store| store.touch_agent_if_stale(&agent, super::store::AGENT_TOUCH_INTERVAL))
-                    .await
-            };
-            if let Err(error) = touched {
-                self.note_store_error("touch_agent", &error).await;
-                tracing::warn!(%error, agent = %agent, "comms: refresh agent activity failed");
-            }
-        }
-        let method = req.method();
-        match self.dispatch(req, session, link_tx).await {
-            Ok(resp) => resp,
-            Err(e) => {
-                self.note_store_error(method, &e).await;
-                CommsResponse::Error {
-                    code: "store_error".to_string(),
-                    message: e.to_string(),
-                }
-            }
-        }
-    }
-
-    async fn dispatch(
-        &self,
-        req: CommsRequest,
-        session: &mut Session,
-        link_tx: &mpsc::Sender<CommsOut>,
-    ) -> Result<CommsResponse, CommsStoreError> {
         match req {
             CommsRequest::Hello {
-                agent,
                 proto_ver,
-                remote,
-                cwd,
-            } => {
-                let resp = self.on_hello(agent, proto_ver, remote, cwd.clone(), session).await?;
-                if let (CommsResponse::Welcome { .. }, Some(root)) = (&resp, cwd) {
-                    let target = root.clone();
-                    if let Err(error) = self.registry_blocking(move |reg| reg.register_workspace(&target)).await {
-                        tracing::warn!(%error, root = %root.display(), "comms: registry auto-register failed");
-                    }
-                }
-                Ok(resp)
+                principal,
+                root,
+                host,
+            } => self.on_hello(proto_ver, principal, root, host, session).await,
+            CommsRequest::AgentPost { sub, body } => self.on_agent_post(session, sub, body).await,
+            CommsRequest::AgentInbox { sub, body, wait_secs } => {
+                self.on_agent_inbox(session, sub, body, wait_secs, gone).await
             }
-            CommsRequest::Register { card } => self.on_register(session, card).await,
-            CommsRequest::ListAgents { thread } => self.on_list_agents(thread).await,
-            request @ CommsRequest::Cleanup { .. } => Ok(self.on_agents_cleanup_request(request).await),
-            CommsRequest::AgentsStatus { agent_ttl_secs } => Ok(self.on_agents_status(agent_ttl_secs).await),
-            CommsRequest::ThreadStart { subject, path, members } => {
-                self.on_thread_start(session, subject, path, members).await
-            }
-            CommsRequest::ThreadJoin { thread } => self.on_thread_join(session, thread).await,
-            CommsRequest::ThreadLeave { thread } => self.on_thread_leave(session, thread).await,
-            CommsRequest::ThreadList {
-                remote,
-                cwd,
-                subject_contains,
-                include_archived,
-            } => {
-                self.on_thread_list(session, remote, cwd, subject_contains, include_archived)
-                    .await
-            }
-            CommsRequest::ThreadPost {
-                thread,
-                subject,
-                tags,
-                reply_to,
-                body,
-                idempotency_key,
-            } => {
-                let fields = PostFields {
-                    subject,
-                    tags,
-                    reply_to,
-                    body,
-                    idempotency_key,
-                };
-                self.on_post(session, thread, fields).await
-            }
-            CommsRequest::ThreadHistory {
-                thread,
-                cursor,
-                limit,
-                since_micros,
-            } => self.on_history(thread, cursor, limit, since_micros).await,
-            CommsRequest::ThreadMembers { thread } => self.on_thread_members(thread).await,
-            CommsRequest::ThreadAddMember { thread, member } => {
-                self.on_thread_add_member(session, thread, member).await
-            }
-            CommsRequest::ThreadRemoveMember { thread, member } => {
-                self.on_thread_remove_member(session, thread, member).await
-            }
-            CommsRequest::ThreadArchive { thread } => self.on_thread_archive(session, thread).await,
-            CommsRequest::GetBody { message_id } => self.on_get_body(session, message_id).await,
-            CommsRequest::Inbox {
-                cursor,
-                limit,
-                mark_read,
-                since_micros,
-                thread,
-                ..
-            } => {
-                self.on_inbox(session, cursor, limit, mark_read, since_micros, thread)
-                    .await
-            }
-            CommsRequest::AckInbox {
-                message_ids,
-                thread,
-                to_seq,
-            } => self.on_ack(session, message_ids, thread, to_seq).await,
-            CommsRequest::Subscribe { thread } => self.on_subscribe(session, thread, link_tx).await,
-            CommsRequest::SubscribeInbox { thread } => self.on_subscribe_inbox(session, thread, link_tx).await,
-            CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
+            CommsRequest::AgentThreads { sub, query } => self.on_agent_threads(session, sub, query).await,
+            CommsRequest::AgentThreadUpdate { sub, update } => self.on_agent_thread_update(session, sub, update).await,
+            CommsRequest::AgentStatus => self.on_agent_status(session),
+            CommsRequest::AgentCleanup { archive } => self.on_agent_cleanup(archive).await,
             CommsRequest::Rescan {
                 root,
                 paths,
                 full,
                 embed,
                 verify,
-            } => Ok(self.on_rescan(root, paths, full, embed, verify).await),
-            CommsRequest::ResolvedRefs { root, query } => Ok(self.on_resolved_refs(root, query).await),
-            CommsRequest::IndexRead { root, query } => Ok(self.on_index_read(root, query).await),
-            CommsRequest::CodeSearchLanes { root, query } => Ok(self.on_code_search_lanes(root, query).await),
-            CommsRequest::GitHistory { root, op } => Ok(self.on_git_history(root, op).await),
+            } => self.on_rescan(root, paths, full, embed, verify).await,
+            CommsRequest::ResolvedRefs { root, query } => self.on_resolved_refs(root, query).await,
+            CommsRequest::IndexRead { root, query } => self.on_index_read(root, query).await,
+            CommsRequest::CodeSearchLanes { root, query } => self.on_code_search_lanes(root, query).await,
+            CommsRequest::GitHistory { root, op } => self.on_git_history(root, op).await,
             #[cfg(feature = "memory")]
-            CommsRequest::Memory { root, scope, op } => Ok(self.on_memory(root, scope, op).await),
-            CommsRequest::AccessedPaths => Ok(self.on_accessed_paths()),
-            CommsRequest::WorkspacesList => Ok(self.on_workspaces_list().await),
-            CommsRequest::WorktreesList { repo_id } => Ok(self.on_worktrees_list(repo_id).await),
-            CommsRequest::BranchesList { repo_id } => Ok(self.on_branches_list(repo_id).await),
-            CommsRequest::Ping => Ok(CommsResponse::Pong),
-            CommsRequest::Status => self.on_status().await,
-            CommsRequest::Stop => Ok(self.on_stop().await),
+            CommsRequest::Memory { root, scope, op } => self.on_memory(root, scope, op).await,
+            CommsRequest::AccessedPaths => self.on_accessed_paths(),
+            CommsRequest::WorkspacesList => self.on_workspaces_list().await,
+            CommsRequest::WorktreesList { repo_id } => self.on_worktrees_list(repo_id).await,
+            CommsRequest::BranchesList { repo_id } => self.on_branches_list(repo_id).await,
+            CommsRequest::Ping => CommsResponse::Pong,
+            CommsRequest::Status => self.on_status(),
+            CommsRequest::Stop => self.on_stop().await,
             // `handle_framed` unwraps the one legal level of `Call`; a nested one is malformed.
-            CommsRequest::Call { .. } => Ok(CommsResponse::Error {
+            CommsRequest::Call { .. } => CommsResponse::Error {
                 code: "nested_call".to_string(),
                 message: "a correlated call cannot wrap another call".to_string(),
-            }),
+            },
         }
+    }
+
+    /// The daemon's own status.
+    fn on_status(&self) -> CommsResponse {
+        CommsResponse::Status(super::protocol::StatusReport {
+            pid: std::process::id(),
+            version: self.version.clone(),
+            build_id: crate::version::build_id().to_string(),
+            proto_ver: super::protocol::PROTO_VER,
+            uptime_secs: self.started.elapsed().as_secs(),
+            agent_store: self.agents.status(None, None).state,
+        })
     }
 }
 
@@ -889,10 +690,14 @@ impl Broker {
 /// that link.
 #[derive(Default)]
 pub struct Session {
-    /// The authenticated agent id for this link.
-    pub agent: Option<AgentId>,
-    /// The scope chain captured at Hello, used for path-glob discovery.
-    pub chain: Option<ScopeChain>,
+    /// The principal the link's agent requests act as.
+    pub principal: Option<Principal>,
+    /// The canonical root the client named.
+    pub root: Option<std::path::PathBuf>,
+    /// The agent harness the client named (`BASEMIND_HOST`).
+    pub host: Option<String>,
+    /// The repository of `root`.
+    pub repo: Option<RepoKey>,
 }
 
 #[path = "daemon_workspace_handlers.rs"]
@@ -901,14 +706,10 @@ mod workspace_handlers;
 #[path = "daemon_store_blocking.rs"]
 mod store_blocking;
 
-#[path = "daemon_threads.rs"]
-pub(super) mod threads;
 #[cfg(test)]
-use super::model::now_micros;
+use super::protocol::PROTO_VER;
 #[cfg(test)]
-use super::protocol::{CommsNotification, PROTO_VER, SeqMeta};
-#[cfg(test)]
-use threads::{sanitize_id, validate_dimensions};
+use super::v2::api::CommsError;
 
 #[cfg(test)]
 #[path = "daemon_tests.rs"]

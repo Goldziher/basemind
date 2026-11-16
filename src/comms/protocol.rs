@@ -11,253 +11,88 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::cursor::Cursor;
-use super::ids::{AgentId, ThreadId};
-use super::model::{AgentCard, MessageMeta, Thread};
+use super::agents_hub::{AgentCleanupReport, AgentStoreStatus};
+use super::v2::api::{
+    CommsError, InboxBody, InboxReply, PostBody, PostReply, Principal, SubName, ThreadId, ThreadQuery, ThreadUpdate,
+    ThreadsReply,
+};
 
 /// The protocol version this build speaks. Bumped on any breaking change to the request /
-/// response / notification shapes. Negotiated in [`CommsRequest::Hello`]. Bumped 1→2 for the
-/// room→thread redesign; bumped 2→3 for [`CommsRequest::SubscribeInbox`] (an old client talking
-/// to a new daemon, or vice versa, now fails the Hello skew check instead of risking a decode
-/// error on the new variant); bumped 3→4 for request correlation ([`CommsRequest::Call`] /
-/// [`CommsOut::Reply`]), so a skewed peer fails the Hello check with a clear error and the daemon
-/// takeover in `ensure_daemon` replaces an older daemon; bumped 4→5 when the `governance`
-/// request and response variants were removed, so a client that could still send one is refused
-/// at Hello instead of failing to decode mid-session. The `worktree_claim` / `worktree_release`
-/// requests were removed WITHOUT a bump: only a deliberate claim from an older client can send one,
-/// the daemon fails to decode the frame and drops that one link, and the client reports a closed
-/// connection and reconnects. Nothing else on the wire changed, so refusing every older client at
-/// Hello would cost more than the one call it protects. Bumped 5→6 for the batched memory reads
-/// (`MemoryOp::GetMany` and `MemoryOp::Stamps` in `comms::memory_proto`): a daemon that predates
-/// them cannot decode the request, so a client that may send one is refused at Hello instead of
-/// failing mid-session. The
-/// same version carries the `verify` flag of [`CommsRequest::Rescan`], which a daemon that predates
-/// it would drop without a word.
-pub const PROTO_VER: u32 = 6;
+/// response / notification shapes. Negotiated in [`CommsRequest::Hello`], so a skewed peer fails
+/// there with a clear error instead of misreading a frame mid-session. 1→2 the room→thread
+/// redesign; 2→3 inbox subscriptions; 3→4 request correlation ([`CommsRequest::Call`] /
+/// [`CommsOut::Reply`]); 4→5 the `governance` requests removed; 5→6 the batched memory reads
+/// and `Rescan`'s `verify` flag. 6→7 agent comms v2 (ADR-0021, ADR-0030 rule 13): `Hello` names a
+/// principal and a root, and the four agent requests replace the twenty of the v1 broker.
+pub const PROTO_VER: u32 = 7;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
 /// flattened fields.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum CommsRequest {
-    /// First frame on a link: announce identity and negotiate protocol version. Carries the
-    /// optional scope context (remote + cwd) used ONLY for path-glob discovery in `ThreadList` —
-    /// it does NOT auto-join anything.
+    /// First frame on a link: negotiate the protocol version and fix who the link speaks for.
+    ///
+    /// `principal` and `root` are what every agent request on the link acts as and in: the
+    /// principal the client resolved (ADR-0021), and the canonical root its repository is derived
+    /// from. A link that only manages the daemon or forwards index work sends neither, and its
+    /// agent requests are refused. `host` is the agent harness (`BASEMIND_HOST`), for status only.
     Hello {
-        /// The connecting agent's id.
-        agent: AgentId,
         /// The protocol version the client speaks.
         proto_ver: u32,
-        /// Normalised git remote of the agent's repo, if any.
+        /// The identity the link's agent requests act as.
         #[serde(default)]
-        remote: Option<String>,
-        /// The agent's current working directory, for path-glob discovery.
+        principal: Option<Principal>,
+        /// The canonical checkout root the identity was derived from.
         #[serde(default)]
-        cwd: Option<std::path::PathBuf>,
+        root: Option<std::path::PathBuf>,
+        /// The agent harness, from `BASEMIND_HOST`.
+        #[serde(default)]
+        host: Option<String>,
     },
-    /// Register or update the agent's card.
-    Register {
-        /// The agent's self-described A2A card.
-        card: AgentCard,
+    /// `agent_post`.
+    AgentPost {
+        /// The sub-identity (`as`) the call acts as, under the link's principal.
+        #[serde(default)]
+        sub: Option<SubName>,
+        /// The post.
+        body: PostBody,
     },
-    /// List known agents, optionally scoped to the members of one thread.
-    ListAgents {
-        /// Restrict to members of this thread when set.
+    /// `agent_inbox`. The daemon owns the wait: with `wait_secs` above 0 a read that finds
+    /// nothing unread waits for a post, up to that many seconds.
+    AgentInbox {
+        /// The sub-identity (`as`) the call acts as, under the link's principal.
         #[serde(default)]
-        thread: Option<ThreadId>,
+        sub: Option<SubName>,
+        /// The read.
+        body: InboxBody,
+        /// Seconds to wait while nothing is unread, at most `MAX_WAIT_SECS`.
+        #[serde(default)]
+        wait_secs: u32,
     },
-    /// Preview or apply machine-global comms retention cleanup.
-    Cleanup {
-        /// Mutate storage when true; false is a dry-run.
-        apply: bool,
-        /// Message expiry threshold.
-        message_ttl_secs: u64,
-        /// Active-thread archive threshold.
-        thread_idle_ttl_secs: u64,
-        /// Archived-thread purge threshold.
-        thread_retention_ttl_secs: u64,
-        /// Generated-agent activity threshold.
-        agent_ttl_secs: u64,
-        /// Identity-claim refresh threshold.
-        claim_ttl_secs: u64,
+    /// `agent_threads` without a change: list, discover or describe.
+    AgentThreads {
+        /// The sub-identity (`as`) the call acts as, under the link's principal.
+        #[serde(default)]
+        sub: Option<SubName>,
+        /// What to list or describe.
+        query: ThreadQuery,
     },
-    /// Report agent lifecycle and retention status.
-    AgentsStatus {
-        /// Generated-agent activity threshold.
-        agent_ttl_secs: u64,
+    /// `agent_threads` with a change: join, leave, invite or archive.
+    AgentThreadUpdate {
+        /// The sub-identity (`as`) the call acts as, under the link's principal.
+        #[serde(default)]
+        sub: Option<SubName>,
+        /// The change.
+        update: ThreadUpdate,
     },
-    /// Start a new thread addressed by AT LEAST TWO of `subject` / `path` / `members`. The
-    /// calling agent becomes the creator and an implicit member. Fewer than two dimensions is
-    /// rejected. Returns the created [`Thread`].
-    ThreadStart {
-        /// Topic string.
+    /// `basemind agent status`: the agent store's state, and the link's repository.
+    AgentStatus,
+    /// `basemind agent cleanup`: archive these threads whoever created them, then sweep once.
+    AgentCleanup {
+        /// Threads to archive.
         #[serde(default)]
-        subject: Option<String>,
-        /// Path or GLOB pattern for path-based discovery.
-        #[serde(default)]
-        path: Option<String>,
-        /// Explicit additional members (the creator is added automatically).
-        #[serde(default)]
-        members: Vec<AgentId>,
-    },
-    /// Join an existing thread (durable membership; drives the inbox).
-    ThreadJoin {
-        /// The thread to join.
-        thread: ThreadId,
-    },
-    /// Leave a thread the calling agent is a member of.
-    ThreadLeave {
-        /// The thread to leave.
-        thread: ThreadId,
-    },
-    /// List threads DISCOVERABLE to the calling agent: those it is a member of, those whose path
-    /// glob matches its cwd, or (when `subject_contains` is set) those whose subject contains the
-    /// filter. NEVER all threads. Archived threads are excluded unless `include_archived`.
-    ThreadList {
-        /// Remote of the agent's repo, if any (reserved for future remote-scoped discovery).
-        #[serde(default)]
-        remote: Option<String>,
-        /// The agent's cwd, used for path-glob discovery.
-        #[serde(default)]
-        cwd: Option<std::path::PathBuf>,
-        /// Optional case-sensitive substring filter over thread subjects.
-        #[serde(default)]
-        subject_contains: Option<String>,
-        /// When true, also return archived threads.
-        #[serde(default)]
-        include_archived: bool,
-    },
-    /// Post a message to a thread. Returns the new message id.
-    ThreadPost {
-        /// Target thread.
-        thread: ThreadId,
-        /// Subject line.
-        subject: String,
-        /// Free-form tags.
-        #[serde(default)]
-        tags: Vec<String>,
-        /// Id of the message being replied to, for threading.
-        #[serde(default)]
-        reply_to: Option<String>,
-        /// The message body bytes.
-        body: Vec<u8>,
-        /// Client-generated key making a retried post return the original id instead of storing a
-        /// second copy (deduplicated per agent and thread for an hour). Additive: an older daemon
-        /// ignores it.
-        #[serde(default)]
-        idempotency_key: Option<String>,
-    },
-    /// Read a thread's history, oldest-first, paginated. Returns front-matter only.
-    ThreadHistory {
-        /// The thread to read.
-        thread: ThreadId,
-        /// Resume token from a previous page.
-        #[serde(default)]
-        cursor: Option<Cursor>,
-        /// Maximum messages to return.
-        #[serde(default)]
-        limit: Option<u32>,
-        /// Absolute recency cutoff in microseconds since the unix epoch: only messages whose
-        /// `ts_micros >= since_micros` are returned. `None` returns ALL history.
-        #[serde(default)]
-        since_micros: Option<i64>,
-    },
-    /// List the members of a thread.
-    ThreadMembers {
-        /// The thread whose members to list.
-        thread: ThreadId,
-    },
-    /// Add a member to a thread. Only the creator may do this.
-    ThreadAddMember {
-        /// The thread to modify.
-        thread: ThreadId,
-        /// The agent to add.
-        member: AgentId,
-    },
-    /// Remove a member from a thread. Only the creator may do this.
-    ThreadRemoveMember {
-        /// The thread to modify.
-        thread: ThreadId,
-        /// The agent to remove.
-        member: AgentId,
-    },
-    /// Archive a thread. Only the creator (or a human via the CLI) may do this. Idempotent.
-    ThreadArchive {
-        /// The thread to archive.
-        thread: ThreadId,
-    },
-    /// Fetch a single message's body by id.
-    GetBody {
-        /// The message id (the `id` field of a [`MessageMeta`]).
-        message_id: String,
-    },
-    /// Read the calling agent's inbox: new messages across all JOINED threads.
-    Inbox {
-        /// Remote of the agent's repo (unused for inbox membership; kept for symmetry).
-        #[serde(default)]
-        remote: Option<String>,
-        /// The agent's cwd (unused for inbox membership; kept for symmetry).
-        #[serde(default)]
-        cwd: Option<std::path::PathBuf>,
-        /// Resume token from a previous page.
-        #[serde(default)]
-        cursor: Option<Cursor>,
-        /// Maximum messages to return.
-        #[serde(default)]
-        limit: Option<u32>,
-        /// When true, advance the agent's read cursors past the returned messages.
-        #[serde(default)]
-        mark_read: bool,
-        /// Absolute recency cutoff in microseconds since the unix epoch: only messages whose
-        /// `ts_micros >= since_micros` surface. `None` returns ALL unread.
-        #[serde(default)]
-        since_micros: Option<i64>,
-        /// Restrict the read to this one thread; `None` reads every joined thread. Additive with
-        /// `#[serde(default)]`: an older client omits it and an older daemon ignores it.
-        #[serde(default)]
-        thread: Option<ThreadId>,
-    },
-    /// Acknowledge inbox messages by ADVANCING the calling agent's per-thread read cursors. This
-    /// never deletes from the shared append-only log nor affects any other agent — it only moves
-    /// THIS agent's cursors forward (monotonic). Two modes, combinable:
-    /// * `message_ids` — resolve each id to its `(thread, seq)`, then advance each thread's cursor
-    ///   to the max acked seq in that thread.
-    /// * `thread` + `to_seq` — advance that one thread's cursor straight to `to_seq`.
-    AckInbox {
-        /// Message ids to ack (mode a). Empty when only the bulk mode is used.
-        #[serde(default)]
-        message_ids: Vec<String>,
-        /// Target thread for the bulk `to_seq` mode (mode b).
-        #[serde(default)]
-        thread: Option<ThreadId>,
-        /// Advance `thread`'s cursor straight to this seq (mode b). Requires `thread`.
-        #[serde(default)]
-        to_seq: Option<u64>,
-    },
-    /// Open a notification stream for a thread (the link receives [`CommsNotification::Message`]
-    /// for every subsequent post). Returns a subscription handle. Unlike [`CommsRequest::SubscribeInbox`],
-    /// this ALSO joins the thread (durable membership), matching its long-standing behavior.
-    Subscribe {
-        /// The thread to stream.
-        thread: ThreadId,
-    },
-    /// Open a notification stream for the calling agent's INBOX: a push for every subsequent post
-    /// to a thread the agent is already a member of (self-authored posts excluded, mirroring
-    /// [`CommsRequest::Inbox`]'s self-exclusion). Passive — unlike [`CommsRequest::Subscribe`], it
-    /// does NOT join any thread. When `thread` is `Some`, the push is restricted to that one
-    /// thread (the agent must already be a member); `None` wakes on ANY joined thread. Backs
-    /// `inbox_wait` / `basemind comms wait`. Returns a subscription handle (same
-    /// [`CommsResponse::Subscribed`] shape as `Subscribe`).
-    SubscribeInbox {
-        /// Restrict the wake to this thread only. `None` = any joined thread.
-        #[serde(default)]
-        thread: Option<ThreadId>,
-    },
-    /// Cancel a notification stream opened by [`CommsRequest::Subscribe`] or
-    /// [`CommsRequest::SubscribeInbox`].
-    Unsubscribe {
-        /// The subscription handle returned by `Subscribe` / `SubscribeInbox`.
-        sub: u64,
+        archive: Vec<ThreadId>,
     },
     /// Scan or rescan a workspace. The daemon is the sole fjall writer; front-ends forward their
     /// writes here so concurrent read-only sessions never contend for the index lock.
@@ -380,26 +215,12 @@ impl CommsRequest {
     pub fn method(&self) -> &'static str {
         match self {
             Self::Hello { .. } => "hello",
-            Self::Register { .. } => "register",
-            Self::ListAgents { .. } => "list_agents",
-            Self::Cleanup { .. } => "cleanup",
-            Self::AgentsStatus { .. } => "agents_status",
-            Self::ThreadStart { .. } => "thread_start",
-            Self::ThreadJoin { .. } => "thread_join",
-            Self::ThreadLeave { .. } => "thread_leave",
-            Self::ThreadList { .. } => "thread_list",
-            Self::ThreadPost { .. } => "thread_post",
-            Self::ThreadHistory { .. } => "thread_history",
-            Self::ThreadMembers { .. } => "thread_members",
-            Self::ThreadAddMember { .. } => "thread_add_member",
-            Self::ThreadRemoveMember { .. } => "thread_remove_member",
-            Self::ThreadArchive { .. } => "thread_archive",
-            Self::GetBody { .. } => "get_body",
-            Self::Inbox { .. } => "inbox",
-            Self::AckInbox { .. } => "ack_inbox",
-            Self::Subscribe { .. } => "subscribe",
-            Self::SubscribeInbox { .. } => "subscribe_inbox",
-            Self::Unsubscribe { .. } => "unsubscribe",
+            Self::AgentPost { .. } => "agent_post",
+            Self::AgentInbox { .. } => "agent_inbox",
+            Self::AgentThreads { .. } => "agent_threads",
+            Self::AgentThreadUpdate { .. } => "agent_thread_update",
+            Self::AgentStatus => "agent_status",
+            Self::AgentCleanup { .. } => "agent_cleanup",
             Self::Rescan { .. } => "rescan",
             #[cfg(feature = "memory")]
             Self::Memory { .. } => "memory",
@@ -432,61 +253,18 @@ pub enum CommsResponse {
     },
     /// Acknowledge a side-effecting request that returns no payload.
     Ok,
-    /// Reply to [`CommsRequest::ListAgents`].
-    Agents(Vec<super::model::AgentRecord>),
-    /// Reply to [`CommsRequest::Cleanup`].
-    Cleanup(CleanupReport),
-    /// Reply to [`CommsRequest::AgentsStatus`].
-    AgentsStatus(AgentsStatusReport),
-    /// Reply to [`CommsRequest::ThreadStart`] and thread lookups.
-    Thread(Thread),
-    /// Reply to [`CommsRequest::ThreadList`].
-    Threads(Vec<Thread>),
-    /// Reply to [`CommsRequest::ThreadMembers`].
-    Members {
-        /// The member agent ids of the thread.
-        members: Vec<AgentId>,
-    },
-    /// Reply to [`CommsRequest::ThreadPost`]: the new message id.
-    Posted {
-        /// The id of the message just stored.
-        message_id: String,
-    },
-    /// Reply to [`CommsRequest::ThreadHistory`].
-    History {
-        /// The page of front-matter records, each paired with its per-thread `seq`.
-        messages: Vec<SeqMeta>,
-        /// Resume token for the next page, when more remain.
-        next_cursor: Option<Cursor>,
-    },
-    /// Reply to [`CommsRequest::Inbox`].
-    Inbox {
-        /// The page of front-matter records across joined threads, each with its per-thread `seq`.
-        messages: Vec<SeqMeta>,
-        /// Count of unread messages remaining after this page.
-        unread: u32,
-        /// Resume token for the next page, when more remain.
-        next_cursor: Option<Cursor>,
-    },
-    /// Reply to [`CommsRequest::AckInbox`]: how many ids were acked and the new per-thread cursor
-    /// values that advanced as a result.
-    Acked {
-        /// Number of message ids that resolved and were acked (excludes unknown ids; the bulk
-        /// `to_seq` mode does not contribute to this count).
-        acked: u32,
-        /// `(thread, new_seq)` for each thread whose cursor advanced in this call.
-        cursors_advanced: Vec<(String, u64)>,
-    },
-    /// Reply to [`CommsRequest::GetBody`].
-    Body {
-        /// The body bytes, or `None` when the message id is unknown.
-        body: Option<Vec<u8>>,
-    },
-    /// Reply to [`CommsRequest::Subscribe`]: the subscription handle.
-    Subscribed {
-        /// The handle to pass to [`CommsRequest::Unsubscribe`].
-        sub: u64,
-    },
+    /// Reply to [`CommsRequest::AgentPost`].
+    AgentPosted(PostReply),
+    /// Reply to [`CommsRequest::AgentInbox`].
+    AgentRead(InboxReply),
+    /// Reply to [`CommsRequest::AgentThreads`] and [`CommsRequest::AgentThreadUpdate`].
+    AgentThreads(ThreadsReply),
+    /// Reply to [`CommsRequest::AgentStatus`].
+    AgentStatus(AgentStoreStatus),
+    /// Reply to [`CommsRequest::AgentCleanup`].
+    AgentCleaned(AgentCleanupReport),
+    /// An agent request refused, with its stable code, its fields and the message to show.
+    AgentRefused(CommsError),
     /// Reply to [`CommsRequest::Ping`].
     Pong,
     /// Reply to [`CommsRequest::Status`].
@@ -564,18 +342,6 @@ pub enum CommsResponse {
     },
 }
 
-/// A front-matter record paired with its per-thread `seq`. The `seq` is the position the message
-/// occupies in its thread's append-only log; callers surface it so they can drive `inbox_ack`'s
-/// `to_seq` bulk mode and `message_ids` resolution without an extra round-trip.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SeqMeta {
-    /// The message's per-thread sequence number.
-    pub seq: u64,
-    /// The front-matter record. Flattened for a compact wire shape.
-    #[serde(flatten)]
-    pub meta: MessageMeta,
-}
-
 /// Daemon status snapshot returned by [`CommsRequest::Status`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusReport {
@@ -593,61 +359,15 @@ pub struct StatusReport {
     pub proto_ver: u32,
     /// Seconds since the daemon started.
     pub uptime_secs: u64,
-    /// Number of registered (active) threads.
-    pub threads: u32,
-    /// Number of live notification subscribers.
-    pub subscribers: u32,
+    /// State of the agent store: `open`, `newer` (written by a newer basemind; read-only) or
+    /// `unreadable`.
+    pub agent_store: String,
 }
 
-/// Per-category retention preview or apply result.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CleanupReport {
-    /// Whether the reported rows were deleted.
-    pub applied: bool,
-    /// Generated agent records past their activity TTL.
-    pub stale_agents: usize,
-    /// Identity claim files past their refresh TTL.
-    pub stale_claims: usize,
-    /// Membership rows owned by stale generated agents.
-    pub stale_memberships: usize,
-    /// Read cursors owned by stale generated agents.
-    pub stale_cursors: usize,
-    /// Messages past their retention TTL.
-    pub expired_messages: usize,
-    /// Active threads past their archive threshold.
-    pub idle_threads: usize,
-    /// Archived threads past their purge threshold.
-    pub archived_threads: usize,
-}
-
-/// Operator-visible agent lifecycle status.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentsStatusReport {
-    /// Named or recently active generated agents.
-    pub active_agents: usize,
-    /// Generated agents past their activity TTL.
-    pub stale_agents: usize,
-    /// Threads accepting new messages.
-    pub active_threads: usize,
-    /// Archived threads still inside their recoverability window.
-    pub archived_threads: usize,
-    /// Completion time of the last applied maintenance sweep.
-    pub last_maintenance_micros: Option<i64>,
-}
-
-/// An unsolicited message the broker pushes to a subscribed link.
-#[allow(clippy::large_enum_variant)]
+/// An unsolicited message the broker pushes to a link.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "notify", content = "data", rename_all = "snake_case")]
 pub enum CommsNotification {
-    /// A new message landed in a thread this link subscribes to. Carries front-matter only;
-    /// fetch the body via [`CommsRequest::GetBody`].
-    Message(MessageMeta),
-    /// A new active thread matches this inbox subscriber's path scope. This carries metadata only
-    /// and does not grant membership; clients must explicitly join before reading or receiving
-    /// messages. Notifications are live-only, so reconnecting clients reconcile with
-    /// [`CommsRequest::ThreadList`].
-    ThreadDiscovered(Thread),
     /// The daemon is shutting down; the link should disconnect.
     Shutdown,
 }
@@ -723,19 +443,76 @@ mod tests {
         );
     }
 
+    fn thread() -> ThreadId {
+        ThreadId::parse("t-aaaaaa").expect("thread")
+    }
+
+    fn round_trip(req: &CommsRequest) -> CommsRequest {
+        let bytes = rmp_serde::to_vec_named(req).expect("encode");
+        rmp_serde::from_slice(&bytes).expect("decode")
+    }
+
     #[test]
-    fn request_round_trips_through_msgpack() {
-        let req = CommsRequest::ThreadPost {
-            idempotency_key: None,
-            thread: ThreadId::parse("th-1").expect("thread"),
-            subject: "hi".to_string(),
-            tags: vec!["t".to_string()],
-            reply_to: None,
-            body: b"hello".to_vec(),
-        };
-        let bytes = rmp_serde::to_vec_named(&req).expect("encode");
-        let back: CommsRequest = rmp_serde::from_slice(&bytes).expect("decode");
-        assert_eq!(req, back);
+    fn agent_requests_round_trip_through_msgpack() {
+        let requests = [
+            CommsRequest::Hello {
+                proto_ver: PROTO_VER,
+                principal: Some(Principal::parse("agent-repo-abcdef").expect("principal")),
+                root: Some(std::path::PathBuf::from("/repo")),
+                host: Some("claude".to_string()),
+            },
+            CommsRequest::AgentPost {
+                sub: Some(SubName::parse("worker").expect("sub")),
+                body: PostBody {
+                    target: crate::comms::v2::api::PostTarget::Thread(thread()),
+                    body: "hello".to_string(),
+                },
+            },
+            CommsRequest::AgentInbox {
+                sub: None,
+                body: InboxBody::default(),
+                wait_secs: 30,
+            },
+            CommsRequest::AgentThreads {
+                sub: None,
+                query: ThreadQuery::Describe(thread()),
+            },
+            CommsRequest::AgentThreadUpdate {
+                sub: None,
+                update: ThreadUpdate {
+                    thread: thread(),
+                    action: crate::comms::v2::api::ThreadAction::Join,
+                },
+            },
+            CommsRequest::AgentStatus,
+            CommsRequest::AgentCleanup {
+                archive: vec![thread()],
+            },
+        ];
+        for req in requests {
+            assert_eq!(round_trip(&req), req);
+        }
+    }
+
+    #[test]
+    fn a_refusal_crosses_the_wire_with_its_code() {
+        let refused = CommsResponse::AgentRefused(CommsError::ThreadNotFound { thread: thread() });
+        let bytes = rmp_serde::to_vec_named(&refused).expect("encode");
+        assert_eq!(rmp_serde::from_slice::<CommsResponse>(&bytes).expect("decode"), refused);
+    }
+
+    /// A v1 agent request from a client that skipped the `Hello` check does not decode, so the link
+    /// drops rather than misreading it.
+    #[test]
+    fn a_v1_agent_request_is_a_decode_error() {
+        for method in ["thread_post", "inbox", "ack_inbox", "subscribe_inbox", "register"] {
+            let frame = serde_json::json!({ "method": method, "params": {} });
+            let bytes = rmp_serde::to_vec_named(&frame).expect("encode");
+            assert!(
+                rmp_serde::from_slice::<CommsRequest>(&bytes).is_err(),
+                "{method} decoded"
+            );
+        }
     }
 
     #[test]
@@ -772,28 +549,6 @@ mod tests {
     }
 
     #[test]
-    fn inbox_without_a_thread_filter_decodes_as_unfiltered() {
-        let old = serde_json::json!({
-            "method": "inbox",
-            "params": {"limit": 5, "mark_read": true}
-        });
-        let bytes = rmp_serde::to_vec_named(&old).expect("encode");
-        let back: CommsRequest = rmp_serde::from_slice(&bytes).expect("decode");
-        assert_eq!(
-            back,
-            CommsRequest::Inbox {
-                remote: None,
-                cwd: None,
-                cursor: None,
-                limit: Some(5),
-                mark_read: true,
-                since_micros: None,
-                thread: None,
-            }
-        );
-    }
-
-    #[test]
     fn method_matches_the_serde_tag() {
         // `method()` is a hand-written match, so it can drift from the derived `rename_all`
         // spelling silently. Check it against what serde actually emits for a sample spanning
@@ -802,36 +557,26 @@ mod tests {
             CommsRequest::Ping,
             CommsRequest::Stop,
             CommsRequest::Status,
-            CommsRequest::ListAgents { thread: None },
-            CommsRequest::ThreadJoin {
-                thread: ThreadId::parse("th-1").expect("thread"),
+            CommsRequest::AgentStatus,
+            CommsRequest::AgentCleanup { archive: Vec::new() },
+            CommsRequest::AgentInbox {
+                sub: None,
+                body: InboxBody::default(),
+                wait_secs: 0,
             },
-            CommsRequest::ThreadRemoveMember {
-                thread: ThreadId::parse("th-1").expect("thread"),
-                member: AgentId::parse("agent-1").expect("agent"),
+            CommsRequest::AgentThreadUpdate {
+                sub: None,
+                update: ThreadUpdate {
+                    thread: thread(),
+                    action: crate::comms::v2::api::ThreadAction::Leave,
+                },
             },
-            CommsRequest::GetBody {
-                message_id: "m1".to_string(),
-            },
-            CommsRequest::SubscribeInbox { thread: None },
         ];
         for req in samples {
             let value = serde_json::to_value(&req).expect("serialize");
             let tag = value.get("method").and_then(serde_json::Value::as_str).expect("tagged");
             assert_eq!(req.method(), tag, "method() drifted from the serde tag for {req:?}");
         }
-    }
-
-    #[test]
-    fn thread_start_round_trips() {
-        let req = CommsRequest::ThreadStart {
-            subject: Some("refactor".to_string()),
-            path: Some("src/**".to_string()),
-            members: vec![AgentId::parse("bob").expect("agent")],
-        };
-        let bytes = rmp_serde::to_vec_named(&req).expect("encode");
-        let back: CommsRequest = rmp_serde::from_slice(&bytes).expect("decode");
-        assert_eq!(req, back);
     }
 
     #[test]
@@ -847,31 +592,5 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&out).expect("encode");
         let back: CommsOut = rmp_serde::from_slice(&bytes).expect("decode");
         assert_eq!(out, back);
-    }
-
-    fn sample_meta(id: &str) -> MessageMeta {
-        MessageMeta {
-            id: id.to_string(),
-            thread: ThreadId::parse("th-1").expect("thread"),
-            from: AgentId::parse("agent-1").expect("agent"),
-            from_name: Some("Author".into()),
-            ts_micros: 7,
-            subject: "subj".to_string(),
-            tags: vec!["t".to_string()],
-            reply_to: None,
-            body_len: 3,
-            body_sha: "abc".to_string(),
-        }
-    }
-
-    #[test]
-    fn seq_meta_round_trips_through_msgpack() {
-        let value = SeqMeta {
-            seq: 42,
-            meta: sample_meta("m-1"),
-        };
-        let bytes = rmp_serde::to_vec_named(&value).expect("encode");
-        let back: SeqMeta = rmp_serde::from_slice(&bytes).expect("decode");
-        assert_eq!(value, back);
     }
 }

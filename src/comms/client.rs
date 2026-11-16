@@ -8,6 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
+use super::protocol::{CommsOut, CommsRequest, CommsResponse, PROTO_VER, StatusReport};
+use super::singleton::{self, CommsPaths};
+use super::transport::MAX_FRAME_BYTES;
+use super::v2::api::{CommsError, MAX_WAIT_SECS, Principal};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::UnixStream as PlatformStream;
@@ -15,18 +19,6 @@ use tokio::net::UnixStream as PlatformStream;
 use tokio::net::windows::named_pipe::NamedPipeClient as PlatformStream;
 use tokio_util::bytes::{Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
-use tokio_util::sync::CancellationToken;
-
-use super::cursor::Cursor;
-use super::ids::{AgentId, ThreadId};
-use super::model::{AgentCard, AgentRecord, Thread};
-use super::protocol::{
-    AgentsStatusReport, CleanupReport, CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta,
-    StatusReport,
-};
-use super::singleton::{self, CommsPaths};
-use super::transport::MAX_FRAME_BYTES;
-use super::workspace_pool::AccessedWorkspace;
 
 /// Outcome of a daemon-side [`CommsClient::rescan`]: the scan counts plus wall-clock time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,8 +75,12 @@ fn timeout_from_env(var: &str, default_secs: u64) -> std::time::Duration {
 /// broker round trip, so silence past the timeout means the broker is wedged, not busy.
 fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
     match req {
+        CommsRequest::AgentInbox { wait_secs, .. } if *wait_secs > 0 => Some(
+            timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS)
+                + std::time::Duration::from_secs(u64::from((*wait_secs).min(MAX_WAIT_SECS))),
+        ),
         CommsRequest::Rescan { .. }
-        | CommsRequest::Cleanup { .. }
+        | CommsRequest::AgentCleanup { .. }
         | CommsRequest::GitHistory { .. }
         | CommsRequest::ResolvedRefs { .. }
         | CommsRequest::IndexRead { .. }
@@ -94,21 +90,6 @@ fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
         _ => Some(timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS)),
     }
 }
-
-/// Cap on [`CommsClient::pending_notifications`]; the oldest is dropped once it is reached.
-///
-/// The queue is opportunistic, and for most clients nothing ever drains it: the only consumers are
-/// [`CommsClient::poll_notification`] (reached solely by the timeout-bounded `wait` path) and
-/// [`CommsClient::next_notification`], which the crate never calls. A client that only issues
-/// ordinary requests — post, history, inbox, thread_list, i.e. nearly all MCP `agents` traffic —
-/// therefore buffers every notification the broker pushes it and frees none of them until the link
-/// dies and [`CommsClient::reconnect`] clears it. A long session on a busy thread grows it without
-/// limit.
-///
-/// Dropping the oldest loses nothing durable: the broker is the authoritative record and `history` /
-/// `inbox` read from it by request, so a discarded push costs at most an early wake-up, while the
-/// unbounded queue costs resident memory for the whole session.
-const PENDING_NOTIFICATION_CAP: usize = 1_024;
 
 /// Strategy for (re)spawning the daemon when a reconnect finds the socket dead. Defaults to the
 /// production [`singleton::spawn_detached_daemon`]; tests inject a closure that launches the real
@@ -156,9 +137,9 @@ pub enum CommsClientError {
         /// The elapsed bound, in seconds.
         secs: u64,
     },
-    /// The caller cancelled a long-poll; the client should be dropped, not reused.
-    #[error("wait cancelled")]
-    Cancelled,
+    /// The daemon refused an agent request.
+    #[error("{0}")]
+    Agent(CommsError),
     /// The daemon's protocol version differs from this build's.
     #[error("protocol skew: daemon speaks {daemon}, client speaks {client}")]
     ProtoSkew {
@@ -169,23 +150,45 @@ pub enum CommsClientError {
     },
 }
 
+/// Who a link speaks for, sent in its `Hello` (ADR-0021). A link that only manages the daemon or
+/// forwards index work names nobody; one that makes agent requests names the principal the
+/// identity resolver chose and the canonical root it chose it for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClientHello {
+    /// The principal the link's agent requests act as.
+    pub principal: Option<Principal>,
+    /// The canonical checkout root.
+    pub root: Option<PathBuf>,
+    /// The agent harness (`BASEMIND_HOST`).
+    pub host: Option<String>,
+}
+
+impl ClientHello {
+    /// A link that makes no agent requests.
+    pub fn anonymous() -> Self {
+        Self::default()
+    }
+
+    /// A link that acts as `principal` in the checkout at `root`.
+    pub fn agent(principal: Principal, root: PathBuf, host: Option<String>) -> Self {
+        Self {
+            principal: Some(principal),
+            root: Some(root),
+            host,
+        }
+    }
+}
+
 /// A connected, said-hello client to the comms broker.
 pub struct CommsClient {
     stream: PlatformStream,
     codec: LengthDelimitedCodec,
     read_buf: BytesMut,
-    agent: AgentId,
-    /// Notifications received while waiting for a response are queued here so the caller can
-    /// drain them via [`CommsClient::next_notification`]. Bounded at [`PENDING_NOTIFICATION_CAP`],
-    /// oldest-first, because most clients never drain it — see that constant.
-    pending_notifications: std::collections::VecDeque<CommsNotification>,
     /// Connection context retained so the client can transparently re-establish the link (and
     /// re-spawn the daemon) after the daemon dies mid-session.
     paths: CommsPaths,
-    /// Scope context replayed on the `Hello` of a reconnect.
-    remote: Option<String>,
-    /// Working directory replayed on the `Hello` of a reconnect.
-    cwd: Option<PathBuf>,
+    /// What the `Hello` of every (re)connect says.
+    hello: ClientHello,
     /// Respawn strategy used by [`CommsClient::reconnect`] when the socket is dead.
     spawn: SpawnFn,
     /// Id of the next correlated request ([`CommsRequest::Call`]) on this link.
@@ -199,56 +202,14 @@ pub struct CommsClient {
 }
 
 impl CommsClient {
-    /// Preview or apply the configured retention policy.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn cleanup_agents(
-        &mut self,
-        apply: bool,
-        message_ttl_secs: u64,
-        thread_idle_ttl_secs: u64,
-        thread_retention_ttl_secs: u64,
-        agent_ttl_secs: u64,
-        claim_ttl_secs: u64,
-    ) -> Result<CleanupReport, CommsClientError> {
-        match self
-            .request(CommsRequest::Cleanup {
-                apply,
-                message_ttl_secs,
-                thread_idle_ttl_secs,
-                thread_retention_ttl_secs,
-                agent_ttl_secs,
-                claim_ttl_secs,
-            })
-            .await?
-        {
-            CommsResponse::Cleanup(report) => Ok(report),
-            other => Err(self.shape_err(other, "cleanup_agents")),
-        }
-    }
-
-    /// Report active/stale agent counts and the last maintenance time.
-    pub async fn agents_status(&mut self, agent_ttl_secs: u64) -> Result<AgentsStatusReport, CommsClientError> {
-        match self.request(CommsRequest::AgentsStatus { agent_ttl_secs }).await? {
-            CommsResponse::AgentsStatus(report) => Ok(report),
-            other => Err(self.shape_err(other, "agents_status")),
-        }
-    }
     /// Connect to an already-running daemon at `paths` and complete the `Hello` handshake.
     /// Use [`CommsClient::ensure_and_connect`] to spawn the daemon first when needed.
     ///
     /// The returned client re-spawns the daemon via [`singleton::spawn_detached_daemon`] when a
     /// reconnect finds the socket dead. Use [`CommsClient::connect_with_respawn`] to inject a
     /// different spawn strategy.
-    pub async fn connect(
-        paths: &CommsPaths,
-        agent: AgentId,
-        remote: Option<String>,
-        cwd: Option<PathBuf>,
-    ) -> Result<Self, CommsClientError> {
-        Self::connect_with_respawn(paths, agent, remote, cwd, |paths| {
-            singleton::spawn_detached_daemon(paths)
-        })
-        .await
+    pub async fn connect(paths: &CommsPaths, hello: ClientHello) -> Result<Self, CommsClientError> {
+        Self::connect_with_respawn(paths, hello, singleton::spawn_detached_daemon).await
     }
 
     /// Connect like [`CommsClient::connect`], but inject the daemon respawn strategy used by the
@@ -257,21 +218,17 @@ impl CommsClient {
     /// `basemind` binary so the reconnect can resurrect an isolated daemon.
     pub async fn connect_with_respawn(
         paths: &CommsPaths,
-        agent: AgentId,
-        remote: Option<String>,
-        cwd: Option<PathBuf>,
+        hello: ClientHello,
         spawn: impl Fn(&CommsPaths) -> std::io::Result<()> + Send + Sync + 'static,
     ) -> Result<Self, CommsClientError> {
         let handshake_timeout = timeout_from_env(HANDSHAKE_TIMEOUT_ENV, DEFAULT_HANDSHAKE_TIMEOUT_SECS);
-        Self::connect_bounded(paths, agent, remote, cwd, spawn, handshake_timeout).await
+        Self::connect_bounded(paths, hello, spawn, handshake_timeout).await
     }
 
     /// [`CommsClient::connect_with_respawn`] with an explicit bound on the dial + `Hello` handshake.
     async fn connect_bounded(
         paths: &CommsPaths,
-        agent: AgentId,
-        remote: Option<String>,
-        cwd: Option<PathBuf>,
+        hello: ClientHello,
         spawn: impl Fn(&CommsPaths) -> std::io::Result<()> + Send + Sync + 'static,
         handshake_timeout: std::time::Duration,
     ) -> Result<Self, CommsClientError> {
@@ -280,11 +237,8 @@ impl CommsClient {
             stream,
             codec,
             read_buf: BytesMut::with_capacity(READ_CHUNK),
-            agent,
-            pending_notifications: std::collections::VecDeque::new(),
             paths: paths.clone(),
-            remote,
-            cwd,
+            hello,
             spawn: Box::new(spawn),
             next_id: 1,
             write_incomplete: false,
@@ -296,14 +250,10 @@ impl CommsClient {
 
     /// Resolve the per-user paths, ensure a daemon is running (spawning it if needed), then
     /// connect + handshake. The one-call entry point for serve / CLI / hooks.
-    pub async fn ensure_and_connect(
-        agent: AgentId,
-        remote: Option<String>,
-        cwd: Option<PathBuf>,
-    ) -> Result<Self, CommsClientError> {
+    pub async fn ensure_and_connect(hello: ClientHello) -> Result<Self, CommsClientError> {
         let paths = singleton::resolve_paths()?;
         singleton::ensure_daemon(&paths).await?;
-        Self::connect(&paths, agent, remote, cwd).await
+        Self::connect(&paths, hello).await
     }
 
     /// Dial the endpoint and build the framing codec. No handshake yet. The connect is
@@ -356,10 +306,10 @@ impl CommsClient {
         let resp = self
             .send_and_await(
                 CommsRequest::Hello {
-                    agent: self.agent.clone(),
                     proto_ver: PROTO_VER,
-                    remote: self.remote.clone(),
-                    cwd: self.cwd.clone(),
+                    principal: self.hello.principal.clone(),
+                    root: self.hello.root.clone(),
+                    host: self.hello.host.clone(),
                 },
                 None,
             )
@@ -376,9 +326,7 @@ impl CommsClient {
     }
 
     /// Re-establish the link after a broken/closed connection: ensure the daemon is alive
-    /// (re-spawning it if the socket is gone), re-dial, and replay the `Hello` handshake. Any
-    /// buffered notifications from the dead link are dropped — they belong to a connection that
-    /// no longer exists.
+    /// (re-spawning it if the socket is gone), re-dial, and replay the `Hello` handshake.
     async fn reconnect(&mut self) -> Result<(), CommsClientError> {
         let spawn = &self.spawn;
         singleton::ensure_daemon_with(
@@ -392,7 +340,6 @@ impl CommsClient {
         self.stream = stream;
         self.codec = codec;
         self.read_buf.clear();
-        self.pending_notifications.clear();
         self.write_incomplete = false;
         bounded("handshake", Some(handshake_timeout), self.handshake()).await
     }
@@ -405,9 +352,9 @@ impl CommsClient {
         self
     }
 
-    /// The agent id this client authenticated as.
-    pub fn agent(&self) -> &AgentId {
-        &self.agent
+    /// What this client's `Hello` says.
+    pub fn hello(&self) -> &ClientHello {
+        &self.hello
     }
 
     async fn expect_ok(&mut self, req: CommsRequest, label: &'static str) -> Result<(), CommsClientError> {
@@ -481,7 +428,7 @@ impl CommsClient {
     }
 
     /// Write the frame and read until the response for `expect_id` arrives (or, for a bare request
-    /// with `None`, the first uncorrelated response), buffering notifications and discarding stale
+    /// with `None`, the first uncorrelated response), skipping notifications and discarding stale
     /// replies to abandoned requests. No reconnect — the single-shot retry lives in
     /// [`CommsClient::request`].
     async fn send_and_await(
@@ -500,7 +447,7 @@ impl CommsClient {
                 Some(CommsOut::Response(_)) => {
                     tracing::debug!(expected = ?expect_id, "comms: discarding uncorrelated response");
                 }
-                Some(CommsOut::Notification(n)) => buffer_notification(&mut self.pending_notifications, n),
+                Some(CommsOut::Notification(_)) => {}
                 None => return Err(CommsClientError::Closed),
             }
         }
@@ -575,21 +522,10 @@ fn is_connection_lost(err: &CommsClientError) -> bool {
 
 #[path = "client_ops.rs"]
 mod ops;
-pub use ops::{WaitOutcome, WaitReason};
 
 #[cfg(all(test, feature = "comms", unix))]
 #[path = "client_tests.rs"]
 mod tests;
-
-/// Buffer a notification seen while awaiting a response, holding `queue` to
-/// [`PENDING_NOTIFICATION_CAP`] by evicting the oldest first. A free function rather than a method
-/// so the bound can be tested without a live broker socket.
-fn buffer_notification(queue: &mut std::collections::VecDeque<CommsNotification>, n: CommsNotification) {
-    while queue.len() >= PENDING_NOTIFICATION_CAP {
-        queue.pop_front();
-    }
-    queue.push_back(n);
-}
 
 /// Map a `UnixStream::connect` failure into an actionable error. A missing socket file
 /// (`NotFound`) or a refused connection (`ConnectionRefused`) means no daemon is listening, so we
@@ -609,15 +545,4 @@ fn daemon_unreachable_error(socket_path: &Path, source: std::io::Error) -> Comms
         }
         _ => CommsClientError::Io(source),
     }
-}
-
-/// Resolve the agent's scope context (remote + cwd) for a `Hello` from the current directory.
-/// Convenience for the CLI / hook callers that just want "whatever repo I'm in".
-pub fn scope_context_for(cwd: &Path) -> (Option<String>, Option<PathBuf>) {
-    let repo = crate::git::Repo::discover(cwd).ok();
-    let remote = repo.as_ref().and_then(|r| {
-        let key = crate::git::scope_key(r);
-        if key.starts_with("path:") { None } else { Some(key) }
-    });
-    (remote, Some(cwd.to_path_buf()))
 }

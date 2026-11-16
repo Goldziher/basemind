@@ -462,7 +462,6 @@ mod tests {
     use super::UdsFrontend;
     use crate::comms::daemon::Broker;
     use crate::comms::protocol::{CommsOut, CommsRequest, CommsResponse};
-    use crate::comms::store::CommsStore;
     use crate::comms::transport::CommsFrontend;
 
     async fn send_req(stream: &mut UnixStream, req: &CommsRequest) {
@@ -490,8 +489,7 @@ mod tests {
     #[tokio::test]
     async fn a_silent_client_does_not_stall_the_accept_loop() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
-        let broker = Arc::new(Broker::new(store));
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
 
         let socket = dir.path().join("accept.sock");
         let listener = UnixListener::bind(&socket).expect("bind");
@@ -543,8 +541,7 @@ mod tests {
         );
 
         // Simulate the slow store open finishing.
-        let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
-        let broker = Arc::new(Broker::new(store));
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
         let frontend = early.finish(broker.clone()).await.expect("finish");
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         tokio::spawn(Box::new(frontend).serve(broker, shutdown_rx));

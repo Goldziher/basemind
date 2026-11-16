@@ -88,7 +88,6 @@ impl ServerHandler for BasemindServer {
         if client_supports_tasks && tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
             return tasks::run_slow_tool(self, request, context, admission, self.task_threshold()).await;
         }
-        let should_deliver_comms = request.name != "agents";
         let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
         let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
@@ -101,17 +100,6 @@ impl ServerHandler for BasemindServer {
         } else {
             self.tool_router.call(tcc).await?
         };
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        let mut response = response;
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if should_deliver_comms
-            && let rmcp::model::CallToolResponse::Complete(result) = &mut response
-            && let Some(notice) = super::helpers_comms::take_delivery_notice(&self.state).await
-        {
-            result.content.push(rmcp::model::ContentBlock::text(notice));
-        }
-        #[cfg(not(all(feature = "comms", any(unix, windows))))]
-        let _ = should_deliver_comms;
         Ok(response)
     }
 

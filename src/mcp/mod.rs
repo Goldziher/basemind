@@ -32,7 +32,7 @@ mod helpers_code;
 #[cfg(feature = "code-search")]
 mod helpers_code_search;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-mod helpers_comms;
+mod helpers_daemon;
 #[cfg(feature = "documents")]
 mod helpers_documents;
 mod helpers_expand;
@@ -70,15 +70,12 @@ mod l1_cache;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod lance_cell;
 mod lean;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod lenient;
 mod map_fingerprint;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod memory;
 #[cfg(feature = "memory")]
 pub(crate) mod memory_ops;
 mod memory_vectors;
-pub mod mode;
 mod notifications;
 pub mod offline;
 mod outline_cache;
@@ -99,15 +96,11 @@ pub(crate) mod tokens;
 mod tool_contract;
 mod tools;
 mod tools_admin;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod tools_comms;
 mod tools_git;
 mod tools_memory;
 pub(crate) mod toon;
 mod types;
 mod types_code;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) mod types_comms;
 mod types_documents;
 mod types_git;
 mod types_impls;
@@ -313,7 +306,7 @@ impl BasemindServer {
         git_cache: Arc<crate::git_cache::GitCache>,
         options: ServerOptions,
     ) -> Self {
-        let agent_id = identity::resolve_agent_id(&config, &store);
+        let agent_id = identity::resolve_agent_id(&store.root);
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
         let git_history = Self::open_git_history(
             &root,
@@ -345,25 +338,10 @@ impl BasemindServer {
             shared,
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            comms_clients: tokio::sync::Mutex::new(lru::LruCache::new(
-                std::num::NonZeroUsize::new(state::COMMS_CLIENT_CAP).expect("comms client capacity is non-zero"),
-            )),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            delivered_notifications: tokio::sync::Mutex::new(lru::LruCache::new(
-                std::num::NonZeroUsize::new(state::DELIVERED_NOTIFICATION_CAP)
-                    .expect("notification cache capacity is non-zero"),
-            )),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            waited_messages: tokio::sync::Mutex::new(lru::LruCache::new(
-                std::num::NonZeroUsize::new(state::DELIVERED_NOTIFICATION_CAP)
-                    .expect("notification cache capacity is non-zero"),
-            )),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            delivery_probe: tokio::sync::Mutex::new(state::DeliveryProbe::default()),
+            daemon_client: tokio::sync::OnceCell::new(),
             lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
             task_threshold_ms: std::sync::atomic::AtomicU64::new(tasks::TASK_THRESHOLD.as_millis() as u64),
         });
-        Self::spawn_comms_presence(&state);
         let mut watcher = None;
         if options.background {
             let view_is_working = {
@@ -419,13 +397,8 @@ impl BasemindServer {
     /// they go through [`router_cache::cached_tool_router`], which builds it once behind a
     /// `OnceLock` and hands back a clone. This is the one-time builder the cache calls into.
     fn assemble_router() -> ToolRouter<Self> {
-        #[allow(unused_mut)]
-        let mut router =
+        let router =
             Self::tool_router_core() + Self::tool_router_git() + Self::tool_router_memory() + Self::tool_router_admin();
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        {
-            router += Self::tool_router_comms();
-        }
         tool_contract::finalize_router(router)
     }
 
@@ -445,7 +418,6 @@ impl BasemindServer {
         heavy_admission: Arc<admission::HeavyAdmission>,
     ) -> Self {
         let state = Arc::new(ServerState::for_connection(shared, agent_id));
-        Self::spawn_comms_presence(&state);
         Self {
             state,
             _watcher: None,
@@ -454,27 +426,6 @@ impl BasemindServer {
             tasks: TaskManager::new(),
             heavy_admission,
         }
-    }
-
-    /// Establish broker presence at MCP connection startup. Registration remains an optional card
-    /// update; the broker's `Hello` creates the routable session record.
-    fn spawn_comms_presence(state: &Arc<ServerState>) {
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let state = Arc::clone(state);
-            runtime.spawn(async move {
-                let connected = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    helpers_comms::resolve_comms_client(&state, None),
-                )
-                .await;
-                if !matches!(connected, Ok(Ok(_))) {
-                    tracing::debug!("comms presence unavailable during MCP startup");
-                }
-            });
-        }
-        #[cfg(not(all(feature = "comms", any(unix, windows))))]
-        let _ = state;
     }
 
     /// Build (once) the shared read stack the daemon hosts for one workspace, plus its single
@@ -527,7 +478,7 @@ impl BasemindServer {
             daemon_writer: true,
             lazy_cache: false,
         };
-        let agent_id = identity::resolve_agent_id(&config, &store);
+        let agent_id = identity::resolve_agent_id(&store.root);
         let history_dir = crate::git_history::shared_history_basemind_dir(root);
         let git_history = Self::open_git_history(
             root,
@@ -599,19 +550,14 @@ impl BasemindServer {
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         if options.daemon_writer || crate::git_history::remote::daemon_is_up() {
-            let agent = crate::comms::ids::AgentId::parse(agent_id.to_string())
-                .inspect_err(|error| tracing::warn!(%error, "git-history: bad agent id; tools will live-walk"))
-                .ok()?;
             if let Some(host) = git_history_host {
                 return Some(Arc::new(crate::git_history::remote::hosted_index(
                     root.to_path_buf(),
-                    agent,
                     host,
                 )));
             }
             return Some(Arc::new(crate::git_history::remote::remote_index(
                 root.to_path_buf(),
-                agent,
             )));
         }
         let _ = (root, agent_id);
@@ -666,12 +612,8 @@ impl BasemindServer {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         if index.is_daemon_backed() {
             let root = state.shared.root.clone();
-            let agent_id = state.agent_id.clone();
             tokio::spawn(async move {
-                let Ok(agent) = crate::comms::ids::AgentId::parse(agent_id) else {
-                    return;
-                };
-                match crate::git_history::remote::request_sync(root, agent).await {
+                match crate::git_history::remote::request_sync(root).await {
                     Some(outcome) => tracing::info!(?outcome, "git-history index synced by the daemon"),
                     None => tracing::warn!("git-history index sync unavailable; history tools live-walk"),
                 }

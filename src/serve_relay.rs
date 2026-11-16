@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result};
 use basemind::comms::ids::AgentId;
-use basemind::comms::{identity, relay, singleton};
+use basemind::comms::{relay, singleton};
 
 use crate::relay_refusal::RelayRefusal;
 use crate::stdio_relay::{self, StopPacing};
@@ -23,7 +23,10 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
         .context("build tokio runtime")?;
 
     let served = runtime.block_on(async move {
-        let agent = identity::mcp_session_agent_id(root);
+        let principal = basemind::comms::v2::identity::resolve_for_root(root)
+            .context("resolve this session's agent identity")?
+            .principal;
+        let agent = AgentId::parse(principal.as_str()).context("name this session's agent")?;
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let view = view.to_owned();
         let pacing = Arc::new(Mutex::new(StopPacing::default()));

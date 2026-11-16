@@ -25,8 +25,7 @@ pub(crate) fn cmd_statusline(root: Option<&std::path::Path>) -> Result<()> {
     }
     #[cfg(all(feature = "comms", any(unix, windows)))]
     {
-        use basemind::comms::client::CommsClient;
-        use basemind::comms::ids::AgentId;
+        use basemind::comms::client::{ClientHello, CommsClient};
         use basemind::comms::singleton;
 
         let line = (|| -> Option<String> {
@@ -36,8 +35,7 @@ pub(crate) fn cmd_statusline(root: Option<&std::path::Path>) -> Result<()> {
                 .build()
                 .ok()?;
             runtime.block_on(async move {
-                let agent = AgentId::parse("basemind-statusline").ok()?;
-                let mut client = CommsClient::connect(&paths, agent, None, None).await.ok()?;
+                let mut client = CommsClient::connect(&paths, ClientHello::anonymous()).await.ok()?;
                 let hot = client.accessed_paths().await.ok()?;
                 Some(format_statusline(&hot))
             })
@@ -381,7 +379,7 @@ fn cmd_comms_cleanup(json: bool, dry_run: bool, older_than_days: u64) -> Result<
 /// `basemind comms status`: connect to the running daemon and print what it reports.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_status(json: bool) -> Result<()> {
-    use basemind::comms::client::CommsClient;
+    use basemind::comms::client::{ClientHello, CommsClient};
     use basemind::comms::singleton;
 
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
@@ -391,9 +389,7 @@ fn cmd_comms_status(json: bool) -> Result<()> {
         .context("build tokio runtime")?;
 
     runtime.block_on(async move {
-        let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let agent = basemind::comms::identity::cli_agent_id(&root);
-        let mut client = CommsClient::connect(&paths, agent, None, None)
+        let mut client = CommsClient::connect(&paths, ClientHello::anonymous())
             .await
             .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))?;
         let status = client.status().await.map_err(|e| anyhow::anyhow!("status: {e}"))?;
@@ -404,7 +400,7 @@ fn cmd_comms_status(json: bool) -> Result<()> {
             );
         } else {
             println!(
-                "pid={} version={} build={} proto={} uptime={}s threads={} subscribers={}",
+                "pid={} version={} build={} proto={} uptime={}s agent_store={}",
                 status.pid,
                 status.version,
                 if status.build_id.is_empty() {
@@ -414,8 +410,7 @@ fn cmd_comms_status(json: bool) -> Result<()> {
                 },
                 status.proto_ver,
                 status.uptime_secs,
-                status.threads,
-                status.subscribers,
+                status.agent_store,
             );
             // Same version, different binary: the case every version check passes and
             // nobody thinks to look for. Say it outright — the symptom is a daemon quietly
@@ -668,7 +663,7 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
 fn probe_label(verdict: &basemind::comms::singleton::DaemonProbe) -> String {
     use basemind::comms::singleton::DaemonProbe;
     match verdict {
-        DaemonProbe::Serving { threads } => format!(" serving({threads} threads)"),
+        DaemonProbe::Serving { agent_store } => format!(" serving(agent store {agent_store})"),
         DaemonProbe::Failing { code, message } => format!(" LIVE BUT FAILING [{code}: {message}]"),
         DaemonProbe::Unreachable => " LIVE BUT NOT RESPONDING".to_string(),
     }
@@ -678,7 +673,9 @@ fn probe_label(verdict: &basemind::comms::singleton::DaemonProbe) -> String {
 fn probe_json(verdict: &basemind::comms::singleton::DaemonProbe) -> serde_json::Value {
     use basemind::comms::singleton::DaemonProbe;
     match verdict {
-        DaemonProbe::Serving { threads } => serde_json::json!({ "state": "serving", "threads": threads }),
+        DaemonProbe::Serving { agent_store } => {
+            serde_json::json!({ "state": "serving", "agent_store": agent_store })
+        }
         DaemonProbe::Failing { code, message } => {
             serde_json::json!({ "state": "failing", "code": code, "message": message })
         }

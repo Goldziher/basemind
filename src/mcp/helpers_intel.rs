@@ -191,7 +191,7 @@ async fn resolve_definition(
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
         use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
-        let client = match super::helpers_comms::resolve_comms_client(state, None).await {
+        let client = match super::helpers_daemon::daemon_client(state).await {
             Ok(client) => client,
             Err(error) => {
                 tracing::debug!(%error, "goto_definition: daemon client unavailable; no cross-file binding");

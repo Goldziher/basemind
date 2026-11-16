@@ -18,10 +18,10 @@ use super::{ENDPOINT_TIMEOUT, PROBE_ATTEMPTS, PROBE_RETRY_BACKOFF, roundtrip, ro
 /// store, so a daemon whose store is wedged still answers it. This asks the harder question.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DaemonProbe {
-    /// The daemon answered a `Status` request, which reads the store. It is really serving.
+    /// The daemon answered a `Status` request. It is really serving.
     Serving {
-        /// Active threads it reported, as a sign of life beyond the bare reply.
-        threads: u32,
+        /// The state of its agent store (`open`, `newer` or `unreadable`), as it reported it.
+        agent_store: String,
     },
     /// The daemon answered, and the answer was an error: it holds the endpoint but cannot serve.
     /// This is the poisoned-store shape — every request fails identically while the process stays
@@ -53,7 +53,7 @@ pub fn probe_serving(socket_path: &Path) -> DaemonProbe {
         match roundtrip(socket_path, &CommsRequest::Status) {
             Some(CommsResponse::Status(report)) => {
                 return DaemonProbe::Serving {
-                    threads: report.threads,
+                    agent_store: report.agent_store,
                 };
             }
             Some(CommsResponse::Error { code, message }) => return DaemonProbe::Failing { code, message },
@@ -236,13 +236,14 @@ mod tests {
                 build_id: "abc".to_string(),
                 proto_ver: PROTO_VER,
                 uptime_secs: 1,
-                threads: 7,
-                subscribers: 0,
+                agent_store: "open".to_string(),
             })),
         );
         assert_eq!(
             probe_serving(&ok_socket),
-            DaemonProbe::Serving { threads: 7 },
+            DaemonProbe::Serving {
+                agent_store: "open".to_string()
+            },
             "a daemon that answers Status is really serving"
         );
         ok_server.join().expect("server thread");

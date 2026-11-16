@@ -101,16 +101,14 @@ pub fn daemon_is_up() -> bool {
 pub fn rescan_via_daemon(root: &Path, paths: Option<Vec<PathBuf>>, full: bool) -> Result<RescanReport> {
     use anyhow::Context as _;
 
-    use crate::comms::client::{CommsClient, scope_context_for};
+    use crate::comms::client::{ClientHello, CommsClient};
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
     runtime.block_on(async {
-        let agent = crate::comms::identity::cli_agent_id(root);
-        let (remote, cwd) = scope_context_for(root);
-        let mut client = CommsClient::ensure_and_connect(agent, remote, cwd)
+        let mut client = CommsClient::ensure_and_connect(ClientHello::anonymous())
             .await
             .map_err(|e| CliExit::unavailable(format!("connect to the basemind daemon: {e}")))?;
         // Paths given on the command line were named, not watched: their blobs are validated.

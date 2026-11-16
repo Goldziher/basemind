@@ -107,20 +107,15 @@ fn every_mcp_tool_is_covered() {
     let domains = mcp_surface::domains();
     let live = live_mcp_ops(&domains);
 
-    let mut compiled: BTreeSet<(String, String)> = basemind::mcp::mode::domain_modes()
-        .into_iter()
-        .flat_map(|(tool, modes)| modes.iter().map(move |m| (tool.to_string(), m.to_string())))
+    let compiled: BTreeSet<(String, String)> = basemind::mcp::params::VERB_TOOLS
+        .iter()
+        .map(|tool| (tool.to_string(), String::new()))
         .collect();
-    compiled.extend(
-        basemind::mcp::params::VERB_TOOLS
-            .iter()
-            .map(|tool| (tool.to_string(), String::new())),
-    );
     let from_schema: BTreeSet<(String, String)> =
         live.iter().map(|o| (o.tool.to_string(), o.mode.to_string())).collect();
     assert_eq!(
         from_schema, compiled,
-        "the advertised tool schemas disagree with VERB_TOOLS + mcp::mode::domain_modes()"
+        "the advertised tool schemas disagree with VERB_TOOLS"
     );
 
     let rows = capabilities::table();

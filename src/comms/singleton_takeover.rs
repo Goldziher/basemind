@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::super::protocol::StatusReport;
-use super::super::store::STORE_DIR;
+use super::super::v2::store::STORE_DIR;
 use super::probe::{StopOutcome, force_terminate, request_stop_within};
 use super::{
     CommsPaths, ENDPOINT_TIMEOUT, Liveness, NO_AUTOSPAWN_ENV, SPAWN_POLL_INTERVAL, SingletonError, SpawnPolicy,

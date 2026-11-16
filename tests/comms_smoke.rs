@@ -1,17 +1,10 @@
-//! End-to-end smoke test for the thread-model comms client against a REAL detached broker daemon.
+//! End-to-end smoke test of agent comms v2 (ADR-0021) against a REAL detached daemon.
 //!
 //! The daemon is the actual `basemind comms daemon` process (spawned via the test binary's
 //! `CARGO_BIN_EXE_basemind`), isolated to a tempdir via `BASEMIND_COMMS_DIR`. We drive the library
-//! [`CommsClient`] directly. This pins the thread contract end to end:
-//!
-//! * `thread_start` needs ≥2 of subject / path / members;
-//! * `inbox_ack` by `message_ids` advances ONLY the acking agent's read cursor — the acked
-//!   messages drop out of that agent's next `inbox_read`, but `thread_history` STILL returns them,
-//!   and a second agent's inbox is unaffected;
-//! * the `to_seq` bulk mode clears a thread straight to a seq;
-//! * a client transparently recovers when the daemon dies mid-session;
-//! * discovery is scoped — a non-member with no path match sees nothing in `thread_list`;
-//! * recency-aware `thread_history` honours an absolute `since_micros` cutoff.
+//! [`CommsClient`] directly over protocol 7: posting, reading that marks read, the daemon-side
+//! wait with and without a thread filter, membership refusals, recovery when the daemon dies,
+//! and the legacy store left untouched.
 
 #![cfg(feature = "comms")]
 
@@ -19,9 +12,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use basemind::comms::client::{CommsClient, WaitReason};
-use basemind::comms::ids::AgentId;
+use basemind::comms::client::{ClientHello, CommsClient, CommsClientError};
 use basemind::comms::singleton::{CommsPaths, comms_socket_path, generation_dir, probe_alive};
+use basemind::comms::v2::{
+    Actor, CommsError, InboxBody, InboxSelect, PostBody, PostReply, PostTarget, Principal, ThreadAction, ThreadId,
+    ThreadQuery, ThreadUpdate, WaitOutcome,
+};
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 
@@ -88,18 +84,48 @@ async fn connect(socket: &Path, agent: &str, root: &Path) -> CommsClient {
         comms_dir: socket.parent().expect("socket parent").to_path_buf(),
         socket_path: socket.to_path_buf(),
     };
-    CommsClient::connect(
-        &paths,
-        AgentId::parse(agent).expect("agent id"),
-        None,
-        Some(root.to_path_buf()),
-    )
-    .await
-    .unwrap_or_else(|e| panic!("connect {agent}: {e}"))
+    let hello = ClientHello::agent(Principal::parse(agent).expect("principal"), root.to_path_buf(), None);
+    CommsClient::connect(&paths, hello)
+        .await
+        .unwrap_or_else(|e| panic!("connect {agent}: {e}"))
 }
 
-fn agent(a: &str) -> AgentId {
-    AgentId::parse(a).expect("agent")
+fn actor(name: &str) -> Actor {
+    Actor::parse(name).expect("actor")
+}
+
+async fn start(client: &mut CommsClient, subject: &str, to: &[&str]) -> PostReply {
+    let body = PostBody {
+        target: PostTarget::NewThread {
+            subject: subject.to_string(),
+            to: to.iter().map(|name| actor(name)).collect(),
+            paths: Vec::new(),
+        },
+        body: "first".to_string(),
+    };
+    client.agent_post(None, body).await.expect("start a thread")
+}
+
+fn into(thread: &ThreadId, body: &str) -> PostBody {
+    PostBody {
+        target: PostTarget::Thread(thread.clone()),
+        body: body.to_string(),
+    }
+}
+
+fn history_of(thread: &ThreadId) -> InboxBody {
+    InboxBody {
+        select: InboxSelect::Thread(thread.clone()),
+        unread: false,
+        ..InboxBody::default()
+    }
+}
+
+fn refusal(result: Result<impl std::fmt::Debug, CommsClientError>) -> CommsError {
+    match result {
+        Err(CommsClientError::Agent(error)) => error,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
 }
 
 /// Run a git command in `cwd`, asserting success. Used to build a real repo the daemon's machine
@@ -128,116 +154,94 @@ fn init_git_repo(main: &Path) {
     git(&["commit", "-qm", "init"], main);
 }
 
-/// `thread_start` needs at least two addressing dimensions; one is rejected.
+/// Two agents of one repository: an open thread is found by query and joined; reading marks read,
+/// history still returns everything, and the poster's own post is never unread for it.
 #[tokio::test(flavor = "multi_thread")]
-async fn thread_start_enforces_two_of_three_dimensions() {
+async fn agents_find_join_post_and_read_on_a_real_daemon() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
     let root = tmp.path().to_path_buf();
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
-
     let mut alice = connect(&socket, "agent-alice", &root).await;
-
-    let one = alice.start_thread(Some("solo-topic".to_string()), None, vec![]).await;
-    assert!(one.is_err(), "a single dimension must be rejected");
-
-    let ok = alice
-        .start_thread(Some("topic".to_string()), None, vec![agent("agent-bob")])
-        .await
-        .expect("two dimensions accepted");
-    assert!(ok.members.contains(&agent("agent-alice")), "creator is a member");
-    assert!(ok.members.contains(&agent("agent-bob")), "explicit member added");
-}
-
-/// `inbox_ack` advances only the acking agent's cursor; the shared log and other agents are intact.
-#[tokio::test(flavor = "multi_thread")]
-async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let comms_dir = tmp.path().join("comms");
-    let root = tmp.path().to_path_buf();
-    let daemon = Daemon::start(&comms_dir);
-    let socket = daemon.socket().to_path_buf();
-
-    let mut alice = connect(&socket, "agent-alice", &root).await;
-    let thread = alice
-        .start_thread(
-            Some("team".to_string()),
-            None,
-            vec![agent("agent-bob"), agent("agent-carol")],
-        )
-        .await
-        .expect("start thread")
-        .id;
-
-    let m1 = alice
-        .post_message(
-            thread.clone(),
-            "first".to_string(),
-            b"body one".to_vec(),
-            vec!["ops".to_string()],
-            None,
-        )
-        .await
-        .expect("post m1");
-    let _m2 = alice
-        .post_message(thread.clone(), "second".to_string(), b"body two".to_vec(), vec![], None)
-        .await
-        .expect("post m2");
-
     let mut bob = connect(&socket, "agent-bob", &root).await;
-    let mut carol = connect(&socket, "agent-carol", &root).await;
 
-    let (bob_inbox, _unread, _c) = bob
-        .read_inbox(None, None, None, 100, false, None)
+    let created = start(&mut alice, "release plan", &[]).await;
+    assert!(created.created);
+    let found = bob
+        .agent_threads(
+            None,
+            ThreadQuery::List(basemind::comms::v2::ThreadFilter {
+                query: Some("release".to_string()),
+                ..Default::default()
+            }),
+        )
         .await
-        .expect("bob inbox");
-    assert_eq!(bob_inbox.len(), 2, "both messages are unread for Bob (he's a member)");
-    let first = bob_inbox.iter().find(|sm| sm.meta.id == m1).expect("m1 in inbox");
-    assert!(first.meta.ts_micros > 0, "ts_micros surfaced");
-    assert_eq!(first.meta.tags, vec!["ops".to_string()], "tags surfaced");
-    assert_eq!(first.seq, 1, "seq surfaced (first message in the thread)");
+        .expect("discover");
+    assert_eq!(
+        found.threads.len(),
+        1,
+        "an open thread of the repository is discoverable"
+    );
+    assert!(!found.threads[0].member);
+    bob.agent_thread_update(
+        None,
+        ThreadUpdate {
+            thread: created.thread.clone(),
+            action: ThreadAction::Join,
+        },
+    )
+    .await
+    .expect("join");
 
-    let (acked, cursors) = bob.ack_inbox(vec![m1.clone()], None, None).await.expect("bob ack m1");
-    assert_eq!(acked, 1);
-    assert_eq!(cursors, vec![(thread.as_str().to_string(), 1)]);
-
-    let (bob_after, _u, _c) = bob
-        .read_inbox(None, None, None, 100, false, None)
+    alice
+        .agent_post(None, into(&created.thread, "second"))
         .await
-        .expect("bob inbox after");
-    assert_eq!(bob_after.len(), 1);
-    assert_eq!(bob_after[0].meta.subject, "second");
-
-    let (history, _next) = bob
-        .read_history(thread.clone(), None, 100, None)
+        .expect("post");
+    let read = bob.agent_inbox(None, InboxBody::default(), 0).await.expect("read");
+    let bodies: Vec<&str> = read.messages.iter().map(|m| m.body.as_str()).collect();
+    assert_eq!(bodies, ["second"], "a joiner reads from the head as of joining");
+    let again = bob.agent_inbox(None, InboxBody::default(), 0).await.expect("read");
+    assert!(again.messages.is_empty(), "reading marked it read");
+    let history = bob
+        .agent_inbox(None, history_of(&created.thread), 0)
         .await
         .expect("history");
-    assert_eq!(history.len(), 2, "ack must not delete from the shared log");
-
-    let (carol_inbox, _u, _c) = carol
-        .read_inbox(None, None, None, 100, false, None)
-        .await
-        .expect("carol inbox");
-    assert_eq!(carol_inbox.len(), 2, "another agent's inbox is untouched");
-
-    let (acked2, cursors2) = carol
-        .ack_inbox(vec![], Some(thread.clone()), Some(2))
-        .await
-        .expect("carol bulk ack");
-    assert_eq!(acked2, 0, "bulk mode acks no specific ids");
-    assert_eq!(cursors2, vec![(thread.as_str().to_string(), 2)]);
-    let (carol_after, _u, _c) = carol
-        .read_inbox(None, None, None, 100, false, None)
-        .await
-        .expect("carol after");
-    assert!(carol_after.is_empty(), "to_seq bulk-acked the whole thread");
-
-    let err = bob.ack_inbox(vec![], None, None).await;
-    assert!(err.is_err(), "empty ack must be rejected");
+    assert_eq!(history.messages.len(), 2, "history keeps every message");
+    let own = alice.agent_inbox(None, InboxBody::default(), 0).await.expect("read");
+    assert!(own.messages.is_empty(), "own posts are never unread");
 }
 
-/// A long-lived client transparently recovers when the daemon dies mid-session.
+/// A non-member can neither post into nor read an invitation-only thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_non_member_is_refused_post_and_history() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+    let mut alice = connect(&socket, "agent-alice", &root).await;
+    let mut eve = connect(&socket, "agent-eve", &root).await;
+
+    let created = start(&mut alice, "private", &["agent-bob"]).await;
+    let posted = eve.agent_post(None, into(&created.thread, "let me in")).await;
+    assert!(matches!(refusal(posted), CommsError::NotMember { .. }));
+    let read = eve.agent_inbox(None, history_of(&created.thread), 0).await;
+    assert!(matches!(refusal(read), CommsError::NotMember { .. }));
+    let joined = eve
+        .agent_thread_update(
+            None,
+            ThreadUpdate {
+                thread: created.thread.clone(),
+                action: ThreadAction::Join,
+            },
+        )
+        .await;
+    assert!(matches!(refusal(joined), CommsError::ThreadClosed { .. }));
+}
+
+/// A client transparently recovers when the daemon dies mid-session, and what was posted before
+/// is still there: the store is on disk, not in the daemon.
 #[tokio::test(flavor = "multi_thread")]
 async fn client_recovers_when_daemon_dies_mid_session() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -250,35 +254,26 @@ async fn client_recovers_when_daemon_dies_mid_session() {
         socket_path: comms_socket_path(&generation_dir(&comms_dir)),
     };
     let spawn_dir = comms_dir.clone();
-    let mut client = CommsClient::connect_with_respawn(
-        &paths,
-        AgentId::parse("agent-resilient").expect("agent id"),
+    let hello = ClientHello::agent(
+        Principal::parse("agent-resilient").expect("principal"),
+        root.clone(),
         None,
-        Some(root.clone()),
-        move |_paths: &CommsPaths| {
-            Command::new(BIN)
-                .args(["comms", "daemon"])
-                .env("BASEMIND_COMMS_DIR", &spawn_dir)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map(|_| ())
-        },
-    )
+    );
+    let mut client = CommsClient::connect_with_respawn(&paths, hello, move |_paths: &CommsPaths| {
+        Command::new(BIN)
+            .args(["comms", "daemon"])
+            .env("BASEMIND_COMMS_DIR", &spawn_dir)
+            .env("BASEMIND_DATA_HOME", &spawn_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(|_| ())
+    })
     .await
     .expect("connect with respawn");
 
-    let thread = client
-        .start_thread(Some("team".to_string()), None, vec![agent("agent-peer")])
-        .await
-        .expect("start thread")
-        .id;
-    let first = client
-        .post_message(thread.clone(), "before".to_string(), b"first".to_vec(), vec![], None)
-        .await
-        .expect("post before death");
-    assert!(!first.is_empty());
+    let first = start(&mut client, "team", &["agent-peer"]).await;
 
     let _ = daemon.child.kill();
     let _ = daemon.child.wait();
@@ -292,21 +287,15 @@ async fn client_recovers_when_daemon_dies_mid_session() {
     );
 
     let second = client
-        .post_message(thread.clone(), "after".to_string(), b"second".to_vec(), vec![], None)
+        .agent_post(None, into(&first.thread, "after"))
         .await
         .expect("post after death must transparently recover");
-    assert!(!second.is_empty());
-    assert_ne!(first, second);
-
-    let (history, _next) = client
-        .read_history(thread.clone(), None, 100, None)
+    assert_ne!(first.id, second.id);
+    let history = client
+        .agent_inbox(None, history_of(&first.thread), 0)
         .await
         .expect("history");
-    assert_eq!(
-        history.len(),
-        2,
-        "both the pre-death and post-recovery messages are in the log"
-    );
+    assert_eq!(history.messages.len(), 2, "both posts are in the thread");
 
     let _ = Command::new(BIN)
         .args(["comms", "stop"])
@@ -314,155 +303,23 @@ async fn client_recovers_when_daemon_dies_mid_session() {
         .output();
 }
 
-/// Discovery is scoped: a non-member whose cwd doesn't match a thread's path glob never sees it in
-/// `thread_list`, while members and path-matched agents do. Two members chat and both see the log.
+/// The store of earlier releases in the generation directory is not read, renamed or imported:
+/// the daemon serves agents from `agents.fjall` beside it.
 #[tokio::test(flavor = "multi_thread")]
-async fn scoped_discovery_and_shared_thread_chat() {
+async fn the_legacy_store_is_left_where_it_is() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
-    let root = tmp.path().to_path_buf();
+    let legacy = generation_dir(&comms_dir).join("store.fjall");
+    std::fs::create_dir_all(&legacy).expect("legacy store dir");
+    std::fs::write(legacy.join("marker"), b"v1").expect("legacy marker");
+
     let daemon = Daemon::start(&comms_dir);
-    let socket = daemon.socket().to_path_buf();
+    let mut alice = connect(daemon.socket(), "agent-alice", tmp.path()).await;
+    start(&mut alice, "fresh", &[]).await;
+    drop(daemon);
 
-    let mut reviewer = connect(&socket, "reviewer", &root).await;
-    let mut tester = connect(&socket, "tester", &root).await;
-    let mut outsider = connect(&socket, "outsider", &root).await;
-
-    let thread = reviewer
-        .start_thread(Some("review".to_string()), None, vec![agent("tester")])
-        .await
-        .expect("start thread")
-        .id;
-
-    let outsider_list = outsider
-        .list_threads(None, None, None, false)
-        .await
-        .expect("outsider list");
-    assert!(outsider_list.is_empty(), "a non-member with no path match sees nothing");
-
-    let reviewer_list = reviewer
-        .list_threads(None, None, None, false)
-        .await
-        .expect("reviewer list");
-    assert_eq!(reviewer_list.len(), 1);
-    let tester_list = tester.list_threads(None, None, None, false).await.expect("tester list");
-    assert_eq!(tester_list.len(), 1);
-
-    reviewer
-        .post_message(
-            thread.clone(),
-            "from reviewer".to_string(),
-            b"hi".to_vec(),
-            vec![],
-            None,
-        )
-        .await
-        .expect("reviewer post");
-    tester
-        .post_message(thread.clone(), "from tester".to_string(), b"yo".to_vec(), vec![], None)
-        .await
-        .expect("tester post");
-
-    let (history, _next) = reviewer
-        .read_history(thread.clone(), None, 100, None)
-        .await
-        .expect("history");
-    let senders: Vec<String> = history.iter().map(|m| m.meta.from.as_str().to_string()).collect();
-    assert!(
-        senders.contains(&"reviewer".to_string()) && senders.contains(&"tester".to_string()),
-        "both senders appear in the shared thread: {senders:?}"
-    );
-
-    let (outsider_inbox, _u, _c) = outsider
-        .read_inbox(None, None, None, 100, false, None)
-        .await
-        .expect("inbox");
-    assert!(
-        !outsider_inbox.iter().any(|sm| sm.meta.subject == "from reviewer"),
-        "posts must not leak to a non-member"
-    );
-}
-
-/// Recency-aware `read_history` honours an absolute `since_micros` cutoff deterministically.
-#[tokio::test(flavor = "multi_thread")]
-async fn read_history_recency_cutoff() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let comms_dir = tmp.path().join("comms");
-    let root = tmp.path().to_path_buf();
-    let daemon = Daemon::start(&comms_dir);
-    let socket = daemon.socket().to_path_buf();
-
-    let mut alice = connect(&socket, "agent-alice", &root).await;
-    let thread = alice
-        .start_thread(Some("freshness".to_string()), Some("src/**".to_string()), vec![])
-        .await
-        .expect("start thread")
-        .id;
-
-    let before_posts = basemind::comms::model::now_micros();
-    for subject in ["first", "second"] {
-        alice
-            .post_message(
-                thread.clone(),
-                subject.to_string(),
-                format!("body of {subject}").into_bytes(),
-                vec![],
-                None,
-            )
-            .await
-            .unwrap_or_else(|e| panic!("post {subject}: {e}"));
-    }
-
-    const ONE_HOUR_MICROS: i64 = 3_600_000_000;
-
-    let (future, _next) = alice
-        .read_history(thread.clone(), None, 100, Some(before_posts + ONE_HOUR_MICROS))
-        .await
-        .expect("history with future cutoff");
-    assert!(future.is_empty(), "a cutoff after both posts elides every message");
-
-    let (all_none, _n) = alice
-        .read_history(thread.clone(), None, 100, None)
-        .await
-        .expect("no cutoff");
-    assert_eq!(all_none.len(), 2, "None cutoff returns the whole log");
-
-    let (all_zero, _n) = alice
-        .read_history(thread.clone(), None, 100, Some(0))
-        .await
-        .expect("zero cutoff");
-    assert_eq!(all_zero.len(), 2, "a 0 cutoff also returns the whole log");
-}
-
-/// A creator can archive a thread, dropping it from active listings; a non-creator member cannot.
-#[tokio::test(flavor = "multi_thread")]
-async fn creator_archives_thread_and_it_leaves_active_listings() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let comms_dir = tmp.path().join("comms");
-    let root = tmp.path().to_path_buf();
-    let daemon = Daemon::start(&comms_dir);
-    let socket = daemon.socket().to_path_buf();
-
-    let mut alice = connect(&socket, "agent-alice", &root).await;
-    let mut bob = connect(&socket, "agent-bob", &root).await;
-    let thread = alice
-        .start_thread(Some("topic".to_string()), None, vec![agent("agent-bob")])
-        .await
-        .expect("start thread")
-        .id;
-
-    assert!(
-        bob.archive_thread(thread.clone()).await.is_err(),
-        "non-creator cannot archive"
-    );
-
-    alice.archive_thread(thread.clone()).await.expect("creator archives");
-
-    let active = alice.list_threads(None, None, None, false).await.expect("active list");
-    assert!(active.is_empty(), "archived thread drops out of active listing");
-    let with_archived = alice.list_threads(None, None, None, true).await.expect("archived list");
-    assert_eq!(with_archived.len(), 1);
-    assert!(!with_archived[0].active);
+    assert_eq!(std::fs::read(legacy.join("marker")).expect("legacy marker"), b"v1");
+    assert!(generation_dir(&comms_dir).join("agents.fjall").is_dir());
 }
 
 /// The daemon is the machine's sole fjall writer: a `rescan` RPC indexes a workspace end to end
@@ -532,211 +389,89 @@ async fn machine_registry_auto_registers_a_connecting_repo() {
     assert_eq!(branches[0].name, "main", "the main branch");
 }
 
-/// `inbox_wait` against a REAL detached daemon (not the in-process/UDS-in-test-process setups used
-/// elsewhere): B waits up to 10s while A posts to their shared thread within ~100ms. B must wake
-/// from the notification push, well under the timeout — proving the subscribe-then-block path
-/// works end to end against the actual daemon binary, not just an in-process broker.
+/// The daemon owns the wait: B waits up to 20 s while A posts within moments, and B wakes on the
+/// post, well under the bound, with the message marked read.
 #[tokio::test(flavor = "multi_thread")]
-async fn inbox_wait_delivers_peer_post_promptly() {
+async fn a_wait_ends_promptly_on_a_peer_post() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
     let root = tmp.path().to_path_buf();
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
-
     let mut alice = connect(&socket, "agent-alice", &root).await;
     let mut bob = connect(&socket, "agent-bob", &root).await;
-    let thread = alice
-        .start_thread(Some("wait-team".to_string()), None, vec![agent("agent-bob")])
+    let thread = start(&mut alice, "waits", &["agent-bob"]).await.thread;
+    bob.agent_inbox(None, InboxBody::default(), 0)
         .await
-        .expect("start thread")
-        .id;
+        .expect("bob reads the first post");
 
-    let waiter = tokio::spawn(async move {
+    let waiting = tokio::spawn(async move {
         let started = Instant::now();
-        let result = bob
-            .wait_inbox(None, None, None, None, None, 100, Duration::from_secs(10))
-            .await
-            .expect("bob wait_inbox");
-        (result, started.elapsed())
+        let reply = bob.agent_inbox(None, InboxBody::default(), 20).await;
+        (reply, started.elapsed())
     });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    alice.agent_post(None, into(&thread, "ping")).await.expect("post");
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    alice
-        .post_message(
-            thread.clone(),
-            "from alice".to_string(),
-            b"hi bob".to_vec(),
-            vec![],
-            None,
-        )
-        .await
-        .expect("alice posts while bob waits");
-
-    let ((timed_out, rows, _unread, _next), elapsed) = tokio::time::timeout(Duration::from_secs(15), waiter)
-        .await
-        .expect("bob's wait_inbox task did not finish in time")
-        .expect("bob's wait_inbox task panicked");
-
-    assert!(!timed_out, "bob must wake from alice's post, not time out");
-    assert_eq!(rows.len(), 1, "bob's woken page carries alice's message");
-    assert_eq!(rows[0].meta.subject, "from alice");
+    let (reply, waited) = waiting.await.expect("waiter");
+    let reply = reply.expect("wait");
+    assert_eq!(reply.wait, WaitOutcome::Arrived);
+    assert_eq!(reply.messages.len(), 1);
     assert!(
-        elapsed < Duration::from_secs(2),
-        "bob should wake on the push within ~100ms, not the 10s timeout: {elapsed:?}"
+        waited < Duration::from_secs(10),
+        "woke on the post, not the bound: {waited:?}"
     );
 }
 
-/// Against a real daemon: a `wait` filtered to one thread ignores an unread message in another
-/// joined thread (reporting `Timeout`), and wakes with `Message` for a post in the filtered thread.
+/// A wait limited to one thread is not ended by a post to another.
 #[tokio::test(flavor = "multi_thread")]
-async fn inbox_wait_thread_filter_ignores_other_threads() {
+async fn a_wait_with_a_thread_filter_ignores_other_threads() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
     let root = tmp.path().to_path_buf();
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
-
     let mut alice = connect(&socket, "agent-alice", &root).await;
     let mut bob = connect(&socket, "agent-bob", &root).await;
-    let watched = alice
-        .start_thread(Some("watched".to_string()), None, vec![agent("agent-bob")])
+    let watched = start(&mut alice, "watched", &["agent-bob"]).await.thread;
+    let other = start(&mut alice, "other", &["agent-bob"]).await.thread;
+    bob.agent_inbox(None, InboxBody::default(), 0)
         .await
-        .expect("start watched thread")
-        .id;
-    let other = alice
-        .start_thread(Some("other".to_string()), None, vec![agent("agent-bob")])
-        .await
-        .expect("start other thread")
-        .id;
-    alice
-        .post_message(other, "elsewhere".to_string(), Vec::new(), vec![], None)
-        .await
-        .expect("post to the other thread");
+        .expect("bob reads both first posts");
 
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let outcome = bob
-        .wait_inbox_unseen(
-            None,
-            None,
-            Some(watched.clone()),
-            None,
-            None,
-            100,
-            Duration::from_millis(500),
-            &cancel,
-            |_| false,
-        )
-        .await
-        .expect("filtered wait");
-    assert_eq!(
-        outcome.reason,
-        WaitReason::Timeout,
-        "another thread's unread message must not end the wait: {outcome:?}"
+    let filter = InboxBody {
+        select: InboxSelect::Thread(watched.clone()),
+        ..InboxBody::default()
+    };
+    let waiting = tokio::spawn(async move { bob.agent_inbox(None, filter, 20).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    alice.agent_post(None, into(&other, "elsewhere")).await.expect("post");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !waiting.is_finished(),
+        "a post to another thread ends no wait on this one"
     );
-    assert!(outcome.messages.is_empty());
+    alice.agent_post(None, into(&watched, "here")).await.expect("post");
 
-    alice
-        .post_message(watched.clone(), "here".to_string(), Vec::new(), vec![], None)
-        .await
-        .expect("post to the watched thread");
-    let outcome = bob
-        .wait_inbox_unseen(
-            None,
-            None,
-            Some(watched),
-            None,
-            None,
-            100,
-            Duration::from_secs(10),
-            &cancel,
-            |_| false,
-        )
-        .await
-        .expect("filtered wait");
-    assert_eq!(outcome.reason, WaitReason::Message);
-    let subjects: Vec<&str> = outcome.messages.iter().map(|row| row.meta.subject.as_str()).collect();
-    assert_eq!(subjects, ["here"]);
+    let reply = waiting.await.expect("waiter").expect("wait");
+    let bodies: Vec<&str> = reply.messages.iter().map(|m| m.body.as_str()).collect();
+    assert_eq!(bodies, ["here"]);
 }
 
-/// Against a real daemon: `mark_read` under a recency window leaves the message the window hid
-/// unread, so a read without the window still returns it.
+/// With nobody posting, a wait ends at its bound with nothing.
 #[tokio::test(flavor = "multi_thread")]
-async fn inbox_mark_read_keeps_messages_outside_the_recency_window() {
+async fn a_wait_with_no_peer_activity_times_out() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let comms_dir = tmp.path().join("comms");
     let root = tmp.path().to_path_buf();
     let daemon = Daemon::start(&comms_dir);
-    let socket = daemon.socket().to_path_buf();
-
-    let mut alice = connect(&socket, "agent-alice", &root).await;
-    let mut bob = connect(&socket, "agent-bob", &root).await;
-    let thread = alice
-        .start_thread(Some("window".to_string()), None, vec![agent("agent-bob")])
-        .await
-        .expect("start thread")
-        .id;
-    alice
-        .post_message(thread.clone(), "old".to_string(), Vec::new(), vec![], None)
-        .await
-        .expect("post old");
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    alice
-        .post_message(thread, "new".to_string(), Vec::new(), vec![], None)
-        .await
-        .expect("post new");
-
-    let (rows, _, _) = bob
-        .read_inbox(None, None, None, 100, false, None)
-        .await
-        .expect("unfiltered read");
-    assert_eq!(rows.len(), 2);
-    let window = Some(rows[1].meta.ts_micros);
-
-    let (shown, _, _) = bob
-        .read_inbox(None, None, None, 100, true, window)
-        .await
-        .expect("windowed mark_read");
-    let shown: Vec<&str> = shown.iter().map(|row| row.meta.subject.as_str()).collect();
-    assert_eq!(shown, ["new"]);
-
-    let (all, _, _) = bob
-        .read_inbox(None, None, None, 100, false, None)
-        .await
-        .expect("read all history");
-    let all: Vec<&str> = all.iter().map(|row| row.meta.subject.as_str()).collect();
-    assert_eq!(all, ["old", "new"], "the hidden message must still be unread");
-}
-
-/// Companion to [`inbox_wait_delivers_peer_post_promptly`]: with no peer posting anything, a real
-/// daemon's `inbox_wait` still returns `timed_out: true` once the timeout elapses.
-#[tokio::test(flavor = "multi_thread")]
-async fn inbox_wait_with_no_peer_activity_times_out() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let comms_dir = tmp.path().join("comms");
-    let root = tmp.path().to_path_buf();
-    let daemon = Daemon::start(&comms_dir);
-    let socket = daemon.socket().to_path_buf();
-
-    let mut alice = connect(&socket, "agent-alice", &root).await;
-    alice
-        .start_thread(Some("lonely".to_string()), None, vec![agent("agent-bob")])
-        .await
-        .expect("start thread");
+    let mut bob = connect(daemon.socket(), "agent-bob", &root).await;
 
     let started = Instant::now();
-    let (timed_out, rows, _unread, _next) = alice
-        .wait_inbox(None, None, None, None, None, 100, Duration::from_millis(500))
-        .await
-        .expect("wait_inbox");
-    let elapsed = started.elapsed();
-
-    assert!(timed_out, "no peer activity landed; the wait must time out");
-    assert!(rows.is_empty(), "a timed-out wait returns no rows");
-    assert!(
-        elapsed >= Duration::from_millis(500) && elapsed < Duration::from_secs(5),
-        "elapsed {elapsed:?} should be close to the 500ms timeout"
-    );
+    let reply = bob.agent_inbox(None, InboxBody::default(), 1).await.expect("wait");
+    assert_eq!(reply.wait, WaitOutcome::TimedOut);
+    assert!(reply.messages.is_empty());
+    assert!(started.elapsed() < Duration::from_secs(8), "{:?}", started.elapsed());
 }
 
 /// A cold daemon whose store open is artificially slow still answers `Ping` immediately, while a

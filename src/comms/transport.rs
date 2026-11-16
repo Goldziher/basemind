@@ -15,14 +15,11 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use super::daemon::{Broker, LinkGuard, Session};
 use super::protocol::{CommsOut, CommsRequest};
-
-/// Notification fan-out buffer depth per served link. Shared by every socket-style front-end
-/// (UDS, named pipe) so they bound the per-link notification backlog identically.
-pub(crate) const LINK_CHANNEL_DEPTH: usize = 256;
 
 /// Maximum accepted frame size on the wire. A defensive cap so a malformed or hostile length
 /// prefix cannot drive an unbounded allocation. 16 MiB comfortably exceeds any realistic
@@ -78,32 +75,38 @@ pub trait CommsFrontend: Send {
 /// build). Deregistration is the guard's `Drop`, so it survives any early `break` — and a panic.
 pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, guard: LinkGuard) {
     let _link_guard = guard;
-    let (link_tx, mut link_rx) = mpsc::channel::<CommsOut>(LINK_CHANNEL_DEPTH);
     let mut session = Session::default();
+    let mut queued: Option<CommsRequest> = None;
     loop {
-        tokio::select! {
-            inbound = link.recv() => {
-                match inbound {
-                    Ok(Some(req)) => {
-                        let out = broker.handle_framed(req, &mut session, &link_tx).await;
-                        if link.send(out).await.is_err() {
-                            break;
+        let req = match queued.take() {
+            Some(req) => req,
+            None => match link.recv().await {
+                Ok(Some(req)) => req,
+                Ok(None) | Err(_) => break,
+            },
+        };
+        // ~keep A waiting inbox read must know when its client hung up, so the link is read while a
+        // ~keep request runs: an end of stream cancels `gone`, a pipelined request waits its turn.
+        let gone = CancellationToken::new();
+        let mut hung_up = false;
+        let out = {
+            let handled = broker.handle_framed(req, &mut session, &gone);
+            tokio::pin!(handled);
+            loop {
+                tokio::select! {
+                    out = &mut handled => break out,
+                    inbound = link.recv(), if queued.is_none() && !hung_up => match inbound {
+                        Ok(Some(next)) => queued = Some(next),
+                        Ok(None) | Err(_) => {
+                            hung_up = true;
+                            gone.cancel();
                         }
-                    }
-                    Ok(None) | Err(_) => break,
+                    },
                 }
             }
-            note = link_rx.recv() => {
-                match note {
-                    Some(out) => {
-                        if link.send(out).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => break,
-                }
-            }
+        };
+        if hung_up || link.send(out).await.is_err() {
+            break;
         }
     }
-    broker.remove_link_subscriptions(&link_tx).await;
 }
