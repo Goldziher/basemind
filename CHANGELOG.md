@@ -406,7 +406,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record holds the daemon's process start and boot, so a wall-clock step does not make a live
   daemon unidentifiable; a record from an earlier release is judged by start time. On Windows a
   recorded pid whose process refuses to be opened (a SYSTEM or another user's process given the
-  pid) is no longer read as a live daemon, scan or host, so the stale record is pruned. A `Stop` is
+  pid) is no longer read as a live daemon or scan, so it is not signalled or waited for. Its
+  hosting marker and this generation's registry pidfile are kept, since another account or a
+  sandboxed basemind sharing the data home refuses to be opened too. A `Stop` is
   refused while a relay session is still being set up, not only once it is
   registered; a relay link that has not sent its hello within 30 s is dropped, so a stalled client
   cannot hold a daemon in place. A `basemind rescan` running through the daemon makes it refuse

@@ -197,6 +197,18 @@ pub enum PidState {
     Unopenable,
 }
 
+impl PidState {
+    /// Whether the process a record names may still be running, for a caller that deletes the
+    /// record when it is not: [`PidState::Unopenable`] counts as running. basemind processes of
+    /// one account open each other, but one of another account sharing the data home, or one in
+    /// a restricted-token or AppContainer sandbox, refuses; deleting its record would lose a live
+    /// process. The cost is that a stale record whose pid Windows gave to such a process stays
+    /// until that process exits.
+    pub fn may_be_live(self) -> bool {
+        matches!(self, Self::Live | Self::Unopenable)
+    }
+}
+
 /// What runs as `pid`. Unix: `kill(pid, 0)`, where `0` (signalable) and `EPERM` (exists, not ours)
 /// are [`PidState::Live`] and `ESRCH` is [`PidState::Gone`]; Unix gives every process's start time
 /// to anyone, so a stranger given a recorded pid is told apart by its start instead. Windows: see
@@ -223,12 +235,13 @@ pub fn pid_state(pid: u32) -> PidState {
     }
 }
 
-/// Whether the process a basemind record names may still be running. Every pid asked about here
-/// comes from a record basemind wrote (a daemon or lock record, a scan breadcrumb, a hosting marker,
-/// a parked directory's name), and basemind's processes can open each other, so a process that
-/// refuses to be opened is not the one recorded: [`PidState::Unopenable`] is not live. Without
-/// this a stale record whose pid Windows gave to a SYSTEM or another user's process would read
-/// live, and could not be pruned, for as long as that process ran.
+/// Whether the process a basemind record names is running, for a caller whose wrong "no" costs a
+/// delay or a retry, not a record. Every pid asked about here comes from a record basemind wrote
+/// (a daemon or lock record, a scan breadcrumb, a hosting marker, a parked directory's name), and
+/// basemind's processes of one account can open each other, so a process that refuses to be
+/// opened is taken for not the one recorded: [`PidState::Unopenable`] is not live. Without this a
+/// stale record whose pid Windows gave to a SYSTEM or another user's process would read live for
+/// as long as that process ran. A caller that deletes the record asks [`PidState::may_be_live`].
 #[cfg(any(unix, windows))]
 pub fn pid_is_live(pid: u32) -> bool {
     pid_state(pid) == PidState::Live
@@ -237,7 +250,7 @@ pub fn pid_is_live(pid: u32) -> bool {
 /// [`PidState`] from what Windows answered: `opened` is the exit code `GetExitCodeProcess` read
 /// (`None` when it failed) of a process `OpenProcess` opened, or the error `OpenProcess` failed with.
 #[cfg(any(windows, test))]
-fn windows_state(opened: Result<Option<u32>, Option<i32>>) -> PidState {
+pub(crate) fn windows_state(opened: Result<Option<u32>, Option<i32>>) -> PidState {
     const ERROR_ACCESS_DENIED: i32 = 5;
     /// The exit code `GetExitCodeProcess` reports for a process that has not exited.
     const STILL_ACTIVE: u32 = 259;
@@ -523,8 +536,8 @@ mod tests {
     }
 
     /// Windows tells a pid's state by whether `OpenProcess` opens it and, once open, by its exit
-    /// code. A process that refuses to be opened exists but is not one basemind started, so a
-    /// record naming its pid is stale.
+    /// code. A process that refuses to be opened exists, and is read as not the one a record names
+    /// ([`pid_is_live`]) but as possibly it by a caller that would delete the record.
     #[test]
     fn windows_answers_map_to_a_pid_state() {
         const STILL_ACTIVE: u32 = 259;
@@ -542,6 +555,18 @@ mod tests {
             "ERROR_INVALID_PARAMETER: no such pid"
         );
         assert_eq!(windows_state(Err(None)), PidState::Gone);
+    }
+
+    /// Only a process that is surely gone loses its record: one that refuses to be opened may be a
+    /// basemind of another account or sandbox sharing the data home.
+    #[test]
+    fn only_a_gone_process_may_lose_its_record() {
+        const STILL_ACTIVE: u32 = 259;
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        assert!(windows_state(Ok(Some(STILL_ACTIVE))).may_be_live());
+        assert!(windows_state(Err(Some(ERROR_ACCESS_DENIED))).may_be_live());
+        assert!(!windows_state(Ok(Some(0))).may_be_live(), "exited");
+        assert!(!windows_state(Err(Some(87))).may_be_live(), "no such pid");
     }
 
     /// A Linux start counts ticks from the boot, so a process of a later boot can carry the start

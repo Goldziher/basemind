@@ -169,6 +169,34 @@ fn count_prunes_dead_holders_and_counts_live_ones() {
     assert!(!dead_path.exists(), "the dead pidfile was reaped");
 }
 
+/// A record whose process Windows refuses to open may name a live daemon of another account or
+/// sandbox sharing the data home: it is listed and its pidfile kept, never pruned as dead.
+#[test]
+fn a_record_whose_process_refuses_to_be_opened_is_kept() {
+    use crate::boot_identity::{PidState, windows_state};
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    let machine = tempfile::tempdir().expect("machine tempdir");
+    let record = DaemonRecord {
+        pid: 0x7FFF_FFFE,
+        kind: DaemonKind::Comms,
+        dir: PathBuf::from("/nonexistent"),
+        version: "9.9.9".to_string(),
+        started_unix: now_unix(),
+        process_start: None,
+        boot: None,
+    };
+    let path = machine.path().join("unopenable.pid");
+    write_record(&path, &record);
+
+    let unopenable = |_pid: u32| windows_state(Err(Some(ERROR_ACCESS_DENIED)));
+    let listed = live_daemons_judged_by(machine.path(), unopenable);
+    assert_eq!(listed.iter().map(|r| r.pid).collect::<Vec<_>>(), [record.pid]);
+    assert!(path.exists(), "the pidfile is kept");
+
+    assert!(live_daemons_judged_by(machine.path(), |_pid| PidState::Gone).is_empty());
+    assert!(!path.exists(), "a gone process's pidfile is pruned");
+}
+
 #[test]
 fn the_ceiling_counts_each_kind_separately() {
     let machine = tempfile::tempdir().expect("machine tempdir");

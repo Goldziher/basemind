@@ -2,6 +2,7 @@
 //! them.
 
 use super::*;
+use crate::boot_identity::{PidState, windows_state};
 use crate::scan_evidence::blobs_need_verifying;
 
 const THIS_BOOT_ID: &str = "id:this";
@@ -287,24 +288,44 @@ fn a_marker_of_an_earlier_boot_under_this_process_own_pid_is_a_dead_host() {
 fn a_host_is_judged_by_its_process_first_and_its_boot_second() {
     use HostFate::{DiedAlone, DiedWithTheMachine, Live};
     assert_eq!(
-        host_fate(true, Some(true), Some(false)),
+        host_fate(PidState::Live, Some(true), Some(false)),
         Live,
         "the host itself still runs"
     );
     assert_eq!(
-        host_fate(true, Some(false), Some(true)),
+        host_fate(PidState::Live, Some(false), Some(true)),
         DiedAlone,
         "the pid went to another"
     );
-    assert_eq!(host_fate(true, Some(false), Some(false)), DiedWithTheMachine);
-    assert_eq!(host_fate(true, Some(false), None), DiedWithTheMachine);
-    assert_eq!(host_fate(true, None, Some(false)), DiedWithTheMachine);
-    assert_eq!(host_fate(true, None, Some(true)), Live);
-    assert_eq!(host_fate(true, None, None), Live, "a live pid is all there is");
-    assert_eq!(host_fate(false, None, Some(true)), DiedAlone);
+    assert_eq!(host_fate(PidState::Live, Some(false), Some(false)), DiedWithTheMachine);
+    assert_eq!(host_fate(PidState::Live, Some(false), None), DiedWithTheMachine);
+    assert_eq!(host_fate(PidState::Live, None, Some(false)), DiedWithTheMachine);
+    assert_eq!(host_fate(PidState::Live, None, Some(true)), Live);
     assert_eq!(
-        host_fate(false, None, None),
+        host_fate(PidState::Live, None, None),
+        Live,
+        "a live pid is all there is"
+    );
+    assert_eq!(host_fate(PidState::Gone, None, Some(true)), DiedAlone);
+    assert_eq!(
+        host_fate(PidState::Gone, None, None),
         DiedWithTheMachine,
         "with the boot unknown a dead pid is the worse case"
+    );
+}
+
+/// Windows refuses to open the process of another account sharing the data home, or of a
+/// sandboxed one, which leaves no start time to compare. Such a host may still run, so its marker
+/// stays: deleting it would leave a host that later dies with the machine asking nothing.
+#[test]
+fn a_host_whose_process_refuses_to_be_opened_is_still_hosting() {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    let unopenable = windows_state(Err(Some(ERROR_ACCESS_DENIED)));
+    assert_eq!(host_fate(unopenable, None, Some(true)), HostFate::Live);
+    assert_eq!(host_fate(unopenable, None, None), HostFate::Live);
+    assert_eq!(
+        host_fate(unopenable, None, Some(false)),
+        HostFate::DiedWithTheMachine,
+        "a marker of an earlier boot is a dead host's whatever runs at its pid now"
     );
 }

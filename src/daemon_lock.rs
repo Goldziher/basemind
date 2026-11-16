@@ -16,7 +16,7 @@
 //! 2. **The machine ceiling** — every live daemon registers a pidfile under
 //!    `<data_home>/daemons/g<N>/`, `N` being its [`RENDEZVOUS_GENERATION`]. [`live_daemons`] and
 //!    [`live_daemons_of`] list this generation's holders only, pruning dead ones via
-//!    [`pid_is_live`]; they are what `comms doctor` and `comms stop --all` act on, so neither can
+//!    [`crate::boot_identity::PidState::may_be_live`]; they are what `comms doctor` and `comms stop --all` act on, so neither can
 //!    reach another generation's daemon. [`count_live_daemons_of`] tallies one kind's holders
 //!    across every generation — this one's directory, the other `g<M>/` directories and the
 //!    unscoped `daemons/` that releases up to 0.33 register in — by reading the records, never by
@@ -236,6 +236,17 @@ fn live_daemons_of_in(machine_dir: &Path, kind: DaemonKind) -> Vec<DaemonRecord>
 
 /// [`live_daemons`] over an explicit machine dir. Injected so unit tests use a temp registry.
 fn live_daemons_in(machine_dir: &Path) -> Vec<DaemonRecord> {
+    live_daemons_judged_by(machine_dir, crate::boot_identity::pid_state)
+}
+
+/// [`live_daemons_in`] with what runs at a pid read by `state`. A record is pruned only when its
+/// process is surely gone ([`crate::boot_identity::PidState::may_be_live`]): one Windows refuses to
+/// open may be a daemon of another account or sandbox sharing the data home, and losing its record
+/// would hide it from `comms doctor` and `stop --all` and from the ceiling for good. It is listed.
+fn live_daemons_judged_by(
+    machine_dir: &Path,
+    state: impl Fn(u32) -> crate::boot_identity::PidState,
+) -> Vec<DaemonRecord> {
     let Ok(entries) = std::fs::read_dir(machine_dir) else {
         return Vec::new();
     };
@@ -246,7 +257,7 @@ fn live_daemons_in(machine_dir: &Path) -> Vec<DaemonRecord> {
             continue;
         }
         match read_record(&path) {
-            Some(record) if pid_is_live(record.pid) => live.push(record),
+            Some(record) if state(record.pid).may_be_live() => live.push(record),
             // Missing/corrupt record or a dead holder: reap the stale pidfile so the count is honest.
             _ => {
                 let _ = std::fs::remove_file(&path);

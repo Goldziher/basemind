@@ -66,8 +66,14 @@ changed, checked against `main` at `3d627ba5`. A clause not named here stands.
    the exit; Windows has no SIGTERM and goes straight to `taskkill /F`. With the lock free after the
    window, the daemon is gone when nothing accepts on its socket and `Unidentified`, signalled by
    nobody, when something does. On Windows a pid a record names whose process refuses `OpenProcess`
-   (access denied) is read as not live: basemind can open its own processes, and such a process
-   gives no start time to rule it out. Reason: a `flock` names no holder; the checks keep a stale
+   (access denied) gives no start time to rule it out, and is read two ways. Where a wrong reading
+   costs a delay or a retry (naming or signalling a holder, waiting for a lock record, counting
+   other generations' daemons, a scan breadcrumb, a parked directory) it is not live: basemind
+   processes of one account open each other. Where the record would be deleted (a hosting marker,
+   this generation's registry pidfile) it may be live and the record stays: a basemind of another
+   account or a sandboxed one sharing the data home refuses too, and losing its record hides a live
+   daemon from `comms doctor`, `stop --all` and the ceiling, or a host that later dies with the
+   machine from blob verification. Reason: a `flock` names no holder; the checks keep a stale
    pidfile from naming a stranger.
 
 ### Sessions, relay and launcher

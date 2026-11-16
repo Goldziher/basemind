@@ -51,12 +51,16 @@ enum HostFate {
     DiedWithTheMachine,
 }
 
-/// Judge a marker. `same_process` says whether the process now at the marker's pid is the host
+/// Judge a marker. `pid` is what runs at the marker's pid, and a process Windows refuses to open
+/// may be the host ([`crate::boot_identity::PidState::may_be_live`]): a marker removed while its
+/// host runs is not there to be judged when the host dies with the machine. `same_process` says
+/// whether the process now at the marker's pid is the host
 /// ([`crate::boot_identity::is_recorded_process`], never so across two boot ids), and `same_boot`
 /// whether the marker is of this boot; `None` where it cannot be told. The host's own process still
 /// running is `Live` whatever the boot times say: a boot time that moved is not a restart. With the
 /// boot unknown and the host gone, the worse case is read.
-fn host_fate(pid_live: bool, same_process: Option<bool>, same_boot: Option<bool>) -> HostFate {
+fn host_fate(pid: crate::boot_identity::PidState, same_process: Option<bool>, same_boot: Option<bool>) -> HostFate {
+    let pid_live = pid.may_be_live();
     if pid_live && same_process == Some(true) {
         return HostFate::Live;
     }
@@ -120,7 +124,7 @@ fn settle_dead_hosts_with(
         let same_process =
             crate::boot_identity::is_recorded_process(pid, record.started, record.boot.as_deref(), this_boot.id);
         let fate = host_fate(
-            crate::daemon_lock::pid_is_live(pid),
+            crate::boot_identity::pid_state(pid),
             same_process,
             marker_of_this_boot(&path, &record, this_boot),
         );
