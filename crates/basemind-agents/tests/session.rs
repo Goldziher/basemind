@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use basemind_agents::{
-    AgentIdentity, ApprovalRequest, ApprovalVerdict, Event, FinishStatus, Harness, HarnessKind, LaunchConfig,
-    LaunchError, LaunchRequest, Registry, Session,
+    AcpFlavor, AgentIdentity, ApprovalRequest, ApprovalVerdict, Event, FinishStatus, Harness, HarnessKind,
+    LaunchConfig, LaunchError, LaunchRequest, Registry, Session,
 };
 
 const HANDSHAKE: &str = r#"read -r init
@@ -634,4 +634,29 @@ fn dropping_a_session_that_is_winding_down_kills_the_harness_at_once() {
         assert!(Instant::now() < deadline, "the harness outlived the drop by 1.5 s");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn an_acp_agent_that_floods_requests_and_never_reads_fails_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    // Every request is answered, and the answers pile up in front of a stdin nobody reads.
+    let body = r#"i=0
+while [ $i -lt 200000 ]; do
+  i=$((i+1))
+  printf '{"jsonrpc":"2.0","id":%d,"method":"x/flood","params":{}}\n' $i
+done
+while :; do sleep 1; done
+"#;
+    let spec = spec(HarnessKind::Acp(AcpFlavor::Generic), dir.path(), body);
+    let started = Instant::now();
+    let session = launch(&spec);
+    let deadline = started + Duration::from_secs(15);
+    let mut events = Vec::new();
+    while let Ok(event) = session.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        events.push(event);
+    }
+    let [.., Event::Error(error), Event::Finished(FinishStatus::Failed)] = events.as_slice() else {
+        panic!("the session did not fail within 15 s: {events:?}");
+    };
+    assert!(error.contains("unread"), "{error}");
 }

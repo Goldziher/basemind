@@ -8,8 +8,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema::{
@@ -216,8 +217,40 @@ impl Driver for AcpDriver {
                 }
             }
         });
-        let outgoing = out_tx.sink_map_err(std::io::Error::other);
-        futures::executor::block_on(converse(outgoing, incoming, self.config, sink, self.controls))
+        futures::executor::block_on(converse(FailFast(out_tx), incoming, self.config, sink, self.controls))
+    }
+}
+
+/// The connection's outgoing lines. The protocol crate queues what it sends without bound and
+/// answers every request it receives, so an agent that floods requests and never reads would
+/// grow that queue until the wall-time limit. This sink never waits: a full queue fails the
+/// connection, which ends the session with a protocol error.
+struct FailFast(Sender<String>);
+
+impl Sink<String> for FailFast {
+    type Error = std::io::Error;
+
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, line: String) -> Result<(), Self::Error> {
+        self.get_mut().0.try_send(line).map_err(|error| {
+            if error.is_full() {
+                std::io::Error::other(format!("the ACP agent left {LINE_QUEUE} lines unread"))
+            } else {
+                std::io::ErrorKind::BrokenPipe.into()
+            }
+        })
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut().0.close_channel();
+        Poll::Ready(Ok(()))
     }
 }
 
