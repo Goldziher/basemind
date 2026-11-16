@@ -95,7 +95,8 @@ pub(super) async fn run_workspace_grep(
                 format!("invalid regex: {e}. Drop `regex` to search for the pattern as literal text."),
                 None,
             )
-        })?;
+        })
+        .map(LineRegex::new)?;
 
     let literal = (params.literal || regex::escape(&params.pattern) == params.pattern)
         .then(|| Finder::new(params.pattern.as_bytes()).into_owned());
@@ -265,7 +266,7 @@ fn count_all(
     sweep: &Sweep<'_>,
     scanned: &[&RelPath],
     skip: Option<&[bool]>,
-    re: &Regex,
+    re: &LineRegex,
     literal: Option<&Finder<'static>>,
     skip_hits: u32,
 ) -> (Vec<u32>, usize) {
@@ -341,7 +342,7 @@ fn with_indexed_bytes<R>(file: Option<std::path::PathBuf>, max_bytes: u64, f: im
 
 /// Matches of `re` in a file's bytes, or `None` for a file that is not UTF-8 and so cannot be
 /// searched. A file the literal prefilter rules out is a zero whatever its encoding.
-fn count_matches(bytes: &[u8], re: &Regex, literal: Option<&Finder<'static>>) -> Option<u32> {
+fn count_matches(bytes: &[u8], re: &LineRegex, literal: Option<&Finder<'static>>) -> Option<u32> {
     if let Some(finder) = literal
         && finder.find(bytes).is_none()
     {
@@ -355,6 +356,28 @@ fn count_matches(bytes: &[u8], re: &Regex, literal: Option<&Finder<'static>>) ->
 /// A byte that is whitespace to the regex engine, matches `.` and ends no line.
 const LONE_CR_STAND_IN: u8 = 0x0B;
 
+/// A grep's compiled pattern, and whether a lone `\r` in a file is masked before matching it:
+/// decided once per call from the parsed pattern, not once per file.
+pub(super) struct LineRegex {
+    regex: Regex,
+    masks_lone_cr: bool,
+}
+
+impl LineRegex {
+    pub(super) fn new(regex: Regex) -> Self {
+        let masks_lone_cr = !names_carriage_return(regex.as_str());
+        Self { regex, masks_lone_cr }
+    }
+}
+
+impl std::ops::Deref for LineRegex {
+    type Target = Regex;
+
+    fn deref(&self) -> &Regex {
+        &self.regex
+    }
+}
+
 /// `source` as the text `re` is matched against, with the same offsets.
 ///
 /// A line ends at `\n`, and a `\r` right before it belongs to the ending: the rule `code_read`,
@@ -362,14 +385,12 @@ const LONE_CR_STAND_IN: u8 = 0x0B;
 /// CRLF-aware regex also anchors `^` and `$` at a `\r` that no `\n` follows, which would report a
 /// line start or end in the middle of a line. Such a `\r` is text inside its line, so it is
 /// swapped for a byte that ends no line before matching. Only a file that has one pays for the
-/// copy, and a pattern that itself names `\r` is matched against the bytes as they are.
-fn lines_end_at_lf<'s>(re: &Regex, source: &'s str) -> std::borrow::Cow<'s, str> {
+/// copy, and a pattern that itself names `\r` (or the stand-in) is matched against the bytes as
+/// they are.
+fn lines_end_at_lf<'s>(re: &LineRegex, source: &'s str) -> std::borrow::Cow<'s, str> {
     let bytes = source.as_bytes();
     let lone = |at: &usize| bytes.get(at + 1) != Some(&b'\n');
-    if !memchr::memchr_iter(b'\r', bytes).any(|at| lone(&at)) {
-        return std::borrow::Cow::Borrowed(source);
-    }
-    if names_carriage_return(re.as_str()) {
+    if !re.masks_lone_cr || !memchr::memchr_iter(b'\r', bytes).any(|at| lone(&at)) {
         return std::borrow::Cow::Borrowed(source);
     }
     let mut masked = bytes.to_vec();
@@ -380,13 +401,18 @@ fn lines_end_at_lf<'s>(re: &Regex, source: &'s str) -> std::borrow::Cow<'s, str>
     std::borrow::Cow::Owned(String::from_utf8(masked).unwrap_or_else(|_| source.to_string()))
 }
 
-/// Whether `pattern` asks for a carriage return: the character itself or any escape of it (`\r`,
-/// `\x0D`, `\x{0D}`, `\u000D`), alone or in a class, or a class range holding it and not the
-/// stand-in. Decided on the parsed pattern, since the spellings are many. A pattern that does not
-/// parse here is read as asking for one, so its file is searched as it is.
+/// Whether `pattern` tells a carriage return from the stand-in: either character itself or any
+/// escape of it (`\r`, `\x0D`, `\x{0D}`, `\u000D`, `\v`, `\x0B`), alone or in a class, or a class
+/// range holding one and not the other. Masking a lone `\r` as the stand-in would change what such
+/// a pattern matches: `a\vb` would match `a\rb`. Decided on the parsed pattern, since the spellings
+/// are many. A pattern that does not parse here is read as naming one, so its file is searched as
+/// it is.
 fn names_carriage_return(pattern: &str) -> bool {
     use regex_syntax::ast::{self, Ast, ClassSetItem, Visitor};
 
+    fn is_either(c: char) -> bool {
+        c == '\r' || c == char::from(LONE_CR_STAND_IN)
+    }
     struct Names(bool);
     impl Visitor for Names {
         type Output = bool;
@@ -396,16 +422,16 @@ fn names_carriage_return(pattern: &str) -> bool {
         }
         fn visit_pre(&mut self, ast: &Ast) -> Result<(), Self::Err> {
             if let Ast::Literal(literal) = ast {
-                self.0 |= literal.c == '\r';
+                self.0 |= is_either(literal.c);
             }
             Ok(())
         }
         fn visit_class_set_item_pre(&mut self, item: &ClassSetItem) -> Result<(), Self::Err> {
             match item {
-                ClassSetItem::Literal(literal) => self.0 |= literal.c == '\r',
+                ClassSetItem::Literal(literal) => self.0 |= is_either(literal.c),
                 ClassSetItem::Range(range) => {
                     let holds = |c: char| (range.start.c..=range.end.c).contains(&c);
-                    self.0 |= holds('\r') && !holds(char::from(LONE_CR_STAND_IN));
+                    self.0 |= holds('\r') != holds(char::from(LONE_CR_STAND_IN));
                 }
                 _ => {}
             }
@@ -482,7 +508,7 @@ fn materialize(
     scanned: &[&RelPath],
     selected: &[Selection],
     is_fresh: &(dyn Fn(usize, &std::path::Path, &[u8]) -> bool + Sync),
-    re: &Regex,
+    re: &LineRegex,
     include_context: bool,
     skip_files: usize,
 ) -> (Vec<GrepHit>, Vec<u64>) {
@@ -518,7 +544,7 @@ fn collect_hits(
     path: &RelPath,
     source: &str,
     source_fresh: bool,
-    re: &Regex,
+    re: &LineRegex,
     sel: &Selection,
     include_context: bool,
     global_file_idx: usize,

@@ -54,7 +54,7 @@ fn a_literal_pattern_is_prefiltered_and_a_metacharacter_pattern_is_not() {
 
 #[test]
 fn counts_every_match_and_the_prefilter_never_changes_the_count() {
-    let re = Regex::new("needle").expect("regex");
+    let re = LineRegex::new(Regex::new("needle").expect("regex"));
     let finder = Finder::new("needle".as_bytes()).into_owned();
     let source = b"needle\nhay\nneedle needle\n";
     assert_eq!(count_matches(source, &re, None), Some(3));
@@ -115,7 +115,7 @@ mod reference {
         root: &Path,
         scanned: &[&RelPath],
         selected: &[Selection],
-        re: &Regex,
+        re: &LineRegex,
         ctx: bool,
         skip_files: usize,
     ) -> (Vec<GrepHit>, Vec<u64>) {
@@ -229,7 +229,7 @@ fn the_optimised_sweep_is_byte_identical_to_the_original_over_a_generated_corpus
         "",
     ];
     for pattern in patterns {
-        let re = Regex::new(pattern).expect("regex");
+        let re = LineRegex::new(Regex::new(pattern).expect("regex"));
         let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
         for skip_hits in [0u32, 3] {
             let (new_counts, _) = count_all(
@@ -395,7 +395,7 @@ fn the_bloom_prefilter_never_changes_a_result_even_after_edits_deletes_and_new_f
     ];
     let mut skipped_somewhere = false;
     for pattern in patterns {
-        let re = Regex::new(pattern).expect("regex");
+        let re = LineRegex::new(Regex::new(pattern).expect("regex"));
         let literal = (regex::escape(pattern) == pattern).then(|| Finder::new(pattern.as_bytes()).into_owned());
         let skip = crate::index::grep_bloom::Needle::compile(pattern)
             .map(|needle| db.view().grep_skip_verdicts(dir.path(), &entries, &needle));
@@ -517,12 +517,14 @@ fn a_file_over_the_size_bound_is_not_read() {
     assert_eq!(with_indexed_bytes(Some(file), 4, <[u8]>::len), None);
 }
 
-fn line_anchored(pattern: &str) -> Regex {
-    regex::RegexBuilder::new(pattern)
-        .multi_line(true)
-        .crlf(true)
-        .build()
-        .expect("regex")
+fn line_anchored(pattern: &str) -> LineRegex {
+    LineRegex::new(
+        regex::RegexBuilder::new(pattern)
+            .multi_line(true)
+            .crlf(true)
+            .build()
+            .expect("regex"),
+    )
 }
 
 /// An anchor matches at the end of the text as well as at every line. After a trailing newline
@@ -557,13 +559,7 @@ fn an_anchor_does_not_match_past_the_last_line() {
 /// unless the pattern itself asks for a `\r`.
 #[test]
 fn a_lone_carriage_return_is_not_a_line_end_for_the_anchors() {
-    let anchored = |pattern: &str| {
-        regex::RegexBuilder::new(pattern)
-            .multi_line(true)
-            .crlf(true)
-            .build()
-            .expect("regex")
-    };
+    let anchored = line_anchored;
     let source = "a\rb\r\nc\n";
     let starts = |pattern: &str| {
         let re = anchored(pattern);
@@ -593,6 +589,17 @@ fn a_lone_carriage_return_is_not_a_line_end_for_the_anchors() {
         "a range holding the stand-in still matches"
     );
     assert_eq!(starts("^b"), Vec::<usize>::new(), "and a pattern naming none is masked");
+
+    // The stand-in is a character of its own: a pattern that tells it from `\r` is not masked.
+    for (spelling, expected) in [
+        ("a\\vb", Vec::<usize>::new()),
+        ("a\\x0Bb", Vec::new()),
+        ("a[\\x00-\\x0B]b", Vec::new()),
+        ("a[\\s&&[^\\x0B]]b", vec![0]),
+        ("a[^\\x00-\\x0B]b", vec![0]),
+    ] {
+        assert_eq!(starts(spelling), expected, "`{spelling}` sees the `\\r` as it is");
+    }
 
     let re = anchored("^c");
     assert!(
