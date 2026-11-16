@@ -269,8 +269,9 @@ mod tests {
     use super::super::transport::MAX_FRAME_BYTES;
     use super::*;
 
-    /// A relay of protocol 1 named an `agent_id` and no principal; its hello must still be read as
-    /// far as its version, so the daemon can decline it as skewed.
+    /// A relay of protocol 1 named an `agent` (an `AgentId`, a string on the wire) and no
+    /// principal; its hello must still be read as far as its version, so the daemon can decline it
+    /// as skewed.
     #[test]
     fn an_older_relays_hello_is_recognised_as_skewed() {
         #[derive(Serialize)]
@@ -278,13 +279,13 @@ mod tests {
             relay_proto_ver: u32,
             root: std::path::PathBuf,
             view: String,
-            agent_id: String,
+            agent: String,
         }
         let body = encode(&HelloV1 {
             relay_proto_ver: 1,
             root: "/repo".into(),
             view: "working".to_string(),
-            agent_id: "a".to_string(),
+            agent: "a".to_string(),
         })
         .expect("encode");
         let error = decode_hello(&body).expect_err("a v1 hello does not decode");
