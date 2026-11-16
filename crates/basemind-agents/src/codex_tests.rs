@@ -342,6 +342,44 @@ fn every_other_server_request_is_answered_at_once() {
     assert!(frames[2]["result"]["currentTimeAt"].as_u64().unwrap() > 1_700_000_000);
 }
 
+/// The request Codex 0.169 sent before calling the `ping` tool of an injected server.
+const LIVE_MCP_ELICITATION: &str = include_str!("../tests/fixtures/live/codex-0.169-mcp-tool-elicitation.json");
+
+#[test]
+fn an_mcp_tool_call_request_goes_to_the_policy() {
+    let frame: Value = serde_json::from_str(LIVE_MCP_ELICITATION).unwrap();
+
+    // Without a policy it is declined, and reported as a request.
+    let (sink, events) = EventSink::for_test(None, 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    protocol.frame(frame.clone(), &mut out, &sink).unwrap();
+    assert_eq!(
+        written(&out),
+        [json!({"id": 0, "result": {"action": "decline", "content": null, "_meta": null}})]
+    );
+    let asked = asked(&events);
+    let [request] = asked.as_slice() else {
+        panic!("unexpected requests {asked:?}");
+    };
+    assert_eq!(request.kind, ApprovalKind::McpTool);
+    assert!(
+        request.detail.starts_with("Server: stub\nTool: ping\nArguments: {}"),
+        "{}",
+        request.detail
+    );
+
+    // An allow accepts this one call: no `persist` goes back.
+    let (sink, _events) = EventSink::for_test(always(ApprovalVerdict::Allow), 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    protocol.frame(frame, &mut out, &sink).unwrap();
+    assert_eq!(
+        written(&out),
+        [json!({"id": 0, "result": {"action": "accept", "content": {}, "_meta": null}})]
+    );
+}
+
 #[test]
 fn failures_end_the_session_and_a_retried_error_does_not() {
     let (sink, events) = EventSink::for_test(None, 1);

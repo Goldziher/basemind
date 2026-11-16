@@ -19,6 +19,8 @@ const INITIALIZE_ID: u64 = 1;
 const THREAD_ID: u64 = 2;
 const TURN_ID_PREFIX: &str = "basemind-turn-";
 const INTERRUPT_ID: &str = "basemind-interrupt";
+/// The server request through which Codex asks before an MCP tool call.
+const ELICITATION: &str = "mcpServer/elicitation/request";
 /// How many file-change items keep their full changes for an approval request.
 const FILE_CHANGE_ITEMS: usize = 16;
 /// How often growing command output is reported.
@@ -211,7 +213,10 @@ impl CodexProtocol {
         allow: bool,
         out: &mut dyn Write,
     ) -> Result<(), LaunchError> {
-        let result = if method.contains("permissions") {
+        let result = if method == ELICITATION {
+            // An empty `_meta` leaves out `persist`: the allow covers this one call.
+            json!({"action": if allow { "accept" } else { "decline" }, "content": if allow { json!({}) } else { Value::Null }, "_meta": null})
+        } else if method.contains("permissions") {
             json!({"permissions": if allow { request["permissions"].clone() } else { json!({}) }, "scope": "turn"})
         } else if method == "execCommandApproval" || method == "applyPatchApproval" {
             json!({"decision": if allow { "approved" } else { "denied" }})
@@ -280,7 +285,16 @@ impl CodexProtocol {
         let pretty = |value: &Value| serde_json::to_string_pretty(value).unwrap_or_default();
         let known = params["itemId"].as_str().and_then(|item| self.tools.get(item));
         let mut params = params.clone();
-        let (kind, title, mut grant) = if method.contains("fileChange") || method == "applyPatchApproval" {
+        let (kind, title, mut grant) = if method == ELICITATION {
+            let meta = &params["_meta"];
+            let grant = format!(
+                "Server: {}\nTool: {}\nArguments: {}",
+                params["serverName"].as_str().unwrap_or("?"),
+                meta["tool_name"].as_str().unwrap_or("?"),
+                pretty(&meta["tool_params"])
+            );
+            (ApprovalKind::McpTool, "Allow this MCP tool call?", grant)
+        } else if method.contains("fileChange") || method == "applyPatchApproval" {
             let Some(changes) = self.requested_changes(&params) else {
                 let detail = "The harness did not say in full which files would change, or the changes are \
                               too large to show, so the request is denied.";
@@ -592,7 +606,11 @@ impl CodexProtocol {
         if method.ends_with("/requestApproval") || matches!(method, "execCommandApproval" | "applyPatchApproval") {
             return self.approval(wire, method, params, out, sink);
         }
-        if method == "mcpServer/elicitation/request" {
+        if method == ELICITATION && params["_meta"]["codex_approval_kind"] == "mcp_tool_call" {
+            // Codex 0.169 asks before every MCP tool call this way, not with a requestApproval.
+            return self.approval(wire, method, params, out, sink);
+        }
+        if method == ELICITATION {
             sink.emit(Event::Status(
                 "Declined an MCP elicitation: no form can be shown here".to_owned(),
             ));
