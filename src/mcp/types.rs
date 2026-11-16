@@ -602,6 +602,8 @@ pub(super) struct FindReferencesResponse {
     #[serde(rename = "match")]
     pub matching: &'static str,
     pub total: u32,
+    /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
+    /// predates exact matching answered, whose substring hits are dropped page by page.
     /// True when the scan stopped at its cap before the end of the matches: `total` is then a
     /// lower bound, and `next_cursor` resumes the scan.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -645,6 +647,8 @@ pub(super) struct FindCallersResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_total: Option<u32>,
     pub total: u32,
+    /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
+    /// predates exact matching answered, whose substring hits are dropped page by page.
     /// As on a `code_refs` name scan: the scan stopped at its cap, so `total` is a lower bound.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,

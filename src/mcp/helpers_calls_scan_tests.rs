@@ -641,9 +641,10 @@ fn hit(callee: &str) -> ReferenceHit {
 }
 
 /// A daemon that predates `exact` answers with substring hits. Dropping this page's share of them
-/// leaves a total that still counts the ones on later pages: an upper bound, and it must say so.
+/// leaves a total that still counts the ones on later pages, an upper bound; no scan cap was hit, so
+/// the page must not report one.
 #[test]
-fn dropping_hits_from_a_forwarded_page_marks_its_total_partial() {
+fn dropping_hits_from_a_forwarded_page_does_not_report_a_scan_cap() {
     let page = || {
         CallScanPage::finish(
             40,
@@ -660,8 +661,11 @@ fn dropping_hits_from_a_forwarded_page_marks_its_total_partial() {
     assert_eq!(filtered.hits.len(), 2);
     assert_eq!(filtered.hit_keys, [vec![1], vec![3]]);
     assert_eq!(filtered.hit_starts, [10, 30]);
-    assert_eq!(filtered.total, 39);
-    assert!(filtered.total_is_partial, "39 is an upper bound, not the count");
+    assert_eq!(
+        filtered.total, 39,
+        "an upper bound: later pages hold more substring hits"
+    );
+    assert!(!filtered.total_is_partial, "no scan cap was hit");
 
     let mut untouched = page();
     untouched.retain(|_| true);
@@ -686,5 +690,5 @@ fn dropping_hits_from_a_forwarded_page_marks_its_total_partial() {
     impls.retain(|hit| Matching::Exact.accepts_trait(&hit.trait_name, "Iterator"));
     assert_eq!(impls.hit_keys, [vec![2]]);
     assert_eq!(impls.total, 8);
-    assert!(impls.total_is_partial);
+    assert!(!impls.total_is_partial, "no scan cap was hit");
 }

@@ -39,6 +39,8 @@ pub struct FindImplementationsResponse {
     /// How the name was matched against trait names: `exact` or `substring`.
     #[serde(rename = "match")]
     pub matching: &'static str,
+    /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
+    /// predates exact matching answered, whose substring hits are dropped page by page.
     pub total: usize,
     /// True when the scan stopped at its cap before the end of the matches: `total` is then a
     /// lower bound, and `next_cursor` resumes the scan.

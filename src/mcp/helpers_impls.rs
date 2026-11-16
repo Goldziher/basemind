@@ -35,8 +35,8 @@ pub(crate) struct ImplScanPage {
 }
 
 impl ImplScanPage {
-    /// Drop the hits `keep` rejects, with their keys; `total` shrinks by the same count and becomes
-    /// partial (an upper bound), as in `CallScanPage::retain`.
+    /// Drop the hits `keep` rejects, with their keys; `total` shrinks by the same count and is then an
+    /// upper bound, as in `CallScanPage::retain`.
     #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
     pub(super) fn retain(&mut self, keep: impl Fn(&ImplementationHit) -> bool) {
         let mut index = 0;
@@ -48,7 +48,6 @@ impl ImplScanPage {
             self.hits.remove(index);
             self.hit_keys.remove(index);
             self.total = self.total.saturating_sub(1);
-            self.total_is_partial = true;
         }
     }
 }

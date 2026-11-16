@@ -537,6 +537,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the live walk order the commits a sync appended differently, so the offset could skip or repeat commits.
 - `basemind git by-path` refuses `--window 0` and `--limit 0`, which returned the same `next_cursor`
   forever.
+- `code_refs` answered by a daemon that predates exact matching no longer sets `truncated_reason:
+  "scan_cap"` when it drops that daemon's substring hits: no cap was hit. `total` is then an upper bound.
 - `code_refs` leaves `resolved` absent when nothing was checked, instead of `false`.
 - `code_grep` and `code_refs` definition no longer read through a file swapped for a link out of the
   repository, and `code_grep` no longer counts matches through a directory swapped for one: the count
