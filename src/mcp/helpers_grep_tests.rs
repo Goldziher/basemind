@@ -576,6 +576,23 @@ fn a_lone_carriage_return_is_not_a_line_end_for_the_anchors() {
     assert_eq!(starts("$"), [3, 6], "and two end, the first before its `\\r\\n`");
     assert_eq!(starts("a.b"), [0], "the lone `\\r` is a character of its line");
     assert_eq!(starts("a\\rb"), [0], "a pattern that names `\\r` sees it");
+    for spelling in [
+        "a\\x0Db",
+        "a\\x0db",
+        "a\\x{0D}b",
+        "a\\u000Db",
+        "a[\\x0d]b",
+        "a[\\r]b",
+        "a[\\x0C-\\x0D]b",
+    ] {
+        assert_eq!(starts(spelling), [0], "`{spelling}` names `\\r` as well");
+    }
+    assert_eq!(
+        starts("a[\\x00-\\x1F]b"),
+        [0],
+        "a range holding the stand-in still matches"
+    );
+    assert_eq!(starts("^b"), Vec::<usize>::new(), "and a pattern naming none is masked");
 
     let re = anchored("^c");
     assert!(

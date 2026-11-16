@@ -369,8 +369,7 @@ fn lines_end_at_lf<'s>(re: &Regex, source: &'s str) -> std::borrow::Cow<'s, str>
     if !memchr::memchr_iter(b'\r', bytes).any(|at| lone(&at)) {
         return std::borrow::Cow::Borrowed(source);
     }
-    let pattern = re.as_str();
-    if pattern.contains('\r') || pattern.contains("\\r") {
+    if names_carriage_return(re.as_str()) {
         return std::borrow::Cow::Borrowed(source);
     }
     let mut masked = bytes.to_vec();
@@ -379,6 +378,43 @@ fn lines_end_at_lf<'s>(re: &Regex, source: &'s str) -> std::borrow::Cow<'s, str>
     }
     // One ASCII byte replaced by another: still UTF-8.
     std::borrow::Cow::Owned(String::from_utf8(masked).unwrap_or_else(|_| source.to_string()))
+}
+
+/// Whether `pattern` asks for a carriage return: the character itself or any escape of it (`\r`,
+/// `\x0D`, `\x{0D}`, `\u000D`), alone or in a class, or a class range holding it and not the
+/// stand-in. Decided on the parsed pattern, since the spellings are many. A pattern that does not
+/// parse here is read as asking for one, so its file is searched as it is.
+fn names_carriage_return(pattern: &str) -> bool {
+    use regex_syntax::ast::{self, Ast, ClassSetItem, Visitor};
+
+    struct Names(bool);
+    impl Visitor for Names {
+        type Output = bool;
+        type Err = std::convert::Infallible;
+        fn finish(self) -> Result<bool, Self::Err> {
+            Ok(self.0)
+        }
+        fn visit_pre(&mut self, ast: &Ast) -> Result<(), Self::Err> {
+            if let Ast::Literal(literal) = ast {
+                self.0 |= literal.c == '\r';
+            }
+            Ok(())
+        }
+        fn visit_class_set_item_pre(&mut self, item: &ClassSetItem) -> Result<(), Self::Err> {
+            match item {
+                ClassSetItem::Literal(literal) => self.0 |= literal.c == '\r',
+                ClassSetItem::Range(range) => {
+                    let holds = |c: char| (range.start.c..=range.end.c).contains(&c);
+                    self.0 |= holds('\r') && !holds(char::from(LONE_CR_STAND_IN));
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+    ast::parse::Parser::new()
+        .parse(pattern)
+        .map_or(true, |parsed| ast::visit(&parsed, Names(false)).unwrap_or(true))
 }
 
 /// The matches of `re` that lie on a line of `source`.
