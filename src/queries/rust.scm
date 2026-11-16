@@ -29,6 +29,7 @@
 (impl_item type: (type_identifier) @symbol.name) @symbol.impl
 (impl_item type: (scoped_type_identifier name: (type_identifier) @symbol.name)) @symbol.impl
 (impl_item type: (generic_type type: (type_identifier) @symbol.name)) @symbol.impl
+(impl_item type: (generic_type type: (scoped_type_identifier name: (type_identifier) @symbol.name))) @symbol.impl
 
 ;; section: imports
 

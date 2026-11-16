@@ -109,7 +109,7 @@ pub(super) fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8])
                     }
                 }
                 Some(CaptureClass::Impl) => {
-                    if let Some(imp) = build_implementation(q, m, source) {
+                    if let Some(imp) = build_implementation(q, m, source).filter(|_| !is_negative_impl(m)) {
                         implementations.push(imp);
                     }
                 }
@@ -415,6 +415,17 @@ fn is_already_collapsed(slice: &str) -> bool {
 ///   the `@impl.range` node's named ancestors to find the nearest identifier.
 /// - `@impl.range` (optional) — the containing declaration node; used for position
 ///   when `@impl.trait_name` itself carries no useful start position.
+/// `impl !Send for X {}` declares that `X` does NOT implement the trait.
+fn is_negative_impl(m: &QueryMatch) -> bool {
+    m.captures().iter().any(|cap| {
+        let node = cap.node;
+        node.kind() == "impl_item" && {
+            let mut cursor = node.walk();
+            node.children(&mut cursor).any(|c| c.kind() == "!")
+        }
+    })
+}
+
 fn build_implementation(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Implementation> {
     let mut trait_name: Option<String> = None;
     let mut impl_type: Option<String> = None;

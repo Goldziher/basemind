@@ -378,3 +378,16 @@ fn macro_bodies_open_three_layers_deep_and_no_further() {
     assert!(names.contains(&"in3"), "{names:?}");
     assert!(!names.contains(&"deep4"), "{names:?}");
 }
+
+#[test]
+fn negative_impls_are_not_implementations_and_path_generic_impls_are_symbols() {
+    let map = l1("impl !Send for X {}\nimpl Tr for a::B<T> {}\n");
+    assert_eq!(impl_pairs(&map), vec![("Tr", "B")]);
+    let impls: Vec<&str> = map
+        .symbols
+        .iter()
+        .filter(|s| s.kind == SymbolKind::Impl)
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(impls.contains(&"B"), "{impls:?}");
+}
