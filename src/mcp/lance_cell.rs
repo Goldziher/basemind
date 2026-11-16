@@ -169,7 +169,8 @@ mod tests {
         let refused = cell
             .get_or_open(|| async { Err("opened again".to_string()) })
             .await
-            .unwrap_err();
+            .err()
+            .expect("refused inside the window");
         let error = refused.refusal("code_search", Some("Search with `mode: \"keyword\"` meanwhile."));
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_REQUEST);
         let message = error.message;
