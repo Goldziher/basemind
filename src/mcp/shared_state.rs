@@ -8,16 +8,14 @@
 //! Split out of `state.rs` so the per-connection type and the shared type each stay well under the
 //! per-file size budget.
 
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
-use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
-use lru::LruCache;
 use tokio::sync::{Notify, RwLock};
 
-use super::{MapCache, OUTLINE_CACHE_CAP, OutlineCache, ServerOptions, telemetry};
+use super::{MapCache, OutlineCache, ServerOptions, telemetry};
 use crate::index::view::IndexView;
 use crate::store::Store;
 
@@ -231,9 +229,7 @@ impl SharedReadStack {
             lazy_cache = options.lazy_cache,
             "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
-        let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
-            NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
-        )));
+        let outline_cache: Arc<OutlineCache> = Arc::new(OutlineCache::default());
         let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
         Self {
             store: RwLock::new(store),

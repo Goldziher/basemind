@@ -163,21 +163,16 @@ fn outline_of(
     let key = gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
         .ok()
         .map(|oid| (oid, language));
-    if let Some(key) = key.as_ref()
-        && let Ok(mut cached) = cache.lock()
-        && let Some(entry) = cached.get(key)
-    {
+    if let Some(entry) = key.as_ref().and_then(|key| cache.get(key)) {
         return Ok(std::sync::Arc::clone(&entry.map));
     }
     let map = std::sync::Arc::new(crate::extract::l1::extract_l1(language, bytes)?);
-    if let Some(key) = key
-        && let Ok(mut cached) = cache.lock()
-    {
+    if let Some(key) = key {
         let entry = super::OutlineEntry {
             map: std::sync::Arc::clone(&map),
             source: std::sync::Arc::new(bytes.to_vec()),
         };
-        cached.put(key, std::sync::Arc::new(entry));
+        cache.put(key, std::sync::Arc::new(entry));
     }
     Ok(map)
 }
@@ -306,8 +301,7 @@ mod tests {
     #[test]
     fn an_edited_file_is_parsed_once_per_content() {
         let _ = crate::lang::ensure_grammars().expect("grammar bootstrap");
-        let cache: crate::mcp::OutlineCache =
-            std::sync::Mutex::new(lru::LruCache::new(std::num::NonZeroUsize::new(4).expect("non-zero")));
+        let cache = crate::mcp::OutlineCache::with_bounds(4, u64::MAX);
         let rust = crate::lang::intern("rust").expect("rust grammar");
         let first = outline_of(&cache, rust, b"fn a() {}\n").expect("parse");
         let again = outline_of(&cache, rust, b"fn a() {}\n").expect("parse");
@@ -317,7 +311,7 @@ mod tests {
         );
         let edited = outline_of(&cache, rust, b"fn b() {}\n").expect("parse");
         assert_eq!(edited.symbols[0].name, "b", "other bytes are other content");
-        assert_eq!(cache.lock().expect("lock").len(), 2);
+        assert_eq!(cache.held().0, 2);
     }
 
     /// The window between a rescan's store write and its map publish: the store names the new

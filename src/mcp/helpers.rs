@@ -710,11 +710,10 @@ mod tests {
 
     use super::{HashMode, outline_entry_for_blob, symbol_fingerprint};
     use crate::mcp::OutlineCache;
-    use std::num::NonZeroUsize;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     fn fresh_cache() -> OutlineCache {
-        Mutex::new(lru::LruCache::new(NonZeroUsize::new(8).unwrap()))
+        OutlineCache::with_bounds(8, u64::MAX)
     }
 
     fn fingerprint_for(source: &[u8], lang: LangId, mode: HashMode) -> Vec<u8> {

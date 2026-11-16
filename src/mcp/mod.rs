@@ -79,6 +79,7 @@ mod memory_vectors;
 pub mod mode;
 mod notifications;
 pub mod offline;
+mod outline_cache;
 mod prompts;
 mod ranked_cache;
 pub mod replay;
@@ -112,15 +113,13 @@ pub(crate) mod types_memory;
 mod types_tools;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use lru::LruCache;
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::task_manager::TaskManager;
 
 use crate::extract::FileMapL1;
-use crate::lang::LangId;
 use crate::store::Store;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -168,16 +167,6 @@ pub mod params {
 
 pub use params::Parameters;
 
-/// In-memory cache for `symbol_history`-style workflows: given a blob's git OID and the
-/// language we'd extract with, hold onto the parsed `FileMapL1` and the source bytes so
-/// repeated visits to the same blob (across commits, modes, or tool calls) skip the
-/// tree-sitter parse entirely. Memory-only — blob OIDs are content-addressed and immutable,
-/// so cache invalidation is implicit (a new blob = a new key).
-///
-/// Cap chosen to bound steady-state memory at a few MB for typical repositories: 512
-/// entries × ~few KiB per `FileMapL1` + Arc'd source = on the order of 1–10 MiB.
-pub(crate) const OUTLINE_CACHE_CAP: usize = 512;
-
 /// Per-category LRU capacity for a daemon-hosted workspace's git cache (commit_files, log, blame).
 /// Matches the `basemind serve --git-cache-mem` default (1024): the daemon holds one git cache per
 /// hot workspace, shared across all connections, so the same budget an in-process serve used per
@@ -190,7 +179,7 @@ pub(crate) struct OutlineEntry {
     pub source: Arc<Vec<u8>>,
 }
 
-pub(crate) type OutlineCache = Mutex<LruCache<(gix::ObjectId, LangId), Arc<OutlineEntry>>>;
+pub(crate) use outline_cache::OutlineCache;
 
 /// Shared MCP server state. `ToolRouter<Self>` is Clone (Arc inside), so we hold it directly
 /// on the struct as the `#[tool_handler]` macro expects.

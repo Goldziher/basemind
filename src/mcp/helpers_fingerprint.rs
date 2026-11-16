@@ -63,19 +63,15 @@ pub(super) fn outline_entry_for_blob(
     source: Vec<u8>,
 ) -> Option<Arc<OutlineEntry>> {
     let key = (oid, lang);
-    {
-        let mut guard = cache.lock().ok()?;
-        if let Some(entry) = guard.get(&key) {
-            return Some(Arc::clone(entry));
-        }
+    if let Some(entry) = cache.get(&key) {
+        return Some(entry);
     }
     let map = Arc::new(crate::extract::l1::extract_l1(lang, &source).ok()?);
     let entry = Arc::new(OutlineEntry {
         map,
         source: Arc::new(source),
     });
-    let mut guard = cache.lock().ok()?;
-    guard.put(key, Arc::clone(&entry));
+    cache.put(key, Arc::clone(&entry));
     Some(entry)
 }
 
