@@ -76,7 +76,8 @@ pub(super) fn outline_entry_for_blob(
 }
 
 /// Compute a symbol-history fingerprint from an outline cache entry, choosing the strategy
-/// based on `mode`. `occurrence` picks among same-named symbols of the file, in outline order. Returns the fingerprint as a `Vec<u8>` so the caller can compare
+/// based on `mode`. `occurrence` picks among same-named symbols of the file, as
+/// [`Picked::occurrence`](super::helpers_pick::Picked) counts them. Returns the fingerprint as a `Vec<u8>` so the caller can compare
 /// successive results with `==` regardless of which mode produced them.
 pub(super) fn symbol_fingerprint(
     entry: &OutlineEntry,
@@ -86,12 +87,11 @@ pub(super) fn symbol_fingerprint(
     lang: LangId,
     mode: HashMode,
 ) -> Option<Vec<u8>> {
-    let sym = entry
-        .map
-        .symbols
+    let symbols = &entry.map.symbols;
+    let same_name = symbols
         .iter()
-        .filter(|s| s.name == name && kind.is_none_or(|k| s.kind == k))
-        .nth(occurrence)?;
+        .filter(|s| s.name == name && kind.is_none_or(|k| s.kind == k));
+    let sym = super::helpers_pick::nth_occurrence(symbols, same_name, occurrence)?;
     let s = sym.start_byte as usize;
     let e = (sym.end_byte as usize).min(entry.source.len());
     if s >= e {

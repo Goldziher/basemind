@@ -3,7 +3,8 @@
 //!
 //! A name is not unique within a file (`new` in two `impl` blocks, `fmt` in two trait impls), and
 //! taking the first match silently answers about the wrong definition. The caller disambiguates
-//! with `line`: any 1-based line inside the definition it means.
+//! with `line`: any 1-based line inside the definition it means. Without one, a definition at item
+//! level wins over same-named functions nested in function bodies (a Rust `fn` inside a test).
 
 use rmcp::ErrorData as McpError;
 
@@ -17,9 +18,46 @@ const CANDIDATES_MAX: usize = 20;
 /// The definition a pinned call names.
 pub(super) struct Picked<'a> {
     pub symbol: &'a Symbol,
-    /// Position among the same-named definitions of the file, in outline order. `git_log` uses it to
-    /// follow the same definition through revisions where the line numbers differ.
+    /// Position among the same-named definitions of the file with the same nesting, in outline
+    /// order, with [`NESTED_OCCURRENCE`] set for a nested one. `git_log` uses it to follow the same
+    /// definition through revisions where the line numbers differ, so adding a nested function of
+    /// the same name does not shift which item-level definition it follows.
     pub occurrence: usize,
+}
+
+/// Set in [`Picked::occurrence`] when the definition is nested in a function body.
+pub(super) const NESTED_OCCURRENCE: usize = 1 << (usize::BITS - 1);
+
+/// Whether `symbol` lies inside the span of another function or method of `symbols`.
+pub(super) fn is_nested(symbols: &[Symbol], symbol: &Symbol) -> bool {
+    symbols.iter().any(|outer| {
+        matches!(outer.kind, SymbolKind::Function | SymbolKind::Method)
+            && outer.start_byte <= symbol.start_byte
+            && symbol.end_byte <= outer.end_byte
+            && (outer.start_byte, outer.end_byte) != (symbol.start_byte, symbol.end_byte)
+    })
+}
+
+/// [`Picked::occurrence`] of `picked` among `candidates`, the same-named definitions of `symbols`.
+fn occurrence_of(symbols: &[Symbol], candidates: &[&Symbol], picked: &Symbol) -> usize {
+    let nested = is_nested(symbols, picked);
+    let index = candidates
+        .iter()
+        .filter(|c| is_nested(symbols, c) == nested)
+        .position(|c| std::ptr::eq(*c, picked))
+        .unwrap_or(0);
+    if nested { index | NESTED_OCCURRENCE } else { index }
+}
+
+/// The definition `occurrence` names among the same-named definitions of `symbols`.
+pub(super) fn nth_occurrence<'a>(
+    symbols: &'a [Symbol],
+    same_name: impl Iterator<Item = &'a Symbol>,
+    occurrence: usize,
+) -> Option<&'a Symbol> {
+    let nested = occurrence & NESTED_OCCURRENCE != 0;
+    let index = occurrence & !NESTED_OCCURRENCE;
+    same_name.filter(|s| is_nested(symbols, s) == nested).nth(index)
 }
 
 /// 1-based inclusive line span of `symbol`. Without the file's bytes only the first line is known.
@@ -108,10 +146,16 @@ pub(super) fn pick_symbol<'a>(
     }
 
     let Some(line) = line else {
-        if candidates.len() == 1 {
+        let mut item_level = candidates.iter().filter(|c| !is_nested(symbols, c));
+        let only = match (candidates.len(), item_level.next(), item_level.next()) {
+            (1, _, _) => Some(candidates[0]),
+            (_, Some(first), None) => Some(*first),
+            _ => None,
+        };
+        if let Some(symbol) = only {
             return Ok(Picked {
-                symbol: candidates[0],
-                occurrence: 0,
+                symbol,
+                occurrence: occurrence_of(symbols, &candidates, symbol),
             });
         }
         return Err(McpError::invalid_params(
@@ -127,14 +171,16 @@ pub(super) fn pick_symbol<'a>(
 
     let holding = candidates
         .iter()
-        .enumerate()
-        .filter(|(_, symbol)| {
+        .filter(|symbol| {
             let (first, last) = line_span(symbol, source);
             (first..=last).contains(&line)
         })
-        .min_by_key(|(_, symbol)| symbol.end_byte.saturating_sub(symbol.start_byte));
+        .min_by_key(|symbol| symbol.end_byte.saturating_sub(symbol.start_byte));
     match holding {
-        Some((occurrence, symbol)) => Ok(Picked { symbol, occurrence }),
+        Some(symbol) => Ok(Picked {
+            symbol,
+            occurrence: occurrence_of(symbols, &candidates, symbol),
+        }),
         None => Err(McpError::invalid_params(
             format!(
                 "`{tool}`: `line` {line} is inside no definition of `{name}` in {place}: {}",
@@ -238,6 +284,64 @@ mod tests {
             Some(7),
         ));
         assert!(outside.contains("of `new` in `a.rs` at HEAD~2:"), "{outside}");
+    }
+
+    /// `fn run() {}` at item level, then `fn outer() { fn run() {} }`.
+    const NESTED: &[u8] = b"fn run() {}\nfn outer() {\n    fn run() {}\n}\n";
+
+    fn nested_outline() -> Vec<Symbol> {
+        let mut symbols = vec![
+            symbol("run", 0, 0, 11),
+            symbol("outer", 1, 12, 42),
+            symbol("run", 2, 29, 40),
+        ];
+        symbols.sort_by_key(|s| s.start_byte);
+        symbols
+    }
+
+    #[test]
+    fn without_a_line_an_item_level_definition_wins_over_nested_ones() {
+        let symbols = nested_outline();
+        let path = RelPath::from("a.rs");
+        let picked = pick_symbol("t", &path, None, &symbols, Some(NESTED), "run", None, None).expect("item level");
+        assert_eq!(picked.symbol.start_row, 0);
+        assert_eq!(picked.occurrence, 0);
+    }
+
+    #[test]
+    fn a_nested_definition_counts_its_occurrence_among_nested_ones_only() {
+        let symbols = nested_outline();
+        let path = RelPath::from("a.rs");
+        let picked = pick_symbol("t", &path, None, &symbols, Some(NESTED), "run", None, Some(3)).expect("nested");
+        assert_eq!(picked.symbol.start_row, 2);
+        assert_eq!(picked.occurrence, NESTED_OCCURRENCE);
+        let same_name = || symbols.iter().filter(|s| s.name == "run");
+        assert_eq!(
+            nth_occurrence(&symbols, same_name(), picked.occurrence).map(|s| s.start_row),
+            Some(2)
+        );
+        assert_eq!(nth_occurrence(&symbols, same_name(), 0).map(|s| s.start_row), Some(0));
+    }
+
+    #[test]
+    fn a_nested_function_added_before_an_item_does_not_shift_its_occurrence() {
+        // Revision 2 nests a `run` inside `outer` ahead of the item-level `run`.
+        let v2: Vec<Symbol> = vec![
+            symbol("outer", 0, 0, 30),
+            symbol("run", 1, 13, 24),
+            symbol("run", 3, 31, 42),
+        ];
+        let same_name = || v2.iter().filter(|s| s.name == "run");
+        assert_eq!(nth_occurrence(&v2, same_name(), 0).map(|s| s.start_row), Some(3));
+    }
+
+    #[test]
+    fn two_item_level_definitions_stay_ambiguous_without_a_line() {
+        let mut symbols = outline();
+        symbols.push(symbol("new", 7, 50, 55));
+        let path = RelPath::from("a.rs");
+        let text = message(pick_symbol("t", &path, None, &symbols, Some(SOURCE), "new", None, None));
+        assert!(text.contains("names 3 definitions"), "{text}");
     }
 
     #[test]

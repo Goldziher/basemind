@@ -99,7 +99,7 @@ pub(super) fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8])
                 .find(|class| !matches!(class, CaptureClass::Other));
             match class {
                 Some(CaptureClass::Symbol) => {
-                    if let Some(sym) = build_symbol(q, m, source) {
+                    if let Some(sym) = build_symbol(q, m, source, lang) {
                         symbols.push(sym);
                     }
                 }
@@ -162,7 +162,7 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
     keep
 }
 
-fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
+fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8], lang: LangId) -> Option<Symbol> {
     let mut name: Option<String> = None;
     let mut kind: Option<SymbolKind> = None;
     let mut start_byte = 0u32;
@@ -208,7 +208,8 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
     // bindings and nested definitions inside a function/method/lambda are implementation detail.
     // A Rust `fn` item is the exception: it is a named item callable by path in its scope (test
     // fixtures, helpers), and a call to it would otherwise resolve to nothing.
-    if symbol_node.is_some_and(|n| n.kind() != "function_item" && is_function_local(n)) {
+    let nested_rust_fn = |n: Node| lang == "rust" && n.kind() == "function_item";
+    if symbol_node.is_some_and(|n| !nested_rust_fn(n) && is_function_local(n)) {
         return None;
     }
 
