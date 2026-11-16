@@ -355,8 +355,9 @@ pub(crate) fn enforce_cache_budget_in(
 }
 
 /// [`enforce_cache_budget`] against explicit directories. The footprint counts what this binary
-/// can free: the workspaces and everything under `blobs_root` except the namespaces of a blob
-/// schema newer than `schema` (see [`cache_footprint`]). Blobs an eviction orphans are reclaimed
+/// can free: the workspaces except those holding a newer basemind's view, and everything under
+/// `blobs_root` except the namespaces of a blob schema newer than `schema` (see
+/// [`cache_footprint`]). Blobs an eviction orphans are reclaimed
 /// in `blobs_dir`, the namespace the evicted workspaces of this version referenced.
 pub(crate) fn enforce_cache_budget_at(
     workspaces_dir: &Path,
@@ -367,7 +368,8 @@ pub(crate) fn enforce_cache_budget_at(
     hot_floor: Duration,
     grace: Duration,
 ) -> Result<EvictReport, GcError> {
-    let total = cache_footprint(workspaces_dir, blobs_root, schema)?;
+    let newer = workspaces_of_a_newer_basemind(workspaces_dir);
+    let total = cache_footprint(workspaces_dir, blobs_root, schema, &newer)?;
     let mut report = EvictReport {
         total_bytes_before: total,
         total_bytes_after: total,
@@ -377,7 +379,7 @@ pub(crate) fn enforce_cache_budget_at(
         return Ok(report);
     }
 
-    for candidate in eviction_candidates(workspaces_dir, hot_floor, grace)? {
+    for candidate in eviction_candidates(workspaces_dir, &newer, hot_floor, grace)? {
         if report.total_bytes_after <= budget_bytes {
             break;
         }
@@ -398,7 +400,7 @@ pub(crate) fn enforce_cache_budget_at(
         let reclaimed = gc_global_blobs_in(workspaces_dir, blobs_dir, orphan_grace(workspaces_dir, probed))?;
         report.blobs_removed += reclaimed.removed;
         report.blob_bytes_freed += reclaimed.bytes_freed;
-        report.total_bytes_after = cache_footprint(workspaces_dir, blobs_root, schema)?;
+        report.total_bytes_after = cache_footprint(workspaces_dir, blobs_root, schema, &newer)?;
         let measured_freed = bytes_before_candidate.saturating_sub(report.total_bytes_after);
         if size > 0 || reclaimed.bytes_freed > 0 {
             report.evicted += 1;
@@ -442,6 +444,7 @@ fn protected_entry(dir: &Path, reason: ProtectionReason) -> ProtectedWorkspace {
 
 fn eviction_candidates(
     workspaces_dir: &Path,
+    newer: &[PathBuf],
     hot_floor: Duration,
     grace: Duration,
 ) -> Result<Vec<EvictionCandidate>, GcError> {
@@ -462,7 +465,11 @@ fn eviction_candidates(
         let (activity, has_views) = workspace_last_activity(&dir);
         let idle = now.duration_since(activity).unwrap_or(Duration::ZERO);
         // A workspace with no view left holds nothing worth protecting.
-        let protected = (has_views && idle < grace).then_some(ProtectionReason::RecentlyBuilt);
+        let protected = if newer.contains(&dir) {
+            Some(ProtectionReason::NewerVersion)
+        } else {
+            (has_views && idle < grace).then_some(ProtectionReason::RecentlyBuilt)
+        };
         candidates.push(EvictionCandidate {
             activity,
             hot: idle < hot_floor,
@@ -475,7 +482,7 @@ fn eviction_candidates(
     // however old it is and whatever the grace window says.
     if let Some(mru) = candidates
         .iter()
-        .filter(|candidate| candidate.has_views)
+        .filter(|candidate| candidate.has_views && !newer.contains(&candidate.dir))
         .max_by_key(|candidate| candidate.activity)
         .map(|candidate| candidate.dir.clone())
     {
@@ -559,12 +566,30 @@ fn remove_cache_path(path: &Path) -> Result<(), GcError> {
     })
 }
 
-/// The bytes the budget is held against: the workspaces, and the blob store without the
-/// namespaces of a schema newer than `schema`. Those belong to a newer basemind sharing the cache.
-/// This binary never deletes them, so counting them would have it evict workspaces every cycle to
-/// make up for bytes no eviction can free.
-fn cache_footprint(workspaces_dir: &Path, blobs_root: &Path, schema: u16) -> Result<u64, GcError> {
+/// The workspace dirs holding a view a newer basemind wrote, which [`evict_workspace`] refuses.
+/// Decided once per pass: each check decodes every view's file map.
+fn workspaces_of_a_newer_basemind(workspaces_dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(workspaces_dir).map_or_else(
+        |_| Vec::new(),
+        |entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|dir| dir.is_dir() && holds_a_newer_view(dir))
+                .collect()
+        },
+    )
+}
+
+/// The bytes the budget is held against: the workspaces other than `newer`, and the blob store
+/// without the namespaces of a schema newer than `schema`. Both belong to a newer basemind sharing
+/// the cache. This binary never deletes them, so counting them would have it evict workspaces
+/// every cycle to make up for bytes no eviction can free.
+fn cache_footprint(workspaces_dir: &Path, blobs_root: &Path, schema: u16, newer: &[PathBuf]) -> Result<u64, GcError> {
     let mut total = dir_size_or_zero(workspaces_dir)? + dir_size_or_zero(blobs_root)?;
+    for workspace in newer {
+        total = total.saturating_sub(dir_size_or_zero(workspace)?);
+    }
     if blobs_root.exists() {
         for entry in read_dir(blobs_root)?.flatten() {
             let newer = entry

@@ -245,6 +245,34 @@ fn a_workspace_written_by_a_newer_basemind_is_never_evicted() {
     assert_eq!(report.locked_skipped, 0, "a newer view is not a locked workspace");
 }
 
+/// A newer basemind's workspaces are bytes this binary can never free. Counted, they alone keep the
+/// cache over budget and every cycle evicts another idle workspace of this version.
+#[test]
+fn a_newer_baseminds_workspace_is_outside_the_budget_and_costs_no_workspace() {
+    let (_tmp, workspaces, blobs) = roots();
+    let newer = seed_workspace_aged(&workspaces, "key-newer", &"a".repeat(64), Duration::from_secs(3600));
+    let mut index = crate::store::Index::empty();
+    index.schema_ver = crate::extract::SCHEMA_VER + 1;
+    write_index(&newer, &index);
+    fs::write(newer.join("git-cache"), vec![0_u8; 256 * 1024]).expect("newer bulk");
+    let idle = seed_workspace_aged(&workspaces, "key-idle", &"c".repeat(64), 9 * DAY);
+    seed_workspace_aged(&workspaces, "key-mru", &"b".repeat(64), 3 * DAY);
+
+    let budget = 128 * 1024;
+    let report = enforce_cache_budget_in(&workspaces, &blobs, budget, DAY, Duration::ZERO).expect("enforce");
+
+    assert!(
+        report.total_bytes_before <= budget,
+        "the newer workspace is not counted: {}",
+        report.total_bytes_before
+    );
+    assert_eq!(report.evicted, 0);
+    assert!(
+        idle.join(crate::store::VIEWS_DIR).exists(),
+        "the idle workspace is kept"
+    );
+}
+
 /// The sweep after an eviction takes only blobs older than the look at the locks: a scan in another
 /// process that started since has written blobs no file map names yet.
 #[test]
