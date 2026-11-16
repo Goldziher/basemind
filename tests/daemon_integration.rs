@@ -1208,7 +1208,9 @@ fn writer_truth(repo: &Path, comms_dir: &Path, args: &[&str]) -> Value {
 }
 
 /// The hits of a `code_refs` payload as rows, each with its `path`: the tool lists them under their
-/// file (`{"<path>": [hit, ...]}`).
+/// file (`{"<path>": [hit, ...]}`). A page writes a hit's `column` only when another hit of that page
+/// shares its line, so pages cut at other points than the writer's one page differ there; the column
+/// is left out of the comparison.
 fn hit_rows(payload: &Value) -> Vec<Value> {
     payload["hits"]
         .as_object()
@@ -1218,6 +1220,9 @@ fn hit_rows(payload: &Value) -> Vec<Value> {
             rows.as_array().expect("a file's hits").iter().map(move |row| {
                 let mut row = row.clone();
                 row["path"] = json!(path);
+                if let Some(fields) = row.as_object_mut() {
+                    fields.remove("column");
+                }
                 row
             })
         })
