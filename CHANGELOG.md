@@ -325,6 +325,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `code_search`, `docs_search` or `code_outline` cursor issued right after the server started is
+  no longer refused as stale on the next page: the background warm of the in-RAM map counted as an
+  index change, though none of the three lists is read from that map.
+- On Windows, a harness given by bare name (the default `claude`, `codex`, `opencode`) is found
+  through `PATHEXT` (`claude.cmd`, `codex.exe`) instead of never matching, or matching the
+  extensionless POSIX shim npm installs beside the `.cmd`.
+- On Windows, `admin eval` baselines run their shell commands with Git for Windows' path
+  conversion off, so an argument such as `-L '/fn alpha/,/^}/'` reaches git as written.
 - Two installed basemind versions no longer kill each other's daemon. The daemon's socket (named
   pipe on Windows), lock, pidfile, log, `http.addr` and comms store moved from the comms directory
   into a protocol-generation subdirectory, `comms/g1/`, and its record in the daemon registry moved
