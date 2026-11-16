@@ -230,12 +230,28 @@ fn every_agent_tool_call_is_stamped_with_a_replay_key_and_is_replayable() {
 }
 
 #[test]
+fn a_replay_key_the_host_supplied_is_replaced_by_the_relays() {
+    let mut state = SessionState::default();
+    let meta = basemind::mcp::replay::REPLAY_KEY_META;
+    let line = |id: u64| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"agent_post\",\
+             \"arguments\":{{\"body\":\"b\"}},\"_meta\":{{\"{meta}\":\"host-key\"}}}}}}\n"
+        )
+    };
+    let first = replay_key(&state.observe_client(&line(1))).expect("key");
+    let second = replay_key(&state.observe_client(&line(2))).expect("key");
+    assert!(first.starts_with("relay-"), "{first}");
+    assert_ne!(first, second, "two calls never share a key");
+}
+
+#[test]
 fn only_reads_and_keyed_agent_calls_are_replayable() {
     let mut state = SessionState::default();
     state.observe_client(&request_line(1));
     state.observe_client(&call_line(2, "code_outline", ""));
     state.observe_client(&call_line(3, "agent_inbox", ""));
-    state.observe_client(&call_line(4, "agents", "thread_start"));
+    state.observe_client(&call_line(4, "agents_retired", ""));
     state.observe_client(&call_line(5, "index_rescan", ""));
     state.observe_client(&call_line(6, "memory_save", ""));
     let errors = state.drain_restart_errors();

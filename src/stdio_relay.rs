@@ -193,8 +193,12 @@ fn classify_request(message: &mut Value, line: &str) -> (String, bool) {
     let Some(meta) = meta.as_object_mut() else {
         return (line.to_owned(), false);
     };
-    meta.entry(basemind::mcp::replay::REPLAY_KEY_META)
-        .or_insert_with(|| Value::String(relay_replay_key()));
+    // Always the relay's own key: one the host put there could repeat across calls, and a ~keep
+    // repeated key returns the first call's result instead of acting. ~keep
+    meta.insert(
+        basemind::mcp::replay::REPLAY_KEY_META.to_string(),
+        Value::String(relay_replay_key()),
+    );
     let mut rewritten = message.to_string();
     if line.ends_with('\n') {
         rewritten.push('\n');
