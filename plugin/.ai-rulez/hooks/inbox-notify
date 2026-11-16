@@ -59,7 +59,10 @@ run_launcher() {
   run_bounded 6 "$LAUNCHER" "$@" 2>/dev/null
 }
 
-NAME="$(printf '%s' "$STDIN_JSON" | run_launcher agent hook name | tr -cd 'a-z0-9_-')" || NAME=""
+# An empty name with success means the host applies no rewritten input, so the tool calls act as the
+# principal and so does the read. A failure (timeout, no launcher) is not that: reading as the
+# principal then would announce to an actor this session never reads as.
+NAME="$(printf '%s' "$STDIN_JSON" | run_launcher agent hook name | tr -cd 'a-z0-9_-')" || exit 0
 AS=()
 [ -n "$NAME" ] && AS=(--as "$NAME")
 

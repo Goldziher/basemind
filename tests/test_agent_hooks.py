@@ -215,6 +215,13 @@ class AgentHookTests(unittest.TestCase):
         self.assertNotIn("--as", self.launcher_args(), "the tool calls act as the principal there")
         self.assertIn("t-abcdef.3", json.loads(result.stdout)["additionalContext"])
 
+    def test_inbox_notify_says_nothing_when_naming_the_session_fails(self) -> None:
+        for code in ("124", "143", "1"):
+            (self.root / "launcher-args").unlink(missing_ok=True)
+            result = self.announce(INBOX, NAME_RESULT="", NAME_EXIT=code)
+            self.assertEqual(result.stdout, "", code)
+            self.assertEqual(self.launcher_args()[:3], ["agent", "hook", "name"], "no principal-level read follows")
+
     def test_inbox_notify_builds_valid_json_from_any_subject(self) -> None:
         hostile = 'quote " backslash \\ tab \t bell \u0007 }{'
         inbox = {**INBOX, "messages": [{**INBOX["messages"][0], "subject": hostile}]}
