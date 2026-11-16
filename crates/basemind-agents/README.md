@@ -43,7 +43,7 @@ for event in session.events() {
   harness and its mode.
 - Extra arguments are limited to model and effort selection per harness; any other flag and any
   positional fails the launch, with or without an opt-in.
-- Claude Code runs with no setting sources, hooks disabled and only the spec's MCP server. Codex,
+- Claude Code is asked for no setting sources, hooks disabled and only the spec's MCP server. Codex,
   Gemini, Cursor and OpenCode are not launched over one of their project files in the working
   directory or above it. Only the MCP tools the spec names are pre-approved (Claude Code only).
 - The working directory has to resolve inside the spec's root, and is checked again in the child.
@@ -56,8 +56,14 @@ for event in session.events() {
 - Frames, the event queue, channels and tables are bounded; dropping a session never blocks for
   long.
 
-Limits: a descendant that leaves the process group survives the session, and nothing is launched
-off Unix.
+Limits:
+
+- The spec's executable and its MCP server's command run as given; the caller must restrict them.
+- An endpoint addition (`*_BASE_URL`) sends the harness's credentials and work wherever it points.
+- A descendant that leaves the process group survives the session.
+- A project file written during a session is only seen by the next launch.
+- That an empty `--setting-sources` loads nothing was not run against a live Claude Code.
+- Nothing is launched off Unix.
 
 ## Provenance
 

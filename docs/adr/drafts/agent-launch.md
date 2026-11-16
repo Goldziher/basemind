@@ -66,7 +66,7 @@ id that fails the grammar stops the launch.
      modes) without an opt-in naming that harness and mode.
    - **Allow-listed arguments.** Caller-supplied arguments are limited to model and effort
      selection per harness; anything else, positionals included, fails the launch, opt-in or not.
-   - **No project configuration.** Claude Code runs with no setting sources, hooks disabled and
+   - **No project configuration.** Claude Code is asked for no setting sources, hooks disabled and
      only the injected MCP server. Codex, Gemini, Cursor and OpenCode are not launched over a
      project file of theirs in the working directory or above it.
    - **Working directory.** It resolves inside the given root, checked at the plan and again in
@@ -122,6 +122,12 @@ call that started it.
   live CLI; if a version rejects it, the launch fails rather than loading project rules.
 - The project files of Grok, Hermes and a generic ACP agent are not known, so they are not
   checked.
+- An environment addition may name a provider endpoint (`*_BASE_URL`). A harness then sends its
+  credentials, including a keychain or HOME login, and the work to that endpoint, so whoever
+  writes the spec chooses where they go. The engine should allow-list endpoints or drop the
+  suffix.
+- The project-file check is a snapshot at launch: a file the agent writes during the session is
+  seen by the next launch, which it then refuses.
 - The environment allow-list means a harness that reads an API key from the environment gets it
   only when the configuration names it. Harnesses that sign in through a keychain or a config file
   in `HOME` work unchanged.

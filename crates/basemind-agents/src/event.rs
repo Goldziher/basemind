@@ -130,7 +130,9 @@ impl Tools {
     }
 }
 
-/// What an approval request would let the harness do.
+/// What an approval request would let the harness do, as the harness itself classifies it
+/// (Claude Code's tool name, ACP's tool kind, the Codex request method). A policy deciding on
+/// an MCP tool should check the full tool name in `params`, not the kind alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ApprovalKind {

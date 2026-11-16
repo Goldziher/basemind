@@ -23,7 +23,7 @@
 //!   a [`BypassOptIn`] naming that harness and its mode.
 //! - **Allow-listed arguments.** [`Harness::args`] may carry only model and effort selection,
 //!   per harness; every other flag and every positional is refused, opt-in or not.
-//! - **No project configuration.** Claude Code runs with no setting sources, hooks disabled
+//! - **No project configuration.** Claude Code is asked for no setting sources, hooks disabled
 //!   and only the MCP server the spec names. Codex, Gemini, Cursor and OpenCode are not
 //!   launched over a project file of theirs (`.codex`, `.gemini`, ...) in the working
 //!   directory or above it. Only MCP tools the spec names are pre-approved, and only Claude
@@ -40,8 +40,12 @@
 //!   events, and every channel and table is bounded. Dropping or stopping a session never
 //!   blocks for long, even when a descendant holds the harness's pipes.
 //!
-//! What it does not do: a descendant that leaves the harness's process group survives the
-//! session (the session still ends on time), and nothing is launched off Unix.
+//! What it does not do: the spec's executable and its MCP server's command run as given, so
+//! the caller has to restrict them; an endpoint addition (`*_BASE_URL`) sends the harness's
+//! credentials and work wherever it points; a descendant that leaves the harness's process
+//! group survives the session (the session still ends on time); a project file written during
+//! a session is only seen by the next launch; that an empty `--setting-sources` loads nothing
+//! was not run against a live Claude Code; and nothing is launched off Unix.
 //!
 //! # Harnesses
 //!
