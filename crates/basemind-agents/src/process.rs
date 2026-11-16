@@ -5,6 +5,9 @@
 //! session; containing it needs a cgroup or a Job Object, which this crate does not set up.
 
 use std::process::{Child, Command};
+use std::sync::atomic::AtomicBool;
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 #[cfg(unix)]
 use std::time::Instant;
@@ -143,27 +146,28 @@ pub(crate) fn terminate(child: &mut Child) {
 /// out. So: wait for an exit on stdin EOF, then SIGTERM the leader only, and SIGKILL the group
 /// last. The group is always killed before the leader is reaped, while its id is still ours.
 ///
-/// The two waits ([`EXIT_GRACE`], then [`TERM_GRACE`]) together take at most `budget`.
-pub(crate) fn retire(child: &mut Child, budget: Duration) {
+/// The two waits ([`EXIT_GRACE`], then [`TERM_GRACE`]) together take at most `budget`, and
+/// both end as soon as `kill_now` is set (the session was dropped).
+pub(crate) fn retire(child: &mut Child, budget: Duration, kill_now: &AtomicBool) {
     #[cfg(unix)]
     {
         let pid = child.id();
         let started = Instant::now();
-        if !exited(pid, EXIT_GRACE.min(budget)) {
+        if !exited(pid, EXIT_GRACE.min(budget), kill_now) && !kill_now.load(Ordering::SeqCst) {
             // SAFETY: kill takes plain integers; the leader is unreaped, so the id is ours.
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
             let left = budget.saturating_sub(started.elapsed());
-            exited(pid, TERM_GRACE.min(left));
+            exited(pid, TERM_GRACE.min(left), kill_now);
         }
     }
     #[cfg(not(unix))]
-    let _ = budget;
+    let _ = (budget, kill_now);
     terminate(child);
 }
 
 /// Whether the child `pid` exits within `within`, observed without reaping it.
 #[cfg(unix)]
-fn exited(pid: u32, within: Duration) -> bool {
+fn exited(pid: u32, within: Duration, abort: &AtomicBool) -> bool {
     let deadline = Instant::now() + within;
     loop {
         // SAFETY: siginfo_t is plain data that waitid fills in, and all-zero is a valid value
@@ -190,7 +194,7 @@ fn exited(pid: u32, within: Duration) -> bool {
         if reported != 0 {
             return true;
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || abort.load(Ordering::SeqCst) {
             return false;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -250,7 +254,7 @@ mod tests {
         ));
         drop(child.stdin.take());
         let started = Instant::now();
-        retire(&mut child, EXIT_GRACE + TERM_GRACE);
+        retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false));
         assert!(started.elapsed() < EXIT_GRACE);
         assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "saved");
     }
@@ -261,7 +265,7 @@ mod tests {
         let pid = child.id();
         drop(child.stdin.take());
         let started = Instant::now();
-        retire(&mut child, EXIT_GRACE + TERM_GRACE);
+        retire(&mut child, EXIT_GRACE + TERM_GRACE, &AtomicBool::new(false));
         assert!(started.elapsed() >= EXIT_GRACE + TERM_GRACE - Duration::from_millis(100));
         wait_for_group_exit(pid);
         assert!(!group_alive(pid));

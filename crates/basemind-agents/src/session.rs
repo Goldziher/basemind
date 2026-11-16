@@ -111,6 +111,8 @@ struct Shared {
     events: Arc<EventQueue>,
     /// Set once the session is over or its group was killed: pipe I/O gives up.
     abandon: Arc<AtomicBool>,
+    /// Set when the session is dropped: a retiring harness is killed without further grace.
+    kill_now: AtomicBool,
 }
 
 impl Shared {
@@ -130,6 +132,7 @@ impl Shared {
             prompts: AtomicU32::new(1),
             events: Arc::default(),
             abandon: Arc::default(),
+            kill_now: AtomicBool::new(false),
         })
     }
 
@@ -370,6 +373,7 @@ impl Drop for Session {
     /// reap it. A supervisor stuck beyond that (in a caller's approval policy, say) is left to
     /// finish on its own thread; the group is killed either way.
     fn drop(&mut self) {
+        self.shared.kill_now.store(true, Ordering::SeqCst);
         self.request_stop(Duration::ZERO);
         self.shared.events.close();
         if let Some(worker) = self.worker.take()
@@ -485,7 +489,7 @@ pub(crate) fn start(
                         .map_or(Duration::ZERO, |at| at.saturating_duration_since(Instant::now())),
                     _ => process::EXIT_GRACE + process::TERM_GRACE,
                 };
-                process::retire(&mut child, budget);
+                process::retire(&mut child, budget, &shared.kill_now);
             } else {
                 process::terminate(&mut child);
             }

@@ -589,3 +589,29 @@ fn a_stopped_harness_gets_only_the_stop_grace() {
     );
     assert_gone(&leader);
 }
+
+#[test]
+fn dropping_a_session_that_is_winding_down_kills_the_harness_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    // After its one turn the stand-in ignores the closed stdin and SIGTERM: retiring it
+    // takes the full 3.5 s of grace unless the drop cuts that short.
+    let body = format!(
+        "trap '' TERM\n{HANDSHAKE}printf '%s\\n' '{{\"type\":\"result\",\"result\":\"Done.\"}}'\nwhile :; do sleep 0.05; done\n"
+    );
+    let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), &body));
+    let leader = session.pid().to_string();
+    loop {
+        match session.recv_timeout(Duration::from_secs(10)) {
+            Ok(Event::TurnCompleted { .. }) => break,
+            Ok(_) => {}
+            Err(error) => panic!("no turn completed: {error:?}"),
+        }
+    }
+    let dropped = Instant::now();
+    drop(session);
+    let deadline = dropped + Duration::from_millis(1500);
+    while alive(&leader) {
+        assert!(Instant::now() < deadline, "the harness outlived the drop by 1.5 s");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
