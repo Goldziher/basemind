@@ -55,6 +55,21 @@ fn model_flags(kind: HarnessKind, value: Value) -> Option<fn(&str) -> Vec<String
     }
 }
 
+/// The longest part of a refused value an error repeats.
+const SHOWN_BYTES: usize = 64;
+
+/// `value` cut to its first [`SHOWN_BYTES`], so an error does not echo a request's value whole.
+fn shown(value: &str) -> String {
+    if value.len() <= SHOWN_BYTES {
+        return value.to_owned();
+    }
+    let mut end = SHOWN_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}
+
 /// The arguments that select `model` and `effort` for `kind`. A value outside its grammar is
 /// refused with [`LaunchError::ArgumentNotAllowed`], and a value for a harness that takes
 /// none with [`LaunchError::Unsupported`].
@@ -76,7 +91,7 @@ pub(crate) fn model_args(
         if !grammar.accepts(value) {
             return Err(LaunchError::ArgumentNotAllowed {
                 harness: kind.id(),
-                argument: value.to_owned(),
+                argument: shown(value),
             });
         }
         args.extend(flags(value));

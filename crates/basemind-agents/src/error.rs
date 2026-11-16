@@ -15,8 +15,10 @@ pub enum LaunchError {
     /// The host does not satisfy `[a-z0-9]{1,16}`, the form the comms resolver reduces to.
     #[error("host {0:?} does not match [a-z0-9]{{1,16}}")]
     InvalidHost(String),
-    /// The working directory resolves to a path outside the confinement root.
-    #[error("working directory {dir} is outside the root {root}")]
+    /// The working directory resolves to a path outside the confinement root. The message
+    /// leaves out both paths, which a model choosing the working directory should not learn;
+    /// the fields carry them for the launcher.
+    #[error("the working directory is outside the root")]
     WorkingDirOutsideRoot {
         /// The canonical working directory that was requested.
         dir: PathBuf,
@@ -42,7 +44,8 @@ pub enum LaunchError {
         /// Why it was refused.
         reason: &'static str,
     },
-    /// A path of the launch could not be resolved.
+    /// A path of the launch could not be resolved. For the request's working directory, the
+    /// path is the relative one the request gave.
     #[error("cannot resolve {path}: {source}")]
     Path {
         /// The path as given.
@@ -67,7 +70,7 @@ pub enum LaunchError {
     ArgumentNotAllowed {
         /// The harness the launch targets.
         harness: &'static str,
-        /// The offending value.
+        /// The offending value, cut to its first 64 bytes.
         argument: String,
     },
     /// The ACP agent's behaviour in this permission mode was not verified to ask before it

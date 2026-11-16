@@ -436,3 +436,30 @@ fn debug_output_names_environment_variables_without_their_values() {
     assert!(format!("{plan:?}").contains("OPENAI_API_KEY"));
     assert!(format!("{server:?}").contains("GITHUB_TOKEN"));
 }
+
+#[test]
+fn request_facing_errors_do_not_echo_the_root_or_a_whole_value() {
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(outer.path().join("sibling")).unwrap();
+    let root_text = root.canonicalize().unwrap().display().to_string();
+
+    let mut spec = spec(HarnessKind::Codex, &root);
+    spec.working_dir = Some(PathBuf::from("../sibling"));
+    let error = spec.prepare().unwrap_err();
+    assert!(matches!(error, LaunchError::WorkingDirOutsideRoot { .. }));
+    assert!(!error.to_string().contains(&root_text), "{error}");
+
+    spec.working_dir = Some(PathBuf::from("missing"));
+    let error = spec.prepare().unwrap_err();
+    assert!(matches!(&error, LaunchError::Path { path, .. } if path == Path::new("missing")));
+    assert!(!error.to_string().contains(&root_text), "{error}");
+
+    spec.working_dir = None;
+    spec.model = Some(format!("{}\"", "m".repeat(1000)));
+    let LaunchError::ArgumentNotAllowed { argument, .. } = spec.prepare().unwrap_err() else {
+        panic!("the model was not refused");
+    };
+    assert_eq!(argument, format!("{}…", "m".repeat(64)));
+}
