@@ -1,8 +1,8 @@
 //! Rust extraction cases a `syn`-based gold extractor found missing from the code map.
 
-use basemind::extract::FileMapL1;
 use basemind::extract::l1::extract_l1;
 use basemind::extract::l2::extract_l2;
+use basemind::extract::{FileMapL1, SymbolKind};
 
 fn l1(src: &str) -> FileMapL1 {
     extract_l1("rust", src.as_bytes()).expect("extract l1")
@@ -111,5 +111,28 @@ fn turbofish_calls_are_recorded() {
     let calls = callees(src);
     for want in ["parse", "collect", "make"] {
         assert!(calls.iter().any(|c| c == want), "{want} missing from {calls:?}");
+    }
+}
+
+#[test]
+fn bodiless_trait_methods_are_symbols() {
+    let src = "\
+pub trait Function {
+    fn param(&self, index: usize) -> Option<u32>;
+    fn provided(&self) {}
+}
+extern \"C\" { fn c_entry(x: i32) -> i32; }
+";
+    let map = l1(src);
+    let param = map.symbols.iter().find(|s| s.name == "param").expect("param symbol");
+    assert_eq!(param.kind, SymbolKind::Function);
+    assert_eq!(
+        param.signature.as_deref(),
+        Some("fn param(&self, index: usize) -> Option<u32>")
+    );
+    assert_eq!((param.start_row, param.start_col), (1, 4));
+    let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
+    for want in ["Function", "provided", "c_entry"] {
+        assert!(names.contains(&want), "{want} missing from {names:?}");
     }
 }

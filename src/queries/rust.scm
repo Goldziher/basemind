@@ -2,6 +2,9 @@
 
 (function_item name: (identifier) @symbol.name) @symbol.function
 
+;; Bodiless declarations: trait methods without a default body and `extern` block functions.
+(function_signature_item name: (identifier) @symbol.name) @symbol.function
+
 (struct_item name: (type_identifier) @symbol.name) @symbol.struct
 
 (enum_item name: (type_identifier) @symbol.name) @symbol.enum

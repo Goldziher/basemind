@@ -643,6 +643,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   body unparsed, so they are recognised lexically: an identifier directly followed by `(` inside a
   macro invocation, excluding `fn`/`struct`/`enum`/`union` definitions, nested macro names and
   `macro_rules!` bodies. Like every call they match by name only.
+- Rust trait methods without a body and `extern` block functions (`function_signature_item`) are
+  symbols of kind `function`.
 
 ## [0.33.0] - 2026-11-14
 
