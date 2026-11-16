@@ -120,6 +120,8 @@ impl Generation for Scripted {
             dir: self.dir.clone(),
             version: "0.49.0".to_string(),
             started_unix: 1_000,
+            process_start: None,
+            boot: None,
         })
     }
 

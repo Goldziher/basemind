@@ -200,6 +200,8 @@ fn record_holder_since(dir: &Path, pid: u32, started_unix: i64) {
         dir: dir.to_path_buf(),
         version: OLDER.to_string(),
         started_unix,
+        process_start: None,
+        boot: None,
     };
     std::fs::write(
         dir.join("daemon.pid"),

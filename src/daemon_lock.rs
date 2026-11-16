@@ -148,6 +148,16 @@ pub struct DaemonRecord {
     pub version: String,
     /// Unix seconds when the daemon acquired the lock.
     pub started_unix: i64,
+    /// The daemon's own [`crate::boot_identity::process_start`]: the process at `pid` is the daemon
+    /// exactly when its start is this one. `None` in a record an older release wrote, or where the
+    /// platform gives no start; [`crate::process_start::can_have_written`] then falls back to
+    /// comparing wall-clock times.
+    #[serde(default)]
+    pub process_start: Option<u64>,
+    /// The boot the daemon ran in ([`crate::boot_identity::current`]), without which a Linux
+    /// `process_start` (ticks since boot) could match a process of a later boot.
+    #[serde(default)]
+    pub boot: Option<String>,
 }
 
 /// The registry root (`<data_home>/daemons/`), holding one subdirectory per generation. Releases
@@ -195,8 +205,8 @@ fn read_record(path: &Path) -> Option<DaemonRecord> {
 
 /// The live process `<dir>/daemon.pid` names, if any. Only the lock holder writes that file, but
 /// it outlives a daemon that was killed, so the process may be an unrelated one that was given
-/// the pid since. A caller about to signal it must also find `daemon.lock` held, the process no
-/// younger than the record ([`crate::process_start::can_have_written`]), and the pid equal to the
+/// the pid since. A caller about to signal it must also find `daemon.lock` held, the process the
+/// one the record names ([`crate::process_start::can_have_written`]), and the pid equal to the
 /// one the daemon reported, when it reported one.
 pub fn recorded_holder(dir: &Path) -> Option<DaemonRecord> {
     read_record(&dir.join(DAEMON_PID_FILE)).filter(|record| pid_is_live(record.pid))
@@ -300,8 +310,9 @@ fn count_recorded_in(dir: &Path, kind: DaemonKind) -> usize {
 /// The registry record of the live daemon running as `pid`, whatever its generation or kind: the
 /// releases up to 0.33 record directly in the registry root, later ones in a `g<N>/` below it.
 /// Read-only. For naming the process that holds something this daemon wants; a pid alone does not
-/// say which basemind version it is. A record older than the process under its pid is passed
-/// over: a daemon that was killed left it, and the number now belongs to something else.
+/// say which basemind version it is. A record that does not name the process now under its pid
+/// ([`crate::process_start::can_have_written`]) is passed over: a daemon that was killed left it,
+/// and the number now belongs to something else.
 pub fn registered_daemon(pid: u32) -> Option<DaemonRecord> {
     registered_daemon_in(&daemons_root(), pid)
 }
@@ -488,6 +499,8 @@ impl DaemonLock {
             dir: dir.to_path_buf(),
             version: version.to_string(),
             started_unix: now_unix(),
+            process_start: crate::boot_identity::process_start(std::process::id()),
+            boot: crate::boot_identity::current(),
         };
         let pid_path = dir.join(DAEMON_PID_FILE);
         let machine_path = machine_registry_path_in(machine_dir, kind, dir);

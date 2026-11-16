@@ -100,6 +100,11 @@ fn a_record_written_by_an_older_binary_still_parses_as_a_comms_daemon() {
         "the directory survives the rename"
     );
     assert_eq!(record.pid, 4242);
+    assert_eq!(
+        (record.process_start, record.boot),
+        (None, None),
+        "no start recorded: the wall-clock rule applies"
+    );
 }
 
 #[test]
@@ -115,6 +120,11 @@ fn acquire_admits_one_owner_then_reports_already_held() {
     match DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path()).expect("second acquire") {
         DaemonLockOutcome::AlreadyHeld(Some(record)) => {
             assert_eq!(record.pid, std::process::id(), "the holder record names us");
+            assert_eq!(
+                record.process_start,
+                crate::boot_identity::process_start(std::process::id()),
+                "and our process start"
+            );
         }
         other => panic!("a second acquire must report AlreadyHeld with the holder, got {other:?}"),
     }
@@ -139,6 +149,8 @@ fn count_prunes_dead_holders_and_counts_live_ones() {
         dir: PathBuf::from("/nonexistent"),
         version: "9.9.9".to_string(),
         started_unix: now_unix(),
+        process_start: None,
+        boot: None,
     };
     let dead_path = machine.path().join("dead.pid");
     write_record(&dead_path, &dead);
