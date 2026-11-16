@@ -111,3 +111,5 @@ them.
 | [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted |
 | [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Superseded by ADR-0027 |
 | [0027](0027-single-breaking-release.md) | Release and branch policy — trunk-based, one breaking release | Accepted |
+| [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Proposed |
+| [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Proposed |
