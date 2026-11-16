@@ -115,12 +115,13 @@ impl Default for Limits {
 pub struct McpServerSpec {
     /// The server name, `[A-Za-z0-9_-]{1,64}`.
     pub name: String,
-    /// The server executable.
+    /// The server executable: an absolute path, or a bare name looked up on the absolute
+    /// entries of the launcher's `PATH`. One inside the root is refused.
     pub command: PathBuf,
     /// Its arguments.
     pub args: Vec<String>,
     /// Variables the server needs besides the agent identity, under the same name rule as
-    /// [`LaunchSpec::env`]. They are exported to the harness as well, because Claude Code and
+    /// [`LaunchConfig::env`]. They are exported to the harness as well, because Claude Code and
     /// Codex hand a server variables by inheritance.
     pub env: BTreeMap<String, String>,
     /// The tools of this server the harness may call without an approval request, by their

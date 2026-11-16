@@ -17,40 +17,55 @@
 //! # Safety defaults
 //!
 //! What the crate enforces, against hostile model-chosen fields (the request) and a hostile
-//! child alike:
+//! child alike. The config is trusted:
 //!
 //! - **Approvals are denied.** Every approval request of the harness is answered `deny`
 //!   unless the config carries an [`ApprovalPolicy`]. A request shows the grant itself (the
 //!   command, the file changes, the permissions, the tool input) as an [`ApprovalKind`] and the
-//!   raw wire params; an agent's stated reason is only appended. An ACP allow takes the
-//!   `allow_once` option only. At most 64 requests wait for the caller; a further one is denied.
+//!   raw wire params; an agent's stated reason is only appended. A Codex file change carries
+//!   the item's full changes, or is denied unasked when they are unknown or over 1 MiB. An ACP
+//!   allow takes the `allow_once` option only. Requests get ids of the crate's own; at most 16
+//!   wait for the caller, and a further one is denied.
 //! - **No permission bypass.** [`PermissionMode::Bypass`] is refused unless the config carries
 //!   a [`BypassOptIn`] naming that harness and its mode.
+//! - **No unverified mode without consent.** An ACP agent in any other mode needs an
+//!   [`UnverifiedModeOptIn`] naming the harness and the mode, since what it does unasked was
+//!   not verified; OpenCode is never launched supervised.
 //! - **No free-form arguments.** A request names a model and an effort, which the adapter
 //!   turns into that harness's flags after checking their grammar; nothing else of a request
-//!   reaches the command line, and its limits are clamped to the config's caps.
+//!   reaches the command line, its limits are clamped to the config's caps, and its brief is
+//!   at most 1 MiB.
 //! - **No project configuration.** Claude Code is asked for no setting sources, hooks disabled
-//!   and only the MCP server the config names. Codex, Gemini, Cursor and OpenCode are not
-//!   launched over a project file of theirs (`.codex`, `.gemini`, ...) in the working
-//!   directory or above it. Only MCP tools the config names are pre-approved, and only Claude
-//!   Code can pre-approve.
-//! - **Working directory.** It has to resolve inside [`LaunchConfig::root`], and is checked
-//!   again in the child after it changes into it. The agent is not sandboxed to the root.
+//!   and only the MCP server the config names, and the session fails unless its `system/init`
+//!   frame reports the requested permission mode and exactly that server. Codex, Gemini,
+//!   Cursor and OpenCode are not launched over a project file of theirs (`.codex`, `.gemini`,
+//!   ...) in the working directory or above it. Only MCP tools the config names are
+//!   pre-approved, and only Claude Code can pre-approve.
+//! - **Executables.** The harness executable and the MCP server's command are resolved to
+//!   absolute paths outside the root; the child's `PATH` keeps only absolute entries.
+//! - **Working directory.** It is relative, has to resolve inside [`LaunchConfig::root`], and
+//!   is checked again in the child after it changes into it. The agent is not sandboxed to
+//!   the root.
 //! - **Allow-listed environment.** The child receives [`ENV_ALLOWLIST`], the config's additions
-//!   and the identity. An addition must be a provider credential
-//!   (`*_API_KEY`, `*_TOKEN`, ...) and may not redirect configuration, code loading, the
-//!   provider endpoint or basemind. Credentials in the launcher's environment do not reach the child.
+//!   and the identity. An addition must be a provider credential (`*_API_KEY`, `*_TOKEN`) or
+//!   one of a few provider settings, and may not redirect configuration, code loading, an
+//!   endpoint or basemind. Credentials in the launcher's environment do not reach the child.
 //! - **Limits.** At the wall-time limit, or when the harness starts more turns than
 //!   [`Limits::max_turns`], the process group is killed. A stop gets [`Limits::stop_grace`].
 //! - **Bounded resources.** A frame is at most 16 MiB, the event queue holds at most 1024
-//!   events, and every channel and table is bounded. Dropping or stopping a session never
-//!   blocks for long, even when a descendant holds the harness's pipes.
+//!   events and 16 MiB, and every channel and table is bounded; an ACP agent that leaves the
+//!   client's lines unread fails the session. Dropping a session waits at most 2 s for its
+//!   supervisor, even when a descendant holds the harness's pipes.
 //!
-//! What it does not do: the config's executable and its MCP server's command run as given, so
-//! the configuration has to restrict them; a descendant that leaves the harness's process
-//! group survives the session (the session still ends on time); a project file written during
-//! a session is only seen by the next launch; that an empty `--setting-sources` loads nothing
-//! was not run against a live Claude Code; and nothing is launched off Unix.
+//! What it does not do: the config's executable, its MCP server's command and its
+//! environment values are used as given, so the configuration has to restrict them; the
+//! harnesses' user-level configuration still applies; a descendant that leaves the harness's
+//! process group survives the session (the session still ends on time); a project file
+//! written during a session is only seen by the next launch; `BASEMIND_AGENT_ID` is
+//! self-asserted; what the ACP agents' modes ask for and what Claude Code's flags and init
+//! frame do were not run against a live harness (the checks fail closed); the launcher must
+//! not reap children it did not start and must ignore SIGPIPE; and nothing is launched off
+//! Unix.
 //!
 //! # Harnesses
 //!

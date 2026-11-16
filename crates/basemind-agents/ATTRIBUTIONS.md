@@ -47,8 +47,12 @@ types, and the per-agent dialect of the ACP adapter.
   - an ACP allow selects `allow_once` only, where monocode falls back to `allow_always`;
   - Claude Code gets `--strict-mcp-config`, `--settings` with `disableAllHooks` always, and an
     empty `--setting-sources`, where monocode loads `user,project,local`;
-  - model and effort flags are not set by the adapter but accepted from the caller through an
-    allow-list (`guard.rs`), which takes monocode's flag names;
+  - model and effort flags are built by the adapter from a request's checked values
+    (`guard.rs`), with monocode's flag names;
+  - Claude Code's `system/init` frame has to report the requested permission mode and only the
+    injected MCP server;
+  - an ACP agent's mode other than an authorized bypass needs an explicit opt-in, and OpenCode
+    is not launched in its default mode;
   - a follow-up starts a new turn when the current one ends, where monocode steers the running turn;
   - turns are counted against a limit, and a turn the harness starts unprompted counts too;
   - errors are a typed `LaunchError` instead of `String`.
