@@ -638,6 +638,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rust trait impls whose trait is written with a path or generics (`impl<T> Extend<T> for Vec<T>`,
   `impl crate::scanner::ScanObserver for RescanPaths`) are implementations, keyed by the trait's last
   path segment. Only bare trait names were matched before.
+- Rust turbofish calls (`s.parse::<u32>()`, `collect::<Vec<_>>()`, `a::b::make::<T>()`) are call sites.
 
 ## [0.33.0] - 2026-11-14
 

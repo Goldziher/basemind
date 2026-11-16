@@ -40,6 +40,14 @@
   function: (field_expression field: (field_identifier) @call.callee)) @call.range
 (call_expression
   function: (scoped_identifier name: (identifier) @call.callee)) @call.range
+(call_expression
+  function: (generic_function function: (identifier) @call.callee)) @call.range
+(call_expression
+  function: (generic_function
+    function: (field_expression field: (field_identifier) @call.callee))) @call.range
+(call_expression
+  function: (generic_function
+    function: (scoped_identifier name: (identifier) @call.callee))) @call.range
 (macro_invocation macro: (identifier) @call.callee) @call.range
 
 ;; section: implementations

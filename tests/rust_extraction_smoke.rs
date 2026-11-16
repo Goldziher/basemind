@@ -2,9 +2,19 @@
 
 use basemind::extract::FileMapL1;
 use basemind::extract::l1::extract_l1;
+use basemind::extract::l2::extract_l2;
 
 fn l1(src: &str) -> FileMapL1 {
     extract_l1("rust", src.as_bytes()).expect("extract l1")
+}
+
+fn callees(src: &str) -> Vec<String> {
+    extract_l2("rust", src.as_bytes())
+        .expect("extract l2")
+        .calls
+        .into_iter()
+        .map(|c| c.callee)
+        .collect()
 }
 
 fn impl_pairs(map: &FileMapL1) -> Vec<(&str, &str)> {
@@ -35,4 +45,13 @@ impl Display for Plain {}
     assert_eq!(pairs.len(), 4, "one implementation per impl block: {pairs:?}");
     let extend = &map.implementations[0];
     assert_eq!((extend.start_byte, extend.start_row, extend.start_col), (0, 0, 0));
+}
+
+#[test]
+fn turbofish_calls_are_recorded() {
+    let src = "fn t() { let n = s.parse::<u32>(); let v = collect::<Vec<u8>>(); let w = a::b::make::<T>(); }\n";
+    let calls = callees(src);
+    for want in ["parse", "collect", "make"] {
+        assert!(calls.iter().any(|c| c == want), "{want} missing from {calls:?}");
+    }
 }
