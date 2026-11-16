@@ -516,7 +516,7 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
     assert_eq!(
         overrides,
         [
-            format!("mcp_servers.basemind.command=\"{MCP_COMMAND}\"").as_str(),
+            format!("mcp_servers.basemind.command={}", toml_string(MCP_COMMAND)).as_str(),
             "mcp_servers.basemind.args=[\"serve\"]",
         ]
     );

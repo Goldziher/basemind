@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{MCP_COMMAND, config, spec};
+use crate::test_support::{BIN_DIRS, MCP_COMMAND, config, spec};
 
 fn os(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
     pairs.iter().map(|(name, value)| (name.into(), value.into())).collect()
@@ -11,7 +11,7 @@ fn the_child_environment_is_the_allow_list_plus_additions_and_identity() {
     let mut spec = spec(HarnessKind::Codex, root.path());
     spec.env.insert("OPENAI_API_KEY".to_owned(), "from-the-spec".to_owned());
     let parent = os(&[
-        ("PATH", "/usr/bin"),
+        ("PATH", BIN_DIRS[0]),
         ("HOME", "/home/dev"),
         ("ANTHROPIC_API_KEY", "sk-parent"),
         ("OPENAI_API_KEY", "sk-parent"),
@@ -25,7 +25,7 @@ fn the_child_environment_is_the_allow_list_plus_additions_and_identity() {
     ]);
     let env = spec.child_env(parent);
     let expected: BTreeMap<String, OsString> = [
-        ("PATH", "/usr/bin"),
+        ("PATH", BIN_DIRS[0]),
         ("HOME", "/home/dev"),
         ("OPENAI_API_KEY", "from-the-spec"),
         ("BASEMIND_AGENT_ID", "launched-agent"),
@@ -360,9 +360,10 @@ fn an_executable_is_found_on_absolute_path_entries_and_never_inside_the_root() {
 fn the_child_search_path_keeps_only_absolute_entries() {
     let root = tempfile::tempdir().unwrap();
     let spec = spec(HarnessKind::Codex, root.path());
-    let search = std::env::join_paths(["", "bin", ".", "/usr/bin", "/bin"]).unwrap();
+    // A rooted entry without a drive resolves against the current drive on Windows.
+    let search = std::env::join_paths(["", "bin", ".", r"\bin", BIN_DIRS[0], BIN_DIRS[1]]).unwrap();
     let env = spec.child_env([(OsString::from("PATH"), search)]);
-    assert_eq!(env["PATH"], std::env::join_paths(["/usr/bin", "/bin"]).unwrap());
+    assert_eq!(env["PATH"], std::env::join_paths(BIN_DIRS).unwrap());
 }
 
 #[test]
@@ -375,11 +376,11 @@ fn the_child_search_path_drops_entries_inside_the_root() {
         root.path().join("bin"),
         canonical.join("bin"),
         root.path().to_owned(),
-        PathBuf::from("/usr/bin"),
+        PathBuf::from(BIN_DIRS[0]),
     ])
     .unwrap();
     let env = spec.child_env([(OsString::from("PATH"), search)]);
-    assert_eq!(env["PATH"], OsString::from("/usr/bin"));
+    assert_eq!(env["PATH"], OsString::from(BIN_DIRS[0]));
 }
 
 #[test]

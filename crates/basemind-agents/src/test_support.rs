@@ -24,10 +24,22 @@ pub fn always(verdict: ApprovalVerdict) -> Option<Arc<dyn ApprovalPolicy>> {
 }
 
 /// An executable that exists outside every test root. Plans name it; no test that only
-/// plans runs it, so no real harness is ever started.
+/// plans runs it, so no real harness is ever started. Absolute on this platform: a rooted path
+/// without a drive is refused on Windows, where it resolves against the current drive.
+#[cfg(not(windows))]
 pub const EXECUTABLE: &str = "/bin/sh";
+#[cfg(windows)]
+pub const EXECUTABLE: &str = r"C:\Windows\System32\cmd.exe";
 /// A stand-in for the MCP server's command, under the same terms.
+#[cfg(not(windows))]
 pub const MCP_COMMAND: &str = "/bin/echo";
+#[cfg(windows)]
+pub const MCP_COMMAND: &str = r"C:\Windows\System32\where.exe";
+/// Absolute directories outside every test root, for search paths.
+#[cfg(not(windows))]
+pub const BIN_DIRS: [&str; 2] = ["/usr/bin", "/bin"];
+#[cfg(windows)]
+pub const BIN_DIRS: [&str; 2] = [r"C:\Windows\System32", r"C:\Windows"];
 
 /// The default config for `kind` rooted at `root`.
 pub fn config(kind: HarnessKind, root: &Path) -> LaunchConfig {
