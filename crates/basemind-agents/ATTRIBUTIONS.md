@@ -25,7 +25,8 @@ types, and the per-agent dialect of the ACP adapter.
   `crates/basemind-agents/LICENSE-monocode`
 - **Authors**: Nick and the monocode contributors
 - **Location**:
-  `crates/basemind-agents/src/{claude,codex,line,process,event,session,acp,spec,harness,guard}.rs`
+  `crates/basemind-agents/src/{claude,codex,line,process,event,session,acp,spec,harness,guard}.rs`,
+  and the replayed task-notification frame in `crates/basemind-agents/src/claude_tests.rs`
 - **Purpose**: Drive Claude Code and Codex over their stdio protocols, give each ACP agent its
   launch arguments and modes, and end a launched harness together with every process that stayed
   in its process group.
