@@ -61,12 +61,19 @@ fn col_of(line: &str, needle: &str, nth: usize) -> u64 {
 type Server = rmcp::service::RunningService<rmcp::RoleClient, ()>;
 
 /// Scan `root`, then spawn `basemind serve` against it.
+///
+/// The scan is blocking work and runs on a blocking thread, as every production caller runs it: the
+/// vector store it may open drives its own runtime, which cannot start on this test's.
 async fn serve(root: &Path) -> Server {
     basemind::store::init_isolated_cache();
-    let mut store = Store::open(root, VIEW_WORKING).unwrap();
-    let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
-    drop(store);
+    let owned = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut store = Store::open(&owned, VIEW_WORKING).unwrap();
+        let cfg = ConfigV1::with_defaults();
+        scan(&owned, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    })
+    .await
+    .expect("scan task");
 
     let transport = basemind::mcp::serve_in_memory(root, "working")
         .await
