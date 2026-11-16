@@ -601,3 +601,19 @@ fn config_values_are_written_as_toml_strings() {
         plan.args
     );
 }
+
+#[test]
+fn turns_of_another_thread_neither_count_nor_end_ours() {
+    let (sink, _events) = EventSink::for_test(None, 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    for frame in [
+        json!({"method": "turn/started", "params": {"threadId": "sub-agent", "turn": {"id": "turn-9"}}}),
+        json!({"method": "turn/completed", "params": {"threadId": "sub-agent", "turn": {"id": "turn-9", "status": "completed"}}}),
+    ] {
+        assert_eq!(protocol.frame(frame, &mut out, &sink).unwrap(), Step::Continue);
+    }
+    assert_eq!(sink.turns(), 1);
+    let ours = json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}});
+    assert_eq!(protocol.frame(ours, &mut out, &sink).unwrap(), Step::TurnDone);
+}

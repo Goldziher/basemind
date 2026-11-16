@@ -263,6 +263,15 @@ impl CodexProtocol {
         }
     }
 
+    /// Whether a notification belongs to our thread. One without a `threadId` is taken as
+    /// ours, as is everything before the thread is known.
+    fn ours(&self, params: &Value) -> bool {
+        match (params["threadId"].as_str(), &self.thread) {
+            (Some(thread), Some(ours)) => thread == ours,
+            _ => true,
+        }
+    }
+
     /// Reports the calls whose output grew, at most every [`OUTPUT_REPORT_INTERVAL`] unless
     /// `now`: a report copies up to 64 KiB, so one per one-byte increment would be quadratic.
     fn report_output(&mut self, now: bool, sink: &EventSink) {
@@ -422,6 +431,9 @@ impl CodexProtocol {
         let params = &frame["params"];
         let request = frame.get("id");
         match method {
+            // Codex runs further threads (sub-agents) on the same connection: only our
+            // thread's turns count and end ours.
+            "turn/started" | "turn/completed" | "turn/aborted" if !self.ours(params) => {}
             "turn/started" => {
                 if let Some(id) = params["turn"]["id"].as_str() {
                     self.turn_started(id, sink)?;
