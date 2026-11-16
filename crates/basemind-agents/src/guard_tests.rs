@@ -132,7 +132,6 @@ fn environment_additions_are_limited_to_provider_credentials_and_settings() {
         "OPENAI_API_KEY",
         "GITHUB_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
         "AWS_REGION",
         "GOOGLE_CLOUD_PROJECT",
     ] {
@@ -140,6 +139,8 @@ fn environment_additions_are_limited_to_provider_credentials_and_settings() {
     }
     for name in [
         "",
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_BASE_URL",
         "A=B_TOKEN",
         "NUL\0_TOKEN",
         "lower_api_key",

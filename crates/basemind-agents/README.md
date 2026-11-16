@@ -59,7 +59,6 @@ for event in session.events() {
 Limits:
 
 - The spec's executable and its MCP server's command run as given; the caller must restrict them.
-- An endpoint addition (`*_BASE_URL`) sends the harness's credentials and work wherever it points.
 - A descendant that leaves the process group survives the session.
 - A project file written during a session is only seen by the next launch.
 - That an empty `--setting-sources` loads nothing was not run against a live Claude Code.

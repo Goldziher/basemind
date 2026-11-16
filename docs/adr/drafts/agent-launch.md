@@ -122,10 +122,9 @@ call that started it.
   live CLI; if a version rejects it, the launch fails rather than loading project rules.
 - The project files of Grok, Hermes and a generic ACP agent are not known, so they are not
   checked.
-- An environment addition may name a provider endpoint (`*_BASE_URL`). A harness then sends its
-  credentials, including a keychain or HOME login, and the work to that endpoint, so whoever
-  writes the spec chooses where they go. The engine should allow-list endpoints or drop the
-  suffix.
+- An environment addition cannot name a provider endpoint (`*_BASE_URL`): the harness would send
+  its credentials and the work there. A deployment that needs another endpoint sets it in the
+  harness's own user configuration.
 - The project-file check is a snapshot at launch: a file the agent writes during the session is
   seen by the next launch, which it then refuses.
 - The environment allow-list means a harness that reads an API key from the environment gets it

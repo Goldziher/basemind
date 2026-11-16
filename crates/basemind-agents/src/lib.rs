@@ -31,9 +31,9 @@
 //! - **Working directory.** It has to resolve inside [`LaunchSpec::root`], and is checked
 //!   again in the child after it changes into it. The agent is not sandboxed to the root.
 //! - **Allow-listed environment.** The child receives [`ENV_ALLOWLIST`], the spec's additions
-//!   and the identity. An addition must be a provider credential or endpoint
-//!   (`*_API_KEY`, `*_TOKEN`, `*_BASE_URL`, ...) and may not redirect configuration, code
-//!   loading or basemind. Credentials in the launcher's environment do not reach the child.
+//!   and the identity. An addition must be a provider credential
+//!   (`*_API_KEY`, `*_TOKEN`, ...) and may not redirect configuration, code loading, the
+//!   provider endpoint or basemind. Credentials in the launcher's environment do not reach the child.
 //! - **Limits.** At the wall-time limit, or when the harness starts more turns than
 //!   [`Limits::max_turns`], the process group is killed. A stop gets [`Limits::stop_grace`].
 //! - **Bounded resources.** A frame is at most 16 MiB, the event queue holds at most 1024
@@ -41,8 +41,7 @@
 //!   blocks for long, even when a descendant holds the harness's pipes.
 //!
 //! What it does not do: the spec's executable and its MCP server's command run as given, so
-//! the caller has to restrict them; an endpoint addition (`*_BASE_URL`) sends the harness's
-//! credentials and work wherever it points; a descendant that leaves the harness's process
+//! the caller has to restrict them; a descendant that leaves the harness's process
 //! group survives the session (the session still ends on time); a project file written during
 //! a session is only seen by the next launch; that an empty `--setting-sources` loads nothing
 //! was not run against a live Claude Code; and nothing is launched off Unix.

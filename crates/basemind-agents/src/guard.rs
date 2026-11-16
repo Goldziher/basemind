@@ -128,9 +128,10 @@ pub(crate) fn guard_bypass(args: &[String], bypass: bool) -> Result<(), LaunchEr
     }
 }
 
-/// Name suffixes an environment addition may carry: credentials and endpoints of a model
-/// provider, which a harness reads from its environment.
-const ENV_SUFFIXES: &[&str] = &["_API_KEY", "_TOKEN", "_BASE_URL"];
+/// Name suffixes an environment addition may carry: credentials of a model provider, which a
+/// harness reads from its environment. An endpoint (`*_BASE_URL`) is not among them: it would
+/// let whoever writes the spec choose where the harness sends its credentials.
+const ENV_SUFFIXES: &[&str] = &["_API_KEY", "_TOKEN"];
 
 /// Further names an addition may carry: provider settings that are neither a credential nor
 /// a location of code or configuration.

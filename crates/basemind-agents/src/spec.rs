@@ -150,7 +150,7 @@ pub struct LaunchSpec {
     /// Variables added to the allow-listed environment. Nothing else of the parent's
     /// environment reaches the child.
     ///
-    /// A name must be `[A-Z][A-Z0-9_]*` and end in `_API_KEY`, `_TOKEN` or `_BASE_URL`, or be
+    /// A name must be `[A-Z][A-Z0-9_]*` and end in `_API_KEY` or `_TOKEN`, or be
     /// one of a few provider settings (`AWS_REGION`, `AWS_ACCESS_KEY_ID`,
     /// `AWS_SECRET_ACCESS_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`). Names on
     /// [`ENV_ALLOWLIST`], `BASEMIND_*`, loader and runtime switches (`LD_*`, `DYLD_*`,
