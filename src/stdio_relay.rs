@@ -149,14 +149,14 @@ const REPLAYABLE_METHODS: &[&str] = &[
 fn is_read_only_tool(tool: &str) -> bool {
     basemind::mcp::replay::REPLAY_SAFE_TOOLS.contains(&tool)
 }
-/// `agents` modes that are reads or naturally idempotent (`post` is made so by a key).
+/// `agents` modes that are reads or naturally idempotent. `post` is made so by a key, and `inbox`
+/// is one only while it marks nothing read.
 const REPLAYABLE_AGENTS_MODES: &[&str] = &[
     "list",
     "thread_list",
     "members",
     "history",
     "message",
-    "inbox",
     "ack",
     "wait",
     "status",
@@ -191,6 +191,12 @@ fn classify_request(message: &mut Value, line: &str) -> (String, bool) {
         .unwrap_or_default();
     if is_read_only_tool(tool) || (tool == "agents" && REPLAYABLE_AGENTS_MODES.contains(&mode)) {
         return (line.to_owned(), true);
+    }
+    if tool == "agents" && mode == "inbox" {
+        let marks_read = message
+            .pointer("/params/arguments/mark_read")
+            .is_some_and(|mark| !matches!(mark, Value::Null | Value::Bool(false)));
+        return (line.to_owned(), !marks_read);
     }
     if tool == "agents" && mode == "post" {
         let has_key = message

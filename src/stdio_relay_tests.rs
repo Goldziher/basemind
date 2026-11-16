@@ -229,6 +229,29 @@ fn only_reads_and_keyed_posts_are_replayable() {
     assert_eq!(state.drain_restart_errors().len(), 3);
 }
 
+/// `inbox` with `mark_read` changes what the next `inbox` returns. Replayed after the daemon
+/// marked and died before replying, it would come back without the messages nobody read.
+#[test]
+fn an_inbox_read_that_marks_messages_read_is_not_replayed() {
+    let inbox = |id: u64, mark_read: &str| {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"agents\",\
+             \"arguments\":{{\"mode\":\"inbox\",\"mark_read\":{mark_read}}}}}}}\n"
+        )
+    };
+    let mut state = SessionState::default();
+    state.observe_client(&inbox(1, "true"));
+    state.observe_client(&inbox(2, "\"true\""));
+    state.observe_client(&inbox(3, "false"));
+    state.observe_client(&inbox(4, "null"));
+    state.observe_client(&call_line(5, "agents", "inbox"));
+    assert_eq!(
+        state.replay.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["3", "4", "5"],
+        "only a read that marks nothing is safe to send twice"
+    );
+}
+
 /// A tool that is not listed as safe is not replayed, whatever else is true of it: the agent tools
 /// of the next release are not in the list, and a post sent twice is a message delivered twice.
 #[test]

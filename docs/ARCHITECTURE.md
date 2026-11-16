@@ -988,8 +988,8 @@ once (5 s replay timeout), but only when re-sending is safe:
 - the read methods `ping`, `tools/list`, `resources/list`, `resources/read`,
   `resources/templates/list`, `prompts/list`, `prompts/get` and `completion/complete`;
 - every call to a read-only code or git tool;
-- `agents` modes `list`, `thread_list`, `members`, `history`, `message`, `inbox`, `ack`, `wait` and
-  `status`;
+- `agents` modes `list`, `thread_list`, `members`, `history`, `message`, `ack`, `wait` and
+  `status`, and `inbox` unless it sets `mark_read`;
 - `agents` `post`, which the relay stamps with a `relay-` key when the caller gave none.
 
 Every other in-flight request is answered with a retryable `-32001 backend_restarted` rather than
