@@ -227,8 +227,11 @@ fn json_of(result: &rmcp::model::CallToolResult) -> serde_json::Value {
     panic!("tool returned no text content");
 }
 
+/// The key a `git_log` list's entries are under, and the arguments of its page at a cursor.
+type List = (&'static str, fn(Option<Cursor>) -> GitLogParams);
+
 /// The three lists `git_log` pages one window at a time: recent commits, a file's, a symbol's.
-fn lists() -> [(&'static str, fn(Option<Cursor>) -> GitLogParams); 3] {
+fn lists() -> [List; 3] {
     [
         ("commits", |cursor| log(None, None, cursor)),
         ("commits", |cursor| log(Some("src/lib.rs"), None, cursor)),
@@ -290,9 +293,7 @@ fn a_cursor_of_any_git_log_list_from_the_other_walk_is_refused() {
         git_log(&state, params(Some(issued))).expect("the live walk resumes it");
 
         let from_index = Cursor::encode_in_memory(offset, snapshot & !LIVE_WALK);
-        let refused = git_log(&state, params(Some(from_index)))
-            .err()
-            .expect("an index cursor on the live walk");
+        let refused = git_log(&state, params(Some(from_index))).expect_err("an index cursor on the live walk");
         assert!(
             refused.message.contains("git-history index") && refused.message.contains("without `cursor`"),
             "{key}: {}",
