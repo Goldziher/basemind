@@ -27,7 +27,8 @@ pub enum PermissionMode {
     /// The harness's planning or read-only mode, where it has one; refused where it has none.
     ReadOnly,
     /// The harness's accept-edits mode: file edits proceed without a request. Refused where
-    /// the harness has no such mode.
+    /// the harness has no such mode, and for Codex, whose nearest mode also runs commands
+    /// unasked.
     AcceptEdits,
     /// The harness skips its permission checks. Refused without a matching [`BypassOptIn`].
     Bypass,

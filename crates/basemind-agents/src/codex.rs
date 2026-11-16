@@ -47,6 +47,14 @@ impl Adapter for CodexAdapter {
 impl CodexAdapter {
     pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
         let prepared = spec.prepare()?;
+        if spec.permission_mode == PermissionMode::AcceptEdits {
+            // Codex 0.169 under `on-request` and a workspace-write sandbox ran `touch` unasked:
+            // its nearest mode also runs commands, which the mode does not promise.
+            return Err(LaunchError::Unsupported {
+                harness: spec.harness.kind.id(),
+                feature: "an accept-edits mode: its nearest one also runs commands unasked",
+            });
+        }
         let mut server_args = Vec::new();
         if let (Some(server), Some(command)) = (&spec.mcp_server, &prepared.mcp_command) {
             // Codex approves a server's tools all at once; single tools cannot be named here.
@@ -116,13 +124,16 @@ impl Access {
     /// `bypass` is the checked consent of the spec; without it `Bypass` degrades to supervised.
     /// `ReadOnly` uses approval policy `never`: the read-only sandbox is the only control,
     /// nothing is asked, and whatever the sandbox blocks fails instead of becoming a request
-    /// an allowing policy could turn into a write.
+    /// an allowing policy could turn into a write. Codex 0.169 failed an MCP tool call under
+    /// it ("requires approval, but approval policy is never") rather than running it.
+    /// `AcceptEdits` is refused by the adapter before it gets here, and maps to supervised.
     pub fn new(mode: PermissionMode, bypass: bool) -> Self {
         let (approval_policy, sandbox, sandbox_policy) = match mode {
             PermissionMode::ReadOnly => ("never", "read-only", "readOnly"),
-            PermissionMode::AcceptEdits => ("on-request", "workspace-write", "workspaceWrite"),
             PermissionMode::Bypass if bypass => ("on-request", "danger-full-access", "dangerFullAccess"),
-            PermissionMode::Supervised | PermissionMode::Bypass => ("untrusted", "read-only", "readOnly"),
+            PermissionMode::Supervised | PermissionMode::AcceptEdits | PermissionMode::Bypass => {
+                ("untrusted", "read-only", "readOnly")
+            }
         };
         Self {
             approval_policy,

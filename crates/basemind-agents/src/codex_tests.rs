@@ -87,6 +87,21 @@ fn full_access_reaches_the_wire_only_with_the_checked_consent() {
 }
 
 #[test]
+fn accept_edits_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let mut spec = spec(HarnessKind::Codex, root.path());
+    spec.permission_mode = PermissionMode::AcceptEdits;
+    assert!(matches!(
+        CodexAdapter.plan_spec(&spec),
+        Err(LaunchError::Unsupported { harness: "codex", .. })
+    ));
+    assert_eq!(
+        Access::new(PermissionMode::AcceptEdits, false),
+        Access::new(PermissionMode::Supervised, false)
+    );
+}
+
+#[test]
 fn a_launch_cannot_ask_for_bypass_without_naming_codex() {
     let root = tempfile::tempdir().unwrap();
     let mut spec = spec(HarnessKind::Codex, root.path());
