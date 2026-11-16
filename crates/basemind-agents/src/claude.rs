@@ -15,7 +15,7 @@ use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
 use crate::session::{self, CommandPlan, EventSink, Session};
-use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode};
+use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode, utf8};
 
 const INIT_REQUEST: &str = "basemind-init";
 /// The most partial tool input collected for one content block.
@@ -66,7 +66,7 @@ impl Adapter for ClaudeCodeAdapter {
             // The server inherits the harness's environment, which carries the identity.
             servers.insert(
                 server.name.clone(),
-                json!({"type": "stdio", "command": server.command, "args": server.args}),
+                json!({"type": "stdio", "command": utf8(&server.command)?, "args": server.args}),
             );
         }
         // Always given, so `--strict-mcp-config` leaves exactly these servers.

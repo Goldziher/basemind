@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -14,7 +13,7 @@ use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
 use crate::session::{self, CommandPlan, EventSink, Session};
-use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode};
+use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode, utf8};
 
 const INITIALIZE_ID: u64 = 1;
 const THREAD_ID: u64 = 2;
@@ -45,7 +44,7 @@ impl Adapter for CodexAdapter {
             }
             // Codex hands a server only the variables named in `env_vars`.
             let settings = [
-                ("command", json!(server.command)),
+                ("command", json!(utf8(&server.command)?)),
                 ("args", json!(server.args)),
                 ("env_vars", json!(spec.mcp_env_names())),
             ];
@@ -62,7 +61,7 @@ impl Adapter for CodexAdapter {
         let plan = self.plan(spec)?;
         let prepared = spec.prepare()?;
         let access = Access::new(spec.permission_mode, prepared.bypass(spec));
-        let protocol = CodexProtocol::new(spec.brief.clone(), plan.cwd.clone(), access);
+        let protocol = CodexProtocol::new(spec.brief.clone(), utf8(&plan.cwd)?.to_owned(), access);
         let (driver, control) = LineDriver::boxed(protocol);
         session::start(&plan, spec, driver, control)
     }
@@ -109,7 +108,7 @@ fn failure(error: &Value, fallback: &str) -> LaunchError {
 pub(crate) struct CodexProtocol {
     /// The brief, until its turn has been started.
     brief: Option<String>,
-    cwd: PathBuf,
+    cwd: String,
     access: Access,
     initialized: bool,
     thread: Option<String>,
@@ -130,7 +129,7 @@ pub(crate) struct CodexProtocol {
 }
 
 impl CodexProtocol {
-    pub fn new(brief: String, cwd: PathBuf, access: Access) -> Self {
+    pub fn new(brief: String, cwd: String, access: Access) -> Self {
         Self {
             brief: Some(brief),
             cwd,

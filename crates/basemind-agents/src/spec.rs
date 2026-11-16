@@ -243,6 +243,11 @@ impl LaunchSpec {
         check_extra_args(kind, &self.harness.args)?;
         let cwd = confine(&self.root, self.working_dir.as_deref())?;
         check_project_config(kind, &cwd, std::env::var_os("HOME").as_deref().map(Path::new))?;
+        // Every harness receives these paths inside JSON or TOML, which carry UTF-8 only.
+        utf8(&cwd)?;
+        if let Some(server) = &self.mcp_server {
+            utf8(&server.command)?;
+        }
         Ok(Prepared {
             cwd,
             bypass_mode: authorized,
@@ -380,6 +385,11 @@ pub const ENV_ALLOWLIST: &[&str] = &[
 /// Where basemind keeps its store and its comms rendezvous. A launched agent has to see the
 /// launcher's values, or its `basemind serve` talks to a different daemon.
 const SHARED_STATE_ENV: &[&str] = &["BASEMIND_DATA_HOME", "BASEMIND_COMMS_DIR"];
+
+/// `path` as UTF-8, which every path written into a harness's protocol has to be.
+pub(crate) fn utf8(path: &Path) -> Result<&str, LaunchError> {
+    path.to_str().ok_or_else(|| LaunchError::NonUtf8Path(path.to_owned()))
+}
 
 /// Whether `name` can be written into every harness's configuration: `[A-Za-z0-9_-]{1,64}`.
 fn mcp_name(name: &str) -> bool {

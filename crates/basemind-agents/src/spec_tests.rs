@@ -189,3 +189,35 @@ fn the_default_spec_is_supervised_single_turn_and_denies() {
     let prepared = spec.prepare().unwrap();
     assert!(!prepared.bypass(&spec));
 }
+
+#[cfg(unix)]
+#[test]
+fn paths_that_are_not_utf8_are_refused_rather_than_serialized() {
+    use std::os::unix::ffi::OsStrExt;
+    let outer = tempfile::tempdir().unwrap();
+    let odd = std::ffi::OsStr::from_bytes(b"caf\xe9");
+    let root = outer.path().join(odd);
+    if std::fs::create_dir(&root).is_err() {
+        // Some file systems (APFS among them) refuse names that are not UTF-8: then no
+        // working directory can be one, and only the server command is checked.
+        assert!(std::str::from_utf8(odd.as_bytes()).is_err());
+    } else {
+        let spec = spec(HarnessKind::Codex, &root);
+        assert!(matches!(spec.prepare(), Err(LaunchError::NonUtf8Path(_))));
+    }
+    for kind in [
+        HarnessKind::ClaudeCode,
+        HarnessKind::Codex,
+        HarnessKind::Acp(crate::harness::AcpFlavor::Cursor),
+    ] {
+        let mut spec = spec(kind, outer.path());
+        spec.mcp_server = Some(McpServerSpec::basemind_serve(Path::new(odd)));
+        assert!(
+            matches!(
+                crate::Registry::with_defaults().plan(&spec),
+                Err(LaunchError::NonUtf8Path(_))
+            ),
+            "{kind} accepted the path"
+        );
+    }
+}

@@ -20,6 +20,9 @@ pub enum LaunchError {
         /// The canonical root it had to stay inside.
         root: PathBuf,
     },
+    /// A path the harness has to receive in its protocol is not valid UTF-8.
+    #[error("path {0:?} is not valid UTF-8")]
+    NonUtf8Path(PathBuf),
     /// A path of the spec could not be resolved.
     #[error("cannot resolve {path}: {source}")]
     Path {

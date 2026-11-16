@@ -8,7 +8,7 @@ use crate::test_support::{always, spec, written};
 fn protocol(mode: PermissionMode, bypass: bool) -> CodexProtocol {
     CodexProtocol::new(
         "Summarize the README.".to_owned(),
-        PathBuf::from("/work/repo"),
+        "/work/repo".to_owned(),
         Access::new(mode, bypass),
     )
 }
