@@ -146,6 +146,50 @@ impl StoreSlot {
     }
 }
 
+/// The first of a relayed read's requests, registered under its replay key. However the read ends
+/// (a return, a panic, or its future dropped), dropping this removes the key, and a read that
+/// published nothing tells a joined replay it was abandoned, so the replay never waits on a sender
+/// that is gone.
+struct FirstRead<'a> {
+    waits: &'a Mutex<AHashMap<Vec<u8>, WaitResult>>,
+    key: Vec<u8>,
+    done: watch::Sender<Published>,
+    mine: WaitResult,
+}
+
+impl FirstRead<'_> {
+    /// Remove the key, unless a later first read registered it again.
+    fn unregister(&self) {
+        let mut waits = lock(self.waits);
+        if waits
+            .get(&self.key)
+            .is_some_and(|registered| registered.same_channel(&self.mine))
+        {
+            waits.remove(&self.key);
+        }
+    }
+
+    /// Hand the result to a joined replay. The key goes first, so a replay that arrives after this
+    /// starts on its own instead of finding the finished read.
+    fn publish(self, published: Published) {
+        self.unregister();
+        self.done.send_replace(published);
+    }
+}
+
+impl Drop for FirstRead<'_> {
+    fn drop(&mut self) {
+        self.unregister();
+        self.done.send_if_modified(|published| {
+            let pending = matches!(published, Published::Pending);
+            if pending {
+                *published = Published::Abandoned;
+            }
+            pending
+        });
+    }
+}
+
 /// The agent store as the daemon serves it.
 pub struct AgentHub {
     dir: PathBuf,
@@ -372,32 +416,37 @@ impl AgentHub {
         };
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            let (done, joining) = {
+            let (registered, joining) = {
                 let mut waits = lock(&self.waits);
                 match waits.entry(key.clone()) {
                     std::collections::hash_map::Entry::Occupied(first) => (None, Some(first.get().clone())),
                     std::collections::hash_map::Entry::Vacant(slot) => {
-                        let (done, receiver) = watch::channel(Published::Pending);
-                        slot.insert(receiver);
-                        (Some(done), None)
+                        let (done, mine) = watch::channel(Published::Pending);
+                        slot.insert(mine.clone());
+                        let registered = FirstRead {
+                            waits: &self.waits,
+                            key: key.clone(),
+                            done,
+                            mine,
+                        };
+                        (Some(registered), None)
                     }
                 }
             };
-            if let Some(done) = done {
+            if let Some(registered) = registered {
                 let left = deadline.saturating_duration_since(tokio::time::Instant::now());
                 let result = self.wait_and_read(&caller, body, kind, left, gone).await;
-                lock(&self.waits).remove(&key);
                 return match result {
                     Ok(Some(reply)) => {
-                        done.send_replace(Published::Done(Ok(reply.clone())));
+                        registered.publish(Published::Done(Ok(reply.clone())));
                         Ok(reply)
                     }
                     Ok(None) => {
-                        done.send_replace(Published::Abandoned);
+                        registered.publish(Published::Abandoned);
                         Ok(self.ended(&caller, WaitOutcome::TimedOut, None))
                     }
                     Err(error) => {
-                        done.send_replace(Published::Done(Err(error.clone())));
+                        registered.publish(Published::Done(Err(error.clone())));
                         Err(error)
                     }
                 };
@@ -413,6 +462,15 @@ impl AgentHub {
                     Published::Pending => {}
                 }
                 if first.changed().await.is_err() {
+                    // Its sender is gone without a result: drop the stale entry, if it is still
+                    // this one, and wait on our own.
+                    let mut waits = lock(&self.waits);
+                    if waits
+                        .get(&key)
+                        .is_some_and(|registered| registered.same_channel(&first))
+                    {
+                        waits.remove(&key);
+                    }
                     break;
                 }
             }

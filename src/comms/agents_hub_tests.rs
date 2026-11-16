@@ -14,6 +14,11 @@ fn hub() -> (Arc<AgentHub>, tempfile::TempDir) {
     (Arc::new(AgentHub::open(dir.path())), dir)
 }
 
+/// A client that is still there.
+fn live() -> CancellationToken {
+    CancellationToken::new()
+}
+
 fn caller(name: &str) -> Caller {
     default_caller(name, Repo::Home)
 }
@@ -540,4 +545,37 @@ async fn a_store_another_process_holds_opens_once_it_is_released() {
         .expect("the store opens once released");
     assert_eq!(hub.status(None, None).state, "open");
     hub.post(caller("a"), new_thread(&["b"])).await.expect("post");
+}
+
+#[tokio::test]
+async fn a_replay_of_a_read_whose_first_request_was_dropped_waits_on_its_own() {
+    let (hub, _dir) = hub();
+    let thread = hub.post(caller("a"), new_thread(&["b"])).await.expect("start").thread;
+    hub.read(caller("b"), InboxBody::default(), Duration::ZERO, &live())
+        .await
+        .expect("b reads");
+    let keyed = caller("b").with_replay_key(ReplayKey::parse("relay-dropped").expect("key"));
+    let client = live();
+    let first = hub.read(keyed.clone(), InboxBody::default(), Duration::from_secs(30), &client);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), first).await.is_err(),
+        "the first read was still waiting when it was dropped"
+    );
+    let replay = {
+        let hub = Arc::clone(&hub);
+        tokio::spawn(async move {
+            hub.read(keyed, InboxBody::default(), Duration::from_secs(30), &live())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    hub.post(caller("a"), into(&thread, "after")).await.expect("post");
+
+    let replay = tokio::time::timeout(Duration::from_secs(5), replay)
+        .await
+        .expect("the replay is answered by the post, not at its deadline")
+        .expect("replay")
+        .expect("read");
+    assert_eq!(replay.messages.len(), 1);
+    assert_eq!(replay.messages[0].body, "after");
 }
