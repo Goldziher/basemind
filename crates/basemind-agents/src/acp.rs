@@ -1,3 +1,4 @@
+// Grok's launch arguments and `GROK_NO_AUTO_UPDATE`, the `yoloMode` session `_meta`, the Hermes and OpenCode session modes and the allow-once option preference are adapted from https://github.com/hardbeat920/monocode (crates/monocode-core/src/provider/acp.rs) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
 //! Agents that speak the Agent Client Protocol, through the `agent-client-protocol` crate.
 //!
 //! The crate owns framing, request ids and the typed messages. This module owns the process

@@ -6,12 +6,13 @@ repository's top-level `ATTRIBUTIONS.md`, so the notice travels with the publish
 ## monocode provider layer (Claude Code and Codex adapters, process groups)
 
 The parts of basemind's agent launch that have no maintained crate: the Claude Code `stream-json`
-adapter, the Codex `app-server` adapter, process-group handling and the event, approval and control
-types.
+adapter, the Codex `app-server` adapter, process-group handling, the event, approval and control
+types, and the per-agent dialect of the ACP adapter.
 
 - **Source**: <https://github.com/hardbeat920/monocode>
 - **Upstream paths**:
   - `crates/monocode-core/src/provider.rs`
+  - `crates/monocode-core/src/provider/acp.rs`
   - `crates/monocode-core/src/provider/lifecycle.rs`
   - `crates/monocode-core/src/provider/parked.rs`
   - `crates/monocode-core/src/process.rs`
@@ -23,9 +24,11 @@ types.
 - **License**: MIT (Copyright (c) 2026 Nick), copied verbatim to
   `crates/basemind-agents/LICENSE-monocode`
 - **Authors**: Nick and the monocode contributors
-- **Location**: `crates/basemind-agents/src/{claude,codex,line,process,event,session}.rs`
-- **Purpose**: Drive Claude Code and Codex over their stdio protocols, and end a launched harness
-  together with every process it started.
+- **Location**:
+  `crates/basemind-agents/src/{claude,codex,line,process,event,session,acp,spec,harness,guard}.rs`
+- **Purpose**: Drive Claude Code and Codex over their stdio protocols, give each ACP agent its
+  launch arguments and modes, and end a launched harness together with every process that stayed
+  in its process group.
 
 ### Modifications
 
@@ -35,23 +38,30 @@ types.
   line loop and the delta/snapshot text de-duplication in `line.rs`.
 - Dropped: everything that serves monocode's desktop application: the warm process pool, session
   resume and rewind, context compaction, questions and elicitation forms, background-task tracking,
-  usage and rate-limit reporting, model and effort selection, attachments, accounts, the Mono and
-  visual bridges, the Pi, Devin and OpenCode transports and the hand-written ACP client (replaced
-  by the `agent-client-protocol` crate).
+  usage and rate-limit reporting, attachments, accounts, the Mono and visual bridges, the Pi, Devin
+  and OpenCode transports and the hand-written ACP client (replaced by the `agent-client-protocol`
+  crate).
 - Changed behaviour:
   - an approval request is answered by a policy and denied without one, where monocode auto-approves
-    under its full-access mode;
+    under its full-access mode; it carries the grant, not the agent's reason;
+  - an ACP allow selects `allow_once` only, where monocode falls back to `allow_always`;
+  - Claude Code gets `--strict-mcp-config`, `--settings` with `disableAllHooks` always, and an
+    empty `--setting-sources`, where monocode loads `user,project,local`;
+  - model and effort flags are not set by the adapter but accepted from the caller through an
+    allow-list (`guard.rs`), which takes monocode's flag names;
   - a follow-up starts a new turn when the current one ends, where monocode steers the running turn;
   - turns are counted against a limit, and a turn the harness starts unprompted counts too;
   - errors are a typed `LaunchError` instead of `String`.
 - `process.rs`: the scheduling hints (`setpriority`, the macOS I/O throttle) and the global registry
-  of running children are removed. `retire` is blocking and observes the exit with
-  `waitid(WNOWAIT)`, so the process group is always signalled before its leader is reaped and the
-  group id cannot have been reused.
-- `agent.rs`: `AccessMode` becomes `PermissionMode`; its full-access variant needs an explicit
-  opt-in naming the harness and the mode.
+  of running children are removed. `retire` is blocking, bounded by a budget, and observes the exit
+  with `waitid(WNOWAIT)`, so the process group is always signalled before its leader is reaped and
+  the group id cannot have been reused. A launch is refused while SIGCHLD is ignored and off Unix.
+- `agent.rs`: `AccessMode` becomes `PermissionMode` (`spec.rs`); its full-access variant needs an
+  explicit opt-in naming the harness and the mode.
+- `provider/acp.rs`: Grok's arguments and `GROK_NO_AUTO_UPDATE`, the `yoloMode` `_meta`, and the
+  Hermes and OpenCode mode names are kept (`acp.rs`, `harness.rs`); the client itself is not.
 - `mono/bridge.rs`: the Codex `-c mcp_servers.<name>.*` overrides are kept, generalized from
-  monocode's own MCP server to a caller-described one.
+  monocode's own MCP server to a caller-described one, without `default_tools_approval_mode`.
 
 ### License Compatibility
 

@@ -1,3 +1,4 @@
+// The bypass mode names and Grok's `--model` and `--reasoning-effort` flags are taken from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{agent.rs,provider/acp.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
 //! Which harness to start and how to find it.
 
 use std::path::PathBuf;

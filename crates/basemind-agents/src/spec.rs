@@ -1,3 +1,4 @@
+// `PermissionMode` is adapted from https://github.com/hardbeat920/monocode (crates/monocode-core/src/agent.rs, `AccessMode`) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
 //! What to launch: the spec a caller builds and the checks every adapter runs on it first.
 
 use std::collections::BTreeMap;

@@ -1,3 +1,4 @@
+// The allowed flag names (Claude Code `--model`/`--effort`, Grok `--model`/`--reasoning-effort`) are taken from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{provider.rs,provider/acp.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
 //! The checks a launch spec's free-form parts pass before any adapter uses them: the caller's
 //! extra arguments, the environment additions and the arguments the adapter itself built.
 
