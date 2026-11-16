@@ -158,15 +158,34 @@ fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
         if attr.path().segments.last().is_some_and(|seg| seg.ident == "test") {
             return true;
         }
-        if !attr.path().is_ident("cfg") {
-            return false;
-        }
-        let syn::Meta::List(list) = &attr.meta else {
-            return false;
-        };
-        let text = list.tokens.to_string().replace(' ', "");
-        text == "test" || text.starts_with("all(test,") || text.contains(",test,") || text.ends_with(",test)")
+        attr.path().is_ident("cfg")
+            && attr
+                .parse_args::<syn::Meta>()
+                .is_ok_and(|meta| cfg_requires_test(&meta))
     })
+}
+
+/// Whether a `cfg` predicate holds only in test builds: `test`, an `all(..)` with such an argument,
+/// or an `any(..)` whose every argument is one. `not(..)` and features never are.
+fn cfg_requires_test(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let Ok(args) =
+                list.parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+            else {
+                return false;
+            };
+            if list.path.is_ident("all") {
+                args.iter().any(cfg_requires_test)
+            } else if list.path.is_ident("any") {
+                !args.is_empty() && args.iter().all(cfg_requires_test)
+            } else {
+                false
+            }
+        }
+        syn::Meta::NameValue(_) => false,
+    }
 }
 
 fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
@@ -237,6 +256,7 @@ impl Walk<'_> {
                 }
             };
             let parsed = parse_file(&child_file);
+            let child_test = child_test || is_cfg_test(&parsed.attrs);
             self.files.insert(child_file.clone());
             let parent = child_file.parent().expect("module file has a parent").to_path_buf();
             let grand_dir = if mod_rs { parent.clone() } else { parent.join(&name) };
@@ -427,15 +447,11 @@ impl<'ast> Visit<'ast> for Collector {
 
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
         let mut prefix = Vec::new();
-        if item.leading_colon.is_none() {
-            self.use_tree(&mut prefix, &item.tree);
-        }
+        self.use_tree(&mut prefix, &item.tree);
     }
 
     fn visit_path(&mut self, path: &'ast syn::Path) {
-        if path.leading_colon.is_none() {
-            self.push(path.segments.iter().map(|s| s.ident.to_string()).collect());
-        }
+        self.push(path.segments.iter().map(|s| s.ident.to_string()).collect());
         syn::visit::visit_path(self, path);
     }
 
@@ -445,6 +461,10 @@ impl<'ast> Visit<'ast> for Collector {
     }
 
     fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+        // Doc comments are prose: a path named in one is not a dependency.
+        if attr.path().is_ident("doc") {
+            return;
+        }
         match &attr.meta {
             syn::Meta::List(list) => self.tokens(list.tokens.clone()),
             syn::Meta::NameValue(nv) => {
@@ -635,7 +655,20 @@ fn the_analyzer_flags_each_reference_shape() {
     let write = |rel: &str, body: &str| std::fs::write(src.join(rel), body).expect("write fixture file");
     write(
         "lib.rs",
-        "pub mod config;\npub mod mcp;\npub mod store;\npub mod cli;\npub mod lance;\n",
+        "pub mod config;\npub mod mcp;\npub mod store;\npub mod cli;\npub mod lance;\npub mod git;\n",
+    );
+    std::fs::create_dir_all(src.join("git")).expect("create fixture dirs");
+    write(
+        "git.rs",
+        "#[path = \"git/walk_impl.rs\"]\nmod walk;\nmod nested;\n/// Mentions crate::cli in prose only.\npub fn g() {}\n",
+    );
+    write(
+        "git/walk_impl.rs",
+        "use crate::cli as c;\npub fn w() { ::tokio::spawn(async {}); }\n",
+    );
+    write(
+        "git/nested.rs",
+        "use super::super::lance::*;\n#[cfg(any(feature = \"x\", test))]\nfn either() { tokio::spawn(async {}); }\n",
     );
     write("mcp.rs", "pub mod params { pub struct V; }\n");
     write("cli.rs", "pub fn run() {}\n");
@@ -654,6 +687,10 @@ fn the_analyzer_flags_each_reference_shape() {
     std::fs::remove_dir_all(&dir).expect("remove fixture");
     let expected: BTreeSet<String> = [
         "src/config/mod.rs -> config::overrides",
+        "src/git/nested.rs -> extern tokio",
+        "src/git/nested.rs -> lance",
+        "src/git/walk_impl.rs -> cli",
+        "src/git/walk_impl.rs -> extern tokio",
         "src/store.rs -> cli",
         "src/store.rs -> cli [test]",
         "src/store.rs -> extern tokio",
