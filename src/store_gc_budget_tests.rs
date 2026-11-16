@@ -8,9 +8,22 @@ use std::fs;
 /// A day, for ages and the hot floor.
 const DAY_AGO: Duration = Duration::from_secs(24 * 3600);
 
+/// What runs as a workspace is about to be evicted.
+type EvictHook = Box<dyn FnMut(&Path)>;
+
 thread_local! {
     /// File maps [`view_is_newer`] opened on this thread.
     pub(super) static VIEW_READS: Cell<usize> = const { Cell::new(0) };
+    /// Run by [`evict_workspace`] on this thread before it looks at the workspace.
+    static BEFORE_EVICT: std::cell::RefCell<Option<EvictHook>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn before_evict(dir: &Path) {
+    BEFORE_EVICT.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(dir);
+        }
+    });
 }
 
 /// Write a file map of a newer basemind into `workspace`'s working view, cut short after its first
@@ -455,4 +468,45 @@ fn a_newer_file_map_is_told_from_its_head() {
         leading_schema_ver(&[0x81, 0xa5, b'f', b'i', b'l', b'e', b's', 0x01]),
         None
     );
+}
+
+/// A newer basemind writes a view into the coldest workspace while the pass runs. The eviction is
+/// refused, and those bytes are no longer the pass's to count: counted, they would cost another
+/// workspace of this version its index.
+#[test]
+fn a_workspace_a_newer_basemind_took_during_the_pass_costs_no_other_workspace() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (workspaces, blobs) = (tmp.path().join("workspaces"), tmp.path().join("blobs"));
+    fs::create_dir_all(&blobs).expect("mk blobs");
+    let taken = seed_workspace_aged(&workspaces, "key-taken", &"a".repeat(64), 9 * DAY_AGO);
+    fs::write(taken.join("git-cache"), vec![0_u8; 256 * 1024]).expect("bulk");
+    let idle = seed_workspace_aged(&workspaces, "key-idle", &"c".repeat(64), 8 * DAY_AGO);
+    seed_workspace_aged(&workspaces, "key-mru", &"b".repeat(64), 3 * DAY_AGO);
+    let target = taken.clone();
+    BEFORE_EVICT.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |dir: &Path| {
+            if dir == target {
+                write_newer_head(dir);
+            }
+        }));
+    });
+
+    let report = enforce_cache_budget_in(&workspaces, &blobs, 128 * 1024, DAY_AGO, Duration::ZERO);
+    BEFORE_EVICT.with(|hook| hook.borrow_mut().take());
+    let report = report.expect("enforce");
+
+    assert!(
+        report
+            .protected
+            .iter()
+            .any(|ws| ws.key == "key-taken" && ws.reason == ProtectionReason::NewerVersion),
+        "{:?}",
+        report.protected
+    );
+    assert_eq!(
+        report.evicted, 0,
+        "within budget once the taken workspace is not counted"
+    );
+    assert!(idle.join(VIEWS_DIR).exists(), "the idle workspace keeps its index");
+    assert!(report.total_bytes_after <= 128 * 1024, "{}", report.total_bytes_after);
 }

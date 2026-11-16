@@ -391,7 +391,7 @@ pub(crate) fn enforce_cache_budget_at(
             ..EvictReport::default()
         });
     }
-    let newer = workspaces_of_a_newer_basemind(workspaces_dir);
+    let mut newer = workspaces_of_a_newer_basemind(workspaces_dir);
     let total = if newer.is_empty() {
         raw
     } else {
@@ -420,6 +420,12 @@ pub(crate) fn enforce_cache_budget_at(
             Eviction::Refused(reason) => {
                 report.locked_skipped += usize::from(reason == ProtectionReason::Locked);
                 report.protected.push(protected_entry(&candidate.dir, reason));
+                // A newer basemind wrote a view into it during the pass: its bytes are no longer
+                // this binary's to count either.
+                if reason == ProtectionReason::NewerVersion {
+                    newer.push(candidate.dir.clone());
+                    report.total_bytes_after = cache_footprint(workspaces_dir, blobs_root, schema, &newer)?;
+                }
                 continue;
             }
         };
@@ -530,6 +536,8 @@ enum Eviction {
 }
 
 fn evict_workspace(dir: &Path) -> Result<Eviction, GcError> {
+    #[cfg(test)]
+    tests::before_evict(dir);
     let Ok(lock) = acquire_lock(dir) else {
         tracing::debug!(workspace = %dir.display(), "over-budget workspace is locked; skipping");
         return Ok(Eviction::Refused(ProtectionReason::Locked));
