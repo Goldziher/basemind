@@ -90,19 +90,20 @@ fn marker_of_this_boot(path: &Path, record: &HostRecord, this_boot: ThisBoot<'_>
 #[cfg(any(unix, windows))]
 fn settle_dead_hosts_in(hosting_dir: &Path, workspaces_dir: &Path, this_boot: ThisBoot<'_>) -> bool {
     settle_dead_hosts_with(hosting_dir, workspaces_dir, this_boot, |flag| {
-        let _ = std::fs::write(flag, b"");
+        std::fs::write(flag, b"").is_ok()
     })
 }
 
-/// [`settle_dead_hosts_in`] writing each verification request with `request`. Every marker is
-/// judged and every request written before any marker goes: a process killed in between leaves
-/// the markers for the next one to judge again.
+/// [`settle_dead_hosts_in`] writing each verification request with `request`, which says whether
+/// it was written. Every marker is judged and every request written before any marker goes: a
+/// process killed in between, or a request that could not be written, leaves the markers for the
+/// next one to judge again.
 #[cfg(any(unix, windows))]
 fn settle_dead_hosts_with(
     hosting_dir: &Path,
     workspaces_dir: &Path,
     this_boot: ThisBoot<'_>,
-    mut request: impl FnMut(&Path),
+    mut request: impl FnMut(&Path) -> bool,
 ) -> bool {
     let mut dead = Vec::new();
     let mut machine_went_down = false;
@@ -128,12 +129,17 @@ fn settle_dead_hosts_with(
         machine_went_down |= fate == HostFate::DiedWithTheMachine;
         dead.push(path);
     }
+    let mut asked_every_workspace = true;
     if machine_went_down {
         for workspace in std::fs::read_dir(workspaces_dir).into_iter().flatten().flatten() {
             if workspace.path().is_dir() {
-                request(&workspace.path().join(VERIFY_BLOBS_FILE));
+                asked_every_workspace &= request(&workspace.path().join(VERIFY_BLOBS_FILE));
             }
         }
+    }
+    if !asked_every_workspace {
+        tracing::warn!("a request to verify blobs could not be written; the dead hosts' markers are kept");
+        return machine_went_down;
     }
     for marker in dead {
         let _ = std::fs::remove_file(marker);

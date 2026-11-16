@@ -159,11 +159,34 @@ fn markers_outlive_a_process_killed_before_it_asked_for_verification() {
     let stale = plant_host(&hosting, DEAD_PID, Some(EARLIER_BOOT_ID), None);
 
     let killed = std::panic::catch_unwind(|| {
-        settle_dead_hosts_with(&hosting, &workspaces, this_boot(), |_| panic!("killed"));
+        settle_dead_hosts_with(&hosting, &workspaces, this_boot(), |_| -> bool { panic!("killed") });
     });
 
     assert!(killed.is_err());
     assert!(stale.exists(), "the marker is the only evidence left");
+    assert!(settle_dead_hosts_in(&hosting, &workspaces, this_boot()));
+    assert!(pair.iter().all(|workspace| blobs_need_verifying(workspace)));
+    assert!(!stale.exists());
+}
+
+/// A verification request that could not be written must not cost the evidence: the markers stay
+/// for the next process, which asks again.
+#[cfg(unix)]
+#[test]
+fn markers_outlive_a_verification_request_that_could_not_be_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let hosting = dir.path().join("hosting");
+    let (workspaces, pair) = two_workspaces(dir.path());
+    let stale = plant_host(&hosting, DEAD_PID, Some(EARLIER_BOOT_ID), None);
+
+    let mut asked = 0;
+    let went_down = settle_dead_hosts_with(&hosting, &workspaces, this_boot(), |flag| {
+        asked += 1;
+        asked > 1 && std::fs::write(flag, b"").is_ok()
+    });
+
+    assert!(went_down);
+    assert!(stale.exists(), "one request failed: the marker is kept");
     assert!(settle_dead_hosts_in(&hosting, &workspaces, this_boot()));
     assert!(pair.iter().all(|workspace| blobs_need_verifying(workspace)));
     assert!(!stale.exists());
