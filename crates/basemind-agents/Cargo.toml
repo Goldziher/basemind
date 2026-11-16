@@ -1,0 +1,36 @@
+# License: MIT. Portions derive from monocode (MIT, see LICENSE-monocode and ATTRIBUTIONS.md).
+[package]
+include = [
+  "/Cargo.toml",
+  "/src/**",
+  "!/src/*_tests.rs",
+  "!/src/test_support.rs",
+  "/README.md",
+  "/LICENSE",
+  "/LICENSE-monocode",
+  "/ATTRIBUTIONS.md",
+]
+name = "basemind-agents"
+version = "0.1.0"
+description = "Launch a coding agent in another harness (Claude Code, Codex, ACP agents) with a brief, an identity and safety limits"
+repository = "https://github.com/Goldziher/basemind"
+readme = "README.md"
+license = "MIT"
+authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
+edition = "2024"
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await", "executor"] }
+serde_json = "1"
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

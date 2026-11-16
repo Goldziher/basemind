@@ -1,0 +1,479 @@
+// Adapted from https://github.com/hardbeat920/monocode (crates/monocode-core/src/{provider.rs,provider/lifecycle.rs,agent.rs,mono/bridge.rs}) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
+//! Codex over `codex app-server`: JSON-RPC without the `jsonrpc` member, one message per line.
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde_json::{Value, json};
+
+use crate::error::LaunchError;
+use crate::event::{ApprovalRequest, Event, ToolCall, ToolState};
+use crate::harness::HarnessKind;
+use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
+use crate::registry::Adapter;
+use crate::session::{self, CommandPlan, EventSink, Session};
+use crate::spec::{ApprovalVerdict, LaunchSpec, PermissionMode};
+
+const INITIALIZE_ID: u64 = 1;
+const THREAD_ID: u64 = 2;
+const TURN_ID_PREFIX: &str = "basemind-turn-";
+const INTERRUPT_ID: &str = "basemind-interrupt";
+
+/// Drives Codex.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CodexAdapter;
+
+impl Adapter for CodexAdapter {
+    fn supports(&self, kind: HarnessKind) -> bool {
+        kind == HarnessKind::Codex
+    }
+
+    fn plan(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
+        let prepared = spec.prepare()?;
+        let mut args = vec!["app-server".to_owned()];
+        if let Some(server) = &spec.mcp_server {
+            // Codex hands a server only the variables named in `env_vars`.
+            let mut settings = vec![
+                ("command", json!(server.command)),
+                ("args", json!(server.args)),
+                ("env_vars", json!(spec.mcp_env_names())),
+            ];
+            if server.allow_tools {
+                settings.push(("default_tools_approval_mode", json!("approve")));
+            }
+            for (key, value) in settings {
+                // JSON strings and arrays of strings are valid TOML literals for these values.
+                args.extend(["-c".to_owned(), format!("mcp_servers.{}.{key}={value}", server.name)]);
+            }
+        }
+        spec.plan(&prepared, args, &[])
+    }
+
+    fn launch(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
+        let plan = self.plan(spec)?;
+        let prepared = spec.prepare()?;
+        let access = Access::new(spec.permission_mode, prepared.bypass(spec));
+        let protocol = CodexProtocol::new(spec.brief.clone(), plan.cwd.clone(), access);
+        let (driver, control) = LineDriver::boxed(protocol);
+        session::start(&plan, spec, driver, control)
+    }
+}
+
+/// The approval policy and sandbox a permission mode maps to.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Access {
+    approval_policy: &'static str,
+    sandbox: &'static str,
+    sandbox_policy: Value,
+}
+
+impl Access {
+    /// `bypass` is the checked consent of the spec; without it `Bypass` degrades to supervised.
+    pub fn new(mode: PermissionMode, bypass: bool) -> Self {
+        let (approval_policy, sandbox, sandbox_policy) = match mode {
+            PermissionMode::ReadOnly => ("never", "read-only", "readOnly"),
+            PermissionMode::AcceptEdits => ("on-request", "workspace-write", "workspaceWrite"),
+            PermissionMode::Bypass if bypass => ("on-request", "danger-full-access", "dangerFullAccess"),
+            PermissionMode::Supervised | PermissionMode::Bypass => ("untrusted", "read-only", "readOnly"),
+        };
+        Self {
+            approval_policy,
+            sandbox,
+            sandbox_policy: json!({"type": sandbox_policy}),
+        }
+    }
+}
+
+fn error_message(error: &Value, fallback: &str) -> String {
+    let message = error["message"].as_str().unwrap_or(fallback);
+    if error["codexErrorInfo"] == "usageLimitExceeded" {
+        format!("Usage limit reached: {message}")
+    } else {
+        message.to_owned()
+    }
+}
+
+fn failure(error: &Value, fallback: &str) -> LaunchError {
+    LaunchError::Protocol(format!("Codex reported: {}", error_message(error, fallback)))
+}
+
+pub(crate) struct CodexProtocol {
+    /// The brief, until its turn has been started.
+    brief: Option<String>,
+    cwd: PathBuf,
+    access: Access,
+    initialized: bool,
+    thread: Option<String>,
+    active_turn: Option<String>,
+    /// A `turn/start` of ours is out and its turn has not been announced yet.
+    awaiting_turn: bool,
+    turn_requests: u32,
+    text: TextStream,
+    tools: HashMap<String, ToolCall>,
+    /// Pending approvals: the wire id, the request method and its params, by event id.
+    approvals: HashMap<String, (Value, String, Value)>,
+}
+
+impl CodexProtocol {
+    pub fn new(brief: String, cwd: PathBuf, access: Access) -> Self {
+        Self {
+            brief: Some(brief),
+            cwd,
+            access,
+            initialized: false,
+            thread: None,
+            active_turn: None,
+            awaiting_turn: false,
+            turn_requests: 0,
+            text: TextStream::default(),
+            tools: HashMap::new(),
+            approvals: HashMap::new(),
+        }
+    }
+
+    /// Records the turn the harness announced. One that answers no `turn/start` of ours is a
+    /// turn of its own making and counts against the limit.
+    fn turn_started(&mut self, id: &str, sink: &EventSink) -> Result<(), LaunchError> {
+        if self.active_turn.as_deref() == Some(id) {
+            return Ok(());
+        }
+        if !std::mem::take(&mut self.awaiting_turn) {
+            sink.begin_turn()?;
+        }
+        self.active_turn = Some(id.to_owned());
+        Ok(())
+    }
+
+    fn respond(
+        &self,
+        wire: &Value,
+        method: &str,
+        request: &Value,
+        allow: bool,
+        out: &mut dyn Write,
+    ) -> Result<(), LaunchError> {
+        let result = if method.contains("permissions") {
+            json!({"permissions": if allow { request["permissions"].clone() } else { json!({}) }, "scope": "turn"})
+        } else if method == "execCommandApproval" || method == "applyPatchApproval" {
+            json!({"decision": if allow { "approved" } else { "denied" }})
+        } else {
+            json!({"decision": if allow { "accept" } else { "decline" }})
+        };
+        write_json(out, &json!({"id": wire, "result": result}))
+    }
+
+    fn approval(
+        &mut self,
+        wire: &Value,
+        method: &str,
+        params: &Value,
+        out: &mut dyn Write,
+        sink: &EventSink,
+    ) -> Result<(), LaunchError> {
+        let title = if method.contains("fileChange") || method == "applyPatchApproval" {
+            "Allow file changes?"
+        } else if method.contains("permissions") {
+            "Allow additional permissions?"
+        } else {
+            "Allow this command?"
+        };
+        let known = params["itemId"].as_str().and_then(|id| self.tools.get(id));
+        let mut detail = params["command"]
+            .as_str()
+            .or(params["reason"].as_str())
+            .map(str::to_owned)
+            .or_else(|| known.map(|tool| tool.input.clone()))
+            .unwrap_or_default();
+        if detail.is_empty() {
+            detail = params
+                .get("permissions")
+                .and_then(|permissions| serde_json::to_string_pretty(permissions).ok())
+                .unwrap_or_else(|| "The agent is requesting permission to continue.".to_owned());
+        }
+        let id = wire.to_string();
+        let verdict = sink.request_approval(ApprovalRequest {
+            id: id.clone(),
+            title: title.to_owned(),
+            detail,
+        });
+        match verdict {
+            ApprovalVerdict::Ask => {
+                self.approvals
+                    .insert(id, (wire.clone(), method.to_owned(), params.clone()));
+                Ok(())
+            }
+            verdict => self.respond(wire, method, params, verdict == ApprovalVerdict::Allow, out),
+        }
+    }
+
+    fn tool(&mut self, item: &Value, completed: bool, sink: &EventSink) {
+        let kind = item["type"].as_str().unwrap_or("");
+        if !matches!(
+            kind,
+            "commandExecution" | "fileChange" | "mcpToolCall" | "webSearch" | "dynamicToolCall"
+        ) {
+            return;
+        }
+        let id = item["id"].as_str().unwrap_or("");
+        let tool = self
+            .tools
+            .entry(id.to_owned())
+            .or_insert_with(|| ToolCall::new(id, kind));
+        tool.name = item["tool"].as_str().unwrap_or(kind).to_owned();
+        if kind == "mcpToolCall" {
+            tool.name = format!("{}:{}", item["server"].as_str().unwrap_or("mcp"), tool.name);
+        }
+        tool.input = item["command"]
+            .as_str()
+            .or_else(|| item["query"].as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                let arguments = item.get("arguments").or_else(|| item.get("changes"));
+                serde_json::to_string_pretty(arguments.unwrap_or(&Value::Null)).unwrap_or_default()
+            });
+        if let Some(changes) = item["changes"].as_array().filter(|_| kind == "fileChange") {
+            let paths: Vec<_> = changes.iter().filter_map(|change| change["path"].as_str()).collect();
+            tool.input = json!({"paths": paths}).to_string();
+            tool.output = changes
+                .iter()
+                .map(|change| {
+                    format!(
+                        "{}\n{}",
+                        change["path"].as_str().unwrap_or(""),
+                        change["diff"].as_str().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        if let Some(output) = item["aggregatedOutput"].as_str().or_else(|| item["output"].as_str()) {
+            output.clone_into(&mut tool.output);
+        } else if let Some(result) = item.get("result") {
+            tool.output = serde_json::to_string_pretty(result).unwrap_or_default();
+        }
+        tool.bound_output();
+        let fallback = if completed { "completed" } else { "inProgress" };
+        tool.state = match item["status"].as_str().unwrap_or(fallback) {
+            "completed" => ToolState::Completed,
+            "failed" | "declined" => ToolState::Failed,
+            "cancelled" | "canceled" | "interrupted" | "aborted" => ToolState::Cancelled,
+            _ => ToolState::Running,
+        };
+        if item["exitCode"].as_i64().is_some_and(|code| code != 0) {
+            tool.state = ToolState::Failed;
+        }
+        sink.emit(Event::ToolCall(tool.clone()));
+    }
+
+    fn response(&mut self, frame: &Value, out: &mut dyn Write, sink: &EventSink) -> Result<(), LaunchError> {
+        if let Some(error) = frame.get("error").filter(|error| !error.is_null()) {
+            return Err(failure(error, "RPC request failed"));
+        }
+        let result = &frame["result"];
+        match frame["id"].as_u64() {
+            Some(INITIALIZE_ID) if !self.initialized => {
+                self.initialized = true;
+                write_json(out, &json!({"method": "initialized"}))?;
+                write_json(
+                    out,
+                    &json!({"id": THREAD_ID, "method": "thread/start", "params": {
+                        "cwd": self.cwd,
+                        "approvalPolicy": self.access.approval_policy,
+                        "sandbox": self.access.sandbox,
+                        "sandboxPolicy": self.access.sandbox_policy,
+                        "approvalsReviewer": "user",
+                    }}),
+                )?;
+            }
+            Some(THREAD_ID) if self.thread.is_none() => {
+                let id = result["thread"]["id"]
+                    .as_str()
+                    .ok_or_else(|| LaunchError::Protocol("Codex returned no thread id".to_owned()))?;
+                self.thread = Some(id.to_owned());
+                sink.emit(Event::HarnessSession(id.to_owned()));
+                if let Some(brief) = self.brief.take() {
+                    self.prompt(&brief, out, sink)?;
+                }
+            }
+            _ => {
+                let ours = frame["id"].as_str().is_some_and(|id| id.starts_with(TURN_ID_PREFIX));
+                if let Some(turn) = result["turn"]["id"].as_str().filter(|_| ours) {
+                    self.turn_started(turn, sink)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn turn_ended(&mut self, method: &str, params: &Value, sink: &EventSink) -> Result<Step, LaunchError> {
+        let turn = &params["turn"];
+        let status = turn["status"].as_str().unwrap_or("completed");
+        if status == "failed" {
+            return Err(failure(&turn["error"], "Codex turn failed"));
+        }
+        let interrupted = matches!(status, "interrupted" | "cancelled" | "canceled") || method == "turn/aborted";
+        for item in turn["items"].as_array().into_iter().flatten() {
+            self.tool(item, true, sink);
+        }
+        if interrupted {
+            for tool in self.tools.values_mut().filter(|tool| tool.state == ToolState::Running) {
+                tool.state = ToolState::Cancelled;
+                sink.emit(Event::ToolCall(tool.clone()));
+            }
+        }
+        self.active_turn = None;
+        Ok(Step::TurnDone)
+    }
+
+    fn notification(
+        &mut self,
+        method: &str,
+        frame: &Value,
+        out: &mut dyn Write,
+        sink: &EventSink,
+    ) -> Result<Step, LaunchError> {
+        let params = &frame["params"];
+        let request = frame.get("id");
+        match method {
+            "turn/started" => {
+                if let Some(id) = params["turn"]["id"].as_str() {
+                    self.turn_started(id, sink)?;
+                }
+            }
+            "item/agentMessage/delta" => {
+                let key = params["itemId"].as_str().unwrap_or("assistant");
+                self.text.push(key, params["delta"].as_str().unwrap_or(""), false, sink);
+            }
+            "item/completed" if params["item"]["type"] == "agentMessage" => {
+                let key = params["item"]["id"].as_str().unwrap_or("assistant");
+                self.text
+                    .push(key, params["item"]["text"].as_str().unwrap_or(""), true, sink);
+            }
+            "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
+                sink.emit(Event::Reasoning(params["delta"].as_str().unwrap_or("").to_owned()));
+            }
+            "item/started" | "item/completed" => self.tool(&params["item"], method == "item/completed", sink),
+            "item/commandExecution/outputDelta" => {
+                let id = params["itemId"].as_str().unwrap_or("");
+                let tool = self
+                    .tools
+                    .entry(id.to_owned())
+                    .or_insert_with(|| ToolCall::new(id, "commandExecution"));
+                tool.append_output(params["delta"].as_str().unwrap_or(""));
+                sink.emit(Event::ToolCall(tool.clone()));
+            }
+            "turn/completed" | "turn/aborted" => return self.turn_ended(method, params, sink),
+            "error" if params["willRetry"] != true => return Err(failure(&params["error"], "Codex stream error")),
+            "error" => sink.emit(Event::Status(error_message(&params["error"], "Codex is reconnecting"))),
+            _ => {
+                if let Some(wire) = request {
+                    self.server_request(wire, method, params, out, sink)?;
+                }
+            }
+        }
+        Ok(Step::Continue)
+    }
+
+    fn server_request(
+        &mut self,
+        wire: &Value,
+        method: &str,
+        params: &Value,
+        out: &mut dyn Write,
+        sink: &EventSink,
+    ) -> Result<(), LaunchError> {
+        if method == "currentTime/read" {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs());
+            return write_json(out, &json!({"id": wire, "result": {"currentTimeAt": now}}));
+        }
+        if method.ends_with("/requestApproval") || matches!(method, "execCommandApproval" | "applyPatchApproval") {
+            return self.approval(wire, method, params, out, sink);
+        }
+        if method == "mcpServer/elicitation/request" {
+            sink.emit(Event::Status(
+                "Declined an MCP elicitation: no form can be shown here".to_owned(),
+            ));
+            return write_json(
+                out,
+                &json!({"id": wire, "result": {"action": "cancel", "content": null, "_meta": null}}),
+            );
+        }
+        // Every server request is answered promptly, or the harness waits on it forever.
+        sink.emit(Event::Status(format!("Unsupported Codex request: {method}")));
+        write_json(
+            out,
+            &json!({"id": wire, "error": {"code": -32601, "message": format!("Unsupported method: {method}")}}),
+        )
+    }
+}
+
+impl Protocol for CodexProtocol {
+    fn start(&mut self, out: &mut dyn Write) -> Result<(), LaunchError> {
+        write_json(
+            out,
+            &json!({"id": INITIALIZE_ID, "method": "initialize", "params": {
+                "clientInfo": {"name": "basemind_agents", "title": "basemind", "version": env!("CARGO_PKG_VERSION")},
+                "capabilities": {"experimentalApi": true},
+            }}),
+        )
+    }
+
+    fn frame(&mut self, frame: Value, out: &mut dyn Write, sink: &EventSink) -> Result<Step, LaunchError> {
+        match frame["method"].as_str() {
+            Some(method) => self.notification(method, &frame, out, sink),
+            None => {
+                if frame["id"] != INTERRUPT_ID {
+                    self.response(&frame, out, sink)?;
+                }
+                Ok(Step::Continue)
+            }
+        }
+    }
+
+    fn answer(&mut self, id: &str, allow: bool, out: &mut dyn Write) -> Result<bool, LaunchError> {
+        let Some((wire, method, request)) = self.approvals.remove(id) else {
+            return Ok(false);
+        };
+        self.respond(&wire, &method, &request, allow, out)?;
+        Ok(true)
+    }
+
+    fn prompt(&mut self, text: &str, out: &mut dyn Write, sink: &EventSink) -> Result<(), LaunchError> {
+        let thread = self
+            .thread
+            .clone()
+            .ok_or_else(|| LaunchError::Protocol("Codex has no thread to start a turn in".to_owned()))?;
+        sink.begin_turn()?;
+        self.awaiting_turn = true;
+        self.turn_requests += 1;
+        write_json(
+            out,
+            &json!({"id": format!("{TURN_ID_PREFIX}{}", self.turn_requests), "method": "turn/start", "params": {
+                "threadId": thread,
+                "input": [{"type": "text", "text": text}],
+                "approvalPolicy": self.access.approval_policy,
+                "sandboxPolicy": self.access.sandbox_policy,
+                "approvalsReviewer": "user",
+            }}),
+        )
+    }
+
+    fn interrupt(&mut self, out: &mut dyn Write) -> Result<(), LaunchError> {
+        self.approvals.clear();
+        match (&self.thread, &self.active_turn) {
+            (Some(thread), Some(turn)) => write_json(
+                out,
+                &json!({"id": INTERRUPT_ID, "method": "turn/interrupt", "params": {"threadId": thread, "turnId": turn}}),
+            ),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "codex_tests.rs"]
+mod tests;

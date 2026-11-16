@@ -54,7 +54,16 @@ categories = ["command-line-utilities", "development-tools"]
 [package.metadata.cargo-machete]
 ignored = ["serde_toon_format"]
 [workspace]
-members = ["crates/lsp-positions", "crates/stack-graphs", "crates/tree-sitter-graph", "crates/tree-sitter-stack-graphs"]
+members = [
+  "crates/basemind-agents",
+  "crates/lsp-positions",
+  "crates/stack-graphs",
+  "crates/tree-sitter-graph",
+  "crates/tree-sitter-stack-graphs",
+]
+
+[workspace.dependencies]
+agent-client-protocol = "5.3.0"
 
 [workspace.lints.clippy]
 all = "warn"
