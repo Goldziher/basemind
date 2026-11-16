@@ -241,13 +241,19 @@ pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::R
 /// The git-history index, but only when it is present AND indexes exactly the current `head`.
 /// History tools use it as a pure accelerator: a stale or absent index returns `None`, and the
 /// caller falls back to the live walk, so a result is never served from a HEAD the index hasn't
-/// caught up to (or from a rewritten history).
+/// caught up to (or from a rewritten history). A stale index asks for a sync
+/// ([`super::history_sync::request`]), so a commit made while the server runs is indexed for the
+/// calls after it.
 pub(super) fn git_history_if_fresh<'a>(
     state: &'a ServerState,
     head: &str,
 ) -> Option<&'a crate::git_history::GitHistoryIndex> {
     let index = state.shared.git_history.as_deref()?;
-    (index.last_indexed_head_hex().as_deref() == Some(head)).then_some(index)
+    if index.last_indexed_head_hex().as_deref() == Some(head) {
+        return Some(index);
+    }
+    super::history_sync::request(state);
+    None
 }
 
 /// Derive a stable 32-bit snapshot id from a HEAD sha. Used as the in-memory cursor's

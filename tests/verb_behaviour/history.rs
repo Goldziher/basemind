@@ -102,6 +102,42 @@ async fn git_log_matches_author_terms_against_the_author_only() {
     assert_author_scoping(&client).await;
 }
 
+/// Wait until the git-history index, not the bounded live walk, answers a search for `query`, and
+/// return that answer.
+async fn indexed_search(client: &Client, query: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let probe = call(client, "git_log", json!({ "query": query })).await;
+        if probe.get("truncated").and_then(Value::as_bool) != Some(true) {
+            return probe;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the git-history index did not answer `{query}` within 60 s: {probe}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// A commit made while the server runs reaches the git-history index: the index catches up with the
+/// new HEAD instead of leaving every later history call on the live walk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_index_catches_up_with_a_commit_made_after_the_server_started() {
+    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| value == "0") {
+        return;
+    }
+    let (dir, client) = started().await;
+    let root = dir.path();
+    indexed_search(&client, "init").await;
+
+    let outline = std::fs::read_to_string(root.join("src/outline.rs")).unwrap();
+    std::fs::write(root.join("src/outline.rs"), outline.replace("    1\n", "    13\n")).unwrap();
+    commit_as(root, "carol", "carol@e.x", "tune the zeppelin");
+
+    let caught_up = indexed_search(&client, "zeppelin").await;
+    assert_eq!(summaries(&caught_up), ["tune the zeppelin"], "{caught_up}");
+}
+
 const STEADY_RS: &str = "pub fn stable() -> u32 {\n    7\n}\n\npub fn churn() -> u32 {\n    0\n}\n";
 
 /// A symbol's history is read from a bounded window of the commits touching its file. The oldest
