@@ -222,8 +222,9 @@ pub struct FileResult {
     #[cfg(feature = "documents")]
     pub(crate) doc_batch: Option<PendingDocBatch>,
     /// Internal: buffered [`DocEntry`] for the document tier (the doc analogue of `upsert`). The
-    /// parallel `process_doc` stashes it; the apply loop drains it into `index.doc_files` so the
-    /// next scan can skip unchanged docs and the blob GC keeps the `.doc.msgpack` cache alive.
+    /// parallel `scanner_docs_lane::process_doc` stashes it; the apply loop drains it into
+    /// `index.doc_files` so the next scan can skip unchanged docs and the blob GC keeps the
+    /// `.doc.msgpack` cache alive.
     #[cfg(feature = "documents")]
     pub(crate) doc_upsert: Option<crate::store::DocEntry>,
     /// Internal: buffered timeout tombstone for a document that overran its extraction budget; the
@@ -231,7 +232,7 @@ pub struct FileResult {
     #[cfg(feature = "documents")]
     pub(crate) doc_tombstone: Option<crate::store_doc_tombstone::DocTombstone>,
     /// Internal: buffered code-chunk batch when this source file went through the code-search
-    /// branch. Drained by the single-threaded `flush_code_batches` pass into LanceDB.
+    /// branch. Drained by the single-threaded `VectorStore::write_code_rows` pass into LanceDB.
     #[cfg(feature = "code-search")]
     pub(crate) code_batch: Option<PendingCodeBatch>,
 }

@@ -451,8 +451,9 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
         if matches!(o.status, FileStatus::Updated { .. } | FileStatus::Unchanged) {
             ctx.out.seen.insert(o.path.clone());
         }
-        // A `DocIndexed` status is set by exactly the `process_doc` arm that attaches a doc batch, ~keep
-        // so the status is a faithful stand-in for a `doc_batch` this loop is about to take. ~keep
+        // A `DocIndexed` status is set by exactly the `scanner_docs_lane::process_doc` arm that ~keep
+        // attaches a doc batch, so the status is a faithful stand-in for a `doc_batch` this loop ~keep
+        // is about to take. ~keep
         #[cfg(feature = "documents")]
         // A deferred document keeps whatever entry it already has: running out of budget is not a ~keep
         // verdict on the file, so the stale purge must not drop its rows until the next scan retries. ~keep

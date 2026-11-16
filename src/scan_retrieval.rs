@@ -146,6 +146,8 @@ pub trait DocumentSink: Sync {
 
     /// Process one file that has no code grammar: extract it as a document when `[documents]`
     /// admits it. Always returns a result; a file that is not a document is `SkippedNoLang`.
+    // Called once per file on the rayon workers: these are the per-file inputs, and an argument
+    // struct would only be built and torn down around each call.
     #[allow(clippy::too_many_arguments)]
     fn process(
         &self,

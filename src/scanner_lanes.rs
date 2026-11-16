@@ -25,7 +25,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 pub const LANE_RESOLVE: &str = "resolve";
 /// Document batches → LanceDB (`scanner_docs::flush_document_batches`).
 pub const LANE_DOC_BATCHES: &str = "doc_batches";
-/// Code-chunk batches → LanceDB (`scanner_code::flush_code_batches`).
+/// Code-chunk batches → LanceDB (`scanner_vectors::flush_code_batches`).
 pub const LANE_CODE_BATCHES: &str = "code_batches";
 /// Purge of `code_chunks` rows for files removed since the last scan.
 pub const LANE_CODE_REMOVALS: &str = "code_removals";
