@@ -148,6 +148,8 @@ pub(crate) struct SharedReadStack {
     /// True while a git-history sync this stack asked for is running, so a burst of history calls
     /// behind a moved HEAD starts one sync, not one per call.
     pub(crate) history_syncing: Arc<AtomicBool>,
+    /// The git index's file list as `find_files` last read it ([`super::helpers_files`]).
+    pub(super) tracked: std::sync::Mutex<super::helpers_files::TrackedCache>,
     /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
     /// instead of writing locally. The store is opened read-only, but — unlike a plain
     /// [`read_only`](Self::read_only) fallback — the empty-index auto-scan, the filesystem
@@ -278,6 +280,7 @@ impl SharedReadStack {
             read_only: options.read_only,
             history_catch_up: options.background,
             history_syncing: Arc::new(AtomicBool::new(false)),
+            tracked: std::sync::Mutex::default(),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             daemon_writer: options.daemon_writer,
             #[cfg(all(feature = "comms", any(unix, windows)))]
