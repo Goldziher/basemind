@@ -186,7 +186,9 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
     } else {
         None
     };
-    if !matches!(embedded, Some(Ok(()))) {
+    if matches!(embedded, Some(Ok(()))) {
+        super::memory_vectors::owe_rows_elsewhere(state).await;
+    } else {
         // The note has no row of this write. One of an earlier write still holds the OLD text's
         // vector; the join refuses it, and removing it keeps it from taking a slot in every later
         // search. The namespace is no longer level: the next search by meaning embeds the note.

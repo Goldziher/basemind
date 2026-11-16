@@ -628,12 +628,13 @@ async fn a_level_mark_lapses_and_the_next_search_reconciles_again() {
         ["first"],
         "believed level: no listing, so the rowless note is not seen"
     );
+    let owed = rows_owed_here(&state).await;
     backfill_marks(&state).insert(
         (vis(), String::new()),
         Backfill::Level {
             until: Instant::now(),
             ttl: LEVEL_TTL,
-            owed: rows_owed(root.path()),
+            owed,
         },
     );
 
@@ -656,8 +657,9 @@ async fn a_rowless_save_in_another_process_ends_level_here() {
     owe_rows(root.path());
 
     assert_eq!(hit_keys(&search_json(&state, "a note", 10).await), ["first", "second"]);
+    let stamp = rows_owed_here(&state).await;
     assert!(
-        matches!(mark_of(&state), Some(Backfill::Level { owed, .. }) if owed == rows_owed(root.path())),
+        matches!(mark_of(&state), Some(Backfill::Level { owed, .. }) if owed == stamp),
         "level again, as of the stamp it read"
     );
 }
@@ -667,15 +669,46 @@ async fn a_rowless_save_in_another_process_ends_level_here() {
 async fn a_save_without_a_row_rewrites_the_group_stamp() {
     let root = tempfile::tempdir().unwrap();
     let state = server(root.path(), "fake");
-    let untouched = rows_owed(root.path());
+    let untouched = rows_owed_here(&state).await;
     put(&state, "embedded", "a note", true).await;
-    assert_eq!(rows_owed(root.path()), untouched, "a save with its row owes nothing");
+    assert_eq!(
+        rows_owed_here(&state).await,
+        untouched,
+        "a save with its row owes nothing"
+    );
 
     put(&state, "deferred", "a note", false).await;
-    let once = rows_owed(root.path());
+    let once = rows_owed_here(&state).await;
     assert_ne!(once, untouched);
     put(&state, "refused", "unembeddable text", true).await;
-    assert_ne!(rows_owed(root.path()), once, "every rowless save is a new stamp");
+    assert_ne!(rows_owed_here(&state).await, once, "every rowless save is a new stamp");
+}
+
+/// Worktrees of one group configured with different presets search different tables. A save that
+/// wrote its row in its own preset's table wrote none in the others, and a process that believes
+/// another table level hears of the note at its next search, not when the belief lapses.
+#[tokio::test]
+async fn a_save_with_its_row_in_one_preset_ends_level_in_another() {
+    let root = tempfile::tempdir().unwrap();
+    let elsewhere = server(root.path(), "model-a");
+    put(&elsewhere, "first", "a note", true).await;
+    search_json(&elsewhere, "a note", 10).await;
+    let level = mark_of(&elsewhere).expect("a mark");
+    assert!(matches!(level, Backfill::Level { .. }));
+    drop(elsewhere);
+
+    let saver = server(root.path(), "model-b");
+    let own = rows_owed_here(&saver).await;
+    assert_eq!(put(&saver, "second", "a note too", true).await["embedded"], true);
+    assert_eq!(rows_owed_here(&saver).await, own, "the saver's own table owes nothing");
+    drop(saver);
+
+    let elsewhere = server(root.path(), "model-a");
+    backfill_marks(&elsewhere).insert((vis(), String::new()), level);
+    assert_eq!(
+        hit_keys(&search_json(&elsewhere, "a note", 10).await),
+        ["first", "second"]
+    );
 }
 
 /// A save that wrote no row leaves a note the rows are behind: the embedding failed, or the save
@@ -857,12 +890,13 @@ async fn a_lapsed_look_that_finds_nothing_doubles_the_wait() {
     save(&state, "k", "a note").await;
     search_json(&state, "note", 5).await;
     assert!(matches!(mark_of(&state), Some(Backfill::Level { ttl, .. }) if ttl == LEVEL_TTL));
+    let owed = rows_owed_here(&state).await;
     backfill_marks(&state).insert(
         (vis(), String::new()),
         Backfill::Level {
             until: Instant::now(),
             ttl: LEVEL_TTL,
-            owed: rows_owed(root.path()),
+            owed,
         },
     );
 

@@ -13,7 +13,8 @@
 //! other processes save notes too, so it lapses after [`LEVEL_TTL`], longer each time a look finds
 //! nothing to do up to [`LEVEL_TTL_MAX`], and is dropped at once by a save here that wrote no row
 //! and by a save in any process that wrote none, which says so in a file of the repo group
-//! ([`owe_rows`]).
+//! ([`owe_rows`]). A save that wrote its row wrote it in its own preset's table only, and says so
+//! to every other table's searches the same way ([`owe_rows_elsewhere`]).
 //! The table is empty after every release minor (its `schema_ver` follows the minor) and for every
 //! embedding preset opened for the first time.
 //!
@@ -98,20 +99,68 @@ fn rows_owed_path(root: &Path) -> PathBuf {
     crate::store_layout::repo_group_dir(root).join(ROWS_OWED_FILE)
 }
 
-/// The group's rows-owed stamp: `0` while no save has owed a row, and another value after each.
-pub(super) fn rows_owed(root: &Path) -> u64 {
-    std::fs::read(rows_owed_path(root)).map_or(0, |bytes| {
-        let hash = crate::hashing::hash_bytes(&bytes);
-        u64::from_le_bytes([hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]]) | 1
-    })
+/// The stamp a save rewrites for the table `table` (a directory name under
+/// [`crate::store_layout::memory_vectors_dir`]) when it wrote its row in another preset's table.
+fn table_owed_path(root: &Path, table: &str) -> PathBuf {
+    crate::store_layout::repo_group_dir(root).join(format!("{ROWS_OWED_FILE}.{table}"))
+}
+
+/// The rows-owed stamp of the table `table`: `0` while no save has owed it a row, and another
+/// value after each.
+pub(super) fn rows_owed(root: &Path, table: &str) -> u64 {
+    let group = std::fs::read(rows_owed_path(root)).unwrap_or_default();
+    let own = std::fs::read(table_owed_path(root, table)).unwrap_or_default();
+    if group.is_empty() && own.is_empty() {
+        return 0;
+    }
+    let hash = crate::hashing::hash_bytes(&[group.as_slice(), b"\n", own.as_slice()].concat());
+    u64::from_le_bytes([hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]]) | 1
+}
+
+/// [`rows_owed`] of the table this process searches.
+pub(super) async fn rows_owed_here(state: &ServerState) -> u64 {
+    rows_owed(&state.shared.root, &table_name(state).await.unwrap_or_default())
+}
+
+/// The directory name of the table this process's embedder writes, or `None` without an embedder.
+async fn table_name(state: &ServerState) -> Option<String> {
+    let embedder = shared_embedder(state).await.ok()?;
+    let dir = memory_lance_dir(&state.shared.root, embedder.model(), embedder.dim());
+    dir.file_name().and_then(|name| name.to_str()).map(str::to_string)
 }
 
 /// Tell every process with the group's notes open that a note has no row of its latest write.
 /// Best effort: a stamp that cannot be written leaves other processes to find the note when their
 /// belief lapses.
 pub(super) fn owe_rows(root: &Path) {
+    write_owed_stamp(&rows_owed_path(root));
+}
+
+/// A save wrote its note's row in this process's table: tell the processes searching every other
+/// preset's table, which has no row of the write. A table created after the listing here lists
+/// the note when it is first searched.
+pub(super) async fn owe_rows_elsewhere(state: &ServerState) {
+    let Some(own) = table_name(state).await else {
+        return;
+    };
+    let root = &state.shared.root;
+    let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(root)) else {
+        return;
+    };
+    for table in tables.flatten() {
+        let name = table.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name != own && table.file_type().is_ok_and(|kind| kind.is_dir()) {
+            write_owed_stamp(&table_owed_path(root, name));
+        }
+    }
+}
+
+/// Rewrite the rows-owed stamp at `path` with a value no earlier write of it held.
+fn write_owed_stamp(path: &Path) {
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let path = rows_owed_path(root);
     let stamp = format!(
         "{} {} {}",
         crate::lance::now_micros(),
@@ -121,7 +170,7 @@ pub(super) fn owe_rows(root: &Path) {
     let written = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&path, stamp));
+        .and_then(|()| std::fs::write(path, stamp));
     if let Err(error) = written {
         tracing::debug!(%error, path = %path.display(), "the memory rows-owed stamp was not written");
     }
@@ -325,7 +374,7 @@ pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, v
     let namespace = (vis_byte, owner.to_string());
     // Read before the look: a save that owes a row after this has its note listed by the look or
     // its stamp read by the next search. ~keep
-    let owed = rows_owed(&state.shared.root);
+    let owed = rows_owed_here(state).await;
     let lapsed = {
         let mut marks = backfill_marks(state);
         let lapsed = match marks.get(&namespace) {
