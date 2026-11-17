@@ -23,6 +23,7 @@ const NON_CODE: &[&str] = &[
     "Cargo.toml",
     "data.csv",
     "layout.xml",
+    "app.log",
 ];
 
 /// Valid content per format, salted with `salt` (the fixture root) so the process-shared
@@ -35,6 +36,7 @@ fn body(name: &str, salt: &str) -> String {
         "Cargo.toml" => format!("[package]\nname = \"demo\"\nsalt = \"{salt}\"\nversion = \"0.1.0\"\n"),
         "data.csv" => format!("id,name\n1,alpha\n2,{salt}\n"),
         "layout.xml" => format!("<root><item>alpha</item><item>{salt}</item></root>\n"),
+        "app.log" => format!("2026-11-17 10:00:00 INFO started\n2026-11-17 10:00:01 WARN {salt}\n"),
         other => unreachable!("{other}"),
     }
 }
@@ -82,6 +84,38 @@ fn prose_data_and_config_files_land_in_the_document_tier() {
         assert!(store.lookup(name).is_none(), "{name} must not be code-mapped");
         assert!(store.lookup_doc(name).is_some(), "{name} must be in doc_files");
     }
+}
+
+/// Config and data files are not only tracked: their rows are in the group's document store, every
+/// chunk cites its lines, and the lexical lane finds them (`docs_search` with embeddings off).
+#[test]
+fn data_and_config_files_are_searchable_documents_that_cite_their_lines() {
+    let (dir, cfg) = fixture();
+    let root = dir.path();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    full_scan(root, &mut store, &cfg);
+
+    // The `balanced` preset's dimension.
+    let dim = 768;
+    let docs = basemind::lance::docs::DocStore::shared_existing(
+        &basemind::lance::docs::group_store_dir(root, &cfg.documents.embedding_preset, dim),
+        dim,
+        &cfg.documents.embedding_preset,
+    )
+    .expect("open")
+    .expect("the scan wrote the store");
+    for name in ["cfg.json", "settings.yaml", "Cargo.toml", "data.csv", "app.log"] {
+        let entry = store.lookup_doc(name).expect(name);
+        let key = basemind::store::doc_key(&entry.hash_hex, &entry.config_digest);
+        let chunks = docs.chunks(&[(key, vec![0])]).expect("read");
+        assert_eq!(chunks.len(), 1, "{name} has rows");
+        assert_eq!(chunks[0].line_start, Some(1), "{name} cites its lines");
+        assert!(chunks[0].line_end.is_some(), "{name}");
+    }
+    let hits = docs
+        .lexical("WARN", &basemind::lance::docs::DocPredicate::default(), 10, false)
+        .expect("lexical lane");
+    assert!(hits.iter().any(|hit| hit.text.contains("WARN")), "the log is found");
 }
 
 #[test]

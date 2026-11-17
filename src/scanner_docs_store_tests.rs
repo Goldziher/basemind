@@ -169,13 +169,13 @@ fn rows_without_vectors_are_replaced_once_the_document_is_embedded() {
 #[test]
 fn rows_no_document_names_are_deleted_and_removal_never_creates_a_store() {
     let (_tmp, mut store, config, filters) = setup();
-    remove_dead_document_rows(&store, &config, &filters);
+    remove_dead_document_rows(&store, &config);
     assert!(open_doc_store(&store, &config, false).unwrap().is_none());
     track(&mut store, &blob("alpha", true), &["a.md"]);
     track(&mut store, &blob("beta", true), &["b.md"]);
     sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
     store.remove_doc("b.md");
-    remove_dead_document_rows(&store, &config, &filters);
+    remove_dead_document_rows(&store, &config);
     assert_eq!(doc_store(&store, &config).keys().unwrap().len(), 1);
 }
 
@@ -211,7 +211,7 @@ fn a_new_version_without_rows_drops_the_old_versions_rows() {
     empty.chunks.clear();
     track(&mut store, &empty, &["guide.md"]);
     sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
-    remove_dead_document_rows(&store, &config, &filters);
+    remove_dead_document_rows(&store, &config);
 
     assert_eq!(
         doc_store(&store, &config).capabilities().unwrap().rows,
@@ -263,4 +263,106 @@ fn a_torn_blob_sends_its_document_to_be_extracted_again() {
         .map(|rel| rel.to_str_lossy().into_owned())
         .collect();
     assert_eq!(owed, ["torn.md"], "its rows stay owed");
+}
+
+fn git(args: &[&str], cwd: &std::path::Path) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Two worktrees of one repository: their stores are views of one group.
+fn worktrees() -> (tempfile::TempDir, Store, Store, Config, Filters) {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main");
+    std::fs::create_dir(&main).unwrap();
+    git(&["init", "-q", "-b", "main"], &main);
+    git(
+        &[
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=T",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        &main,
+    );
+    let linked = tmp.path().join("linked");
+    git(
+        &["worktree", "add", "-q", linked.to_str().unwrap(), "-b", "linked"],
+        &main,
+    );
+    let a = Store::open(&main, crate::store::VIEW_WORKING).unwrap();
+    let b = Store::open(&linked, crate::store::VIEW_WORKING).unwrap();
+    let mut config = crate::config::default_for_root(std::path::Path::new("."));
+    config.documents.embed = true;
+    let filters = Filters::build(&config, Vec::new()).unwrap();
+    (tmp, a, b, config, filters)
+}
+
+#[test]
+fn worktrees_of_a_group_share_one_document_store_and_sweep_only_what_no_view_names() {
+    let (_tmp, mut a, mut b, config, filters) = worktrees();
+    let shared = blob("group-shared", true);
+    let key = doc_key(&track(&mut a, &shared, &["guide.md"]), "digest");
+    track(&mut b, &shared, &["guide.md"]);
+    track(&mut b, &blob("group-only-b", true), &["b.md"]);
+    let written_a = sync_document_rows(&mut a, &config, &filters, &AHashSet::new(), usize::MAX);
+    a.flush().unwrap();
+    let written_b = sync_document_rows(&mut b, &config, &filters, &AHashSet::new(), usize::MAX);
+    b.flush().unwrap();
+
+    assert_eq!(
+        doc_store(&a, &config).dir(),
+        doc_store(&b, &config).dir(),
+        "one store for the group"
+    );
+    assert_eq!((written_a, written_b), (1, 1), "the shared document is written once");
+    let store = doc_store(&a, &config);
+    assert_eq!(store.keys().unwrap().len(), 2);
+
+    // Removed in one worktree, the document keeps its rows for the other.
+    a.remove_doc("guide.md");
+    remove_dead_document_rows(&a, &config);
+    a.flush().unwrap();
+    assert!(store.keys().unwrap().contains(&key), "b still names it");
+
+    // Removed in both, its rows are swept.
+    b.remove_doc("guide.md");
+    remove_dead_document_rows(&b, &config);
+    let keys = store.keys().unwrap();
+    assert!(!keys.contains(&key), "no view names it");
+    assert_eq!(keys.len(), 1, "b's other document stays");
+}
+
+#[test]
+fn an_unreadable_sibling_document_map_deletes_nothing() {
+    let (_tmp, mut a, mut b, config, filters) = worktrees();
+    track(&mut a, &blob("group-unknown-a", true), &["a.md"]);
+    track(&mut b, &blob("group-unknown-b", true), &["b.md"]);
+    sync_document_rows(&mut a, &config, &filters, &AHashSet::new(), usize::MAX);
+    a.flush().unwrap();
+    sync_document_rows(&mut b, &config, &filters, &AHashSet::new(), usize::MAX);
+    std::fs::write(b.view_dir.join(crate::store::INDEX_FILE), b"\xc1 not msgpack").unwrap();
+
+    a.remove_doc("a.md");
+    remove_dead_document_rows(&a, &config);
+
+    assert_eq!(
+        doc_store(&a, &config).keys().unwrap().len(),
+        2,
+        "liveness unknown: nothing is deleted"
+    );
 }

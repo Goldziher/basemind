@@ -1,0 +1,30 @@
+# Mirelle-1 ground segment configuration
+ground_stations:
+  halvmark:
+    name: Halvmark
+    latitude_deg: 67.9
+    min_elevation_deg: 5.0
+    role: primary
+    bands:
+      - s_band_downlink
+      - uhf_uplink
+  orrsund:
+    name: Orrsund
+    latitude_deg: 59.3
+    min_elevation_deg: 10.0
+    role: backup
+    bands:
+      - s_band_downlink
+      - uhf_uplink
+  tessel:
+    name: Tessel Point
+    latitude_deg: 44.1
+    min_elevation_deg: 7.5
+    role: campaign
+    bands:
+      - s_band_downlink
+      - uhf_uplink
+scheduling:
+  max_passes_per_day: 6
+  command_upload_deadline_min: 12
+  conflict_policy: prefer_primary_then_longest_pass

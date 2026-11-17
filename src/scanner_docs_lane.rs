@@ -80,8 +80,8 @@ impl DocumentSink for DocumentLane {
         flush_document_batches(store, config, filters, batches, budget)
     }
 
-    fn remove(&self, store: &mut Store, config: &Config, filters: &Filters, stale: &[String]) {
-        delete_stale_documents(store, config, filters, stale);
+    fn remove(&self, store: &mut Store, config: &Config, _filters: &Filters, stale: &[String]) {
+        delete_stale_documents(store, config, stale);
     }
 
     fn purge_unembedded(&self, store: &mut Store, config: &Config, filters: &Filters, _scope: &str) -> bool {
