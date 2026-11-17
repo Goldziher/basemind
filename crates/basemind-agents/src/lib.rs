@@ -125,6 +125,7 @@ mod spec;
 mod supervisor;
 mod supervisor_codes;
 mod supervisor_identity;
+mod supervisor_pump;
 mod supervisor_types;
 #[cfg(test)]
 mod test_support;

@@ -228,6 +228,9 @@ pub enum SupervisorError {
     /// No launch token could be made, so nothing was launched.
     #[error("no launch token could be made: {0}")]
     Token(#[source] std::io::Error),
+    /// The thread that supervises a session could not be started, so the harness was killed.
+    #[error("the session's supervising thread could not be started: {0}")]
+    Thread(#[source] std::io::Error),
     /// The adapter refused the launch or could not start it, or the session refused a control.
     #[error(transparent)]
     Launch(#[from] LaunchError),
@@ -256,6 +259,7 @@ impl SupervisorError {
             Self::BudgetExhausted { .. } => "budget_exhausted",
             Self::Audit(_) => "audit_failed",
             Self::Token(_) => "token_failed",
+            Self::Thread(_) => "thread_failed",
             Self::Launch(error) => launch_error_code(error),
             Self::UnknownSession(_) => "unknown_session",
             Self::NotOwner(_) => "not_owner",

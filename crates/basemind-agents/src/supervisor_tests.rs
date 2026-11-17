@@ -10,29 +10,30 @@ use serde_json::Value;
 use super::*;
 use crate::audit::{FileAuditSink, MemoryAuditSink};
 use crate::claude::ClaudeCodeAdapter;
+use crate::event::{Event, FinishStatus};
 use crate::harness::{AcpFlavor, Harness};
 use crate::peer::Peer;
-use crate::policy::{Budget, FlavorPolicy, PolicySpec};
+use crate::policy::{Budget, Caveat, FlavorPolicy, PolicySpec};
 use crate::registry::Adapter;
-use crate::session::CommandPlan;
+use crate::session::{CommandPlan, Session};
 use crate::spec::{ApprovalVerdict, PermissionMode};
 use crate::test_support::always;
 
-const OPENCODE: HarnessKind = HarnessKind::Acp(AcpFlavor::OpenCode);
-const SECRET: &str = "sk-ant-test-secret-value-0123456789";
-const BRIEF_MARKER: &str = "brief-marker-do-not-log";
+pub(super) const OPENCODE: HarnessKind = HarnessKind::Acp(AcpFlavor::OpenCode);
+pub(super) const SECRET: &str = "sk-ant-test-secret-value-0123456789";
+pub(super) const BRIEF_MARKER: &str = "brief-marker-do-not-log";
 
 /// Claude Code's handshake, up to the brief and the init frame of a supervised session.
-const HANDSHAKE: &str = r#"read -r init
+pub(super) const HANDSHAKE: &str = r#"read -r init
 printf '%s\n' '{"type":"control_response","response":{"request_id":"basemind-init"}}'
 read -r prompt
 printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"default","mcp_servers":[],"tools":[]}'
 "#;
-const RESULT: &str = r#"printf '%s\n' '{"type":"result","result":"Done."}'
+pub(super) const RESULT: &str = r#"printf '%s\n' '{"type":"result","result":"Done."}'
 "#;
 
 /// Runs the Claude Code adapter for harnesses of another kind.
-struct As(HarnessKind);
+pub(super) struct As(pub(super) HarnessKind);
 
 impl Adapter for As {
     fn supports(&self, kind: HarnessKind) -> bool {
@@ -48,20 +49,20 @@ impl Adapter for As {
     }
 }
 
-fn as_claude(config: &LaunchConfig) -> LaunchConfig {
+pub(super) fn as_claude(config: &LaunchConfig) -> LaunchConfig {
     let mut config = config.clone();
     config.harness.kind = HarnessKind::ClaudeCode;
     config
 }
 
 /// A scratch directory holding the root, the stand-ins and what they write.
-struct Scratch {
+pub(super) struct Scratch {
     _dir: tempfile::TempDir,
-    path: PathBuf,
+    pub(super) path: PathBuf,
 }
 
 impl Scratch {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(path.join("root")).unwrap();
@@ -69,7 +70,7 @@ impl Scratch {
     }
 
     /// A config for `kind` whose harness is a stand-in running `body`.
-    fn config(&self, kind: HarnessKind, body: &str) -> LaunchConfig {
+    pub(super) fn config(&self, kind: HarnessKind, body: &str) -> LaunchConfig {
         use std::os::unix::fs::PermissionsExt;
         let script = self.path.join(format!("{}-stand-in", kind.id()));
         std::fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
@@ -86,7 +87,7 @@ impl Scratch {
     }
 
     /// A stand-in body that records its environment, then works until it is stopped.
-    fn long(&self) -> String {
+    pub(super) fn long(&self) -> String {
         format!(
             "env > '{}/'\"$BASEMIND_AGENT_ID\".env\n{HANDSHAKE}cat > /dev/null\n",
             self.path.display()
@@ -94,7 +95,7 @@ impl Scratch {
     }
 
     /// The environment the launched agent `agent` recorded.
-    fn env_of(&self, agent: &str) -> BTreeMap<String, String> {
+    pub(super) fn env_of(&self, agent: &str) -> BTreeMap<String, String> {
         let path = self.path.join(format!("{agent}.env"));
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -112,7 +113,7 @@ impl Scratch {
     }
 }
 
-fn policy(flavors: &[HarnessKind]) -> PolicySpec {
+pub(super) fn policy(flavors: &[HarnessKind]) -> PolicySpec {
     PolicySpec {
         flavors: flavors.iter().copied().map(FlavorPolicy::supervised).collect(),
         launchers: vec!["lead".to_owned(), "second".to_owned(), "third".to_owned()],
@@ -124,39 +125,39 @@ fn policy(flavors: &[HarnessKind]) -> PolicySpec {
     }
 }
 
-fn registry() -> Registry {
+pub(super) fn registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(ClaudeCodeAdapter);
     registry.register(As(OPENCODE));
     registry
 }
 
-fn start(spec: PolicySpec, configs: Vec<LaunchConfig>) -> (Supervisor, Arc<MemoryAuditSink>) {
+pub(super) fn start(spec: PolicySpec, configs: Vec<LaunchConfig>) -> (Supervisor, Arc<MemoryAuditSink>) {
     let audit = Arc::new(MemoryAuditSink::default());
     let supervisor = Supervisor::new(LaunchPolicy::new(spec).unwrap(), configs, registry(), audit.clone()).unwrap();
     (supervisor, audit)
 }
 
 /// A process outside the supervisor's tree: the test runner's parent.
-fn outside() -> Peer {
+pub(super) fn outside() -> Peer {
     Peer::of_pid(std::os::unix::process::parent_id())
 }
 
 /// The harness process of session `id`, standing in for a process of that session.
-fn inside(supervisor: &Supervisor, id: SessionId) -> Peer {
+pub(super) fn inside(supervisor: &Supervisor, id: SessionId) -> Peer {
     Peer::of_pid(supervisor.status(id).unwrap().pid.unwrap())
 }
 
-fn lead() -> Caller {
+pub(super) fn lead() -> Caller {
     Caller::principal("lead", outside()).unwrap()
 }
 
-fn request() -> LaunchRequest {
+pub(super) fn request() -> LaunchRequest {
     LaunchRequest::new(format!("Review the diff. {BRIEF_MARKER}"))
 }
 
 /// The outcomes of the records of `event`, in order.
-fn outcomes(audit: &MemoryAuditSink, event: AuditEvent) -> Vec<&'static str> {
+pub(super) fn outcomes(audit: &MemoryAuditSink, event: AuditEvent) -> Vec<&'static str> {
     audit
         .records()
         .iter()
@@ -166,7 +167,7 @@ fn outcomes(audit: &MemoryAuditSink, event: AuditEvent) -> Vec<&'static str> {
 }
 
 /// The first record of `event`.
-fn first(audit: &MemoryAuditSink, event: AuditEvent) -> AuditRecord {
+pub(super) fn first(audit: &MemoryAuditSink, event: AuditEvent) -> AuditRecord {
     audit
         .records()
         .into_iter()
@@ -175,7 +176,7 @@ fn first(audit: &MemoryAuditSink, event: AuditEvent) -> AuditRecord {
 }
 
 /// Waits until `audit` holds a record of `event`.
-fn await_record(audit: &MemoryAuditSink, event: AuditEvent) {
+pub(super) fn await_record(audit: &MemoryAuditSink, event: AuditEvent) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while outcomes(audit, event).is_empty() {
         assert!(Instant::now() < deadline, "no {} record arrived", event.id());
@@ -183,18 +184,18 @@ fn await_record(audit: &MemoryAuditSink, event: AuditEvent) {
     }
 }
 
-fn finished(supervisor: &Supervisor, id: SessionId) -> FinishStatus {
+pub(super) fn finished(supervisor: &Supervisor, id: SessionId) -> FinishStatus {
     match supervisor.wait(id, Duration::from_secs(15)) {
         Some(SessionState::Finished(status)) => status,
         other => panic!("session {id} did not finish: {other:?}"),
     }
 }
 
-fn pid_of(supervisor: &Supervisor, id: SessionId) -> i32 {
+pub(super) fn pid_of(supervisor: &Supervisor, id: SessionId) -> i32 {
     i32::try_from(supervisor.status(id).unwrap().pid.unwrap()).unwrap()
 }
 
-fn alive(pid: i32) -> bool {
+pub(super) fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 only checks that the process exists.
     unsafe { libc::kill(pid, 0) == 0 }
 }
@@ -609,7 +610,7 @@ fn dropping_the_supervisor_stops_every_session() {
 
 /// Records every event the supervisor reports.
 #[derive(Default)]
-struct Recorder(Mutex<Vec<(SessionId, Event)>>);
+pub(super) struct Recorder(Mutex<Vec<(SessionId, Event)>>);
 
 impl SessionObserver for Recorder {
     fn event(&self, session: SessionId, event: &Event) {
@@ -746,7 +747,7 @@ fn the_audit_log_holds_no_brief_environment_value_or_token() {
 
 /// A command prefix that runs the rest of the line in a session of its own, as OpenCode's
 /// server leaves the harness's group. `None` where neither `setsid` nor `perl` is installed.
-fn own_session_prefix() -> Option<String> {
+pub(super) fn own_session_prefix() -> Option<String> {
     let on_path = |name: &str| {
         std::env::split_paths(&std::env::var_os("PATH")?)
             .map(|dir| dir.join(name))
@@ -759,7 +760,7 @@ fn own_session_prefix() -> Option<String> {
 }
 
 /// The pid a stand-in wrote to `path`.
-fn recorded_pid(path: &Path) -> i32 {
+pub(super) fn recorded_pid(path: &Path) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Ok(pid) = std::fs::read_to_string(path).unwrap_or_default().trim().parse() {
@@ -818,285 +819,4 @@ fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
     // SAFETY: the test started this process; it is killed whatever the assertion says.
     unsafe { libc::kill(server, libc::SIGKILL) };
     assert!(survived, "the untracked process died with its group");
-}
-
-/// `perl`, which the attack stand-ins use to call `setpgid` and `setsid`. Its absence fails the
-/// test unless `BASEMIND_TEST_ALLOW_NO_SETSID` is set, so a missing tool never passes silently.
-fn perl() -> Option<PathBuf> {
-    let found = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|dir| dir.join("perl"))
-        .find(|candidate| candidate.is_file());
-    if found.is_none() {
-        assert!(
-            std::env::var_os("BASEMIND_TEST_ALLOW_NO_SETSID").is_some(),
-            "perl is not installed; set BASEMIND_TEST_ALLOW_NO_SETSID=1 to skip the tests that need it"
-        );
-        eprintln!("skipped: perl is not installed and BASEMIND_TEST_ALLOW_NO_SETSID is set");
-    }
-    found
-}
-
-/// Lead launches A (Claude Code); A launches C (OpenCode), whose stand-in runs `perl <attack>`
-/// in the background. Returns the supervisor, both sessions and the attacking process's pid.
-/// `attack` is given the scratch directory, where `a.pid` holds A's pid.
-struct Lateral {
-    scratch: Scratch,
-    supervisor: Supervisor,
-    a: Launched,
-    c: Launched,
-    attacker: u32,
-    /// The attacker as it started, so it is killed at the end only while it is still that
-    /// process.
-    started: Peer,
-}
-
-impl Drop for Lateral {
-    fn drop(&mut self) {
-        let pid = self.started.id.pid;
-        if crate::procinfo::info(pid).is_some_and(|now| now.start == self.started.id.start) {
-            // SAFETY: the test started this process, and its start time was checked just now.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-        }
-    }
-}
-
-fn lateral(attack: impl Fn(&Path) -> String) -> Option<Lateral> {
-    let perl = perl()?;
-    let scratch = Scratch::new();
-    let pidfile = scratch.path.join("attacker.pid");
-    let body = format!(
-        "{HANDSHAKE}'{perl}' {attack} &\necho $! > '{pidfile}'\ncat > /dev/null\n",
-        perl = perl.display(),
-        attack = attack(&scratch.path),
-        pidfile = pidfile.display(),
-    );
-    let (supervisor, _) = start(
-        PolicySpec {
-            max_depth: 3,
-            ..policy(&[HarnessKind::ClaudeCode, OPENCODE])
-        },
-        vec![
-            scratch.config(HarnessKind::ClaudeCode, &scratch.long()),
-            scratch.config(OPENCODE, &body),
-        ],
-    );
-    let a = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
-    std::fs::write(scratch.path.join("a.pid"), pid_of(&supervisor, a.id).to_string()).unwrap();
-    let token = scratch.env_of(&a.agent)["BASEMIND_LAUNCH_TOKEN"].clone();
-    let c = supervisor
-        .launch(
-            &Caller::launched(&token, inside(&supervisor, a.id)),
-            OPENCODE,
-            &request(),
-        )
-        .unwrap();
-    let attacker = u32::try_from(recorded_pid(&pidfile)).unwrap();
-    Some(Lateral {
-        scratch,
-        supervisor,
-        a,
-        c,
-        attacker,
-        started: Peer::of_pid(attacker),
-    })
-}
-
-/// What the attacker wrote to `outcome` in the scratch directory, once it has.
-fn attack_outcome(scratch: &Scratch) -> String {
-    let path = scratch.path.join("outcome");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        if !text.is_empty() {
-            return text;
-        }
-        assert!(Instant::now() < deadline, "the attacker never reported");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-#[test]
-fn a_child_cannot_join_its_launchers_group_and_act_as_its_launcher() {
-    // C's tool process moves into A's process group, then claims to be the configured launcher.
-    let Some(attack) = lateral(|dir| {
-        format!(
-            "-e 'open(my $f, q{{<}}, q{{{dir}/a.pid}}) or die; my $a = <$f>; chomp $a; \
-             my $r = setpgrp(0, $a) ? q{{joined}} : q{{refused}}; \
-             open(my $o, q{{>}}, q{{{dir}/outcome}}) or die; print $o $r; close $o; sleep 300'",
-            dir = dir.display()
-        )
-    }) else {
-        return;
-    };
-    let outcome = attack_outcome(&attack.scratch);
-    let claim = Caller::principal("lead", Peer::of_pid(attack.attacker)).unwrap();
-    // Acting as A, C could stop (and answer for) itself; acting as itself it may not.
-    let stopped = attack.supervisor.stop(&claim, attack.c.id);
-    assert_eq!(outcome, "refused", "C's process joined A's process group");
-    assert_eq!(stopped.map_err(|error| error.code()), Err("not_owner"));
-    let _ = attack.a;
-}
-
-#[test]
-fn a_child_that_leaves_for_a_session_of_its_own_is_still_its_session() {
-    let Some(attack) = lateral(|dir| {
-        format!(
-            "-MPOSIX -e 'my $r = POSIX::setsid() > 0 ? q{{left}} : q{{stayed}}; \
-             open(my $o, q{{>}}, q{{{dir}/outcome}}) or die; print $o $r; close $o; sleep 300'",
-            dir = dir.display()
-        )
-    }) else {
-        return;
-    };
-    assert_eq!(attack_outcome(&attack.scratch), "left");
-    let refused = attack.supervisor.operator(Peer::of_pid(attack.attacker));
-    assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
-    let claim = Caller::principal("lead", Peer::of_pid(attack.attacker)).unwrap();
-    // As the configured launcher it would launch at depth 1 and own A; as C it sits at depth 2.
-    let launched = attack
-        .supervisor
-        .launch(&claim, HarnessKind::ClaudeCode, &request())
-        .unwrap();
-    assert_eq!(
-        launched.depth, 3,
-        "the escaped process launched as the configured launcher"
-    );
-    assert_eq!(
-        attack
-            .supervisor
-            .stop(&claim, attack.a.id)
-            .map_err(|error| error.code()),
-        Err("not_owner")
-    );
-}
-
-#[test]
-fn a_process_below_the_supervisor_in_no_session_is_no_launcher() {
-    let scratch = Scratch::new();
-    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
-    let (supervisor, _) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
-    // A process the supervisor's process started outside any session, as a leftover of a
-    // finished session would be.
-    let mut stray = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
-    let claim = Caller::principal("lead", Peer::of_pid(stray.id())).unwrap();
-    let refused = supervisor.launch(&claim, HarnessKind::ClaudeCode, &request());
-    let _ = stray.kill();
-    let _ = stray.wait();
-    assert_eq!(
-        refused.map(|launched| launched.depth).map_err(|error| error.code()),
-        Err("caller_not_admitted")
-    );
-}
-
-#[test]
-fn only_a_peer_outside_the_supervisors_tree_is_made_the_operator() {
-    let scratch = Scratch::new();
-    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
-    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
-    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
-    // A launched agent running `basemind agent approve` from its shell: a process of the session.
-    let refused = supervisor.operator(inside(&supervisor, launched.id));
-    assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
-    // A process this process started outside any session.
-    let mut stray = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
-    let refused = supervisor.operator(Peer::of_pid(stray.id()));
-    let _ = stray.kill();
-    let _ = stray.wait();
-    assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
-    assert_eq!(
-        outcomes(&audit, AuditEvent::Refusal),
-        ["caller_not_admitted", "caller_not_admitted"]
-    );
-    // The operator's own process, outside the tree.
-    let operator = supervisor.operator(outside()).unwrap();
-    supervisor.stop(&operator, launched.id).unwrap();
-    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
-}
-
-/// An OpenCode session whose stand-in starts `perl <attack>` in the background, then completes
-/// its turn and ends. Returns the attacker as it started.
-fn detached_attack(
-    scratch: &Scratch,
-    supervisor_configs: &mut Vec<LaunchConfig>,
-    perl: &Path,
-    attack: &str,
-) -> PathBuf {
-    let pidfile = scratch.path.join("attacker.pid");
-    let body = format!(
-        "'{perl}' {attack} &\necho $! > '{pidfile}'\n{HANDSHAKE}sleep 1\n{RESULT}cat > /dev/null\n",
-        perl = perl.display(),
-        pidfile = pidfile.display(),
-    );
-    supervisor_configs.push(scratch.config(OPENCODE, &body));
-    pidfile
-}
-
-/// Kills the attacker `started` at the end of a test, only while it is still that process.
-struct Reclaim(Peer);
-
-impl Drop for Reclaim {
-    fn drop(&mut self) {
-        let pid = self.0.id.pid;
-        if crate::procinfo::info(pid).is_some_and(|now| now.start == self.0.id.start) {
-            // SAFETY: the test started this process, and its start time was checked just now.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-        }
-    }
-}
-
-#[test]
-fn a_detached_process_that_joins_a_sibling_sessions_group_does_not_take_it_down() {
-    let Some(perl) = perl() else {
-        return;
-    };
-    let scratch = Scratch::new();
-    let attack = format!(
-        "-e 'open(my $f, q{{<}}, q{{{dir}/b.pid}}) or die; my $b = <$f>; chomp $b; \
-         my $r = setpgrp(0, $b) ? q{{joined}} : q{{refused}}; \
-         open(my $o, q{{>}}, q{{{dir}/outcome}}) or die; print $o $r; close $o; sleep 300'",
-        dir = scratch.path.display()
-    );
-    let mut configs = vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())];
-    let pidfile = detached_attack(&scratch, &mut configs, &perl, &attack);
-    let (supervisor, _) = start(policy(&[HarnessKind::ClaudeCode, OPENCODE]), configs);
-    let sibling = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
-    let sibling_pid = pid_of(&supervisor, sibling.id);
-    std::fs::write(scratch.path.join("b.pid"), sibling_pid.to_string()).unwrap();
-    let second = Caller::principal("second", outside()).unwrap();
-    let launched = supervisor.launch(&second, OPENCODE, &request()).unwrap();
-    let _reclaim = Reclaim(Peer::of_pid(u32::try_from(recorded_pid(&pidfile)).unwrap()));
-    let outcome = attack_outcome(&scratch);
-    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Completed);
-    assert!(alive(sibling_pid), "the reaper killed a sibling session ({outcome})");
-    assert_eq!(supervisor.status(sibling.id).unwrap().state, SessionState::Running);
-    assert_eq!(outcome, "refused");
-}
-
-#[test]
-fn a_detached_process_that_joins_the_launchers_group_is_still_reaped() {
-    let Some(perl) = perl() else {
-        return;
-    };
-    let scratch = Scratch::new();
-    // SAFETY: getpgrp has no preconditions.
-    let own_group = unsafe { libc::getpgrp() };
-    let attack = format!(
-        "-e 'my $r = setpgrp(0, {own_group}) ? q{{joined}} : q{{refused}}; \
-         open(my $o, q{{>}}, q{{{dir}/outcome}}) or die; print $o $r; close $o; sleep 300'",
-        dir = scratch.path.display()
-    );
-    let mut configs = Vec::new();
-    let pidfile = detached_attack(&scratch, &mut configs, &perl, &attack);
-    let (supervisor, _) = start(policy(&[OPENCODE]), configs);
-    let launched = supervisor.launch(&lead(), OPENCODE, &request()).unwrap();
-    let attacker = Peer::of_pid(u32::try_from(recorded_pid(&pidfile)).unwrap());
-    let _reclaim = Reclaim(attacker);
-    let outcome = attack_outcome(&scratch);
-    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Completed);
-    let survived =
-        crate::procinfo::info(attacker.id.pid).is_some_and(|now| now.start == attacker.id.start && !now.zombie);
-    assert!(
-        !survived,
-        "a process in the launcher's group outlived its session ({outcome})"
-    );
 }

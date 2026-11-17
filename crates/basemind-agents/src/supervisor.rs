@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
@@ -14,15 +14,14 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::audit::{AuditApproval, AuditEvent, AuditLimits, AuditRecord, AuditSink};
 use crate::detached::{self, Detached};
 use crate::error::LaunchError;
-use crate::event::{Event, FinishStatus};
 use crate::harness::HarnessKind;
 use crate::identity::{AgentIdentity, LaunchToken};
-use crate::policy::{Caveat, LAUNCHED_PREFIX, LaunchPolicy, PolicyError};
+use crate::policy::{LAUNCHED_PREFIX, LaunchPolicy, PolicyError};
 use crate::procinfo::{self, ProcId};
 use crate::registry::Registry;
-use crate::session::{Session, SessionHandle};
+use crate::session::SessionHandle;
 use crate::spec::{LaunchConfig, LaunchRequest};
-use crate::supervisor_codes::{approval_kind, approval_source, finish_code};
+use crate::supervisor_pump::{Reservation, supervise};
 
 use crate::peer::Peer;
 pub use crate::supervisor_codes::launch_error_code;
@@ -35,8 +34,6 @@ pub use crate::supervisor_types::{
 /// The longest a dropped supervisor waits, past the sessions' stop grace, before it kills the
 /// sessions still running and leaves their supervising threads to finish alone.
 const DROP_SLACK: Duration = Duration::from_secs(2);
-/// The most approval requests whose kind a session remembers until they are settled.
-const MAX_REMEMBERED_APPROVALS: usize = 256;
 
 /// Who launched a session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,11 +51,13 @@ pub(crate) enum Resolved {
 }
 
 pub(crate) struct Entry {
-    flavor: HarnessKind,
-    agent: String,
+    pub(crate) flavor: HarnessKind,
+    pub(crate) agent: String,
     launcher: Launcher,
+    /// The sessions above this one, outermost first: a stop of any of them stops this one.
+    lineage: Vec<u64>,
     launcher_name: String,
-    depth: u32,
+    pub(crate) depth: u32,
     pub(crate) token: LaunchToken,
     /// The harness's pid and start time, once it runs.
     pub(crate) leader: Option<ProcId>,
@@ -66,9 +65,9 @@ pub(crate) struct Entry {
     stop_requested: bool,
     started: SystemTime,
     root: PathBuf,
-    handle: Option<SessionHandle>,
+    pub(crate) handle: Option<SessionHandle>,
     pub(crate) detached: Arc<Detached>,
-    approvals: HashMap<String, &'static str>,
+    pub(crate) approvals: HashMap<String, &'static str>,
     pump: Option<JoinHandle<()>>,
 }
 
@@ -92,7 +91,7 @@ impl Entry {
 #[derive(Default)]
 pub(crate) struct Table {
     next: u64,
-    launches: u32,
+    pub(crate) launches: u32,
     pub(crate) sessions: BTreeMap<u64, Entry>,
 }
 
@@ -102,24 +101,24 @@ impl Table {
     }
 }
 
-struct Inner {
+pub(crate) struct Inner {
     policy: LaunchPolicy,
     configs: Vec<LaunchConfig>,
     registry: Registry,
     audit: Arc<dyn AuditSink>,
-    observer: std::sync::OnceLock<Arc<dyn SessionObserver>>,
+    pub(crate) observer: std::sync::OnceLock<Arc<dyn SessionObserver>>,
     table: Mutex<Table>,
-    changed: Condvar,
+    pub(crate) changed: Condvar,
     audit_failures: AtomicU64,
 }
 
 impl Inner {
-    fn table(&self) -> MutexGuard<'_, Table> {
+    pub(crate) fn table(&self) -> MutexGuard<'_, Table> {
         self.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Appends `record`, counting a failure.
-    fn audit(&self, record: &AuditRecord) -> std::io::Result<()> {
+    pub(crate) fn audit(&self, record: &AuditRecord) -> std::io::Result<()> {
         let written = self.audit.record(record);
         if written.is_err() {
             self.audit_failures.fetch_add(1, Ordering::SeqCst);
@@ -287,7 +286,13 @@ impl Supervisor {
         };
         let mut table = inner.table();
         let admitted = admit(inner, &table, caller, flavor, &mut refusal);
-        let (launcher, launcher_name, depth, config) = match admitted {
+        let Admitted {
+            launcher,
+            lineage,
+            launcher_name,
+            depth,
+            config,
+        } = match admitted {
             Ok(admitted) => admitted,
             Err(error) => {
                 refusal.outcome = error.code();
@@ -334,6 +339,7 @@ impl Supervisor {
                 flavor,
                 agent: agent.clone(),
                 launcher,
+                lineage,
                 launcher_name,
                 depth,
                 token,
@@ -350,21 +356,14 @@ impl Supervisor {
         );
         drop(table);
 
+        // From here the slot is given back unless the pump takes the session: on an adapter
+        // error, a failed thread spawn, or a panic in the adapter.
+        let mut reservation = Reservation::new(inner, id, refusal);
         let session = match inner.registry.launch(&config, request) {
             Ok(session) => session,
             Err(error) => {
-                let mut table = inner.table();
-                table.sessions.remove(&id);
-                table.launches -= 1;
-                drop(table);
-                inner.changed.notify_all();
                 let error = SupervisorError::Launch(error);
-                let record = AuditRecord {
-                    session: Some(id),
-                    outcome: error.code(),
-                    ..refusal
-                };
-                let _ = inner.audit(&record);
+                reservation.outcome = error.code();
                 return Err(error);
             }
         };
@@ -381,18 +380,36 @@ impl Supervisor {
         if let Some(leader) = entry.leader {
             entry.detached.follow(leader);
         }
+        let detached = entry.detached.clone();
+        let pump = std::thread::Builder::new()
+            .name(format!("basemind-session-{id}"))
+            .spawn({
+                let inner = self.inner.clone();
+                move || supervise(&inner, id, session, &detached, flavor)
+            });
+        let pump = match pump {
+            Ok(pump) => pump,
+            Err(error) => {
+                // The closure, and the session in it, is dropped: its process group is killed.
+                drop(table);
+                let error = SupervisorError::Thread(error);
+                reservation.outcome = error.code();
+                return Err(error);
+            }
+        };
+        let entry = table
+            .sessions
+            .get_mut(&id)
+            .expect("only the pump removes a started entry");
+        entry.pump = Some(pump);
         if entry.stop_requested {
             entry.state = SessionState::Stopping;
             handle.stop();
         } else {
             entry.state = SessionState::Running;
         }
-        let detached = entry.detached.clone();
-        entry.pump = Some(std::thread::spawn({
-            let inner = self.inner.clone();
-            move || supervise(&inner, id, session, &detached, flavor)
-        }));
         drop(table);
+        reservation.disarm();
         Ok(Launched {
             id: SessionId(id),
             agent,
@@ -465,8 +482,26 @@ impl Supervisor {
         } else {
             record.outcome = "already_finished";
         }
+        // Every session below this one stops with it: once it is gone its token stops
+        // resolving, and nothing but the operator could stop them.
+        let mut cascaded = Vec::new();
+        for (below, entry) in &mut table.sessions {
+            if entry.state.live() && entry.lineage.contains(&id.0) {
+                request_stop(entry);
+                cascaded.push(AuditRecord {
+                    caller: record.caller.clone(),
+                    session: Some(*below),
+                    flavor: Some(entry.flavor.id()),
+                    agent: Some(entry.agent.clone()),
+                    ..AuditRecord::new(AuditEvent::Stop, "cascaded")
+                });
+            }
+        }
         drop(table);
         let _ = inner.audit(&record);
+        for record in &cascaded {
+            let _ = inner.audit(record);
+        }
         Ok(())
     }
 
@@ -648,7 +683,7 @@ fn admit<'a>(
     caller: &Caller,
     flavor: HarnessKind,
     refusal: &mut AuditRecord,
-) -> Result<(Launcher, String, u32, &'a LaunchConfig), SupervisorError> {
+) -> Result<Admitted<'a>, SupervisorError> {
     let policy = &inner.policy;
     if !policy.enabled() {
         return Err(SupervisorError::Disabled);
@@ -661,10 +696,19 @@ fn admit<'a>(
     };
     let resolved = resolve(policy, table, caller)?;
     refusal.caller = Some(name_of(table, &resolved));
-    let (launcher, caller_depth) = match resolved {
+    let (launcher, caller_depth, lineage) = match resolved {
         Resolved::Operator => return Err(SupervisorError::CallerNotAdmitted),
-        Resolved::Top(principal) => (Launcher::Principal(principal), 0),
-        Resolved::Session(id) => (Launcher::Session(id), table.sessions[&id].depth),
+        Resolved::Top(principal) => (Launcher::Principal(principal), 0, Vec::new()),
+        Resolved::Session(id) => {
+            let parent = &table.sessions[&id];
+            // A session told to stop, or not yet running, starts nothing.
+            if parent.state != SessionState::Running {
+                return Err(SupervisorError::CallerNotAdmitted);
+            }
+            let mut lineage = parent.lineage.clone();
+            lineage.push(id);
+            (Launcher::Session(id), parent.depth, lineage)
+        }
     };
     refusal.caller_depth = Some(caller_depth);
     let launcher_name = refusal.caller.clone().unwrap_or_default();
@@ -697,7 +741,22 @@ fn admit<'a>(
             max_children: policy.max_children(),
         });
     }
-    Ok((launcher, launcher_name, depth, config))
+    Ok(Admitted {
+        launcher,
+        lineage,
+        launcher_name,
+        depth,
+        config,
+    })
+}
+
+/// What [`admit`] decided about a launch.
+struct Admitted<'a> {
+    launcher: Launcher,
+    lineage: Vec<u64>,
+    launcher_name: String,
+    depth: u32,
+    config: &'a LaunchConfig,
 }
 
 /// The flavor's config as the launched agent runs it: its own principal (keeping the config's
@@ -735,6 +794,7 @@ fn name_of(table: &Table, resolved: &Resolved) -> String {
 }
 
 /// Session `id`, when `resolved` may control it: the operator any, a launcher those it launched.
+/// A stop of a launcher reaches the sessions below it (see [`Supervisor::stop`]).
 fn owned(
     table: &mut Table,
     resolved: Result<Resolved, SupervisorError>,
@@ -758,7 +818,7 @@ fn owned(
     }
 }
 
-fn request_stop(entry: &mut Entry) {
+pub(crate) fn request_stop(entry: &mut Entry) {
     match &entry.handle {
         Some(handle) => {
             entry.state = SessionState::Stopping;
@@ -769,94 +829,10 @@ fn request_stop(entry: &mut Entry) {
     }
 }
 
-/// The thread that owns one session: it reads every event, hands it to the observer, audits
-/// each settled approval, records the harness's detached processes for a flavor that makes them,
-/// and once the session has finished, reaps those processes, marks the session finished and
-/// writes its exit record.
-fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc<Detached>, flavor: HarnessKind) {
-    let tracks = crate::policy::caveats(flavor).contains(&Caveat::DetachedServer);
-    let done = Arc::new(AtomicBool::new(false));
-    let tracker = tracks.then(|| {
-        let (detached, done) = (detached.clone(), done.clone());
-        std::thread::spawn(move || {
-            // Once the leader is gone its pid may name another process: stop polling it.
-            while !done.load(Ordering::SeqCst) && detached.poll() {
-                std::thread::sleep(detached::POLL);
-            }
-        })
-    });
-    let mut status = FinishStatus::Failed;
-    for event in session.events() {
-        if let Some(observer) = inner.observer.get() {
-            observer.event(SessionId(id), &event);
-        }
-        match &event {
-            Event::ApprovalRequest(request) => {
-                let mut table = inner.table();
-                if let Some(entry) = table.sessions.get_mut(&id)
-                    && entry.approvals.len() < MAX_REMEMBERED_APPROVALS
-                {
-                    entry.approvals.insert(request.id.clone(), approval_kind(request.kind));
-                }
-            }
-            Event::ApprovalResolved {
-                id: approval,
-                allowed,
-                source,
-            } => {
-                let kind = inner
-                    .table()
-                    .sessions
-                    .get_mut(&id)
-                    .and_then(|entry| entry.approvals.remove(approval))
-                    .unwrap_or("unknown");
-                let _ = inner.audit(&AuditRecord {
-                    session: Some(id),
-                    flavor: Some(flavor.id()),
-                    approval: Some(AuditApproval {
-                        id: approval.clone(),
-                        kind,
-                        allowed: *allowed,
-                        source: approval_source(*source),
-                    }),
-                    ..AuditRecord::new(AuditEvent::Approval, if *allowed { "allowed" } else { "denied" })
-                });
-            }
-            Event::Finished(finished) => status = *finished,
-            _ => {}
-        }
-    }
-    done.store(true, Ordering::SeqCst);
-    if let Some(tracker) = tracker {
-        let _ = tracker.join();
-    }
-    let killed = if tracks { detached.reap(detached::EXIT_GRACE) } else { 0 };
-    drop(session);
-    let mut table = inner.table();
-    let record = table.sessions.get_mut(&id).map(|entry| {
-        entry.state = SessionState::Finished(status);
-        entry.handle = None;
-        entry.leader = None;
-        AuditRecord {
-            session: Some(id),
-            agent: Some(entry.agent.clone()),
-            flavor: Some(flavor.id()),
-            depth: Some(entry.depth),
-            caveats: if killed > 0 {
-                vec![Caveat::DetachedServer.id()]
-            } else {
-                Vec::new()
-            },
-            ..AuditRecord::new(AuditEvent::Exit, finish_code(status))
-        }
-    });
-    drop(table);
-    inner.changed.notify_all();
-    if let Some(record) = record {
-        let _ = inner.audit(&record);
-    }
-}
-
 #[cfg(all(test, unix))]
 #[path = "supervisor_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "supervisor_attack_tests.rs"]
+mod attack_tests;
