@@ -273,6 +273,13 @@ impl LaunchPolicy {
         &self.spec.flavors
     }
 
+    /// The principals that may launch at the top of a tree, once each is registered to a
+    /// process ([`Supervisor::register_launcher`](crate::Supervisor::register_launcher)).
+    #[must_use]
+    pub fn launchers(&self) -> &[String] {
+        &self.spec.launchers
+    }
+
     /// Whether `principal` may launch at the top of a tree.
     #[must_use]
     pub fn admits(&self, principal: &str) -> bool {

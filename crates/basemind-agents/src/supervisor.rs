@@ -26,7 +26,7 @@ use crate::supervisor_pump::{Reservation, supervise};
 
 use crate::peer::Peer;
 pub use crate::supervisor_codes::launch_error_code;
-use crate::supervisor_identity::{mint_operator, resolve};
+use crate::supervisor_identity::{Role, mint_operator, register, resolve};
 use crate::supervisor_types::CallerKind;
 pub use crate::supervisor_types::{
     Caller, Launched, SessionId, SessionObserver, SessionState, SessionStatus, SupervisorError,
@@ -94,6 +94,8 @@ pub(crate) struct Table {
     next: u64,
     pub(crate) launches: u32,
     pub(crate) sessions: BTreeMap<u64, Entry>,
+    /// The processes the engine registered, each with what it may act as.
+    pub(crate) registered: Vec<(Role, ProcId)>,
 }
 
 impl Table {
@@ -252,40 +254,80 @@ impl Supervisor {
         self.inner.audit_failures.load(Ordering::SeqCst)
     }
 
-    /// The human operator, on the connection of `peer`: may stop and answer any session and
-    /// launches nothing.
+    /// Binds the configured launcher `principal` to `peer`'s process, replacing the process it
+    /// was bound to. From then on a caller is `principal` only when its peer is that process or
+    /// descends from it; until a principal is registered, no caller is it.
     ///
-    /// `peer` has to be outside the supervisor's tree: not a harness, nothing a harness started
-    /// (however it detached since, while its ancestry still leads to the harness), and nothing
-    /// else this process started. It is checked again on every call the operator makes.
-    ///
-    /// The embedding has to make sure that `peer` is the operator's process and not merely
-    /// some process of the same user. This crate cannot: it sees the kernel's word on the
-    /// process and its ancestry, nothing more. The engine must:
-    ///
-    /// - build `peer` with [`Peer::of_socket`] on the accepted connection, never from a pid a
-    ///   client sent;
-    /// - accept operator commands only on a channel the launched agents are not handed: not a
-    ///   tool of the injected MCP server, and not the socket whose path is in the launched
-    ///   agents' environment;
-    /// - not hand an operator caller made for one connection to another.
-    ///
-    /// What remains: any process of the same user outside the tree can become the operator,
-    /// and so can a launched agent's process that double-forked away from the harness
-    /// (reparented to init, its ancestry gone) on a host where orphans are not reparented to
-    /// this process. On Linux the embedding can close that by making itself a child subreaper
-    /// (`PR_SET_CHILD_SUBREAPER`), so orphans stay below it, and reaping those orphans by pid.
+    /// The engine calls this on a channel the launched agents do not reach (its own start-up,
+    /// a socket they are not handed), for the process that speaks for the principal: binding
+    /// a broader ancestor admits everything else that descends from it.
     ///
     /// # Errors
     ///
-    /// [`SupervisorError::CallerNotAdmitted`] for a peer inside a session or below the
-    /// supervisor, [`SupervisorError::PeerUnverified`] for one that is gone or cannot be
-    /// placed. Each refusal is audited.
+    /// [`SupervisorError::CallerNotAdmitted`] for a principal the policy does not name, or a
+    /// peer inside a session; [`SupervisorError::PeerUnverified`] for
+    /// one that is gone; [`SupervisorError::Audit`] when the registration could not be recorded
+    /// (it is then undone). Each is audited.
+    pub fn register_launcher(&self, principal: &str, peer: Peer) -> Result<(), SupervisorError> {
+        self.bind(Role::Launcher(principal.to_owned()), peer)
+    }
+
+    /// Binds the operator to `peer`'s process, as [`Self::register_launcher`] binds a launcher.
+    /// [`Self::operator`] then mints the operator only for that process or a descendant of it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register_launcher`], but for the principal.
+    pub fn register_operator(&self, peer: Peer) -> Result<(), SupervisorError> {
+        self.bind(Role::Operator, peer)
+    }
+
+    fn bind(&self, role: Role, peer: Peer) -> Result<(), SupervisorError> {
+        let inner = &self.inner;
+        let caller = match &role {
+            Role::Launcher(principal) => principal.clone(),
+            Role::Operator => "operator".to_owned(),
+        };
+        let mut table = inner.table();
+        let bound = register(&inner.policy, &mut table, role.clone(), peer);
+        drop(table);
+        let record = AuditRecord {
+            caller: Some(caller),
+            peer: Some(peer.pid()),
+            ..AuditRecord::new(AuditEvent::Registration, "registered")
+        };
+        if let Err(error) = bound {
+            return Err(refuse(inner, record, error));
+        }
+        if let Err(error) = inner.audit(&record) {
+            inner
+                .table()
+                .registered
+                .retain(|entry| *entry != (role.clone(), peer.id));
+            return Err(SupervisorError::Audit(error));
+        }
+        Ok(())
+    }
+
+    /// The human operator, on the connection of `peer`: may stop and answer any session and
+    /// launches nothing.
+    ///
+    /// `peer` has to be the process registered with [`Self::register_operator`] or a descendant
+    /// of it. It is checked again on every call the operator makes. The engine must build
+    /// `peer` with [`Peer::of_socket`] on the accepted connection, never from a pid a client
+    /// sent, and must not hand an operator caller made for one connection to another.
+    ///
+    /// # Errors
+    ///
+    /// [`SupervisorError::PeerUnverified`] for a peer under no registered process, or one that
+    /// is gone or cannot be placed; [`SupervisorError::CallerNotAdmitted`] for one inside a
+    /// session, below the supervisor, or registered for something else. Each refusal is audited.
     pub fn operator(&self, peer: Peer) -> Result<Caller, SupervisorError> {
         let minted = mint_operator(&self.inner.table(), peer);
         if let Err(error) = &minted {
             self.inner.refuse(AuditRecord {
-                caller: Some("operator".to_owned()),
+                claimed: Some("operator".to_owned()),
+                peer: Some(peer.pid()),
                 ..AuditRecord::new(AuditEvent::Refusal, error.code())
             });
         }

@@ -75,7 +75,10 @@ let supervisor = Supervisor::new(LaunchPolicy::new(spec)?, vec![config], Registr
 // The kernel names the process on the other end of the connection; the caller cannot.
 let listener = UnixListener::bind("/run/user/1000/basemind/agents.sock")?;
 let (connection, _) = listener.accept()?;
-let lead = Caller::principal("lead", Peer::of_socket(connection.as_fd())?)?;
+let peer = Peer::of_socket(connection.as_fd())?;
+// Once, on a channel the launched agents never reach: this process speaks for "lead".
+supervisor.register_launcher("lead", peer)?;
+let lead = Caller::principal("lead", peer)?;
 let launched = supervisor.launch(&lead, HarnessKind::Codex, &LaunchRequest::new("Review the diff."))?;
 println!("{} runs as {}", launched.id, launched.agent);
 # Ok(())

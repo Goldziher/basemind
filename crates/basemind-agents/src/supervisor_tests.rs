@@ -135,7 +135,16 @@ pub(super) fn registry() -> Registry {
 pub(super) fn start(spec: PolicySpec, configs: Vec<LaunchConfig>) -> (Supervisor, Arc<MemoryAuditSink>) {
     let audit = Arc::new(MemoryAuditSink::default());
     let supervisor = Supervisor::new(LaunchPolicy::new(spec).unwrap(), configs, registry(), audit.clone()).unwrap();
-    (supervisor, audit)
+    (registered(supervisor), audit)
+}
+
+/// `supervisor` with each of the policy's launchers, and the operator, bound to [`outside`].
+pub(super) fn registered(supervisor: Supervisor) -> Supervisor {
+    for launcher in supervisor.policy().launchers().to_vec() {
+        supervisor.register_launcher(&launcher, outside()).unwrap();
+    }
+    supervisor.register_operator(outside()).unwrap();
+    supervisor
 }
 
 /// A process outside the supervisor's tree: the test runner's parent.
@@ -329,7 +338,12 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
         outcomes(&audit, AuditEvent::Refusal),
         cases.iter().map(|(_, _, code)| *code).collect::<Vec<_>>()
     );
-    let callers: Vec<Option<String>> = audit.records().into_iter().map(|record| record.caller).collect();
+    let callers: Vec<Option<String>> = audit
+        .records()
+        .into_iter()
+        .filter(|record| record.event == AuditEvent::Refusal)
+        .map(|record| record.caller)
+        .collect();
     assert_eq!(callers[0].as_deref(), Some("stranger"));
     assert_eq!(callers[1].as_deref(), Some("operator"));
     assert_eq!(callers[3], None, "a token caller was named");
@@ -429,8 +443,13 @@ fn a_peer_inside_a_session_is_that_session_whatever_it_claims() {
         matches!(refused, SupervisorError::DepthExceeded { depth: 2, .. }),
         "{refused}"
     );
-    // This process is in no session's group: its claim stands.
-    let own = Caller::principal("lead", Peer::this_process().unwrap()).unwrap();
+    // This process is in no session: unregistered it is nobody, registered it is the launcher.
+    let own = Caller::principal("second", Peer::this_process().unwrap()).unwrap();
+    let refused = supervisor.launch(&own, HarnessKind::ClaudeCode, &request());
+    assert_eq!(refused.err().map(|error| error.code()), Some("peer_unverified"));
+    supervisor
+        .register_launcher("second", Peer::this_process().unwrap())
+        .unwrap();
     let second = supervisor.launch(&own, HarnessKind::ClaudeCode, &request()).unwrap();
     assert_eq!(second.depth, 1);
 }
@@ -706,13 +725,15 @@ fn the_audit_log_holds_no_brief_environment_value_or_token() {
     let scratch = Scratch::new();
     let log = scratch.path.join("audit.jsonl");
     let audit = Arc::new(FileAuditSink::open(&log).unwrap());
-    let supervisor = Supervisor::new(
-        LaunchPolicy::new(policy(&[HarnessKind::ClaudeCode])).unwrap(),
-        vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())],
-        registry(),
-        audit,
-    )
-    .unwrap();
+    let supervisor = registered(
+        Supervisor::new(
+            LaunchPolicy::new(policy(&[HarnessKind::ClaudeCode])).unwrap(),
+            vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())],
+            registry(),
+            audit,
+        )
+        .unwrap(),
+    );
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
     let env = scratch.env_of(&launched.agent);
     let token = env["BASEMIND_LAUNCH_TOKEN"].clone();
@@ -737,11 +758,23 @@ fn the_audit_log_holds_no_brief_environment_value_or_token() {
                 .to_owned()
         })
         .collect();
-    assert_eq!(events, ["launch", "refusal", "stop", "exit"]);
+    assert_eq!(
+        events,
+        [
+            "registration",
+            "registration",
+            "registration",
+            "registration",
+            "launch",
+            "refusal",
+            "stop",
+            "exit"
+        ]
+    );
     for needle in [SECRET, BRIEF_MARKER, token.as_str(), "ANTHROPIC_API_KEY", "PATH"] {
         assert!(!text.contains(needle), "{needle:?} reached the audit log");
     }
-    let launch: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    let launch: Value = serde_json::from_str(text.lines().nth(4).unwrap()).unwrap();
     assert_eq!(launch["caller"], "lead");
     assert_eq!(launch["agent"], launched.agent);
     assert_eq!(launch["flavor"], "claude");

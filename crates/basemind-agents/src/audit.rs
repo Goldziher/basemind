@@ -28,6 +28,8 @@ pub enum AuditEvent {
     Approval,
     /// A caller answered a pending approval request through the supervisor.
     ApprovalAnswer,
+    /// The engine bound a launcher or the operator to a process.
+    Registration,
 }
 
 impl AuditEvent {
@@ -41,6 +43,7 @@ impl AuditEvent {
             Self::Exit => "exit",
             Self::Approval => "approval",
             Self::ApprovalAnswer => "approval_answer",
+            Self::Registration => "registration",
         }
     }
 }
@@ -81,8 +84,14 @@ pub struct AuditRecord {
     pub at: SystemTime,
     /// What the record is about.
     pub event: AuditEvent,
-    /// Who asked: a principal, `operator`, or `supervisor` for a stop it made itself.
+    /// Who asked, as the supervisor verified it: a principal, a launched agent's principal,
+    /// `operator`, or `supervisor` for a stop it made itself. Absent when the caller could not
+    /// be verified.
     pub caller: Option<String>,
+    /// The principal an unverified caller claimed to be. Never a token.
+    pub claimed: Option<String>,
+    /// The caller's process id, as the kernel reported it.
+    pub peer: Option<u32>,
     /// The caller's own depth: 0 for a configured launcher, the session's for a launched one.
     pub caller_depth: Option<u32>,
     /// The session the record is about.
@@ -116,6 +125,8 @@ impl AuditRecord {
             at: SystemTime::now(),
             event,
             caller: None,
+            claimed: None,
+            peer: None,
             caller_depth: None,
             session: None,
             agent: None,
@@ -143,6 +154,8 @@ impl AuditRecord {
             }
         };
         put("caller", self.caller.as_ref().map(|caller| json!(caller)));
+        put("claimed", self.claimed.as_ref().map(|claimed| json!(claimed)));
+        put("peer", self.peer.map(|peer| json!(peer)));
         put("caller_depth", self.caller_depth.map(|depth| json!(depth)));
         put("session", self.session.map(|session| json!(session)));
         put("agent", self.agent.as_ref().map(|agent| json!(agent)));

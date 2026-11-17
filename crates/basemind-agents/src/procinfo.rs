@@ -61,48 +61,38 @@ pub(crate) fn all() -> Option<Vec<ProcInfo>> {
     (!procs.is_empty()).then_some(procs)
 }
 
-/// The ancestors of `pid`, nearest first, ending at a process whose parent is 0 or itself
-/// (the kernel's or init), or at the child of a process of another user, which macOS does not
-/// describe (`login`, `launchd`, a setuid program). `None` when a link vanished while it was
-/// read, which callers treat as unknown ancestry, or the walk ran over a bound no real tree
-/// reaches.
-pub(crate) fn ancestors(pid: i32) -> Option<Vec<ProcInfo>> {
+/// The ancestors of a process, nearest first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Chain {
+    pub procs: Vec<ProcInfo>,
+    /// Whether the walk reached a process whose parent is 0 or itself (the kernel's or init).
+    /// `false` when it stopped at a parent that could not be read, such as a process of another
+    /// user, which macOS does not describe (`login`, a setuid program): nothing is known above it.
+    pub complete: bool,
+}
+
+/// The ancestors of `pid`. `None` when `pid` cannot be read, a link vanished or was reused
+/// while it was read, or the walk ran over a bound no real tree reaches.
+pub(crate) fn ancestors(pid: i32) -> Option<Chain> {
     const MAX_DEPTH: usize = 4096;
-    let mut chain = Vec::new();
+    let mut procs = Vec::new();
     let mut at = info(pid)?;
     loop {
         if at.ppid <= 0 || at.ppid == at.pid {
-            return Some(chain);
+            return Some(Chain { procs, complete: true });
         }
         let Some(parent) = info(at.ppid) else {
-            return another_users(at.ppid).then_some(chain);
+            return Some(Chain { procs, complete: false });
         };
         // A parent that started after its child is a reused pid: the real parent is gone.
         if parent.start > at.start {
             return None;
         }
-        chain.push(parent);
-        if chain.len() > MAX_DEPTH {
+        procs.push(parent);
+        if procs.len() > MAX_DEPTH {
             return None;
         }
         at = parent;
-    }
-}
-
-/// Whether `pid` exists although it could not be read: a process of another user. Signal 0
-/// reports `EPERM` for most of them, and succeeds for one in the caller's own POSIX session
-/// (macOS lets a session's processes signal its leader, `login`, with SIGCONT).
-fn another_users(pid: i32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: signal 0 only checks that the process exists and may be signalled.
-        let status = unsafe { libc::kill(pid, 0) };
-        status == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
     }
 }
 
@@ -219,7 +209,7 @@ mod tests {
         }));
         assert!(all().unwrap().iter().any(|proc| proc.id() == me.id()));
         let chain = ancestors(me.pid).unwrap();
-        assert_eq!(chain.first().map(|parent| parent.pid), Some(me.ppid));
+        assert_eq!(chain.procs.first().map(|parent| parent.pid), Some(me.ppid));
         assert!(info(0).is_none() && info(-1).is_none());
     }
 
