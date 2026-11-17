@@ -135,7 +135,10 @@ fn verb_tools_snapshot(tools: &[rmcp::model::Tool]) -> String {
 async fn tools_list_matches_the_committed_snapshot() {
     let (_dir, tools, _) = list_tools().await;
     let served = verb_tools_snapshot(&tools);
-    let committed = std::fs::read_to_string(TOOLS_LIST_SNAPSHOT).expect("read the tools/list snapshot");
+    // A Windows checkout may convert the snapshot to CRLF; the bytes compared are the served ones.
+    let committed = std::fs::read_to_string(TOOLS_LIST_SNAPSHOT)
+        .expect("read the tools/list snapshot")
+        .replace("\r\n", "\n");
     assert!(
         served == committed,
         "tools/list differs from {TOOLS_LIST_SNAPSHOT}. If the change is intended, run `cargo test --test \
