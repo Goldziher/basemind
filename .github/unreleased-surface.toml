@@ -1,0 +1,10 @@
+# Plugin content on main names a tool surface the release its manifests pin cannot serve.
+#
+# While this file exists, tests/plugin_tool_skew.rs reports every name the pinned release lacks
+# instead of failing on it, and .github/workflows/publish.yaml refuses to publish. Remove it in the
+# release commit that makes the manifests pin a binary serving that surface; renew `review_by` only
+# as a deliberate decision to keep main ahead of its release.
+pinned_version = "0.33.0"
+since = "2026-11-17"
+review_by = "2026-12-15"
+reason = "ADR-0027 rule 4: main carries the 0.34.0 verb-tool surface (code_outline, git_log, ...) while the manifests pin 0.33.0, which serves the mode-dispatched code/git/... tools; the skew ends when 0.34.0 is cut."
