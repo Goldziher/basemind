@@ -378,7 +378,9 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
         }
         GitCmd::Churn { window, top_k } => (
             "git_churn",
-            server.git_churn_call(HotFilesParams { window, top_k }).await,
+            server
+                .cli_op(HotFilesParams { window, top_k }, Workspace::git_churn)
+                .await,
         ),
         GitCmd::ByPath {
             pattern,
@@ -389,13 +391,16 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
         } => (
             "git_by_path",
             server
-                .git_by_path_call(FindCommitsByPathParams {
-                    pattern,
-                    window,
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+                .cli_op(
+                    FindCommitsByPathParams {
+                        pattern,
+                        window,
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    Workspace::git_by_path,
+                )
                 .await,
         ),
     };
