@@ -4,6 +4,7 @@ use super::attack_tests::{approvals_body, consenting, replies};
 use super::tests::*;
 use super::*;
 use crate::audit::MemoryAuditSink;
+use crate::event::FinishStatus;
 use crate::policy::{FlavorPolicy, PolicySpec};
 use crate::spec::ApprovalVerdict;
 
