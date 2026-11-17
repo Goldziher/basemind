@@ -285,6 +285,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mcp__plugin_basemind_basemind__` and `mcp__basemind__`, instead of the
   `mcp__plugin_basemind_basemind__*` wildcard, which also approved `memory_save`, `index_rescan` and
   the agent tools. It removes that wildcard and entries for retired tools.
+- The plugin ships `scripts/statusline.sh`; `/bm-statusline` runs the installed plugin's copy
+  instead of the marketplace clone's.
 
 ### Removed
 

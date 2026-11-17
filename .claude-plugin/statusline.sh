@@ -203,11 +203,14 @@ mark() { printf '%s%s%s %s%sbasemind%s' "$brand" "$glyph" "$reset" "$bold" "$bra
 
 bm_version() {
   [[ "${BASEMIND_STATUSLINE_VERSION:-1}" == "0" ]] && return 0
-  local dir ver="" parent
+  local dir ver="" parent manifest
   dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || return 0
-  if [[ $have_jq -eq 1 && -f "$dir/plugin.json" ]]; then
-    ver="$(jq -r '.version // empty' "$dir/plugin.json" 2>/dev/null || true)"
-  fi
+  # Beside the manifest (`.claude-plugin/statusline.sh`) or in the plugin's `scripts/`.
+  for manifest in "$dir/plugin.json" "$dir/../.claude-plugin/plugin.json"; do
+    if [[ -z "$ver" && $have_jq -eq 1 && -f "$manifest" ]]; then
+      ver="$(jq -r '.version // empty' "$manifest" 2>/dev/null || true)"
+    fi
+  done
   if [[ -z "$ver" ]]; then
     parent="$(basename "$(dirname "$dir")")"
     [[ "$parent" =~ ^[0-9]+\.[0-9]+ ]] && ver="$parent"

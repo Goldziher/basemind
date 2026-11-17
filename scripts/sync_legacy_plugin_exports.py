@@ -51,6 +51,8 @@ def expected_files(root: Path) -> dict[str, Path]:
         if path.is_file():
             files[f"hooks/{path.name}"] = path
     files["scripts/mcp-launch.sh"] = root / "plugin/.ai-rulez/scripts/mcp-launch.sh"
+    # The marketplace clone's copy, which `/bm-statusline` falls back to and settings.json names.
+    files[".claude-plugin/statusline.sh"] = root / "plugin/.ai-rulez/scripts/statusline.sh"
     files["opencode-plugin/.pi/extensions/basemind.ts"] = root / ".pi/extensions/basemind.ts"
     for tree in TREES[:2]:
         for name in ("session-start", "inbox-notify", "run-hook.cmd"):
