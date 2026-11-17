@@ -53,7 +53,7 @@ impl ServedWorkspace {
 ///
 /// Holds one [`Arc<Workspace>`](super::Workspace) (the heavy read state, shared across
 /// connections) plus this connection's own identity. Field accesses to the shared read stack go
-/// through [`shared`](Self::shared); the identity fields (`agent_id`, `daemon_client`)
+/// through [`shared`](Self::shared); the identity fields (`agent_id`, `agents`)
 /// are read directly.
 pub(crate) struct ServerState {
     /// The workspace-level read stack shared across every connection to this `(root, view)`.
@@ -84,11 +84,6 @@ pub(crate) struct ServerState {
     /// identity resolver of agent comms (ADR-0021). Group-tier writes ignore it.
     #[allow(dead_code)]
     pub(crate) agent_id: String,
-    /// This session's link to the daemon for forwarded work, connected on first use (see
-    /// `helpers_daemon`). It names no agent.
-    #[cfg(all(feature = "comms", feature = "memory", any(unix, windows)))]
-    pub(crate) daemon_client:
-        tokio::sync::OnceCell<std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>>,
     /// Who this session is to the agent tools: set for a daemon-hosted relay session only.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) agents: Option<std::sync::Arc<super::AgentContext>>,
@@ -119,8 +114,6 @@ impl ServerState {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             host: served.host,
             agent_id,
-            #[cfg(all(feature = "comms", feature = "memory", any(unix, windows)))]
-            daemon_client: tokio::sync::OnceCell::new(),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             agents: None,
             lean: std::sync::atomic::AtomicBool::new(super::lean::lean_mode_enabled()),
@@ -130,16 +123,6 @@ impl ServerState {
 }
 
 impl ServerState {
-    /// Whether a memory request crosses the daemon's socket, whose frame bounds its size, rather
-    /// than being answered in this process.
-    #[cfg(feature = "memory")]
-    pub(crate) fn memory_is_framed(&self) -> bool {
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        return self.daemon_writer && self.host.is_none();
-        #[cfg(not(all(feature = "comms", any(unix, windows))))]
-        false
-    }
-
     /// Barrier every cache-reading tool crosses before it touches [`ServerState::cache`].
     ///
     /// Two regimes:

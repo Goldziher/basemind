@@ -1,9 +1,8 @@
-//! The link a session keeps to the daemon for forwarded work: memory operations, resolved
-//! references, index reads and the code-search lanes.
+//! How a session that does not hold the index reaches the one that does: a rescan over a link of
+//! its own to the daemon, and a memory operation through the daemon's pool, in process, for a
+//! daemon-hosted session.
 //!
-//! The link names no agent: agent messaging does not go over it (ADR-0021). One link is opened
-//! lazily per session and kept; a long forwarded operation (a rescan, an embed pass) opens its
-//! own with [`connect_ephemeral_client`] so it does not hold up the reads queued on the shared one.
+//! The link names no agent: agent messaging does not go over it (ADR-0021).
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -11,15 +10,9 @@
 use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
-#[cfg(feature = "memory")]
-use tokio::sync::Mutex;
 
 use super::ServerState;
 use crate::comms::client::{ClientHello, CommsClient};
-
-/// Upper bound on dialing (and, if need be, spawning) the daemon.
-#[cfg(feature = "memory")]
-const CONNECT_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Map a [`CommsClientError`](crate::comms::client::CommsClientError) into an MCP error with a
 /// stable `comms:` prefix so agents can route on it.
@@ -41,39 +34,14 @@ async fn connect(state: &ServerState) -> Result<CommsClient, McpError> {
         .map_err(comms_err)
 }
 
-/// This session's shared link to the daemon, connected on first use. A failed connect leaves
-/// nothing cached, so the next call dials again.
-#[cfg(feature = "memory")]
-pub(super) async fn daemon_client(state: &ServerState) -> Result<Arc<Mutex<CommsClient>>, McpError> {
-    let handle = state
-        .daemon_client
-        .get_or_try_init(|| async {
-            let client = tokio::time::timeout(CONNECT_BUDGET, connect(state))
-                .await
-                .map_err(|_| {
-                    comms_err(format!(
-                        "broker unresponsive: connect did not finish within {}s (retryable)",
-                        CONNECT_BUDGET.as_secs()
-                    ))
-                })??;
-            Ok::<_, McpError>(Arc::new(Mutex::new(client)))
-        })
-        .await?;
-    Ok(Arc::clone(handle))
-}
-
 /// A link of its own for a long forwarded operation, owned and dropped by the caller.
 pub(super) async fn connect_ephemeral_client(state: &ServerState) -> Result<CommsClient, McpError> {
     connect(state).await
 }
 
-/// Route a CORE memory op to the machine's sole fjall writer and return the outcome.
-///
-/// On the daemon-HOSTED path ([`ServerState`]'s shared `host` is `Some`) the writer pool is
-/// in-process, so the op runs directly against it on a blocking thread — no socket loopback, which on
-/// the daemon would be the daemon dialing itself. Every other `daemon_writer` serve has no host and
-/// forwards over the socket. Both run the identical `run_memory_op` writer-side, so callers see one
-/// outcome shape.
+/// Run a CORE memory op against the machine's sole fjall writer: the daemon's pool, in process, on
+/// a blocking thread. Only a daemon-hosted session forwards memory; a CLI next to the daemon
+/// forwards its whole call instead.
 #[cfg(feature = "memory")]
 pub(super) async fn dispatch_memory_op(
     state: &ServerState,
@@ -88,10 +56,8 @@ pub(super) async fn dispatch_memory_op(
             .map_err(|error| McpError::internal_error(format!("host memory task panicked: {error}"), None))?
             .map_err(|error| McpError::internal_error(format!("host memory: {error}"), None));
     }
-    let client = daemon_client(state).await?;
-    let mut guard = client.lock().await;
-    guard
-        .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-        .await
-        .map_err(comms_err)
+    Err(McpError::internal_error(
+        "memory: this session is neither hosted by the daemon nor holds the index",
+        None,
+    ))
 }

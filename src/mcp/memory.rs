@@ -350,11 +350,10 @@ pub(super) async fn memory_get_many_wire(
     owner: &str,
     keys: Vec<String>,
 ) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
-    let framed = state.memory_is_framed();
     let mut entries = Vec::with_capacity(keys.len());
     while entries.len() < keys.len() {
         let rest = &keys[entries.len()..];
-        let chunk = super::memory_ops::request_chunk(rest, super::memory_ops::GET_MANY_MAX_KEYS, framed)?;
+        let chunk = &rest[..rest.len().min(super::memory_ops::GET_MANY_MAX_KEYS)];
         entries.extend(memory_get_chunk_wire(state, vis_byte, owner, chunk).await?);
     }
     Ok(entries)
@@ -410,11 +409,10 @@ pub(super) async fn memory_stamps_wire(
     owner: &str,
     keys: &[String],
 ) -> Result<Vec<Option<i64>>, McpError> {
-    let framed = state.memory_is_framed();
     let mut stamps = Vec::with_capacity(keys.len());
     while stamps.len() < keys.len() {
         let rest = &keys[stamps.len()..];
-        let chunk = super::memory_ops::request_chunk(rest, super::memory_ops::STAMPS_MAX_KEYS, framed)?;
+        let chunk = &rest[..rest.len().min(super::memory_ops::STAMPS_MAX_KEYS)];
         #[cfg(all(feature = "comms", any(unix, windows)))]
         if state.daemon_writer {
             use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
