@@ -240,9 +240,8 @@ The package includes ten skills and a native extension that loads basemind conte
 and after compaction. Pi runs basemind through its shell tool using the [CLI](#3-as-a-cli).
 No MCP bridge or binary is included. Add `-l` to save the package in the current project's configuration.
 
-The next release adds these resources to the existing `basemind-opencode` npm package.
-After that release, use `pi install npm:basemind-opencode` for registry installation and
-Pi package-catalog discovery. Both installation paths carry the same extension and skills.
+The `basemind-opencode` npm package carries the same extension and skills: use
+`pi install npm:basemind-opencode` for registry installation and Pi package-catalog discovery.
 
 </details>
 
@@ -1058,7 +1057,7 @@ A cap variable must be a positive integer; anything else falls back to the defau
 (size or modification time) and logs `config changed`. A file that no longer parses keeps the last
 good config and logs a warning. A hosted read stack with live sessions keeps its config until they
 reconnect, and `scan_threads` is fixed for the process lifetime (the daemon logs that a restart is
-required). `admin status` reports `config_stamp` (`<bytes>B@<unix seconds>`) to spot an edit.
+required). `index_status {}` (CLI `basemind status`) reports `config_stamp` (`<bytes>B@<unix seconds>`) to spot an edit.
 
 **Reserved keys.** These parse but nothing reads them yet, and setting one to a non-default value
 logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[memory] enabled` /
