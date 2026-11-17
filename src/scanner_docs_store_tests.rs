@@ -464,3 +464,32 @@ fn an_incremental_pass_sweeps_only_the_keys_it_dropped() {
     assert!(!keys.contains(&orphan), "a full pass sweeps every dead key");
     assert_eq!(keys.len(), 1);
 }
+
+/// A store an earlier build kept under `views/<view>/retrieval/` is removed by the next scan, and
+/// the group store is filled from the cached blobs: the rows carry the blob's vectors, and no
+/// embedder is reached (the sync has none). A view with no documents removes its old store too.
+#[test]
+fn the_per_view_store_of_an_earlier_build_is_replaced_by_the_group_store() {
+    let (_tmp, mut store, config, filters) = setup();
+    let legacy = store.view_dir.join(crate::store_layout::RETRIEVAL_DIR);
+    let seed = |legacy: &std::path::Path| {
+        std::fs::create_dir_all(legacy.join("balanced-768-0000")).unwrap();
+        std::fs::write(legacy.join("balanced-768-0000").join("rows"), b"old rows").unwrap();
+    };
+    seed(&legacy);
+    track(&mut store, &blob("legacy migrated", true), &["a.md"]);
+
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX),
+        1
+    );
+    assert!(!legacy.exists(), "the per-view store is removed");
+    let caps = doc_store(&store, &config).capabilities().unwrap();
+    assert_eq!((caps.rows, caps.vectors), (2, 2), "rows and vectors come from the blob");
+
+    let (_tmp, mut empty, config, filters) = setup();
+    let legacy = empty.view_dir.join(crate::store_layout::RETRIEVAL_DIR);
+    seed(&legacy);
+    sync_document_rows(&mut empty, &config, &filters, &AHashSet::new(), usize::MAX);
+    assert!(!legacy.exists(), "a view without documents removes it too");
+}

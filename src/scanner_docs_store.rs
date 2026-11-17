@@ -25,19 +25,20 @@ const WRITE_ROWS: usize = crate::lance::BATCH_MAX_ROWS;
 /// The group's retrieval store for the configured preset. With `create` false, `None` when no store
 /// was ever written for it: removing rows must not create one.
 ///
-/// A writer also removes the view's own stores an earlier build kept under `views/<view>/retrieval/`:
-/// the group store replaces them, and is filled from the cached blobs without embedding again.
+/// Every open (all of them are a scan's) also removes the view's own stores an earlier build kept
+/// under `views/<view>/retrieval/`, whether or not the view still holds documents: the group store
+/// replaces them, and is filled from the cached blobs without embedding again.
 pub(crate) fn open_doc_store(store: &Store, config: &Config, create: bool) -> Result<Option<DocStore>, String> {
+    let legacy = store.view_dir.join(crate::store_layout::RETRIEVAL_DIR);
+    if legacy.is_dir()
+        && let Err(error) = std::fs::remove_dir_all(&legacy)
+    {
+        tracing::debug!(%error, dir = %legacy.display(), "removing the view's old document store failed");
+    }
     let preset = &config.documents.embedding_preset;
     let dim = super::preset_dim(preset).map_err(|error| error.to_string())?;
     let dir = group_store_dir(&store.root, preset, dim);
     let opened = if create {
-        let legacy = store.view_dir.join(crate::store_layout::RETRIEVAL_DIR);
-        if legacy.is_dir()
-            && let Err(error) = std::fs::remove_dir_all(&legacy)
-        {
-            tracing::debug!(%error, dir = %legacy.display(), "removing the view's old document store failed");
-        }
         DocStore::shared(&dir, dim, preset).map(Some)
     } else {
         DocStore::shared_existing(&dir, dim, preset)
