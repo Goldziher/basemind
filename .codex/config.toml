@@ -3,3 +3,11 @@ project_doc_max_bytes = 65536
 [mcp_servers.ai-rulez]
 args = ["mcp"]
 command = "ai-rulez"
+
+[mcp_servers.basemind]
+command = "node"
+args = [
+    "-e",
+    'const fs=require("fs"),p=require("path"),o=require("os"),u=require("url"),cp=require("child_process"),c=p.join(process.env.BASEMIND_CODEX_HOME||process.env.CODEX_HOME||p.join(o.homedir(),".codex"),"plugins","cache"),a=process.argv.slice(1),s=(fs.existsSync(c)?fs.readdirSync(c,{withFileTypes:true}):[]).flatMap(m=>{const r=p.join(c,m.name,"basemind");return fs.existsSync(r)?fs.readdirSync(r).map(v=>p.join(r,v,"scripts","codex-mcp-launch.mjs")):[]}).filter(f=>fs.existsSync(f)).sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs)[0];if(s){import(u.pathToFileURL(s).href).then(m=>m.run(a))}else{const l=p.join("scripts","mcp-launch.sh"),r=fs.existsSync(l)?cp.spawnSync(l,a,{stdio:"inherit"}):cp.spawnSync("basemind",a,{stdio:"inherit"});if(r.error)throw r.error;process.exitCode=r.status??1}',
+    "serve",
+]

@@ -98,3 +98,4 @@ GEMINI.md
 /node_modules/
 
 /opencode.json
+.claude/settings.local.json
