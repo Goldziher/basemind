@@ -1,4 +1,4 @@
-//! Token counting for savings telemetry, `admin eval` and `basemind admin tokens`.
+//! Token counting for savings telemetry, budgets, `admin eval` and `basemind admin tokens`.
 //!
 //! Real HF-tokenizer counts (o200k / gpt-4o, via xberg) when the `tokenizer`
 //! feature is enabled (pulled in unconditionally by `documents`, which needs it
@@ -6,6 +6,13 @@
 //! path downloads the tokenizer from HF on first use and caches it, and falls
 //! back to a word estimate offline — acceptable for `basemind admin tokens`, NOT
 //! for any per-call hot path.
+
+/// `bytes / 4` token estimate, saturating. The byte-only fallback used wherever the full text
+/// is NOT in hand — only a byte length. Shared by the budget helper ([`super::budget`]) and the
+/// telemetry estimator, so both use the exact same bytes→token factor.
+pub(crate) fn bytes_to_tokens(bytes: u64) -> u64 {
+    bytes / 4
+}
 
 /// Count the tokens in `text`.
 #[cfg(feature = "tokenizer")]

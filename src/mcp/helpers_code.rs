@@ -324,7 +324,7 @@ async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<C
         &store,
         refs,
         &route,
-        super::tool_contract::IndexedFiles::of(state),
+        super::tool_contract::IndexedFiles::of(&state.shared),
         &cache,
         params,
         || state.lifecycle_notice(),
@@ -385,7 +385,7 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
         let l1 = if live.fresh {
             l1
         } else {
-            super::freshness::reparse(state, "code_outline", &p.path, &live.bytes)?
+            super::freshness::reparse(&state.shared, "code_outline", &p.path, &live.bytes)?
         };
         Ok::<_, McpError>((l1, live.bytes, !live.fresh))
     })?;

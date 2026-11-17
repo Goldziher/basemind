@@ -7,13 +7,15 @@
 
 use std::path::Path;
 
-use rmcp::ErrorData as McpError;
-
+use crate::engine::error::EngineError;
+use crate::engine::outline_cache::{OutlineCache, OutlineEntry};
+use crate::engine::workspace::Workspace;
+use crate::engine::{MapCache, l1_cache};
 use crate::path::RelPath;
 
 /// What the index recorded about a file's content when it scanned it.
 #[derive(Clone, Copy)]
-pub(super) struct IndexedStamp<'a> {
+pub(crate) struct IndexedStamp<'a> {
     pub hash_hex: &'a str,
     pub size_bytes: u64,
     /// Nanoseconds since the epoch; `0` when the scan could not trust the timestamp.
@@ -30,8 +32,8 @@ impl<'a> From<&'a crate::store::FileEntry> for IndexedStamp<'a> {
     }
 }
 
-impl<'a> From<&'a super::l1_cache::FileMeta> for IndexedStamp<'a> {
-    fn from(meta: &'a super::l1_cache::FileMeta) -> Self {
+impl<'a> From<&'a l1_cache::FileMeta> for IndexedStamp<'a> {
+    fn from(meta: &'a l1_cache::FileMeta) -> Self {
         Self {
             hash_hex: &meta.hash_hex,
             size_bytes: meta.size_bytes,
@@ -47,9 +49,9 @@ impl<'a> From<&'a super::l1_cache::FileMeta> for IndexedStamp<'a> {
 /// the live bytes then match the stamp while the spans laid over them belong to the older content.
 /// Here the outline is looked up by the entry's own content hash, so the stamp a file is judged
 /// against and the facts served for it are one snapshot.
-pub(super) fn indexed_outline(
+pub(crate) fn indexed_outline(
     store: &crate::store::Store,
-    cache: &super::MapCache,
+    cache: &MapCache,
     path: &RelPath,
 ) -> Option<(crate::store::FileEntry, std::sync::Arc<crate::extract::FileMapL1>)> {
     let entry = store.lookup(path)?.clone();
@@ -70,7 +72,7 @@ pub(super) fn indexed_outline(
 /// A different size settles it. The same size and timestamp is the scanner's own "unchanged" test.
 /// Anything else is decided by the content hash, so an edit that keeps the size is never taken for
 /// the indexed content.
-pub(super) fn matches_index(stamp: IndexedStamp<'_>, file: &Path, bytes: &[u8]) -> bool {
+pub(crate) fn matches_index(stamp: IndexedStamp<'_>, file: &Path, bytes: &[u8]) -> bool {
     if bytes.len() as u64 != stamp.size_bytes {
         return false;
     }
@@ -85,7 +87,7 @@ pub(super) fn matches_index(stamp: IndexedStamp<'_>, file: &Path, bytes: &[u8]) 
 }
 
 /// An indexed file as it is on disk now.
-pub(super) struct Live {
+pub(crate) struct Live {
     pub bytes: Vec<u8>,
     /// Whether `bytes` are the content the index describes. Indexed offsets apply only then.
     pub fresh: bool,
@@ -93,7 +95,7 @@ pub(super) struct Live {
 
 /// Why an indexed file's content could not be loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Unloadable {
+pub(crate) enum Unloadable {
     /// Deleted, or no longer readable, since the scan.
     Gone,
     /// Grown past `scan.max_file_bytes` since the scan.
@@ -104,7 +106,7 @@ pub(super) enum Unloadable {
 ///
 /// The scan indexes no file over `scan.max_file_bytes`, so a larger one has outgrown its index
 /// entry and is never held whole at whatever size it has reached.
-pub(super) fn read_bounded(file: &Path, max_bytes: u64) -> std::io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_bounded(file: &Path, max_bytes: u64) -> std::io::Result<Option<Vec<u8>>> {
     use std::io::Read;
 
     let mut bytes = Vec::new();
@@ -115,7 +117,7 @@ pub(super) fn read_bounded(file: &Path, max_bytes: u64) -> std::io::Result<Optio
 }
 
 /// Read `file` whole, bounded by `max_bytes`, and judge it against `stamp`. Blocking IO.
-pub(super) fn load(file: &Path, stamp: IndexedStamp<'_>, max_bytes: u64) -> Result<Live, Unloadable> {
+pub(crate) fn load(file: &Path, stamp: IndexedStamp<'_>, max_bytes: u64) -> Result<Live, Unloadable> {
     let bytes = read_bounded(file, max_bytes)
         .map_err(|_| Unloadable::Gone)?
         .ok_or(Unloadable::TooLarge)?;
@@ -124,13 +126,13 @@ pub(super) fn load(file: &Path, stamp: IndexedStamp<'_>, max_bytes: u64) -> Resu
 }
 
 /// [`load`] for a tool that can only answer from the indexed content: an edited file is an error.
-pub(super) fn load_fresh(
+pub(crate) fn load_fresh(
     tool: &str,
     path: &RelPath,
     file: &Path,
     stamp: IndexedStamp<'_>,
     max_bytes: u64,
-) -> Result<Vec<u8>, McpError> {
+) -> Result<Vec<u8>, EngineError> {
     match load(file, stamp, max_bytes) {
         Ok(live) if live.fresh => Ok(live.bytes),
         Ok(_) => Err(edited(tool, path)),
@@ -139,7 +141,7 @@ pub(super) fn load_fresh(
 }
 
 /// The error for an indexed file that cannot be loaded, phrased as the next call to make.
-pub(super) fn unloadable(tool: &str, path: &RelPath, reason: Unloadable, max_bytes: u64) -> McpError {
+pub(crate) fn unloadable(tool: &str, path: &RelPath, reason: Unloadable, max_bytes: u64) -> EngineError {
     let message = match reason {
         Unloadable::Gone => format!(
             "`{tool}`: `{path}` is in the index but can no longer be read: it was deleted or moved after the \
@@ -151,14 +153,14 @@ pub(super) fn unloadable(tool: &str, path: &RelPath, reason: Unloadable, max_byt
              {{\"paths\":[\"{path}\"]}}` to drop it from the index."
         ),
     };
-    McpError::invalid_params(message, None)
+    EngineError::invalid_argument(message)
 }
 
 /// The outline of `bytes` in `language`, parsed once per content: it is kept in the outline cache
 /// under the content's git blob id, the key a revision's blob has there, so paging a stale outline
 /// or reading several symbols of one edited file costs one parse. Blocking: a tree-sitter parse.
 fn outline_of(
-    cache: &super::OutlineCache,
+    cache: &OutlineCache,
     language: crate::lang::LangId,
     bytes: &[u8],
 ) -> Result<std::sync::Arc<crate::extract::FileMapL1>, crate::extract::ExtractError> {
@@ -170,7 +172,7 @@ fn outline_of(
     }
     let map = std::sync::Arc::new(crate::extract::l1::extract_l1(language, bytes)?);
     if let Some(key) = key {
-        let entry = super::OutlineEntry {
+        let entry = OutlineEntry {
             map: std::sync::Arc::clone(&map),
             source: std::sync::Arc::new(bytes.to_vec()),
         };
@@ -180,36 +182,30 @@ fn outline_of(
 }
 
 /// The outline of `bytes`, the current content of an indexed file that was edited after the scan.
-pub(super) fn reparse(
-    state: &super::ServerState,
+pub(crate) fn reparse(
+    ws: &Workspace,
     tool: &str,
     path: &RelPath,
     bytes: &[u8],
-) -> Result<std::sync::Arc<crate::extract::FileMapL1>, McpError> {
+) -> Result<std::sync::Arc<crate::extract::FileMapL1>, EngineError> {
     let cannot = |why: String| {
-        McpError::invalid_params(
-            format!(
-                "`{tool}`: `{path}` changed since it was indexed and {why}. Read a line span with `code_read`, \
+        EngineError::invalid_argument(format!(
+            "`{tool}`: `{path}` changed since it was indexed and {why}. Read a line span with `code_read`, \
                  or run `index_rescan {{\"paths\":[\"{path}\"]}}`."
-            ),
-            None,
-        )
+        ))
     };
-    let language = super::helpers_git_file::detect_lang(state, path)
+    let language = ws
+        .detect_lang(path)
         .ok_or_else(|| cannot("is no longer in a supported language".to_string()))?;
-    outline_of(&state.shared.outline_cache, language, bytes)
-        .map_err(|error| cannot(format!("could not be parsed ({error})")))
+    outline_of(&ws.outline_cache, language, bytes).map_err(|error| cannot(format!("could not be parsed ({error})")))
 }
 
 /// The error for a tool that needs the indexed positions of a file edited after the scan.
-pub(super) fn edited(tool: &str, path: &RelPath) -> McpError {
-    McpError::invalid_params(
-        format!(
-            "`{tool}`: `{path}` changed since it was indexed, so the indexed positions no longer match the \
+pub(crate) fn edited(tool: &str, path: &RelPath) -> EngineError {
+    EngineError::invalid_argument(format!(
+        "`{tool}`: `{path}` changed since it was indexed, so the indexed positions no longer match the \
              file. Run `index_rescan {{\"paths\":[\"{path}\"]}}` and retry."
-        ),
-        None,
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -289,21 +285,20 @@ mod tests {
         let path = RelPath::from("a.rs");
         let refusal = load_fresh("code_refs", &path, &file, stamp, 1024).expect_err("edited");
         assert!(
-            refusal.message.contains("index_rescan {\"paths\":[\"a.rs\"]}"),
-            "{}",
-            refusal.message
+            refusal.to_string().contains("index_rescan {\"paths\":[\"a.rs\"]}"),
+            "{refusal}"
         );
 
         std::fs::remove_file(&file).expect("remove");
         assert_eq!(load(&file, stamp, 1024).err(), Some(Unloadable::Gone));
         let gone = unloadable("code_read", &path, Unloadable::Gone, 1024);
-        assert!(gone.message.contains("index_rescan"), "{}", gone.message);
+        assert!(gone.to_string().contains("index_rescan"), "{gone}");
     }
 
     #[test]
     fn an_edited_file_is_parsed_once_per_content() {
         let _ = crate::lang::ensure_grammars().expect("grammar bootstrap");
-        let cache = crate::mcp::OutlineCache::with_bounds(4, u64::MAX);
+        let cache = OutlineCache::with_bounds(4, u64::MAX);
         let rust = crate::lang::intern("rust").expect("rust grammar");
         let first = outline_of(&cache, rust, b"fn a() {}\n").expect("parse");
         let again = outline_of(&cache, rust, b"fn a() {}\n").expect("parse");
@@ -343,7 +338,7 @@ mod tests {
         std::fs::write(&file, before).expect("write");
         let mut store = Store::open(root, VIEW_WORKING).expect("open store");
         scan(&mut store);
-        let lagging = crate::mcp::MapCache::build(&store, 0);
+        let lagging = MapCache::build(&store, 0);
         std::fs::write(&file, after).expect("write");
         scan(&mut store);
 

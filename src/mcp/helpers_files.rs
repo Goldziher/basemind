@@ -474,7 +474,7 @@ pub(super) fn doc_language(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::Lifecycle;
+    use crate::engine::Lifecycle;
     use crate::mcp::types::LifecycleNotice;
 
     #[test]

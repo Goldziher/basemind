@@ -173,11 +173,7 @@ fn span_in_file(
 /// Grammar for `path`, honouring the workspace's `[languages]` overrides so git-side tools agree
 /// with what the scanner indexed.
 pub(super) fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>) -> Option<crate::lang::LangId> {
-    state
-        .shared
-        .lang_rules()
-        .detect(std::path::Path::new(path.as_ref()))
-        .lang()
+    state.shared.detect_lang(path)
 }
 
 /// The `diff_outline` operation: which symbols the served view has that `rev` does not, and
@@ -470,7 +466,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     let cache = state.shared.cache.load_full();
     let outline = match state.shared.try_store_read() {
         Ok(store) => super::freshness::indexed_outline(&store, &cache, &params.path).map(|(entry, l1)| {
-            let file = super::tool_contract::IndexedFiles::of(state)
+            let file = super::tool_contract::IndexedFiles::of(&state.shared)
                 .file(&store, &params.path)
                 .ok();
             (l1, file.map(|file| (file, entry)))

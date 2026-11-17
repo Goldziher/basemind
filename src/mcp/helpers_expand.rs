@@ -213,7 +213,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         let l1 = if live.fresh {
             std::sync::Arc::new(indexed)
         } else {
-            freshness::reparse(state, "code_read", &params.path, &live.bytes)?
+            freshness::reparse(&state.shared, "code_read", &params.path, &live.bytes)?
         };
         Ok::<_, McpError>((live.bytes, !live.fresh, l1))
     })?;

@@ -15,6 +15,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use arc_swap::ArcSwap;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use crate::engine::types::LifecycleNotice;
 use crate::engine::{MapCache, outline_cache::OutlineCache};
 use crate::index::view::IndexView;
 use crate::store::Store;
@@ -331,6 +332,58 @@ impl Workspace {
     pub(crate) fn note_index_changed(&self) {
         self.cache_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.index_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Workspace {
+    /// Grammar for `path`, honouring the workspace's `[languages]` overrides so the git-side tools
+    /// and a stale re-parse agree with what the scanner indexed.
+    pub(crate) fn detect_lang(&self, path: impl AsRef<std::ffi::OsStr>) -> Option<crate::lang::LangId> {
+        self.lang_rules().detect(std::path::Path::new(path.as_ref())).lang()
+    }
+
+    /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
+    pub(crate) fn lifecycle(&self) -> Lifecycle {
+        Lifecycle::from_flags(
+            self.initial_scan_active.load(Ordering::Relaxed),
+            self.cache_warming.load(Ordering::Relaxed),
+            self.rescan_active.load(Ordering::Relaxed),
+        )
+    }
+
+    /// The `index_rebuilding` notice while the workspace's `status.json` records a partial scan or an
+    /// uncommitted resolve pass. The daemon marks it when it opens a workspace whose fjall index was
+    /// wiped or is empty over a populated file map, and a session that does not hold the index
+    /// (`daemon_writer`, daemon-hosted) cannot see that any other way.
+    fn index_rebuilding_notice(&self) -> Option<LifecycleNotice> {
+        let status = crate::store::read_status_sidecar(&crate::store::workspace_cache_dir(&self.root));
+        LifecycleNotice::for_scan_status(status.as_ref())
+    }
+
+    /// The notice for a workspace nothing has been scanned into, so an empty answer is never read
+    /// as "no matches". Judged on the store's file map, not the in-RAM map, which is also empty
+    /// before a lazy build. `None` while another task holds the store lock.
+    fn empty_index_notice(&self) -> Option<LifecycleNotice> {
+        let store = self.try_store_read().ok()?;
+        (store.index.files.is_empty() && store.index.doc_files.is_empty()).then(LifecycleNotice::empty_index)
+    }
+
+    /// A [`LifecycleNotice`] to attach to a tool response, or `None` when
+    /// [`Ready`](Lifecycle::Ready). Lets every read tool label a possibly-incomplete result with the
+    /// server state + an actionable message, so an agent knows to retry rather than concluding "empty".
+    pub(crate) fn lifecycle_notice(&self) -> Option<LifecycleNotice> {
+        LifecycleNotice::for_state(self.lifecycle())
+            .or_else(|| self.index_rebuilding_notice())
+            .or_else(|| self.empty_index_notice())
+            .or_else(|| {
+                // A read-only session whose projected call/impl indexes were capped answers reference
+                // queries from a truncated set. Reported through the same channel as the warming/
+                // rescanning states so a caller never reads an incomplete result as "no matches".
+                self.cache
+                    .load()
+                    .projections_capped()
+                    .then(LifecycleNotice::projections_capped)
+            })
     }
 }
 

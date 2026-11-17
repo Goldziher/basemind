@@ -26,7 +26,7 @@ fn disk(state: &ServerState, cache: &super::MapCache, path: &RelPath) -> Disk {
     let Some(meta) = cache.meta(path) else {
         return Disk::Fresh;
     };
-    let files = IndexedFiles::of(state);
+    let files = IndexedFiles::of(&state.shared);
     let Some(file) = files.indexed_path(path) else {
         return Disk::Unreadable;
     };
@@ -54,7 +54,7 @@ pub(super) fn follow_symbols(state: &ServerState, cache: &super::MapCache, hits:
             .entry(hit.path.clone())
             .or_insert_with(|| match disk(state, cache, &hit.path) {
                 Disk::Fresh => None,
-                Disk::Edited(bytes) => Some(freshness::reparse(state, "code_symbols", &hit.path, &bytes).ok()),
+                Disk::Edited(bytes) => Some(freshness::reparse(&state.shared, "code_symbols", &hit.path, &bytes).ok()),
                 Disk::Unreadable => Some(None),
             });
         let Some(outline) = outline else {

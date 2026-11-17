@@ -133,7 +133,7 @@ pub(super) async fn run_workspace_grep(
     let (scanned, byte_budget_hit) = apply_byte_budget(window);
 
     let root = state.shared.root.as_path();
-    let files = IndexedFiles::of(state);
+    let files = IndexedFiles::of(&state.shared);
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
     // Documents have no bloom row: they sit after the code files and are always read.
     let code_files = scanned.partition_point(|(_, meta)| !meta.hash_hex.is_empty());
