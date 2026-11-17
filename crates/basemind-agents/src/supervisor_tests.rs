@@ -139,18 +139,19 @@ pub(super) fn start(spec: PolicySpec, configs: Vec<LaunchConfig>) -> (Supervisor
     (registered(supervisor), audit)
 }
 
-/// `supervisor` with each of the policy's launchers, and the operator, bound to [`outside`].
+/// `supervisor` with each of the policy's launchers, and the operator, bound to this process,
+/// as an embedding whose own code launches would bind them.
 pub(super) fn registered(supervisor: Supervisor) -> Supervisor {
     for launcher in supervisor.policy().launchers().to_vec() {
-        supervisor.register_launcher(&launcher, outside()).unwrap();
+        supervisor.register_launcher_in_process(&launcher).unwrap();
     }
-    supervisor.register_operator(outside()).unwrap();
+    supervisor.register_operator_in_process().unwrap();
     supervisor
 }
 
-/// A process outside the supervisor's tree: the test runner's parent.
-pub(super) fn outside() -> Peer {
-    Peer::of_pid(std::os::unix::process::parent_id())
+/// This process, the one [`registered`] binds every role to.
+pub(super) fn own() -> Peer {
+    Peer::this_process().unwrap()
 }
 
 /// The harness process of session `id`, standing in for a process of that session.
@@ -159,7 +160,7 @@ pub(super) fn inside(supervisor: &Supervisor, id: SessionId) -> Peer {
 }
 
 pub(super) fn lead() -> Caller {
-    Caller::principal("lead", outside()).unwrap()
+    Caller::principal("lead", own()).unwrap()
 }
 
 pub(super) fn request() -> LaunchRequest {
@@ -315,18 +316,18 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
     let claude = HarnessKind::ClaudeCode;
     let cases = [
         (
-            Caller::principal("stranger", outside()).unwrap(),
+            Caller::principal("stranger", own()).unwrap(),
             claude,
             "caller_not_admitted",
         ),
-        (supervisor.operator(outside()).unwrap(), claude, "caller_not_admitted"),
+        (supervisor.operator(own()).unwrap(), claude, "caller_not_admitted"),
         // A principal with the launched prefix is never a configured launcher.
         (
-            Caller::principal("launched-claude-0-00000000", outside()).unwrap(),
+            Caller::principal("launched-claude-0-00000000", own()).unwrap(),
             claude,
             "caller_not_admitted",
         ),
-        (Caller::launched("0".repeat(64), outside()), claude, "unknown_token"),
+        (Caller::launched("0".repeat(64), own()), claude, "unknown_token"),
         // Allowed by the policy but without a config, and not allowed at all.
         (lead(), HarnessKind::Codex, "flavor_not_allowed"),
         (lead(), HarnessKind::Acp(AcpFlavor::Gemini), "flavor_not_allowed"),
@@ -350,8 +351,8 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
     assert_eq!(callers[1].0.as_deref(), Some("operator"));
     assert_eq!(callers[3], (None, None), "a token caller was named");
     assert!(supervisor.list().is_empty(), "a refused launch left a session");
-    assert!(Caller::principal("has space", outside()).is_err());
-    assert!(!format!("{:?}", Caller::launched("secret-token", outside())).contains("secret-token"));
+    assert!(Caller::principal("has space", own()).is_err());
+    assert!(!format!("{:?}", Caller::launched("secret-token", own())).contains("secret-token"));
 }
 
 #[test]
@@ -392,11 +393,7 @@ fn a_launched_agent_carries_its_depth_and_token_and_launches_only_within_max_dep
     assert_eq!(finished(&shallow, parent.id), FinishStatus::Stopped);
     // The token of a finished session admits nobody.
     let refused = shallow
-        .launch(
-            &Caller::launched(&token, outside()),
-            HarnessKind::ClaudeCode,
-            &request(),
-        )
+        .launch(&Caller::launched(&token, own()), HarnessKind::ClaudeCode, &request())
         .unwrap_err();
     assert_eq!(refused.code(), "unknown_token");
 
@@ -445,13 +442,8 @@ fn a_peer_inside_a_session_is_that_session_whatever_it_claims() {
         matches!(refused, SupervisorError::DepthExceeded { depth: 2, .. }),
         "{refused}"
     );
-    // This process is in no session: unregistered it is nobody, registered it is the launcher.
-    let own = Caller::principal("second", Peer::this_process().unwrap()).unwrap();
-    let refused = supervisor.launch(&own, HarnessKind::ClaudeCode, &request());
-    assert_eq!(refused.err().map(|error| error.code()), Some("peer_unverified"));
-    supervisor
-        .register_launcher("second", Peer::this_process().unwrap())
-        .unwrap();
+    // This process is in no session and is registered for every launcher: its claim stands.
+    let own = Caller::principal("second", own()).unwrap();
     let second = supervisor.launch(&own, HarnessKind::ClaudeCode, &request()).unwrap();
     assert_eq!(second.depth, 1);
 }
@@ -477,9 +469,9 @@ fn concurrency_and_fan_out_are_refused_with_the_limit_named() {
     );
     assert!(refused.to_string().contains("max_children"));
     supervisor
-        .launch(&Caller::principal("second", outside()).unwrap(), claude, &request())
+        .launch(&Caller::principal("second", own()).unwrap(), claude, &request())
         .unwrap();
-    let third = Caller::principal("third", outside()).unwrap();
+    let third = Caller::principal("third", own()).unwrap();
     let refused = supervisor.launch(&third, claude, &request()).unwrap_err();
     assert!(
         matches!(refused, SupervisorError::ConcurrencyExceeded { max_concurrent: 2 }),
@@ -569,9 +561,9 @@ fn only_the_launcher_or_the_operator_stops_a_session_and_reaping_forgets_it() {
     let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
     let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
-    let second = Caller::principal("second", outside()).unwrap();
+    let second = Caller::principal("second", own()).unwrap();
     assert_eq!(supervisor.stop(&second, launched.id).unwrap_err().code(), "not_owner");
-    let stranger = Caller::principal("stranger", outside()).unwrap();
+    let stranger = Caller::principal("stranger", own()).unwrap();
     assert_eq!(
         supervisor.stop(&stranger, launched.id).unwrap_err().code(),
         "caller_not_admitted"
@@ -582,7 +574,7 @@ fn only_the_launcher_or_the_operator_stops_a_session_and_reaping_forgets_it() {
     );
     assert_eq!(supervisor.status(launched.id).unwrap().state, SessionState::Running);
     supervisor
-        .stop(&supervisor.operator(outside()).unwrap(), launched.id)
+        .stop(&supervisor.operator(own()).unwrap(), launched.id)
         .unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
     supervisor.stop(&lead(), launched.id).unwrap();
@@ -611,7 +603,7 @@ fn dropping_the_supervisor_stops_every_session() {
     let pids: Vec<i32> = ["lead", "second"]
         .into_iter()
         .map(|launcher| {
-            let caller = Caller::principal(launcher, outside()).unwrap();
+            let caller = Caller::principal(launcher, own()).unwrap();
             let launched = supervisor.launch(&caller, HarnessKind::ClaudeCode, &request()).unwrap();
             pid_of(&supervisor, launched.id)
         })
@@ -695,7 +687,7 @@ cat > /dev/null
         assert!(Instant::now() < deadline, "the observer saw no approval request");
         std::thread::sleep(Duration::from_millis(20));
     };
-    let second = Caller::principal("second", outside()).unwrap();
+    let second = Caller::principal("second", own()).unwrap();
     assert_eq!(
         supervisor
             .answer(&second, launched.id, &approval, true)
@@ -893,6 +885,8 @@ fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    // The exit record is written just after the session is marked finished.
+    await_record(&audit, AuditEvent::Exit);
     assert_eq!(first(&audit, AuditEvent::Exit).caveats, ["detached_server"]);
 
     // A flavor without the caveat is not tracked: its detached process is left running, which

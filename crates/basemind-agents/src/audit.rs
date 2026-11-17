@@ -353,7 +353,7 @@ impl AuditSink for FileAuditSink {
 fn kept_for(record: &AuditRecord) -> bool {
     match record.event {
         AuditEvent::Launch | AuditEvent::Exit => true,
-        AuditEvent::Registration => record.outcome == "registered",
+        AuditEvent::Registration => matches!(record.outcome, "registered" | "replaced"),
         AuditEvent::Approval | AuditEvent::ApprovalAnswer => {
             record.approval.as_ref().is_some_and(|approval| approval.allowed)
         }

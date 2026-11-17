@@ -159,29 +159,86 @@ pub(crate) fn mint_operator(table: &Table, peer: Peer) -> Result<Caller, Supervi
     }
 }
 
-/// Binds `role` to `peer`'s process, replacing the process it was bound to. The process must not
-/// be a session's. One the embedding started itself is accepted, and so is one whose ancestry
-/// stops at a process that cannot be read: the engine vouches for the process it registers.
+/// The process the engine registers for a role.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Source {
+    /// The peer of a connection: accepted only outside every session and outside the
+    /// supervisor's tree, with its ancestry read up to init, and never an ancestor of the
+    /// supervisor, since an orphan of a session can be reparented to one (a Linux subreaper).
+    Peer(Peer),
+    /// A child the embedding spawned itself: its parent is the supervisor's process.
+    Child(u32),
+    /// The supervisor's own process, registered only as itself.
+    InProcess,
+}
+
+/// Whether `id` is still the process it was and has not exited.
+fn running(id: ProcId) -> bool {
+    procinfo::info(id.pid).is_some_and(|now| now.start == id.start && !now.zombie)
+}
+
+/// Binds `role` to the process `source` names. A binding is write-once while its process runs;
+/// once that process is gone the role can be bound again. Returns the binding it replaced.
 pub(crate) fn register(
     policy: &crate::LaunchPolicy,
     table: &mut Table,
     role: Role,
-    peer: Peer,
-) -> Result<(), SupervisorError> {
+    source: Source,
+) -> Result<(ProcId, Option<ProcId>), SupervisorError> {
     if let Role::Launcher(principal) = &role
         && !policy.admits(principal)
     {
         return Err(SupervisorError::CallerNotAdmitted);
     }
-    match origin(table, &peer) {
-        Origin::Unknown => Err(SupervisorError::PeerUnverified),
-        Origin::Session(_) => Err(SupervisorError::CallerNotAdmitted),
-        Origin::Supervisor | Origin::Below | Origin::Outside { .. } | Origin::Registered(_) => {
-            table.registered.retain(|(bound, _)| *bound != role);
-            table.registered.push((role, peer.id));
-            Ok(())
+    let supervisor = Peer::this_process().map_err(|_| SupervisorError::PeerUnverified)?;
+    let id = match source {
+        Source::InProcess => supervisor.id,
+        Source::Child(pid) => {
+            let child = i32::try_from(pid)
+                .ok()
+                .and_then(procinfo::info)
+                .filter(|child| !child.zombie)
+                .ok_or(SupervisorError::PeerUnverified)?;
+            // Not a child of this process, or a session's harness (a starting one included).
+            let harness = table
+                .sessions
+                .values()
+                .any(|entry| entry.handle.as_ref().is_some_and(|handle| handle.pid() == pid));
+            if child.ppid != supervisor.id.pid || harness || table.session_of(&child).is_some() {
+                return Err(SupervisorError::CallerNotAdmitted);
+            }
+            child.id()
         }
+        Source::Peer(peer) => {
+            let own = procinfo::ancestors(supervisor.id.pid).ok_or(SupervisorError::PeerUnverified)?;
+            if own.procs.iter().any(|ancestor| ancestor.id() == peer.id) {
+                return Err(SupervisorError::CallerNotAdmitted);
+            }
+            match origin(table, &peer) {
+                Origin::Outside { complete: true } | Origin::Registered(_) => {}
+                Origin::Session(_) | Origin::Below | Origin::Supervisor => {
+                    return Err(SupervisorError::CallerNotAdmitted);
+                }
+                Origin::Outside { complete: false } | Origin::Unknown => return Err(SupervisorError::PeerUnverified),
+            }
+            // An ancestor past a link that could not be read cannot be ruled out.
+            if !own.complete {
+                return Err(SupervisorError::PeerUnverified);
+            }
+            peer.id
+        }
+    };
+    let previous = table
+        .registered
+        .iter()
+        .find(|(bound, _)| *bound == role)
+        .map(|(_, previous)| *previous);
+    if previous.is_some_and(running) {
+        return Err(SupervisorError::RoleBound);
     }
+    table.registered.retain(|(bound, _)| *bound != role);
+    table.registered.push((role, id));
+    Ok((id, previous))
 }
 
 impl Table {

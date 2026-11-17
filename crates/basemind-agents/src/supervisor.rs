@@ -27,7 +27,7 @@ use crate::supervisor_pump::{Reservation, supervise};
 
 use crate::peer::Peer;
 pub use crate::supervisor_codes::launch_error_code;
-use crate::supervisor_identity::{Role, coalescing_key, mint_operator, register, resolve};
+use crate::supervisor_identity::{Role, Source, coalescing_key, mint_operator, register, resolve};
 pub use crate::supervisor_types::{
     Caller, Launched, SessionId, SessionObserver, SessionState, SessionStatus, SupervisorError,
 };
@@ -254,35 +254,84 @@ impl Supervisor {
         self.inner.audit_failures.load(Ordering::SeqCst)
     }
 
-    /// Binds the configured launcher `principal` to `peer`'s process, replacing the process it
-    /// was bound to. From then on a caller is `principal` only when its peer is that process or
-    /// descends from it; until a principal is registered, no caller is it.
+    /// Binds the configured launcher `principal` to a child process the embedding spawned
+    /// itself (its parent is this process), such as the lead agent it starts. From then on a
+    /// caller is `principal` only when its peer is that process or descends from it; until a
+    /// principal is registered, no caller is it. This is the documented way to register.
     ///
-    /// The engine calls this on a channel the launched agents do not reach (its own start-up,
-    /// a socket they are not handed), for the process that speaks for the principal: binding
-    /// a broader ancestor admits everything else that descends from it.
+    /// A binding is write-once while its process runs: the role can be bound again only once
+    /// that process is gone. Everything the registered process starts acts as the principal, so
+    /// it must not start processes on another agent's request.
     ///
     /// # Errors
     ///
     /// [`SupervisorError::CallerNotAdmitted`] for a principal the policy does not name, or a
-    /// peer inside a session; [`SupervisorError::PeerUnverified`] for
-    /// one that is gone; [`SupervisorError::Audit`] when the registration could not be recorded
-    /// (it is then undone). Each is audited.
-    pub fn register_launcher(&self, principal: &str, peer: Peer) -> Result<(), SupervisorError> {
-        self.bind(Role::Launcher(principal.to_owned()), peer)
+    /// process that is not this process's child or is a session's harness;
+    /// [`SupervisorError::PeerUnverified`] for one that is gone;
+    /// [`SupervisorError::RoleBound`] while the principal is bound to a running process;
+    /// [`SupervisorError::Audit`] when the registration could not be recorded (it is then
+    /// undone). Each is audited.
+    pub fn register_launcher_child(&self, principal: &str, child: &std::process::Child) -> Result<(), SupervisorError> {
+        self.bind(Role::Launcher(principal.to_owned()), Source::Child(child.id()))
     }
 
-    /// Binds the operator to `peer`'s process, as [`Self::register_launcher`] binds a launcher.
-    /// [`Self::operator`] then mints the operator only for that process or a descendant of it.
+    /// Binds the configured launcher `principal` to this process, for an embedding whose own
+    /// code (its user interface) launches. Only this process is the principal then, never what
+    /// descends from it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register_launcher_child`].
+    pub fn register_launcher_in_process(&self, principal: &str) -> Result<(), SupervisorError> {
+        self.bind(Role::Launcher(principal.to_owned()), Source::InProcess)
+    }
+
+    /// Binds the configured launcher `principal` to `peer`'s process. Accepted only for a
+    /// process outside every session and outside this process's tree, whose ancestry is read up
+    /// to init, and which is not an ancestor of this process; on a host where this process's
+    /// own ancestry cannot be read up to init, never. A principal must not be registered from a
+    /// connection to a socket the launched agents can reach: any process of the user, an
+    /// escaped agent's included, can connect to it. Prefer [`Self::register_launcher_child`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register_launcher_child`], and [`SupervisorError::PeerUnverified`] for a peer
+    /// whose ancestry, or this process's, cannot be read up to init.
+    pub fn register_launcher(&self, principal: &str, peer: Peer) -> Result<(), SupervisorError> {
+        self.bind(Role::Launcher(principal.to_owned()), Source::Peer(peer))
+    }
+
+    /// Binds the operator to a child process the embedding spawned, as
+    /// [`Self::register_launcher_child`] binds a launcher. [`Self::operator`] then mints the
+    /// operator only for that process or a descendant of it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register_launcher_child`], but for the principal.
+    pub fn register_operator_child(&self, child: &std::process::Child) -> Result<(), SupervisorError> {
+        self.bind(Role::Operator, Source::Child(child.id()))
+    }
+
+    /// Binds the operator to this process, as [`Self::register_launcher_in_process`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register_launcher_child`], but for the principal.
+    pub fn register_operator_in_process(&self) -> Result<(), SupervisorError> {
+        self.bind(Role::Operator, Source::InProcess)
+    }
+
+    /// Binds the operator to `peer`'s process, under the conditions of
+    /// [`Self::register_launcher`].
     ///
     /// # Errors
     ///
     /// As [`Self::register_launcher`], but for the principal.
     pub fn register_operator(&self, peer: Peer) -> Result<(), SupervisorError> {
-        self.bind(Role::Operator, peer)
+        self.bind(Role::Operator, Source::Peer(peer))
     }
 
-    fn bind(&self, role: Role, peer: Peer) -> Result<(), SupervisorError> {
+    fn bind(&self, role: Role, source: Source) -> Result<(), SupervisorError> {
         let inner = &self.inner;
         let caller = match &role {
             Role::Launcher(principal) => principal.clone(),
@@ -290,21 +339,33 @@ impl Supervisor {
         };
         let key = format!("register-{caller}");
         let mut table = inner.table();
-        let bound = register(&inner.policy, &mut table, role.clone(), peer);
+        let bound = register(&inner.policy, &mut table, role.clone(), source);
         drop(table);
-        let record = AuditRecord {
+        let mut record = AuditRecord {
             caller: Some(caller),
-            peer: Some(peer.pid()),
             ..AuditRecord::new(AuditEvent::Registration, "registered")
         };
-        if let Err(error) = bound {
-            return Err(refuse(inner, record, &key, error));
+        let (id, previous) = match bound {
+            Ok(bound) => bound,
+            Err(error) => {
+                record.peer = match source {
+                    Source::Peer(peer) => Some(peer.pid()),
+                    Source::Child(pid) => Some(pid),
+                    Source::InProcess => Some(std::process::id()),
+                };
+                return Err(refuse(inner, record, &key, error));
+            }
+        };
+        record.peer = Some(id.pid.unsigned_abs());
+        if previous.is_some() {
+            record.outcome = "replaced";
         }
         if let Err(error) = inner.audit(&record) {
-            inner
-                .table()
-                .registered
-                .retain(|entry| *entry != (role.clone(), peer.id));
+            let mut table = inner.table();
+            table.registered.retain(|entry| *entry != (role.clone(), id));
+            if let Some(previous) = previous {
+                table.registered.push((role, previous));
+            }
             return Err(SupervisorError::Audit(error));
         }
         Ok(())
@@ -817,3 +878,7 @@ mod tests;
 #[cfg(all(test, unix))]
 #[path = "supervisor_attack_tests.rs"]
 mod attack_tests;
+
+#[cfg(all(test, unix))]
+#[path = "supervisor_identity_tests.rs"]
+mod identity_tests;
