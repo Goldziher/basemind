@@ -14,12 +14,12 @@ use super::{MapCache, ServerState};
 /// held read guard blocks the only in-process writer (`scan_and_refresh`) for the
 /// mark+sweep; cross-process scans are impossible because serve holds the flock.
 pub(super) async fn run_background_gc(state: Arc<ServerState>) {
-    if state.shared.store.read().await.blobs_shared {
+    if state.store_read().await.blobs_shared {
         tracing::debug!("background blob GC skipped: blob cache is shared across git worktrees");
         return;
     }
     let result = tokio::task::spawn_blocking(move || {
-        let store = state.shared.store.blocking_read();
+        let store = state.shared.store_read();
         let referenced = crate::store_gc::collect_referenced_hashes(&store.basemind_dir)?;
         crate::store_gc::gc_blobs(&referenced)
     })
@@ -127,7 +127,7 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
 /// `serve` boots with an EMPTY [`MapCache`] placeholder so it can answer the MCP `initialize` /
 /// `tools/list` handshake immediately, then this task does the heavy `MapCache::build` (a rayon
 /// `par_iter` over every L1/L2 blob) on a blocking thread, publishes the full map via `ArcSwap`, and
-/// wakes every tool awaiting [`ServerState::cache_ready`]. Without this, that build ran synchronously
+/// opens the warm gate every tool waits on in [`ServerState::await_cache_ready`]. Without this, that build ran synchronously
 /// before `.serve(transport)` and — under rayon-pool contention from other sessions' scans — could take
 /// minutes, blowing the client's startup window so the tools never registered.
 pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
@@ -137,7 +137,7 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
         let started = std::time::Instant::now();
         let build_state = Arc::clone(&state);
         let built = tokio::task::spawn_blocking(move || {
-            let store = build_state.shared.store.blocking_read();
+            let store = build_state.shared.store_read();
             let budget = super::l1_cache::budget_bytes_from(&build_state.shared.config.resources);
             MapCache::build(&store, budget)
         })
@@ -150,13 +150,12 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
                 state.shared.cache_generation.fetch_add(1, Ordering::Relaxed);
                 // Build the `symbols` / `dependents` term index off the query path so the first
                 // lookup after boot is as fast as every later one.
-                cache.warm_terms();
+                warm_terms(&cache);
                 state
                     .shared
                     .cache_warm_ms
                     .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                state.shared.cache_warming.store(false, Ordering::Relaxed);
-                state.shared.cache_ready.notify_waiters();
+                state.shared.finish_warm();
                 tracing::info!(
                     files,
                     elapsed_ms = started.elapsed().as_millis() as u64,
@@ -164,12 +163,23 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
                 );
             }
             Err(error) => {
-                state.shared.cache_warming.store(false, Ordering::Relaxed);
-                state.shared.cache_ready.notify_waiters();
+                state.shared.finish_warm();
                 tracing::error!(%error, "in-RAM code map warm task panicked; serving un-warmed cache");
             }
         }
     });
+}
+
+/// Build the term index on a blocking thread so the first `symbols` / `dependents` call after
+/// a full cache publish doesn't pay for it. A no-op outside a Tokio runtime (queries then build
+/// it lazily).
+pub(super) fn warm_terms(cache: &Arc<MapCache>) {
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        let cache = Arc::clone(cache);
+        runtime.spawn_blocking(move || {
+            cache.terms();
+        });
+    }
 }
 
 /// Run one debounced batch of changed paths through the writer and report `(scanned, updated,
@@ -304,7 +314,7 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
         shutdown: Some(shutdown_tx),
     };
     let (basemind_dir, view) = {
-        let store = match state.shared.store.try_read() {
+        let store = match state.shared.try_store_read() {
             Ok(g) => g,
             Err(_) => return guard,
         };
@@ -386,8 +396,7 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
                 }
                 let view = state
                     .shared
-                    .store
-                    .try_read()
+                    .try_store_read()
                     .map(|g| g.view.clone())
                     .unwrap_or_default();
                 let new_store = match reopen_read_only(&state, &view) {

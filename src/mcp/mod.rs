@@ -85,7 +85,6 @@ pub(crate) mod memory_vectors;
 mod notifications;
 pub mod offline;
 mod prompts;
-pub(crate) use crate::engine::ranked_cache;
 pub mod replay;
 mod resources;
 mod router_cache;
@@ -349,7 +348,7 @@ impl BasemindServer {
         let mut watcher = None;
         if options.background {
             let view_is_working = {
-                match state.shared.store.try_read() {
+                match state.shared.try_store_read() {
                     Ok(g) => g.view == crate::store::VIEW_WORKING,
                     Err(_) => false,
                 }

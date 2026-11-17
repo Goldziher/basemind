@@ -41,7 +41,7 @@ pub(super) async fn run_goto_definition(
     let max_bytes = state.shared.config.scan.max_file_bytes;
     // The index is consulted before the file is read, so a path that is not indexed cannot be
     // probed for existence or contents through the errors below.
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let Some(entry) = store.lookup(&params.path) else {
         return Err(super::tool_contract::not_indexed_in(
             &store,

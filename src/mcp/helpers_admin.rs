@@ -59,7 +59,7 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
     };
     let notice = state.lifecycle_notice();
     let identity = repo_identity(state);
-    let store = match state.shared.store.try_read() {
+    let store = match state.shared.try_store_read() {
         Ok(store) => store,
         Err(_) => {
             return json_result(&StatusResponse {

@@ -97,7 +97,7 @@ pub(super) async fn writer_rescan_and_refresh(
 /// directly — without replacing the store they would report the pre-scan (often empty) index
 /// forever. This is the forward-path counterpart to a local scan mutating the store in place.
 async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpError> {
-    let view = state.shared.store.read().await.view.clone();
+    let view = state.store_read().await.view.clone();
     let root = state.shared.root.clone();
     let current = state.shared.cache.load_full();
     let config = Arc::clone(&state.shared.config);
@@ -109,11 +109,11 @@ async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpErr
     .await
     .map_err(|error| McpError::internal_error(format!("refresh map task panicked: {error}"), None))?
     .map_err(|error| McpError::internal_error(format!("reopen read-only store: {error}"), None))?;
-    *state.shared.store.write().await = store;
+    *state.store_write().await = store;
     if let Some(cache) = cache {
         let cache = Arc::new(cache);
         state.shared.cache.store(Arc::clone(&cache));
-        cache.warm_terms();
+        super::background::warm_terms(&cache);
     }
     state.shared.note_index_changed();
     Ok(())

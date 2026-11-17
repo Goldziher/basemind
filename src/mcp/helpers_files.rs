@@ -118,7 +118,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
         }
         None => 0,
     };
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
 
     let path_finder = params
         .path_contains

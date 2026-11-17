@@ -90,7 +90,7 @@ fn server(root: &Path, model: &str) -> ServerState {
 
 /// Save a note in the Fjall truth only: a note with no vector row, as after a wipe.
 async fn save(state: &ServerState, key: &str, value: &str) -> i64 {
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store.index_db.as_ref().unwrap();
     put_core(idx, &state.shared.scope, vis(), "", key, value, &["t".to_string()])
         .unwrap()
@@ -490,7 +490,7 @@ async fn a_delete_does_not_create_a_store() {
     let state = server(root.path(), "fake");
     save(&state, "plain", "a note").await;
     {
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         delete_core(
             store.index_db.as_ref().unwrap(),
             &state.shared.scope,

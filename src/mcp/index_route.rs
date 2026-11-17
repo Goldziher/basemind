@@ -58,7 +58,7 @@ pub(super) enum IndexRoute {
 impl IndexRoute {
     /// Decide the route for this session. Never fails: an unreachable daemon is the `InRam` route.
     pub(super) async fn resolve(state: &super::ServerState) -> Self {
-        if let Some(idx) = state.shared.store.read().await.index_db.clone() {
+        if let Some(idx) = state.store_read().await.index_db.clone() {
             return Self::Local(Box::new(StandaloneView(idx)));
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]

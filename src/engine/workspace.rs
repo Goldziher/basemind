@@ -9,11 +9,11 @@
 //! per-file size budget.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use arc_swap::ArcSwap;
-use tokio::sync::{Notify, RwLock};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::engine::{MapCache, outline_cache::OutlineCache};
 use crate::index::view::IndexView;
@@ -27,7 +27,11 @@ use crate::store::Store;
 /// when these fields lived directly on `ServerState`; a future daemon can point many connections at
 /// one stack.
 pub(crate) struct Workspace {
-    pub(crate) store: RwLock<Store>,
+    /// The opened store. A synchronous, task-fair lock, so the engine names no runtime: a scan holds
+    /// the write side for its whole run, and readers wait for it as they did on the async lock this
+    /// replaces (a waiting writer holds back new readers, and a panic poisons nothing). Shared by
+    /// `Arc` so an async caller can hold an owned, `Send` read guard ([`store_lock`](Self::store_lock)).
+    store: Arc<RwLock<Store>>,
     pub(crate) root: PathBuf,
     /// In-RAM mirror of every indexed file's L1 blob.
     ///
@@ -117,15 +121,15 @@ pub(crate) struct Workspace {
     /// is still running. Deferring that build off the startup path is what lets `serve` answer the
     /// MCP `initialize`/`tools/list` handshake immediately instead of blocking on a rayon `par_iter`
     /// that can be starved for minutes by other sessions' scans. Cache-reading tools await
-    /// [`cache_ready`](Self::cache_ready) while this is set (see [`crate::mcp::ServerState::await_cache_ready`]).
+    /// [`wait_for_warm`](Self::wait_for_warm) while this is set (see [`crate::mcp::ServerState::await_cache_ready`]).
     pub(crate) cache_warming: AtomicBool,
     /// Wall-clock duration of the boot-time cache preload, in milliseconds, once it completes
     /// (`0` = still warming or no deferred preload this session). Surfaced on `status` as `warm_ms`.
     pub(crate) cache_warm_ms: AtomicU64,
-    /// Fired once when the deferred preload finishes and the full map is swapped in. Tools that read
-    /// the cache `notified().await` on this (bounded by [`crate::mcp::state::CACHE_WARM_WAIT_CAP`]) so a
-    /// query issued during the warmup window returns COMPLETE data rather than an empty snapshot.
-    pub(crate) cache_ready: Notify,
+    /// Opened once when the deferred preload finishes and the full map is swapped in. Tools that read
+    /// the cache wait on it (bounded by [`CACHE_WARM_WAIT_CAP`]) so a query issued during the warmup
+    /// window returns COMPLETE data rather than an empty snapshot.
+    warm_gate: WarmGate,
     /// True while a watcher-driven incremental rescan (`scan_and_refresh` from the active filesystem
     /// watcher) is in flight. Surfaced as the `Rescanning` lifecycle so a client sees "results may be
     /// a moment stale" rather than treating a mid-rescan snapshot as final.
@@ -140,8 +144,8 @@ pub(crate) struct Workspace {
     /// warming: it is long-lived, so the build amortizes over the session.
     pub(crate) lazy_cache: bool,
     /// Gates the one-time on-demand build under [`lazy_cache`](Self::lazy_cache). Concurrent
-    /// callers of the barrier all await the single build rather than racing to rebuild the map.
-    pub(crate) lazy_cache_built: tokio::sync::OnceCell<()>,
+    /// callers of the barrier all wait for the single build rather than racing to rebuild the map.
+    pub(crate) lazy_cache_built: std::sync::OnceLock<()>,
     /// True when this serve fell back to a read-only store because another serve owns the
     /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
@@ -256,7 +260,7 @@ impl Workspace {
         Self {
             #[cfg(feature = "memory")]
             memory_owner,
-            store: RwLock::new(store),
+            store: Arc::new(RwLock::new(store)),
             root,
             cache: ArcSwap::from(cache),
             repo,
@@ -283,10 +287,10 @@ impl Workspace {
             initial_scan_ms: AtomicU64::new(0),
             cache_warming: AtomicBool::new(defer_warm),
             cache_warm_ms: AtomicU64::new(0),
-            cache_ready: Notify::new(),
+            warm_gate: WarmGate::default(),
             rescan_active: AtomicBool::new(false),
             lazy_cache: options.lazy_cache,
-            lazy_cache_built: tokio::sync::OnceCell::new(),
+            lazy_cache_built: std::sync::OnceLock::new(),
             read_only: options.read_only,
             history_catch_up: options.background,
             history_syncing: Arc::new(AtomicBool::new(false)),
@@ -317,10 +321,75 @@ impl Workspace {
             .get_or_init(|| crate::lang_rules::LangRules::from_config(&self.config.languages).unwrap_or_default())
     }
 
+    /// Read the store, waiting while a scan holds it.
+    pub(crate) fn store_read(&self) -> RwLockReadGuard<'_, Store> {
+        self.store.read()
+    }
+
+    /// Write the store, waiting for every reader to finish.
+    pub(crate) fn store_write(&self) -> RwLockWriteGuard<'_, Store> {
+        self.store.write()
+    }
+
+    /// Read the store if no writer holds it right now.
+    pub(crate) fn try_store_read(&self) -> Result<RwLockReadGuard<'_, Store>, StoreBusy> {
+        self.store.try_read().ok_or(StoreBusy)
+    }
+
+    /// The lock itself, for a caller that needs an owned guard (`read_arc`, `write_arc`): one it
+    /// can move to another thread or hold across an `.await`.
+    pub(crate) fn store_lock(&self) -> &Arc<RwLock<Store>> {
+        &self.store
+    }
+
+    /// Mark the deferred preload finished and wake every caller of
+    /// [`wait_for_warm`](Self::wait_for_warm).
+    pub(crate) fn finish_warm(&self) {
+        self.cache_warming.store(false, Ordering::Relaxed);
+        self.warm_gate.open();
+    }
+
+    /// Wait for the deferred preload, at most [`CACHE_WARM_WAIT_CAP`]. Returns at once when no
+    /// preload is running. Never call it holding a store guard: the preload reads the store.
+    pub(crate) fn wait_for_warm(&self) {
+        self.warm_gate
+            .wait_while(CACHE_WARM_WAIT_CAP, || self.cache_warming.load(Ordering::Relaxed));
+    }
+
     /// Record that the index may have changed under the published map: both generations move.
     pub(crate) fn note_index_changed(&self) {
         self.cache_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.index_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The store is held by a writer (a scan) right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StoreBusy;
+
+/// A one-way gate a preload opens and readers wait on. The condition itself lives with the caller
+/// (an atomic flag); the mutex only orders a waiter's check against [`open`](Self::open), so a
+/// waiter that saw the gate closed is already waiting when the opener notifies.
+#[derive(Default)]
+struct WarmGate {
+    lock: Mutex<()>,
+    opened: Condvar,
+}
+
+impl WarmGate {
+    /// Wake every waiter. The caller clears its condition first.
+    fn open(&self) {
+        let _held = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        self.opened.notify_all();
+    }
+
+    /// Block while `closed` holds, at most `cap`.
+    fn wait_while(&self, cap: std::time::Duration, closed: impl Fn() -> bool) {
+        let held = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = self
+            .opened
+            .wait_timeout_while(held, cap, |_| closed())
+            .unwrap_or_else(PoisonError::into_inner);
     }
 }
 

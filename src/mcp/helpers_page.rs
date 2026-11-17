@@ -47,7 +47,7 @@ const REASON_DEPTH: &str = "depth";
     allow(dead_code, reason = "compiled for its tests when `code_search` is not in the build")
 )]
 pub(super) async fn ranked_retrieval<F>(
-    cache: &super::ranked_cache::RankedCache,
+    cache: &crate::engine::ranked_cache::RankedCache,
     tool: &str,
     arguments: &Value,
     list_key: &str,
@@ -58,7 +58,7 @@ where
     F: std::future::Future<Output = Result<CallToolResult, McpError>>,
 {
     let started = std::time::Instant::now();
-    let key = super::ranked_cache::RankedCache::key(tool, arguments);
+    let key = crate::engine::ranked_cache::RankedCache::key(tool, arguments);
     if let Some(mut body) = cache.get(&key, generation) {
         if let Some(elapsed) = body.get_mut("elapsed_us") {
             *elapsed = Value::from(super::helpers::elapsed_us(started));
@@ -218,7 +218,7 @@ mod tests {
     async fn a_later_page_and_a_repeat_do_not_run_the_retrieval_again() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let cache = crate::mcp::ranked_cache::RankedCache::default();
+        let cache = crate::engine::ranked_cache::RankedCache::default();
         let runs = AtomicUsize::new(0);
         let retrieve = |count: usize| {
             runs.fetch_add(1, Ordering::Relaxed);

@@ -115,7 +115,7 @@ pub(super) async fn lance_store(
                 .await
                 .map_err(|e| format!("embedder init: {e}"))?;
             let (lance_dir, writer) = {
-                let store = state.shared.store.read().await;
+                let store = state.store_read().await;
                 (
                     store.basemind_dir.join(crate::store::LANCE_DIR),
                     store.holds_writer_lock(),
@@ -279,7 +279,7 @@ async fn memory_put_fjall(
 
     let key_lock = memory_put_lock(&state.shared.scope, vis_byte, owner, key);
     let _put_guard = key_lock.lock().await;
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()
@@ -324,7 +324,7 @@ pub(super) async fn memory_get_wire(
         };
     }
 
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()
@@ -387,7 +387,7 @@ async fn memory_get_chunk_wire(
         };
     }
 
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()
@@ -435,7 +435,7 @@ pub(super) async fn memory_stamps_wire(
             }
             continue;
         }
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         let idx = store
             .index_db
             .as_ref()
@@ -540,7 +540,7 @@ pub(super) async fn memory_list_page(
         };
     }
 
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()
@@ -603,7 +603,7 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
         };
     }
 
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()

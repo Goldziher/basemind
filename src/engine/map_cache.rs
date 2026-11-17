@@ -65,7 +65,7 @@ impl MapCache {
     /// An empty map cache: the placeholder a `serve` boots with while the real [`build`](Self::build)
     /// runs in the background (see [`crate::mcp::background::spawn_cache_warm`]). Deferring the index
     /// projection off the startup path is what lets the MCP `initialize`/`tools/list` handshake
-    /// answer immediately. Cache-reading tools await [`ServerState::await_cache_ready`] before
+    /// answer immediately. Cache-reading tools await [`ServerState::await_cache_ready`](crate::mcp::ServerState::await_cache_ready) before
     /// reading, so they observe the built map, never this placeholder.
     pub(crate) fn empty() -> Self {
         Self {
@@ -199,18 +199,6 @@ impl MapCache {
                 self.for_each(|path, l1| visit(path, l1));
             }))
         })
-    }
-
-    /// Build the term index on a blocking thread so the first `symbols` / `dependents` call after
-    /// a full cache publish doesn't pay for it. A no-op outside a Tokio runtime (queries then build
-    /// it lazily).
-    pub(crate) fn warm_terms(self: &Arc<Self>) {
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let cache = Arc::clone(self);
-            runtime.spawn_blocking(move || {
-                cache.terms();
-            });
-        }
     }
 
     /// Stream every `(path, outline)` in path order, stopping early when `f` returns `false`.

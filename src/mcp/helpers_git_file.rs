@@ -468,7 +468,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     // The outline and the bytes its spans are laid over follow one index entry; with the store
     // busy, the in-RAM outline is used without spans.
     let cache = state.shared.cache.load_full();
-    let outline = match state.shared.store.try_read() {
+    let outline = match state.shared.try_store_read() {
         Ok(store) => super::freshness::indexed_outline(&store, &cache, &params.path).map(|(entry, l1)| {
             let file = super::tool_contract::IndexedFiles::of(state)
                 .file(&store, &params.path)

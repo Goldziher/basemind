@@ -2,14 +2,21 @@
 //! [`Lifecycle`] classifier, and the [`MapCache`] read stack over the indexed corpus.
 //!
 //! The heavy, workspace-level read fields live on [`Workspace`](super::Workspace)
-//! (in `shared_state.rs`) so one stack can be shared — via an [`Arc`] — across many connections.
+//! (in `src/engine/workspace.rs`) so one stack can be shared — via an [`Arc`] — across many connections.
 //! `ServerState` keeps only what is specific to a single connection: the resolved agent identity,
 //! its lazily-connected link to the daemon, and the client's requested log verbosity.
 
 use std::sync::Arc;
 
 use super::{Workspace, l1_cache, types};
-use crate::engine::{Lifecycle, MapCache, workspace::CACHE_WARM_WAIT_CAP};
+use crate::engine::{Lifecycle, MapCache};
+use crate::store::Store;
+
+/// An owned read guard on a workspace's store, from [`ServerState::store_read`].
+pub(crate) type StoreReadGuard = parking_lot::ArcRwLockReadGuard<parking_lot::RawRwLock, Store>;
+/// An owned write guard on a workspace's store, from [`ServerState::store_write`].
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) type StoreWriteGuard = parking_lot::ArcRwLockWriteGuard<parking_lot::RawRwLock, Store>;
 
 /// Per-connection MCP server state.
 ///
@@ -84,7 +91,7 @@ impl ServerState {
     ///   cost then falls only on tools that actually read the map; `repo_info` / `status` / the git
     ///   tools never reach this barrier and so never pay it.
     /// * **`serve`** — wait for the background preload to publish the full map, bounded by
-    ///   [`CACHE_WARM_WAIT_CAP`]. No-op once warm (the common path).
+    ///   [`CACHE_WARM_WAIT_CAP`](crate::engine::workspace::CACHE_WARM_WAIT_CAP). No-op once warm (the common path).
     ///
     /// Neither regime waits on [`Lifecycle::BuildingIndex`] — a from-scratch scan can run for
     /// minutes, so those tools return the partial index plus a
@@ -92,53 +99,72 @@ impl ServerState {
     pub(crate) async fn await_cache_ready(&self) {
         use std::sync::atomic::Ordering::Relaxed;
         if self.shared.lazy_cache {
-            self.build_cache_on_demand().await;
+            if self.shared.lazy_cache_built.get().is_none() {
+                super::index_route::blocking(|| self.build_cache_on_demand());
+            }
             return;
         }
         if !self.shared.cache_warming.load(Relaxed) {
             return;
         }
-        let notified = self.shared.cache_ready.notified();
-        if !self.shared.cache_warming.load(Relaxed) {
-            return;
-        }
-        let _ = tokio::time::timeout(CACHE_WARM_WAIT_CAP, notified).await;
+        super::index_route::blocking(|| self.shared.wait_for_warm());
     }
 
     /// Build the whole-corpus in-RAM map and publish it — exactly once, however many callers race
     /// the barrier.
     ///
     /// [`MapCache::build`] is IO-bound (a rayon `par_iter` probing every indexed file's blob), so it
-    /// must not run on the async reactor. It is handed to [`tokio::task::block_in_place`], which requires
-    /// the multi-thread runtime the CLI builds; off one (a `current_thread` test) we call it
-    /// directly, which is safe precisely because such a runtime has no other task to starve. Mirrors
-    /// the runtime check in [`crate::git_history::remote`].
-    async fn build_cache_on_demand(&self) {
+    /// must not run on the async reactor: [`await_cache_ready`](Self::await_cache_ready) runs it
+    /// inside [`index_route::blocking`](super::index_route::blocking), which hands the worker over
+    /// on the multi-thread runtime the CLI builds and runs it in place on a `current_thread` test
+    /// runtime, which has no other task to starve.
+    fn build_cache_on_demand(&self) {
         use std::sync::atomic::Ordering::Relaxed;
-        self.shared
-            .lazy_cache_built
-            .get_or_init(|| async {
-                let started = std::time::Instant::now();
-                let store = self.shared.store.read().await;
-                let multi_thread = tokio::runtime::Handle::try_current()
-                    .map(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
-                    .unwrap_or(false);
-                let budget = l1_cache::budget_bytes_from(&self.shared.config.resources);
-                let cache = if multi_thread {
-                    tokio::task::block_in_place(|| MapCache::build(&store, budget))
-                } else {
-                    MapCache::build(&store, budget)
-                };
-                let files = cache.len();
-                let cache = Arc::new(cache);
-                self.shared.cache.store(Arc::clone(&cache));
-                cache.warm_terms();
-                self.shared.cache_generation.fetch_add(1, Relaxed);
-                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                self.shared.cache_warm_ms.store(elapsed_ms, Relaxed);
-                tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
-            })
-            .await;
+        self.shared.lazy_cache_built.get_or_init(|| {
+            let started = std::time::Instant::now();
+            let store = self.shared.store_read();
+            let budget = l1_cache::budget_bytes_from(&self.shared.config.resources);
+            let cache = MapCache::build(&store, budget);
+            let files = cache.len();
+            let cache = Arc::new(cache);
+            self.shared.cache.store(Arc::clone(&cache));
+            super::background::warm_terms(&cache);
+            self.shared.cache_generation.fetch_add(1, Relaxed);
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            self.shared.cache_warm_ms.store(elapsed_ms, Relaxed);
+            tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
+        });
+    }
+
+    /// Read the workspace's store from async code. A free lock is taken at once; a held one (a scan
+    /// is writing) is waited for on a blocking thread, so the wait never parks a runtime worker. The
+    /// guard is owned and `Send`, so it may be held across an `.await`, as the async lock this
+    /// replaces allowed.
+    pub(crate) async fn store_read(&self) -> StoreReadGuard {
+        let lock = self.shared.store_lock();
+        if let Some(store) = lock.try_read_arc() {
+            return store;
+        }
+        let lock = Arc::clone(lock);
+        match tokio::task::spawn_blocking(move || lock.read_arc()).await {
+            Ok(store) => store,
+            Err(join) => std::panic::resume_unwind(join.into_panic()),
+        }
+    }
+
+    /// Write the workspace's store from async code, waiting as [`store_read`](Self::store_read)
+    /// does. Only the daemon-forward refresh writes from async code.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) async fn store_write(&self) -> StoreWriteGuard {
+        let lock = self.shared.store_lock();
+        if let Some(store) = lock.try_write_arc() {
+            return store;
+        }
+        let lock = Arc::clone(lock);
+        match tokio::task::spawn_blocking(move || lock.write_arc()).await {
+            Ok(store) => store,
+            Err(join) => std::panic::resume_unwind(join.into_panic()),
+        }
     }
 
     /// The `index_rebuilding` notice while the workspace's `status.json` records a partial scan or an
@@ -157,7 +183,7 @@ impl ServerState {
     /// as "no matches". Judged on the store's file map, not the in-RAM map, which is also empty
     /// before a lazy build. `None` while another task holds the store lock.
     fn empty_index_notice(&self) -> Option<types::LifecycleNotice> {
-        let store = self.shared.store.try_read().ok()?;
+        let store = self.shared.try_store_read().ok()?;
         (store.index.files.is_empty() && store.index.doc_files.is_empty()).then(types::LifecycleNotice::empty_index)
     }
 

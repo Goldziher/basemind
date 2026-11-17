@@ -89,7 +89,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
         0
     };
     let hydrated = {
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         hydrate_hits(&store, seeds, fetch_n, keep_text)
     };
 
@@ -275,7 +275,7 @@ async fn fjall_lanes(
     want_exact: bool,
 ) -> Result<LaneOutcome, McpError> {
     {
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         if let Some(db) = store.read_index_view() {
             let keyword = bm25_search(&*db, query, limit)
                 .into_iter()
@@ -569,7 +569,7 @@ async fn rerank_hits(
 pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {
     let __body = std::time::Instant::now();
     let blob = {
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         let entry = store.lookup(&params.path).ok_or_else(|| {
             McpError::invalid_params(format!("`code chunk`: file not indexed: {}", params.path), None)
         })?;
