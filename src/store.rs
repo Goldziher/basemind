@@ -929,6 +929,12 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
     }
     let index: Index = rmp_serde::from_slice(&bytes)?;
     check_schema(index.schema_ver)?;
+    if index.blob_layout > crate::store_layout::BLOB_LAYOUT {
+        return Err(StoreError::NewerSchema {
+            stored: u16::from(index.blob_layout),
+            current: u16::from(crate::store_layout::BLOB_LAYOUT),
+        });
+    }
     if index.blob_layout < crate::store_layout::BLOB_LAYOUT {
         return Err(StoreError::StaleBlobLayout {
             found: index.blob_layout,

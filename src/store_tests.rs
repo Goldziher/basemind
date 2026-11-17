@@ -679,3 +679,24 @@ fn the_status_sidecar_counts_this_workspaces_distinct_contents() {
     let sidecar = read_status_sidecar(&store.basemind_dir).expect("sidecar");
     assert_eq!((sidecar.file_count, sidecar.blob_count), (3, 2));
 }
+
+/// A file map of a newer blob layout was accepted and rewritten as this binary's layout, over blobs
+/// it does not know where to find. It is refused as a newer basemind's, like a newer schema.
+#[test]
+fn a_file_map_of_a_newer_blob_layout_is_refused() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let view_dir = scanned_view(tmp.path());
+    let mut newer = read_index(&view_dir).expect("read").expect("a file map");
+    newer.blob_layout = crate::store_layout::BLOB_LAYOUT + 1;
+    std::fs::write(
+        view_dir.join(INDEX_FILE),
+        rmp_serde::to_vec_named(&newer).expect("encode"),
+    )
+    .expect("write");
+
+    let Err(error) = Store::open(tmp.path(), VIEW_WORKING) else {
+        panic!("a newer blob layout must not open");
+    };
+    assert!(matches!(error, StoreError::NewerSchema { .. }), "{error}");
+}
