@@ -246,7 +246,16 @@ fn the_table_asks_only_an_older_daemon_to_stop() {
     assert_eq!(classify(&report(NEWER, PROTO_VER), OURS), Verdict::Use);
     assert_eq!(classify(&report(NEWER, OTHER_PROTO), OURS), Verdict::RefuseNewer);
     assert_eq!(classify(&report(OURS.version, PROTO_VER), OURS), Verdict::Use);
-    assert_eq!(classify(&report(OURS.version, OTHER_PROTO), OURS), Verdict::Use);
+    assert_eq!(
+        classify(&report(OURS.version, OTHER_PROTO), OURS),
+        Verdict::RefuseNewer,
+        "a build of this release on a newer protocol is not this binary's to use or stop"
+    );
+    assert_eq!(
+        classify(&report(OURS.version, PROTO_VER - 1), OURS),
+        Verdict::Replace { usable: false },
+        "a build of this release on an older protocol (a dev build before the bump) is replaced"
+    );
     assert_eq!(
         classify(&report(OLDER, PROTO_VER), OURS),
         Verdict::Replace { usable: true }
