@@ -7,8 +7,8 @@
 fn git_cache_schema_tracks_release_minor() {
     assert_eq!(
         GIT_CACHE_SCHEMA,
-        RELEASE_MINOR + 2,
-        "GIT_CACHE_SCHEMA must derive from RELEASE_MINOR (the +2 offset), not a hardcoded value"
+        RELEASE_MINOR + 3,
+        "GIT_CACHE_SCHEMA must derive from RELEASE_MINOR (the +3 offset), not a hardcoded value"
     );
     assert_ne!(
         GIT_CACHE_SCHEMA, 1,

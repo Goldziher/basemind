@@ -419,6 +419,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A root commit's file list (`git_log` `files`, a directory's history, `basemind git churn` and
+  `git by-path`) names its files only, no longer every directory of its tree. The git-history index
+  rebuilds once and the cached file lists are recomputed.
 - The plugin launcher releases its install lock when a signal (a hook's time limit, a closed host)
   stops it mid-download, instead of making the next start wait 120 s for it.
 - The session-start hook bounds its `basemind status` probe without a `timeout` binary (stock

@@ -83,7 +83,9 @@ use crate::path::RelPath;
 /// deleted, no directory is listed as modified, and a merge lists only what it changed against
 /// every parent. An index built before keeps the old lists, and the history of a path read from it
 /// would disagree with the live walk.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 7;
+///
+/// `+8` rebuilds them again: a root commit listed every directory of its tree as an added file.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 8;
 
 /// LZ4 on data and index blocks at every level; see [`crate::index`]'s `index_keyspace_options`.
 fn keyspace_options() -> KeyspaceCreateOptions {

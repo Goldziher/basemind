@@ -32,8 +32,8 @@ use crate::git::{BlameResult, ChangeKind, CommitInfo, GitError, Repo};
 
 /// Git-cache payload schema version, derived from [`crate::version::RELEASE_MINOR`] so it
 /// moves in lock-step with the other on-disk caches (`crate::extract::SCHEMA_VER`,
-/// `crate::index::INDEX_SCHEMA_VER`) on every minor-release bump. The offset mirrors
-/// the index's `+2` convention: a fixed offset from `RELEASE_MINOR` that (a) changes
+/// `crate::index::INDEX_SCHEMA_VER`) on every minor-release bump. The offset started
+/// from the index's `+2` convention: a fixed offset from `RELEASE_MINOR` that (a) changes
 /// whenever `RELEASE_MINOR` changes and (b) differs from the historical hardcoded `1`, so
 /// the next release invalidates stale git-cache payloads exactly once. A mismatch on read
 /// is a cache miss — the value is recomputed from `gix` and rewritten, so this rebuilds
@@ -41,8 +41,8 @@ use crate::git::{BlameResult, ChangeKind, CommitInfo, GitError, Repo};
 ///
 /// The offset is `+2` since commit file lists stopped naming directories and started naming a
 /// merge's files only when they differ from every parent: the cached lists of earlier builds are
-/// misses.
-pub const GIT_CACHE_SCHEMA: u16 = crate::version::RELEASE_MINOR + 2;
+/// misses. `+3` since a root commit's list stopped naming the directories of its tree.
+pub const GIT_CACHE_SCHEMA: u16 = crate::version::RELEASE_MINOR + 3;
 pub const GIT_CACHE_DIR: &str = "git-cache";
 
 #[derive(Debug, Error)]

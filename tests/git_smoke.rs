@@ -485,3 +485,26 @@ fn a_commit_missing_from_the_object_store_fails_the_history_walk() {
     );
     assert!(repo.all_commit_shas().is_err(), "the git-history index build");
 }
+
+/// A commit's file list names files, never the directories they sit in: the root commit's included,
+/// whose list is the whole tree rather than a diff against a parent.
+#[test]
+fn a_root_commit_lists_its_files_and_no_directory() {
+    let (dir, _cfg) = init_repo();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src/nested")).unwrap();
+    fs::write(root.join("src/nested/deep.rs"), b"pub fn deep() {}\n").unwrap();
+    fs::write(root.join("top.rs"), b"pub fn top() {}\n").unwrap();
+    run(root, &["add", "-A"]);
+    run(root, &["commit", "-qm", "init"]);
+
+    let repo = Repo::discover(root).expect("repo discover");
+    let head = repo.resolve_rev("HEAD").unwrap();
+    let files: Vec<String> = repo
+        .commit_files_uncached(&head)
+        .expect("file list")
+        .into_iter()
+        .map(|(path, kind)| format!("{path} {}", kind.as_str()))
+        .collect();
+    assert_eq!(files, ["src/nested/deep.rs added", "top.rs added"]);
+}

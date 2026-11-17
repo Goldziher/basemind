@@ -77,7 +77,9 @@ pub(super) fn commit_files(
         let mut recorder = tree.traverse().breadthfirst.files().ok()?;
         recorder.sort_by(|a, b| a.filepath.cmp(&b.filepath));
         let mut out = Vec::with_capacity(recorder.len());
-        for e in recorder {
+        // The traversal records every directory on the way to a file; a directory is not a file
+        // (as in `classify_tree_change`).
+        for e in recorder.into_iter().filter(|e| !e.mode.is_tree()) {
             out.push((crate::path::RelPath::from(e.filepath.as_slice()), ChangeKind::Added));
         }
         return Some(out);

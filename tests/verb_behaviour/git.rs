@@ -106,7 +106,7 @@ async fn git_log_answers_byte_for_byte() {
     let cases = [
         (
             json!({}),
-            r#"{"commits":[{"sha":"c48e32cbf7dd","summary":"add gamma","author":"t","author_time_unix":1704240000,"files":{"src/gamma.rs":"added"}},{"sha":"0c2fe19c38a2","summary":"tune alpha","author":"t","author_time_unix":1704153600,"files":{"src/lib.rs":"modified"}},{"sha":"3f38556b6d45","summary":"init","author":"t","author_time_unix":1704067200,"files":{"notes":"added","notes/readme.txt":"added","src":"added","src/lib.rs":"added"}}]}"#,
+            r#"{"commits":[{"sha":"c48e32cbf7dd","summary":"add gamma","author":"t","author_time_unix":1704240000,"files":{"src/gamma.rs":"added"}},{"sha":"0c2fe19c38a2","summary":"tune alpha","author":"t","author_time_unix":1704153600,"files":{"src/lib.rs":"modified"}},{"sha":"3f38556b6d45","summary":"init","author":"t","author_time_unix":1704067200,"files":{"notes/readme.txt":"added","src/lib.rs":"added"}}]}"#,
         ),
         (
             json!({ "path": "src/lib.rs" }),
@@ -126,11 +126,11 @@ async fn git_log_answers_byte_for_byte() {
         ),
         (
             json!({ "path": "src/" }),
-            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cbf7dd","summary":"add gamma","author":"t","author_time_unix":1704240000,"files":{"src/gamma.rs":"added"}},{"sha":"0c2fe19c38a2","summary":"tune alpha","author":"t","author_time_unix":1704153600,"files":{"src/lib.rs":"modified"}},{"sha":"3f38556b6d45","summary":"init","author":"t","author_time_unix":1704067200,"files":{"notes":"added","notes/readme.txt":"added","src":"added","src/lib.rs":"added"}}]}"#,
+            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cbf7dd","summary":"add gamma","author":"t","author_time_unix":1704240000,"files":{"src/gamma.rs":"added"}},{"sha":"0c2fe19c38a2","summary":"tune alpha","author":"t","author_time_unix":1704153600,"files":{"src/lib.rs":"modified"}},{"sha":"3f38556b6d45","summary":"init","author":"t","author_time_unix":1704067200,"files":{"notes/readme.txt":"added","src/lib.rs":"added"}}]}"#,
         ),
         (
             json!({ "path": "src" }),
-            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cbf7dd","summary":"add gamma","author":"t","author_time_unix":1704240000,"files":{"src/gamma.rs":"added"}},{"sha":"0c2fe19c38a2","summary":"tune alpha","author":"t","author_time_unix":1704153600,"files":{"src/lib.rs":"modified"}},{"sha":"3f38556b6d45","summary":"init","author":"t","author_time_unix":1704067200,"files":{"notes":"added","notes/readme.txt":"added","src":"added","src/lib.rs":"added"}}]}"#,
+            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cbf7dd","summary":"add gamma","author":"t","author_time_unix":1704240000,"files":{"src/gamma.rs":"added"}},{"sha":"0c2fe19c38a2","summary":"tune alpha","author":"t","author_time_unix":1704153600,"files":{"src/lib.rs":"modified"}},{"sha":"3f38556b6d45","summary":"init","author":"t","author_time_unix":1704067200,"files":{"notes/readme.txt":"added","src/lib.rs":"added"}}]}"#,
         ),
         (
             json!({ "path": "src/lib.rs", "symbol": "alpha" }),
@@ -488,7 +488,7 @@ fn git_churn_and_by_path_print_byte_for_byte() {
     let cases: [(&[&str], &str); 7] = [
         (
             &["churn"],
-            r#"{"window_inspected":200,"total_files_changed":5,"files":[{"path":"src/lib.rs","commits_touching":2,"added":1,"modified":1,"deleted":0},{"path":"notes","commits_touching":1,"added":1,"modified":0,"deleted":0},{"path":"notes/readme.txt","commits_touching":1,"added":1,"modified":0,"deleted":0},{"path":"src","commits_touching":1,"added":1,"modified":0,"deleted":0},{"path":"src/gamma.rs","commits_touching":1,"added":1,"modified":0,"deleted":0}]}"#,
+            r#"{"window_inspected":200,"total_files_changed":3,"files":[{"path":"src/lib.rs","commits_touching":2,"added":1,"modified":1,"deleted":0},{"path":"notes/readme.txt","commits_touching":1,"added":1,"modified":0,"deleted":0},{"path":"src/gamma.rs","commits_touching":1,"added":1,"modified":0,"deleted":0}]}"#,
         ),
         (
             &["churn", "--window", "2", "--top-k", "1"],
@@ -496,7 +496,7 @@ fn git_churn_and_by_path_print_byte_for_byte() {
         ),
         (
             &["by-path", "^src/"],
-            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cbf7dd","summary":"add gamma","author":"t","author_time_unix":1704240000,"files":{"src/gamma.rs":"added"}},{"sha":"0c2fe19c38a2","summary":"tune alpha","author":"t","author_time_unix":1704153600,"files":{"src/lib.rs":"modified"}},{"sha":"3f38556b6d45","summary":"init","author":"t","author_time_unix":1704067200,"files":{"notes":"added","notes/readme.txt":"added","src":"added","src/lib.rs":"added"}}]}"#,
+            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cbf7dd","summary":"add gamma","author":"t","author_time_unix":1704240000,"files":{"src/gamma.rs":"added"}},{"sha":"0c2fe19c38a2","summary":"tune alpha","author":"t","author_time_unix":1704153600,"files":{"src/lib.rs":"modified"}},{"sha":"3f38556b6d45","summary":"init","author":"t","author_time_unix":1704067200,"files":{"notes/readme.txt":"added","src/lib.rs":"added"}}]}"#,
         ),
         (
             &["by-path", "^src/", "--window", "1"],
