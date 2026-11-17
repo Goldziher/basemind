@@ -173,6 +173,24 @@ fn index_for(column: &str) -> Index {
 #[derive(Clone)]
 pub struct DocStore {
     lance: LanceStore,
+    gate: SweepGate,
+}
+
+/// Orders the dead-row sweep against row writes of one store directory, across every view of the
+/// group in this process. A scan names a document in its file map on disk before it writes the
+/// document's rows; a write holds the gate shared, and a sweep holds it exclusively from the read of
+/// the group's liveness to its last delete. So a row is either written before the sweep reads the
+/// file map that names it, or after the sweep is done. Other processes cannot write the store: a
+/// writer holds the group lock (ADR-0028) for as long as it holds the group's index.
+type SweepGate = std::sync::Arc<parking_lot::RwLock<()>>;
+
+/// The gate of the store at `dir`: one per directory for the life of the process, so a handle
+/// opened again after the directory was removed orders against the old one.
+fn sweep_gate(dir: &Path) -> SweepGate {
+    static GATES: std::sync::OnceLock<std::sync::Mutex<AHashMap<PathBuf, SweepGate>>> = std::sync::OnceLock::new();
+    let gates = GATES.get_or_init(Default::default);
+    let mut gates = gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::sync::Arc::clone(gates.entry(dir.to_path_buf()).or_default())
 }
 
 impl DocStore {
@@ -185,7 +203,10 @@ impl DocStore {
             model,
             &[(DOC_CHUNKS_TABLE, doc_chunks_schema(dim)), (DOCS_TABLE, docs_schema())],
         )?;
-        Ok(Self { lance })
+        Ok(Self {
+            lance,
+            gate: sweep_gate(dir),
+        })
     }
 
     /// The process's handle on the store at `dir`, opening it on first use. A scan and a search in
@@ -290,10 +311,14 @@ impl DocStore {
     /// Write the rows of `docs`, replacing any rows of the same keys. The chunk rows commit before
     /// the document rows, so a document row is only ever seen beside its complete chunk rows: a
     /// write cut short between the two leaves the key absent, and the next scan writes it again.
+    ///
+    /// Waits for a running sweep ([`Self::sweep_exclusive`]). The caller's file map on disk must
+    /// already name every key of `docs`, or a sweep may delete them.
     pub fn write(&self, docs: &[DocRows]) -> Result<()> {
         if docs.is_empty() {
             return Ok(());
         }
+        let _shared = self.gate.read();
         let keys: Vec<String> = docs.iter().map(|doc| doc.doc_key.clone()).collect();
         self.delete_keys(&keys)?;
         let dim = self.lance.dim();
@@ -344,6 +369,13 @@ impl DocStore {
             }
             Ok(())
         })
+    }
+
+    /// Hold off every write to this store until the guard drops. A sweep holds it from the read of
+    /// the group's liveness to its last delete (see [`SweepGate`]); never call [`Self::write`]
+    /// while holding it.
+    pub fn sweep_exclusive(&self) -> parking_lot::RwLockWriteGuard<'_, ()> {
+        self.gate.write()
     }
 
     /// Delete the rows of every key not in `live`. Returns how many documents went. This is the

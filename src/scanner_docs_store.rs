@@ -144,6 +144,9 @@ pub(crate) fn build_doc_rows(doc: FileMapDoc, key: String, with_vectors: bool, m
 /// delete the rows no live document names, and bring the indexes up to date. Returns the number
 /// of documents written. Failures are logged; what was not written stays owed.
 ///
+/// Runs after the pass wrote its file map, which then names every key written here: a sibling's
+/// sweep may delete a row whose key no file map on disk names ([`DocStore::write`]).
+///
 /// The documents at `scanned` (this scan's) are always written when absent; at most `budget` other
 /// absent documents are, so an incremental or cancelled pass does not read every blob a wiped
 /// store lacks. The rest are recorded as owed for a later pass.
@@ -292,7 +295,17 @@ pub(crate) fn sync_document_rows(
 /// dropped stays while another names it. When a view's document map cannot be read the liveness is
 /// unknown and nothing is deleted; dead rows are filtered out at query time meanwhile.
 fn sweep_dead_rows(store: &Store, doc_store: &DocStore) {
-    let live_keys = match store.group_live_doc_keys() {
+    sweep_dead_rows_as_of(doc_store, || store.group_live_doc_keys());
+}
+
+/// [`sweep_dead_rows`] with the live keys read by `live`, under the store's sweep gate: a sibling
+/// that names a document after `live` read its file map writes the rows after the delete.
+fn sweep_dead_rows_as_of(
+    doc_store: &DocStore,
+    live: impl FnOnce() -> Result<AHashSet<String>, crate::store::LivenessUnknown>,
+) {
+    let _exclusive = doc_store.sweep_exclusive();
+    let live_keys = match live() {
         Ok(keys) => keys,
         Err(error) => {
             tracing::warn!(%error, "the group's live documents are unknown; no document rows are deleted");

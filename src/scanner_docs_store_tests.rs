@@ -366,3 +366,46 @@ fn an_unreadable_sibling_document_map_deletes_nothing() {
         "liveness unknown: nothing is deleted"
     );
 }
+
+/// A sibling's scan names a document in its file map, then writes the document's rows. A sweep that
+/// read the group's liveness before that map was written must not delete those rows: the write
+/// waits for the sweep, or the sweep sees the key.
+#[test]
+fn a_sweep_never_deletes_rows_a_sibling_writes_after_liveness_was_read() {
+    let (_tmp, mut a, mut b, config, filters) = worktrees();
+    track(&mut a, &blob("race-own", true), &["a.md"]);
+    sync_document_rows(&mut a, &config, &filters, &AHashSet::new(), usize::MAX);
+    a.flush().unwrap();
+    let store = doc_store(&a, &config);
+    let key = doc_key(&track(&mut b, &blob("race-sibling", true), &["b.md"]), "digest");
+
+    let (go, wait_go) = std::sync::mpsc::channel::<()>();
+    let (written, wait_written) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let (b, config, sibling_key) = (&mut b, &config, key.clone());
+        scope.spawn(move || {
+            wait_go.recv().unwrap();
+            // A scan writes its file map before its rows (`flush_code_map`, then the lanes).
+            b.flush().unwrap();
+            let rows = build_doc_rows(blob("race-sibling", true), sibling_key, true, 10);
+            open_doc_store(b, config, true)
+                .unwrap()
+                .unwrap()
+                .write(&[rows])
+                .unwrap();
+            let _ = written.send(());
+        });
+        sweep_dead_rows_as_of(&store, || {
+            let live = a.group_live_doc_keys();
+            go.send(()).unwrap();
+            // Long enough for an ungated write to land before the delete.
+            let _ = wait_written.recv_timeout(std::time::Duration::from_secs(3));
+            live
+        });
+    });
+
+    assert!(
+        store.keys().unwrap().contains(&key),
+        "the sibling's rows survive the sweep"
+    );
+}
