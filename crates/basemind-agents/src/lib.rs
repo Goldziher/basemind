@@ -141,6 +141,7 @@ mod session;
 mod spec;
 mod supervisor;
 mod supervisor_admit;
+mod supervisor_allows;
 mod supervisor_codes;
 mod supervisor_identity;
 mod supervisor_pump;

@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
@@ -23,6 +23,7 @@ use crate::registry::Registry;
 use crate::session::SessionHandle;
 use crate::spec::{LaunchConfig, LaunchRequest};
 use crate::supervisor_admit::{Admitted, Asker, admit, launched_config, owned, refuse};
+use crate::supervisor_allows::Allowance;
 use crate::supervisor_pump::{Reservation, supervise};
 
 pub use crate::supervisor_codes::launch_error_code;
@@ -68,6 +69,8 @@ pub(crate) struct Entry {
     pub(crate) handle: Option<SessionHandle>,
     pub(crate) detached: Arc<Detached>,
     pub(crate) approvals: HashMap<String, &'static str>,
+    /// What the session may still be allowed.
+    allowance: Allowance,
     pump: Option<JoinHandle<()>>,
 }
 
@@ -112,6 +115,8 @@ pub(crate) struct Inner {
     table: Mutex<Table>,
     pub(crate) changed: Condvar,
     audit_failures: AtomicU64,
+    /// The allows given over the supervisor's life, against the budget's `max_allows`.
+    allows: Arc<AtomicU32>,
     refusals: Refusals,
     /// Serializes registrations, each with its record.
     pub(crate) registering: Mutex<()>,
@@ -270,6 +275,7 @@ impl Supervisor {
                 table: Mutex::default(),
                 changed: Condvar::new(),
                 audit_failures: AtomicU64::new(0),
+                allows: Arc::default(),
                 refusals: Refusals::default(),
                 registering: Mutex::new(()),
             }),
@@ -359,12 +365,13 @@ impl Supervisor {
             }
         };
         let id = table.next;
+        let allowance = Allowance::new(inner.allows.clone(), inner.policy.budget().max_allows);
         let prepared = LaunchToken::generate()
             .and_then(|token| Ok((token, crate::identity::random_bytes::<4>()?)))
             .map_err(SupervisorError::Token)
             .and_then(|(token, bytes)| {
                 let agent = format!("{LAUNCHED_PREFIX}{}-{id}-{}", flavor.id(), crate::identity::hex(&bytes));
-                let config = launched_config(inner, config, &agent, depth, token.clone())?;
+                let config = launched_config(inner, config, &agent, depth, token.clone(), &allowance)?;
                 Ok((token, agent, config))
             });
         let (token, agent, config) = match prepared {
@@ -410,6 +417,7 @@ impl Supervisor {
                 handle: None,
                 detached: Arc::default(),
                 approvals: HashMap::new(),
+                allowance,
                 pump: None,
             },
         );
@@ -644,6 +652,7 @@ impl Supervisor {
         let recorded_id = approval.to_owned();
         let handle = entry.handle.clone();
         let flavor = entry.flavor.id();
+        let allowance = entry.allowance.clone();
         drop(table);
         let record = |outcome, allowed| {
             let mut record = AuditRecord {
@@ -664,6 +673,13 @@ impl Supervisor {
         // request stays pending and is denied when its turn or the session ends. A denial
         // goes through whatever the log says.
         if allow {
+            // An allow past the session's or the supervisor's allowance is refused, not
+            // delivered: the request stays pending for a denial.
+            if !allowance.take() {
+                let error = SupervisorError::AllowsExhausted;
+                inner.refuse(record(error.code(), false), &asker.key);
+                return Err(error);
+            }
             inner.audit(&record("allowed", true)).map_err(SupervisorError::Audit)?;
         }
         let answered = handle
@@ -785,3 +801,7 @@ mod attack_tests;
 #[cfg(all(test, unix))]
 #[path = "supervisor_identity_tests.rs"]
 mod identity_tests;
+
+#[cfg(all(test, unix))]
+#[path = "supervisor_audit_tests.rs"]
+mod audit_tests;

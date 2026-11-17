@@ -646,6 +646,18 @@ impl SessionObserver for Recorder {
 }
 
 impl Recorder {
+    /// The ids of the approval requests seen so far, in order.
+    pub(super) fn approvals(&self) -> Vec<String> {
+        let events = self.0.lock().unwrap();
+        events
+            .iter()
+            .filter_map(|(_, event)| match event {
+                Event::ApprovalRequest(request) => Some(request.id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn approval(&self) -> Option<String> {
         self.0.lock().unwrap().iter().find_map(|(_, event)| match event {
             Event::ApprovalRequest(request) => Some(request.id.clone()),

@@ -706,21 +706,49 @@ cat > /dev/null
     );
 }
 
-/// A Claude Code stand-in that asks for `count` tool approvals one after the other, reading
-/// each answer, touches `done` in the scratch directory, then keeps running.
-fn approvals_body(scratch: &Scratch, count: usize) -> String {
+/// A Claude Code stand-in that asks for `count` tool approvals one after the other, appending
+/// each answer it reads to `replies` in the scratch directory, touches `done` there, then keeps
+/// running.
+pub(super) fn approvals_body(scratch: &Scratch, count: usize) -> String {
     format!(
         r#"{HANDSHAKE}i=0
 while [ "$i" -lt {count} ]; do
   i=$((i + 1))
   printf '%s\n' '{{"type":"control_request","request_id":"req-'"$i"'","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"true"}}}}}}'
   read -r reply
+  printf '%s\n' "$reply" >> '{replies}'
 done
 touch '{done}'
 cat > /dev/null
 "#,
+        replies = scratch.path.join("replies").display(),
         done = scratch.path.join("done").display()
     )
+}
+
+/// The answers the stand-in of [`approvals_body`] read so far: (allowed, denied).
+pub(super) fn replies(scratch: &Scratch) -> (usize, usize) {
+    let text = std::fs::read_to_string(scratch.path.join("replies")).unwrap_or_default();
+    let allowed = text
+        .lines()
+        .filter(|line| line.contains(r#""behavior":"allow""#))
+        .count();
+    let denied = text
+        .lines()
+        .filter(|line| line.contains(r#""behavior":"deny""#))
+        .count();
+    (allowed, denied)
+}
+
+/// A policy spec whose Claude Code rule consents to an approval policy.
+pub(super) fn consenting() -> PolicySpec {
+    PolicySpec {
+        flavors: vec![FlavorPolicy {
+            approval_policy: true,
+            ..FlavorPolicy::supervised(HarnessKind::ClaudeCode)
+        }],
+        ..policy(&[])
+    }
 }
 
 /// A supervisor whose Claude Code config settles every approval with `verdict`.
@@ -731,14 +759,7 @@ fn settling(
 ) -> (Supervisor, Arc<MemoryAuditSink>) {
     let mut config = scratch.config(HarnessKind::ClaudeCode, &approvals_body(scratch, count));
     config.approval_policy = crate::test_support::always(verdict);
-    let spec = PolicySpec {
-        flavors: vec![FlavorPolicy {
-            approval_policy: true,
-            ..FlavorPolicy::supervised(HarnessKind::ClaudeCode)
-        }],
-        ..policy(&[])
-    };
-    start(spec, vec![config])
+    start(consenting(), vec![config])
 }
 
 #[test]
@@ -775,20 +796,26 @@ fn a_flood_of_policy_denials_is_coalesced() {
 }
 
 #[test]
-fn a_session_past_its_recorded_allows_is_stopped() {
+fn a_session_past_its_recorded_allows_is_denied_them() {
     let scratch = Scratch::new();
-    let count = crate::supervisor_pump::MAX_RECORDED_ALLOWS + 20;
-    let (supervisor, audit) = settling(&scratch, crate::spec::ApprovalVerdict::Allow, count);
+    let cap = crate::supervisor_allows::MAX_SESSION_ALLOWS as usize;
+    let (supervisor, audit) = settling(&scratch, crate::spec::ApprovalVerdict::Allow, cap + 20);
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
-    let state = supervisor.wait(launched.id, Duration::from_secs(60));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !scratch.path.join("done").exists() {
+        assert!(Instant::now() < deadline, "the stand-in never had its answers");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Every allow the harness got is on the record; the rest were denied, not allowed unseen.
     assert_eq!(
-        state,
-        Some(SessionState::Finished(FinishStatus::Stopped)),
-        "a session ran on past its recorded allows"
+        replies(&scratch),
+        (cap, 20),
+        "(allowed, denied) as the harness read them"
     );
     let allows = outcomes(&audit, AuditEvent::Approval)
         .iter()
         .filter(|outcome| **outcome == "allowed")
         .count();
-    assert_eq!(allows, crate::supervisor_pump::MAX_RECORDED_ALLOWS, "allows recorded");
+    assert_eq!(allows, cap, "allows recorded");
+    assert_eq!(supervisor.status(launched.id).unwrap().state, SessionState::Running);
 }

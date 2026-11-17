@@ -251,6 +251,10 @@ pub enum SupervisorError {
     /// The session has no pending approval request of that id.
     #[error("no pending approval request of that id")]
     UnknownApproval,
+    /// The session, or the supervisor over its life (the budget's `max_allows`), was given all
+    /// the allows it may be, so this one was not delivered.
+    #[error("no allow is left in the session's or the supervisor's allowance")]
+    AllowsExhausted,
 }
 
 impl SupervisorError {
@@ -276,6 +280,7 @@ impl SupervisorError {
             Self::NotOwner(_) => "not_owner",
             Self::UnknownApproval => "unknown_approval",
             Self::RoleBound => "role_bound",
+            Self::AllowsExhausted => "allows_exhausted",
         }
     }
 }
