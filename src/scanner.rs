@@ -19,8 +19,8 @@ use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
 use crate::scanner_flush::{
-    REQUEUE_PER_INCREMENTAL, derive_scope, finalize_bm25_stats_if_any, flush_code_removals_if_any, flush_vector_lanes,
-    maintain_lance_if_open,
+    REQUEUE_ALL, REQUEUE_PER_INCREMENTAL, derive_scope, finalize_bm25_stats_if_any, flush_code_removals_if_any,
+    flush_vector_lanes, maintain_lance_if_open,
 };
 use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
 use crate::scanner_lanes::{LANE_BM25_STATS, LANE_CODE_REMOVALS, LANE_EMBED_POLICY, LANE_RESOLVE, run_optional_lane};
@@ -626,7 +626,7 @@ pub fn scan_with_observer(
     }
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
-    flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, usize::MAX)?;
+    flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, REQUEUE_ALL)?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
         flush_code_removals_if_any(store, config, &filters, &scope, &stale);
     });

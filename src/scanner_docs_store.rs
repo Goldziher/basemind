@@ -150,6 +150,10 @@ pub(crate) fn build_doc_rows(doc: FileMapDoc, key: String, with_vectors: bool, m
 /// The documents at `scanned` (this scan's) are always written when absent; at most `budget` other
 /// absent documents are, so an incremental or cancelled pass does not read every blob a wiped
 /// store lacks. The rest are recorded as owed for a later pass.
+///
+/// A full pass ([`crate::scanner_flush::REQUEUE_ALL`]) sweeps every dead row; any other pass checks
+/// only the keys it dropped ([`Store::dropped_doc_keys`]), and reads the other views' file maps
+/// only when one of them is not in this view's own.
 pub(crate) fn sync_document_rows(
     store: &mut Store,
     config: &Config,
@@ -157,6 +161,7 @@ pub(crate) fn sync_document_rows(
     scanned: &AHashSet<String>,
     budget: usize,
 ) -> usize {
+    let dropped = std::mem::take(&mut store.dropped_doc_keys);
     let live = live_docs(store, config, filters);
     let doc_store = match open_doc_store(store, config, !live.is_empty()) {
         Ok(Some(doc_store)) => doc_store,
@@ -283,8 +288,13 @@ pub(crate) fn sync_document_rows(
         store.pending_vectors.owe_doc(path);
     }
     crate::scanner_flush::extract_again(store, &damaged, |store, rel| store.remove_doc(rel));
-    drop(live);
-    sweep_dead_rows(store, &doc_store);
+    if budget == crate::scanner_flush::REQUEUE_ALL {
+        drop(live);
+        sweep_dead_rows(store, &doc_store);
+    } else {
+        sweep_dropped_rows(store, &doc_store, dropped, |key| live.contains_key(key));
+        drop(live);
+    }
     if let Err(error) = doc_store.maintain_indexes() {
         tracing::warn!(?error, "document index upkeep failed; searches scan the unindexed rows");
     }
@@ -320,10 +330,53 @@ fn sweep_dead_rows_as_of(
     }
 }
 
-/// Delete the rows of documents no view of the group names any more. No store is created for it.
-pub(crate) fn remove_dead_document_rows(store: &Store, config: &Config) {
+/// Delete the rows of the keys `dropped` names that no view of the group names any more. The other
+/// views' file maps are read only when this view's own map names none of them. A dead row of a key
+/// not dropped here waits for the next full pass ([`sweep_dead_rows`]).
+fn sweep_dropped_rows(
+    store: &Store,
+    doc_store: &DocStore,
+    mut dropped: Vec<String>,
+    own_names: impl Fn(&String) -> bool,
+) {
+    dropped.retain(|key| !own_names(key));
+    if dropped.is_empty() {
+        return;
+    }
+    dropped.sort_unstable();
+    dropped.dedup();
+    let _exclusive = doc_store.sweep_exclusive();
+    let live = match store.group_live_doc_keys() {
+        Ok(keys) => keys,
+        Err(error) => {
+            tracing::warn!(%error, "the group's live documents are unknown; no document rows are deleted");
+            return;
+        }
+    };
+    dropped.retain(|key| !live.contains(key));
+    if let Err(error) = doc_store.delete_keys(&dropped) {
+        tracing::warn!(
+            ?error,
+            "deleting dropped document rows failed; they are filtered out at query time"
+        );
+    }
+}
+
+/// Delete the rows of the documents this pass dropped that no view of the group names any more.
+/// No store is created for it.
+pub(crate) fn remove_dead_document_rows(store: &mut Store, config: &Config) {
+    let dropped = std::mem::take(&mut store.dropped_doc_keys);
+    if dropped.is_empty() {
+        return;
+    }
+    let own: AHashSet<String> = store
+        .index
+        .doc_files
+        .values()
+        .map(|entry| doc_key(&entry.hash_hex, &entry.config_digest))
+        .collect();
     match open_doc_store(store, config, false) {
-        Ok(Some(doc_store)) => sweep_dead_rows(store, &doc_store),
+        Ok(Some(doc_store)) => sweep_dropped_rows(store, &doc_store, dropped, |key| own.contains(key)),
         Ok(None) => {}
         Err(error) => tracing::warn!(%error, "document store did not open; removed documents' rows stay"),
     }
