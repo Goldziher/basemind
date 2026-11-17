@@ -174,3 +174,94 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
 
     service.cancel().await.expect("shut down the relay client");
 }
+
+/// The four CLI-only commands, which ADR-0018 keeps off the agent surface.
+const CLI_ONLY: [(&str, &str); 4] = [
+    ("memory_delete", r#"{"key":"k"}"#),
+    ("git_churn", "{}"),
+    ("git_by_path", r#"{"pattern":"a"}"#),
+    ("code_chunk", r#"{"path":"a.rs"}"#),
+];
+
+/// A relay session is an agent's unless its hello says it is a CLI command's. An agent session (a
+/// `serve` relay) answers the CLI-only commands as unknown tools; a CLI session lists the same
+/// tools byte for byte, answers a CLI-only command, and reports a failed call as a JSON-RPC error
+/// with the code the CLI exits by.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_a_cli_session_reaches_the_cli_only_commands() {
+    let dir = build_repo();
+    let root = dir.path();
+    git(root, &["add", "-A"]);
+    git(
+        root,
+        &["-c", "user.name=t", "-c", "user.email=t@e.x", "commit", "-qm", "init"],
+    );
+    run_scan(root);
+
+    let bin = env!("CARGO_BIN_EXE_basemind");
+    let cmd = AsyncCommand::new(bin).configure(|c| {
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
+    });
+    let agent = ().serve(TokioChildProcess::new(cmd).expect("spawn basemind serve")).await.expect("serve relay");
+    for (name, args) in CLI_ONLY {
+        let error = agent
+            .call_tool(call_params(name, serde_json::from_str(args).expect("args")))
+            .await
+            .expect_err("an agent session does not know a CLI-only command");
+        assert!(error.to_string().contains("tool not found"), "{name}: {error}");
+    }
+
+    let paths = basemind::comms::singleton::resolve_paths().expect("comms paths");
+    let mut stream = basemind::comms::relay_connect::connect_stream(&paths.socket_path)
+        .await
+        .expect("connect to the daemon the serve relay brought up");
+    let hello = basemind::comms::relay::RelayHello {
+        relay_proto_ver: basemind::comms::relay::RELAY_PROTO_VER,
+        root: root.canonicalize().expect("canonical root"),
+        view: basemind::store::VIEW_WORKING.to_string(),
+        principal: basemind::comms::v2::Principal::parse("cli-test").expect("principal"),
+        host: None,
+        notices: Vec::new(),
+        client: basemind::comms::relay::RelayClient::Cli,
+    };
+    let welcome = basemind::comms::relay::client_handshake(&mut stream, &hello)
+        .await
+        .expect("relay handshake");
+    assert!(welcome.accepted && welcome.cli, "{welcome:?}");
+    let cli = ().serve(tokio::io::split(stream)).await.expect("CLI session");
+
+    let mut tools: Vec<_> = cli
+        .list_all_tools()
+        .await
+        .expect("tools/list")
+        .into_iter()
+        .filter(|tool| !basemind::mcp::agent_tools::AGENT_TOOLS.contains(&tool.name.as_ref()))
+        .collect();
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut listed = serde_json::to_string_pretty(&tools).expect("serialize tools");
+    listed.push('\n');
+    let committed = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tools_list.json"))
+        .expect("tools/list snapshot")
+        .replace("\r\n", "\n");
+    assert!(listed == committed, "a CLI session lists other tools:\n{listed}");
+
+    let churn = cli
+        .call_tool(call_params("git_churn", serde_json::json!({})))
+        .await
+        .expect("a CLI session runs `git churn`");
+    assert_ne!(churn.is_error, Some(true), "{churn:?}");
+    assert!(decode_text(&churn).get("files").is_some(), "{churn:?}");
+
+    let refused = cli
+        .call_tool(call_params("code_outline", serde_json::json!({ "path": "missing.rs" })))
+        .await
+        .expect_err("a failed call is a JSON-RPC error on a CLI session");
+    let rmcp::ServiceError::McpError(refused) = refused else {
+        panic!("not a JSON-RPC error: {refused}");
+    };
+    assert_eq!(refused.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{refused:?}");
+    assert!(refused.message.contains("missing.rs"), "{refused:?}");
+
+    cli.cancel().await.expect("close the CLI session");
+    agent.cancel().await.expect("close the serve relay");
+}

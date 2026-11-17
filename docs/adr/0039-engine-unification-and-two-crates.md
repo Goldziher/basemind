@@ -78,6 +78,23 @@ ADR-0023 and ADR-0032 stand except where this record changes them.
    | `src/engine/workspace.rs -> mcp::helpers_files` (`TrackedCache`) | the `find_files` operation step |
 
    Extraction cannot start while any of these remains, in addition to ADR-0032's three edges.
+4. **A CLI command forwards its whole call to the daemon.** With the daemon up, a tool command on
+   the working view opens no store. It opens one relay session, sends `tools/call {name, arguments}`
+   and renders the `CallToolResult` the daemon's own tool body answered:
+   - The relay hello names its client: `serve` (the default, an agent's session) or `cli`. A CLI
+     session answers a failed call as a JSON-RPC error that keeps its code and data, so the exit
+     status is the one an in-process call gives. It also answers the CLI-only commands (`git churn`,
+     `git by-path`, `code chunk`, `memory delete`) by name. They stay off `tools/list`, which is the
+     same for both kinds. The kind is the peer's own claim, so only the daemon's local socket or
+     pipe honours it. The HTTP front-end never builds a CLI session.
+   - The kind is an additive field in `RelayHello`, and the daemon's acknowledgement (`cli`) is an
+     additive field in `RelayWelcome`. `RELAY_PROTO_VER` stays 2. An older relay's hello reads as
+     `serve`, and an older daemon ignores the kind. A CLI that gets no acknowledgement refuses with
+     exit 4 and names `basemind comms stop`. It never reads an older daemon's `isError` answers as
+     successes. A relay protocol bump would have made every older `serve` refuse a newer daemon of
+     its generation, which ADR-0024 rule 2 has it use as it is.
+   - A view other than the working tree runs in process, as the daemon hosts only the working view.
+   - `admin telemetry` and `admin eval` are not tool calls and run in process.
 
 ## Consequences
 

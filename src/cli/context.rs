@@ -6,11 +6,9 @@
 //! read-only so the CLI never contends for the `.basemind/.lock` flock a running
 //! `basemind serve` may already hold.
 //!
-//! When the comms daemon is up it is the sole index writer and holds the fjall lock, so the server
-//! is built in the same `daemon_writer` shape the daemon's own `serve` relay uses: blobs-only
-//! store, and every index read (references, callers, grep prefilter), memory op and rescan is
-//! forwarded to the daemon rather than degrading to a truncating in-RAM projection or failing with
-//! "index not available".
+//! When the comms daemon is up it is the sole index writer and holds the fjall lock, so a command on
+//! the working view opens no store at all: [`Tools`] forwards the whole call to the daemon over one
+//! relay session ([`super::forward`]) and renders what the daemon's tool body answered.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -23,6 +21,73 @@ use crate::git::Repo;
 use crate::git_cache::GitCache;
 use crate::mcp::BasemindServer;
 use crate::store::Store;
+
+/// Where a CLI command's call runs: in this process, or in the daemon that holds the index.
+pub struct Tools {
+    root: std::path::PathBuf,
+    backend: Backend,
+}
+
+enum Backend {
+    Local(Box<BasemindServer>),
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    Daemon(super::forward::DaemonSession),
+}
+
+impl Tools {
+    /// The repository root the command runs against.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The in-process server, for a command that is not a tool call (`admin telemetry`, `eval`).
+    pub(crate) fn local(&self) -> Option<&BasemindServer> {
+        match &self.backend {
+            Backend::Local(server) => Some(server),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            Backend::Daemon(_) => None,
+        }
+    }
+
+    /// Run the tool `name` with `params`: through `local` in this process, or as `tools/call {name,
+    /// params}` in the daemon. Both answer from the same tool body.
+    pub(crate) async fn call<P: serde::Serialize>(
+        &self,
+        name: &str,
+        params: P,
+        local: impl AsyncFnOnce(&BasemindServer, P) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        let _ = name;
+        match &self.backend {
+            Backend::Local(server) => local(server, params).await,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            Backend::Daemon(session) => {
+                let arguments = serde_json::to_value(&params).map_err(|error| {
+                    rmcp::ErrorData::internal_error(format!("encode `{name}` arguments: {error}"), None)
+                })?;
+                session.call(name, arguments).await
+            }
+        }
+    }
+}
+
+/// The backend for one CLI command: the daemon when it is up, `forward` allows it and the view is
+/// the working tree (the only view the daemon hosts), else an in-process server.
+pub async fn build_tools(root: &Path, view: &str, documents: DocumentsCliOverrides, forward: bool) -> Result<Tools> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if forward && view == crate::store::VIEW_WORKING && super::rescan::daemon_is_up() {
+        return Ok(Tools {
+            root: root.to_path_buf(),
+            backend: Backend::Daemon(super::forward::DaemonSession::open(root).await?),
+        });
+    }
+    let _ = forward;
+    Ok(Tools {
+        root: root.to_path_buf(),
+        backend: Backend::Local(Box::new(build_server(root, view, documents)?)),
+    })
+}
 
 /// LRU capacity per git-cache category for one-shot CLI invocations. Small —
 /// a CLI process issues a single query and exits, so a big LRU never pays off.

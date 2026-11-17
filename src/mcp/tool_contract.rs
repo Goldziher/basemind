@@ -38,8 +38,11 @@ impl BasemindServer {
         F: FnOnce(T) -> Fut,
         Fut: Future<Output = Result<CallToolResult, McpError>>,
     {
+        // ~keep A CLI session keeps the error as an error: its code is the CLI's exit status.
         match args.0 {
+            Ok(params) if self.cli => body(params).await,
             Ok(params) => Ok(into_tool_result(body(params).await)),
+            Err(message) if self.cli => Err(McpError::invalid_params(message, None)),
             Err(message) => Ok(tool_error(message)),
         }
     }

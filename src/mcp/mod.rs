@@ -25,6 +25,12 @@ mod daemon_forward;
 use crate::engine::freshness;
 mod helpers;
 pub(crate) use helpers::BUSY_DATA;
+
+/// The overload refusal a CLI session answers with ([`admission::ServerBusy::into_cli_error`]).
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
+pub(crate) fn server_busy_for_cli() -> rmcp::ErrorData {
+    admission::ServerBusy.into_cli_error()
+}
 #[cfg(test)]
 pub(crate) use helpers::rescan_error;
 #[cfg(feature = "documents")]
@@ -182,6 +188,8 @@ pub struct BasemindServer {
     tasks: TaskManager,
     /// Bounds allocation-heavy calls while allowing control/comms traffic to bypass the queue.
     heavy_admission: Arc<admission::HeavyAdmission>,
+    /// A `basemind` CLI command's relay session ([`for_cli`](Self::for_cli)).
+    cli: bool,
 }
 
 /// Construction-time switches for [`BasemindServer`].
@@ -375,6 +383,7 @@ impl BasemindServer {
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
             heavy_admission: Arc::new(admission::HeavyAdmission::default()),
+            cli: false,
         }
     }
 
@@ -440,7 +449,18 @@ impl BasemindServer {
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
             heavy_admission,
+            cli: false,
         }
+    }
+
+    /// This session forwards a `basemind` CLI command: a failed call is answered as a JSON-RPC error
+    /// carrying the code the CLI turns into its exit status, and the CLI-only commands
+    /// ([`server_handler::CLI_ONLY`]) are answered too, off `tools/list`. Only a CLI's hello on the
+    /// daemon's local socket or pipe asks for it.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn for_cli(mut self) -> Self {
+        self.cli = true;
+        self
     }
 
     /// Build (once) the shared read stack the daemon hosts for one workspace, plus its single

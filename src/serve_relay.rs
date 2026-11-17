@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result};
-use basemind::comms::{relay, singleton};
+use basemind::comms::{relay, relay_connect, singleton};
 
 use crate::relay_refusal::RelayRefusal;
 use crate::stdio_relay::{self, StopPacing};
@@ -60,11 +60,7 @@ struct Identity {
     notices: Vec<String>,
 }
 
-#[cfg(unix)]
-type RelayStream = tokio::net::UnixStream;
-
-#[cfg(windows)]
-type RelayStream = tokio::net::windows::named_pipe::NamedPipeClient;
+type RelayStream = relay_connect::RelayStream;
 
 /// Connect a relay to the daemon, bringing one up if needed. `pacing` decides whether this attempt
 /// may ask an older daemon to make way, and is told when it did.
@@ -81,7 +77,7 @@ async fn open_relay_connection(
         pacing.lock().unwrap_or_else(PoisonError::into_inner).asked();
     }
     ensured.context("ensure daemon")?;
-    let mut stream = relay_connect_stream(&paths.socket_path)
+    let mut stream = relay_connect::connect_stream(&paths.socket_path)
         .await
         .context("connect to daemon socket")?;
     let hello = relay::RelayHello {
@@ -91,6 +87,7 @@ async fn open_relay_connection(
         principal: agent.principal,
         host: agent.host,
         notices: agent.notices,
+        client: relay::RelayClient::Serve,
     };
     let welcome = relay::client_handshake(&mut stream, &hello)
         .await
@@ -111,32 +108,4 @@ async fn open_relay_connection(
         .into());
     }
     Ok(stream)
-}
-
-/// Dial the daemon's relay endpoint: a Unix-domain socket on unix.
-#[cfg(unix)]
-async fn relay_connect_stream(socket_path: &Path) -> std::io::Result<tokio::net::UnixStream> {
-    tokio::net::UnixStream::connect(socket_path).await
-}
-
-/// Dial the daemon's relay endpoint: a named pipe on Windows, retrying while the pipe is busy.
-#[cfg(windows)]
-async fn relay_connect_stream(socket_path: &Path) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    const ERROR_PIPE_BUSY: i32 = 231;
-    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
-    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-    let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
-    loop {
-        match basemind::comms::pipe_owner::open_verified(socket_path) {
-            Ok(client) => return Ok(client),
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(e);
-                }
-                tokio::time::sleep(RETRY_INTERVAL).await;
-            }
-            Err(source) => return Err(source),
-        }
-    }
 }

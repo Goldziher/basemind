@@ -95,14 +95,24 @@ struct Daemon {
 
 impl Daemon {
     fn start(env: &Env) -> Self {
+        Self::spawn(env, Stdio::null())
+    }
+
+    /// A daemon logging at `info` to `log`, which records each relay session it hosts.
+    fn start_logged(env: &Env, log: &Path) -> Self {
+        Self::spawn(env, std::fs::File::create(log).expect("daemon log").into())
+    }
+
+    fn spawn(env: &Env, stderr: Stdio) -> Self {
         let comms_dir = env.comms_dir();
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", &comms_dir)
             .env("BASEMIND_DATA_HOME", env.home.path())
+            .env("RUST_LOG", "basemind=info")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .spawn()
             .expect("spawn daemon");
         let daemon = Self { child, comms_dir };
@@ -307,4 +317,105 @@ fn ctrl_c_during_scan_stops_cleanly_and_leaves_a_consistent_index() {
     );
     let files = env.run(&["--json", "code", "symbols", "f3999"]);
     assert_eq!(code(&files), 0, "{}", text(&files));
+}
+
+/// `stdout` with the timings taken out: a call's own `elapsed_us` and the process's `startup_us`
+/// differ from run to run, and nothing else may.
+fn answer(out: &Output) -> String {
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("elapsed_us");
+                map.remove("startup_us");
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    match serde_json::from_str::<serde_json::Value>(&stdout) {
+        Ok(mut value) => {
+            strip(&mut value);
+            value.to_string()
+        }
+        Err(_) => stdout.into_owned(),
+    }
+}
+
+/// `stderr` without tracing lines: the in-process call logs opening the store, which a forwarded
+/// one does not; what the command itself prints stays.
+fn diagnostics(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .filter(|line| !line.starts_with("\u{1b}[2m"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// With the daemon up, a CLI command on the working view is forwarded whole to it over one relay
+/// session, and prints byte for byte what the same command prints in process: the answers, the
+/// refusals and their exit codes. The daemon's log proves each call was forwarded.
+#[test]
+fn a_forwarded_call_prints_exactly_what_the_in_process_call_prints() {
+    let env = Env::new();
+    let scan = env.run(&["scan", "--quiet"]);
+    assert_eq!(code(&scan), 0, "{}", text(&scan));
+    let calls: &[&[&str]] = &[
+        &["--json", "code", "outline", "a.rs"],
+        &["--json", "code", "symbols", "alpha"],
+        &["--json", "code", "read", "a.rs", "--symbol", "alpha"],
+        &["--json", "git", "log"],
+        &["--json", "code", "find", "a"],
+        &["--json", "code", "files"],
+        &["--json", "git", "churn"],
+        &["code", "outline", "missing.rs"],
+        &["code", "read", "a.rs", "--symbol", "nope"],
+        &["code", "outline", "a.rs", "--limit", "0"],
+    ];
+    let in_process: Vec<(i32, String, String)> = calls
+        .iter()
+        .map(|args| {
+            let out = env.run(args);
+            (code(&out), answer(&out), diagnostics(&out))
+        })
+        .collect();
+    assert_eq!(in_process[0].0, 0, "{}", in_process[0].2);
+    assert_eq!(
+        in_process[7].0, 2,
+        "a path that is not indexed is a usage error: {}",
+        in_process[7].2
+    );
+    assert!(in_process[7].2.contains("missing.rs"), "{}", in_process[7].2);
+    assert_eq!(in_process[9].0, 2, "{}", in_process[9].2);
+
+    let log = env.home.path().join("daemon-stderr.log");
+    let _daemon = Daemon::start_logged(&env, &log);
+    for (args, expected) in calls.iter().zip(&in_process) {
+        let out = env.run(args);
+        let forwarded = (code(&out), answer(&out), diagnostics(&out));
+        assert_eq!(
+            &forwarded, expected,
+            "basemind {args:?} answered differently through the daemon"
+        );
+    }
+    let hosted = std::fs::read_to_string(&log)
+        .expect("daemon log")
+        .matches("relay: hosting rmcp session")
+        .count();
+    assert_eq!(hosted, calls.len(), "every call is one forwarded relay session");
+}
+
+/// A view the daemon does not host runs in process even with the daemon up.
+#[test]
+fn a_call_on_another_view_runs_in_process_next_to_the_daemon() {
+    let env = Env::new();
+    let log = env.home.path().join("daemon-stderr.log");
+    let _daemon = Daemon::start_logged(&env, &log);
+    let out = env.run(&["--view", "other", "--json", "code", "files"]);
+    let hosted = std::fs::read_to_string(&log)
+        .expect("daemon log")
+        .matches("relay: hosting rmcp session")
+        .count();
+    assert_eq!(hosted, 0, "{}", text(&out));
 }

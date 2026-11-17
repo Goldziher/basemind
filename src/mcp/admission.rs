@@ -92,6 +92,18 @@ impl ServerBusy {
         }));
         result
     }
+
+    /// The rejection for a CLI session ([`BasemindServer::for_cli`](super::BasemindServer::for_cli)):
+    /// a JSON-RPC error marked [`BUSY_DATA`](super::BUSY_DATA), which the CLI exits `3` for.
+    pub(crate) fn into_cli_error(self) -> ErrorData {
+        ErrorData::invalid_request(
+            format!(
+                "server_busy: basemind is running as many heavy calls as it allows and this one was not \
+                 started. Nothing was changed. Retry in about {DEFAULT_RETRY_AFTER_MS} ms."
+            ),
+            Some(serde_json::json!({ super::BUSY_DATA: true })),
+        )
+    }
 }
 
 #[cfg(test)]
