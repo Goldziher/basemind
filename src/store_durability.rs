@@ -60,11 +60,17 @@ pub(super) fn open_index_for_writer(
     Ok((index_db, index_rebuild_needed || index.rebuild_pending))
 }
 
-/// Remove the file map of a view written for an earlier blob store layout, and the index built
-/// from it: the index is of the current schema, so nothing else would empty it, and rows of files
-/// deleted since would outlive the map that knew of them. The caller holds the workspace lock.
-pub(super) fn discard_view_of_a_stale_layout(view_dir: &Path) -> Result<(), StoreError> {
-    super::wipe_view(view_dir)?;
+/// Remove the file map of a view written for an earlier blob store layout, or one of this version
+/// that does not decode, and the index built from it: the index is of the current schema, so
+/// nothing else would empty it, and rows of files deleted since would outlive the map that knew of
+/// them. A map whose version cannot be read (`why`) is set aside instead of deleted. The caller
+/// holds the workspace lock.
+pub(super) fn discard_view_of_a_stale_layout(view_dir: &Path, why: &StoreError) -> Result<(), StoreError> {
+    if matches!(why, StoreError::UnreadableFileMap { .. }) {
+        super::file_map::set_aside_unreadable_map(view_dir)?;
+    } else {
+        super::wipe_view(view_dir)?;
+    }
     if view_dir.join(crate::index::INDEX_DIR).exists() {
         crate::index::durability::discard_index(view_dir)?;
     }
@@ -166,9 +172,13 @@ impl Store {
                 super::wipe_view(&self.view_dir)?;
                 Index::empty()
             }
-            Err(StoreError::StaleBlobLayout { .. } | StoreError::Decode(_)) => {
+            Err(
+                error @ (StoreError::StaleBlobLayout { .. }
+                | StoreError::Decode(_)
+                | StoreError::UnreadableFileMap { .. }),
+            ) => {
                 self.reset_stale_schema = true;
-                discard_view_of_a_stale_layout(&self.view_dir)?;
+                discard_view_of_a_stale_layout(&self.view_dir, &error)?;
                 Index::empty()
             }
             Err(error) => return Err(error),

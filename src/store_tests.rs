@@ -700,3 +700,68 @@ fn a_file_map_of_a_newer_blob_layout_is_refused() {
     };
     assert!(matches!(error, StoreError::NewerSchema { .. }), "{error}");
 }
+
+/// A file map whose version peek reads a newer blob layout belongs to a newer basemind, whether or
+/// not the rest of it decodes as this binary's: a newer layout may change any other field. It is
+/// refused, never discarded as damaged.
+#[test]
+fn an_undecodable_file_map_of_a_newer_blob_layout_is_refused_not_rebuilt() {
+    #[derive(serde::Serialize)]
+    struct Newer {
+        schema_ver: u16,
+        files: &'static str,
+        blob_layout: u8,
+    }
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let view_dir = scanned_view(tmp.path());
+    let newer = rmp_serde::to_vec_named(&Newer {
+        schema_ver: crate::extract::SCHEMA_VER,
+        files: "a field this binary reads as a map",
+        blob_layout: crate::store_layout::BLOB_LAYOUT + 1,
+    })
+    .expect("encode");
+    std::fs::write(view_dir.join(INDEX_FILE), &newer).expect("write");
+
+    assert!(matches!(read_index(&view_dir), Err(StoreError::NewerSchema { .. })));
+    let Err(error) = Store::open(tmp.path(), VIEW_WORKING) else {
+        panic!("a newer blob layout must not open");
+    };
+    assert!(matches!(error, StoreError::NewerSchema { .. }), "{error}");
+    assert_eq!(
+        std::fs::read(view_dir.join(INDEX_FILE)).expect("the map is still there"),
+        newer,
+        "the newer map is left as it was"
+    );
+    assert!(view_dir.join(crate::index::INDEX_DIR).exists(), "and so is its index");
+}
+
+/// A map whose version cannot even be read may be a newer basemind's: a writer open sets it aside
+/// rather than deleting it, and rebuilds.
+#[test]
+fn a_file_map_whose_version_cannot_be_read_is_set_aside_not_deleted() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let view_dir = scanned_view(tmp.path());
+    let torn = b"\xff\xff torn \x00";
+    std::fs::write(view_dir.join(INDEX_FILE), torn).expect("tear the file map");
+
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("the writer open rebuilds");
+    assert!(store.index.files.is_empty());
+    let aside: Vec<Vec<u8>> = std::fs::read_dir(&view_dir)
+        .expect("read view dir")
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("index.msgpack.unreadable-")
+        })
+        .map(|entry| std::fs::read(entry.path()).expect("read the set-aside map"))
+        .collect();
+    assert_eq!(
+        aside,
+        vec![torn.to_vec()],
+        "the unreadable map is kept aside, byte for byte"
+    );
+}

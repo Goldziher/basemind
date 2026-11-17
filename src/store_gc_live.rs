@@ -143,12 +143,15 @@ fn written_since_group_memory(view_dir: &Path) -> bool {
         .is_some_and(|version| version.schema_ver >= GROUP_MEMORY_SINCE_MINOR)
 }
 
-/// Whether `error` reading a file map marks rebuildable cache: an older schema or blob layout, or a
-/// map that does not decode.
+/// Whether `error` reading a file map marks a view the sweep passes over: an older schema or blob
+/// layout, a map of this version that does not decode, or one whose version cannot be read.
 pub(crate) fn is_rebuildable_view_error(error: &StoreError) -> bool {
     matches!(
         error,
-        StoreError::SchemaMismatch { .. } | StoreError::StaleBlobLayout { .. } | StoreError::Decode(_)
+        StoreError::SchemaMismatch { .. }
+            | StoreError::StaleBlobLayout { .. }
+            | StoreError::Decode(_)
+            | StoreError::UnreadableFileMap { .. }
     )
 }
 

@@ -48,6 +48,19 @@ pub(super) fn write_file_map(view_dir: &Path, index: &Index) -> Result<(), Store
     Ok(())
 }
 
+/// Rename the file map of `view_dir` aside as `index.msgpack.unreadable-<unix seconds>`: its
+/// version cannot be read, so it may be a newer basemind's, which is never deleted.
+pub(super) fn set_aside_unreadable_map(view_dir: &Path) -> Result<(), StoreError> {
+    let from = view_dir.join(INDEX_FILE);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let to = view_dir.join(format!("{INDEX_FILE}.unreadable-{secs}"));
+    std::fs::rename(&from, &to).map_err(|source| StoreError::Io { path: from, source })?;
+    tracing::warn!(path = %to.display(), "file map unreadable; set aside, and the view is rebuilt");
+    Ok(())
+}
+
 /// Delete the index file in a single view's directory.
 pub(crate) fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
     let index_path = view_dir.join(INDEX_FILE);
@@ -85,13 +98,18 @@ pub(super) fn migrate_legacy_index_into_views(basemind_dir: &Path) -> Result<(),
 
 /// Read and deserialize a view's `index.msgpack`. `Ok(None)` when the file is absent;
 /// `Err(StoreError::SchemaMismatch)` on an older version, `Err(StoreError::NewerSchema)` on a newer
-/// one, `Err(StoreError::StaleBlobLayout)` on a map of an earlier blob store layout. Reused by
-/// `store_gc` to enumerate the live blob hashes referenced by every view.
+/// schema or blob layout, `Err(StoreError::StaleBlobLayout)` on a map of an earlier blob store
+/// layout, `Err(StoreError::Decode)` on a map of this version that does not decode, and
+/// `Err(StoreError::UnreadableFileMap)` on one whose version cannot be read. Reused by `store_gc` to
+/// enumerate the live blob hashes referenced by every view.
 pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
-    /// The one field every layout of the file map has had.
+    /// The fields that say which basemind wrote the map: `schema_ver`, which every layout has had,
+    /// and `blob_layout`, absent (`0`) before blob namespaces.
     #[derive(Deserialize)]
     struct Version {
         schema_ver: u16,
+        #[serde(default)]
+        blob_layout: u8,
     }
     let path = view_dir.join(INDEX_FILE);
     if !path.exists() {
@@ -102,9 +120,21 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
         source,
     })?;
     // The version is read on its own first: a newer map need not decode as this one, and a decode
-    // failure must not read as a damaged map that may be removed. ~keep
-    if let Ok(Version { schema_ver }) = rmp_serde::from_slice(&bytes) {
-        check_schema(schema_ver)?;
+    // failure must not read as a damaged map that may be removed. Only a map whose version reads as
+    // this binary's is rebuildable when the rest does not decode. ~keep
+    let Ok(Version {
+        schema_ver,
+        blob_layout,
+    }) = rmp_serde::from_slice(&bytes)
+    else {
+        return Err(StoreError::UnreadableFileMap { path });
+    };
+    check_schema(schema_ver)?;
+    if blob_layout > crate::store_layout::BLOB_LAYOUT {
+        return Err(StoreError::NewerSchema {
+            stored: u16::from(blob_layout),
+            current: u16::from(crate::store_layout::BLOB_LAYOUT),
+        });
     }
     let index: Index = rmp_serde::from_slice(&bytes)?;
     check_schema(index.schema_ver)?;

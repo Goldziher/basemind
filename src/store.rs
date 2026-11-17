@@ -82,6 +82,10 @@ pub enum StoreError {
         /// sidecar is missing/corrupt — the message then falls back to a generic guess.
         holder: Option<LockMeta>,
     },
+    /// The file map's version fields cannot be read, so which basemind wrote it is unknown. A
+    /// writer open sets it aside and rebuilds; nothing deletes it.
+    #[error("file map {path} is unreadable; `basemind scan` sets it aside and rebuilds the view")]
+    UnreadableFileMap { path: PathBuf },
     #[error("working view migration recovery failed: {0}")]
     Migration(#[source] anyhow::Error),
     #[error("inverted index error: {0}")]
@@ -510,10 +514,14 @@ impl Store {
             }
             // A map that does not decode is rebuildable cache; refusing it left the workspace unopenable
             // until someone cleared the cache. Its index goes too: no map lists the files of its rows. ~keep
-            Err(error @ (StoreError::StaleBlobLayout { .. } | StoreError::Decode(_))) => {
+            Err(
+                error @ (StoreError::StaleBlobLayout { .. }
+                | StoreError::Decode(_)
+                | StoreError::UnreadableFileMap { .. }),
+            ) => {
                 reset_stale_schema = true;
                 tracing::info!(view, %error, "refreshing view in place (every file is extracted again)");
-                durability::discard_view_of_a_stale_layout(&view_dir)?;
+                durability::discard_view_of_a_stale_layout(&view_dir, &error)?;
                 Index::empty()
             }
             Err(e) => return Err(e),
