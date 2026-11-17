@@ -131,7 +131,10 @@ mod supervisor_types;
 mod test_support;
 
 pub use acp::AcpAdapter;
-pub use audit::{AuditApproval, AuditEvent, AuditLimits, AuditRecord, AuditSink, FileAuditSink, MemoryAuditSink};
+pub use audit::{
+    AuditApproval, AuditEvent, AuditLimits, AuditRecord, AuditSink, DEFAULT_AUDIT_MAX_BYTES, FileAuditSink,
+    MemoryAuditSink,
+};
 pub use claude::ClaudeCodeAdapter;
 pub use codex::CodexAdapter;
 pub use error::LaunchError;

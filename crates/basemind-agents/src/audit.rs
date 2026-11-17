@@ -186,12 +186,35 @@ pub trait AuditSink: Send + Sync {
     fn record(&self, record: &AuditRecord) -> std::io::Result<()>;
 }
 
+/// The size a [`FileAuditSink`] grows to by default before it drops records.
+pub const DEFAULT_AUDIT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// Room past the cap kept for the markers that say records were dropped.
+const MARKER_ROOM: u64 = 4096;
+
 /// An audit log in a file: one JSON object per line, appended, the file readable and writable
-/// by its owner only.
+/// by its owner only, and bounded in size.
+///
+/// The log is append-only as far as this writer goes; it is not tamper-resistant: any process
+/// of the same user can rewrite or truncate it.
+///
+/// Once the file would grow past its cap ([`DEFAULT_AUDIT_MAX_BYTES`] unless
+/// [`FileAuditSink::with_max_bytes`] says otherwise), each further record is dropped and
+/// refused with an error: a supervisor then refuses the launch that record was for, and counts
+/// the other failures. The first drop appends an `audit_full` marker and dropping the sink an
+/// `audit_dropped` one with the count, in room kept past the cap for them. Rotating the log is
+/// the operator's job.
 #[derive(Debug)]
 pub struct FileAuditSink {
     path: PathBuf,
-    file: Mutex<std::fs::File>,
+    max_bytes: u64,
+    file: Mutex<LogFile>,
+}
+
+#[derive(Debug)]
+struct LogFile {
+    file: std::fs::File,
+    size: u64,
+    dropped: u64,
 }
 
 impl FileAuditSink {
@@ -200,9 +223,10 @@ impl FileAuditSink {
     /// # Errors
     ///
     /// The I/O error of opening it, and [`std::io::ErrorKind::PermissionDenied`] when `path` is
-    /// a link, is not a regular file, belongs to another user, or is readable or writable by
-    /// anyone but its owner: a log others can read leaks who launched what, and one they can
-    /// write can be forged.
+    /// a symbolic link, has another hard link, is not a regular file (a FIFO is refused without
+    /// blocking), belongs to another user, or is readable or writable by anyone but its owner:
+    /// a log others can read leaks who launched what, one they can write can be forged, and a
+    /// hard link would have the records appended to whatever file it names.
     pub fn open(path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
         let mut options = std::fs::OpenOptions::new();
@@ -210,14 +234,29 @@ impl FileAuditSink {
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+            // Non-blocking, so a FIFO at the path cannot hold the open; cleared once the file
+            // is known to be a regular file.
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
         }
         let file = options.open(&path)?;
         check_private(&file)?;
+        #[cfg(unix)]
+        blocking(&file)?;
+        let size = file.metadata()?.len();
         Ok(Self {
             path,
-            file: Mutex::new(file),
+            max_bytes: DEFAULT_AUDIT_MAX_BYTES,
+            file: Mutex::new(LogFile { file, size, dropped: 0 }),
         })
+    }
+
+    /// The same sink, dropping records once the file would grow past `max_bytes`.
+    #[must_use]
+    pub fn with_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_bytes = max_bytes;
+        self
     }
 
     /// The log's path.
@@ -225,20 +264,78 @@ impl FileAuditSink {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// How many records were dropped because the log was full.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.log().dropped
+    }
+
+    fn log(&self) -> std::sync::MutexGuard<'_, LogFile> {
+        self.file.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl LogFile {
+    /// Appends `line` and syncs it. One write of the whole line: with `O_APPEND` concurrent
+    /// writers do not interleave it.
+    fn append(&mut self, line: &str) -> std::io::Result<()> {
+        self.file.write_all(line.as_bytes())?;
+        self.size += line.len() as u64;
+        self.file.sync_data()
+    }
+
+    /// A marker line of `event`, carrying `dropped` when given.
+    fn marker(event: &str, dropped: Option<u64>) -> String {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let mut object = Map::new();
+        object.insert("ts_ms".to_owned(), json!(u64::try_from(millis).unwrap_or(u64::MAX)));
+        object.insert("event".to_owned(), json!(event));
+        if let Some(dropped) = dropped {
+            object.insert("dropped".to_owned(), json!(dropped));
+        }
+        object.insert("outcome".to_owned(), json!("dropped"));
+        format!("{}\n", Value::Object(object))
+    }
 }
 
 impl AuditSink for FileAuditSink {
     fn record(&self, record: &AuditRecord) -> std::io::Result<()> {
         let mut line = record.to_json_line();
         line.push('\n');
-        let mut file = self.file.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        // One write of the whole line: with `O_APPEND` concurrent writers do not interleave it.
-        file.write_all(line.as_bytes())?;
-        file.sync_data()
+        let mut log = self.log();
+        if log.size.saturating_add(line.len() as u64) > self.max_bytes {
+            log.dropped += 1;
+            if log.dropped == 1 {
+                let marker = LogFile::marker("audit_full", None);
+                if log.size.saturating_add(marker.len() as u64) <= self.max_bytes.saturating_add(MARKER_ROOM) {
+                    let _ = log.append(&marker);
+                }
+            }
+            return Err(std::io::Error::other("the audit log is full"));
+        }
+        log.append(&line)
     }
 }
 
-/// Refuses a file that is not a regular file of this user with no group or other access.
+impl Drop for FileAuditSink {
+    /// Appends how many records were dropped, if any were.
+    fn drop(&mut self) {
+        let log = self.file.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if log.dropped > 0 {
+            let marker = LogFile::marker("audit_dropped", Some(log.dropped));
+            if log.size.saturating_add(marker.len() as u64) <= self.max_bytes.saturating_add(MARKER_ROOM) {
+                let _ = log.append(&marker);
+            }
+        }
+    }
+}
+
+/// Refuses a file that is not a regular file of this user with one link and no group or
+/// other access.
 fn check_private(file: &std::fs::File) -> std::io::Result<()> {
     let metadata = file.metadata()?;
     let denied = |why: &str| std::io::Error::new(std::io::ErrorKind::PermissionDenied, why.to_owned());
@@ -248,12 +345,30 @@ fn check_private(file: &std::fs::File) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(denied("the audit log has another hard link"));
+        }
         // SAFETY: geteuid has no preconditions and cannot fail.
         if metadata.uid() != unsafe { libc::geteuid() } {
             return Err(denied("the audit log belongs to another user"));
         }
         if metadata.mode() & 0o077 != 0 {
             return Err(denied("the audit log is accessible to users other than its owner"));
+        }
+    }
+    Ok(())
+}
+
+/// Clears `O_NONBLOCK`, set only so the open could not block.
+#[cfg(unix)]
+fn blocking(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let fd = file.as_raw_fd();
+    // SAFETY: fcntl on a descriptor `file` owns, reading and then setting its status flags.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) < 0 {
+            return Err(std::io::Error::last_os_error());
         }
     }
     Ok(())

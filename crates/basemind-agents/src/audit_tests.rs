@@ -106,3 +106,74 @@ fn the_file_sink_refuses_a_log_others_can_read_and_a_link() {
 
     assert!(FileAuditSink::open(dir.path()).is_err(), "a directory was accepted");
 }
+
+#[cfg(unix)]
+#[test]
+fn the_file_sink_refuses_a_hard_link_to_another_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    // A private file of the user's, such as a credential store, pre-linked at the log's path.
+    let target = dir.path().join("authorized_keys");
+    std::fs::write(&target, "ssh-ed25519 AAAA\n").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let link = dir.path().join("audit.jsonl");
+    std::fs::hard_link(&target, &link).unwrap();
+    let opened = FileAuditSink::open(&link);
+    assert_eq!(
+        opened.err().map(|error| error.kind()),
+        Some(std::io::ErrorKind::PermissionDenied),
+        "a hard link was accepted"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "ssh-ed25519 AAAA\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_file_sink_refuses_a_fifo_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("audit.jsonl");
+    let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: mkfifo reads the NUL-terminated path it is given.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (done, opened) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let fifo = fifo.clone();
+        move || {
+            let _ = done.send(FileAuditSink::open(&fifo).map(|_| ()));
+        }
+    });
+    let result = opened.recv_timeout(Duration::from_secs(2));
+    if result.is_err() {
+        // Release the blocked open so the thread ends, then fail.
+        let _ = std::fs::File::open(&fifo);
+    }
+    let result = result.expect("opening a FIFO blocked");
+    assert!(result.is_err(), "a FIFO was accepted");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_full_log_drops_records_with_a_marker_and_counts_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let line = AuditRecord::new(AuditEvent::Refusal, "fan_out_exceeded")
+        .to_json_line()
+        .len() as u64
+        + 1;
+    let sink = FileAuditSink::open(&path).unwrap().with_max_bytes(3 * line);
+    let written = (0..10)
+        .filter(|_| {
+            sink.record(&AuditRecord::new(AuditEvent::Refusal, "fan_out_exceeded"))
+                .is_ok()
+        })
+        .count();
+    assert_eq!(written, 3);
+    assert_eq!(sink.dropped(), 7);
+    drop(sink);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let events: Vec<Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    let names: Vec<&str> = events.iter().map(|event| event["event"].as_str().unwrap()).collect();
+    assert_eq!(names, ["refusal", "refusal", "refusal", "audit_full", "audit_dropped"]);
+    assert_eq!(events[4]["dropped"], 7);
+    assert!(text.len() as u64 <= 3 * line + MARKER_ROOM);
+}
