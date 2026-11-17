@@ -57,22 +57,16 @@ pub(crate) fn origin(table: &Table, peer: &Peer) -> Origin {
 ///   presents has to be that session's own, and it is never the operator.
 /// - A peer below the supervisor in no live session is nobody.
 /// - A peer outside the supervisor's tree (or the supervisor's own process) is the principal it
-///   claims, when the policy admits it, or the operator; a token presented from outside every
-///   session's processes is refused, since it was read from another process.
+///   claims, when the policy admits it, or the operator it was minted as; a token presented
+///   from outside every session's processes is refused, since it was read from another
+///   process.
 /// - A peer that is gone or cannot be placed is refused.
 pub(crate) fn resolve(
     policy: &crate::LaunchPolicy,
     table: &Table,
     caller: &Caller,
 ) -> Result<Resolved, SupervisorError> {
-    let Some(peer) = &caller.peer else {
-        // Only an operator caller is built without a peer.
-        return match caller.kind {
-            CallerKind::Operator => Ok(Resolved::Operator),
-            _ => Err(SupervisorError::PeerUnverified),
-        };
-    };
-    match origin(table, peer) {
+    match origin(table, &caller.peer) {
         Origin::Unknown => Err(SupervisorError::PeerUnverified),
         Origin::Below => Err(SupervisorError::CallerNotAdmitted),
         Origin::Session(id) => match &caller.kind {
@@ -96,6 +90,19 @@ fn token_refusal(table: &Table, token: &str) -> SupervisorError {
         SupervisorError::PeerMismatch
     } else {
         SupervisorError::UnknownToken
+    }
+}
+
+/// The operator caller for `peer`, when `peer` is outside the supervisor's tree or is the
+/// supervisor's own process.
+pub(crate) fn mint_operator(table: &Table, peer: Peer) -> Result<Caller, SupervisorError> {
+    match origin(table, &peer) {
+        Origin::Supervisor | Origin::Foreign => Ok(Caller {
+            kind: CallerKind::Operator,
+            peer,
+        }),
+        Origin::Unknown => Err(SupervisorError::PeerUnverified),
+        Origin::Session(_) | Origin::Below => Err(SupervisorError::CallerNotAdmitted),
     }
 }
 

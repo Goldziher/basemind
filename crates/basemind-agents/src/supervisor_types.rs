@@ -44,10 +44,18 @@ impl std::fmt::Display for SessionId {
 /// not by the claim: a process inside a live session, or below one, is that session whatever it
 /// claims; a process below the supervisor in no session is nobody; only a process outside the
 /// supervisor's tree is the principal it names. `Debug` never shows a token.
+///
+/// There is no public constructor for the operator: only
+/// [`Supervisor::operator`](crate::Supervisor::operator) makes one, for a peer outside the
+/// supervisor's tree.
+///
+/// ```compile_fail
+/// let operator = basemind_agents::Caller::operator();
+/// ```
 #[derive(Clone)]
 pub struct Caller {
     pub(crate) kind: CallerKind,
-    pub(crate) peer: Option<Peer>,
+    pub(crate) peer: Peer,
 }
 
 #[derive(Clone)]
@@ -66,21 +74,12 @@ impl std::fmt::Debug for Caller {
         };
         f.debug_struct("Caller")
             .field("kind", &kind)
-            .field("peer", &self.peer.map(|peer| peer.pid()))
+            .field("peer", &self.peer.pid())
             .finish()
     }
 }
 
 impl Caller {
-    /// The human operator, through the CLI: may stop and answer any session, launches nothing.
-    #[must_use]
-    pub fn operator() -> Self {
-        Self {
-            kind: CallerKind::Operator,
-            peer: None,
-        }
-    }
-
     /// A principal of the comms identity model on the connection of `peer`, admitted to launch
     /// when the policy names it and `peer` is outside the supervisor's tree.
     ///
@@ -91,7 +90,7 @@ impl Caller {
         AgentIdentity::new(principal)?;
         Ok(Self {
             kind: CallerKind::Principal(principal.to_owned()),
-            peer: Some(peer),
+            peer,
         })
     }
 
@@ -101,7 +100,7 @@ impl Caller {
     pub fn launched(token: impl Into<String>, peer: Peer) -> Self {
         Self {
             kind: CallerKind::Token(token.into()),
-            peer: Some(peer),
+            peer,
         }
     }
 }

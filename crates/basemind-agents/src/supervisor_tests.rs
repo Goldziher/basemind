@@ -303,7 +303,7 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
             claude,
             "caller_not_admitted",
         ),
-        (Caller::operator(), claude, "caller_not_admitted"),
+        (supervisor.operator(outside()).unwrap(), claude, "caller_not_admitted"),
         // A principal with the launched prefix is never a configured launcher.
         (
             Caller::principal("launched-claude-0-00000000", outside()).unwrap(),
@@ -557,7 +557,9 @@ fn only_the_launcher_or_the_operator_stops_a_session_and_reaping_forgets_it() {
         "unknown_session"
     );
     assert_eq!(supervisor.status(launched.id).unwrap().state, SessionState::Running);
-    supervisor.stop(&Caller::operator(), launched.id).unwrap();
+    supervisor
+        .stop(&supervisor.operator(outside()).unwrap(), launched.id)
+        .unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
     supervisor.stop(&lead(), launched.id).unwrap();
     assert_eq!(
@@ -947,6 +949,8 @@ fn a_child_that_leaves_for_a_session_of_its_own_is_still_its_session() {
         return;
     };
     assert_eq!(attack_outcome(&attack.scratch), "left");
+    let refused = attack.supervisor.operator(Peer::of_pid(attack.attacker));
+    assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
     let claim = Caller::principal("lead", Peer::of_pid(attack.attacker)).unwrap();
     // As the configured launcher it would launch at depth 1 and own A; as C it sits at depth 2.
     let launched = attack
@@ -982,4 +986,29 @@ fn a_process_below_the_supervisor_in_no_session_is_no_launcher() {
         refused.map(|launched| launched.depth).map_err(|error| error.code()),
         Err("caller_not_admitted")
     );
+}
+
+#[test]
+fn only_a_peer_outside_the_supervisors_tree_is_made_the_operator() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    // A launched agent running `basemind agent approve` from its shell: a process of the session.
+    let refused = supervisor.operator(inside(&supervisor, launched.id));
+    assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
+    // A process this process started outside any session.
+    let mut stray = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let refused = supervisor.operator(Peer::of_pid(stray.id()));
+    let _ = stray.kill();
+    let _ = stray.wait();
+    assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
+    assert_eq!(
+        outcomes(&audit, AuditEvent::Refusal),
+        ["caller_not_admitted", "caller_not_admitted"]
+    );
+    // The operator's own process, outside the tree.
+    let operator = supervisor.operator(outside()).unwrap();
+    supervisor.stop(&operator, launched.id).unwrap();
+    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
 }

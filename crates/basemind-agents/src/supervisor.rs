@@ -24,8 +24,9 @@ use crate::session::{Session, SessionHandle};
 use crate::spec::{LaunchConfig, LaunchRequest};
 use crate::supervisor_codes::{approval_kind, approval_source, finish_code};
 
+use crate::peer::Peer;
 pub use crate::supervisor_codes::launch_error_code;
-use crate::supervisor_identity::resolve;
+use crate::supervisor_identity::{mint_operator, resolve};
 use crate::supervisor_types::CallerKind;
 pub use crate::supervisor_types::{
     Caller, Launched, SessionId, SessionObserver, SessionState, SessionStatus, SupervisorError,
@@ -215,6 +216,46 @@ impl Supervisor {
     #[must_use]
     pub fn audit_failures(&self) -> u64 {
         self.inner.audit_failures.load(Ordering::SeqCst)
+    }
+
+    /// The human operator, on the connection of `peer`: may stop and answer any session and
+    /// launches nothing.
+    ///
+    /// `peer` has to be outside the supervisor's tree: not a harness, nothing a harness started
+    /// (however it detached since, while its ancestry still leads to the harness), and nothing
+    /// else this process started. It is checked again on every call the operator makes.
+    ///
+    /// The embedding has to make sure that `peer` is the operator's process and not merely
+    /// some process of the same user. This crate cannot: it sees the kernel's word on the
+    /// process and its ancestry, nothing more. The engine must:
+    ///
+    /// - build `peer` with [`Peer::of_socket`] on the accepted connection, never from a pid a
+    ///   client sent;
+    /// - accept operator commands only on a channel the launched agents are not handed: not a
+    ///   tool of the injected MCP server, and not the socket whose path is in the launched
+    ///   agents' environment;
+    /// - not hand an operator caller made for one connection to another.
+    ///
+    /// What remains: any process of the same user outside the tree can become the operator,
+    /// and so can a launched agent's process that double-forked away from the harness
+    /// (reparented to init, its ancestry gone) on a host where orphans are not reparented to
+    /// this process. On Linux the embedding can close that by making itself a child subreaper
+    /// (`PR_SET_CHILD_SUBREAPER`), so orphans stay below it, and reaping those orphans by pid.
+    ///
+    /// # Errors
+    ///
+    /// [`SupervisorError::CallerNotAdmitted`] for a peer inside a session or below the
+    /// supervisor, [`SupervisorError::PeerUnverified`] for one that is gone or cannot be
+    /// placed. Each refusal is audited.
+    pub fn operator(&self, peer: Peer) -> Result<Caller, SupervisorError> {
+        let minted = mint_operator(&self.inner.table(), peer);
+        if let Err(error) = &minted {
+            let _ = self.inner.audit(&AuditRecord {
+                caller: Some("operator".to_owned()),
+                ..AuditRecord::new(AuditEvent::Refusal, error.code())
+            });
+        }
+        minted
     }
 
     /// Launches `request` in a harness of `flavor` for `caller`.
