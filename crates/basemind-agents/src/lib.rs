@@ -136,7 +136,7 @@ pub use harness::{AcpFlavor, Harness, HarnessKind};
 pub use identity::{AgentIdentity, ENV_AGENT_DEPTH, ENV_AGENT_ID, ENV_HOST, ENV_LAUNCH_TOKEN};
 pub use policy::{
     Budget, Caveat, FlavorPolicy, LAUNCHED_PREFIX, LaunchPolicy, MAX_CONCURRENT_CEILING, MAX_DEPTH_CEILING,
-    MAX_WALL_TIME_CEILING, PolicyError, PolicySpec, caveats,
+    MAX_STOP_GRACE_CEILING, MAX_WALL_TIME_CEILING, PolicyError, PolicySpec, caveats,
 };
 pub use registry::{Adapter, Registry};
 pub use session::{CommandPlan, Session};

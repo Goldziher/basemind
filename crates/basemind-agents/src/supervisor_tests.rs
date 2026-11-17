@@ -237,6 +237,50 @@ fn a_config_has_to_match_the_policy_for_its_flavor() {
 }
 
 #[test]
+fn a_config_cannot_widen_permissions_the_policy_did_not_grant() {
+    let scratch = Scratch::new();
+    let policy = |kinds: &[HarnessKind]| LaunchPolicy::new(policy(kinds)).unwrap();
+    let audit: Arc<dyn AuditSink> = Arc::new(MemoryAuditSink::default());
+    let mismatch = |harness, field| Some(PolicyError::ConfigMismatch { harness, field });
+    // An approval policy that allows everything is a bypass under a supervised flavor.
+    let mut allowing = scratch.config(HarnessKind::ClaudeCode, "");
+    allowing.approval_policy = always(ApprovalVerdict::Allow);
+    let refused = Supervisor::new(
+        policy(&[HarnessKind::ClaudeCode]),
+        vec![allowing],
+        registry(),
+        audit.clone(),
+    );
+    assert_eq!(refused.err(), mismatch("claude", "approval_policy"));
+    // An ACP mode nobody verified, consented to in the config alone.
+    let gemini = HarnessKind::Acp(AcpFlavor::Gemini);
+    let mut unverified = scratch.config(gemini, "");
+    unverified.unverified_mode = Some(crate::spec::UnverifiedModeOptIn {
+        harness: gemini,
+        mode: PermissionMode::Supervised,
+    });
+    let refused = Supervisor::new(policy(&[gemini]), vec![unverified], registry(), audit.clone());
+    assert_eq!(refused.err(), mismatch("gemini", "unverified_mode"));
+    // A pre-approved tool, such as the launch tool itself.
+    let mut tools = scratch.config(HarnessKind::ClaudeCode, "");
+    let mut server = crate::spec::McpServerSpec::basemind_serve("/bin/sh");
+    server.allow_tools = vec!["agent_launch".to_owned()];
+    tools.mcp_server = Some(server);
+    let refused = Supervisor::new(
+        policy(&[HarnessKind::ClaudeCode]),
+        vec![tools],
+        registry(),
+        audit.clone(),
+    );
+    assert_eq!(refused.err(), mismatch("claude", "allow_tools"));
+    // A stop grace that would hold a dropped supervisor for a day.
+    let mut slow = scratch.config(HarnessKind::ClaudeCode, "");
+    slow.limits.stop_grace = Duration::from_secs(24 * 60 * 60);
+    let refused = Supervisor::new(policy(&[HarnessKind::ClaudeCode]), vec![slow], registry(), audit);
+    assert_eq!(refused.err(), mismatch("claude", "stop_grace"));
+}
+
+#[test]
 fn only_an_admitted_caller_launches_an_allowed_flavor() {
     let scratch = Scratch::new();
     let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
@@ -574,7 +618,14 @@ cat > /dev/null
     // A policy that asks leaves it to the launcher, whose answer is audited too.
     let mut asking = scratch.config(HarnessKind::ClaudeCode, &body);
     asking.approval_policy = always(ApprovalVerdict::Ask);
-    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![asking]);
+    let consenting = PolicySpec {
+        flavors: vec![FlavorPolicy {
+            approval_policy: true,
+            ..FlavorPolicy::supervised(HarnessKind::ClaudeCode)
+        }],
+        ..policy(&[])
+    };
+    let (supervisor, audit) = start(consenting, vec![asking]);
     let recorder = Arc::new(Recorder::default());
     let supervisor = supervisor.with_observer(recorder.clone());
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();

@@ -158,8 +158,10 @@ impl Supervisor {
     ///
     /// [`PolicyError::ConfigNotAllowed`] for a config of a flavor the policy does not allow
     /// (with the default policy, any config), [`PolicyError::DuplicateConfig`] for two of one
-    /// flavor, and [`PolicyError::ConfigMismatch`] for a config whose permission mode or bypass
-    /// opt-in differs from the policy's rule for its flavor.
+    /// flavor, and [`PolicyError::ConfigMismatch`] for a config that widens what the policy's
+    /// rule for its flavor grants: another permission mode, bypass or unverified-mode opt-in, an
+    /// approval policy the rule does not consent to, a pre-approved tool the rule does not
+    /// name, or a stop grace over [`MAX_STOP_GRACE_CEILING`](crate::MAX_STOP_GRACE_CEILING).
     pub fn new(
         policy: LaunchPolicy,
         configs: Vec<LaunchConfig>,
@@ -174,16 +176,7 @@ impl Supervisor {
             if configs[..at].iter().any(|earlier| earlier.harness.kind == kind) {
                 return Err(PolicyError::DuplicateConfig(kind.id()));
             }
-            let mismatch = |field| PolicyError::ConfigMismatch {
-                harness: kind.id(),
-                field,
-            };
-            if config.permission_mode != rule.permission_mode {
-                return Err(mismatch("permission_mode"));
-            }
-            if config.bypass != rule.bypass {
-                return Err(mismatch("bypass"));
-            }
+            crate::policy::check_config(rule, config)?;
         }
         Ok(Self {
             inner: Arc::new(Inner {

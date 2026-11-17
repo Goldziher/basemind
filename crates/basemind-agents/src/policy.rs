@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::harness::{AcpFlavor, HarnessKind};
 use crate::identity::AgentIdentity;
-use crate::spec::{BypassOptIn, PermissionMode};
+use crate::spec::{BypassOptIn, PermissionMode, UnverifiedModeOptIn};
 
 /// The deepest launch tree a policy may allow.
 pub const MAX_DEPTH_CEILING: u32 = 8;
@@ -18,6 +18,9 @@ pub const MAX_DEPTH_CEILING: u32 = 8;
 pub const MAX_CONCURRENT_CEILING: u32 = 32;
 /// The longest wall time a policy may allow a session.
 pub const MAX_WALL_TIME_CEILING: Duration = Duration::from_secs(24 * 60 * 60);
+/// The longest stop grace a launch config may give a session. A dropped supervisor waits for
+/// the longest one, so it bounds how long a drop can take.
+pub const MAX_STOP_GRACE_CEILING: Duration = Duration::from_secs(60);
 /// The prefix of every principal a supervisor gives a launched agent. A launcher principal may
 /// not start with it, so a launched agent can never be mistaken for a configured launcher.
 pub const LAUNCHED_PREFIX: &str = "launched-";
@@ -72,6 +75,17 @@ pub struct FlavorPolicy {
     /// The consent for [`PermissionMode::Bypass`]: required for it, refused without it. It has
     /// to name this flavor and its bypass mode.
     pub bypass: Option<BypassOptIn>,
+    /// The consent to run this ACP flavor in a mode nobody verified; the flavor's config has to
+    /// carry the same one. It has to name this flavor and its permission mode.
+    pub unverified_mode: Option<UnverifiedModeOptIn>,
+    /// Whether the flavor's config may carry an
+    /// [`ApprovalPolicy`](crate::ApprovalPolicy). The crate cannot see what a policy decides,
+    /// and one that allows every request is a bypass, so it is consent like the opt-ins.
+    /// Without it every approval request of the flavor is denied.
+    pub approval_policy: bool,
+    /// The MCP tools the flavor's config may pre-approve; its server's
+    /// [`allow_tools`](crate::McpServerSpec::allow_tools) has to be within them.
+    pub allow_tools: Vec<String>,
 }
 
 impl FlavorPolicy {
@@ -82,6 +96,9 @@ impl FlavorPolicy {
             kind,
             permission_mode: PermissionMode::Supervised,
             bypass: None,
+            unverified_mode: None,
+            approval_policy: false,
+            allow_tools: Vec::new(),
         }
     }
 
@@ -206,6 +223,12 @@ impl LaunchPolicy {
                 return Err(PolicyError::DuplicateFlavor(flavor.kind.id()));
             }
             check_bypass(flavor)?;
+            if flavor
+                .unverified_mode
+                .is_some_and(|opt_in| opt_in.harness != flavor.kind || opt_in.mode != flavor.permission_mode)
+            {
+                return Err(PolicyError::OptInMismatch(flavor.kind.id()));
+            }
         }
         for launcher in &spec.launchers {
             AgentIdentity::new(launcher.as_str()).map_err(|_| PolicyError::InvalidLauncher(launcher.clone()))?;
@@ -285,6 +308,36 @@ impl LaunchPolicy {
     pub fn budget(&self) -> Option<Budget> {
         self.spec.budget
     }
+}
+
+/// Checks `config` against the rule for its flavor: every field that widens what the launched
+/// agent may do unasked has to be what the policy grants, and the stop grace within its
+/// ceiling.
+pub(crate) fn check_config(rule: &FlavorPolicy, config: &crate::spec::LaunchConfig) -> Result<(), PolicyError> {
+    let mismatch = |field| PolicyError::ConfigMismatch {
+        harness: rule.kind.id(),
+        field,
+    };
+    if config.permission_mode != rule.permission_mode {
+        return Err(mismatch("permission_mode"));
+    }
+    if config.bypass != rule.bypass {
+        return Err(mismatch("bypass"));
+    }
+    if config.unverified_mode != rule.unverified_mode {
+        return Err(mismatch("unverified_mode"));
+    }
+    if config.approval_policy.is_some() && !rule.approval_policy {
+        return Err(mismatch("approval_policy"));
+    }
+    let pre_approved = config.mcp_server.iter().flat_map(|server| &server.allow_tools);
+    if pre_approved.into_iter().any(|tool| !rule.allow_tools.contains(tool)) {
+        return Err(mismatch("allow_tools"));
+    }
+    if config.limits.stop_grace > MAX_STOP_GRACE_CEILING {
+        return Err(mismatch("stop_grace"));
+    }
+    Ok(())
 }
 
 /// A bypass mode needs an opt-in naming the flavor and its own mode name; any other mode may

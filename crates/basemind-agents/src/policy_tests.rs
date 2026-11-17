@@ -15,8 +15,9 @@ fn allowing(flavors: Vec<FlavorPolicy>) -> PolicySpec {
 fn bypass(kind: HarnessKind, opt_in: Option<BypassOptIn>) -> FlavorPolicy {
     FlavorPolicy {
         kind,
-        permission_mode: PermissionMode::Bypass,
         bypass: opt_in,
+        permission_mode: PermissionMode::Bypass,
+        ..FlavorPolicy::supervised(kind)
     }
 }
 
@@ -114,6 +115,25 @@ fn a_flavor_without_a_bypass_mode_cannot_be_given_one() {
         LaunchPolicy::new(allowing(vec![bypass(opencode, Some(opt_in))])),
         Err(PolicyError::OptInMismatch("opencode"))
     );
+}
+
+#[test]
+fn an_unverified_mode_opt_in_names_the_flavor_and_its_mode() {
+    let gemini = HarnessKind::Acp(AcpFlavor::Gemini);
+    let flavor = |harness, mode| FlavorPolicy {
+        unverified_mode: Some(UnverifiedModeOptIn { harness, mode }),
+        ..FlavorPolicy::supervised(gemini)
+    };
+    assert!(LaunchPolicy::new(allowing(vec![flavor(gemini, PermissionMode::Supervised)])).is_ok());
+    for stray in [
+        flavor(HarnessKind::Codex, PermissionMode::Supervised),
+        flavor(gemini, PermissionMode::ReadOnly),
+    ] {
+        assert_eq!(
+            LaunchPolicy::new(allowing(vec![stray])),
+            Err(PolicyError::OptInMismatch("gemini"))
+        );
+    }
 }
 
 #[test]
