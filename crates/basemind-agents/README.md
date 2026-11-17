@@ -72,15 +72,21 @@ let config = LaunchConfig::new(
 );
 let audit = Arc::new(FileAuditSink::open("/var/lib/basemind/agent-launch.jsonl")?);
 let supervisor = Supervisor::new(LaunchPolicy::new(spec)?, vec![config], Registry::with_defaults(), audit)?;
-// The kernel names the process on the other end of the connection; the caller cannot.
-let listener = UnixListener::bind("/run/user/1000/basemind/agents.sock")?;
-let (connection, _) = listener.accept()?;
-let peer = Peer::of_socket(connection.as_fd())?;
-// Once, on a channel the launched agents never reach: this process speaks for "lead".
-supervisor.register_launcher("lead", peer)?;
-let lead = Caller::principal("lead", peer)?;
+// At start-up, before any agent runs: the embedding's own process speaks for "lead". A
+// launcher is registered only over a channel the launched agents never reach.
+let me = Peer::this_process()?;
+supervisor.register_launcher("lead", me)?;
+let lead = Caller::principal("lead", me)?;
 let launched = supervisor.launch(&lead, HarnessKind::Codex, &LaunchRequest::new("Review the diff."))?;
 println!("{} runs as {}", launched.id, launched.agent);
+// A launched agent's call: the kernel names the process on the other end of the connection,
+// which the supervisor places in its session; the token has to be that session's.
+let listener = UnixListener::bind("/run/user/1000/basemind/agents.sock")?;
+let (connection, _) = listener.accept()?;
+let token = "the token the agent read from BASEMIND_LAUNCH_TOKEN";
+let agent = Caller::launched(token, Peer::of_socket(connection.as_fd())?);
+let refused = supervisor.launch(&agent, HarnessKind::Codex, &LaunchRequest::new("Fan out."));
+assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
 # Ok(())
 # }
 ```
