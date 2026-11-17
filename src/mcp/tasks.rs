@@ -228,18 +228,16 @@ mod tests {
         for tool in ["code_grep", "code_search", "docs_search"] {
             assert!(is_cancel_aware_read(tool, None), "{tool}");
         }
-        assert!(is_cancel_aware_read(
-            "agents",
-            Some(&args(serde_json::json!({ "mode": "wait" })))
-        ));
-        for tool in ["index_rescan", "memory_save", "code_outline"] {
+        // A waiting agent_inbox marks what it returns read, so dropping it is not free.
+        for tool in [
+            "index_rescan",
+            "memory_save",
+            "code_outline",
+            "agent_inbox",
+            "agent_post",
+        ] {
             assert!(!is_cancel_aware_read(tool, None), "{tool}");
         }
-        assert!(!is_cancel_aware_read(
-            "agents",
-            Some(&args(serde_json::json!({ "mode": "post" })))
-        ));
-        assert!(!is_cancel_aware_read("agents", None));
     }
 
     /// Holds a heavy admission permit; dropping it (as a cancelled handler future does) frees it.
