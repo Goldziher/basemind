@@ -947,3 +947,217 @@ fn the_analyzer_flags_each_reference_shape() {
     .collect();
     assert_eq!(found, expected);
 }
+
+/// Names an engine-layer item may not use: the MCP adapter's types (ADR-0039). The engine answers
+/// with its own result types and `EngineError`; the adapter turns them into tool results.
+const ADAPTER_TYPES: &[&str] = &["McpError", "CallToolResult", "ErrorData", "Parameters"];
+
+/// What makes an engine item depend on its adapter: an `async fn`, an adapter type, or a
+/// non-private function answering with a `serde_json::Value` instead of a typed result.
+struct EngineApi {
+    test: bool,
+    found: BTreeSet<String>,
+}
+
+impl EngineApi {
+    fn function(&mut self, vis: Option<&syn::Visibility>, sig: &syn::Signature) {
+        if self.test {
+            return;
+        }
+        let name = sig.ident.to_string();
+        if sig.asyncness.is_some() {
+            self.found.insert(format!("async fn {name}"));
+        }
+        let exported = vis.is_some_and(|vis| !matches!(vis, syn::Visibility::Inherited));
+        if let syn::ReturnType::Type(_, ty) = &sig.output
+            && exported
+            && returns_json_value(ty)
+        {
+            self.found.insert(format!("fn {name} -> serde_json::Value"));
+        }
+    }
+
+    fn tokens(&mut self, stream: TokenStream) {
+        for tree in stream {
+            match tree {
+                TokenTree::Ident(ident) => self.ident(&ident.to_string()),
+                TokenTree::Group(group) => self.tokens(group.stream()),
+                _ => {}
+            }
+        }
+    }
+
+    fn ident(&mut self, ident: &str) {
+        if !self.test && ADAPTER_TYPES.contains(&ident) {
+            self.found.insert(format!("names {ident}"));
+        }
+    }
+}
+
+/// `serde_json::Value`, or a bare `Value` (the only `Value` an engine module imports).
+fn returns_json_value(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else { return false };
+    let segments: Vec<String> = path.path.segments.iter().map(|s| s.ident.to_string()).collect();
+    matches!(segments.as_slice(), [only] if only == "Value")
+        || matches!(segments.as_slice(), [krate, value] if krate == "serde_json" && value == "Value")
+}
+
+impl<'ast> Visit<'ast> for EngineApi {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        let saved = self.test;
+        self.test |= is_cfg_test(item_attrs(item));
+        syn::visit::visit_item(self, item);
+        self.test = saved;
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        self.function(Some(&item.vis), &item.sig);
+        syn::visit::visit_item_fn(self, item);
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        let saved = self.test;
+        self.test |= is_cfg_test(&item.attrs);
+        self.function(Some(&item.vis), &item.sig);
+        syn::visit::visit_impl_item_fn(self, item);
+        self.test = saved;
+    }
+
+    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+        let saved = self.test;
+        self.test |= is_cfg_test(&item.attrs);
+        self.function(None, &item.sig);
+        syn::visit::visit_trait_item_fn(self, item);
+        self.test = saved;
+    }
+
+    fn visit_item_mod(&mut self, _: &'ast syn::ItemMod) {}
+
+    fn visit_ident(&mut self, ident: &'ast proc_macro2::Ident) {
+        self.ident(&ident.to_string());
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        self.tokens(mac.tokens.clone());
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+/// Every adapter dependency in `items`, as `EngineApi` reports them.
+fn engine_api_findings(items: &[syn::Item], test: bool) -> BTreeSet<String> {
+    let mut api = EngineApi {
+        test,
+        found: BTreeSet::new(),
+    };
+    for item in items {
+        api.visit_item(item);
+    }
+    api.found
+}
+
+/// The engine is a synchronous library (ADR-0039): no non-test engine-layer item is async, names
+/// an MCP adapter type, or answers with an untyped JSON value.
+#[test]
+fn engine_api_is_sync_and_adapter_free() {
+    let root = manifest_dir();
+    let (modules, _) = load_modules(&root);
+    let mut checked = 0;
+    let mut offences = Vec::new();
+    for module in modules.iter().filter(|m| layer_of(&m.path) == Some(Engine)) {
+        checked += 1;
+        let file = module
+            .file
+            .strip_prefix(&root)
+            .unwrap_or(&module.file)
+            .display()
+            .to_string();
+        for finding in engine_api_findings(&module.items, module.test) {
+            offences.push(format!("{file}: {finding}"));
+        }
+    }
+    assert!(checked >= 15, "checked only {checked} engine-layer modules");
+    assert!(
+        offences.is_empty(),
+        "engine-layer code depends on its adapter:\n  {}",
+        offences.join("\n  ")
+    );
+}
+
+/// The check sees each shape it claims to, and leaves test code and private helpers alone.
+#[test]
+fn the_engine_api_check_flags_each_shape() {
+    let file = syn::parse_file(
+        "pub(crate) async fn warm() {}\n\
+         pub(crate) fn answer() -> Result<CallToolResult, McpError> { todo!() }\n\
+         pub fn raw() -> serde_json::Value { serde_json::Value::Null }\n\
+         fn private() -> Value { Value::Null }\n\
+         pub(crate) fn typed() -> Outline { format!(\"{}\", Parameters) }\n\
+         #[cfg(test)] mod tests { async fn t() -> McpError { todo!() } }\n\
+         pub trait T { async fn go(&self); }\n\
+         #[cfg(test)] fn helper() -> ErrorData { todo!() }\n",
+    )
+    .expect("parse");
+    let expected: BTreeSet<String> = [
+        "async fn go",
+        "async fn warm",
+        "fn raw -> serde_json::Value",
+        "names CallToolResult",
+        "names McpError",
+        "names Parameters",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    assert_eq!(engine_api_findings(&file.items, false), expected);
+}
+
+/// `(rmcp_files, helper_lines)`: the non-test files under `src/mcp` that name rmcp, `McpError` or
+/// `CallToolResult`, and the lines of the non-test `src/mcp/helpers*.rs` files. Each engine step
+/// moves tool bodies out of the adapter, so neither may rise; lower them here when they fall.
+const ADAPTER_RATCHET: (usize, usize) = (66, 9_499);
+
+/// A test file under `src/mcp`: every test module there lives in a `*_tests.rs` file.
+fn is_test_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("_tests.rs"))
+}
+
+#[test]
+fn the_adapter_only_shrinks() {
+    let root = manifest_dir();
+    let mcp = root.join("src/mcp");
+    let mut files = BTreeSet::new();
+    collect_rs_files(&mcp, &mut files);
+    let mut rmcp_files = 0;
+    let mut helper_lines = 0;
+    let mut scanned = 0;
+    for file in files.iter().filter(|file| !is_test_file(file)) {
+        scanned += 1;
+        let text = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+        if ["rmcp", "McpError", "CallToolResult"]
+            .iter()
+            .any(|name| text.contains(name))
+        {
+            rmcp_files += 1;
+        }
+        let helper = file.parent() == Some(mcp.as_path())
+            && file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("helpers"));
+        if helper {
+            helper_lines += text.lines().count();
+        }
+    }
+    assert!(scanned > 50, "scanned only {scanned} files under src/mcp");
+    let found = (rmcp_files, helper_lines);
+    assert!(
+        rmcp_files <= ADAPTER_RATCHET.0 && helper_lines <= ADAPTER_RATCHET.1,
+        "src/mcp grew to (rmcp_files, helper_lines) = {found:?}, over the ratchet {ADAPTER_RATCHET:?}: \
+         put the new body in src/engine, not in the adapter."
+    );
+    if found != ADAPTER_RATCHET {
+        println!("src/mcp shrank to {found:?}: lower ADAPTER_RATCHET from {ADAPTER_RATCHET:?}.");
+    }
+}
