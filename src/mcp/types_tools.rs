@@ -59,7 +59,7 @@ tool_args! {
     IndexRescanParams => "index_rescan",
 }
 
-pub use crate::engine::types::code::CodeOutlineParams;
+pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams};
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
 
 /// Arguments of `code_symbols`.
@@ -83,26 +83,6 @@ pub struct CodeSymbolsParams {
     /// Token budget for the list (default 6000).
     #[serde(default)]
     pub max_tokens: Option<u32>,
-}
-
-/// Arguments of `code_read`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CodeReadParams {
-    /// Repo-relative file path.
-    pub path: RelPath,
-    /// Symbol whose body to return (exact name).
-    #[serde(default)]
-    pub symbol: Option<String>,
-    /// With `symbol`: its kind, when several share the name.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// First line of a span, 1-based. With `symbol`: a line inside the definition meant.
-    #[serde(default)]
-    pub line: Option<u32>,
-    /// Last line of a span, inclusive (default: `line`). Not with `symbol`.
-    #[serde(default)]
-    pub end_line: Option<u32>,
 }
 
 /// Arguments of `code_grep`.
