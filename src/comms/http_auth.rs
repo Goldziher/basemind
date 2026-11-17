@@ -295,7 +295,10 @@ mod tests {
         let mut parsed = 0;
         for read in 0..20_000 {
             if let Some(portfile) = read_portfile(dir.path()) {
-                assert!(portfile.token.is_some(), "read {read} saw the address without its token");
+                assert!(
+                    portfile.token.is_some(),
+                    "read {read} saw the address without its token"
+                );
                 parsed += 1;
             }
         }

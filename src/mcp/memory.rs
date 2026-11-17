@@ -121,15 +121,12 @@ pub(super) async fn lance_store(
 /// (Fjall, then async Lance) writes can interleave so the stores disagree.
 ///
 /// We serialize per key — unrelated keys still write in parallel — by handing
-/// out a per-key `tokio::sync::Mutex` from a process-global registry. The
-/// registry itself is guarded by a short-lived `std::sync::Mutex` (held only to
-/// clone an `Arc`, never across an `.await`).
+/// out a per-key `tokio::sync::Mutex` from a process-global registry, itself guarded
+/// by a short-lived `std::sync::Mutex` (held only to clone an `Arc`, never across an `.await`).
 ///
-/// The registry is an `LruCache` bounded at [`MEMORY_PUT_LOCK_CAP`] so it cannot
-/// grow without limit as distinct `(scope, key)` pairs are written over the
-/// process lifetime. The cap is generous enough that realistic key counts never
-/// evict. Eviction is safe for correctness: any task already holding the `Arc`
-/// keeps its mutex alive after the entry is dropped from the cache. The single
+/// The registry is an `LruCache` bounded at [`MEMORY_PUT_LOCK_CAP`] so it cannot grow
+/// without limit as distinct `(scope, key)` pairs are written. Eviction is safe for
+/// correctness: a task already holding the `Arc` keeps its mutex alive. The single
 /// rare-eviction caveat is that if a key's lock is evicted while one put holds
 /// it and a *second* put for the same key arrives, the second put mints a fresh
 /// mutex and the two no longer serialize — a window only reachable when more
