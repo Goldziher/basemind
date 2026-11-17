@@ -608,6 +608,12 @@ fn admit<'a>(
     if !policy.enabled() {
         return Err(SupervisorError::Disabled);
     }
+    // Until the caller resolves, a refusal names whom it claimed to be; never a token.
+    refusal.caller = match &caller.kind {
+        CallerKind::Operator => Some("operator".to_owned()),
+        CallerKind::Principal(principal) => Some(principal.clone()),
+        CallerKind::Token(_) => None,
+    };
     let resolved = resolve(policy, table, caller)?;
     refusal.caller = Some(name_of(table, &resolved));
     let (launcher, caller_depth) = match resolved {

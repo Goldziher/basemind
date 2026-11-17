@@ -264,6 +264,10 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
         outcomes(&audit, AuditEvent::Refusal),
         cases.iter().map(|(_, _, code)| *code).collect::<Vec<_>>()
     );
+    let callers: Vec<Option<String>> = audit.records().into_iter().map(|record| record.caller).collect();
+    assert_eq!(callers[0].as_deref(), Some("stranger"));
+    assert_eq!(callers[1].as_deref(), Some("operator"));
+    assert_eq!(callers[3], None, "a token caller was named");
     assert!(supervisor.list().is_empty(), "a refused launch left a session");
     assert!(Caller::principal("has space").is_err());
     assert!(!format!("{:?}", Caller::launched("secret-token")).contains("secret-token"));
