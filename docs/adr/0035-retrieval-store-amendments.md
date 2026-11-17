@@ -50,10 +50,12 @@ with the code and the benchmark:
      (ADR-0025 (c)), and a missing row is rebuilt from the note.
    The version is bumped when a table's columns change.
 3. **Interim location (amends rule 2 until ADR-0028 lands).** The store is
-   `.basemind/retrieval/<model-slug>-<dim>-<hash8>/` in the workspace, chosen in one function,
-   `lance::docs::store_dir(parent, model, dim)`; rows carry no path or workspace. The scan deletes
-   the rows no document of its view names. When the group directory exists, `store_dir` is called
-   with it and that deletion moves to the group sweep, which passes every view's live keys.
+   `views/<view>/retrieval/<model-slug>-<dim>-<hash8>/` in the workspace cache, chosen in one
+   function, `lance::docs::store_dir(parent, model, dim)`; rows carry no path or workspace. Each
+   view has its own store because each view's scan deletes the rows its document map does not
+   name; two views sharing one would delete each other's rows. When the group directory exists,
+   `store_dir` is called with it and that deletion moves to the group sweep, which passes every
+   view's live keys.
 4. **Filter values (amends rule 5).** `kind` is one of `pdf`, `office`, `html`, `markdown`,
    `email`, `notebook`, `text`, `other`; `path` is a glob over the view's document paths;
    `keywords` is a comma-separated list, a document passing when it has any of them as a whole
@@ -65,7 +67,8 @@ with the code and the benchmark:
 
 - Upgrading wipes each vector store once (its old version is the minor, below 1000); after that a
   release minor no longer wipes the memory vectors.
-- A worktree still holds its own copy of the document rows until ADR-0028's group directory exists.
+- Each view of each worktree holds its own copy of the document rows until ADR-0028's group
+  directory exists.
 - A view whose allowed set exceeds 2,000 documents pays the widening on every query and may see
   `liveness_depth`.
 - ADR-0029's `lang` column and its Bitmap index are not built: no filter reads them.

@@ -119,7 +119,7 @@ fn open_store(root: &Path) -> Store {
 
 /// A file where the vector store's directory belongs: every open of the store fails.
 fn block_vector_store(store: &Store) -> std::path::PathBuf {
-    let dir = store.basemind_dir.join(crate::store_layout::RETRIEVAL_DIR);
+    let dir = store.view_dir.join(crate::store_layout::RETRIEVAL_DIR);
     std::fs::write(&dir, b"not a directory").unwrap();
     dir
 }
@@ -422,7 +422,7 @@ fn a_vector_store_that_was_removed_gets_its_rows_back_from_the_next_scan() {
     inline_scan(tmp.path(), &mut store, &config);
     assert_eq!(doc_rows(&mut store, &scope), [rel]);
 
-    std::fs::remove_dir_all(store.basemind_dir.join(crate::store_layout::RETRIEVAL_DIR)).unwrap();
+    std::fs::remove_dir_all(store.view_dir.join(crate::store_layout::RETRIEVAL_DIR)).unwrap();
     inline_scan(tmp.path(), &mut store, &config);
 
     assert_eq!(
@@ -441,7 +441,7 @@ fn an_incremental_scan_also_finds_the_vector_store_gone() {
     let config = config();
     let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
     inline_scan(tmp.path(), &mut store, &config);
-    std::fs::remove_dir_all(store.basemind_dir.join(crate::store_layout::RETRIEVAL_DIR)).unwrap();
+    std::fs::remove_dir_all(store.view_dir.join(crate::store_layout::RETRIEVAL_DIR)).unwrap();
 
     let other = tmp.path().join("lib.rs");
     std::fs::write(&other, "fn other() {}\n").unwrap();

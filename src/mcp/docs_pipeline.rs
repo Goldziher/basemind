@@ -145,7 +145,7 @@ pub(super) async fn docs_store(state: &ServerState) -> Result<Option<DocStore>, 
     let preset = state.shared.config.documents.embedding_preset.clone();
     let dim = crate::scanner_docs::preset_dim(&preset)
         .map_err(|error| McpError::invalid_request(format!("`docs_search`: {error}"), None))?;
-    let parent = state.shared.store.read().await.basemind_dir.clone();
+    let parent = state.shared.store.read().await.view_dir.clone();
     tokio::task::spawn_blocking(move || {
         let dir = crate::lance::docs::store_dir(&parent, &preset, dim);
         DocStore::shared_existing(&dir, dim, &preset)
@@ -332,12 +332,21 @@ async fn lexical_lane(
                 capped,
             });
         }
-        let (hits, capped) = project(&predicate, &allowed, |k| store.lexical(&text, &predicate, k, true))?;
-        Ok(Lane {
-            hits,
-            fuzzy: true,
-            capped,
-        })
+        match project(&predicate, &allowed, |k| store.lexical(&text, &predicate, k, true)) {
+            Ok((fuzzy_hits, fuzzy_capped)) => Ok(Lane {
+                hits: fuzzy_hits,
+                fuzzy: true,
+                capped: fuzzy_capped,
+            }),
+            Err(error) => {
+                tracing::debug!(%error, "docs_search: the fuzzy lexical rerun failed; keeping the exact hits");
+                Ok(Lane {
+                    hits,
+                    fuzzy: false,
+                    capped,
+                })
+            }
+        }
     })
     .await
 }

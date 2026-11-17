@@ -245,3 +245,22 @@ fn keys_name_content_and_settings_and_store_dirs_name_the_model() {
     assert_eq!(mime_group("application/x-ipynb+json"), "notebook");
     assert_eq!(mime_group("text/html; charset=utf-8"), "html");
 }
+
+#[test]
+fn live_keys_and_metadata_filters_apply_together() {
+    let (_dir, store) = seeded();
+    // Both documents are live; only one of them is a PDF.
+    let predicate = DocPredicate {
+        mime_type: Some("application/pdf".to_string()),
+        keys: Some(vec!["md00".to_string(), "pdf".to_string()]),
+        ..DocPredicate::default()
+    };
+    let vector = store.nearest(&[1.0, 0.0, 0.0, 0.0], &predicate, 5).unwrap();
+    assert_eq!(
+        vector.iter().map(|h| h.doc_key.as_str()).collect::<Vec<_>>(),
+        vec!["pdf"]
+    );
+    let lexical = store.lexical("harbour barrier", &predicate, 10, false).unwrap();
+    assert!(lexical.iter().all(|h| h.doc_key == "pdf"), "{lexical:?}");
+    assert!(!lexical.is_empty());
+}

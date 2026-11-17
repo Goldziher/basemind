@@ -71,7 +71,7 @@ mod index_route_tests;
 #[cfg(test)]
 mod index_view_tests;
 mod l1_cache;
-#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+#[cfg(any(feature = "memory", feature = "code-search"))]
 mod lance_cell;
 mod lean;
 #[cfg(all(feature = "comms", any(unix, windows)))]

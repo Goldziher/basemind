@@ -28,9 +28,10 @@ const KEYS_PER_STATEMENT: usize = 2_000;
 
 /// The directory of the retrieval store for `model` at `dim`, under `parent`.
 ///
-/// `parent` is the workspace directory today. The group-index work (ADR-0028) hands the group
-/// directory instead, and the store moves to `groups/<group>/lance/<model>-<dim>-<hash>/` with no
-/// other change. The name ends in a hash of the model's own name, so two models whose readable
+/// `parent` is the view directory today: a view's scan deletes the rows its own document map does
+/// not name, so two views must not share a store. The group-index work (ADR-0028) hands the group
+/// directory instead, with the group sweep deleting what no view names, and the store moves to
+/// `groups/<group>/lance/<model>-<dim>-<hash>/` with no other change. The name ends in a hash of the model's own name, so two models whose readable
 /// slug collides never share, and wipe, one directory.
 pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
     let slug: String = model
@@ -404,7 +405,6 @@ impl DocStore {
                     .into_iter()
                     .map(|index| index.name)
                     .collect();
-                let mut built = false;
                 for (_, index_name, column) in INDEXES.iter().filter(|(table_name, _, _)| *table_name == name) {
                     if existing.contains(*index_name) {
                         continue;
@@ -415,14 +415,11 @@ impl DocStore {
                         .execute()
                         .await
                         .with_context(|| format!("create {index_name} on {name}.{column}"))?;
-                    built = true;
                 }
-                if !built {
-                    table
-                        .optimize(OptimizeAction::Index(OptimizeOptions::default()))
-                        .await
-                        .with_context(|| format!("update {name} indexes"))?;
-                }
+                table
+                    .optimize(OptimizeAction::Index(OptimizeOptions::default()))
+                    .await
+                    .with_context(|| format!("update {name} indexes"))?;
             }
             Ok(())
         })?;

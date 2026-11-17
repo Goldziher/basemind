@@ -36,8 +36,8 @@ fn ranked(doc: &str, ord: u32, text: &str) -> RankedChunk {
 fn adjacent_chunks_of_one_document_become_one_hit_at_the_best_rank() {
     let groups = merge(vec![
         ranked("a", 4, "four"),
-        ranked("b", 1, "one"),
         ranked("a", 3, "three"),
+        ranked("b", 1, "one"),
         ranked("a", 7, "seven"),
     ]);
     let spans: Vec<(&str, (u32, u32))> = groups.iter().map(|g| (g.first.doc.as_str(), g.ord_range())).collect();
@@ -54,7 +54,11 @@ fn adjacent_chunks_of_one_document_become_one_hit_at_the_best_rank() {
 
 #[test]
 fn stitching_drops_the_overlap_between_consecutive_chunks() {
-    assert_eq!(stitch("alpha beta gamma", "beta gamma delta"), "alpha beta gamma delta");
+    assert_eq!(
+        stitch("alpha beta gamma epsilon", "beta gamma epsilon delta"),
+        "alpha beta gamma epsilon delta"
+    );
+    assert_eq!(stitch("the", "end"), "the\nend", "a one-letter match is not an overlap");
     assert_eq!(stitch("one\n", "two"), "one\ntwo");
     assert_eq!(stitch("one", "two"), "one\ntwo");
 }
@@ -73,4 +77,15 @@ fn the_reranker_reorders_its_candidates_and_drops_nothing() {
     let bad = vec![scored(7, 0.1)];
     assert!(reorder(&mut hits, 2, &bad).is_err());
     assert_eq!(hits.len(), 3, "a bad answer keeps every hit");
+}
+
+#[test]
+fn only_rank_neighbours_merge_so_a_page_can_end_after_any_hit() {
+    // A0 and A1 are adjacent chunks but B0 sits between them in rank: three hits, not two, so a
+    // budget that keeps the first hit resumes at B0.
+    let groups = merge(vec![ranked("a", 0, "x"), ranked("b", 0, "y"), ranked("a", 1, "z")]);
+    assert_eq!(groups.len(), 3);
+    let groups = merge(vec![ranked("a", 2, "x"), ranked("a", 0, "y"), ranked("a", 1, "z")]);
+    let spans: Vec<(u32, u32)> = groups.iter().map(Merged::ord_range).collect();
+    assert_eq!(spans, vec![(2, 2), (0, 1)]);
 }

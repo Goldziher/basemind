@@ -16,6 +16,8 @@ use crate::lance::docs_schema::DocChunkHit;
 pub(super) const RERANK_CANDIDATES: usize = 50;
 /// The longest overlap between consecutive chunks that stitching looks for, in bytes.
 const STITCH_MAX_OVERLAP: usize = 512;
+/// The shortest shared text taken for an overlap: a shorter match is a coincidence ("the" + "end").
+const STITCH_MIN_OVERLAP: usize = 12;
 
 /// Reorder the first [`RERANK_CANDIDATES`] hits by the cross-encoder when the reranker is on.
 /// Nothing is dropped, and a failure leaves the fused order with the reason on the report.
@@ -100,12 +102,13 @@ impl Merged {
     }
 }
 
-/// Group the page's hits: a hit whose chunk is next to a chunk of an earlier hit of the same
-/// document joins it. The group keeps the rank of its best member.
+/// Group the page's hits: a hit whose chunk is next to a chunk of the hit ranked just before it, in
+/// the same document, joins that hit. Only rank neighbours merge, so every group is a run of
+/// consecutive ranks and the page can end after any group. The group keeps its first rank.
 fn merge(page: Vec<RankedChunk>) -> Vec<Merged> {
     let mut groups: Vec<Merged> = Vec::new();
     for hit in page {
-        let joined = groups.iter_mut().find(|group| {
+        let joined = groups.last_mut().filter(|group| {
             group.first.doc == hit.doc && {
                 let (lo, hi) = group.ord_range();
                 hit.ord + 1 >= lo && hit.ord <= hi + 1
@@ -129,7 +132,7 @@ fn merge(page: Vec<RankedChunk>) -> Vec<Merged> {
 /// consecutive chunks).
 fn stitch(a: &str, b: &str) -> String {
     let max = a.len().min(b.len()).min(STITCH_MAX_OVERLAP);
-    let overlap = (1..=max)
+    let overlap = (STITCH_MIN_OVERLAP..=max)
         .rev()
         .find(|&n| a.is_char_boundary(a.len() - n) && b.is_char_boundary(n) && a[a.len() - n..] == b[..n])
         .unwrap_or(0);

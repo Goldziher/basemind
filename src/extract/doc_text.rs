@@ -241,22 +241,25 @@ pub(crate) fn snap_start<'a>(
     if start >= previous_end || start == 0 || content.as_bytes().get(start - 1) == Some(&b'\n') {
         return (start, None);
     }
-    let window = &content[start..previous_end];
+    let Some(window) = content.get(start..previous_end) else {
+        return (start, None);
+    };
     if let Some(newline) = window.find('\n') {
         return (start + newline + 1, None);
     }
     let prev = content[..start].chars().next_back();
     let next = content[start..].chars().next();
-    if prev.is_some_and(char::is_alphanumeric) && next.is_some_and(char::is_alphanumeric) {
-        if let Some(space) = window.find(char::is_whitespace) {
-            let after = start + space;
-            let skip = content[after..]
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .map(char::len_utf8)
-                .sum::<usize>();
-            return ((after + skip).min(previous_end), None);
-        }
+    if prev.is_some_and(char::is_alphanumeric)
+        && next.is_some_and(char::is_alphanumeric)
+        && let Some(space) = window.find(char::is_whitespace)
+    {
+        let after = start + space;
+        let skip = content[after..]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .map(char::len_utf8)
+            .sum::<usize>();
+        return ((after + skip).min(previous_end), None);
     }
     (start, None)
 }
@@ -276,11 +279,10 @@ pub(crate) fn source_lines<'a>(source: &str, chunks: impl IntoIterator<Item = &'
     chunks
         .into_iter()
         .map(|chunk| {
-            let mut lines = chunk.lines().map(str::trim).filter(|line| line.len() >= 3);
+            let mut lines = chunk.lines().map(str::trim).filter(|line| is_distinctive(line));
             let first = lines.next()?;
-            let last = lines.last().unwrap_or(first);
-            let found = source[cursor..].find(first).map(|i| i + cursor);
-            let start = found.or_else(|| source.find(first))?;
+            let last = lines.next_back().unwrap_or(first);
+            let start = source[cursor..].find(first).map(|i| i + cursor)?;
             let end = source[start..]
                 .find(last)
                 .map_or(start + first.len(), |i| start + i + last.len());
@@ -288,6 +290,15 @@ pub(crate) fn source_lines<'a>(source: &str, chunks: impl IntoIterator<Item = &'
             Some((line_of(start), line_of(end.saturating_sub(1).max(start))))
         })
         .collect()
+}
+
+/// Whether `line` can locate a chunk in its source: long enough, and not a fence or a rule, which
+/// repeat throughout a document.
+fn is_distinctive(line: &str) -> bool {
+    line.len() >= 3
+        && !line
+            .chars()
+            .all(|c| matches!(c, '`' | '~' | '-' | '*' | '_' | '=' | '#' | ' '))
 }
 
 /// Source lines are looked up only in a text source no larger than this.
@@ -366,7 +377,9 @@ pub(crate) fn build_chunks(
                 input.text = format!("{opener}\n{}", input.text);
             }
         }
-        previous_end = previous_end.max(input.byte_end);
+        if exact {
+            previous_end = previous_end.max(input.byte_end);
+        }
         let text = if decode {
             decode_entities_where(&input.text, decode_in_code).into_owned()
         } else {

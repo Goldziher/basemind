@@ -385,7 +385,11 @@ fn per_view_file_count(basemind_dir: &Path) -> Result<Vec<(String, usize)>, GcEr
 #[cfg(feature = "intelligence")]
 fn clear_lance(basemind_dir: &Path) -> Result<(), GcError> {
     #[cfg(feature = "documents")]
-    remove_dir_if_exists(&basemind_dir.join(crate::store_layout::RETRIEVAL_DIR))?;
+    if let Ok(views) = std::fs::read_dir(basemind_dir.join(VIEWS_DIR)) {
+        for view in views.flatten() {
+            remove_dir_if_exists(&view.path().join(crate::store_layout::RETRIEVAL_DIR))?;
+        }
+    }
     remove_dir_if_exists(&basemind_dir.join(crate::store::LANCE_DIR))
 }
 

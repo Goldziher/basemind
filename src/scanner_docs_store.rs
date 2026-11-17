@@ -25,7 +25,7 @@ const WRITE_ROWS: usize = crate::lance::BATCH_MAX_ROWS;
 pub(crate) fn open_doc_store(store: &Store, config: &Config, create: bool) -> Result<Option<DocStore>, String> {
     let preset = &config.documents.embedding_preset;
     let dim = super::preset_dim(preset).map_err(|error| error.to_string())?;
-    let dir = store_dir(&store.basemind_dir, preset, dim);
+    let dir = store_dir(&store.view_dir, preset, dim);
     let opened = if create {
         DocStore::shared(&dir, dim, preset).map(Some)
     } else {
@@ -180,11 +180,14 @@ pub(crate) fn sync_document_rows(
     let preset = config.documents.embedding_preset.clone();
     let max_chunks = config.documents.max_chunks_per_document;
     let mut written = 0usize;
+    // Paths whose rows are in the store and need no rewrite owe nothing; the rest settle once written.
+    let queued: AHashSet<&String> = todo.iter().copied().chain(beyond.iter().copied()).collect();
     let mut settled: Vec<String> = keys
         .iter()
-        .filter(|key| present.contains_key(*key))
+        .filter(|key| present.contains_key(*key) && !queued.contains(key))
         .flat_map(|key| live[key].paths.iter().cloned())
         .collect();
+    drop(queued);
     let mut blobless: Vec<String> = Vec::new();
     let mut pending: Vec<DocRows> = Vec::new();
     let mut pending_paths: Vec<String> = Vec::new();
