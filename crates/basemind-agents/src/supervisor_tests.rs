@@ -10,6 +10,7 @@ use serde_json::Value;
 use super::*;
 use crate::audit::{FileAuditSink, MemoryAuditSink};
 use crate::claude::ClaudeCodeAdapter;
+use crate::error::LaunchError;
 use crate::event::{Event, FinishStatus};
 use crate::harness::{AcpFlavor, Harness};
 use crate::identity::AgentIdentity;
