@@ -296,7 +296,7 @@ impl Broker {
 
     /// Serve one accepted RELAY connection: run the relay handshake, then — if accepted — host the
     /// full rmcp code-map router over the raw stream, sharing this workspace's one
-    /// [`SharedReadStack`](crate::mcp::SharedReadStack) across every connection.
+    /// [`Workspace`](crate::mcp::Workspace) across every connection.
     ///
     /// The accept loop routes a connection here after peeking [`relay::RELAY_MAGIC`](super::relay::RELAY_MAGIC);
     /// this consumes the magic, reads the [`RelayHello`](super::relay::RelayHello) within

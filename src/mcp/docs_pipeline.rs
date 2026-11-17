@@ -33,7 +33,7 @@ async fn docs_store(state: &ServerState) -> Result<Option<DocStore>, McpError> {
     let preset = state.shared.config.documents.embedding_preset.clone();
     let dim = crate::scanner_docs::preset_dim(&preset)
         .map_err(|error| McpError::invalid_request(format!("`docs_search`: {error}"), None))?;
-    let parent = state.shared.store.read().await.view_dir.clone();
+    let parent = state.store_read().await.view_dir.clone();
     tokio::task::spawn_blocking(move || {
         DocStore::shared_existing(&crate::lance::docs::store_dir(&parent, &preset, dim), dim, &preset)
     })
@@ -55,7 +55,7 @@ async fn rank(
     store: Option<DocStore>,
 ) -> Result<DocsRanking, McpError> {
     let (live, owed) = {
-        let index = state.shared.store.read().await;
+        let index = state.store_read().await;
         (
             LiveDocs::of_store(&index, filters.path.as_ref()),
             index.pending_vectors.docs().len(),
@@ -119,7 +119,7 @@ pub(super) async fn docs_search(state: &ServerState, p: DocsSearchParams) -> Res
     };
     let filters =
         Filters::parse(&request, crate::extract::doc_tiers::entity_filter_unavailable()).map_err(tool_error)?;
-    let key = super::ranked_cache::RankedCache::key(
+    let key = crate::engine::ranked_cache::RankedCache::key(
         "docs_search",
         &serde_json::json!({
             "query": &request.query,

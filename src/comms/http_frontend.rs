@@ -11,7 +11,7 @@
 //! `http://127.0.0.1:<port>/mcp?root=<percent-encoded-abs-repo-path>&agent=<agent-id>`
 //!
 //! Each POST is self-describing: the router parses `root` + `agent` from the query, resolves the
-//! workspace's [`SharedReadStack`](crate::mcp::SharedReadStack) (building it on first touch, shared
+//! workspace's [`Workspace`](crate::mcp::Workspace) (building it on first touch, shared
 //! by `Arc` with any relay client on the same workspace), and constructs a fresh
 //! [`StreamableHttpService`] bound to that stack for the one request. There is no session registry
 //! to maintain — `NeverSessionManager` keeps the transport stateless per SEP-2567.

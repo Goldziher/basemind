@@ -41,7 +41,7 @@ pub(super) async fn run_goto_definition(
     let max_bytes = state.shared.config.scan.max_file_bytes;
     // The index is consulted before the file is read, so a path that is not indexed cannot be
     // probed for existence or contents through the errors below.
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let Some(entry) = store.lookup(&params.path) else {
         return Err(super::tool_contract::not_indexed_in(
             &store,
@@ -216,7 +216,7 @@ async fn resolve_definition(
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let _ = state;
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.shared.host {
+    if let Some(host) = &state.host {
         // ~keep Daemon-hosted: resolve the cross-file binding in-process through the pool's read-write index
         // ~keep rather than dialing the daemon over its own socket. A host error degrades to `None`, exactly
         // ~keep like the daemon-forward arm, so goto reports no binding rather than erroring.
@@ -241,7 +241,7 @@ async fn resolve_definition(
         };
     }
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
         let client = match super::helpers_daemon::daemon_client(state).await {
             Ok(client) => client,

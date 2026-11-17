@@ -69,28 +69,30 @@ fn server(root: &Path, model: &str) -> ServerState {
             Err(error) => panic!("open the store: {error}"),
         }
     };
-    let shared = crate::mcp::SharedReadStack::new(
+    let telemetry_dir = store.basemind_dir.clone();
+    let shared = crate::mcp::Workspace::new(
         store,
         root.to_path_buf(),
         Arc::new(Config::with_defaults()),
         None,
         Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
         None,
-        crate::mcp::ServerOptions::default(),
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        None,
+        crate::mcp::ServerOptions::default().into(),
     );
     shared
         .embedder
         .set(Arc::new(SharedEmbedder::fake(model, DIM, fake_embed)))
         .ok()
         .unwrap();
-    ServerState::for_connection(Arc::new(shared), "test".into())
+    ServerState::for_connection(
+        crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
+        "test".into(),
+    )
 }
 
 /// Save a note in the Fjall truth only: a note with no vector row, as after a wipe.
 async fn save(state: &ServerState, key: &str, value: &str) -> i64 {
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store.index_db.as_ref().unwrap();
     put_core(idx, &state.shared.scope, vis(), "", key, value, &["t".to_string()])
         .unwrap()
@@ -490,7 +492,7 @@ async fn a_delete_does_not_create_a_store() {
     let state = server(root.path(), "fake");
     save(&state, "plain", "a note").await;
     {
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         delete_core(
             store.index_db.as_ref().unwrap(),
             &state.shared.scope,

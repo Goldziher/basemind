@@ -71,7 +71,7 @@ async fn read_span(
         ));
     }
     // Only the store's file map is consulted: a span never waits for the in-RAM map to build.
-    let file = indexed_file(state, &*state.shared.store.read().await, "code_read", path)?;
+    let file = indexed_file(state, &*state.store_read().await, "code_read", path)?;
     let span = blocking(|| read_lines(&file, line, end_line))
         .map_err(|_| freshness::unloadable("code_read", path, Unloadable::Gone, 0))?;
     let total_lines = span.total_lines;
@@ -198,7 +198,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         .map_err(|e| McpError::invalid_params(format!("`code_read`: invalid kind {:?}: {e}", params.kind), None))?;
 
     let (indexed, entry, file) = {
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         let not_indexed = || not_indexed_in(&store, &state.shared.root, "code_read", &params.path);
         let l1 = query::file_outline(&store, &params.path).map_err(|_| not_indexed())?;
         let entry = store.lookup(&params.path).cloned().ok_or_else(not_indexed)?;

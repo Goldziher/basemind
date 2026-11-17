@@ -59,7 +59,7 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
     };
     let notice = state.lifecycle_notice();
     let identity = repo_identity(state);
-    let store = match state.shared.store.try_read() {
+    let store = match state.shared.try_store_read() {
         Ok(store) => store,
         Err(_) => {
             return json_result(&StatusResponse {
@@ -267,7 +267,7 @@ async fn fetch_rescan_stats(
     scoped_paths: Option<Vec<std::path::PathBuf>>,
 ) -> Result<RescanStats, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         let report = super::daemon_forward::writer_rescan_and_refresh(state, scoped_paths, false, true, true).await?;
         return Ok(RescanStats {
             scanned: report.scanned,

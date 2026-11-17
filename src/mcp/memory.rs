@@ -115,7 +115,7 @@ pub(super) async fn lance_store(
                 .await
                 .map_err(|e| format!("embedder init: {e}"))?;
             let (lance_dir, writer) = {
-                let store = state.shared.store.read().await;
+                let store = state.store_read().await;
                 (
                     store.basemind_dir.join(crate::store::LANCE_DIR),
                     store.holds_writer_lock(),
@@ -257,7 +257,7 @@ async fn memory_put_fjall(
     tags: &[String],
 ) -> Result<(i64, i64), McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let op = MemoryOp::Put {
@@ -279,7 +279,7 @@ async fn memory_put_fjall(
 
     let key_lock = memory_put_lock(&state.shared.scope, vis_byte, owner, key);
     let _put_guard = key_lock.lock().await;
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()
@@ -307,7 +307,7 @@ pub(super) async fn memory_get_wire(
     key: &str,
 ) -> Result<Option<super::memory_ops::WireMemoryEntry>, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let op = MemoryOp::Get {
@@ -324,7 +324,7 @@ pub(super) async fn memory_get_wire(
         };
     }
 
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()
@@ -350,7 +350,7 @@ pub(super) async fn memory_get_many_wire(
     owner: &str,
     keys: Vec<String>,
 ) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
-    let framed = state.shared.memory_is_framed();
+    let framed = state.memory_is_framed();
     let mut entries = Vec::with_capacity(keys.len());
     while entries.len() < keys.len() {
         let rest = &keys[entries.len()..];
@@ -369,7 +369,7 @@ async fn memory_get_chunk_wire(
     keys: &[String],
 ) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let wanted = keys.len();
@@ -387,7 +387,7 @@ async fn memory_get_chunk_wire(
         };
     }
 
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()
@@ -410,13 +410,13 @@ pub(super) async fn memory_stamps_wire(
     owner: &str,
     keys: &[String],
 ) -> Result<Vec<Option<i64>>, McpError> {
-    let framed = state.shared.memory_is_framed();
+    let framed = state.memory_is_framed();
     let mut stamps = Vec::with_capacity(keys.len());
     while stamps.len() < keys.len() {
         let rest = &keys[stamps.len()..];
         let chunk = super::memory_ops::request_chunk(rest, super::memory_ops::STAMPS_MAX_KEYS, framed)?;
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if state.shared.daemon_writer {
+        if state.daemon_writer {
             use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
             let op = MemoryOp::Stamps {
@@ -435,7 +435,7 @@ pub(super) async fn memory_stamps_wire(
             }
             continue;
         }
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         let idx = store
             .index_db
             .as_ref()
@@ -511,7 +511,7 @@ pub(super) async fn memory_list_page(
     cursor: Option<Vec<u8>>,
 ) -> Result<super::memory_ops::ListResult, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let op = MemoryOp::List {
@@ -540,7 +540,7 @@ pub(super) async fn memory_list_page(
         };
     }
 
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()
@@ -585,7 +585,7 @@ pub(super) async fn run_memory_delete(
 #[cfg(feature = "memory")]
 async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key: &str) -> Result<bool, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let op = MemoryOp::Delete {
@@ -603,7 +603,7 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
         };
     }
 
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let idx = store
         .index_db
         .as_ref()

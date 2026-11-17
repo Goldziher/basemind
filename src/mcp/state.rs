@@ -1,26 +1,86 @@
 //! MCP server per-connection state: [`ServerState`] (identity + a shared read stack), its
 //! [`Lifecycle`] classifier, and the [`MapCache`] read stack over the indexed corpus.
 //!
-//! The heavy, workspace-level read fields live on [`SharedReadStack`](super::SharedReadStack)
-//! (in `shared_state.rs`) so one stack can be shared — via an [`Arc`] — across many connections.
+//! The heavy, workspace-level read fields live on [`Workspace`](super::Workspace)
+//! (in `src/engine/workspace.rs`) so one stack can be shared — via an [`Arc`] — across many connections.
 //! `ServerState` keeps only what is specific to a single connection: the resolved agent identity,
 //! its lazily-connected link to the daemon, and the client's requested log verbosity.
 
 use std::sync::Arc;
 
-use super::{SharedReadStack, helpers_calls, helpers_impls, l1_cache, types};
-use crate::extract::FileMapL1;
+use super::{Workspace, l1_cache, types};
+use crate::engine::{Lifecycle, MapCache};
 use crate::store::Store;
+
+/// An owned read guard on a workspace's store, from [`ServerState::store_read`].
+pub(crate) type StoreReadGuard = parking_lot::ArcRwLockReadGuard<parking_lot::RawRwLock, Store>;
+/// An owned write guard on a workspace's store, from [`ServerState::store_write`].
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) type StoreWriteGuard = parking_lot::ArcRwLockWriteGuard<parking_lot::RawRwLock, Store>;
+
+/// A [`Workspace`] together with what every connection served from it shares: the telemetry writer
+/// and how the workspace's writes reach the index. The engine knows none of these; they belong to
+/// the process serving it. Cloned into each connection's [`ServerState`].
+#[derive(Clone)]
+pub(crate) struct ServedWorkspace {
+    /// The workspace-level read stack.
+    pub(crate) workspace: Arc<Workspace>,
+    /// Per-tool-call telemetry writer; appends to the workspace's `telemetry.jsonl`. One writer per
+    /// served workspace, so connections sharing it share its rotation.
+    pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
+    /// Writes go to the machine daemon (see [`ServerState::daemon_writer`]).
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) daemon_writer: bool,
+    /// The daemon's own workspace pool, for a daemon-hosted workspace (see [`ServerState::host`]).
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) host: Option<Arc<dyn super::HostBackend>>,
+}
+
+impl ServedWorkspace {
+    /// Serve `workspace` from this process, with its own telemetry writer under `basemind_dir`.
+    pub(crate) fn new(workspace: Arc<Workspace>, basemind_dir: &std::path::Path) -> Self {
+        Self {
+            workspace,
+            telemetry: Arc::new(super::telemetry::Telemetry::new(basemind_dir)),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            daemon_writer: false,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            host: None,
+        }
+    }
+}
 
 /// Per-connection MCP server state.
 ///
-/// Holds one [`Arc<SharedReadStack>`](super::SharedReadStack) (the heavy read state, shared across
+/// Holds one [`Arc<Workspace>`](super::Workspace) (the heavy read state, shared across
 /// connections) plus this connection's own identity. Field accesses to the shared read stack go
 /// through [`shared`](Self::shared); the identity fields (`agent_id`, `daemon_client`)
 /// are read directly.
 pub(crate) struct ServerState {
     /// The workspace-level read stack shared across every connection to this `(root, view)`.
-    pub(crate) shared: Arc<SharedReadStack>,
+    pub(crate) shared: Arc<Workspace>,
+    /// Per-tool-call telemetry writer, shared by every connection to this workspace. Always present
+    /// (best-effort writes); the dashboard surfaces / statusline read from the same file.
+    pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
+    /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
+    /// instead of writing locally. The store is opened read-only, but — unlike a plain
+    /// [`read_only`](Workspace::read_only) fallback — the empty-index auto-scan, the filesystem
+    /// watcher, and the `rescan` tool FORWARD their scans to the daemon over the socket and then
+    /// rebuild the in-RAM map from the daemon-written `index.msgpack`. Only ever true on a
+    /// `comms`-enabled build; always false otherwise, so the local-writer paths are unchanged.
+    ///
+    /// Only exists on a `comms` build: every read of this field lives behind the same `cfg`, so on
+    /// a non-`comms` build there is no daemon to forward to and the field would be dead.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) daemon_writer: bool,
+    /// In-process host seam for a DAEMON-HOSTED read stack: the daemon's own workspace pool (the
+    /// machine's sole fjall writer). When `Some`, the writer / resolved-refs branch sites route
+    /// directly through it instead of forwarding to the daemon over a socket — closing the
+    /// daemon-dials-itself loopback and, crucially, serving resolved-refs from the pool's read-write
+    /// fjall index (which a `daemon_writer` serve's index-less store cannot see). `None` on every
+    /// non-hosted stack (in-process serve / CLI), where the `daemon_writer` FORWARD path stays live.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) host: Option<Arc<dyn super::HostBackend>>,
     /// Owner segment for the individual-memory tier: the session's principal, resolved by the one
     /// identity resolver of agent comms (ADR-0021). Group-tier writes ignore it.
     #[allow(dead_code)]
@@ -46,15 +106,19 @@ pub(crate) struct ServerState {
 }
 
 impl ServerState {
-    /// Build a fresh per-connection state that shares the given [`SharedReadStack`].
+    /// Build a fresh per-connection state that shares the given served [`Workspace`].
     ///
     /// Each connection gets its own identity: no daemon link yet, no agent context, and the default
     /// log verbosity. The daemon-hosted transports use it to hand every accepted connection the one
     /// shared read stack.
-    #[allow(dead_code)]
-    pub(crate) fn for_connection(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
+    pub(crate) fn for_connection(served: ServedWorkspace, agent_id: String) -> Self {
         Self {
-            shared,
+            shared: served.workspace,
+            telemetry: served.telemetry,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            daemon_writer: served.daemon_writer,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            host: served.host,
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             daemon_client: tokio::sync::OnceCell::new(),
@@ -66,44 +130,17 @@ impl ServerState {
     }
 }
 
-/// Upper bound a cache-reading tool waits for the deferred boot preload to finish before serving from
-/// whatever is loaded so far. Sized so a normal repo's preload (seconds) completes within the wait — a
-/// query issued right after the handshake returns COMPLETE data — while a pathologically large tree
-/// still can't hang a call indefinitely (it returns partial results labelled with a warming notice).
-pub(crate) const CACHE_WARM_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Coarse server lifecycle state surfaced to clients so an empty/partial result is never mistaken for
-/// "no matches". Precedence (highest first): [`BuildingIndex`](Lifecycle::BuildingIndex) (a from-scratch
-/// scan is populating the index) > [`WarmingUp`](Lifecycle::WarmingUp) (blobs are loading into RAM) >
-/// [`Rescanning`](Lifecycle::Rescanning) (a watcher-driven incremental refresh is in flight) >
-/// [`Ready`](Lifecycle::Ready).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Lifecycle {
-    Ready,
-    WarmingUp,
-    BuildingIndex,
-    Rescanning,
-}
-
-impl Lifecycle {
-    /// Pure precedence classifier over the three lifecycle flags. Highest first: `building`
-    /// (from-scratch index scan), then `warming` (blobs loading into RAM), then `rescanning`
-    /// (watcher refresh), then `Ready`. Split out from [`ServerState::lifecycle`] so the precedence
-    /// is unit-testable without constructing a server.
-    pub(crate) fn from_flags(building: bool, warming: bool, rescanning: bool) -> Self {
-        if building {
-            Lifecycle::BuildingIndex
-        } else if warming {
-            Lifecycle::WarmingUp
-        } else if rescanning {
-            Lifecycle::Rescanning
-        } else {
-            Lifecycle::Ready
-        }
-    }
-}
-
 impl ServerState {
+    /// Whether a memory request crosses the daemon's socket, whose frame bounds its size, rather
+    /// than being answered in this process.
+    #[cfg(feature = "memory")]
+    pub(crate) fn memory_is_framed(&self) -> bool {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        return self.daemon_writer && self.host.is_none();
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        false
+    }
+
     /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
     pub(crate) fn lifecycle(&self) -> Lifecycle {
         use std::sync::atomic::Ordering::Relaxed;
@@ -122,7 +159,7 @@ impl ServerState {
     ///   cost then falls only on tools that actually read the map; `repo_info` / `status` / the git
     ///   tools never reach this barrier and so never pay it.
     /// * **`serve`** — wait for the background preload to publish the full map, bounded by
-    ///   [`CACHE_WARM_WAIT_CAP`]. No-op once warm (the common path).
+    ///   [`CACHE_WARM_WAIT_CAP`](crate::engine::workspace::CACHE_WARM_WAIT_CAP). No-op once warm (the common path).
     ///
     /// Neither regime waits on [`Lifecycle::BuildingIndex`] — a from-scratch scan can run for
     /// minutes, so those tools return the partial index plus a
@@ -130,53 +167,72 @@ impl ServerState {
     pub(crate) async fn await_cache_ready(&self) {
         use std::sync::atomic::Ordering::Relaxed;
         if self.shared.lazy_cache {
-            self.build_cache_on_demand().await;
+            if self.shared.lazy_cache_built.get().is_none() {
+                super::index_route::blocking(|| self.build_cache_on_demand());
+            }
             return;
         }
         if !self.shared.cache_warming.load(Relaxed) {
             return;
         }
-        let notified = self.shared.cache_ready.notified();
-        if !self.shared.cache_warming.load(Relaxed) {
-            return;
-        }
-        let _ = tokio::time::timeout(CACHE_WARM_WAIT_CAP, notified).await;
+        super::index_route::blocking(|| self.shared.wait_for_warm());
     }
 
     /// Build the whole-corpus in-RAM map and publish it — exactly once, however many callers race
     /// the barrier.
     ///
     /// [`MapCache::build`] is IO-bound (a rayon `par_iter` probing every indexed file's blob), so it
-    /// must not run on the async reactor. It is handed to [`tokio::task::block_in_place`], which requires
-    /// the multi-thread runtime the CLI builds; off one (a `current_thread` test) we call it
-    /// directly, which is safe precisely because such a runtime has no other task to starve. Mirrors
-    /// the runtime check in [`crate::git_history::remote`].
-    async fn build_cache_on_demand(&self) {
+    /// must not run on the async reactor: [`await_cache_ready`](Self::await_cache_ready) runs it
+    /// inside [`index_route::blocking`](super::index_route::blocking), which hands the worker over
+    /// on the multi-thread runtime the CLI builds and runs it in place on a `current_thread` test
+    /// runtime, which has no other task to starve.
+    fn build_cache_on_demand(&self) {
         use std::sync::atomic::Ordering::Relaxed;
-        self.shared
-            .lazy_cache_built
-            .get_or_init(|| async {
-                let started = std::time::Instant::now();
-                let store = self.shared.store.read().await;
-                let multi_thread = tokio::runtime::Handle::try_current()
-                    .map(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
-                    .unwrap_or(false);
-                let budget = l1_cache::budget_bytes_from(&self.shared.config.resources);
-                let cache = if multi_thread {
-                    tokio::task::block_in_place(|| MapCache::build(&store, budget))
-                } else {
-                    MapCache::build(&store, budget)
-                };
-                let files = cache.len();
-                let cache = Arc::new(cache);
-                self.shared.cache.store(Arc::clone(&cache));
-                cache.warm_terms();
-                self.shared.cache_generation.fetch_add(1, Relaxed);
-                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                self.shared.cache_warm_ms.store(elapsed_ms, Relaxed);
-                tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
-            })
-            .await;
+        self.shared.lazy_cache_built.get_or_init(|| {
+            let started = std::time::Instant::now();
+            let store = self.shared.store_read();
+            let budget = l1_cache::budget_bytes_from(&self.shared.config.resources);
+            let cache = MapCache::build(&store, budget);
+            let files = cache.len();
+            let cache = Arc::new(cache);
+            self.shared.cache.store(Arc::clone(&cache));
+            super::background::warm_terms(&cache);
+            self.shared.cache_generation.fetch_add(1, Relaxed);
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            self.shared.cache_warm_ms.store(elapsed_ms, Relaxed);
+            tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
+        });
+    }
+
+    /// Read the workspace's store from async code. A free lock is taken at once; a held one (a scan
+    /// is writing) is waited for on a blocking thread, so the wait never parks a runtime worker. The
+    /// guard is owned and `Send`, so it may be held across an `.await`, as the async lock this
+    /// replaces allowed.
+    pub(crate) async fn store_read(&self) -> StoreReadGuard {
+        let lock = self.shared.store_lock();
+        if let Some(store) = lock.try_read_arc() {
+            return store;
+        }
+        let lock = Arc::clone(lock);
+        match tokio::task::spawn_blocking(move || lock.read_arc()).await {
+            Ok(store) => store,
+            Err(join) => std::panic::resume_unwind(join.into_panic()),
+        }
+    }
+
+    /// Write the workspace's store from async code, waiting as [`store_read`](Self::store_read)
+    /// does. Only the daemon-forward refresh writes from async code.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) async fn store_write(&self) -> StoreWriteGuard {
+        let lock = self.shared.store_lock();
+        if let Some(store) = lock.try_write_arc() {
+            return store;
+        }
+        let lock = Arc::clone(lock);
+        match tokio::task::spawn_blocking(move || lock.write_arc()).await {
+            Ok(store) => store,
+            Err(join) => std::panic::resume_unwind(join.into_panic()),
+        }
     }
 
     /// The `index_rebuilding` notice while the workspace's `status.json` records a partial scan or an
@@ -195,7 +251,7 @@ impl ServerState {
     /// as "no matches". Judged on the store's file map, not the in-RAM map, which is also empty
     /// before a lazy build. `None` while another task holds the store lock.
     fn empty_index_notice(&self) -> Option<types::LifecycleNotice> {
-        let store = self.shared.store.try_read().ok()?;
+        let store = self.shared.try_store_read().ok()?;
         (store.index.files.is_empty() && store.index.doc_files.is_empty()).then(types::LifecycleNotice::empty_index)
     }
 
@@ -215,342 +271,3 @@ impl ServerState {
             })
     }
 }
-
-pub(crate) struct MapCache {
-    /// Symbol-free view of every indexed file. Permanent and O(files) — never O(symbols).
-    files: l1_cache::FileIndexView,
-    /// The only place a decoded [`FileMapL1`] lives: a byte-charged, read-through LRU keyed by
-    /// content hash. Shared with the snapshot this cache was derived from, so an incremental
-    /// rescan is a refcount bump rather than a rebuild.
-    l1: Arc<l1_cache::L1Cache>,
-    /// In-RAM callee index: the LAST-RESORT fallback for a session that has neither a Fjall index
-    /// nor a daemon to forward `references` / `callers` to.
-    /// Built on first use ([`calls_projection`](Self::calls_projection)) and never otherwise, so a
-    /// daemon-backed session that only asks point queries holds none of it.
-    calls: std::sync::OnceLock<helpers_calls::InRamCallIndex>,
-    /// In-RAM trait→impl index, same lazy last-resort role as `calls` for `find_implementations`.
-    impls: std::sync::OnceLock<helpers_impls::InRamImplIndex>,
-    /// Searchable symbol-name / import text of every file, built on first use (or by the cache
-    /// warm) and patched rather than rebuilt by [`with_delta`](Self::with_delta). Backs the
-    /// substring sweeps of `symbols` and `dependents`.
-    terms: std::sync::OnceLock<Arc<super::term_index::TermIndex>>,
-    /// Every path of the document tier (markdown, config, data, PDFs ...), sorted. The code map
-    /// holds code only, so decision records (`docs/adr/*.md`) and path citations to prose / config
-    /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
-    /// (no blob or LanceDB read), so it is rebuilt with every cache build and delta.
-    pub(crate) doc_paths: std::sync::Arc<[crate::path::RelPath]>,
-}
-
-/// The sorted document-tier paths of `store`'s index.
-fn doc_paths_of(store: &Store) -> std::sync::Arc<[crate::path::RelPath]> {
-    let mut paths: Vec<crate::path::RelPath> = store.index.doc_files.keys().cloned().collect();
-    paths.sort_unstable();
-    paths.into()
-}
-
-impl MapCache {
-    /// Build the read stack's map over `store`, charging decoded L1s against `budget_bytes`
-    /// (`0` = unbounded).
-    ///
-    /// Unlike the whole-corpus map this replaces, `build` decodes NO L1 blobs: it projects the
-    /// index into [`l1_cache::FileIndexView`] and leaves the outlines to be faulted in on demand.
-    /// The read-only projections (`calls` / `impls`) are not built here either: they are the
-    /// last-resort fallback for a session that can reach no Fjall index, built lazily on first use
-    /// and charged against the same budget.
-    pub(crate) fn build(store: &Store, budget_bytes: u64) -> Self {
-        let files = l1_cache::FileIndexView::build(store);
-        let l1 = Arc::new(l1_cache::L1Cache::from_store(store, budget_bytes));
-        Self {
-            files,
-            l1,
-            calls: Default::default(),
-            impls: Default::default(),
-            terms: Default::default(),
-            doc_paths: doc_paths_of(store),
-        }
-    }
-
-    /// An empty map cache: the placeholder a `serve` boots with while the real [`build`](Self::build)
-    /// runs in the background (see [`super::background::spawn_cache_warm`]). Deferring the index
-    /// projection off the startup path is what lets the MCP `initialize`/`tools/list` handshake
-    /// answer immediately. Cache-reading tools await [`ServerState::await_cache_ready`] before
-    /// reading, so they observe the built map, never this placeholder.
-    pub(crate) fn empty() -> Self {
-        Self {
-            files: l1_cache::FileIndexView::default(),
-            l1: Arc::new(l1_cache::L1Cache::placeholder()),
-            calls: Default::default(),
-            impls: Default::default(),
-            terms: Default::default(),
-            doc_paths: Default::default(),
-        }
-    }
-
-    /// Build a cache over a synthetic, blob-less corpus. Test-only seam: hand-built outlines that
-    /// no scan produced have no store to be read back from, so they are seeded straight into the
-    /// L1 cache.
-    #[cfg(test)]
-    pub(crate) fn from_synthetic(files: Vec<(crate::path::RelPath, FileMapL1)>) -> Self {
-        let l1 = Arc::new(l1_cache::L1Cache::new(std::path::PathBuf::new(), 0));
-        let mut metas: Vec<(crate::path::RelPath, l1_cache::FileMeta)> = Vec::with_capacity(files.len());
-        for (path, map) in files {
-            let hash_hex = format!("synthetic-{}", path.to_str_lossy());
-            let meta = l1_cache::FileMeta {
-                hash_hex: hash_hex.as_str().into(),
-                language: map.language.as_str().into(),
-                size_bytes: map.size_bytes,
-                mtime_ns: 0,
-                extract_epoch: map.extract_epoch,
-            };
-            l1.seed(&hash_hex, Arc::new(map));
-            metas.push((path, meta));
-        }
-        Self {
-            files: l1_cache::FileIndexView::from_pairs(metas),
-            l1,
-            calls: Default::default(),
-            impls: Default::default(),
-            terms: Default::default(),
-            doc_paths: Default::default(),
-        }
-    }
-
-    /// The in-RAM call projection, built on first use. Only reached by a session with no reachable
-    /// Fjall index (see [`calls`](Self::calls)); a build that hits the byte budget is truncated and
-    /// reports it through [`projections_capped`](Self::projections_capped).
-    pub(crate) fn calls_projection(&self) -> &helpers_calls::InRamCallIndex {
-        self.calls.get_or_init(|| {
-            helpers_calls::InRamCallIndex::build(&self.files, self.l1.blobs_dir(), self.l1.budget_bytes())
-        })
-    }
-
-    /// The in-RAM implementation projection, built on first use. See
-    /// [`calls_projection`](Self::calls_projection).
-    pub(crate) fn impls_projection(&self) -> &helpers_impls::InRamImplIndex {
-        self.impls
-            .get_or_init(|| helpers_impls::InRamImplIndex::build(&self.files, &self.l1, self.l1.budget_bytes()))
-    }
-
-    /// Whether either projection has been built. Test seam for the memory bound: a daemon-backed
-    /// session must answer its reference reads without ever allocating one.
-    #[cfg(all(test, feature = "comms", any(unix, windows)))]
-    pub(crate) fn projections_built(&self) -> bool {
-        self.calls.get().is_some() || self.impls.get().is_some()
-    }
-
-    /// True when a projection this session has ALREADY built hit its byte cap, so the answers it
-    /// backed are incomplete. Surfaced through [`ServerState::lifecycle_notice`] rather than
-    /// silently degrading a result to "no matches". `false` until a projection exists, which is why
-    /// the handlers that fall back to one read the notice AFTER running the scan.
-    pub(crate) fn projections_capped(&self) -> bool {
-        self.calls.get().is_some_and(helpers_calls::InRamCallIndex::capped)
-            || self.impls.get().is_some_and(helpers_impls::InRamImplIndex::capped)
-    }
-
-    /// Number of indexed files this map covers.
-    pub(crate) fn len(&self) -> usize {
-        self.files.len()
-    }
-
-    /// Whether `path` is one of the indexed files. Answered from the symbol-free view, so it costs
-    /// no blob read.
-    pub(crate) fn contains(&self, path: &crate::path::RelPath) -> bool {
-        self.files.contains(path)
-    }
-
-    /// Whether `path` is a tracked document (non-code file in the document tier).
-    pub(crate) fn contains_doc(&self, path: &crate::path::RelPath) -> bool {
-        self.doc_paths.binary_search(path).is_ok()
-    }
-
-    /// What the index recorded about `path`'s content, without faulting in its outline.
-    pub(crate) fn meta(&self, path: &crate::path::RelPath) -> Option<&l1_cache::FileMeta> {
-        self.files.get(path)
-    }
-
-    /// The language recorded for `path` at scan time, without faulting in its outline.
-    pub(crate) fn language_of(&self, path: &crate::path::RelPath) -> Option<&str> {
-        self.files.get(path).map(|meta| &*meta.language)
-    }
-
-    /// Every indexed path, in sorted order.
-    pub(crate) fn paths(&self) -> impl Iterator<Item = &crate::path::RelPath> {
-        self.files.keys()
-    }
-
-    /// Every indexed path with its symbol-free metadata, in sorted order. The whole surface a
-    /// path/language/size filter needs, with no L1 decode anywhere.
-    pub(crate) fn file_metas(&self) -> impl Iterator<Item = (&crate::path::RelPath, &l1_cache::FileMeta)> {
-        self.files.iter()
-    }
-
-    /// The decoded outline for one file — the point-lookup path. A hit is a pointer clone; a miss
-    /// is one blob read, which is exactly what the old whole-corpus build paid per file up front.
-    pub(crate) fn get(&self, path: &crate::path::RelPath) -> Option<Arc<FileMapL1>> {
-        let meta = self.files.get(path)?;
-        self.l1.load(&meta.hash_hex, meta.extract_epoch)
-    }
-
-    /// The decoded outline of the content `hash_hex`, whichever path holds it. Outlines are keyed
-    /// by content, so this is the outline of an index entry however old this snapshot's file view
-    /// is next to the store the entry came from. `extract_epoch` is that entry's epoch, so an
-    /// outline cached before a refresh rewrote the blob is not served for it.
-    pub(crate) fn outline_of_content(&self, hash_hex: &str, extract_epoch: u16) -> Option<Arc<FileMapL1>> {
-        self.l1.load(hash_hex, extract_epoch)
-    }
-
-    /// The term index, building it from one corpus stream on first use. Later calls (and the
-    /// snapshots derived by [`with_delta`](Self::with_delta)) reuse it.
-    pub(crate) fn terms(&self) -> &super::term_index::TermIndex {
-        self.terms.get_or_init(|| {
-            Arc::new(super::term_index::TermIndex::build(|visit| {
-                self.for_each(|path, l1| visit(path, l1));
-            }))
-        })
-    }
-
-    /// Build the term index on a blocking thread so the first `symbols` / `dependents` call after
-    /// a full cache publish doesn't pay for it. A no-op outside a Tokio runtime (queries then build
-    /// it lazily).
-    pub(crate) fn warm_terms(self: &Arc<Self>) {
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let cache = Arc::clone(self);
-            runtime.spawn_blocking(move || {
-                cache.terms();
-            });
-        }
-    }
-
-    /// Stream every `(path, outline)` in path order, stopping early when `f` returns `false`.
-    ///
-    /// The whole-corpus read primitive. Consumers project into a compact structure and drop the
-    /// outline, so the corpus is never simultaneously materialised — the invariant the old
-    /// `for (path, l1) in &cache.by_path` loop violated by construction.
-    pub(crate) fn for_each_while<F>(&self, f: F)
-    where
-        F: FnMut(&crate::path::RelPath, &FileMapL1) -> bool,
-    {
-        l1_cache::stream_while(&self.files, &self.l1, f);
-    }
-
-    /// [`for_each_while`](Self::for_each_while) for a consumer that always runs to completion.
-    pub(crate) fn for_each<F>(&self, mut f: F)
-    where
-        F: FnMut(&crate::path::RelPath, &FileMapL1),
-    {
-        self.for_each_while(|path, l1| {
-            f(path, l1);
-            true
-        });
-    }
-
-    /// The L1 cache backing this map. The budget tests read its counters.
-    #[cfg(test)]
-    pub(crate) fn l1_cache(&self) -> &l1_cache::L1Cache {
-        &self.l1
-    }
-
-    /// Incrementally derive a fresh cache from `self` for a **scoped** (watcher) rescan: patch the
-    /// file view for the changed paths only and carry the L1 cache forward by refcount. This avoids
-    /// `build`'s whole-corpus index projection on every debounced batch, which is what pegged
-    /// multi-core CPU on gitignored / nested-`.basemind` churn (issue #33).
-    ///
-    /// Sharing the L1 cache across the two snapshots is safe because it is keyed by CONTENT HASH:
-    /// an updated path's new view entry names a new hash, so a reader still holding `self` keeps
-    /// resolving the old hash and cannot observe the newer content. An extract-epoch refresh keeps
-    /// the hash and rewrites the blob; the new view entry names the newer epoch, which the cache
-    /// does not answer from an outline decoded under an older one.
-    ///
-    /// The lazy `calls`/`impls` projections start empty on the derived snapshot, so they are
-    /// rebuilt from the post-rescan file view if ever needed and cannot drift out of sync.
-    ///
-    /// The outlines of the content `updated` and `removed` paths named before are dropped from the
-    /// shared L1 cache once no path of the new view names them (see
-    /// [`L1Cache::forget_superseded`](l1_cache::L1Cache::forget_superseded)).
-    pub(crate) fn with_delta(
-        &self,
-        store: &Store,
-        updated: &[crate::path::RelPath],
-        removed: &[crate::path::RelPath],
-    ) -> Self {
-        let superseded: ahash::AHashSet<&str> = updated
-            .iter()
-            .chain(removed)
-            .filter_map(|path| self.files.get(path))
-            .map(|meta| &*meta.hash_hex)
-            .collect();
-        // An extract-epoch refresh rewrote the blob under the same hash: the outline decoded from
-        // the replaced blob must not be served for it, whoever still names the hash.
-        for path in updated {
-            if let (Some(old), Some(entry)) = (self.files.get(path), store.index.files.get(path))
-                && *old.hash_hex == *entry.hash_hex
-                && old.extract_epoch != entry.extract_epoch
-            {
-                self.l1.forget(&old.hash_hex);
-            }
-        }
-        let next = Self {
-            files: self.files.with_delta(store, updated, removed),
-            l1: Arc::clone(&self.l1),
-            // Fresh and empty: a derived snapshot rebuilds its projections lazily, so they can never
-            // describe the pre-rescan corpus.
-            calls: Default::default(),
-            impls: Default::default(),
-            terms: Default::default(),
-            doc_paths: doc_paths_of(store),
-        };
-        self.l1.forget_superseded(superseded, &next.files);
-        if let Some(terms) = self.terms.get() {
-            let _ = next
-                .terms
-                .set(Arc::new(terms.patched(updated, removed, |p| next.get(p))));
-        }
-        next
-    }
-
-    /// The map of `store` derived from this one, or `None` when it would map `store` exactly as
-    /// this one does.
-    ///
-    /// A rescan publishes a new index; rebuilding the map over it started a fresh L1 cache, and the
-    /// term-index warm that follows a build then decoded every outline of the repository again,
-    /// however few files the scan changed. Instead the paths a [`build`](Self::build) would map
-    /// differently are found by comparing the whole index against this map's view
-    /// ([`FileIndexView::diff`](l1_cache::FileIndexView::diff)), and [`with_delta`](Self::with_delta)
-    /// applies exactly those, so the result is the map `build` would produce, while unchanged
-    /// outlines stay decoded. The diff is taken from the store, never from a scan's report of what it
-    /// touched, so a path a report missed cannot leave the map stale.
-    ///
-    /// `None` is what keeps a no-op daemon scan from transiently doubling the map's residency. The
-    /// boot placeholder, or a cache over other blob directories than `store` reads, is rebuilt.
-    pub(crate) fn refreshed(&self, store: &Store, budget_bytes: u64) -> Option<Self> {
-        if !self.l1.serves(store) {
-            return Some(Self::build(store, budget_bytes));
-        }
-        let (updated, removed) = self.files.diff(store);
-        let doc_paths = doc_paths_of(store);
-        // A path left out of the view for a missing blob is re-probed by every diff; while its
-        // blob is still missing the delta would map exactly what this map does.
-        let unchanged = removed.is_empty()
-            && doc_paths == self.doc_paths
-            && updated.iter().all(|path| {
-                !self.files.contains(path)
-                    && store
-                        .index
-                        .files
-                        .get(path)
-                        .is_none_or(|entry| !l1_cache::has_blob(store, entry))
-            });
-        if unchanged {
-            return None;
-        }
-        Some(self.with_delta(store, &updated, &removed))
-    }
-}
-
-#[cfg(test)]
-#[path = "map_cache_budget_tests.rs"]
-mod map_cache_budget_tests;
-
-#[cfg(test)]
-#[path = "map_cache_delta_tests.rs"]
-mod map_cache_delta_tests;

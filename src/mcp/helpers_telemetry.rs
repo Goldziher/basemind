@@ -62,8 +62,5 @@ pub(super) fn record_call(
     } else {
         super::savings::estimate_from_text(tool, corpus, resp_text.as_ref())
     };
-    state
-        .shared
-        .telemetry
-        .record(tool, params, resp_bytes, elapsed_us, &savings);
+    state.telemetry.record(tool, params, resp_bytes, elapsed_us, &savings);
 }

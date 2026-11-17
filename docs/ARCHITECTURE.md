@@ -485,7 +485,7 @@ without changing a single result:
   costs one empty range scan.
   The first query after the index opens still walks the partition while a background pass builds it,
   and a needle matching over 5 % of the distinct names goes back to the walk.
-- **Term index** (`src/mcp/term_index.rs`). `code_symbols` and the `code_refs` importer lookup search
+- **Term index** (`src/engine/term_index.rs`). `code_symbols` and the `code_refs` importer lookup search
   only names and import
   strings, held per file with no spans or signatures; a hit fetches its span and signature from the
   outline cache by `(path, symbol index)`, so only the returned page is decoded. It is built in the
@@ -783,7 +783,7 @@ basemind's footprint on a constrained machine:
 | `document_models` | `full` | Model families document extraction runs: `full` (every configured post-processor the build has; OCR needs `documents-ocr`, NER needs `documents-ner`) \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
 | `onnx_provider` | `cpu` | ONNX execution provider for embeddings, reranker and NER: `cpu` \| `auto` \| `coreml` \| `cuda` \| `tensorrt`. `auto` on macOS means CoreML, which compiles per input shape and measured 7.6 GB for one tiny document vs 0.8 GB on CPU. |
 | `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment (75% of an enforced cgroup limit, else 25% of machine RAM, floored at 2048 MiB); `"off"` disables the gate. |
-| `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/mcp/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. A read-only session's projected call / implementation indexes are charged against it. |
+| `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/engine/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. A read-only session's projected call / implementation indexes are charged against it. |
 
 In the shared daemon these values are ceilings, not settings: `src/config/daemon.rs` applies
 `min(file, cap)` to each (and to `[scan]` / `[documents]` limits), with `0` / `"auto"` /

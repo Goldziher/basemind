@@ -1,8 +1,8 @@
 //! The term index must answer exactly what the streaming sweeps it replaces answered.
 
 use super::TermIndex;
+use crate::engine::MapCache;
 use crate::extract::{FileMapL1, Import, Symbol, SymbolKind};
-use crate::mcp::MapCache;
 use crate::path::RelPath;
 
 const KINDS: [SymbolKind; 4] = [

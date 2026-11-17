@@ -29,7 +29,7 @@ pub(crate) use helpers::rescan_error;
 #[cfg(feature = "documents")]
 mod docs_pipeline;
 mod helpers_admin;
-mod helpers_calls;
+pub(crate) mod helpers_calls;
 #[cfg(test)]
 mod helpers_calls_resolved_tests;
 mod helpers_calls_scan;
@@ -41,7 +41,7 @@ mod helpers_daemon;
 #[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
 mod helpers_expand;
-mod helpers_files;
+pub(crate) mod helpers_files;
 mod helpers_filters;
 mod helpers_fingerprint;
 mod helpers_git;
@@ -50,7 +50,7 @@ mod helpers_git_file;
 mod helpers_git_show;
 mod helpers_grep;
 mod helpers_grep_text;
-mod helpers_impls;
+pub(crate) mod helpers_impls;
 mod helpers_intel;
 mod helpers_memory;
 #[cfg(any(feature = "code-search", feature = "documents", test))]
@@ -63,7 +63,7 @@ mod helpers_telemetry;
 mod history_sync;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod host;
-mod identity;
+pub(crate) mod identity;
 #[cfg(feature = "test-support")]
 pub mod in_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -73,31 +73,27 @@ mod index_route;
 mod index_route_tests;
 #[cfg(test)]
 mod index_view_tests;
-mod l1_cache;
+pub(crate) use crate::engine::l1_cache;
 #[cfg(any(feature = "memory", feature = "code-search"))]
-mod lance_cell;
+pub(crate) mod lance_cell;
 mod lean;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod memory;
 #[cfg(feature = "memory")]
 pub(crate) mod memory_ops;
-mod memory_vectors;
+pub(crate) mod memory_vectors;
 mod notifications;
 pub mod offline;
-mod outline_cache;
 mod prompts;
-mod ranked_cache;
 pub mod replay;
 mod resources;
 mod router_cache;
 pub(crate) mod savings;
 mod server_handler;
-mod shared_state;
 mod state;
 mod strict;
 mod tasks;
-mod telemetry;
-mod term_index;
+pub(crate) mod telemetry;
 pub(crate) mod tokens;
 mod tool_contract;
 mod tools;
@@ -122,9 +118,10 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::task_manager::TaskManager;
 
-use crate::extract::FileMapL1;
 use crate::store::Store;
 
+pub(crate) use crate::engine::Workspace;
+pub(crate) use crate::engine::{Lifecycle, MapCache};
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub use agent_context::AgentContext;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -133,21 +130,20 @@ pub(crate) use host::HostBackend;
 pub use in_memory::serve_in_memory_daemon_writer;
 #[cfg(feature = "test-support")]
 pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
-pub(crate) use shared_state::SharedReadStack;
-pub(crate) use state::{Lifecycle, MapCache, ServerState};
+pub(crate) use state::{ServedWorkspace, ServerState};
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 /// A daemon-owned read stack and the watcher lifetime that keeps it fresh.
 pub(crate) struct HostedReadStack {
     _watcher: background::WatcherGuard,
-    shared: Arc<SharedReadStack>,
+    shared: ServedWorkspace,
 }
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 impl HostedReadStack {
     /// Clone the read stack shared by every connection to this hosted workspace.
-    pub(crate) fn shared(&self) -> Arc<SharedReadStack> {
-        Arc::clone(&self.shared)
+    pub(crate) fn shared(&self) -> ServedWorkspace {
+        self.shared.clone()
     }
 }
 
@@ -179,12 +175,7 @@ pub use params::Parameters;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) const HOSTED_GIT_CACHE_MEM: usize = 1024;
 
-pub(crate) struct OutlineEntry {
-    pub map: Arc<FileMapL1>,
-    pub source: Arc<Vec<u8>>,
-}
-
-pub(crate) use outline_cache::OutlineCache;
+pub(crate) use crate::engine::outline_cache::{OutlineCache, OutlineEntry};
 
 /// Shared MCP server state. `ToolRouter<Self>` is Clone (Arc inside), so we hold it directly
 /// on the struct as the `#[tool_handler]` macro expects.
@@ -248,6 +239,17 @@ pub struct ServerOptions {
     /// of running it at construction. Set only for the one-shot CLI — see
     /// [`ServerState::lazy_cache`].
     pub lazy_cache: bool,
+}
+
+impl From<ServerOptions> for crate::engine::workspace::OpenOptions {
+    fn from(options: ServerOptions) -> Self {
+        Self {
+            background: options.background,
+            read_only: options.read_only,
+            forwards_writes: options.daemon_writer,
+            lazy_cache: options.lazy_cache,
+        }
+    }
 }
 
 impl Default for ServerOptions {
@@ -330,34 +332,30 @@ impl BasemindServer {
             None,
         );
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
-        let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
-        let shared = Arc::new(SharedReadStack::new(
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
+        let basemind_dir = store.basemind_dir.clone();
+        let shared = Arc::new(Workspace::new(
             store,
             root,
             config,
             repo,
             git_cache,
             git_history,
-            options,
-            // ~keep In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
-            // ~keep (not this seam) handles writes when a daemon is up.
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            None,
+            options.into(),
         ));
-        let state = Arc::new(ServerState {
-            shared,
-            agent_id,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_client: tokio::sync::OnceCell::new(),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            agents: None,
-            lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
-            task_threshold_ms: std::sync::atomic::AtomicU64::new(tasks::TASK_THRESHOLD.as_millis() as u64),
-        });
+        // ~keep In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
+        // ~keep (not the host seam) handles writes when a daemon is up.
+        #[allow(unused_mut)] // ~keep only a `comms` build records the daemon topology
+        let mut served = ServedWorkspace::new(shared, &basemind_dir);
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        {
+            served.daemon_writer = options.daemon_writer;
+        }
+        let state = Arc::new(ServerState::for_connection(served, agent_id));
         let mut watcher = None;
         if options.background {
             let view_is_working = {
-                match state.shared.store.try_read() {
+                match state.shared.try_store_read() {
                     Ok(g) => g.view == crate::store::VIEW_WORKING,
                     Err(_) => false,
                 }
@@ -419,7 +417,7 @@ impl BasemindServer {
         tool_contract::finalize_router(router)
     }
 
-    /// Build a per-connection server that SHARES a workspace's [`SharedReadStack`] rather than
+    /// Build a per-connection server that SHARES a workspace's [`Workspace`] rather than
     /// opening its own. This is the daemon-hosted seam: the daemon builds one shared read stack per
     /// hot workspace (see [`build_hosted_read_stack`](Self::build_hosted_read_stack)) and hands every
     /// accepted relay connection its own `BasemindServer` over that one stack — so the heavy state
@@ -432,7 +430,7 @@ impl BasemindServer {
     /// advertises nor serves them.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn from_shared(
-        shared: Arc<SharedReadStack>,
+        shared: ServedWorkspace,
         agent_id: String,
         heavy_admission: Arc<admission::HeavyAdmission>,
         agents: Option<Arc<AgentContext>>,
@@ -459,7 +457,7 @@ impl BasemindServer {
     /// Build (once) the shared read stack the daemon hosts for one workspace, plus its single
     /// "warden" — a background-running [`ServerState`] that owns freshness for the whole workspace:
     /// the empty-index auto-scan, the live filesystem watcher, cache warming, and the git-history
-    /// sync. The warden shares the returned [`SharedReadStack`] by `Arc`, so when its watcher
+    /// sync. The warden shares the returned [`Workspace`] by `Arc`, so when its watcher
     /// rebuilds the in-RAM map every hosted connection sees the refreshed snapshot at once. This is
     /// the N-watchers-per-workspace → one-watcher-per-workspace consolidation: per-connection
     /// servers ([`from_shared`](Self::from_shared)) spawn nothing.
@@ -510,21 +508,24 @@ impl BasemindServer {
             &options,
             Some(git_history_host),
         );
-        let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
-        let shared = Arc::new(SharedReadStack::new(
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
+        let telemetry_dir = store.basemind_dir.clone();
+        let workspace = Arc::new(Workspace::new(
             store,
             root.to_path_buf(),
             config,
             repo,
             git_cache,
             git_history,
-            options,
-            // ~keep The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
-            // ~keep the pool instead of looping back over the daemon's own socket.
-            Some(host),
+            options.into(),
         ));
+        let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);
+        shared.daemon_writer = options.daemon_writer;
+        // ~keep The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
+        // ~keep the pool instead of looping back over the daemon's own socket.
+        shared.host = Some(host);
         // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
-        let warden = Arc::new(ServerState::for_connection(Arc::clone(&shared), agent_id));
+        let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
         history_sync::request(&warden);
         if needs_initial_scan {

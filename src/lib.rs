@@ -17,6 +17,7 @@ pub mod daemon_lock;
 pub mod disk_space;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
+pub(crate) mod engine;
 pub mod eval;
 pub mod extract;
 pub mod git;

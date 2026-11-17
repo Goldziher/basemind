@@ -3,7 +3,7 @@
 
 /// This server's principal for the checkout at `root`. A root the resolver refuses (one that is
 /// not absolute) falls back to the bare default host name, `agent`, so memory still has an owner.
-pub(super) fn resolve_agent_id(root: &std::path::Path) -> String {
+pub(crate) fn resolve_agent_id(root: &std::path::Path) -> String {
     match crate::comms::v2::identity::resolve_for_root(root) {
         Ok(resolved) => resolved.principal.as_str().to_string(),
         Err(error) => {

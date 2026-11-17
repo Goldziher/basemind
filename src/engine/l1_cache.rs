@@ -225,7 +225,7 @@ struct Charged {
 
 /// Byte-charged, read-through cache of decoded L1 outlines, keyed by content hash.
 ///
-/// Shared (behind an [`Arc`]) by every [`MapCache`](super::MapCache) snapshot derived from one
+/// Shared (behind an [`Arc`]) by every [`MapCache`](crate::engine::MapCache) snapshot derived from one
 /// another, so a watcher rescan does not throw away a warm cache or transiently double its
 /// residency.
 pub(crate) struct L1Cache {

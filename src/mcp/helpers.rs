@@ -592,7 +592,7 @@ pub(super) async fn scan_and_refresh(
     let was_scoped = scoped_paths.is_some();
     let state_for_scan = Arc::clone(&state);
     let (report, paths) = tokio::task::spawn_blocking(move || {
-        let mut store = state_for_scan.shared.store.blocking_write();
+        let mut store = state_for_scan.shared.store_write();
         // The store may have been opened via `Store::open_read_only` (the CLI / MCP query path),
         // which never creates `view_dir` on disk. On a workspace's first-ever scan that directory
         // is still missing here, and `flush()` would fail with ENOENT writing `index.msgpack.tmp`.
@@ -636,7 +636,7 @@ pub(super) async fn scan_and_refresh(
     let RescanPaths { updated, removed } = paths;
 
     let new_cache = {
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         state
             .shared
@@ -666,7 +666,7 @@ pub(super) async fn run_telemetry_summary(
     state: &ServerState,
     params: super::types::TelemetrySummaryParams,
 ) -> Result<CallToolResult, McpError> {
-    let response = super::telemetry::summarize(state.shared.telemetry.path(), params).await?;
+    let response = super::telemetry::summarize(state.telemetry.path(), params).await?;
     json_result(&response)
 }
 

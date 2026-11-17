@@ -4,9 +4,9 @@
 //! `basemind-retrieval`, `basemind-engine` or the root `basemind`). Dependencies may only point
 //! down that list: a module may name a module of its own layer or a lower one, never a higher one.
 //! A layer may also not name the external crates ADR-0023 forbids it (core: tokio, rmcp, clap,
-//! jsonschema, xberg, lancedb; retrieval and engine: rmcp, clap). Test-only code may use them,
-//! since they stay available as dev-dependencies; it may not reach a higher layer, because that
-//! module will not exist in the lower crate's test build.
+//! jsonschema, xberg, lancedb; retrieval: rmcp, clap; engine: rmcp, clap and, by ADR-0039, tokio).
+//! Test-only code may use them, since they stay available as dev-dependencies; it may not reach a
+//! higher layer, because that module will not exist in the lower crate's test build.
 //!
 //! The module tree is walked from `src/lib.rs` following `mod` declarations (including
 //! `#[path]`), so a `*_tests.rs` file belongs to the module that declares it. Every `#[cfg]` arm is
@@ -43,7 +43,8 @@ use Layer::{Core, Engine, Retrieval, Root};
 
 /// Module path prefix -> future crate. The longest matching prefix wins, so a module listed here
 /// carries its submodules (and the `*_tests.rs` files it declares) unless a deeper entry overrides.
-/// `retrieval_wiring` is the first engine module: it binds the scan to the retrieval stack.
+/// `retrieval_wiring` binds the scan to the retrieval stack; `engine` holds the synchronous
+/// `Workspace` (ADR-0039).
 const LAYERS: &[(&str, Layer)] = &[
     ("alloc_tag", Core),
     ("backpressure", Core),
@@ -57,6 +58,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("daemon_lock", Core),
     ("disk_space", Core),
     ("embeddings", Retrieval),
+    ("engine", Engine),
     ("eval", Root),
     ("extract", Core),
     ("extract::doc", Retrieval),
@@ -133,13 +135,26 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
         &["tokio", "tokio_util", "rmcp", "clap", "jsonschema", "xberg", "lancedb"],
     ),
     (Retrieval, &["rmcp", "clap"]),
-    (Engine, &["rmcp", "clap"]),
+    (Engine, &["rmcp", "clap", "tokio", "tokio_util"]),
 ];
 
 /// Edges not yet cut, as `"<file> -> <target>"`, with ` [test]` when the reference sits in test
 /// code. `<target>` is the module named (or `extern <crate>`). Remove an entry when its edge is cut.
+/// The `src/engine` edges are the interim ones of ADR-0039, each removed by the engine-unification
+/// step named beside it.
 const KNOWN_VIOLATIONS: &[&str] = &[
     "src/config/validate.rs -> extern jsonschema",
+    // S5 (one Workspace per pooled workspace) deletes the in-RAM call / impl projections.
+    "src/engine/map_cache.rs -> mcp::helpers_calls",
+    "src/engine/map_cache.rs -> mcp::helpers_impls",
+    // S7b (memory ops) replaces the embedder's async OnceCell.
+    "src/engine/workspace.rs -> extern tokio",
+    // S6a (find_files) moves TrackedCache into the engine.
+    "src/engine/workspace.rs -> mcp::helpers_files",
+    // S7b (memory ops) moves the memory owner, LanceCell and the vector backfill into the engine.
+    "src/engine/workspace.rs -> mcp::identity",
+    "src/engine/workspace.rs -> mcp::lance_cell",
+    "src/engine/workspace.rs -> mcp::memory_vectors",
     "src/scanner_filter.rs -> retrieval_wiring",
     "src/store.rs -> lance",
 ];

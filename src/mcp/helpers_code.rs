@@ -299,17 +299,17 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
 async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
     let route = IndexRoute::resolve(state).await;
-    let store = state.shared.store.read().await;
+    let store = state.store_read().await;
     let cache = state.shared.cache.load_full();
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let refs = if let Some(host) = &state.shared.host {
+    let refs = if let Some(host) = &state.host {
         // ~keep Daemon-hosted: resolve in-process through the pool's read-write index (fixes the
         // ~keep Seam-B degradation) instead of dialing the daemon over its own socket.
         RefsSource::Host {
             host: std::sync::Arc::clone(host),
             root: state.shared.root.clone(),
         }
-    } else if state.shared.daemon_writer {
+    } else if state.daemon_writer {
         let client = super::helpers_daemon::daemon_client(state).await?;
         RefsSource::Daemon {
             client,
@@ -352,7 +352,7 @@ pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> R
     // the map here would make a one-shot CLI call decode the whole corpus to outline one file.
     let cache = state.shared.cache.load_full();
     let (file, entry, l1) = {
-        let store = state.shared.store.read().await;
+        let store = state.store_read().await;
         let (entry, l1) = super::freshness::indexed_outline(&store, &cache, &p.path)
             .ok_or_else(|| not_indexed_in(&store, &state.shared.root, "code_outline", &p.path))?;
         (

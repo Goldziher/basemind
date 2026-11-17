@@ -831,6 +831,7 @@ dependencies = [
  "oxc_semantic",
  "oxc_span",
  "oxc_syntax",
+ "parking_lot 0.12.5",
  "proc-macro2",
  "proptest",
  "rayon",

@@ -56,18 +56,20 @@ fn state(root: &Path, cache: &Path) -> ServerState {
 fn state_over(root: &Path, cache: &Path) -> ServerState {
     let store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("store");
     let repo = crate::git::Repo::discover(root).expect("repo");
-    let shared = super::super::SharedReadStack::new(
+    let telemetry_dir = store.basemind_dir.clone();
+    let shared = super::super::Workspace::new(
         store,
         root.to_path_buf(),
         Arc::new(crate::config::Config::with_defaults()),
         Some(Arc::new(repo)),
         Arc::new(crate::git_cache::GitCache::open(cache, 4, true).expect("git cache")),
         None,
-        super::super::ServerOptions::default(),
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        None,
+        super::super::ServerOptions::default().into(),
     );
-    ServerState::for_connection(Arc::new(shared), "test".into())
+    ServerState::for_connection(
+        super::super::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
+        "test".into(),
+    )
 }
 
 fn params(window: Option<u32>, limit: Option<u32>, cursor: Option<Cursor>) -> FindCommitsByPathParams {
