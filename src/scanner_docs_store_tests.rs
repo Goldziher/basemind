@@ -219,3 +219,18 @@ fn a_new_version_without_rows_drops_the_old_versions_rows() {
         "no row of the old version is served"
     );
 }
+
+/// Review M8: a document under an `[scan] extra_roots` root is keyed by its absolute path. It used
+/// to be written under its own scope, which the search never asked for; rows now carry no scope and
+/// the view's document map, external keys included, is what the search allows.
+#[test]
+fn an_external_root_document_is_written_and_allowed_like_any_other() {
+    let (_tmp, mut store, config, filters) = setup();
+    let key = track(&mut store, &blob("external spec", true), &["/data/specs/retry.md"]);
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
+
+    let live = crate::lance::docs_rank::LiveDocs::of_store(&store, None);
+    let doc_key = crate::lance::docs::doc_key(&key, "digest");
+    assert_eq!(live.by_key.get(&doc_key), Some(&vec!["/data/specs/retry.md".to_string()]));
+    assert_eq!(doc_store(&store, &config).keys().unwrap().len(), 1, "its rows are written");
+}
