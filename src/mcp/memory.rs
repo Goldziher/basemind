@@ -513,12 +513,11 @@ pub(super) async fn memory_list_page(
             MemoryOutcome::Listed {
                 entries,
                 total,
-                truncated,
                 next_cursor,
+                ..
             } => Ok(super::memory_ops::ListResult {
                 entries,
                 total,
-                truncated,
                 next_cursor,
             }),
             other => Err(McpError::internal_error(

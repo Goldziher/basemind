@@ -454,8 +454,6 @@ pub(crate) struct ListResult {
     pub entries: Vec<WireMemoryEntry>,
     /// Total matching records seen this scan.
     pub total: u32,
-    /// Whether `total` exceeded `limit`.
-    pub truncated: bool,
     /// Raw Fjall resume-key bytes for the next page, when more remain.
     pub next_cursor: Option<Vec<u8>>,
 }
@@ -535,7 +533,6 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
     Ok(ListResult {
         entries,
         total: total as u32,
-        truncated: total > limit,
         next_cursor,
     })
 }
@@ -632,7 +629,7 @@ pub(crate) fn run_memory_op(
             Ok(MemoryOutcome::Listed {
                 entries: result.entries,
                 total: result.total,
-                truncated: result.truncated,
+                truncated: result.total as usize > *limit as usize,
                 next_cursor: result.next_cursor,
             })
         }
