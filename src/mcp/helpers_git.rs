@@ -405,9 +405,11 @@ pub(super) fn walk_cursor(
 ///
 /// The index answers with an empty list both when no commit matches and when the lookup failed (a
 /// forward to the daemon that did not come back), so an empty answer is checked against the
-/// repository itself. A cursor `issued` on the other list is refused: the index appends the commits
-/// a sync finds after the ones it holds, where the live walk interleaves them by commit time, so an
-/// offset into one is not an offset into the other.
+/// repository itself. A cursor `issued` on the index is refused once the index stops answering: the
+/// index appends the commits a sync finds after the ones it holds, where the live walk interleaves
+/// them by commit time, so an offset into one is not an offset into the other. A cursor issued on
+/// the live walk keeps paging the live walk, which still lists the same HEAD: an index that catches
+/// up between two pages does not cut the walk off.
 pub(super) fn history_page(
     tool: &str,
     head: &str,
@@ -415,7 +417,8 @@ pub(super) fn history_page(
     indexed: Option<Vec<CommitInfo>>,
     live: impl FnOnce() -> Result<Vec<CommitInfo>, McpError>,
 ) -> Result<(Vec<CommitInfo>, u32), McpError> {
-    let indexed = indexed.filter(|commits| !commits.is_empty());
+    let live_cursor = issued.is_some_and(|issued| issued & LIVE_WALK != 0);
+    let indexed = indexed.filter(|commits| !live_cursor && !commits.is_empty());
     let snapshot = (head_snapshot_id(head) & !LIVE_WALK) | u32::from(indexed.is_none());
     if issued.is_some_and(|issued| issued != snapshot) {
         return Err(super::cursor_bind::walk_switched(tool));
@@ -784,6 +787,20 @@ mod tests {
         assert_eq!(no_index[0].author, "alice");
         let (truly_empty, _) = history_page("git_log", head, None, Some(Vec::new()), || Ok(Vec::new())).expect("live");
         assert!(truly_empty.is_empty());
+    }
+
+    #[test]
+    fn a_live_walk_cursor_keeps_the_live_walk_once_the_index_answers() {
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        let live = (head_snapshot_id(head) & !LIVE_WALK) | LIVE_WALK;
+        let walked = || Ok(vec![commit(1, "alice")]);
+        let (page, snapshot) =
+            history_page("git_log", head, Some(live), Some(vec![commit(7, "bob")]), walked).expect("page");
+        assert_eq!(page[0].author, "alice", "the walk the cursor was cut from");
+        assert_eq!(snapshot, live);
+        let indexed = live & !LIVE_WALK;
+        let refused = history_page("git_log", head, Some(indexed), None, walked).expect_err("index gone");
+        assert!(refused.message.contains("git-history index"), "{}", refused.message);
     }
 
     #[test]

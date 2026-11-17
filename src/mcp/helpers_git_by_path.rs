@@ -88,7 +88,11 @@ pub(super) fn by_path(
 
     // One commit past the window is asked for, only to learn whether history continues beyond it.
     let fetch = window + 1;
+    // ~keep A cursor cut from the live walk keeps paging it, so an index that catches up between two
+    // ~keep pages does not cut the walk off; one cut from the index needs the index.
+    let live_cursor = cursor_snapshot.is_some_and(|issued| issued & LIVE_WALK != 0);
     let indexed = git_history_if_fresh(state, &head)
+        .filter(|_| !live_cursor)
         .map(|index| index.recent_commits(start, fetch, true))
         .filter(|commits| !commits.is_empty());
     let snapshot = snapshot_of(indexed.is_none());
