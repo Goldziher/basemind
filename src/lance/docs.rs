@@ -382,9 +382,10 @@ impl DocStore {
     /// store's half of the dead-row sweep: the caller says what is live, the store lists nothing
     /// else (ADR-0029 rule 11).
     pub fn delete_dead(&self, live: &AHashSet<String>) -> Result<usize> {
-        let dead: Vec<String> = self.keys()?.into_iter().filter(|key| !live.contains(key)).collect();
+        let present: AHashSet<String> = self.keys()?.into_iter().collect();
+        let dead: Vec<String> = present.iter().filter(|key| !live.contains(*key)).cloned().collect();
         // Chunk rows whose document row was never written (a cut-short write) are dead as well.
-        let orphans = self.orphan_chunk_keys(live)?;
+        let orphans = self.orphan_chunk_keys(&present, live)?;
         let mut all = dead.clone();
         all.extend(orphans);
         all.sort_unstable();
@@ -393,8 +394,8 @@ impl DocStore {
         Ok(dead.len())
     }
 
-    fn orphan_chunk_keys(&self, live: &AHashSet<String>) -> Result<Vec<String>> {
-        let present: AHashSet<String> = self.keys()?.into_iter().collect();
+    /// Keys of chunk rows with no document row (`present` lists those) and no live key.
+    fn orphan_chunk_keys(&self, present: &AHashSet<String>, live: &AHashSet<String>) -> Result<Vec<String>> {
         self.block_on(async {
             let table = self.table(DOC_CHUNKS_TABLE).await?;
             let mut stream = table

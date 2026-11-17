@@ -23,6 +23,10 @@ pub(crate) fn maintain_lance_if_open(store: &Store, filters: &Filters) {
 /// also re-read every blob a long outage left owing; a full pass takes them all.
 pub(crate) const REQUEUE_PER_INCREMENTAL: usize = 64;
 
+/// The re-queue budget of a full pass: every owed path. A document flush given it also sweeps
+/// every dead row of the group's store; any other budget checks only the keys the pass dropped.
+pub(crate) const REQUEUE_ALL: usize = usize::MAX;
+
 /// Write the vector rows this scan owes and up to `requeue` of the ones an earlier scan left
 /// owing, then rewrite the owed set beside the file map (see [`crate::store_pending`]).
 ///

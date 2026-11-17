@@ -169,13 +169,13 @@ fn rows_without_vectors_are_replaced_once_the_document_is_embedded() {
 #[test]
 fn rows_no_document_names_are_deleted_and_removal_never_creates_a_store() {
     let (_tmp, mut store, config, filters) = setup();
-    remove_dead_document_rows(&store, &config);
+    remove_dead_document_rows(&mut store, &config);
     assert!(open_doc_store(&store, &config, false).unwrap().is_none());
     track(&mut store, &blob("alpha", true), &["a.md"]);
     track(&mut store, &blob("beta", true), &["b.md"]);
     sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
     store.remove_doc("b.md");
-    remove_dead_document_rows(&store, &config);
+    remove_dead_document_rows(&mut store, &config);
     assert_eq!(doc_store(&store, &config).keys().unwrap().len(), 1);
 }
 
@@ -211,7 +211,7 @@ fn a_new_version_without_rows_drops_the_old_versions_rows() {
     empty.chunks.clear();
     track(&mut store, &empty, &["guide.md"]);
     sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
-    remove_dead_document_rows(&store, &config);
+    remove_dead_document_rows(&mut store, &config);
 
     assert_eq!(
         doc_store(&store, &config).capabilities().unwrap().rows,
@@ -335,13 +335,13 @@ fn worktrees_of_a_group_share_one_document_store_and_sweep_only_what_no_view_nam
 
     // Removed in one worktree, the document keeps its rows for the other.
     a.remove_doc("guide.md");
-    remove_dead_document_rows(&a, &config);
+    remove_dead_document_rows(&mut a, &config);
     a.flush().unwrap();
     assert!(store.keys().unwrap().contains(&key), "b still names it");
 
     // Removed in both, its rows are swept.
     b.remove_doc("guide.md");
-    remove_dead_document_rows(&b, &config);
+    remove_dead_document_rows(&mut b, &config);
     let keys = store.keys().unwrap();
     assert!(!keys.contains(&key), "no view names it");
     assert_eq!(keys.len(), 1, "b's other document stays");
@@ -358,7 +358,7 @@ fn an_unreadable_sibling_document_map_deletes_nothing() {
     std::fs::write(b.view_dir.join(crate::store::INDEX_FILE), b"\xc1 not msgpack").unwrap();
 
     a.remove_doc("a.md");
-    remove_dead_document_rows(&a, &config);
+    remove_dead_document_rows(&mut a, &config);
 
     assert_eq!(
         doc_store(&a, &config).keys().unwrap().len(),
@@ -432,4 +432,35 @@ fn stripping_vectors_leaves_the_rows_a_sibling_names() {
         .unwrap();
     assert_eq!(present.get(&shared_key), Some(&true), "b names it: its vectors stay");
     assert_eq!(present.get(&own_key), Some(&false), "only a names it: stripped");
+}
+
+/// An incremental pass deletes only the rows of the keys it dropped; a dead row it did not drop
+/// (left by a pass that died before its sweep) waits for the next full pass, which sweeps it.
+#[test]
+fn an_incremental_pass_sweeps_only_the_keys_it_dropped() {
+    let (_tmp, mut store, config, filters) = setup();
+    track(&mut store, &blob("sweep-kept", true), &["kept.md"]);
+    let orphan = doc_key(
+        &track(&mut store, &blob("sweep-orphan", true), &["orphan.md"]),
+        "digest",
+    );
+    let dropped = doc_key(
+        &track(&mut store, &blob("sweep-dropped", true), &["dropped.md"]),
+        "digest",
+    );
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
+    // A pass that died after dropping the entry, before its sweep: the store keeps the rows.
+    store.remove_doc("orphan.md");
+    store.dropped_doc_keys.clear();
+
+    store.remove_doc("dropped.md");
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), 64);
+    let keys = doc_store(&store, &config).keys().unwrap();
+    assert!(!keys.contains(&dropped), "the key this pass dropped is swept");
+    assert!(keys.contains(&orphan), "an incremental pass checks no other key");
+
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
+    let keys = doc_store(&store, &config).keys().unwrap();
+    assert!(!keys.contains(&orphan), "a full pass sweeps every dead key");
+    assert_eq!(keys.len(), 1);
 }
