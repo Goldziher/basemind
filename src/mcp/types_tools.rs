@@ -60,6 +60,7 @@ tool_args! {
 }
 
 pub use crate::engine::types::code::CodeOutlineParams;
+pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
 
 /// Arguments of `code_symbols`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -244,90 +245,6 @@ pub struct DocsSearchParams {
     /// Token budget for the list (default 6000).
     #[serde(default)]
     pub max_tokens: Option<u32>,
-}
-
-/// Arguments of `git_log`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct GitLogParams {
-    /// Only commits touching this file; a trailing `/` means a directory (200 commits inspected per
-    /// page; follow `next_cursor`). Not with `query` or `author`.
-    #[serde(default)]
-    pub path: Option<RelPath>,
-    /// Words the commit message must all contain. Combines with `author` only.
-    #[serde(default)]
-    pub query: Option<String>,
-    /// Words the author name or email must all contain. Combines with `query` only.
-    #[serde(default)]
-    pub author: Option<String>,
-    /// History of this symbol's body, one window of commits per page; needs `path`, combines
-    /// with nothing else but `line`.
-    #[serde(default)]
-    pub symbol: Option<String>,
-    /// With `symbol`: 1-based line inside the definition meant, when several share the name.
-    #[serde(default)]
-    pub line: Option<u32>,
-    /// Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.
-    #[serde(default)]
-    pub rev: Option<String>,
-    /// Max commits (default 20).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
-
-/// Arguments of `git_blame`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct GitBlameParams {
-    /// Repo-relative file path.
-    pub path: RelPath,
-    /// First line of a span, 1-based, as numbered at `rev`. With `symbol`: a line inside the
-    /// definition meant.
-    #[serde(default)]
-    pub line: Option<u32>,
-    /// Last line of a span, inclusive (default: `line`). Needs `line`; not with `symbol`.
-    #[serde(default)]
-    pub end_line: Option<u32>,
-    /// Blame this symbol's lines, as they are at `rev`, instead of a span.
-    #[serde(default)]
-    pub symbol: Option<String>,
-    /// Revision to blame at (default HEAD).
-    #[serde(default)]
-    pub rev: Option<String>,
-    /// Max hunks (default 100).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
-
-/// Arguments of `git_diff`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct GitDiffParams {
-    /// File to diff, or a directory ending in `/` to narrow the status; omit every argument for
-    /// the whole working-tree status.
-    #[serde(default)]
-    pub path: Option<RelPath>,
-    /// Old revision (default HEAD). Needs `path`.
-    #[serde(default)]
-    pub from: Option<String>,
-    /// New revision (default: the working tree). Needs `path`; not with `structural`.
-    #[serde(default)]
-    pub to: Option<String>,
-    /// Symbol-level diff of `from` against the indexed working tree, instead of text hunks.
-    #[serde(default)]
-    pub structural: Option<bool>,
 }
 
 /// Arguments of `memory_save`.

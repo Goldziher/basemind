@@ -6,11 +6,11 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::freshness::{self, Unloadable};
 use super::helpers::{json_result, kind_to_str, parse_kind};
-use super::helpers_pick::pick_symbol;
 use super::index_route::blocking;
 use super::tool_contract::{indexed_file, not_indexed_in};
 use super::types_code::{ExpandParams, ExpandResponse, ReadSpanResponse};
 use super::types_tools::CodeReadParams;
+use crate::engine::pick::pick_symbol;
 use crate::query;
 
 /// Maximum body size returned in a single read (128 KiB).

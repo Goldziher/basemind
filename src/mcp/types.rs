@@ -173,9 +173,7 @@ pub struct GotoDefinitionParams {
     pub name: String,
 }
 
-pub(super) fn default_true() -> bool {
-    true
-}
+pub(super) use crate::engine::types::default_true;
 
 /// One `code_symbols` row: where a definition is and what it is. Rows are ranked: the exact name,
 /// then names it prefixes, then names holding it, then (with `fuzzy`) fuzzy matches; which of those
@@ -664,8 +662,7 @@ impl Serialize for GrepHit {
     }
 }
 
-/// `truncated_reason` of a scan that stopped at its cap before the end of the matches.
-pub(super) const SCAN_CAP: &str = "scan_cap";
+pub(super) use crate::engine::types::SCAN_CAP;
 
 /// Why a `workspace_grep` result was cut short. Present only when `truncated` is true — a grep that
 /// returned every match carries no reason, so an agent can tell a complete zero from a bounded one.
@@ -803,13 +800,4 @@ pub(super) struct RecentCallView {
     pub est_tokens_saved: u64,
 }
 
-pub use super::types_git::{
-    BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DiffFileParams, DiffOutlineParams,
-    FindCommitsByPathParams, HotFilesParams, RecentChangesParams, SearchGitHistoryParams, SymbolHistoryParams,
-};
-pub(super) use super::types_git::{
-    BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView, CommitsTouchingResponse,
-    DiffFileResponse, DiffOutlineResponse, DiffSymbolView, FindCommitsByPathResponse, GitCommitHit, GitShowResponse,
-    HotFileEntry, HotFilesResponse, HunkView, RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry,
-    SymbolHistoryResponse, WorkingTreeStatusView,
-};
+pub use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{LifecycleNotice, is_zero};
 use crate::engine::cursor::Cursor;
+use crate::engine::error::EngineError;
 use crate::extract::SymbolKind;
 use crate::path::RelPath;
 
@@ -100,4 +101,34 @@ pub(crate) fn kind_to_str(k: SymbolKind) -> &'static str {
         SymbolKind::Heading => "heading",
         SymbolKind::Unknown => "unknown",
     }
+}
+
+/// The [`SymbolKind`] a `kind` argument names; the inverse of [`kind_to_str`], plus `variant`.
+pub(crate) fn parse_kind(s: &str) -> Result<SymbolKind, EngineError> {
+    Ok(match s.to_ascii_lowercase().as_str() {
+        "function" => SymbolKind::Function,
+        "method" => SymbolKind::Method,
+        "struct" => SymbolKind::Struct,
+        "enum" => SymbolKind::Enum,
+        "class" => SymbolKind::Class,
+        "interface" => SymbolKind::Interface,
+        "trait" => SymbolKind::Trait,
+        "type" => SymbolKind::Type,
+        "const" => SymbolKind::Const,
+        "module" => SymbolKind::Module,
+        "macro" => SymbolKind::Macro,
+        "impl" => SymbolKind::Impl,
+        "namespace" => SymbolKind::Namespace,
+        "getter" => SymbolKind::Getter,
+        "setter" => SymbolKind::Setter,
+        "field" => SymbolKind::Field,
+        "variable" => SymbolKind::Variable,
+        "enum_variant" | "variant" => SymbolKind::EnumVariant,
+        "constructor" => SymbolKind::Constructor,
+        "decorator" => SymbolKind::Decorator,
+        "heading" => SymbolKind::Heading,
+        other => {
+            return Err(EngineError::invalid_argument(format!("unknown symbol kind: {other}")));
+        }
+    })
 }

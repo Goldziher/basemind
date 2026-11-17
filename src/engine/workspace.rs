@@ -155,6 +155,8 @@ pub(crate) struct Workspace {
     /// `index_status` reports it: a paged git walk that spans the end of a sync is refused,
     /// because the index orders commits differently from the live walk.
     pub(crate) history_syncing: Arc<AtomicBool>,
+    /// The host's git-history sync ([`OpenOptions::history_sync`]).
+    pub(crate) history_sync: Option<fn(&Workspace)>,
     /// The git index's file list as `find_files` last read it ([`crate::mcp::helpers_files`]).
     pub(crate) tracked: std::sync::Mutex<crate::mcp::helpers_files::TrackedCache>,
 }
@@ -179,6 +181,9 @@ pub(crate) struct OpenOptions {
     pub(crate) forwards_writes: bool,
     /// Build the in-RAM map on the first call that reads it instead of at construction.
     pub(crate) lazy_cache: bool,
+    /// How the host brings the git-history index up to HEAD when a history read finds it behind;
+    /// `None` reads the live walk until something else syncs it.
+    pub(crate) history_sync: Option<fn(&Workspace)>,
 }
 
 /// Boot decisions derived purely from the opened store + [`OpenOptions`]: whether an initial scan
@@ -280,6 +285,7 @@ impl Workspace {
             read_only: options.read_only,
             history_catch_up: options.background,
             history_syncing: Arc::new(AtomicBool::new(false)),
+            history_sync: options.history_sync,
             tracked: std::sync::Mutex::default(),
         }
     }
@@ -326,6 +332,49 @@ impl Workspace {
     pub(crate) fn wait_for_warm(&self) {
         self.warm_gate
             .wait_while(CACHE_WARM_WAIT_CAP, || self.cache_warming.load(Ordering::Relaxed));
+    }
+
+    /// Wait until the in-RAM map can answer a query that reads the whole corpus: under
+    /// [`lazy_cache`](Self::lazy_cache) build it now (once); otherwise wait out a deferred preload
+    /// ([`wait_for_warm`](Self::wait_for_warm)). Never call it holding a store guard.
+    pub(crate) fn wait_map_ready(&self) {
+        if self.lazy_cache {
+            if self.lazy_cache_built.get().is_none() {
+                self.build_map_on_demand();
+            }
+            return;
+        }
+        if self.cache_warming.load(Ordering::Relaxed) {
+            self.wait_for_warm();
+        }
+    }
+
+    /// Build the whole-corpus in-RAM map and publish it, exactly once however many callers race.
+    /// Returns the map when this call built it, so the caller can warm its term index.
+    pub(crate) fn build_map_on_demand(&self) -> Option<Arc<MapCache>> {
+        let mut built = None;
+        self.lazy_cache_built.get_or_init(|| {
+            let started = std::time::Instant::now();
+            let store = self.store_read();
+            let budget = crate::engine::l1_cache::budget_bytes_from(&self.config.resources);
+            let cache = Arc::new(MapCache::build(&store, budget));
+            let files = cache.len();
+            self.cache.store(Arc::clone(&cache));
+            self.cache_generation.fetch_add(1, Ordering::Relaxed);
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            self.cache_warm_ms.store(elapsed_ms, Ordering::Relaxed);
+            tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
+            built = Some(cache);
+        });
+        built
+    }
+
+    /// Ask the host to bring the git-history index up to HEAD, when it keeps one caught up
+    /// ([`OpenOptions::history_sync`]).
+    pub(crate) fn request_history_sync(&self) {
+        if let Some(sync) = self.history_sync {
+            sync(self);
+        }
     }
 
     /// Record that the index may have changed under the published map: both generations move.

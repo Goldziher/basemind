@@ -8,8 +8,7 @@
 
 use std::sync::Arc;
 
-use super::{Workspace, l1_cache, types};
-use crate::engine::MapCache;
+use super::{Workspace, types};
 use crate::store::Store;
 
 /// An owned read guard on a workspace's store, from [`ServerState::store_read`].
@@ -178,21 +177,9 @@ impl ServerState {
     /// on the multi-thread runtime the CLI builds and runs it in place on a `current_thread` test
     /// runtime, which has no other task to starve.
     fn build_cache_on_demand(&self) {
-        use std::sync::atomic::Ordering::Relaxed;
-        self.shared.lazy_cache_built.get_or_init(|| {
-            let started = std::time::Instant::now();
-            let store = self.shared.store_read();
-            let budget = l1_cache::budget_bytes_from(&self.shared.config.resources);
-            let cache = MapCache::build(&store, budget);
-            let files = cache.len();
-            let cache = Arc::new(cache);
-            self.shared.cache.store(Arc::clone(&cache));
+        if let Some(cache) = self.shared.build_map_on_demand() {
             super::background::warm_terms(&cache);
-            self.shared.cache_generation.fetch_add(1, Relaxed);
-            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            self.shared.cache_warm_ms.store(elapsed_ms, Relaxed);
-            tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
-        });
+        }
     }
 
     /// Read the workspace's store from async code. A free lock is taken at once; a held one (a scan

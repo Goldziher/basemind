@@ -19,16 +19,7 @@ const LANGUAGES_LISTED_MAX: usize = 30;
 /// they occur in real paths (`app/[id]/page.tsx`).
 const GLOB_WILDCARDS: [char; 2] = ['*', '?'];
 
-/// Refuse `limit: 0`: it returns an empty page whose cursor points back at the same position.
-pub(super) fn reject_zero_limit(tool: &str, limit: Option<u32>) -> Result<(), McpError> {
-    if limit == Some(0) {
-        return Err(McpError::invalid_params(
-            format!("`{tool}`: `limit` must be at least 1; omit it for the default page size."),
-            None,
-        ));
-    }
-    Ok(())
-}
+pub(super) use crate::engine::cursor::reject_zero_limit;
 
 /// How a tool matches its path filter against a repo-relative path.
 pub(super) enum PathFilter<'a> {

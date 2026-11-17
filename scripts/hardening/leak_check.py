@@ -56,7 +56,7 @@ UNIT = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
 # constructor was reached from one of these owners, matched on mangled path fragments so a rebuild
 # (new crate hashes) still matches.
 POOLED_TREE_SITTER = {
-    "ts_parser_new": ("8basemind7extract", "8basemind5intel", "8basemind4lang", "8basemind3mcp19helpers_fingerprint"),
+    "ts_parser_new": ("8basemind7extract", "8basemind5intel", "8basemind4lang", "8basemind6engine3git11fingerprint"),
     "ts_query_new": ("8basemind4lang", "8basemind7extract6locals", "8basemind5intel10stackgraph"),
 }
 # Upper bound on compiled queries one language can cache: the combined L1 query, one per

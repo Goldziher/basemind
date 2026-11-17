@@ -86,7 +86,7 @@ pub(super) fn ranked_offset(tool: &str, cursor: Option<&Cursor>, generation: u32
     };
     let (offset, snapshot) = cursor.decode_in_memory()?;
     if snapshot != generation {
-        return Err(super::cursor_bind::stale_cursor(tool));
+        return Err(super::cursor_bind::stale_cursor(tool).into());
     }
     Ok(u32::try_from(offset).unwrap_or(RANKED_DEPTH))
 }

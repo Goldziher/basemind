@@ -5,23 +5,23 @@
 //! commit-log family, purely to keep both files under the 1000-line cap. Nothing here is reachable
 //! except through those three bodies.
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
-
-use super::ServerState;
-use super::helpers::{
-    HashMode, LOG_WALK_MAX, blame_resume_after, blame_symbol_too_large_response, blame_too_large_response, elapsed_us,
-    git_history_if_fresh, head_sha, head_snapshot_id, json_result, kind_to_str, outline_entry_for_blob,
-    paginate_blame_hunks, parse_hash_mode, parse_kind, require_git_repo, symbol_fingerprint,
+use super::by_path::MATCHED_EARLIER;
+use super::common::{
+    LOG_WALK_MAX, blame_resume_after, blame_symbol_too_large_response, blame_too_large_response, git_history_if_fresh,
+    head_sha, head_snapshot_id, paginate_blame_hunks, require_git_repo,
 };
-use super::helpers_git::{history_page, reject_external_path, walk_cursor};
-use super::helpers_git_by_path::MATCHED_EARLIER;
-use super::helpers_pick::pick_symbol;
-use super::types::{
+use super::fingerprint::{HashMode, outline_entry_for_blob, parse_hash_mode, symbol_fingerprint};
+use super::log::{history_page, reject_external_path, walk_cursor};
+use crate::engine::error::EngineError;
+use crate::engine::pick::pick_symbol;
+use crate::engine::timing::elapsed_us;
+use crate::engine::types::code::{kind_to_str, parse_kind};
+use crate::engine::types::git::{
     BlameFileParams, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams, DiffFileResponse,
     DiffOutlineParams, DiffOutlineResponse, DiffSymbolView, HunkView, SymbolHistoryEntry, SymbolHistoryParams,
     SymbolHistoryResponse,
 };
+use crate::engine::workspace::Workspace;
 use crate::git::CommitInfo;
 
 /// What the old side of a text diff is compared against.
@@ -34,17 +34,17 @@ const DIFF_TEXT_MAX: usize = 128 * 1024;
 
 /// The `diff` operation: content hunks for one path between `rev_old` and either another revision
 /// or, when `rev_new` is `None`, the file as it is in the working tree.
-pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<CallToolResult, McpError> {
-    let repo = require_git_repo(state)?;
+pub(super) fn run_diff(ws: &Workspace, params: DiffFileParams) -> Result<DiffFileResponse, EngineError> {
+    let repo = require_git_repo(ws)?;
     reject_external_path(&params.path)?;
     // Between two revisions only blobs are read, so the lexical check (`..`, absolute) is the whole
     // of it: a tracked symlink is a blob holding its target path, wherever that points. The
     // working-tree side reads the disk, and `diff_file_worktree` resolves the path before it does.
     crate::path::lexical_file(repo.workdir(), &params.path)
-        .map_err(|_| super::tool_contract::outside_repository("git_diff", &params.path))?;
+        .map_err(|_| crate::engine::files::outside_repository("git_diff", &params.path))?;
     let resolve = |rev: &str| {
         repo.resolve_rev(rev)
-            .map_err(|e| McpError::invalid_params(format!("`git_diff`: cannot resolve revision `{rev}`: {e}"), None))
+            .map_err(|e| EngineError::invalid_argument(format!("`git_diff`: cannot resolve revision `{rev}`: {e}")))
     };
     let old_sha = resolve(&params.rev_old)?;
     let (result, to) = match params.rev_new.as_deref() {
@@ -58,22 +58,19 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
         ),
     };
     let result = result.map_err(|e| match e {
-        crate::git::GitError::OutsideRepo(path) => super::tool_contract::outside_repository("git_diff", &path),
-        other => McpError::internal_error(format!("`git_diff`: {other}"), None),
+        crate::git::GitError::OutsideRepo(path) => crate::engine::files::outside_repository("git_diff", &path),
+        other => EngineError::internal(format!("`git_diff`: {other}")),
     })?;
     let Some(diff) = result else {
         let to_side = params
             .rev_new
             .as_deref()
             .map_or_else(|| "in the working tree".to_string(), |rev| format!("at `{rev}`"));
-        return Err(McpError::invalid_params(
-            format!(
-                "`git_diff`: `{}` exists neither at `{}` nor {to_side}. `path` is a repo-relative file \
+        return Err(EngineError::invalid_argument(format!(
+            "`git_diff`: `{}` exists neither at `{}` nor {to_side}. `path` is a repo-relative file \
                  path; locate it with `find_files`.",
-                params.path, params.rev_old
-            ),
-            None,
-        ));
+            params.path, params.rev_old
+        )));
     };
     let total_hunks = diff.hunks.len();
     let (hunks, clipped) = capped_hunks(diff.hunks);
@@ -84,7 +81,7 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
     } else {
         None
     };
-    json_result(&DiffFileResponse {
+    Ok(DiffFileResponse {
         path: params.path,
         from: old_sha,
         to,
@@ -151,42 +148,41 @@ fn span_in_file(
     path: &crate::path::RelPath,
     line: u32,
     end_line: u32,
-) -> Result<(u32, u32), McpError> {
+) -> Result<(u32, u32), EngineError> {
     let Some(text) = path.as_str() else {
         return Ok((line, end_line));
     };
     let blob = repo
         .read_blob_at_rev(rev, text)
-        .map_err(|e| McpError::internal_error(format!("`git_blame`: read {rev}:{path}: {e}"), None))?
-        .ok_or_else(|| McpError::invalid_params(format!("`git_blame`: no file `{path}` at {rev}"), None))?;
+        .map_err(|e| EngineError::internal(format!("`git_blame`: read {rev}:{path}: {e}")))?
+        .ok_or_else(|| EngineError::invalid_argument(format!("`git_blame`: no file `{path}` at {rev}")))?;
     let newlines = memchr::memchr_iter(b'\n', &blob).count() as u32;
     let total = newlines + u32::from(blob.last().is_some_and(|byte| *byte != b'\n'));
     if line > total.max(1) {
-        return Err(McpError::invalid_params(
-            format!("`git_blame`: `{path}` has {total} lines at {rev}; line {line} is out of range"),
-            None,
-        ));
+        return Err(EngineError::invalid_argument(format!(
+            "`git_blame`: `{path}` has {total} lines at {rev}; line {line} is out of range"
+        )));
     }
     Ok((line, end_line.min(total.max(1))))
 }
 
 /// Grammar for `path`, honouring the workspace's `[languages]` overrides so git-side tools agree
 /// with what the scanner indexed.
-pub(super) fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>) -> Option<crate::lang::LangId> {
-    state.shared.detect_lang(path)
+pub(super) fn detect_lang(ws: &Workspace, path: impl AsRef<std::ffi::OsStr>) -> Option<crate::lang::LangId> {
+    ws.detect_lang(path)
 }
 
 /// The `diff_outline` operation: which symbols the served view has that `rev` does not, and
 /// vice versa — "what did this branch add" without reading source. Synchronous: the caller waits for
 /// the code map first, then runs this off the reactor.
-pub(super) fn run_diff_outline(state: &ServerState, params: DiffOutlineParams) -> Result<CallToolResult, McpError> {
-    let repo = require_git_repo(state)?;
+pub(super) fn run_diff_outline(ws: &Workspace, params: DiffOutlineParams) -> Result<DiffOutlineResponse, EngineError> {
+    let repo = require_git_repo(ws)?;
     let rev_spec = params.rev.as_deref().unwrap_or("HEAD");
     let rev_sha = repo
         .resolve_rev(rev_spec)
-        .map_err(|e| McpError::invalid_params(format!("resolve_rev({rev_spec}): {e}"), None))?;
+        .map_err(|e| EngineError::invalid_argument(format!("resolve_rev({rev_spec}): {e}")))?;
 
-    let cache = state.shared.cache.load_full();
+    let cache = ws.cache.load_full();
     let here = cache.get(&params.path).map(|l1| {
         l1.symbols
             .iter()
@@ -196,14 +192,14 @@ pub(super) fn run_diff_outline(state: &ServerState, params: DiffOutlineParams) -
 
     let rev_blob = repo
         .read_blob_at_rev(&rev_sha, &params.path)
-        .map_err(|e| McpError::internal_error(format!("read blob {rev_sha}:{}: {e}", params.path), None))?;
+        .map_err(|e| EngineError::internal(format!("read blob {rev_sha}:{}: {e}", params.path)))?;
 
     let there: Option<Vec<(String, &'static str)>> = match rev_blob {
         Some(bytes) => {
-            let lang = detect_lang(state, &params.path)
-                .ok_or_else(|| McpError::invalid_params(format!("unsupported language for {}", params.path), None))?;
+            let lang = detect_lang(ws, &params.path)
+                .ok_or_else(|| EngineError::invalid_argument(format!("unsupported language for {}", params.path)))?;
             let l1 = crate::extract::l1::extract_l1(lang, &bytes)
-                .map_err(|e| McpError::internal_error(format!("extract {rev_sha}:{}: {e}", params.path), None))?;
+                .map_err(|e| EngineError::internal(format!("extract {rev_sha}:{}: {e}", params.path)))?;
             Some(l1.symbols.into_iter().map(|s| (s.name, kind_to_str(s.kind))).collect())
         }
         None => None,
@@ -257,14 +253,14 @@ pub(super) fn run_diff_outline(state: &ServerState, params: DiffOutlineParams) -
             Some("path not indexed in the current view; entire file treated as removed".to_string()),
         ),
         (None, None) => {
-            return Err(McpError::invalid_params(
-                format!("path not present in current view or at {rev_spec}: {}", params.path),
-                None,
-            ));
+            return Err(EngineError::invalid_argument(format!(
+                "path not present in current view or at {rev_spec}: {}",
+                params.path
+            )));
         }
     };
 
-    json_result(&DiffOutlineResponse {
+    Ok(DiffOutlineResponse {
         path: params.path,
         rev: rev_sha,
         added,
@@ -276,35 +272,34 @@ pub(super) fn run_diff_outline(state: &ServerState, params: DiffOutlineParams) -
 
 /// The `blame` operation: per-line blame at `rev`, optionally clamped to a 1-based inclusive
 /// line range.
-pub(super) fn run_blame(state: &ServerState, params: BlameFileParams) -> Result<CallToolResult, McpError> {
+pub(super) fn run_blame(ws: &Workspace, params: BlameFileParams) -> Result<BlameResponse, EngineError> {
     let started = std::time::Instant::now();
-    let repo = require_git_repo(state)?;
+    let repo = require_git_repo(ws)?;
     reject_external_path(&params.path)?;
     let suspect_sha = match params.rev.as_deref() {
         Some(r) => repo
             .resolve_rev(r)
-            .map_err(|e| McpError::invalid_params(format!("resolve_rev({r}): {e}"), None))?,
+            .map_err(|e| EngineError::invalid_argument(format!("resolve_rev({r}): {e}")))?,
         None => head_sha(repo)?,
     };
     let range = match (params.line_start, params.line_end) {
         (Some(lo), Some(hi)) => Some(span_in_file(repo, &suspect_sha, &params.path, lo, hi)?),
         (None, None) => None,
         _ => {
-            return Err(McpError::invalid_params(
+            return Err(EngineError::invalid_argument(
                 "`git_blame`: `line` and `end_line` must be provided together",
-                None,
             ));
         }
     };
     let snapshot = head_snapshot_id(&suspect_sha);
     let resume_after = blame_resume_after(params.cursor.as_ref(), snapshot)?;
-    let result = match state.shared.git_cache.blame(repo, &suspect_sha, &params.path, range) {
+    let result = match ws.git_cache.blame(repo, &suspect_sha, &params.path, range) {
         Ok(r) => r,
         Err(e) => {
             if let Some(too_large) = blame_too_large_response(&params.path, &suspect_sha, &e, started) {
-                return json_result(&too_large);
+                return Ok(too_large);
             }
-            return Err(McpError::internal_error(format!("blame: {e}"), None));
+            return Err(EngineError::internal(format!("blame: {e}")));
         }
     };
     let page = paginate_blame_hunks(
@@ -320,7 +315,7 @@ pub(super) fn run_blame(state: &ServerState, params: BlameFileParams) -> Result<
         None if repo.is_shallow() => Some("shallow_clone"),
         None => None,
     };
-    json_result(&BlameResponse {
+    Ok(BlameResponse {
         path: result.path.clone(),
         suspect_sha: result.suspect_sha.clone(),
         hunks: page.hunks,
@@ -336,50 +331,43 @@ pub(super) fn run_blame(state: &ServerState, params: BlameFileParams) -> Result<
 ///
 /// The span is the symbol's in the blamed revision's own blob. The working-tree outline describes
 /// other lines as soon as the file differs from that revision above the symbol.
-pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -> Result<CallToolResult, McpError> {
+pub(super) fn run_blame_symbol(ws: &Workspace, params: BlameSymbolParams) -> Result<BlameSymbolResponse, EngineError> {
     let started = std::time::Instant::now();
-    let repo = require_git_repo(state)?;
+    let repo = require_git_repo(ws)?;
     reject_external_path(&params.path)?;
     let kind = params.kind.as_deref().map(parse_kind).transpose()?;
     let suspect_sha = match params.rev.as_deref() {
         Some(r) => repo
             .resolve_rev(r)
-            .map_err(|e| McpError::invalid_params(format!("resolve_rev({r}): {e}"), None))?,
+            .map_err(|e| EngineError::invalid_argument(format!("resolve_rev({r}): {e}")))?,
         None => head_sha(repo)?,
     };
     let at = params.rev.as_deref().unwrap_or("HEAD");
-    let lang = detect_lang(state, &params.path).ok_or_else(|| {
-        McpError::invalid_params(
-            format!(
-                "`git_blame`: `{}` is not in a language with symbols; blame a line span with `line` and \
+    let lang = detect_lang(ws, &params.path).ok_or_else(|| {
+        EngineError::invalid_argument(format!(
+            "`git_blame`: `{}` is not in a language with symbols; blame a line span with `line` and \
                  `end_line` instead.",
-                params.path
-            ),
-            None,
-        )
+            params.path
+        ))
     })?;
     let (bytes, oid) = repo
         .read_blob_at_rev_with_oid(&suspect_sha, &params.path)
-        .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?
+        .map_err(|e| EngineError::internal(format!("blob: {e}")))?
         .ok_or_else(|| {
-            McpError::invalid_params(format!("`git_blame`: `{}` does not exist at {at}.", params.path), None)
+            EngineError::invalid_argument(format!("`git_blame`: `{}` does not exist at {at}.", params.path))
         })?;
     // The scan parses no file over `scan.max_file_bytes`; a revision's blob is held to the same.
-    let max_bytes = state.shared.config.scan.max_file_bytes;
+    let max_bytes = ws.config.scan.max_file_bytes;
     if bytes.len() as u64 > max_bytes {
-        return Err(McpError::invalid_params(
-            format!(
-                "`git_blame`: `{}` is {} bytes at {at}, over `scan.max_file_bytes` ({max_bytes}), and is not \
+        return Err(EngineError::invalid_argument(format!(
+            "`git_blame`: `{}` is {} bytes at {at}, over `scan.max_file_bytes` ({max_bytes}), and is not \
                  parsed for symbols. Blame a line span with `line` and `end_line` instead.",
-                params.path,
-                bytes.len()
-            ),
-            None,
-        ));
+            params.path,
+            bytes.len()
+        )));
     }
-    let outline = outline_entry_for_blob(&state.shared.outline_cache, oid, lang, bytes).ok_or_else(|| {
-        McpError::internal_error(format!("`git_blame`: could not parse `{}` at {at}", params.path), None)
-    })?;
+    let outline = outline_entry_for_blob(&ws.outline_cache, oid, lang, bytes)
+        .ok_or_else(|| EngineError::internal(format!("`git_blame`: could not parse `{}` at {at}", params.path)))?;
     let sym = pick_symbol(
         "git_blame",
         &params.path,
@@ -391,11 +379,10 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
         params.line,
     )?
     .symbol;
-    let (line_start, line_end) = super::helpers_pick::line_span(sym, Some(outline.source.as_slice()));
+    let (line_start, line_end) = crate::engine::pick::line_span(sym, Some(outline.source.as_slice()));
     let snapshot = head_snapshot_id(&suspect_sha);
     let resume_after = blame_resume_after(params.cursor.as_ref(), snapshot)?;
-    let result = match state
-        .shared
+    let result = match ws
         .git_cache
         .blame(repo, &suspect_sha, &params.path, Some((line_start, line_end)))
     {
@@ -404,9 +391,9 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
             if let Some(too_large) =
                 blame_symbol_too_large_response(&params.path, &suspect_sha, sym, line_start, line_end, &e, started)
             {
-                return json_result(&too_large);
+                return Ok(too_large);
             }
-            return Err(McpError::internal_error(format!("blame: {e}"), None));
+            return Err(EngineError::internal(format!("blame: {e}")));
         }
     };
     let page = paginate_blame_hunks(
@@ -422,7 +409,7 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
         None if repo.is_shallow() => Some("shallow_clone"),
         None => None,
     };
-    json_result(&BlameSymbolResponse {
+    Ok(BlameSymbolResponse {
         path: result.path.clone(),
         suspect_sha: result.suspect_sha.clone(),
         name: sym.name.clone(),
@@ -445,12 +432,15 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
 /// commit offset its cursor carries. A window that ends before the history does hands back a
 /// cursor to the commit after it, so every change back to the introduction is reachable however
 /// many commits lie in between; a page can then be short, or empty, and still not be the last.
-pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParams) -> Result<CallToolResult, McpError> {
-    let repo = require_git_repo(state)?;
+pub(super) fn run_symbol_history(
+    ws: &Workspace,
+    params: SymbolHistoryParams,
+) -> Result<SymbolHistoryResponse, EngineError> {
+    let repo = require_git_repo(ws)?;
     let kind = params.kind.as_deref().map(parse_kind).transpose()?;
     let limit = params.limit.unwrap_or(20).min(100) as usize;
-    let lang = detect_lang(state, &params.path)
-        .ok_or_else(|| McpError::invalid_params(format!("unsupported language: {}", params.path), None))?;
+    let lang = detect_lang(ws, &params.path)
+        .ok_or_else(|| EngineError::invalid_argument(format!("unsupported language: {}", params.path)))?;
     let hash_mode = match params.hash_mode.as_deref() {
         Some(s) => parse_hash_mode(s)?,
         None => HashMode::Normalized,
@@ -463,21 +453,21 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     // to read, and only a name no inspected commit defines either is a mistake in the call.
     // The outline and the bytes its spans are laid over follow one index entry; with the store
     // busy, the in-RAM outline is used without spans.
-    let cache = state.shared.cache.load_full();
-    let outline = match state.shared.try_store_read() {
-        Ok(store) => super::freshness::indexed_outline(&store, &cache, &params.path).map(|(entry, l1)| {
-            let file = super::tool_contract::IndexedFiles::of(&state.shared)
+    let cache = ws.cache.load_full();
+    let outline = match ws.try_store_read() {
+        Ok(store) => crate::engine::freshness::indexed_outline(&store, &cache, &params.path).map(|(entry, l1)| {
+            let file = crate::engine::files::IndexedFiles::of(ws)
                 .file(&store, &params.path)
                 .ok();
             (l1, file.map(|file| (file, entry)))
         }),
         Err(_) => cache.get(&params.path).map(|l1| (l1, None)),
     };
-    let mut absent_now: Option<McpError> = None;
+    let mut absent_now: Option<EngineError> = None;
     let occurrence = match outline {
         Some((l1, indexed)) => {
             let source = indexed.and_then(|(file, entry)| {
-                super::freshness::load(&file, (&entry).into(), state.shared.config.scan.max_file_bytes)
+                crate::engine::freshness::load(&file, (&entry).into(), ws.config.scan.max_file_bytes)
                     .ok()
                     .filter(|live| live.fresh)
                     .map(|live| live.bytes)
@@ -509,7 +499,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
 
     let head = head_sha(repo)?;
     let invalidated = || {
-        json_result(&SymbolHistoryResponse {
+        Ok(SymbolHistoryResponse {
             kind: kind.map(|k| kind_to_str(k).to_string()),
             commits_inspected: 0,
             history: Vec::new(),
@@ -541,18 +531,18 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         "git_log",
         &head,
         issued,
-        git_history_if_fresh(state, &head).map(|index| index.commits_touching(&params.path, start, fetch)),
+        git_history_if_fresh(ws, &head).map(|index| index.commits_touching(&params.path, start, fetch)),
         || {
             repo.log_window_touching(&head, &params.path, start, fetch)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))
+                .map_err(|e| EngineError::internal(format!("log: {e}")))
         },
     )?;
-    let fingerprint_at = |sha: &str| -> Result<Option<Vec<u8>>, McpError> {
+    let fingerprint_at = |sha: &str| -> Result<Option<Vec<u8>>, EngineError> {
         let blob = repo
             .read_blob_at_rev_with_oid(sha, &params.path)
-            .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?;
+            .map_err(|e| EngineError::internal(format!("blob: {e}")))?;
         Ok(blob.and_then(|(bytes, oid)| {
-            outline_entry_for_blob(&state.shared.outline_cache, oid, lang, bytes)
+            outline_entry_for_blob(&ws.outline_cache, oid, lang, bytes)
                 .and_then(|entry| symbol_fingerprint(&entry, &params.name, kind, occurrence, lang, hash_mode))
         }))
     };
@@ -584,7 +574,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
             history.push((
                 start + index,
                 SymbolHistoryEntry {
-                    sha: super::helpers::abbreviated_sha(c.sha.clone()),
+                    sha: super::common::abbreviated_sha(c.sha.clone()),
                     summary: c.summary.clone(),
                     author: c.author.clone(),
                     author_time_unix: c.author_time_unix,
@@ -599,7 +589,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
 
     let offsets: Vec<usize> = history.iter().map(|(offset, _)| *offset).collect();
     let page: Vec<SymbolHistoryEntry> = history.into_iter().map(|(_, entry)| entry).take(limit).collect();
-    let budget = super::budget::apply_budget(page, params.max_tokens);
+    let budget = crate::engine::budget::apply_budget(page, params.max_tokens);
     let (page, budgeted) = (budget.items, budget.budgeted);
     // The next page starts at the first change this one left out, or past the window when the
     // window held no more changes and the history goes on.
@@ -613,7 +603,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         Some(error) if next_offset.is_none() => return Err(error),
         Some(error) => Some(format!(
             "{}. No commit inspected so far defines it either; `next_cursor` looks further back.",
-            error.message
+            error
         )),
         None => None,
     };
@@ -625,7 +615,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     } else {
         None
     };
-    json_result(&SymbolHistoryResponse {
+    Ok(SymbolHistoryResponse {
         kind: kind.map(|k| kind_to_str(k).to_string()),
         commits_inspected: u32::try_from(inspected).unwrap_or(u32::MAX),
         history: page,
@@ -636,7 +626,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         truncated_reason,
         next_cursor: next_offset.map(|offset| {
             let carried = if defined { MATCHED_EARLIER } else { 0 };
-            super::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)
+            crate::engine::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)
         }),
         cursor_invalidated: false,
     })
