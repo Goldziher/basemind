@@ -1,5 +1,5 @@
-//! Bodies of the code verb tools: `code_outline`, `code_symbols`, `code_grep`, `code_search`,
-//! `code_refs` and `find_files`.
+//! Bodies of the code verb tools: `code_symbols`, `code_grep`, `code_search`, `code_refs` and
+//! `find_files`. `code_outline` is an engine operation (`src/engine/ops/code_outline.rs`).
 //!
 //! Each `pub(super) async fn` here is what both the `#[tool]` shim in `tools.rs` and the matching
 //! `basemind code …` command run. They translate the tool's wire arguments
@@ -12,24 +12,17 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::{
-    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result, kind_to_str, run_find_callers,
-    run_find_files, run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
+    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_files,
+    run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
 };
 use super::index_route::IndexRoute;
-use super::tool_contract::{budget, not_indexed_in};
+use super::tool_contract::budget;
 use super::types::{
     DependentsResponse, FindCallersParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
-    ListFilesParams, OutlineResponse, OutlineSymbol, SearchSymbolsParams, WorkspaceGrepParams,
+    ListFilesParams, SearchSymbolsParams, WorkspaceGrepParams,
 };
 use super::types_impls::FindImplementationsParams;
-use super::types_tools::{
-    CodeGrepParams, CodeOutlineParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams, FindFilesToolParams,
-};
-
-/// Symbols returned by one `code_outline` page when the caller passes no `limit`.
-const OUTLINE_LIMIT_DEFAULT: u32 = 500;
-/// Imports listed on the first `code_outline` page.
-const OUTLINE_IMPORTS_MAX: usize = 200;
+use super::types_tools::{CodeGrepParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams, FindFilesToolParams};
 
 /// `code_grep`: content search over every indexed code file.
 pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
@@ -330,121 +323,6 @@ async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<C
         || state.lifecycle_notice(),
     )
     .await
-}
-
-/// 1-based line of the byte at `offset`, from the sorted offsets of every newline in the file.
-fn line_of(newlines: &[usize], offset: usize) -> u32 {
-    newlines.partition_point(|newline| *newline < offset) as u32 + 1
-}
-
-/// `code_outline`: one file's symbols with their 1-based line spans, plus its imports.
-///
-/// `end_line` is not in the index (a symbol records its byte span and start row), so it is derived
-/// from the working-tree file. When that file no longer holds the indexed content the outline is
-/// extracted from the file as it is and flagged `stale`: the indexed spans laid over other bytes
-/// would end on the wrong lines.
-pub(super) async fn code_outline(state: &ServerState, p: CodeOutlineParams) -> Result<CallToolResult, McpError> {
-    use std::sync::atomic::Ordering;
-
-    let started = std::time::Instant::now();
-    let generation = state.shared.index_generation.load(Ordering::Relaxed);
-    // Path-keyed: served from the in-RAM map when it is warm, else from the one blob. Waiting for
-    // the map here would make a one-shot CLI call decode the whole corpus to outline one file.
-    let cache = state.shared.cache.load_full();
-    let (file, entry, l1) = {
-        let store = state.store_read().await;
-        let (entry, l1) = super::freshness::indexed_outline(&store, &cache, &p.path)
-            .ok_or_else(|| not_indexed_in(&store, &state.shared.root, "code_outline", &p.path))?;
-        (
-            super::tool_contract::indexed_file(state, &store, "code_outline", &p.path)?,
-            entry,
-            l1,
-        )
-    };
-
-    let skip = match p.cursor.as_ref() {
-        Some(cursor) => {
-            let (offset, snapshot) = cursor.decode_in_memory()?;
-            if snapshot != generation {
-                return Err(McpError::invalid_params(
-                    "`code_outline`: the index changed since this cursor was issued. Call again without `cursor`."
-                        .to_string(),
-                    None,
-                ));
-            }
-            offset as usize
-        }
-        None => 0,
-    };
-    let limit = p.limit.unwrap_or(OUTLINE_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
-
-    let max_bytes = state.shared.config.scan.max_file_bytes;
-    let (l1, source, stale) = super::index_route::blocking(|| {
-        let live = super::freshness::load(&file, (&entry).into(), max_bytes)
-            .map_err(|reason| super::freshness::unloadable("code_outline", &p.path, reason, max_bytes))?;
-        let l1 = if live.fresh {
-            l1
-        } else {
-            super::freshness::reparse(&state.shared, "code_outline", &p.path, &live.bytes)?
-        };
-        Ok::<_, McpError>((l1, live.bytes, !live.fresh))
-    })?;
-    let newlines: Vec<usize> = memchr::memchr_iter(b'\n', &source).collect();
-
-    let total = l1.symbols.len();
-    let page: Vec<OutlineSymbol> = l1
-        .symbols
-        .iter()
-        .skip(skip)
-        .take(limit)
-        .map(|symbol| {
-            let line = symbol.start_row + 1;
-            let end_line = line_of(&newlines, (symbol.end_byte as usize).min(source.len())).max(line);
-            OutlineSymbol {
-                name: symbol.name.clone(),
-                kind: kind_to_str(symbol.kind),
-                line,
-                end_line,
-                signature: symbol.signature.clone(),
-            }
-        })
-        .collect();
-    let budgeted = super::budget::apply_budget(page, budget(p.max_tokens));
-    let symbols = budgeted.items;
-    let next = skip + symbols.len();
-    let imports: Vec<String> = if skip == 0 {
-        l1.imports
-            .iter()
-            .take(OUTLINE_IMPORTS_MAX)
-            .map(|import| import.module.clone().unwrap_or_else(|| import.raw.clone()))
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    let imports_omitted = if skip == 0 {
-        l1.imports.len().saturating_sub(OUTLINE_IMPORTS_MAX)
-    } else {
-        0
-    };
-
-    json_result(&OutlineResponse {
-        path: p.path,
-        language: l1.language.clone(),
-        size_bytes: l1.size_bytes,
-        had_errors: l1.had_errors,
-        total,
-        budgeted: budgeted.budgeted,
-        stale,
-        symbols,
-        truncated: imports_omitted > 0,
-        truncated_reason: (imports_omitted > 0).then_some("imports"),
-        omitted: imports_omitted,
-        imports,
-        next_cursor: (next < total).then(|| super::cursor::Cursor::encode_in_memory(next as u64, generation)),
-        notice: state.lifecycle_notice(),
-        elapsed_us: elapsed_us(started),
-    })
 }
 
 /// Body of `code_refs` relation `importers`: a heuristic reverse lookup over every file's imports.

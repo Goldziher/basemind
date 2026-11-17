@@ -52,15 +52,28 @@ pub(super) fn record_call(
     started: Instant,
     result: &Result<CallToolResult, McpError>,
 ) {
+    let corpus = state.shared.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
+    record_call_to(&state.telemetry, corpus, tool, params, started, result);
+}
+
+/// [`record_call`] without a `ServerState`: the telemetry writer and the corpus size it costs
+/// against, as the engine adapter holds them on a blocking thread.
+pub(super) fn record_call_to(
+    telemetry: &super::telemetry::Telemetry,
+    corpus: u64,
+    tool: &'static str,
+    params: &Value,
+    started: Instant,
+    result: &Result<CallToolResult, McpError>,
+) {
     let Ok(r) = result else { return };
     let elapsed_us: u64 = started.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
     let resp_text = result_text(r);
     let resp_bytes = resp_text.len() as u64;
-    let corpus = state.shared.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
     let savings = if r.is_error == Some(true) {
         super::savings::refusal(resp_text.as_ref())
     } else {
         super::savings::estimate_from_text(tool, corpus, resp_text.as_ref())
     };
-    state.telemetry.record(tool, params, resp_bytes, elapsed_us, &savings);
+    telemetry.record(tool, params, resp_bytes, elapsed_us, &savings);
 }

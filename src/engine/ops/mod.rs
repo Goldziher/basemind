@@ -3,3 +3,5 @@
 
 /// Upper bound on a `limit` that pages a symbol list.
 pub(crate) const SEARCH_LIMIT_MAX: u32 = 1000;
+
+mod code_outline;

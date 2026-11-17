@@ -29,7 +29,7 @@ const PAGING_KEYS: [&str; 3] = ["limit", "cursor", "max_tokens"];
 const SEPARATOR: char = '.';
 
 /// The arguments of a paginated verb tool.
-pub(super) trait Paged: ToolArgs + Serialize {
+pub(crate) trait Paged: ToolArgs + Serialize {
     /// `(field, value)` for each string argument whose omission the tool reads as that value.
     /// Passing the default explicitly selects the same list as leaving it out, so the two must
     /// bind a cursor alike. Each entry mirrors the default applied in the tool's body.
@@ -165,13 +165,29 @@ where
     F: FnOnce(T) -> Fut,
     Fut: Future<Output = Result<CallToolResult, McpError>>,
 {
+    let id = unbind_params(&mut params)?;
+    rebind(T::TOOL, body(params).await?, id)
+}
+
+/// [`bound`] for a synchronous body, run where blocking is allowed.
+pub(super) fn bound_blocking<T, F>(mut params: T, body: F) -> Result<CallToolResult, McpError>
+where
+    T: Paged,
+    F: FnOnce(T) -> Result<CallToolResult, McpError>,
+{
+    let id = unbind_params(&mut params)?;
+    rebind(T::TOOL, body(params)?, id)
+}
+
+/// Refuse `limit: 0`, replace a bound cursor with the tool's own one, and return the query's id.
+fn unbind_params<T: Paged>(params: &mut T) -> Result<u32, McpError> {
     super::helpers_filters::reject_zero_limit(T::TOOL, params.limit())?;
-    let id = query_id(&params);
+    let id = query_id(&*params);
     let slot = params.cursor_mut();
     if let Some(cursor) = slot.as_ref() {
         *slot = Some(unbind(T::TOOL, cursor, id)?);
     }
-    rebind(T::TOOL, body(params).await?, id)
+    Ok(id)
 }
 
 /// Bind the `next_cursor` of a body's response, and turn a `cursor_invalidated` page into the
