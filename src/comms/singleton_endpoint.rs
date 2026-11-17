@@ -186,7 +186,7 @@ mod pipe {
     use std::time::Duration;
 
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+    use tokio::net::windows::named_pipe::NamedPipeClient;
 
     /// Every instance of the pipe is serving a client, which takes a server.
     pub(super) const ERROR_PIPE_BUSY: i32 = 231;
@@ -208,7 +208,7 @@ mod pipe {
 
         let deadline = std::time::Instant::now() + wait;
         loop {
-            match ClientOptions::new().open(socket_path) {
+            match crate::comms::pipe_owner::open_verified(socket_path) {
                 Ok(client) => return Opened::Open(client),
                 Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                     if std::time::Instant::now() >= deadline {
