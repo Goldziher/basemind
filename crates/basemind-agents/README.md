@@ -117,7 +117,9 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
 - **Who launches.** Nothing is trusted by default. Every caller carries a `Peer`: the process the
   kernel reports for its connection (`Peer::of_socket`), pinned to the process that connected (by
   its audit token's pid version on macOS, a pidfd on Linux 6.5+; `Peer::pins_connections` says
-  whether this host pins). The supervisor places that process, not the claim:
+  whether this host pins). A socket whose peer is this process (a `socketpair`, a connected
+  descriptor it inherited) names no peer: only `Peer::embedding()` names this process. The
+  supervisor places that process, not the claim:
   - each harness leads a POSIX session of its own, so a process inside one is that session (by
     session id, by ancestry, or as a detached process the supervisor recorded for it) whatever it
     claims, and its token has to be that session's;
@@ -184,8 +186,10 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   count. A symbolic link among the path's directories is followed: the engine picks the path. The
   log is append-only as far as this writer goes, not tamper-resistant: the same user can rewrite
   it; rotating it is the operator's job.
-- **Sessions.** `status`, `list`, `wait`, `stop` (the launcher or the operator; it reaches every
-  session below the one stopped), `answer` for a pending approval, `stop_all`, and `reap` to forget
+- **Sessions.** `status`, `list`, `wait`, `stop` (the operator, the configured launcher at the top
+  of the session's tree, or a session above it, also once the sessions between them are reaped;
+  ownership is by principal name, so a name bound again after `unregister_launcher` controls the
+  old binding's sessions; a stop reaches every session below the one stopped), `answer` for a pending approval, `stop_all`, and `reap` to forget
   finished sessions. Only the operator allows an approval request; a launcher (the lead model, or
   a launched agent over its children) may deny one, and an allow from it is refused with
   `launcher_may_not_allow`. A model that allows launders what the launched agent asks for past the

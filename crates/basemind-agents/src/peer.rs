@@ -26,13 +26,25 @@ impl Peer {
     /// The socket's error; [`std::io::ErrorKind::PermissionDenied`] for a peer running as
     /// another user; [`std::io::ErrorKind::Unsupported`] on a platform whose kernel does not
     /// report the peer's process, or whose process table this crate cannot read; and
-    /// [`std::io::ErrorKind::NotFound`] when the peer is already gone.
+    /// [`std::io::ErrorKind::NotFound`] when the peer is already gone; and
+    /// [`std::io::ErrorKind::InvalidInput`] when the peer is this process (a `socketpair`, or a
+    /// connected socket this process inherited or was handed): only [`Self::embedding`] names
+    /// this process, so a launched agent's `serve` given such a socket cannot pass for it.
     #[cfg(unix)]
     pub fn of_socket(socket: std::os::fd::BorrowedFd<'_>) -> std::io::Result<Self> {
         if !procinfo::SUPPORTED {
             return Err(unsupported());
         }
-        socket_peer(socket).map(|id| Self { id })
+        let id = socket_peer(socket)?;
+        // A socket pair this process made, or a connected socket it was handed, reports this
+        // process: in-process, the principal. A connection is never this process.
+        if u32::try_from(id.pid).ok() == Some(std::process::id()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the socket's peer is this process",
+            ));
+        }
+        Ok(Self { id })
     }
 
     /// Whether [`Self::of_socket`] pins a peer to the process that connected on this host: on
@@ -320,11 +332,16 @@ mod tests {
     use std::os::fd::AsFd;
 
     #[test]
-    fn the_peer_of_a_socket_is_the_process_that_holds_its_other_end() {
+    fn a_socket_whose_peer_is_this_process_names_no_peer() {
+        // In-process this process is the principal: a socket pair handed to a launched agent's
+        // `serve` must not make it one.
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
-        let peer = Peer::of_socket(ours.as_fd()).unwrap();
-        assert_eq!(peer.pid(), std::process::id());
-        assert_eq!(peer, Peer::embedding().unwrap());
+        let read = Peer::of_socket(ours.as_fd());
+        assert_eq!(
+            read.map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::InvalidInput),
+            "a socket pair's peer was taken for a caller"
+        );
         drop(theirs);
     }
 

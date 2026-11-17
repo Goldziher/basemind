@@ -273,8 +273,10 @@ id that fails the grammar stops the launch.
      Past the cap a record is dropped and refused, with an `audit_full` marker and an
      `audit_dropped` count. It is append-only as far as this writer goes, not tamper-resistant:
      any process of the same user can rewrite it.
-   - **Sessions.** `status`, `list`, `wait`, `stop` (by the launcher or the operator; it reaches
-     every session below the one stopped), `answer` for a pending approval (a launcher may
+   - **Sessions.** `status`, `list`, `wait`, `stop` (by the operator, the configured launcher at
+     the top of the session's tree, or a session above it, also once the sessions between them
+     are reaped, so a grandchild never outlives its parent's entry unstoppable; it reaches every
+     session below the one stopped), `answer` for a pending approval (a launcher may
      deny; only the operator allows, unless the flavor's `launcher_may_allow` opt-in says
      otherwise, which `LaunchPolicy::new` refuses with a `max_depth` above 1), `stop_all`,
      `reap`. A thread per session reads its events, hands each to an optional
@@ -338,7 +340,10 @@ id that fails the grammar stops the launch.
      from the connection: the `Peer` from `Peer::of_socket` on the accepted connection, right
      after `accept` (never a pid the client sends, never `Peer::embedding()`), and the launch
      token the injected `basemind serve` read from `BASEMIND_LAUNCH_TOKEN`. A transport without
-     peer credentials cannot reach the supervisor.
+     peer credentials cannot reach the supervisor. `Peer::of_socket` refuses a socket whose peer
+     is this process (a `socketpair`, or a pre-connected or inherited descriptor, which Linux
+     reports as its creator's): in-process that process is the principal, so the injected
+     `serve` is given a path to connect to, never a descriptor.
    - **Registration.** Only the two in-process forms exist: `register_launcher_in_process`
      for the lead, and `register_launcher_child(&mut Child)` for a child the embedding spawned
      itself, which must execute nothing another agent can write (no shell, hooks, build steps
