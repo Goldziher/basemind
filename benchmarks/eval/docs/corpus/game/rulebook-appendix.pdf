@@ -1,0 +1,100 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 1149 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 742 Td
+/F2 13 Tf (Cairnfall Rulebook Appendix) Tj T* /F1 11 Tf
+T*
+/F2 13 Tf (Appendix A: Variant rules) Tj T* /F1 11 Tf
+T*
+/F2 13 Tf (A.1 Duel for two players) Tj T* /F1 11 Tf
+T*
+(With two players, each player also takes four stones from an unused colour, which count) Tj T*
+(as their own for every purpose. Remove the fog cards from the weather deck before) Tj T*
+(shuffling, since claiming sigils is already less contested with two.) Tj T*
+T*
+/F2 13 Tf (A.2 Solo play against the Warden) Tj T* /F1 11 Tf
+T*
+(A solo player competes against an automated opponent called the Warden. The Warden has) Tj T*
+(no hand. At the start of each of its turns, flip the top terrain tile and place it) Tj T*
+(touching the most recently placed tile, with its ridge edge facing the nearest ridge) Tj T*
+(line where possible. The Warden then raises a stone on the tile it just placed, unless) Tj T*
+(that tile is bog.) Tj T*
+T*
+(You win if your score beats the Warden's score by at least ten points. The Warden never) Tj T*
+(claims sigils, but it scores two points for every weather card turned over during its) Tj T*
+(own turns.) Tj T*
+T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 1047 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 742 Td
+/F2 13 Tf (Appendix B: Rulings and frequently asked questions) Tj T* /F1 11 Tf
+T*
+(Q: Once a sigil has been claimed, can it be passed to another player or returned to the) Tj T*
+(landscape? A: No. A claimed sigil stays with the player who took it until the end of the) Tj T*
+(game, even if the cairn beside it is later stranded or blown down.) Tj T*
+T*
+(Q: What happens to stones on a tile that rain turns into bog? A: They remain on the tile) Tj T*
+(but are stranded. Stranded stones score nothing and cannot be built upon.) Tj T*
+T*
+(Q: Can a ridge line pass through the starting tile? A: Yes. The starting tile has ridge) Tj T*
+(edges on all six sides and may join any number of ridge lines.) Tj T*
+T*
+(Q: Wind is drawn while snow is in effect. Which applies? A: Both. Wind removes stones as) Tj T*
+(usual; the frozen ridges stay frozen until the next round ends.) Tj T*
+T*
+(Q: May a player look through the discard pile? A: Yes, at any time, but the order of the) Tj T*
+(discards must not be changed.) Tj T*
+T*
+ET
+endstream
+endobj
+9 0 obj
+<< /Title (Cairnfall Rulebook Appendix) /Producer (gen_corpus.py) >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000462 00000 n 
+0000001662 00000 n 
+0000001798 00000 n 
+0000002896 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 9 0 R >>
+startxref
+2980
+%%EOF

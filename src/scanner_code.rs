@@ -107,9 +107,9 @@ fn bm25_batch_from_chunks(
 /// match — `balanced` and `multilingual` share dim 768, so a dim-only check would falsely reuse
 /// stale-model vectors across that switch — and the blob must actually carry one embedding per chunk.
 /// Mirrors the documents tier's `scanner_docs::cached_doc_is_reusable`.
-fn code_cache_is_reusable(blob: &CodeChunkBlob, dim: u16, preset: &str) -> bool {
+fn code_cache_is_reusable(blob: &CodeChunkBlob, dim: u16, model_key: &str) -> bool {
     blob.embedding_dim == dim
-        && blob.embedding_model == preset
+        && blob.embedding_model == model_key
         && !blob.chunks.is_empty()
         && blob.embeddings.len() == blob.chunks.len()
 }
@@ -246,7 +246,7 @@ pub(crate) fn chunk_and_embed(
     };
 
     if let Some(blob) = &cached
-        && code_cache_is_reusable(blob, dim, &config.documents.embedding_preset)
+        && code_cache_is_reusable(blob, dim, &filters.model_key)
     {
         let over_cap = over_chunk_cap(rel, blob.chunks.len(), cfg);
         return Ok(Some(PendingCodeBatch {
@@ -330,7 +330,7 @@ pub(crate) fn chunk_and_embed(
         schema_ver: SCHEMA_VER,
         extract_epoch: crate::extract::EXTRACT_EPOCH,
         embedding_dim: dim,
-        embedding_model: config.documents.embedding_preset.clone(),
+        embedding_model: filters.model_key.clone(),
         chunks,
         embeddings,
     };
@@ -483,34 +483,47 @@ mod tests {
         }
     }
 
+    /// The model key the scan stamps for `balanced` (`embeddings::model_key`, out of this layer's
+    /// reach) and the one another model under that name would have.
+    const BALANCED: &str = "balanced@0123456789ab";
+    const REMAPPED: &str = "balanced@ba9876543210";
+
     #[test]
     fn code_cache_reuse_requires_matching_dim_and_model() {
-        let blob = embedded_blob("balanced", 768);
-        assert!(code_cache_is_reusable(&blob, 768, "balanced"));
+        let blob = embedded_blob(BALANCED, 768);
+        assert!(code_cache_is_reusable(&blob, 768, BALANCED));
         assert!(
-            !code_cache_is_reusable(&blob, 768, "multilingual"),
+            !code_cache_is_reusable(&embedded_blob("balanced", 768), 768, BALANCED),
+            "a blob stamped with the bare name predates the model identity and is re-embedded"
+        );
+        assert!(
+            !code_cache_is_reusable(&embedded_blob(REMAPPED, 768), 768, BALANCED),
+            "another model under the same preset name must miss"
+        );
+        assert!(
+            !code_cache_is_reusable(&blob, 768, "multilingual@0123456789ab"),
             "same-dim different-model must miss and force a re-embed"
         );
-        assert!(!code_cache_is_reusable(&blob, 384, "balanced"));
-        assert!(!code_cache_is_reusable(&embedded_blob("", 768), 768, "balanced"));
+        assert!(!code_cache_is_reusable(&blob, 384, BALANCED));
+        assert!(!code_cache_is_reusable(&embedded_blob("", 768), 768, BALANCED));
     }
 
     #[test]
     fn code_cache_reuse_rejects_chunkless_or_unembedded_blob() {
-        let mut blob = embedded_blob("balanced", 768);
+        let mut blob = embedded_blob(BALANCED, 768);
         blob.chunks.clear();
         blob.embeddings.clear();
-        assert!(!code_cache_is_reusable(&blob, 768, "balanced"));
+        assert!(!code_cache_is_reusable(&blob, 768, BALANCED));
         let chunk_only = CodeChunkBlob {
             config_digest: String::new(),
             schema_ver: 0,
             extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: 768,
-            embedding_model: "balanced".to_string(),
+            embedding_model: BALANCED.to_string(),
             chunks: vec![chunk("h:0", "alpha")],
             embeddings: Vec::new(),
         };
-        assert!(!code_cache_is_reusable(&chunk_only, 768, "balanced"));
+        assert!(!code_cache_is_reusable(&chunk_only, 768, BALANCED));
     }
 
     #[test]

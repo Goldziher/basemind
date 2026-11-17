@@ -34,7 +34,6 @@ use crate::config::{DocumentsConfig, ResourcesConfig};
 use crate::extract::doc::{DocBlobs, DocConfig, FileMapDoc, extract_doc};
 use crate::extract::doc_guard::ChunkCutovers;
 use crate::hashing::{self, Hash};
-use crate::lance::{DocumentRow, PendingBatch};
 use crate::scan_retrieval::PendingDocBatch;
 use crate::scanner::EmbedMode;
 use crate::scanner_filter::Filters;
@@ -238,7 +237,6 @@ pub(crate) fn extract_and_persist_doc(
     cfg: &DocumentsConfig,
     resources: &ResourcesConfig,
     filters: &Filters,
-    scope: &str,
     mode: EmbedMode,
 ) -> Result<Option<PendingDocBatch>, anyhow::Error> {
     let embed = doc_embed_requested(rel, cfg, mode, filters);
@@ -257,7 +255,7 @@ pub(crate) fn extract_and_persist_doc(
         // Keep this reused blob "young" so the blob GC's grace window protects it through a NoCache
         // rename's transient entry-less gap (issue #44) instead of reaping it and forcing a re-embed.
         store.touch_doc_blob(hash_hex);
-        return Ok(Some(pending_from_doc(&cached, rel, hash_hex, scope, cfg, embed, true)));
+        return Ok(Some(pending_from_doc(&cached, rel, cfg, embed, true)));
     }
 
     let mut doc_config = doc_config_from(cfg, resources, embed);
@@ -274,7 +272,7 @@ pub(crate) fn extract_and_persist_doc(
         .write_doc(hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
 
-    Ok(Some(pending_from_doc(&doc, rel, hash_hex, scope, cfg, embed, false)))
+    Ok(Some(pending_from_doc(&doc, rel, cfg, embed, false)))
 }
 
 /// `(size, mtime)` of the file at `abs` now, as `read_working_tree` reports them for a read.
@@ -339,7 +337,7 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: boo
 pub(crate) fn doc_has_vectors_of(doc: &FileMapDoc, preset: &str) -> bool {
     doc.embedding_dim > 0
         && Some(doc.embedding_dim) == preset_dim(preset).ok()
-        && doc.embedding_model == preset
+        && doc.embedding_model == crate::embeddings::model_key(preset)
         && doc
             .chunks
             .iter()
@@ -354,8 +352,6 @@ pub(crate) fn doc_has_vectors_of(doc: &FileMapDoc, preset: &str) -> bool {
 pub(crate) fn pending_from_doc(
     doc: &FileMapDoc,
     rel: &str,
-    blob_hash: &str,
-    scope: &str,
     cfg: &DocumentsConfig,
     embed: bool,
     reused: bool,
@@ -374,15 +370,14 @@ pub(crate) fn pending_from_doc(
     let emit_rows = embed && embedding_dim > 0 && chunk_count > 0 && !over_cap;
     PendingDocBatch {
         rel_path: rel.to_string(),
-        blob_hash: blob_hash.to_string(),
-        doc_scope: scope.to_string(),
         chunk_count,
         embedding_dim,
         emit_rows,
         embedded: !embed || embedding_dim > 0 || chunk_count == 0,
         // Only a fresh extraction (`!reused`) ran an attempt; a reused blob already carries vectors ~keep
-        // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. ~keep
-        embed_attempted: embed && !reused,
+        // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. A ~keep
+        // failed attempt is not one: the document owes its vectors until the embedder works. ~keep
+        embed_attempted: embed && !reused && !doc.embed_failed,
         reused,
         degraded: crate::extract::doc_guard::is_degraded_chunking(
             &doc.mime_type,
@@ -393,39 +388,21 @@ pub(crate) fn pending_from_doc(
     }
 }
 
-/// Turn a document's chunks into LanceDB rows. Hoists the per-row constant strings out of the map so
-/// they allocate once instead of once per chunk (a doc can have hundreds of chunks).
-///
-/// Takes `doc` by value to move `chunk.text` and `chunk.embedding` directly into each row —
-/// avoids cloning the chunk text (potentially large) and the embedding vector (`Vec<f32>`,
-/// hundreds of kilobytes per chunk at typical preset dimensions).
-fn build_doc_rows(doc: FileMapDoc, rel: &str, scope: &str) -> Vec<DocumentRow> {
-    let scope_owned = scope.to_string();
-    let rel_owned = rel.to_string();
-    let mime_owned = doc.mime_type;
-    doc.chunks
-        .into_iter()
-        .enumerate()
-        .map(|(idx, chunk)| DocumentRow {
-            scope: scope_owned.clone(),
-            path: rel_owned.clone(),
-            chunk_idx: u32::try_from(idx).unwrap_or(u32::MAX),
-            mime_type: mime_owned.clone(),
-            text: chunk.text,
-            byte_start: chunk.byte_start,
-            byte_end: chunk.byte_end,
-            embedding: chunk.embedding,
-        })
-        .collect()
-}
+#[path = "scanner_docs_store.rs"]
+mod doc_rows;
+#[cfg(test)]
+pub(crate) use doc_rows::open_doc_store;
 
-/// Purge the LanceDB `documents` rows AND the `index.doc_files` entries of docs that no longer
-/// exist (or are no longer routed to the doc tier). Serial apply pass; mirrors
-/// `scanner_code::delete_stale_code_chunks`. The tracking entry is dropped unconditionally (the doc
-/// cache metadata must not leak for a removed file); the LanceDB delete is best-effort and never
-/// *creates* the store. External-root docs were written under a per-root scope, so the delete uses
-/// [`doc_scope_for`] to match it.
-pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::Config, scope: &str, stale: &[String]) {
+/// Drop the `index.doc_files` entries of documents that no longer exist (or are no longer routed
+/// to the doc tier), then the store rows no remaining document names. Serial apply pass. The
+/// tracking entry is dropped unconditionally; the row delete is best-effort and never creates the
+/// store.
+pub(crate) fn delete_stale_documents(
+    store: &mut Store,
+    config: &crate::config::Config,
+    filters: &Filters,
+    stale: &[String],
+) {
     if stale.is_empty() {
         return;
     }
@@ -433,253 +410,31 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
         store.remove_doc(path);
         store.remove_doc_tombstone(path);
     }
-    let Some(lance) = open_existing_doc_lance(store, config, "doc stale purge") else {
-        return;
-    };
-    // Group by doc scope and delete in bulk: one commit per scope per 2000 paths, not two per path.
-    let mut by_scope: ahash::AHashMap<String, Vec<String>> = ahash::AHashMap::new();
-    for path in stale {
-        by_scope
-            .entry(doc_scope_for(path, scope, config).into_owned())
-            .or_default()
-            .push(path.clone());
-    }
-    for (doc_scope, paths) in &by_scope {
-        if let Err(error) = lance.delete_documents_for_paths(doc_scope, paths) {
-            tracing::warn!(
-                paths = paths.len(),
-                ?error,
-                "doc stale purge failed; search_documents may return a removed path"
-            );
-        }
-    }
+    doc_rows::remove_dead_document_rows(store, config, filters);
 }
 
-/// Open the LanceDB store for a purge, or `None` when there is nothing to purge from: the store
-/// was never built (a purge must not *create* it) or the preset / open failed (logged).
-fn open_existing_doc_lance(
-    store: &mut Store,
-    config: &crate::config::Config,
-    what: &str,
-) -> Option<crate::lance::LanceStore> {
-    try_open_existing_doc_lance(store, config, what).ok().flatten()
+/// Rewrite without vectors the rows of every tracked doc that is no longer embed-eligible
+/// (`[documents] embed = false`, or every path of it now falls outside `embed_include` / inside
+/// `embed_exclude`). The docs stay indexed and searchable by the lexical lane; only their vectors
+/// go. Run when the embed policy changed since the last scan; see [`crate::scanner_policy`].
+/// Returns whether the purge fully applied (no store counts as applied).
+pub(crate) fn purge_unembedded_documents(store: &mut Store, config: &crate::config::Config, filters: &Filters) -> bool {
+    doc_rows::strip_unwanted_vectors(store, config, filters)
 }
 
-/// [`open_existing_doc_lance`] that tells "there is no vector store" (`Ok(None)`) apart from "there
-/// is one and it could not be opened" (`Err`).
-fn try_open_existing_doc_lance(
-    store: &mut Store,
-    config: &crate::config::Config,
-    what: &str,
-) -> Result<Option<crate::lance::LanceStore>, ()> {
-    if store.lance.is_none() && !store.lance_dir_exists() {
-        return Ok(None);
-    }
-    let model = &config.documents.embedding_preset;
-    let dim = match preset_dim(model) {
-        Ok(dim) => dim,
-        Err(error) => {
-            tracing::warn!(?error, preset = %model, "{what}: unknown preset; skipping lance delete");
-            return Err(());
-        }
-    };
-    match store.lance_or_open(dim, model) {
-        Ok(lance) => Ok(Some(lance.clone())),
-        Err(error) => {
-            tracing::warn!(?error, "{what}: open LanceStore failed; skipping");
-            Err(())
-        }
-    }
-}
-
-/// Delete the `documents` vector rows of every tracked doc that is no longer embed-eligible
-/// (`[documents] embed = false`, or the path now falls outside `embed_include` / inside
-/// `embed_exclude`). The docs stay indexed and keyword-searchable; only their vectors go. Run when
-/// the embed policy changed since the last scan; see [`crate::scanner_policy`]. Returns whether the
-/// purge fully applied (no vector store counts as applied).
-pub(crate) fn purge_unembedded_documents(
+/// Write the rows the store lacks for this scan's documents and every other live document (a
+/// wiped store is rebuilt here from the cached blobs), delete the rows of documents the view no
+/// longer names, and update the indexes. The batches only say that the scan touched documents:
+/// what is written is decided against the store. Returns the number of documents written.
+pub(crate) fn flush_document_batches(
     store: &mut Store,
     config: &crate::config::Config,
     filters: &Filters,
-    scope: &str,
-) -> bool {
-    let cfg = &config.documents;
-    let mut by_scope: ahash::AHashMap<String, Vec<String>> = ahash::AHashMap::new();
-    for key in store.index.doc_files.keys() {
-        let path = key.to_str_lossy();
-        if cfg.embed && filters.doc_embed_allowed(&path) {
-            continue;
-        }
-        let doc_scope = doc_scope_for(&path, scope, config).into_owned();
-        by_scope.entry(doc_scope).or_default().push(path.into_owned());
-    }
-    if by_scope.is_empty() {
-        return true;
-    }
-    let lance = match try_open_existing_doc_lance(store, config, "doc embed-policy purge") {
-        Ok(Some(lance)) => lance,
-        Ok(None) => return true,
-        Err(()) => return false,
-    };
-    let mut applied = true;
-    for (doc_scope, paths) in by_scope {
-        if let Err(error) = lance.delete_documents_for_paths(&doc_scope, &paths) {
-            tracing::warn!(
-                paths = paths.len(),
-                ?error,
-                "doc embed-policy purge failed; search_documents may still return vectors for excluded paths"
-            );
-            applied = false;
-        }
-    }
-    applied
-}
-
-/// Stream every pending document batch into LanceDB, one file at a time. Opens the store lazily — if
-/// no batch will emit rows (no embeddings configured) no LanceDB connection is ever made.
-///
-/// For each row-emitting file this re-reads the file's already-persisted `.doc.msgpack` blob, builds
-/// its [`DocumentRow`]s, writes them, and drops them before the next file — so peak embed-write RAM
-/// is one document's rows plus one Arrow batch, independent of corpus size. (The blob is guaranteed
-/// on disk here: every doc that produced a batch was written by `extract_and_persist_doc` or was a
-/// cache hit, both before this post-barrier lane runs.)
-///
-/// Returns the number of files for which rows were written. Errors are logged and skipped on a
-/// per-file basis so one malformed embedding doesn't abort the scan.
-pub(crate) fn flush_document_batches(store: &mut Store, batches: Vec<PendingDocBatch>, embedding_model: &str) -> usize {
-    let mut inserted = 0usize;
-    let Some(dim) = batches
-        .iter()
-        .find(|b| b.emit_rows && b.embedding_dim > 0)
-        .map(|b| b.embedding_dim)
-    else {
-        return 0;
-    };
-
-    match preset_dim(embedding_model) {
-        Ok(expected) if expected != dim => {
-            tracing::error!(
-                preset = %embedding_model,
-                expected,
-                actual = dim,
-                "preset/runtime dim mismatch — refusing to write document batch"
-            );
-            return 0;
-        }
-        Ok(_) => {}
-        Err(error) => {
-            tracing::error!(
-                ?error,
-                preset = %embedding_model,
-                "unknown embedding preset — refusing to write document batch"
-            );
-            return 0;
-        }
-    }
-
-    let lance = match store.lance_or_open(dim, embedding_model) {
-        Ok(s) => s.clone(),
-        Err(error) => {
-            tracing::error!(?error, "open LanceStore for document batch failed");
-            return 0;
-        }
-    };
-
-    // One delete+append commit pair per BATCH_MAX_DOCS documents instead of per document (#76);
-    // rows are still built one document at a time, so peak RAM is one batch's rows.
-    let mut pending: PendingBatch<DocumentRow> = PendingBatch::default();
-    // Paths this call leaves owing nothing: rows written, or no rows to write. A path whose blob
-    // could not be read or whose write failed stays owed for the next scan.
-    let mut settled: Vec<String> = Vec::new();
-    let flush = |pending: &mut PendingBatch<DocumentRow>, inserted: &mut usize, settled: &mut Vec<String>| {
-        let items = pending.take();
-        let docs = items.len();
-        let paths: Vec<String> = items.iter().map(|(_, path, _)| path.clone()).collect();
-        match lance.replace_documents_many(items) {
-            Ok(()) => {
-                *inserted += docs;
-                settled.extend(paths);
-            }
-            Err(error) => {
-                tracing::warn!(
-                    docs,
-                    ?error,
-                    "lance replace_documents_many failed; the documents stay queued for the next scan"
-                );
-            }
-        }
-    };
-    for batch in batches {
-        if !batch.emit_rows {
-            continue;
-        }
-        let doc = match store.read_doc_by_hex(&batch.blob_hash) {
-            Ok(Some(doc)) => doc,
-            // No blob, no rows to build: the entry's next extraction queues the file again.
-            Ok(None) => {
-                tracing::warn!(rel = %batch.rel_path, "doc blob missing at flush; no vector rows to write");
-                settled.push(batch.rel_path);
-                continue;
-            }
-            Err(error) => {
-                tracing::warn!(rel = %batch.rel_path, ?error, "re-read doc blob failed; skipping vector rows");
-                continue;
-            }
-        };
-        let rows = build_doc_rows(doc, &batch.rel_path, &batch.doc_scope);
-        // Rows of another dimension would fail the whole write, and every document batched with
-        // them: the blob holds no vectors this table can take.
-        if rows.is_empty() || rows.iter().any(|row| row.embedding.len() != usize::from(dim)) {
-            settled.push(batch.rel_path);
-            continue;
-        }
-        pending.push(&batch.doc_scope, &batch.rel_path, rows);
-        if pending.is_full() {
-            flush(&mut pending, &mut inserted, &mut settled);
-        }
-    }
-    if !pending.is_empty() {
-        flush(&mut pending, &mut inserted, &mut settled);
-    }
-    store.pending_vectors.settle_docs(&settled);
-    inserted
-}
-
-/// Choose the LanceDB scope for a document. Repo files keep the scan-wide `default_scope`;
-/// external-root files (absolute key, see [`crate::path::RelPath::is_external`]) are scoped
-/// `path:<extra_root>` so they group under the out-of-repo tree they came from rather than the
-/// repository's own doc scope. Retrieval is unaffected — `search_documents` has no scope filter —
-/// so this only partitions storage.
-pub(crate) fn doc_scope_for<'a>(
-    rel: &str,
-    default_scope: &'a str,
-    config: &crate::config::Config,
-) -> std::borrow::Cow<'a, str> {
-    if !crate::path::is_external_key(rel.as_bytes()) {
-        return std::borrow::Cow::Borrowed(default_scope);
-    }
-    // Longest root wins, and the match is on a path-segment boundary: `/data/foo` must not claim
-    // `/data/foobar/x`.
-    let mut best: Option<String> = None;
-    for raw_root in &config.scan.extra_roots {
-        if let Ok(canonical) = raw_root.canonicalize()
-            && let Some(prefix) = canonical.to_str()
-        {
-            #[cfg(windows)]
-            let prefix = prefix.replace('\\', "/");
-            #[cfg(windows)]
-            let prefix = prefix.as_str();
-            let prefix = prefix.trim_end_matches('/');
-            let inside = rel == prefix || rel.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'));
-            if inside && best.as_ref().is_none_or(|b| prefix.len() > b.len()) {
-                best = Some(prefix.to_string());
-            }
-        }
-    }
-    if let Some(prefix) = best {
-        return std::borrow::Cow::Owned(format!("path:{prefix}"));
-    }
-    std::borrow::Cow::Owned(format!("path:{rel}"))
+    batches: Vec<PendingDocBatch>,
+    budget: usize,
+) -> usize {
+    let scanned: ahash::AHashSet<String> = batches.into_iter().map(|batch| batch.rel_path).collect();
+    doc_rows::sync_document_rows(store, config, filters, &scanned, budget)
 }
 
 #[cfg(test)]

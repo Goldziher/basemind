@@ -88,8 +88,12 @@ pub(crate) struct SharedReadStack {
     #[allow(dead_code)]
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
-    #[cfg(any(feature = "documents", feature = "code-search"))]
+    #[cfg(feature = "code-search")]
     pub(crate) lance: super::lance_cell::LanceCell,
+    /// Owner of this workspace's `individual` memory notes: the checkout's comms v2 principal
+    /// (`identity::resolve_agent_id`), which is the same at every server start.
+    #[cfg(feature = "memory")]
+    pub(crate) memory_owner: String,
     /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
     pub(crate) memory_lance: super::lance_cell::LanceCell,
@@ -244,9 +248,13 @@ impl SharedReadStack {
             lazy_cache = options.lazy_cache,
             "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
+        #[cfg(feature = "memory")]
+        let memory_owner = super::identity::resolve_agent_id(&store.root);
         let outline_cache: Arc<OutlineCache> = Arc::new(OutlineCache::default());
         let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
         Self {
+            #[cfg(feature = "memory")]
+            memory_owner,
             store: RwLock::new(store),
             root,
             cache: ArcSwap::from(cache),
@@ -262,7 +270,7 @@ impl SharedReadStack {
             index_generation: AtomicU32::new(1),
             ranked: Default::default(),
             scope,
-            #[cfg(any(feature = "documents", feature = "code-search"))]
+            #[cfg(feature = "code-search")]
             lance: Default::default(),
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             embedder: tokio::sync::OnceCell::new(),

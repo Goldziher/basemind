@@ -64,7 +64,11 @@ pub struct GetChunkParams {
 #[cfg(feature = "code-search")]
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct CodeSearchHit {
+    /// The first (sorted) indexed path holding this chunk's content now.
     pub path: String,
+    /// Other indexed paths with the same content (copies of the file), so they are one hit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_at: Vec<String>,
     pub chunk_id: String,
     /// Symbol name; empty for a module-level chunk.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -127,10 +131,13 @@ pub(crate) struct SearchCodeResponse {
     /// ones that can be paged to. Narrow the query or the filters.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// What cut it: `depth` (the ranking goes on past the 100 hits that can be paged),
-    /// `rerank_top_k` (the reranker kept its `top_k` best).
+    /// What cut it: `stale_chunks` (ranked chunks no indexed file holds any more were dropped;
+    /// run `index_rescan`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<String>,
+    /// Ranked chunks dropped because no indexed file holds their content any more.
+    #[serde(default, skip_serializing_if = "super::types::is_zero")]
+    pub omitted: usize,
     pub hits: Vec<CodeSearchHit>,
     /// Lanes that produced a ranking for this query: `vector`, `keyword`, `exact`.
     pub lanes_ran: Vec<&'static str>,

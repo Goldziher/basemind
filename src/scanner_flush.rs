@@ -38,13 +38,13 @@ pub(crate) fn flush_vector_lanes(
     requeue: usize,
 ) -> Result<(), crate::store::StoreError> {
     owe_rows_that_may_be_lost(store, filters)?;
+    let mut budget = requeue;
     if owes_beyond(store, &doc_batches, &code_batches) && vector_store_opens(store, config, filters) {
-        let mut budget = requeue;
         requeue_pending_docs(store, config, filters, scope, &mut doc_batches, &mut budget);
         requeue_pending_code(store, config, filters, &mut code_batches, &mut budget);
     }
     run_optional_lane(LANE_DOC_BATCHES, || {
-        flush_doc_batches_if_any(store, config, filters, doc_batches);
+        flush_doc_batches_if_any(store, config, filters, doc_batches, budget);
     });
     run_optional_lane(LANE_CODE_BATCHES, || {
         flush_code_batches_if_any(store, config, filters, scope, code_batches);
@@ -200,11 +200,10 @@ fn requeue_pending_code(
 ) {
     use crate::store::StoreError;
 
-    if store.pending_vectors.code().is_empty() {
+    if store.pending_vectors.code().is_empty() || !writes_code_vectors(store) {
         return;
     }
     let cfg = &config.code_search;
-    let preset = &config.documents.embedding_preset;
     let queued: ahash::AHashSet<&str> = batches.iter().map(|batch| batch.rel_path.as_str()).collect();
     let mut requeued = Vec::new();
     let mut settled = Vec::new();
@@ -225,7 +224,7 @@ fn requeue_pending_code(
         match store.peek_chunk_state(&entry.hash_hex) {
             Ok(Some(peek))
                 if peek.embedding_dim > 0
-                    && peek.embedding_model == *preset
+                    && peek.embedding_model == filters.model_key
                     && peek.embeddings.len() == peek.chunks.len()
                     && !crate::scanner_code::over_chunk_cap(&rel_path, peek.chunks.len(), cfg) =>
             {
@@ -279,16 +278,20 @@ fn requeue_pending_code(
 ) {
 }
 
-/// Push the buffered document batches into LanceDB. No-op without the `documents` feature.
+/// Bring the document store in line with the view: this scan's documents and any an earlier scan,
+/// or a wiped store, left without rows. No-op without the `documents` feature.
 #[cfg(feature = "documents")]
-fn flush_doc_batches_if_any(store: &mut Store, config: &Config, filters: &Filters, batches: Vec<PendingDocBatchOpt>) {
-    if batches.is_empty() {
-        return;
-    }
+fn flush_doc_batches_if_any(
+    store: &mut Store,
+    config: &Config,
+    filters: &Filters,
+    batches: Vec<PendingDocBatchOpt>,
+    budget: usize,
+) {
     let _ = filters
         .retrieval
         .documents
-        .flush(store, batches, &config.documents.embedding_preset);
+        .flush(store, config, filters, batches, budget);
 }
 
 #[cfg(not(feature = "documents"))]
@@ -297,6 +300,7 @@ fn flush_doc_batches_if_any(
     _config: &Config,
     _filters: &Filters,
     _batches: Vec<PendingDocBatchOpt>,
+    _budget: usize,
 ) {
 }
 
@@ -310,7 +314,8 @@ pub(crate) fn flush_doc_removals_if_any(
     scope: &str,
     stale: &[String],
 ) {
-    filters.retrieval.documents.remove(store, config, scope, stale);
+    let _ = scope;
+    filters.retrieval.documents.remove(store, config, filters, stale);
 }
 
 /// Push the buffered code-chunk batches into LanceDB. No-op without the `code-search` feature.
@@ -322,7 +327,7 @@ fn flush_code_batches_if_any(
     scope: &str,
     batches: Vec<PendingCodeBatchOpt>,
 ) {
-    if batches.is_empty() {
+    if batches.is_empty() || !writes_code_vectors(store) {
         return;
     }
     let _ = filters
@@ -351,7 +356,18 @@ pub(crate) fn flush_code_removals_if_any(
     scope: &str,
     stale: &[String],
 ) {
+    if !writes_code_vectors(store) {
+        return;
+    }
     crate::scanner_code::delete_stale_code_chunks(store, config, filters.retrieval.vectors, scope, stale);
+}
+
+/// Whether this view's scan may write or delete `code_chunks` rows. The rows live in one store per
+/// workspace keyed by path, so a staged or revision view writing them would replace the working
+/// view's rows with other content (review M3); only the working view does.
+#[cfg(feature = "code-search")]
+fn writes_code_vectors(store: &Store) -> bool {
+    store.view == crate::store::VIEW_WORKING
 }
 
 #[cfg(not(feature = "code-search"))]

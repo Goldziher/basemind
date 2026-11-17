@@ -1,0 +1,120 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 772 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 742 Td
+/F2 13 Tf (Mirelle-1 Mission Overview) Tj T* /F1 11 Tf
+T*
+/F2 13 Tf (1. Objectives) Tj T* /F1 11 Tf
+T*
+(Mirelle-1 will monitor harmful algal blooms in coastal lagoons and estuaries with a) Tj T*
+(six-band multispectral imager at a ground sampling distance of 30 metres. Its data will) Tj T*
+(give regional fisheries agencies an early warning of blooms that can close shellfish) Tj T*
+(beds, at a fraction of the cost of aerial surveys.) Tj T*
+T*
+/F2 13 Tf (2. Orbit) Tj T* /F1 11 Tf
+T*
+(The spacecraft will fly in a sun-synchronous orbit at 520 km altitude with the local) Tj T*
+(time of the ascending node \(LTAN\) at 10:30. This gives consistent lighting for the) Tj T*
+(imager and revisits each target lagoon every three days.) Tj T*
+T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 851 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 742 Td
+/F2 13 Tf (3. Spacecraft bus) Tj T* /F1 11 Tf
+T*
+(The bus is a six-unit aluminium structure carrying the payload, power, radio and) Tj T*
+(computing units described below.) Tj T*
+T*
+/F2 13 Tf (3.1 Attitude determination and control) Tj T* /F1 11 Tf
+T*
+(Three reaction wheels and three magnetorquers control attitude, guided by a star) Tj T*
+(tracker, six coarse sun sensors and a magnetometer. Pointing accuracy is 0.5 degrees in) Tj T*
+(imaging mode, and the magnetorquers dump momentum from the wheels once per orbit.) Tj T*
+T*
+/F2 13 Tf (3.2 On-board computer and storage) Tj T* /F1 11 Tf
+T*
+(The on-board computer runs the flight software on a radiation-tolerant microcontroller) Tj T*
+(with 32 GB of flash storage for images, enough for about four days of observations if) Tj T*
+(ground contact is lost.) Tj T*
+T*
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 10 0 R >>
+endobj
+10 0 obj
+<< /Length 730 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 742 Td
+/F2 13 Tf (4. Operations phases) Tj T* /F1 11 Tf
+T*
+(Launch and early orbit operations last three days and end once the solar wings are) Tj T*
+(deployed and two-way contact is stable. Commissioning takes six weeks, after which) Tj T*
+(routine operations are planned to continue for three years.) Tj T*
+T*
+/F2 13 Tf (5. End of life) Tj T* /F1 11 Tf
+T*
+(At the end of the mission a deployable drag sail called the Furl, 1.5 square metres in) Tj T*
+(area, will be released to increase atmospheric drag. Re-entry is expected within five) Tj T*
+(years of deployment. Before the sail opens the spacecraft is passivated: the battery is) Tj T*
+(discharged and both transmitters are switched off.) Tj T*
+T*
+ET
+endstream
+endobj
+11 0 obj
+<< /Title (Mirelle-1 Mission Overview) /Producer (gen_corpus.py) >>
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000133 00000 n 
+0000000230 00000 n 
+0000000332 00000 n 
+0000000468 00000 n 
+0000001290 00000 n 
+0000001426 00000 n 
+0000002327 00000 n 
+0000002464 00000 n 
+0000003245 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 11 0 R >>
+startxref
+3329
+%%EOF

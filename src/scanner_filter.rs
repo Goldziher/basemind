@@ -229,6 +229,13 @@ pub(crate) struct Filters {
     /// drive. Shared with extraction through [`crate::extract::doc::DocConfig::phase`].
     #[cfg(feature = "documents")]
     pub(crate) doc_phase: std::sync::Arc<crate::backpressure::DocPhase>,
+    /// Whether the document embedder works, probed on the first document that owes vectors.
+    #[cfg(feature = "documents")]
+    doc_embedder_ready: std::sync::OnceLock<bool>,
+    /// The model identity code vectors are stamped with and reused under: the
+    /// `[documents] embedding_preset`'s [`crate::embeddings::model_key`].
+    #[cfg(feature = "code-search")]
+    pub(crate) model_key: String,
     /// [`crate::config::DocumentsConfig::effective_phase_budget_secs`], to re-arm [`Self::doc_phase`].
     #[cfg_attr(not(feature = "documents"), allow(dead_code))]
     pub(crate) doc_phase_budget_secs: u64,
@@ -322,6 +329,10 @@ impl Filters {
             doc_guard_digest,
             #[cfg(feature = "documents")]
             doc_phase: std::sync::Arc::default(),
+            #[cfg(feature = "documents")]
+            doc_embedder_ready: std::sync::OnceLock::new(),
+            #[cfg(feature = "code-search")]
+            model_key: crate::retrieval_wiring::model_key(&config.documents.embedding_preset),
             doc_phase_budget_secs: config.documents.effective_phase_budget_secs(),
             submodule_prefixes,
             eager_l2: config.scan.eager_l2,
@@ -355,6 +366,14 @@ impl Filters {
             .filter_map(|p| key.strip_prefix(p.as_str()))
             .min_by_key(|rest| rest.len())
             .unwrap_or(key)
+    }
+
+    /// Whether the document embedder embeds now; probed once per scan.
+    #[cfg(feature = "documents")]
+    pub(crate) fn doc_embedder_ready(&self, config: &crate::config::Config) -> bool {
+        *self
+            .doc_embedder_ready
+            .get_or_init(|| self.retrieval.documents.embedder_ready(config))
     }
 
     /// `[documents] include/exclude`: may `rel` be indexed as a document.

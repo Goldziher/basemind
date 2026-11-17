@@ -4,7 +4,7 @@ date: 2026-11-17
 amends: ["0030"]
 ---
 
-# ADR-0037: Comms v2 cutover as built — agent tool replay and the closed open items
+# ADR-0038: Comms v2 cutover as built — agent tool replay and the closed open items
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0030; ADR-0013, ADR-0021, ADR-0022

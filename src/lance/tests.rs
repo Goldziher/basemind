@@ -39,7 +39,7 @@ fn keys_predicate_pins_keys_and_escapes_quotes() {
 }
 
 /// A pre-0.5 `meta.json` (no `schema_ver`) must deserialize as `schema_ver = 0` and,
-/// because that differs from the current `MEMORY_SCHEMA_VER`, force a wipe — never a
+/// because that differs from the current `VECTOR_STORE_VER`, force a wipe — never a
 /// parse error. This is the guard against the memory-table column add faulting at
 /// batch-build time on upgrade.
 #[test]
@@ -52,9 +52,9 @@ fn pre_0_5_meta_without_schema_ver_triggers_wipe() {
     let expected = LanceMeta {
         dim: 384,
         embedding_model: "balanced".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
-    assert_ne!(MEMORY_SCHEMA_VER, 0, "current schema ver must differ from the legacy 0");
+    assert_ne!(VECTOR_STORE_VER, 0, "current schema ver must differ from the legacy 0");
     wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
     assert!(!keep.exists(), "stale lance dir should have been wiped");
 }
@@ -67,7 +67,7 @@ fn matching_meta_preserves_store() {
     let expected = LanceMeta {
         dim: 384,
         embedding_model: "balanced".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
     std::fs::write(&meta_path, serde_json::to_vec(&expected).unwrap()).unwrap();
     let keep = sentinel(dir.path());
@@ -84,13 +84,13 @@ fn schema_ver_bump_triggers_wipe() {
     let on_disk = LanceMeta {
         dim: 384,
         embedding_model: "balanced".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
     std::fs::write(&meta_path, serde_json::to_vec(&on_disk).unwrap()).unwrap();
     let keep = sentinel(dir.path());
 
     let expected = LanceMeta {
-        schema_ver: MEMORY_SCHEMA_VER + 1,
+        schema_ver: VECTOR_STORE_VER + 1,
         ..on_disk
     };
     wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
@@ -150,10 +150,10 @@ fn newer_schema_ver_on_disk_is_refused_without_wiping() {
     let expected = LanceMeta {
         dim: 384,
         embedding_model: "balanced".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
     let on_disk = LanceMeta {
-        schema_ver: MEMORY_SCHEMA_VER + 1,
+        schema_ver: VECTOR_STORE_VER + 1,
         ..expected.clone()
     };
     std::fs::write(&meta_path, serde_json::to_vec(&on_disk).unwrap()).unwrap();
@@ -278,7 +278,7 @@ fn an_unreadable_meta_is_a_mismatch_not_an_error() {
     let expected = LanceMeta {
         dim: 384,
         embedding_model: "balanced".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
 
     wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
@@ -320,13 +320,13 @@ fn a_wipe_that_cannot_finish_leaves_meta_in_place() {
 fn a_newer_meta_this_binary_cannot_parse_is_refused_not_wiped() {
     let dir = tempfile::tempdir().unwrap();
     let meta_path = dir.path().join(META_FILE);
-    let newer = format!(r#"{{"schema_ver":{},"vectors":{{"dim":384}}}}"#, MEMORY_SCHEMA_VER + 1);
+    let newer = format!(r#"{{"schema_ver":{},"vectors":{{"dim":384}}}}"#, VECTOR_STORE_VER + 1);
     std::fs::write(&meta_path, &newer).unwrap();
     let keep = sentinel(dir.path());
     let expected = LanceMeta {
         dim: 384,
         embedding_model: "balanced".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
 
     let error = wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap_err();
@@ -386,7 +386,7 @@ fn a_wipe_that_fails_on_a_table_keeps_meta_json_for_the_next_open() {
     let old = LanceMeta {
         dim: 8,
         embedding_model: "old".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
     std::fs::write(&meta_path, serde_json::to_vec(&old).unwrap()).unwrap();
     let stuck = dir.path().join("stuck.lance");
@@ -398,7 +398,7 @@ fn a_wipe_that_fails_on_a_table_keeps_meta_json_for_the_next_open() {
     let expected = LanceMeta {
         dim: 4,
         embedding_model: "new".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
 
     let wiped = wipe_on_mismatch(dir.path(), &meta_path, &expected);
@@ -494,7 +494,7 @@ fn another_process_temp_file_does_not_get_in_the_way_of_writing_meta() {
     let meta = LanceMeta {
         dim: 4,
         embedding_model: "test".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER,
+        schema_ver: VECTOR_STORE_VER,
     };
 
     write_meta(&meta_path, &meta).expect("the write goes through its own temp file");
@@ -594,6 +594,56 @@ fn an_open_that_waits_out_a_held_lock_fails_and_touches_nothing() {
     drop(LanceStore::open(dir.path(), 4, "model").expect("opens once the lock is free"));
 }
 
+/// A store written by a binary whose store version was the release minor reads as older than the
+/// decoupled version and is wiped and rebuilt, never refused: an upgrade does not lock the user
+/// out of their vector store, and the memory notes, kept elsewhere, re-embed into it.
+#[test]
+fn a_store_versioned_by_the_release_minor_is_older_and_wiped() {
+    assert!(u32::from(crate::version::RELEASE_MINOR) < VECTOR_STORE_VER);
+    let dir = tempfile::tempdir().unwrap();
+    let meta = LanceMeta {
+        dim: 4,
+        embedding_model: "m".to_string(),
+        schema_ver: u32::from(crate::version::RELEASE_MINOR),
+    };
+    write_meta(&dir.path().join(META_FILE), &meta).unwrap();
+    std::fs::write(dir.path().join("stale.lance"), b"x").unwrap();
+    let store = LanceStore::open(dir.path(), 4, "m").expect("an older store opens");
+    assert!(!dir.path().join("stale.lance").exists(), "its tables were wiped");
+    let written: LanceMeta = serde_json::from_slice(&std::fs::read(dir.path().join(META_FILE)).unwrap()).unwrap();
+    assert_eq!(written.schema_ver, VECTOR_STORE_VER);
+    drop(store);
+}
+
+fn small_fragments(store: &LanceStore, table: &str) -> usize {
+    store.inner.rt().block_on(async {
+        let t = store.inner.connection.open_table(table).execute().await.unwrap();
+        t.stats().await.unwrap().fragment_stats.num_small_fragments
+    })
+}
+
+/// Each `basemind memory save` is its own process: one open, one upsert, gone. The per-process
+/// commit counter never reaches its period there, so the table's own fragment count bounds it.
+#[test]
+fn short_lived_memory_writers_keep_the_fragment_count_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let writes = super::batch::AUTO_COMPACT_SMALL_FRAGMENTS + 8;
+    for i in 0..writes {
+        let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+        store
+            .upsert_memory(memory_row(&format!("k{i}"), "note", i64::try_from(i).unwrap() + 1))
+            .unwrap();
+    }
+
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    let fragments = small_fragments(&store, MEMORY_TABLE);
+    assert!(
+        fragments < super::batch::AUTO_COMPACT_SMALL_FRAGMENTS,
+        "{fragments} small fragments after {writes} one-write processes"
+    );
+    assert_eq!(store.memory_stamps("s", "group", "").unwrap().stamps.len(), writes);
+}
+
 fn listing(dir: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
@@ -649,7 +699,7 @@ fn a_read_side_open_refuses_a_newer_store() {
     let newer = LanceMeta {
         dim: 8,
         embedding_model: "balanced".to_string(),
-        schema_ver: MEMORY_SCHEMA_VER + 1,
+        schema_ver: VECTOR_STORE_VER + 1,
     };
     std::fs::write(dir.path().join(META_FILE), serde_json::to_vec(&newer).unwrap()).unwrap();
     let keep = sentinel(dir.path());

@@ -89,7 +89,8 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 /// - 1: symbol `signature` stops at the grammar's body field (`extract::l1::header_text`).
 /// - 2: Rust outlines gain bodiless trait methods, nested `fn` items, items inside item-position
 ///   macro bodies, and trait impls written with a path or generic trait.
-pub const EXTRACT_EPOCH: u16 = 2;
+/// - 3: the BM25 keyword postings split camelCase and PascalCase identifiers into their words.
+pub const EXTRACT_EPOCH: u16 = 3;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

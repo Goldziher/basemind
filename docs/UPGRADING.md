@@ -245,7 +245,8 @@ lowered), `body_truncated` (`git_log` search: one commit's message was shortened
 | `code_refs` | `total_is_partial` | `truncated`, `truncated_reason: "scan_cap"` (`total` is a lower bound; `next_cursor` resumes the scan) |
 | `find_files` | `truncated` | removed: `next_cursor` says a listing goes on |
 | `memory_search` listing | `truncated` on a `limit` cut | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when `total` stopped counting (a lower bound) |
-| `code_search`, `docs_search` | none | `truncated`, `truncated_reason` (`depth`, `rerank_top_k`, `filter_depth`) |
+| `code_search` | none | `also_at` on a hit (other paths with the same content; `path` is the live one); `truncated`, `truncated_reason: "stale_chunks"`, `omitted` when ranked chunks no indexed file holds were dropped; a reranker that could not run is a `rerank` entry of `lanes_unavailable` |
+| `docs_search` | `chunk_idx`, `distance`, `byte_start` / `byte_end`, per-hit `keywords` / `entities` / `summary` | `chunk`, `cite` (pages, section, lines, bytes), `context`, `also_at`, `title`, `lanes`, `score`; on the response `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`, `vector_mode`, `rerank`; `truncated_reason` (`depth`, `liveness_depth`). `scope` is gone; `kind` and `path` filter before ranking (ADR-0029, ADR-0037) |
 | `git_diff {}` | none | `truncated`, `truncated_reason: "path_cap"`, `omitted` (paths), `path` |
 | `git_diff {path}` | `truncated`, `total_hunks` | `truncated`, `truncated_reason` (`hunk_cap`, `byte_cap`), `omitted` (hunks) |
 | `git_diff {structural}` | `common` (a list) | `common` (a count) |
@@ -433,9 +434,8 @@ afterwards, together with `admin compress` and `compress-output`; they have no r
 
 The `web` tool and the `basemind web` commands (`scrape`, `crawl`, `map`) were removed, with the
 `crawl` cargo feature; they have no replacement. A `[crawl]` table in `basemind.toml` is still
-accepted and ignored. Pages already ingested stay searchable under their `web:<host>` scope
-(`docs_search` with `scope: "web:<host>"`, or `memory documents --scope web:<host>`) and are no
-longer refreshed.
+accepted and ignored. Pages ingested under a `web:<host>` scope are no longer searchable: the
+document store (ADR-0029) holds only the documents of the scanned workspace, and `scope` is gone.
 
 The `shell` tool and the `basemind shell` commands (`spawn`, `send`, `capture`, `kill`, `list`,
 `broadcast`) were removed, with the `shells` cargo feature; they have no replacement. A `[shells]`

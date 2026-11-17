@@ -101,6 +101,10 @@ pub struct FileMapDoc {
     /// blobs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text_fallback: bool,
+    /// True when vectors were asked for and the embedder could not produce them: the document owes
+    /// its vectors and is re-extracted once the embedder works. Tail field, absent in older blobs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub embed_failed: bool,
 }
 
 #[path = "doc_blobs.rs"]
@@ -174,7 +178,7 @@ pub struct DocSummary {
 }
 
 /// A single chunked region of a document.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DocChunk {
     /// UTF-8 byte offset where this chunk starts in the original text.
     pub byte_start: u32,
@@ -186,7 +190,27 @@ pub struct DocChunk {
     /// Embedding vector. Empty when chunking ran without an embedding config.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub embedding: Vec<f32>,
+    /// xberg's classification of the chunk (`heading`, `table_like`, `code_block`, ...), snake
+    /// case; empty for the linear chunker. Tail fields from here on: older blobs decode them empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// Pages (slides) the chunk spans, 1-based; paged formats only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_end: Option<u32>,
+    /// Heading trail the chunk sits under, outermost first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section: Vec<String>,
+    /// Source lines the chunk came from, 1-based; text sources only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<u32>,
 }
+
+#[path = "doc_text.rs"]
+pub(crate) mod text;
 
 /// Caller-supplied knobs for document extraction.
 ///
@@ -273,12 +297,14 @@ impl DocConfig {
             self.document_models,
             DocumentModelProfile::CodeOnly | DocumentModelProfile::None_
         );
+        // Tables repeat their header in every chunk they are split over (ADR-0029 rule 10).
         let chunking = ChunkingConfig {
             max_characters: self.max_characters,
             overlap: self.overlap,
             embedding: None,
             preset: self.embedding_preset.clone(),
             chunker_type: ChunkerType::Markdown,
+            table_chunking: xberg::core::config::processing::TableChunkingMode::RepeatHeader,
             ..Default::default()
         };
         let language_detection = if self.language.auto_detect {
@@ -321,6 +347,9 @@ impl DocConfig {
             concurrency,
             extraction_timeout_secs: Some(self.extraction_timeout_secs),
             security_limits: Some(security_limits),
+            // Markdown keeps headings, tables and fences in the content, so the splitter cuts at
+            // them and PDF chunks get a section (benchmarks/retrieval/PROBES.md).
+            output_format: xberg::core::config::OutputFormat::Markdown,
             ..Default::default()
         }
     }
@@ -576,36 +605,29 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         tracing::warn!(path = %path.display(), "{warning}");
     }
 
-    let mut chunks: Vec<DocChunk> = Vec::new();
-    let mut dense_inputs = Vec::new();
     let embed_requested = config.embed && !matches!(config.document_models, DocumentModelProfile::None_);
-    if linear {
-        for (start, end) in doc_guard::linear_chunk_spans(&result.content, config.max_characters, config.overlap) {
-            let (chunk, dense_input) = prepare_doc_chunk(
-                result.content[start..end].to_string(),
-                start,
-                end,
-                None,
-                embed_requested,
-            );
-            chunks.push(chunk);
-            dense_inputs.extend(dense_input);
-        }
-    } else if let Some(input_chunks) = result.chunks {
-        for c in input_chunks {
-            let (chunk, dense_input) = prepare_doc_chunk(
-                c.content,
-                c.metadata.byte_start,
-                c.metadata.byte_end,
-                c.metadata.heading_context.as_ref(),
-                embed_requested,
-            );
-            chunks.push(chunk);
-            if let Some(dense_input) = dense_input {
-                dense_inputs.push(dense_input);
-            }
-        }
-    }
+    let inputs: Vec<text::ChunkInput<'_>> = if linear {
+        doc_guard::linear_chunk_spans(&result.content, config.max_characters, config.overlap)
+            .into_iter()
+            .map(|(start, end)| text::ChunkInput::of_span(&result.content, start, end))
+            .collect()
+    } else {
+        result
+            .chunks
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(text::ChunkInput::of_xberg)
+            .collect()
+    };
+    let source = text::read_text_source(path, &result.mime_type);
+    let (mut chunks, mut dense_inputs) = text::build_chunks(
+        &result.content,
+        &result.mime_type,
+        source.as_deref(),
+        inputs,
+        embed_requested,
+    );
 
     if linear && chunks.len() > config.max_chunks_per_document {
         tracing::warn!(
@@ -616,35 +638,34 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         );
         dense_inputs.clear();
     }
-    let mut embedding_dim = 0;
-    if embed_requested && !dense_inputs.is_empty() {
+    // An embedder that cannot load or run leaves the document indexed without vectors: it is still
+    // found by the lexical lane, and the vector lane says it has none (review M1).
+    let mut embed_failed = false;
+    let embedding_dim = if embed_requested && !dense_inputs.is_empty() {
         let preset = config.embedding_preset.as_deref().unwrap_or("balanced");
-        let embedder = crate::embeddings::SharedEmbedder::load_with_provider(
-            preset,
-            config.embed_max_threads,
-            config.embed_batch_size,
-            config.onnx_provider,
-        )
-        .map_err(|error| ExtractError::Document(format!("loading dense embedder: {error}")))?;
-        let input_refs: Vec<&str> = dense_inputs.iter().map(String::as_str).collect();
-        let vectors = embedder
-            .embed_batch(&input_refs)
-            .map_err(|error| ExtractError::Document(format!("embedding document chunks: {error}")))?;
-        if vectors.len() != chunks.len() {
-            return Err(ExtractError::Document(format!(
-                "dense embedder returned {} vectors for {} chunks",
-                vectors.len(),
-                chunks.len()
-            )));
-        }
-        embedding_dim = embedder.dim();
-        for (chunk, vector) in chunks.iter_mut().zip(vectors) {
-            chunk.embedding = vector;
-        }
-    }
+        let embedded = text::embed_chunks(&dense_inputs, &mut chunks, |inputs| {
+            text::embed_document_inputs(
+                preset,
+                config.embed_max_threads,
+                config.embed_batch_size,
+                config.onnx_provider,
+                inputs,
+            )
+        });
+        embedded.unwrap_or_else(|reason| {
+            tracing::warn!(path = %path.display(), %reason, "document indexed without vectors");
+            embed_failed = true;
+            0
+        })
+    } else {
+        0
+    };
 
     let embedding_model = if embedding_dim > 0 {
-        config.embedding_preset.clone().unwrap_or_else(|| "default".to_string())
+        config.embedding_preset.as_deref().map_or_else(
+            || "default".to_string(),
+            |p| crate::embeddings::model_key(p).into_owned(),
+        )
     } else {
         String::new()
     };
@@ -699,35 +720,8 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         language_confidences,
         linear_chunked: linear,
         text_fallback,
+        embed_failed,
     })
-}
-
-/// Dense retrieval benefits from structural heading context, while the persisted text and lexical
-/// search input must remain the exact source span described by the chunk's byte offsets.
-fn dense_retrieval_text<'a>(content: &'a str, heading_context: Option<&xberg::types::HeadingContext>) -> Cow<'a, str> {
-    match heading_context {
-        Some(context) if !context.headings.is_empty() => {
-            Cow::Owned(xberg::chunking::render_heading_breadcrumb(content, context))
-        }
-        _ => Cow::Borrowed(content),
-    }
-}
-
-fn prepare_doc_chunk(
-    content: String,
-    byte_start: usize,
-    byte_end: usize,
-    heading_context: Option<&xberg::types::HeadingContext>,
-    embed_requested: bool,
-) -> (DocChunk, Option<String>) {
-    let dense_input = embed_requested.then(|| dense_retrieval_text(&content, heading_context).into_owned());
-    let chunk = DocChunk {
-        byte_start: u32::try_from(byte_start).unwrap_or(u32::MAX),
-        byte_end: u32::try_from(byte_end).unwrap_or(u32::MAX),
-        text: content,
-        embedding: Vec::new(),
-    };
-    (chunk, dense_input)
 }
 
 fn map_language_confidences(input: Vec<xberg::types::LanguageConfidence>) -> Vec<DocLanguageConfidence> {
@@ -925,9 +919,21 @@ mod tests {
         assert_eq!(chunking.chunker_type, ChunkerType::Markdown);
     }
 
+    fn input<'a>(text: &str, context: Option<&'a HeadingContext>) -> text::ChunkInput<'a> {
+        text::ChunkInput {
+            text: text.to_string(),
+            byte_start: 0,
+            byte_end: text.len(),
+            kind: String::new(),
+            pages: Some((3, 4)),
+            section: vec!["Guide".to_string()],
+            heading_context: context,
+        }
+    }
+
     #[test]
     fn dense_retrieval_text_adds_breadcrumb_without_changing_source() {
-        let source = "## Setup\n\nInstall dependencies.".to_string();
+        let source = "## Setup\n\nInstall dependencies.";
         let context = HeadingContext {
             headings: vec![
                 HeadingLevel {
@@ -941,30 +947,26 @@ mod tests {
             ],
         };
 
-        let (stored, retrieval) = prepare_doc_chunk(source, 10, 44, Some(&context), true);
+        let (stored, retrieval) =
+            text::build_chunks(source, "text/markdown", None, vec![input(source, Some(&context))], true);
 
-        assert_eq!(stored.text, "## Setup\n\nInstall dependencies.");
-        assert_eq!(stored.byte_start, 10);
-        assert_eq!(stored.byte_end, 44);
+        assert_eq!(stored[0].text, source);
+        assert_eq!((stored[0].byte_start, stored[0].byte_end), (0, 31));
+        assert_eq!(stored[0].section, vec!["Guide".to_string()]);
+        assert_eq!(stored[0].page_start, None, "a Markdown file has no pages");
         assert_eq!(
-            retrieval.as_deref(),
-            Some("# Guide > ## Setup\n\nInstall dependencies.")
+            retrieval,
+            vec!["# Guide > ## Setup\n\nInstall dependencies.".to_string()]
         );
     }
 
     #[test]
-    fn dense_retrieval_text_borrows_exact_source_without_heading_context() {
-        let retrieval = dense_retrieval_text("Exact source span", None);
-
-        assert!(matches!(retrieval, Cow::Borrowed("Exact source span")));
-    }
-
-    #[test]
-    fn embedding_disabled_keeps_exact_text_without_allocating_retrieval_input() {
-        let (stored, retrieval) = prepare_doc_chunk("Exact source span".to_string(), 0, 17, None, false);
-
-        assert_eq!(stored.text, "Exact source span");
-        assert!(retrieval.is_none());
+    fn paged_formats_keep_their_pages_and_embedding_off_builds_no_input() {
+        let source = "Exact source span";
+        let (stored, retrieval) = text::build_chunks(source, "application/pdf", None, vec![input(source, None)], false);
+        assert_eq!(stored[0].text, "Exact source span");
+        assert_eq!((stored[0].page_start, stored[0].page_end), (Some(3), Some(4)));
+        assert!(retrieval.is_empty());
     }
 
     #[test]

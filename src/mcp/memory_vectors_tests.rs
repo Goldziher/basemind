@@ -992,3 +992,6 @@ async fn a_store_that_would_not_open_is_unavailable_at_once_to_the_next_call() {
     assert!(second.message.contains("unavailable"), "{}", second.message);
     assert!(!dir.exists(), "the store was not opened again");
 }
+
+#[path = "memory_vectors_restart_tests.rs"]
+mod restart;

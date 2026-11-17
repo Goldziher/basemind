@@ -25,6 +25,11 @@ pub const BATCH_MAX_ROWS: usize = 4_096;
 const AUTO_PRUNE_EVERY: u64 = 32;
 /// ...and also compact its fragments every this many commits.
 const AUTO_COMPACT_EVERY: u64 = 128;
+/// Compact a table once it holds this many small (uncompacted) fragments, whatever process wrote
+/// them. The commit counter is per process, so a writer that lives for one or two commits (a
+/// `basemind memory save`, a hook) never reaches [`AUTO_COMPACT_EVERY`]; the fragment count is read
+/// from the table itself, so short-lived writers are bounded too.
+pub(super) const AUTO_COMPACT_SMALL_FRAGMENTS: usize = 32;
 /// Versions younger than this survive an auto prune (in-flight readers pin a version).
 #[cfg(not(test))]
 const AUTO_RETENTION: Duration = Duration::from_secs(300);
@@ -155,8 +160,11 @@ impl LanceStore {
         })
     }
 
-    /// Count a commit against `table_name` and run the bounded-retention maintenance when due.
-    /// Best effort: maintenance failures are logged, never propagated into the write.
+    /// Count a commit against `table_name` and run the bounded-retention maintenance when due:
+    /// every [`AUTO_PRUNE_EVERY`] commits of this process or versions of the table, and a compaction
+    /// every [`AUTO_COMPACT_EVERY`] commits or once the table holds
+    /// [`AUTO_COMPACT_SMALL_FRAGMENTS`] small fragments. Best effort: maintenance failures are
+    /// logged, never propagated into the write.
     pub(super) async fn after_commit(&self, table: &Table, table_name: &str) {
         let n = {
             let mut map = self.inner.commits.lock().unwrap_or_else(|e| e.into_inner());
@@ -164,10 +172,15 @@ impl LanceStore {
             *n += 1;
             *n
         };
-        if n % AUTO_PRUNE_EVERY != 0 {
+        let version_due = table.version().await.is_ok_and(|v| v % AUTO_PRUNE_EVERY == 0);
+        let fragments_due = table
+            .stats()
+            .await
+            .is_ok_and(|stats| stats.fragment_stats.num_small_fragments >= AUTO_COMPACT_SMALL_FRAGMENTS);
+        if n % AUTO_PRUNE_EVERY != 0 && !version_due && !fragments_due {
             return;
         }
-        let compact = n % AUTO_COMPACT_EVERY == 0;
+        let compact = fragments_due || n % AUTO_COMPACT_EVERY == 0;
         if let Err(error) = optimize_table(table, compact, AUTO_RETENTION).await {
             tracing::warn!(table = table_name, ?error, "lance auto-maintenance failed");
         }

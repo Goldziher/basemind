@@ -1166,7 +1166,7 @@ degrading to a truncated in-memory view.
 | `put <key> <value> [--tag]... [--individual]` | Store a note (`memory_save`). |
 | `get <key>` / `list [--prefix --tag]` / `search <query> [--tag]` | Read one note, list by key prefix, or search by meaning (`memory_search`). |
 | `delete <key>` | Remove a note (CLI only). |
-| `documents <query> [--mime-type --keywords --entity --scope]` | Search indexed PDFs / Office / HTML / images by meaning (`docs_search`). |
+| `documents <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks by meaning and by words, with citations (`docs_search`). |
 **Admin (`basemind admin`)**
 
 | Command | Purpose |
