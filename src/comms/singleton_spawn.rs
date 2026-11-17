@@ -85,6 +85,29 @@ const INHERITED_IDENTITY_VARS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PAREN
 /// with.
 const INHERITED_CWD_VARS: [&str; 2] = ["PWD", "OLDPWD"];
 
+/// Grants that widen what the daemon does for every session on the machine: admit any root or extra
+/// roots, follow symlinks, index credential files, open the HTTP transport and where it binds. A
+/// daemon serves every session of the generation, so one that inherited them from whichever shell
+/// happened to start it applied that shell's grants to all of them. They reach the daemon only from
+/// an operator's explicit start (`comms start`, or `daemon ensure` with the HTTP grant set).
+const INHERITED_GRANT_VARS: [&str; 6] = [
+    crate::config::root_guard::ALLOW_ANY_ROOT_ENV,
+    crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV,
+    crate::config::trust::ALLOW_FOLLOW_SYMLINKS_ENV,
+    crate::scanner_filter::ALLOW_REPO_CREDENTIALS_ENV,
+    crate::comms::http_auth::ALLOW_HTTP_ENV,
+    crate::comms::http_frontend::HTTP_ADDR_ENV,
+];
+
+/// Whether a spawn passes the spawner's [`INHERITED_GRANT_VARS`] on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grants {
+    /// An implicit spawn (a session, a CLI call): the grants are removed.
+    Withheld,
+    /// An operator's explicit start: the grants in its environment are the ones meant.
+    Passed,
+}
+
 /// File name of the detached daemon's combined stdout/stderr log, inside the comms dir.
 pub const DAEMON_LOG_FILE: &str = "daemon.log";
 /// Size past which the log is rotated at spawn and trimmed while the daemon runs.
@@ -134,7 +157,7 @@ pub fn trim_daemon_log(comms_dir: &Path) {
 /// launching a process — the properties that matter here are all visible on the [`Command`] itself.
 ///
 /// [`Command`]: std::process::Command
-fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
+fn daemon_command(exe: &Path, paths: &CommsPaths, grants: Grants) -> std::process::Command {
     let mut command = std::process::Command::new(exe);
     command
         .arg("comms")
@@ -156,6 +179,11 @@ fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
     for key in INHERITED_IDENTITY_VARS.iter().chain(INHERITED_CWD_VARS.iter()) {
         command.env_remove(key);
     }
+    if grants == Grants::Withheld {
+        for key in INHERITED_GRANT_VARS {
+            command.env_remove(key);
+        }
+    }
     command
 }
 
@@ -169,12 +197,17 @@ fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
 /// of `/` and a scan of the entire filesystem. Nothing in the daemon reads its own cwd, so this
 /// costs nothing and removes the whole class.
 pub fn spawn_detached_daemon(paths: &CommsPaths) -> std::io::Result<()> {
+    spawn_detached_daemon_with(paths, Grants::Withheld)
+}
+
+/// [`spawn_detached_daemon`] choosing whether the spawner's grants reach the daemon.
+pub fn spawn_detached_daemon_with(paths: &CommsPaths, grants: Grants) -> std::io::Result<()> {
     let exe = absolute_daemon_binary(resolve_daemon_binary()?)?;
     // `resolve_paths` already made it; recreate defensively because `current_dir` on a missing
     // directory fails the spawn outright, and losing the daemon to a tidied cache dir is worse
     // than the cwd hygiene is good.
     let _ = std::fs::create_dir_all(&paths.comms_dir);
-    spawn_detached(daemon_command(&exe, paths))
+    spawn_detached(daemon_command(&exe, paths, grants))
 }
 
 /// Spawn `command` so that it outlives this process and is never this process's child once it runs.
@@ -363,7 +396,11 @@ mod tests {
     #[test]
     fn the_daemon_runs_in_the_comms_dir_not_the_spawner_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let command = daemon_command(std::path::Path::new("/usr/local/bin/basemind"), &paths_at(dir.path()));
+        let command = daemon_command(
+            std::path::Path::new("/usr/local/bin/basemind"),
+            &paths_at(dir.path()),
+            Grants::Withheld,
+        );
 
         assert_eq!(
             command.get_current_dir(),
@@ -377,7 +414,11 @@ mod tests {
     #[test]
     fn the_child_environment_drops_identity_and_cwd_vars_and_keeps_everything_else() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let command = daemon_command(std::path::Path::new("/usr/local/bin/basemind"), &paths_at(dir.path()));
+        let command = daemon_command(
+            std::path::Path::new("/usr/local/bin/basemind"),
+            &paths_at(dir.path()),
+            Grants::Withheld,
+        );
 
         let removed: Vec<&std::ffi::OsStr> = command
             .get_envs()
@@ -396,8 +437,38 @@ mod tests {
         );
         assert_eq!(
             removed.len(),
-            INHERITED_IDENTITY_VARS.len() + INHERITED_CWD_VARS.len(),
+            INHERITED_IDENTITY_VARS.len() + INHERITED_CWD_VARS.len() + INHERITED_GRANT_VARS.len(),
             "nothing the daemon needs (PATH, HOME, XDG, proxy, model vars) may be swept up: {removed:?}"
+        );
+    }
+
+    /// One shell with `BASEMIND_ALLOW_ANY_ROOT=1` or `BASEMIND_ALLOW_HTTP=1` that happened to start
+    /// the daemon lifted the root guard, or opened TCP, for every session on the machine.
+    #[test]
+    fn an_implicit_spawn_withholds_the_grants_and_an_explicit_one_passes_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = std::path::Path::new("/usr/local/bin/basemind");
+        let removed = |grants| {
+            daemon_command(exe, &paths_at(dir.path()), grants)
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(key, _)| key.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let implicit = removed(Grants::Withheld);
+        for key in [
+            "BASEMIND_ALLOW_ANY_ROOT",
+            "BASEMIND_ALLOW_HTTP",
+            "BASEMIND_ALLOW_EXTRA_ROOTS",
+        ] {
+            assert!(implicit.iter().any(|removed| removed == key), "{key}: {implicit:?}");
+        }
+        let explicit = removed(Grants::Passed);
+        assert!(
+            INHERITED_GRANT_VARS
+                .iter()
+                .all(|key| !explicit.iter().any(|removed| removed == key)),
+            "{explicit:?}"
         );
     }
 
