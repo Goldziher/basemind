@@ -675,6 +675,25 @@ impl WorkspacePool {
         dropped
     }
 
+    /// Drop every hosted read stack, live sessions or not, and return the count dropped. For the
+    /// drain: a stack holds this pool and the broker as its hosts, so one left in its slot keeps
+    /// both, and every store they hold, alive past the daemon's exit from its serve loop.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) async fn shed_read_stacks(&self) -> usize {
+        let entries: Vec<std::sync::Arc<WorkspaceEntry>> = self.lock_map().values().cloned().collect();
+        let mut dropped = 0;
+        for entry in entries {
+            // A slot held this long is mid-build; the runtime teardown cancels that build. ~keep
+            let Ok(mut slot) = tokio::time::timeout(Duration::from_secs(1), entry.serve_state.lock()).await else {
+                continue;
+            };
+            if slot.take().is_some() {
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
     /// Number of workspaces currently holding a warm hosted read stack. Exposed for tests: it is the
     /// quantity the cap bounds, and it is deliberately NOT [`Self::len`] — the two diverge on
     /// purpose.

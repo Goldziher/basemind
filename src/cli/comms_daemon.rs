@@ -76,6 +76,14 @@ fn test_store_open_delay() -> Option<std::time::Duration> {
 /// case where that one file is stuck inside non-cooperative work (e.g. an ONNX embed call).
 const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// How long a new daemon waits for a lock holder that does not answer: a draining daemon has
+/// unlinked its endpoint and holds the lock through its drain grace and runtime teardown.
+const HOLDER_DRAIN_WAIT: std::time::Duration = crate::comms::daemon::DRAIN_GRACE
+    .saturating_add(RUNTIME_SHUTDOWN_TIMEOUT.saturating_add(std::time::Duration::from_secs(5)));
+
+/// How often a waiting daemon tries the lock again.
+const HOLDER_DRAIN_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// The `(device, inode)` identity of the socket file, or `None` when it is absent / unstattable.
 /// The ownership watchdog compares this against the value captured at bind time to detect an
 /// unlink-and-rebind reclaim by another daemon.
@@ -104,6 +112,8 @@ pub fn run() -> Result<()> {
     #[cfg(feature = "intelligence")]
     crate::embeddings::bound_ort_memory(DAEMON_ORT_THREADS);
 
+    crate::comms::fd_budget::raise_to_budget();
+
     // The daemon is mostly idle I/O relay, so a handful of async workers is plenty; the blocking pool
     // (GC, read-stack builds, git-history syncs) is capped well under tokio's default of 512 and its
     // idle threads are reaped quickly.
@@ -112,28 +122,36 @@ pub fn run() -> Result<()> {
         .max_blocking_threads(DAEMON_MAX_BLOCKING_THREADS)
         .thread_keep_alive(std::time::Duration::from_secs(5))
         .enable_all()
-    crate::comms::fd_budget::raise_to_budget();
-
         .build()
         .context("build tokio runtime")?;
 
-    let result = runtime.block_on(async move {
-        // Single-owner lock FIRST, before bind: a redundant daemon converges (exit 0) without ever
-        // touching the live daemon's socket. This — plus the machine-registry entry it writes — is
-        // the authoritative "one daemon per comms dir" gate, uniform across Unix and Windows.
-        use crate::comms::daemon_lock::{DaemonLock, DaemonLockOutcome};
-        let _daemon_lock = match DaemonLock::acquire(&paths.comms_dir, env!("CARGO_PKG_VERSION")) {
-            Ok(DaemonLockOutcome::Acquired(lock)) => lock,
-            Ok(DaemonLockOutcome::AlreadyHeld(holder)) => {
-                tracing::info!(
-                    holder_pid = holder.as_ref().map(|record| record.pid),
-                    "comms daemon: another daemon already owns this comms dir; converging (exit 0)"
-                );
-                return Ok(());
-            }
-            Err(error) => return Err(anyhow::anyhow!("acquire daemon lock: {error}")),
-        };
+    // Single-owner lock FIRST, before bind: a redundant daemon converges (exit 0) without ever
+    // touching the live daemon's socket. This — plus the machine-registry entry it writes — is the
+    // authoritative "one daemon per comms dir" gate, uniform across Unix and Windows. It is held
+    // until after the runtime's teardown below, so it is released last: a successor that took it
+    // while this daemon still held its stores found the comms store locked and exited.
+    use crate::comms::daemon_lock::{DaemonKind, DaemonLock, DaemonLockOutcome};
+    let socket_path = paths.socket_path.clone();
+    let daemon_lock = match DaemonLock::acquire_waiting(
+        DaemonKind::Comms,
+        &paths.comms_dir,
+        env!("CARGO_PKG_VERSION"),
+        &crate::daemon_lock::daemons_dir(),
+        (HOLDER_DRAIN_WAIT, HOLDER_DRAIN_POLL),
+        || singleton::probe_alive(&socket_path),
+    ) {
+        Ok(DaemonLockOutcome::Acquired(lock)) => lock,
+        Ok(DaemonLockOutcome::AlreadyHeld(holder)) => {
+            tracing::info!(
+                holder_pid = holder.as_ref().map(|record| record.pid),
+                "comms daemon: another daemon already owns this comms dir; converging (exit 0)"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(anyhow::anyhow!("acquire daemon lock: {error}")),
+    };
 
+    let result = runtime.block_on(async move {
         // Held until this block returns: a daemon that is killed leaves the marker for the next.
         let _hosting = crate::scan_evidence::HostingMarker::begin();
 
@@ -364,15 +382,18 @@ pub fn run() -> Result<()> {
             ),
         ));
         let broker_for_exit = broker.clone();
-        frontend
+        let served = frontend
             .serve_obj(broker, shutdown_rx)
             .await
-            .context("comms front-end serve loop")?;
+            .context("comms front-end serve loop");
+        broker_for_exit.shed_hosted_stacks().await;
+        served?;
         broker_for_exit.maintain_agents().await;
         Ok(())
     });
     // Bounded teardown instead of the implicit unbounded drop — see [`RUNTIME_SHUTDOWN_TIMEOUT`]. ~keep
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+    drop(daemon_lock);
     result?;
     Ok(())
 }

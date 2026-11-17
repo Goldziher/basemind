@@ -136,6 +136,57 @@ fn acquire_admits_one_owner_then_reports_already_held() {
     }
 }
 
+/// A daemon spawned while the previous one drains (endpoint gone, lock still held) must wait for
+/// the lock and become the daemon, not converge and leave none behind.
+#[test]
+fn a_contender_waits_out_a_holder_that_does_not_answer_and_takes_the_lock() {
+    let machine = tempfile::tempdir().expect("machine tempdir");
+    let comms = tempfile::tempdir().expect("comms tempdir");
+    let draining =
+        DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path()).expect("holder acquires");
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        drop(draining);
+    });
+    let windows = (std::time::Duration::from_secs(10), std::time::Duration::from_millis(20));
+    let outcome = DaemonLock::acquire_waiting(
+        DaemonKind::Comms,
+        comms.path(),
+        "9.9.9",
+        machine.path(),
+        windows,
+        || false,
+    )
+    .expect("contend");
+    releaser.join().expect("release");
+    assert!(
+        matches!(outcome, DaemonLockOutcome::Acquired(_)),
+        "the successor takes over once the draining holder lets go, got {outcome:?}"
+    );
+}
+
+/// A holder that answers is a live daemon: converge at once, without waiting.
+#[test]
+fn a_contender_converges_at_once_on_a_holder_that_answers() {
+    let machine = tempfile::tempdir().expect("machine tempdir");
+    let comms = tempfile::tempdir().expect("comms tempdir");
+    let _live =
+        DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "9.9.9", machine.path()).expect("holder acquires");
+    let started = std::time::Instant::now();
+    let windows = (std::time::Duration::from_secs(10), std::time::Duration::from_millis(20));
+    let outcome = DaemonLock::acquire_waiting(
+        DaemonKind::Comms,
+        comms.path(),
+        "9.9.9",
+        machine.path(),
+        windows,
+        || true,
+    )
+    .expect("contend");
+    assert!(matches!(outcome, DaemonLockOutcome::AlreadyHeld(_)));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
 #[test]
 fn count_prunes_dead_holders_and_counts_live_ones() {
     let machine = tempfile::tempdir().expect("machine tempdir");

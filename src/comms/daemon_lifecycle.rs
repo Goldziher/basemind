@@ -83,6 +83,16 @@ impl Broker {
         }
     }
 
+    /// Drop every hosted read stack once the front-end has stopped. Each stack holds the broker and
+    /// the workspace pool as its hosts, a cycle that otherwise kept the comms store and every open
+    /// workspace store alive until the process exited, past the release of the daemon lock.
+    pub async fn shed_hosted_stacks(&self) {
+        let shed = self.workspaces.shed_read_stacks().await;
+        if shed > 0 {
+            tracing::info!(shed, "comms: released hosted read stacks for shutdown");
+        }
+    }
+
     /// Current lifecycle state.
     pub async fn state(&self) -> LifecycleState {
         self.registry.lock().await.state

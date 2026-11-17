@@ -171,7 +171,7 @@ fn daemons_root() -> PathBuf {
 /// register and the only place its listings look. Keyed on the resolved data home; the `_in`/`_at`
 /// helpers take a directory explicitly so unit tests inject a temp dir without mutating the
 /// process-global `BASEMIND_DATA_HOME`.
-fn daemons_dir() -> PathBuf {
+pub(crate) fn daemons_dir() -> PathBuf {
     generation_registry_in(&daemons_root())
 }
 
@@ -483,6 +483,33 @@ impl DaemonLock {
     /// *live* peer — the caller exits 0 rather than racing to reclaim.
     pub fn acquire_kind(kind: DaemonKind, dir: &Path, version: &str) -> std::io::Result<DaemonLockOutcome> {
         Self::acquire_at(kind, dir, version, &daemons_dir())
+    }
+
+    /// [`acquire_at`](Self::acquire_at) that waits, up to `wait`, for a holder that does not
+    /// answer to let go, polling every `poll`. A holder that answers (`holder_answers`) is a live
+    /// daemon to converge on at once; one that holds the lock without answering is draining (its
+    /// endpoint is gone first and its lock last) or still starting. Converging on a draining holder
+    /// left no daemon at all once it exited, and the client that spawned this one waited out its
+    /// whole spawn timeout.
+    pub fn acquire_waiting(
+        kind: DaemonKind,
+        dir: &Path,
+        version: &str,
+        machine_dir: &Path,
+        (wait, poll): (std::time::Duration, std::time::Duration),
+        mut holder_answers: impl FnMut() -> bool,
+    ) -> std::io::Result<DaemonLockOutcome> {
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            let outcome = Self::acquire_at(kind, dir, version, machine_dir)?;
+            if matches!(outcome, DaemonLockOutcome::Acquired(_))
+                || std::time::Instant::now() >= deadline
+                || holder_answers()
+            {
+                return Ok(outcome);
+            }
+            std::thread::sleep(poll);
+        }
     }
 
     /// [`acquire_kind`](Self::acquire_kind) registering into an explicit machine dir. Injected so
