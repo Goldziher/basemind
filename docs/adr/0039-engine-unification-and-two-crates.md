@@ -107,6 +107,13 @@ ADR-0023 and ADR-0032 stand except where this record changes them.
      1,733 ms, against 1,296 ms when its history was read over the daemon socket. The same call
      without `--symbol` is forwarded: 19 ms on either view.
    - `admin telemetry` and `admin eval` are not tool calls and run in process.
+   - The per-read socket forwards go: the daemon no longer answers `memory`, `resolved_refs`,
+     `index_read` or `code_search_lanes`, and a session that holds no index reaches it only when the
+     daemon hosts it, in process. `GitHistory` stays: `basemind scan` asks the daemon to sync history
+     through it. `PROTO_VER` stays 7. A retired request is a decode error that closes the sender's
+     link, as for the retired worktree claims, while a bump would make every older binary of the
+     generation fail its handshake with a newer daemon (ADR-0024 rule 2) for requests it never
+     needed.
 
 ## Consequences
 
