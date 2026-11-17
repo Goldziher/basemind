@@ -660,7 +660,10 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     };
 
     let embedding_model = if embedding_dim > 0 {
-        config.embedding_preset.clone().unwrap_or_else(|| "default".to_string())
+        config.embedding_preset.as_deref().map_or_else(
+            || "default".to_string(),
+            |p| crate::embeddings::model_key(p).into_owned(),
+        )
     } else {
         String::new()
     };

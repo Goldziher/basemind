@@ -107,7 +107,7 @@ fn bm25_batch_from_chunks(
 /// Mirrors the documents tier's `scanner_docs::cached_doc_is_reusable`.
 fn code_cache_is_reusable(blob: &CodeChunkBlob, dim: u16, preset: &str) -> bool {
     blob.embedding_dim == dim
-        && blob.embedding_model == preset
+        && blob.embedding_model == crate::embeddings::model_key(preset)
         && !blob.chunks.is_empty()
         && blob.embeddings.len() == blob.chunks.len()
 }
@@ -301,7 +301,7 @@ pub(crate) fn chunk_and_embed(
         config_digest: digest.to_string(),
         schema_ver: SCHEMA_VER,
         embedding_dim: dim,
-        embedding_model: config.documents.embedding_preset.clone(),
+        embedding_model: crate::embeddings::model_key(&config.documents.embedding_preset).into_owned(),
         chunks,
         embeddings,
     };
@@ -455,8 +455,16 @@ mod tests {
 
     #[test]
     fn code_cache_reuse_requires_matching_dim_and_model() {
-        let blob = embedded_blob("balanced", 768);
+        let blob = embedded_blob(&crate::embeddings::model_key("balanced"), 768);
         assert!(code_cache_is_reusable(&blob, 768, "balanced"));
+        assert!(
+            !code_cache_is_reusable(&embedded_blob("balanced", 768), 768, "balanced"),
+            "a blob stamped with the bare name predates the model identity and is re-embedded"
+        );
+        assert!(
+            !code_cache_is_reusable(&embedded_blob("balanced@000000000000", 768), 768, "balanced"),
+            "another model under the same preset name must miss"
+        );
         assert!(
             !code_cache_is_reusable(&blob, 768, "multilingual"),
             "same-dim different-model must miss and force a re-embed"
@@ -467,7 +475,7 @@ mod tests {
 
     #[test]
     fn code_cache_reuse_rejects_chunkless_or_unembedded_blob() {
-        let mut blob = embedded_blob("balanced", 768);
+        let mut blob = embedded_blob(&crate::embeddings::model_key("balanced"), 768);
         blob.chunks.clear();
         blob.embeddings.clear();
         assert!(!code_cache_is_reusable(&blob, 768, "balanced"));

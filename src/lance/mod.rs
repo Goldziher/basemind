@@ -310,7 +310,7 @@ impl LanceStore {
         let meta_path = dir.join(META_FILE);
         let expected = LanceMeta {
             dim,
-            embedding_model: embedding_model.to_string(),
+            embedding_model: crate::embeddings::model_key(embedding_model).into_owned(),
             schema_ver: VECTOR_STORE_VER,
         };
         // Released when this function returns, tables created.
@@ -345,7 +345,7 @@ impl LanceStore {
                 runtime: Some(runtime),
                 connection,
                 dim,
-                embedding_model: embedding_model.to_string(),
+                embedding_model: expected.embedding_model.clone(),
                 dir: dir.to_path_buf(),
                 commits: std::sync::Mutex::new(std::collections::HashMap::new()),
             }),

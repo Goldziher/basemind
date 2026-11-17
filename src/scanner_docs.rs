@@ -325,7 +325,7 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: boo
 pub(crate) fn doc_has_vectors_of(doc: &FileMapDoc, preset: &str) -> bool {
     doc.embedding_dim > 0
         && Some(doc.embedding_dim) == preset_dim(preset).ok()
-        && doc.embedding_model == preset
+        && doc.embedding_model == crate::embeddings::model_key(preset)
         && doc
             .chunks
             .iter()

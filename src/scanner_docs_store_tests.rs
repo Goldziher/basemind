@@ -31,7 +31,11 @@ fn blob(text: &str, vectors: bool) -> FileMapDoc {
                 ..DocChunk::default()
             },
         ],
-        embedding_model: if vectors { "balanced".to_string() } else { String::new() },
+        embedding_model: if vectors {
+            crate::embeddings::model_key("balanced").into_owned()
+        } else {
+            String::new()
+        },
         embedding_dim: if vectors { 768 } else { 0 },
         keywords: vec![DocKeyword {
             text: "Flood Barrier".to_string(),

@@ -184,7 +184,7 @@ fn embed_state_satisfied(
     }
     peek.chunks.is_empty()
         || (peek.embedding_dim > 0
-            && peek.embedding_model == config.documents.embedding_preset
+            && peek.embedding_model == crate::embeddings::model_key(&config.documents.embedding_preset)
             && peek.embeddings.len() == peek.chunks.len())
 }
 

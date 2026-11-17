@@ -34,6 +34,7 @@ const KEYS_PER_STATEMENT: usize = 2_000;
 /// `groups/<group>/lance/<model>-<dim>-<hash>/` with no other change. The name ends in a hash of the model's own name, so two models whose readable
 /// slug collides never share, and wipe, one directory.
 pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
+    let model = crate::embeddings::model_key(model);
     let slug: String = model
         .chars()
         .map(|c| {
@@ -202,7 +203,7 @@ impl DocStore {
         let mut handles = handles.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(store) = handles.get(dir)
             && store.dim() == dim
-            && store.lance.embedding_model() == model
+            && store.lance.embedding_model() == crate::embeddings::model_key(model)
             && dir.join(super::META_FILE).exists()
         {
             return Ok(store.clone());

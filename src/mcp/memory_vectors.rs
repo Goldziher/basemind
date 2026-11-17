@@ -223,6 +223,7 @@ pub(super) fn not_level(state: &ServerState, vis_byte: u8, owner: &str) {
 /// name: two models never share a directory and wipe each other's rows in turn. No garbage
 /// collector lists the group directory.
 pub(super) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
+    let model = crate::embeddings::model_key(model);
     let slug: String = model
         .chars()
         .map(|c| {

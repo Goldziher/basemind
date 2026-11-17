@@ -28,7 +28,7 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
             embedding: vec![0.0_f32; 768],
             ..DocChunk::default()
         }],
-        embedding_model: "balanced".to_string(),
+        embedding_model: crate::embeddings::model_key("balanced").into_owned(),
         embedding_dim: 768,
         keywords: Vec::new(),
         entities: Vec::new(),
@@ -59,6 +59,15 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
         "embedding off: cached doc is always reusable"
     );
 }
+
+    let remapped = FileMapDoc {
+        embedding_model: "balanced@000000000000".to_string(),
+        ..doc
+    };
+    assert!(
+        !cached_doc_is_reusable(&remapped, &same, true, "d"),
+        "another model under the preset name `balanced` must force recompute"
+    );
 
 /// Structural regression guard for the streaming-flush memory fix: the accumulated per-file
 /// descriptor must stay metadata-only. This exhaustive struct literal names EXACTLY the metadata

@@ -8,6 +8,36 @@ use xberg::{EmbeddingConfig, EmbeddingModelType};
 
 use crate::config::OnnxProvider;
 
+/// The identity of `preset`'s model, stamped on every stored vector and naming the vector stores:
+/// the preset name, then a digest of what xberg loads for it (repository, file, sibling files,
+/// pooling, dimension, backend, query prefix). An xberg release that points a preset name at
+/// another model changes the digest, so vectors of the old model are re-embedded instead of being
+/// mixed with the new one's. An unknown preset is its own name.
+pub fn model_key(preset: &str) -> std::borrow::Cow<'static, str> {
+    static KEYS: OnceLock<ahash::AHashMap<String, String>> = OnceLock::new();
+    let keys = KEYS.get_or_init(|| {
+        EMBEDDING_PRESETS
+            .iter()
+            .map(|p| {
+                let identity = format!(
+                    "{}\0{}\0{:?}\0{}\0{}\0{:?}\0{:?}",
+                    p.model_repo, p.model_file, p.additional_files, p.pooling, p.dimensions, p.backend, p.query_prefix
+                );
+                let digest = crate::hashing::hash_bytes(identity.as_bytes());
+                let hex = crate::hashing::hex_buf(&digest);
+                (
+                    p.name.clone(),
+                    format!("{}@{}", p.name, &crate::hashing::hex_str(&hex)[..12]),
+                )
+            })
+            .collect()
+    });
+    match keys.get(preset) {
+        Some(key) => std::borrow::Cow::Borrowed(key.as_str()),
+        None => std::borrow::Cow::Owned(preset.to_string()),
+    }
+}
+
 /// Translate `[resources] onnx_provider` into xberg's acceleration setting. `Auto` yields `None`, so
 /// xberg applies its own platform default.
 pub fn acceleration(provider: OnnxProvider) -> Option<xberg::AccelerationConfig> {
@@ -550,5 +580,24 @@ mod tests {
             "query: rivers"
         );
         assert_eq!(super::with_query_prefix(None, "rivers"), "rivers");
+    }
+}
+
+#[cfg(test)]
+mod model_key_tests {
+    use super::model_key;
+
+    #[test]
+    fn a_preset_is_identified_by_its_model_not_only_its_name() {
+        let balanced = model_key("balanced");
+        assert!(balanced.starts_with("balanced@"), "{balanced}");
+        assert_eq!(balanced.len(), "balanced@".len() + 12);
+        assert_eq!(balanced, model_key("balanced"), "stable within a build");
+        assert_ne!(
+            balanced.trim_start_matches("balanced@"),
+            model_key("multilingual").trim_start_matches("multilingual@"),
+            "two models of one dimension have different digests"
+        );
+        assert_eq!(model_key("not-a-preset"), "not-a-preset");
     }
 }

@@ -221,7 +221,7 @@ fn requeue_pending_code(
         match store.peek_chunk_state(&entry.hash_hex) {
             Ok(Some(peek))
                 if peek.embedding_dim > 0
-                    && peek.embedding_model == *preset
+                    && peek.embedding_model == crate::embeddings::model_key(preset)
                     && peek.embeddings.len() == peek.chunks.len()
                     && !crate::scanner_code::over_chunk_cap(&rel_path, peek.chunks.len(), cfg) =>
             {
