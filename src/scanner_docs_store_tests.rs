@@ -196,3 +196,26 @@ fn excluded_documents_lose_their_vectors_and_stay_searchable() {
     assert!(strip_unwanted_vectors(&store, &config, &filters));
     assert_eq!(doc_store(&store, &config).capabilities().unwrap().vectors, 0);
 }
+
+/// Review M2: a document whose new version has no rows (zero chunks, over the chunk cap, excluded)
+/// must not keep serving the old version's rows. Rows are keyed by content, so the old version's key
+/// is dead once the path names the new content.
+#[test]
+fn a_new_version_without_rows_drops_the_old_versions_rows() {
+    let (_tmp, mut store, config, filters) = setup();
+    track(&mut store, &blob("version one", true), &["guide.md"]);
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
+    assert_eq!(doc_store(&store, &config).capabilities().unwrap().rows, 2);
+
+    let mut empty = blob("version two", false);
+    empty.chunks.clear();
+    track(&mut store, &empty, &["guide.md"]);
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
+    remove_dead_document_rows(&store, &config, &filters);
+
+    assert_eq!(
+        doc_store(&store, &config).capabilities().unwrap().rows,
+        0,
+        "no row of the old version is served"
+    );
+}
