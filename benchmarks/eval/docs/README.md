@@ -39,5 +39,9 @@ python3 benchmarks/eval/docs/summarize.py benchmarks/eval/docs/tasks.jsonl <out 
 ```
 
 `run.sh` copies the corpus to `<out dir>/workspace` with a `basemind.toml` that enables documents, scans it and
-runs `basemind admin eval --mode docs`. `summarize.py` breaks the run down by selectivity and variant. Results
+runs `basemind admin eval --mode docs`. `summarize.py` breaks the run down by selectivity and variant, with the
+p50 / p95 of response tokens and latency. `EVAL_RERANK=1` turns the reranker on; `EVAL_DISTRACTORS=N` adds N
+plain-text distractors (`grow_corpus.py`) that repeat the task queries, so the corpus holds more chunks than a lane's
+candidate cut and a filtered task only finds its gold if the filter runs first. `citations.py` checks the first gold
+hit's citation (section, PDF page, Markdown lines) against the task. Results
 before and after the ADR-0029 pipeline are in the polyrepo's `reports/retrieval-eval.md`.

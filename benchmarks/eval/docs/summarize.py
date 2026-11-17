@@ -1,8 +1,9 @@
 """Break a `docs` eval run down by filter selectivity and query variant.
 
 `basemind admin eval` reports one aggregate per mode. This joins its per-task NDJSON with the task file and prints,
-per group (all, selectivity, variant, gold file format), the task count, the failed calls and the means of recall@10, nDCG@10, hit@1 and MRR, as a
-Markdown table. A task that failed counts as zero in every mean.
+per group (all, selectivity, variant, gold file format), the task count, the failed calls, the means of recall@10, nDCG@10, hit@1
+and MRR, and the p50 / p95 of the response tokens and the call latency, as a Markdown table. A task that failed counts as zero
+in every mean.
 
     python3 benchmarks/eval/docs/summarize.py TASKS.jsonl RESULTS.ndjson [LABEL]
 """
@@ -18,6 +19,11 @@ METRICS = ("recall", "ndcg", "hit_at_1", "mrr")
 def load(path: str) -> list[dict]:
     with Path(path).open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
+
+
+def percentile(values: list[float], share: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(share * len(ordered)))] if ordered else 0.0
 
 
 def group_of(task: dict) -> list[str]:
@@ -38,8 +44,8 @@ def main() -> None:
     out = [
         f"### {label}",
         "",
-        "| Group | Tasks | Failed | recall@10 | nDCG@10 | hit@1 | MRR |",
-        "|---|---|---|---|---|---|---|",
+        "| Group | Tasks | Failed | recall@10 | nDCG@10 | hit@1 | MRR | tokens p50 / p95 | ms p50 / p95 |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for group in sorted(rows, key=lambda g: (g != "all", g)):
         results = rows[group]
@@ -48,7 +54,13 @@ def main() -> None:
         for metric in METRICS:
             values = [(r.get("score") or {}).get(metric) or 0.0 for r in results]
             means.append(f"{sum(values) / len(values):.3f}")
-        out.append(f"| {group} | {len(results)} | {failed} | " + " | ".join(means) + " |")
+        tokens = [float(r.get("tokens") or 0) for r in results]
+        millis = [(r.get("elapsed_us") or 0) / 1000 for r in results]
+        cost = (
+            f"{percentile(tokens, 0.5):.0f} / {percentile(tokens, 0.95):.0f} | "
+            f"{percentile(millis, 0.5):.0f} / {percentile(millis, 0.95):.0f}"
+        )
+        out.append(f"| {group} | {len(results)} | {failed} | " + " | ".join(means) + f" | {cost} |")
     sys.stdout.write("\n".join(out) + "\n")
 
 
