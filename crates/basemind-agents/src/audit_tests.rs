@@ -207,4 +207,23 @@ fn a_full_log_keeps_room_for_launches_exits_and_allows() {
     })
     .unwrap();
     sink.record(&AuditRecord::new(AuditEvent::Exit, "completed")).unwrap();
+    // The stop that stopped a session is kept too; a repeated one and a denial are not.
+    sink.record(&AuditRecord::new(AuditEvent::Stop, "requested")).unwrap();
+    sink.record(&AuditRecord::new(AuditEvent::Stop, "cascaded")).unwrap();
+    assert!(
+        sink.record(&AuditRecord::new(AuditEvent::Stop, "already_stopping"))
+            .is_err()
+    );
+    assert!(
+        sink.record(&AuditRecord {
+            approval: Some(AuditApproval {
+                id: "2".to_owned(),
+                kind: "command",
+                allowed: false,
+                source: "policy",
+            }),
+            ..AuditRecord::new(AuditEvent::Approval, "denied")
+        })
+        .is_err()
+    );
 }

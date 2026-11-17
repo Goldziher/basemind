@@ -160,7 +160,7 @@ impl Inner {
     /// one sits) has had a burst of the same refusal written in this window (see
     /// [`crate::refusals`]). Never called with the table locked.
     pub(crate) fn refuse(&self, mut record: AuditRecord, key: &str) {
-        if let Some(suppressed) = self.refusals.admit(key, record.outcome) {
+        if let Some(suppressed) = self.refusals.admit(key, record.event, record.outcome) {
             record.suppressed = Some(suppressed);
             let _ = self.audit(&record);
         }
@@ -552,17 +552,20 @@ impl Supervisor {
         };
         record.flavor = Some(entry.flavor.id());
         record.agent = Some(entry.agent.clone());
-        match entry.state {
-            SessionState::Finished(_) => record.outcome = "already_finished",
-            SessionState::Stopping => record.outcome = "already_stopping",
-            SessionState::Starting | SessionState::Running => request_stop(entry),
+        // Each session is asked to stop once, so a stop that is written in full (and may use
+        // the log's reserve) is written at most once per session.
+        if !entry.state.live() {
+            record.outcome = "already_finished";
+        } else if !stoppable(entry) {
+            record.outcome = "already_stopping";
+        } else {
+            request_stop(entry);
         }
         // Every session below this one stops with it: once it is gone its token stops
         // resolving, and nothing but the operator could stop them.
         let mut cascaded = Vec::new();
         for (below, entry) in &mut table.sessions {
-            let stoppable = matches!(entry.state, SessionState::Starting | SessionState::Running);
-            if stoppable && !entry.stop_requested && entry.lineage.contains(&id.0) {
+            if stoppable(entry) && entry.lineage.contains(&id.0) {
                 request_stop(entry);
                 cascaded.push(AuditRecord {
                     caller: record.caller.clone(),
@@ -593,7 +596,7 @@ impl Supervisor {
         let mut stopped = Vec::new();
         let mut table = inner.table();
         for (id, entry) in &mut table.sessions {
-            if entry.state.live() {
+            if stoppable(entry) {
                 request_stop(entry);
                 stopped.push((*id, entry.flavor, entry.agent.clone()));
             }
@@ -725,11 +728,11 @@ impl Drop for Supervisor {
     /// grace, then kills the ones still running and waits briefly once more.
     fn drop(&mut self) {
         self.stop_all();
-        for (caller, outcome, suppressed) in self.inner.refusals.drain() {
+        for pending in self.inner.refusals.drain() {
             let _ = self.inner.audit(&AuditRecord {
-                caller: Some(caller),
-                suppressed: Some(suppressed),
-                ..AuditRecord::new(AuditEvent::Refusal, outcome)
+                caller: Some(pending.caller),
+                suppressed: Some(pending.suppressed),
+                ..AuditRecord::new(pending.event, pending.outcome)
             });
         }
         let grace = self
@@ -777,6 +780,11 @@ impl Supervisor {
             };
         }
     }
+}
+
+/// Whether `entry` runs and has not been asked to stop yet.
+fn stoppable(entry: &Entry) -> bool {
+    matches!(entry.state, SessionState::Starting | SessionState::Running) && !entry.stop_requested
 }
 
 pub(crate) fn request_stop(entry: &mut Entry) {

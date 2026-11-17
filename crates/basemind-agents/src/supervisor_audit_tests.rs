@@ -93,3 +93,47 @@ fn a_caller_allow_spends_the_allow_budget() {
         .collect();
     assert_eq!(answered, ["allowed", "allows_exhausted", "denied"]);
 }
+
+#[test]
+fn a_caller_cannot_spread_its_refusals_over_outcomes() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    let nowhere = SessionId::from_raw(999);
+    for _ in 0..50 {
+        let refused = [
+            supervisor
+                .launch(&lead(), HarnessKind::ClaudeCode, &LaunchRequest::new("/context"))
+                .map(|_| ()),
+            supervisor.launch(&lead(), HarnessKind::Codex, &request()).map(|_| ()),
+            supervisor.stop(&lead(), nowhere),
+            supervisor.answer(&lead(), nowhere, "never-issued", false),
+        ];
+        let codes: Vec<_> = refused
+            .iter()
+            .map(|refused| refused.as_ref().err().map(SupervisorError::code))
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                Some("slash_command_prompt"),
+                Some("flavor_not_allowed"),
+                Some("unknown_session"),
+                Some("unknown_session")
+            ]
+        );
+    }
+    let written = audit
+        .records()
+        .iter()
+        .filter(|record| record.caller.as_deref() == Some("lead") && record.event != AuditEvent::Registration)
+        .count();
+    assert_eq!(
+        written,
+        crate::refusals::BURST as usize,
+        "200 refusals of one caller over four outcomes"
+    );
+    drop(supervisor);
+    let suppressed: u64 = audit.records().iter().filter_map(|record| record.suppressed).sum();
+    assert_eq!(suppressed, 200 - u64::from(crate::refusals::BURST));
+}

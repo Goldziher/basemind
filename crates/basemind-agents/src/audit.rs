@@ -218,9 +218,9 @@ const MARKER_ROOM: u64 = 4096;
 /// of the same user can rewrite or truncate it.
 ///
 /// The last quarter of the cap ([`DEFAULT_AUDIT_MAX_BYTES`] unless
-/// [`FileAuditSink::with_max_bytes`] says otherwise) is kept for launches, exits, registrations
-/// and allows, so refusals, stops and denials, which a launched agent can loop on, cannot fill
-/// it. A record that does not fit is dropped and refused with an error: a supervisor then
+/// [`FileAuditSink::with_max_bytes`] says otherwise) is kept for launches, exits,
+/// registrations, allows and the one stop that stops each session, so refusals, repeated stops
+/// and denials, which a launched agent can loop on, cannot fill it. A record that does not fit is dropped and refused with an error: a supervisor then
 /// refuses the launch or the caller's allow that record was for, stops a session whose
 /// policy-settled allow it was, and counts the other failures. The first drop appends an
 /// `audit_full` marker and dropping the sink an `audit_dropped` one with the count, in room
@@ -349,15 +349,18 @@ impl AuditSink for FileAuditSink {
 }
 
 /// Whether `record` may use the part of the cap kept for what must not go unrecorded: a
-/// launch, an exit, a registration, or an allow.
+/// launch, an exit, a registration or its release, an allow, or a stop that stopped a session
+/// (at most one per session). Never a refusal, a denial or a repeated stop, which a caller can
+/// loop on.
 fn kept_for(record: &AuditRecord) -> bool {
     match record.event {
         AuditEvent::Launch | AuditEvent::Exit => true,
-        AuditEvent::Registration => matches!(record.outcome, "registered" | "replaced"),
+        AuditEvent::Registration => matches!(record.outcome, "registered" | "unregistered"),
         AuditEvent::Approval | AuditEvent::ApprovalAnswer => {
             record.approval.as_ref().is_some_and(|approval| approval.allowed)
         }
-        AuditEvent::Refusal | AuditEvent::Stop => false,
+        AuditEvent::Stop => matches!(record.outcome, "requested" | "cascaded"),
+        AuditEvent::Refusal => false,
     }
 }
 
