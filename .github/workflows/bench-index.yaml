@@ -1,0 +1,91 @@
+name: bench-index
+
+# benches/index_read run interleaved (before, after, before, ...) against a baseline ref, judged by
+# the ADR-0028 p95 gate (scripts/bench/index_read_gate.py). On demand only: it needs a quiet
+# machine, which a hosted runner is more often than a shared workstation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Commit, branch or tag to measure against (must contain benches/index_read)
+        type: string
+        required: true
+      rounds:
+        description: After runs; the before runs are one more
+        type: number
+        default: 2
+      features:
+        description: Cargo features of both bench builds
+        type: string
+        default: code-search
+
+concurrency:
+  group: bench-index-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  gate:
+    name: index_read gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
+
+      - name: Check out the baseline
+        env:
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/baseline" "$BASELINE_REF"
+          git -C "$RUNNER_TEMP/baseline" log --oneline -1
+
+      - name: Build both bench binaries
+        env:
+          FEATURES: ${{ inputs.features }}
+        run: |
+          set -euo pipefail
+          build() { # <src dir> <target dir> <out>
+            exe=$(cd "$1" && CARGO_TARGET_DIR="$2" cargo bench --locked --bench index_read \
+              --features "$FEATURES" --no-run --message-format=json |
+              jq -r 'select(.executable != null) | .executable' | grep index_read | tail -1)
+            cp "$exe" "$3"
+          }
+          mkdir -p "$RUNNER_TEMP/bins"
+          build "$RUNNER_TEMP/baseline" "$RUNNER_TEMP/target-before" "$RUNNER_TEMP/bins/before"
+          build "$GITHUB_WORKSPACE" "$RUNNER_TEMP/target-after" "$RUNNER_TEMP/bins/after"
+          rm -rf "$RUNNER_TEMP/target-before" "$RUNNER_TEMP/target-after"
+
+      - name: Run interleaved and judge
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+        run: |
+          set -euo pipefail
+          python3 scripts/bench/index_read_gate.py --before "$RUNNER_TEMP/bins/before" \
+            --after "$RUNNER_TEMP/bins/after" --out "$RUNNER_TEMP/gate" --rounds "$ROUNDS"
+          cat "$RUNNER_TEMP/gate/gate.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: index-read-gate
+          path: ${{ runner.temp }}/gate
+          if-no-files-found: warn
