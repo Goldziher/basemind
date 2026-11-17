@@ -61,6 +61,16 @@ pub(crate) fn all() -> Option<Vec<ProcInfo>> {
     (!procs.is_empty()).then_some(procs)
 }
 
+/// How many entries a listing into a buffer of `room` entries returned, when it is known to be
+/// whole: a negative count is an error, and a full buffer may have cut the listing short.
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(dead_code, reason = "only macOS lists into a buffer")
+)]
+fn whole(listed: i32, room: usize) -> Option<usize> {
+    usize::try_from(listed).ok().filter(|listed| *listed < room)
+}
+
 /// The ancestors of a process, nearest first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Chain {
@@ -136,7 +146,8 @@ mod platform {
 mod platform {
     use super::ProcInfo;
 
-    pub fn info(pid: i32) -> Option<ProcInfo> {
+    /// The process's BSD info, `None` when it cannot be read.
+    fn bsd_info(pid: i32) -> Option<libc::proc_bsdinfo> {
         // SAFETY: proc_bsdinfo is plain data, valid all-zero, and proc_pidinfo writes at most
         // the size it is given into it.
         let (written, bsd) = unsafe {
@@ -145,12 +156,20 @@ mod platform {
             let written = libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut bsd).cast(), size);
             (written, bsd)
         };
-        if usize::try_from(written).ok()? != std::mem::size_of::<libc::proc_bsdinfo>() {
-            return None;
-        }
+        (usize::try_from(written).ok()? == std::mem::size_of::<libc::proc_bsdinfo>()).then_some(bsd)
+    }
+
+    pub fn info(pid: i32) -> Option<ProcInfo> {
+        let bsd = bsd_info(pid)?;
         // SAFETY: getsid only reads the process table.
         let sid = unsafe { libc::getsid(pid) };
         if sid < 0 {
+            return None;
+        }
+        // The session id is read apart from the rest: unless the same process still holds the
+        // pid afterwards, it may be another process's.
+        let again = bsd_info(pid)?;
+        if (again.pbi_start_tvsec, again.pbi_start_tvusec) != (bsd.pbi_start_tvsec, bsd.pbi_start_tvusec) {
             return None;
         }
         Some(ProcInfo {
@@ -169,13 +188,21 @@ mod platform {
     pub fn pids() -> Option<Vec<i32>> {
         // SAFETY: with a null buffer proc_listallpids returns the number of processes.
         let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-        let room = usize::try_from(count).ok()? + 64;
-        let mut pids = vec![0_i32; room];
-        let bytes = libc::c_int::try_from(room * std::mem::size_of::<i32>()).ok()?;
-        // SAFETY: the buffer holds `room` pids, `bytes` bytes, and the call writes at most that.
-        let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-        pids.truncate(usize::try_from(listed).ok()?);
-        Some(pids)
+        let mut room = usize::try_from(count).ok()? + 64;
+        // A buffer the listing filled may have cut it short: retry larger, then give up, since
+        // a partial table would pass for a complete one.
+        for _ in 0..4 {
+            let mut pids = vec![0_i32; room];
+            let bytes = libc::c_int::try_from(room * std::mem::size_of::<i32>()).ok()?;
+            // SAFETY: the buffer holds `room` pids, `bytes` bytes, and the call writes at most that.
+            let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+            if let Some(listed) = super::whole(listed, room) {
+                pids.truncate(listed);
+                return Some(pids);
+            }
+            room = room.checked_mul(2)?;
+        }
+        None
     }
 }
 
@@ -229,6 +256,13 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn a_listing_that_filled_its_buffer_is_not_taken_as_whole() {
+        assert_eq!(whole(10, 11), Some(10));
+        assert_eq!(whole(11, 11), None, "a full buffer was taken for the whole table");
+        assert_eq!(whole(-1, 11), None);
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
