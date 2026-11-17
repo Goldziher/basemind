@@ -14,7 +14,8 @@ use serde_json::{Value, json};
 use tokio::process::Command as AsyncCommand;
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
-const HOST: &str = "smoke";
+/// A host whose hook rewrites the agent tools' input, so `agent hook name` names the session.
+const HOST: &str = "claude";
 
 /// Run `basemind agent <args>` from `cwd` as the hooks do, returning its JSON output.
 fn agent_cli(cwd: &Path, args: &[&str], stdin: Option<&str>) -> Value {
