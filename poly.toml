@@ -34,6 +34,8 @@ exclude = [
   "website/node_modules/**",
   "website/.astro/**",
   "schema/basemind-config-v1.schema.json",
+  # Written by benchmarks/eval/docs/gen_corpus.py; the eval scans these exact bytes.
+  "benchmarks/eval/docs/corpus/**",
   "crates/*-ffi/include/*.h",
   "packages/go/include/*.h",
 ]
