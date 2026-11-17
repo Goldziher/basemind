@@ -232,7 +232,9 @@ pub enum SupervisorError {
     #[error("the session's supervising thread could not be started: {0}")]
     Thread(#[source] std::io::Error),
     /// The adapter refused the launch or could not start it, or the session refused a control.
-    #[error(transparent)]
+    /// Shown by its code only: the adapter's error can name paths of the host; it stays
+    /// available as the source.
+    #[error("the launch was refused: {}", launch_error_code(.0))]
     Launch(#[from] LaunchError),
     /// No session of that id is known.
     #[error("no session {0}")]
@@ -268,5 +270,18 @@ impl SupervisorError {
             Self::NotOwner(_) => "not_owner",
             Self::UnknownApproval => "unknown_approval",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_launch_refusal_shows_its_code_and_no_path() {
+        let error = SupervisorError::Launch(LaunchError::WorkingDirChanged(PathBuf::from("/home/someone/secret")));
+        let shown = error.to_string();
+        assert!(!shown.contains("/home/someone"), "{shown}");
+        assert!(shown.contains(error.code()), "{shown}");
     }
 }
