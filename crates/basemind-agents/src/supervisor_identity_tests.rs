@@ -344,6 +344,10 @@ fn an_ancestor_of_the_supervisor_or_a_process_below_it_cannot_be_registered_by_p
 /// for the supervisor below it.
 #[cfg(target_os = "linux")]
 const SUBREAPER_ROLE: &str = "BASEMIND_TEST_SUBREAPER_ROLE";
+/// The file the inner run writes once its assertions passed, so a rerun that matched no test
+/// (and exits 0) fails the outer one.
+#[cfg(target_os = "linux")]
+const SUBREAPER_MARKER: &str = "BASEMIND_TEST_SUBREAPER_MARKER";
 
 /// On Linux an orphan is reparented to the nearest child subreaper among its dead parent's
 /// ancestors. With a subreaper above the supervisor, a session's double-forked process lands
@@ -352,20 +356,38 @@ const SUBREAPER_ROLE: &str = "BASEMIND_TEST_SUBREAPER_ROLE";
 #[test]
 fn a_subreaper_ancestor_cannot_be_registered_and_adopts_no_launcher() {
     const NAME: &str = "supervisor::identity_tests::a_subreaper_ancestor_cannot_be_registered_and_adopts_no_launcher";
-    let rerun = |role: &str| {
-        std::process::Command::new(std::env::current_exe().unwrap())
+    // The wrapper's rerun inherits the marker's path from the environment it was given.
+    let rerun = |role: &str, marker: Option<&Path>| {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
             .args([NAME, "--exact", "--nocapture", "--test-threads=1"])
-            .env(SUBREAPER_ROLE, role)
-            .status()
-            .unwrap()
+            .env(SUBREAPER_ROLE, role);
+        if let Some(marker) = marker {
+            command.env(SUBREAPER_MARKER, marker);
+        }
+        command.status().unwrap()
     };
     match std::env::var(SUBREAPER_ROLE).as_deref() {
-        Err(_) => assert!(rerun("wrapper").success(), "the run below the subreaper failed"),
+        Err(_) => {
+            if perl().is_none() {
+                return;
+            }
+            let scratch = Scratch::new();
+            let marker = scratch.path.join("inner-ran");
+            assert!(
+                rerun("wrapper", Some(&marker)).success(),
+                "the run below the subreaper failed"
+            );
+            assert!(
+                marker.exists(),
+                "the run below the subreaper ran no test: {NAME} matched nothing"
+            );
+        }
         Ok("wrapper") => {
             // SAFETY: prctl with PR_SET_CHILD_SUBREAPER takes plain integers.
             let set = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
             assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
-            let status = rerun("inner");
+            let status = rerun("inner", None);
             std::process::exit(status.code().unwrap_or(1));
         }
         Ok(_) => {
@@ -387,6 +409,7 @@ fn a_subreaper_ancestor_cannot_be_registered_and_adopts_no_launcher() {
                 "the subreaper above the supervisor was registered"
             );
             assert_escape_refused(&escaped);
+            std::fs::write(std::env::var_os(SUBREAPER_MARKER).unwrap(), "ran").unwrap();
         }
     }
 }

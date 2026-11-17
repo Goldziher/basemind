@@ -742,10 +742,24 @@ fn a_flood_of_policy_denials_is_coalesced() {
     }
     supervisor.stop(&lead(), launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
-    let written = outcomes(&audit, AuditEvent::Approval).len();
-    assert!(
-        written <= crate::refusals::BURST as usize,
-        "{written} denial records for one session"
+    // A burst is written, every denial in it, and the rest are counted.
+    let written = outcomes(&audit, AuditEvent::Approval);
+    assert_eq!(
+        written,
+        ["denied"; crate::refusals::BURST as usize],
+        "denial records for one session"
+    );
+    drop(supervisor);
+    let counted: u64 = audit
+        .records()
+        .iter()
+        .filter(|record| record.outcome == "denied")
+        .filter_map(|record| record.suppressed)
+        .sum();
+    assert_eq!(
+        counted,
+        200 - u64::from(crate::refusals::BURST),
+        "the suppressed denials were not counted"
     );
 }
 
@@ -756,16 +770,18 @@ fn a_session_past_its_recorded_allows_is_stopped() {
     let (supervisor, audit) = settling(&scratch, crate::spec::ApprovalVerdict::Allow, count);
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
     let state = supervisor.wait(launched.id, Duration::from_secs(60));
+    assert_eq!(
+        state,
+        Some(SessionState::Finished(FinishStatus::Stopped)),
+        "a session ran on past its recorded allows"
+    );
     assert!(
-        matches!(state, Some(SessionState::Finished(_))),
-        "a session ran on past its recorded allows: {state:?}"
+        !scratch.path.join("done").exists(),
+        "the stand-in had every allow it asked for"
     );
     let allows = outcomes(&audit, AuditEvent::Approval)
         .iter()
         .filter(|outcome| **outcome == "allowed")
         .count();
-    assert!(
-        allows <= crate::supervisor_pump::MAX_RECORDED_ALLOWS,
-        "{allows} allows recorded"
-    );
+    assert_eq!(allows, crate::supervisor_pump::MAX_RECORDED_ALLOWS, "allows recorded");
 }
