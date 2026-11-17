@@ -49,18 +49,18 @@ pub(crate) struct RankedCache {
 impl RankedCache {
     /// The identity of a retrieval: the tool and every argument that shapes its ranking. `limit`,
     /// `cursor` and `max_tokens` only choose a page of it and are left out.
-    pub(super) fn key(tool: &str, arguments: &Value) -> String {
+    pub(crate) fn key(tool: &str, arguments: &Value) -> String {
         format!("{tool} {arguments}")
     }
 
     /// The ranking stored for `key` at `generation`, if it is still served.
-    pub(super) fn get(&self, key: &str, generation: u32) -> Option<Value> {
+    pub(crate) fn get(&self, key: &str, generation: u32) -> Option<Value> {
         self.get_at(key, generation, Instant::now())
     }
 
     /// Keep `body` as the ranking of `key` at `generation`. A body larger than the whole byte
     /// bound is not kept.
-    pub(super) fn put(&self, key: String, generation: u32, body: &Value) {
+    pub(crate) fn put(&self, key: String, generation: u32, body: &Value) {
         self.put_at(key, generation, body, Instant::now());
     }
 

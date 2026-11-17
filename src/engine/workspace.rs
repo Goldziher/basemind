@@ -1,9 +1,9 @@
-//! The shared, workspace-level read stack ([`SharedReadStack`]) behind [`super::ServerState`].
+//! The shared, workspace-level read stack ([`SharedReadStack`]) behind [`crate::mcp::ServerState`].
 //!
 //! Everything here is scoped to a `(root, view)` and is safe to share — via an [`Arc`] — across
 //! many client connections at once. That is the pivot for a single-daemon architecture: one heavy
 //! read stack (store, in-RAM code map, git indexes, config, telemetry) built once and pointed at by
-//! every per-connection [`ServerState`](super::ServerState), which keeps only its own identity.
+//! every per-connection [`ServerState`](crate::mcp::ServerState), which keeps only its own identity.
 //!
 //! Split out of `state.rs` so the per-connection type and the shared type each stay well under the
 //! per-file size budget.
@@ -15,13 +15,14 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use arc_swap::ArcSwap;
 use tokio::sync::{Notify, RwLock};
 
-use super::{MapCache, OutlineCache, ServerOptions, telemetry};
+use crate::engine::{MapCache, outline_cache::OutlineCache};
 use crate::index::view::IndexView;
+use crate::mcp::{ServerOptions, telemetry};
 use crate::store::Store;
 
 /// Heavy, workspace-level read state shared across every connection to one `(root, view)`.
 ///
-/// Held behind an [`Arc`] on each [`ServerState`](super::ServerState). In the in-process serve/CLI
+/// Held behind an [`Arc`] on each [`ServerState`](crate::mcp::ServerState). In the in-process serve/CLI
 /// path exactly one `ServerState` points at a given `SharedReadStack`, so behavior is identical to
 /// when these fields lived directly on `ServerState`; a future daemon can point many connections at
 /// one stack.
@@ -63,7 +64,7 @@ pub(crate) struct SharedReadStack {
     pub(crate) telemetry: Arc<telemetry::Telemetry>,
     /// Sum of `size_bytes` across every indexed file. Captured at boot and
     /// after each `rescan`. Feeds the corpus-baseline cost in
-    /// [`super::savings::estimate_from_text`].
+    /// [`crate::mcp::savings::estimate_from_text`].
     pub(crate) corpus_bytes: AtomicU64,
     /// Monotonic counter bumped every time `cache` is swapped (boot, rescan, view watcher).
     /// In-memory pagination cursors embed this value as a snapshot id so a resume call
@@ -82,25 +83,25 @@ pub(crate) struct SharedReadStack {
         not(any(feature = "code-search", feature = "documents")),
         allow(dead_code, reason = "read only by the ranked tools, which this build lacks")
     )]
-    pub(crate) ranked: super::ranked_cache::RankedCache,
+    pub(crate) ranked: crate::engine::ranked_cache::RankedCache,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)]
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(feature = "code-search")]
-    pub(crate) lance: super::lance_cell::LanceCell,
+    pub(crate) lance: crate::mcp::lance_cell::LanceCell,
     /// Owner of this workspace's `individual` memory notes: the checkout's comms v2 principal
     /// (`identity::resolve_agent_id`), which is the same at every server start.
     #[cfg(feature = "memory")]
     pub(crate) memory_owner: String,
     /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
-    pub(crate) memory_lance: super::lance_cell::LanceCell,
+    pub(crate) memory_lance: crate::mcp::lance_cell::LanceCell,
     /// Memory namespaces `(vis_byte, owner)` whose vector rows a search in this process is bringing
     /// up to date with the notes, or has.
     #[cfg(feature = "memory")]
-    pub(crate) memory_backfill: std::sync::Mutex<ahash::AHashMap<(u8, String), super::memory_vectors::Backfill>>,
+    pub(crate) memory_backfill: std::sync::Mutex<ahash::AHashMap<(u8, String), crate::mcp::memory_vectors::Backfill>>,
     /// Shared embedding engine. Lazy-init on first embed call.
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
@@ -116,13 +117,13 @@ pub(crate) struct SharedReadStack {
     /// is still running. Deferring that build off the startup path is what lets `serve` answer the
     /// MCP `initialize`/`tools/list` handshake immediately instead of blocking on a rayon `par_iter`
     /// that can be starved for minutes by other sessions' scans. Cache-reading tools await
-    /// [`cache_ready`](Self::cache_ready) while this is set (see [`super::ServerState::await_cache_ready`]).
+    /// [`cache_ready`](Self::cache_ready) while this is set (see [`crate::mcp::ServerState::await_cache_ready`]).
     pub(crate) cache_warming: AtomicBool,
     /// Wall-clock duration of the boot-time cache preload, in milliseconds, once it completes
     /// (`0` = still warming or no deferred preload this session). Surfaced on `status` as `warm_ms`.
     pub(crate) cache_warm_ms: AtomicU64,
     /// Fired once when the deferred preload finishes and the full map is swapped in. Tools that read
-    /// the cache `notified().await` on this (bounded by [`super::state::CACHE_WARM_WAIT_CAP`]) so a
+    /// the cache `notified().await` on this (bounded by [`crate::mcp::state::CACHE_WARM_WAIT_CAP`]) so a
     /// query issued during the warmup window returns COMPLETE data rather than an empty snapshot.
     pub(crate) cache_ready: Notify,
     /// True while a watcher-driven incremental rescan (`scan_and_refresh` from the active filesystem
@@ -130,7 +131,7 @@ pub(crate) struct SharedReadStack {
     /// a moment stale" rather than treating a mid-rescan snapshot as final.
     pub(crate) rescan_active: AtomicBool,
     /// True when the in-RAM code map is built ON DEMAND — at the first
-    /// [`await_cache_ready`](super::ServerState::await_cache_ready) barrier — instead of at construction.
+    /// [`await_cache_ready`](crate::mcp::ServerState::await_cache_ready) barrier — instead of at construction.
     ///
     /// Set only for the one-shot CLI. A CLI process answers exactly one tool call and exits, and
     /// most tools (`repo_info`, `status`, every git tool) never read the map at all — yet
@@ -154,8 +155,8 @@ pub(crate) struct SharedReadStack {
     /// `index_status` reports it: a paged git walk that spans the end of a sync is refused,
     /// because the index orders commits differently from the live walk.
     pub(crate) history_syncing: Arc<AtomicBool>,
-    /// The git index's file list as `find_files` last read it ([`super::helpers_files`]).
-    pub(super) tracked: std::sync::Mutex<super::helpers_files::TrackedCache>,
+    /// The git index's file list as `find_files` last read it ([`crate::mcp::helpers_files`]).
+    pub(crate) tracked: std::sync::Mutex<crate::mcp::helpers_files::TrackedCache>,
     /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
     /// instead of writing locally. The store is opened read-only, but — unlike a plain
     /// [`read_only`](Self::read_only) fallback — the empty-index auto-scan, the filesystem
@@ -210,7 +211,7 @@ impl SharedReadStack {
     ///
     /// The single sanctioned constructor for the shared stack — `BasemindServer::new_with_options`
     /// calls it, and a future daemon-hosted path can reuse it to build one stack shared across many
-    /// [`ServerState`](super::ServerState) connections.
+    /// [`ServerState`](crate::mcp::ServerState) connections.
     // ~keep Each argument is a distinct pre-resolved dependency of the read stack (store, git handles,
     // ~keep config, options, host seam); bundling them into a params struct would only relocate the same
     // ~keep fields with no clarity gain, so the eighth (cfg-gated `host`) argument is accepted here.
@@ -236,7 +237,7 @@ impl SharedReadStack {
         } else {
             Arc::new(MapCache::build(
                 &store,
-                super::l1_cache::budget_bytes_from(&config.resources),
+                crate::engine::l1_cache::budget_bytes_from(&config.resources),
             ))
         };
         tracing::info!(
@@ -249,7 +250,7 @@ impl SharedReadStack {
             "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
         #[cfg(feature = "memory")]
-        let memory_owner = super::identity::resolve_agent_id(&store.root);
+        let memory_owner = crate::mcp::identity::resolve_agent_id(&store.root);
         let outline_cache: Arc<OutlineCache> = Arc::new(OutlineCache::default());
         let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
         Self {
@@ -320,6 +321,43 @@ impl SharedReadStack {
     pub(crate) fn note_index_changed(&self) {
         self.cache_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.index_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Upper bound a cache-reading tool waits for the deferred boot preload to finish before serving from
+/// whatever is loaded so far. Sized so a normal repo's preload (seconds) completes within the wait — a
+/// query issued right after the handshake returns COMPLETE data — while a pathologically large tree
+/// still can't hang a call indefinitely (it returns partial results labelled with a warming notice).
+pub(crate) const CACHE_WARM_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Coarse server lifecycle state surfaced to clients so an empty/partial result is never mistaken for
+/// "no matches". Precedence (highest first): [`BuildingIndex`](Lifecycle::BuildingIndex) (a from-scratch
+/// scan is populating the index) > [`WarmingUp`](Lifecycle::WarmingUp) (blobs are loading into RAM) >
+/// [`Rescanning`](Lifecycle::Rescanning) (a watcher-driven incremental refresh is in flight) >
+/// [`Ready`](Lifecycle::Ready).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lifecycle {
+    Ready,
+    WarmingUp,
+    BuildingIndex,
+    Rescanning,
+}
+
+impl Lifecycle {
+    /// Pure precedence classifier over the three lifecycle flags. Highest first: `building`
+    /// (from-scratch index scan), then `warming` (blobs loading into RAM), then `rescanning`
+    /// (watcher refresh), then `Ready`. Split out from [`ServerState::lifecycle`] so the precedence
+    /// is unit-testable without constructing a server.
+    pub(crate) fn from_flags(building: bool, warming: bool, rescanning: bool) -> Self {
+        if building {
+            Lifecycle::BuildingIndex
+        } else if warming {
+            Lifecycle::WarmingUp
+        } else if rescanning {
+            Lifecycle::Rescanning
+        } else {
+            Lifecycle::Ready
+        }
     }
 }
 

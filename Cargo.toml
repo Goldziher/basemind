@@ -33,8 +33,8 @@ include = [
   "!/src/mcp/index_route_tests.rs",
   "!/src/mcp/lazy_cache_tests.rs",
   "!/src/mcp/find_files_tests.rs",
-  "!/src/mcp/map_cache_budget_tests.rs",
-  "!/src/mcp/term_index_tests.rs",
+  "!/src/engine/map_cache_budget_tests.rs",
+  "!/src/engine/term_index_tests.rs",
   "!/src/registry/tests.rs",
   "!/src/index/writer_tests.rs",
 ]

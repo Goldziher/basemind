@@ -57,6 +57,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("daemon_lock", Core),
     ("disk_space", Core),
     ("embeddings", Retrieval),
+    ("engine", Root),
     ("eval", Root),
     ("extract", Core),
     ("extract::doc", Retrieval),

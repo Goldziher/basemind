@@ -29,7 +29,7 @@ pub(crate) use helpers::rescan_error;
 #[cfg(feature = "documents")]
 mod docs_pipeline;
 mod helpers_admin;
-mod helpers_calls;
+pub(crate) mod helpers_calls;
 #[cfg(test)]
 mod helpers_calls_resolved_tests;
 mod helpers_calls_scan;
@@ -41,7 +41,7 @@ mod helpers_daemon;
 #[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
 mod helpers_expand;
-mod helpers_files;
+pub(crate) mod helpers_files;
 mod helpers_filters;
 mod helpers_fingerprint;
 mod helpers_git;
@@ -50,7 +50,7 @@ mod helpers_git_file;
 mod helpers_git_show;
 mod helpers_grep;
 mod helpers_grep_text;
-mod helpers_impls;
+pub(crate) mod helpers_impls;
 mod helpers_intel;
 mod helpers_memory;
 #[cfg(any(feature = "code-search", feature = "documents", test))]
@@ -63,7 +63,7 @@ mod helpers_telemetry;
 mod history_sync;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod host;
-mod identity;
+pub(crate) mod identity;
 #[cfg(feature = "test-support")]
 pub mod in_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -73,31 +73,28 @@ mod index_route;
 mod index_route_tests;
 #[cfg(test)]
 mod index_view_tests;
-mod l1_cache;
+pub(crate) use crate::engine::l1_cache;
 #[cfg(any(feature = "memory", feature = "code-search"))]
-mod lance_cell;
+pub(crate) mod lance_cell;
 mod lean;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod memory;
 #[cfg(feature = "memory")]
 pub(crate) mod memory_ops;
-mod memory_vectors;
+pub(crate) mod memory_vectors;
 mod notifications;
 pub mod offline;
-mod outline_cache;
 mod prompts;
-mod ranked_cache;
+pub(crate) use crate::engine::ranked_cache;
 pub mod replay;
 mod resources;
 mod router_cache;
 pub(crate) mod savings;
 mod server_handler;
-mod shared_state;
 mod state;
 mod strict;
 mod tasks;
-mod telemetry;
-mod term_index;
+pub(crate) mod telemetry;
 pub(crate) mod tokens;
 mod tool_contract;
 mod tools;
@@ -122,9 +119,10 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::task_manager::TaskManager;
 
-use crate::extract::FileMapL1;
 use crate::store::Store;
 
+pub(crate) use crate::engine::SharedReadStack;
+pub(crate) use crate::engine::{Lifecycle, MapCache};
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub use agent_context::AgentContext;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -133,8 +131,7 @@ pub(crate) use host::HostBackend;
 pub use in_memory::serve_in_memory_daemon_writer;
 #[cfg(feature = "test-support")]
 pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
-pub(crate) use shared_state::SharedReadStack;
-pub(crate) use state::{Lifecycle, MapCache, ServerState};
+pub(crate) use state::ServerState;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 /// A daemon-owned read stack and the watcher lifetime that keeps it fresh.
@@ -179,12 +176,7 @@ pub use params::Parameters;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) const HOSTED_GIT_CACHE_MEM: usize = 1024;
 
-pub(crate) struct OutlineEntry {
-    pub map: Arc<FileMapL1>,
-    pub source: Arc<Vec<u8>>,
-}
-
-pub(crate) use outline_cache::OutlineCache;
+pub(crate) use crate::engine::outline_cache::{OutlineCache, OutlineEntry};
 
 /// Shared MCP server state. `ToolRouter<Self>` is Clone (Arc inside), so we hold it directly
 /// on the struct as the `#[tool_handler]` macro expects.
@@ -330,7 +322,7 @@ impl BasemindServer {
             None,
         );
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
-        let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options);
         let shared = Arc::new(SharedReadStack::new(
             store,
             root,
@@ -510,7 +502,7 @@ impl BasemindServer {
             &options,
             Some(git_history_host),
         );
-        let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options);
         let shared = Arc::new(SharedReadStack::new(
             store,
             root.to_path_buf(),

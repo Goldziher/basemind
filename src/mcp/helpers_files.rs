@@ -35,7 +35,7 @@ fn invalidated(state: &ServerState, limit_clamped: bool) -> Result<CallToolResul
 /// checksum and the code map's generation are unchanged, so a `find_files` call, or each page of
 /// one, does not walk every index entry again.
 #[derive(Default)]
-pub(super) struct TrackedCache {
+pub(crate) struct TrackedCache {
     tracked: crate::git::TrackedFiles,
     generation: u32,
     unindexed: Arc<Vec<RelPath>>,

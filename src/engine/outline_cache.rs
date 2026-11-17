@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
 
-use super::OutlineEntry;
+use crate::extract::FileMapL1;
 use crate::lang::LangId;
 
 /// Entries kept at once.
@@ -86,7 +86,13 @@ impl OutlineCache {
 }
 
 fn cost(entry: &OutlineEntry) -> u64 {
-    entry.source.len() as u64 + super::l1_cache::l1_heap_bytes(&entry.map)
+    entry.source.len() as u64 + crate::engine::l1_cache::l1_heap_bytes(&entry.map)
+}
+
+/// A parsed outline and the source it was parsed from.
+pub(crate) struct OutlineEntry {
+    pub map: Arc<FileMapL1>,
+    pub source: Arc<Vec<u8>>,
 }
 
 #[cfg(test)]
