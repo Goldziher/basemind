@@ -121,7 +121,8 @@ pub struct CacheStats {
     pub blobs_current_bytes: u64,
     /// Recursive byte size of `views/`.
     pub views_bytes: u64,
-    /// Recursive byte size of `lance/`.
+    /// Recursive byte size of `lance/` and of the repository group's document retrieval stores
+    /// (`cache/groups/<group>/lance/`, shared with the group's other worktrees).
     pub lance_bytes: u64,
     /// Recursive byte size of the memory notes' vector stores (`memory.lance/` in the repo group
     /// directory, every embedding model). `0` when the workspace has no marker naming its root.
@@ -218,7 +219,10 @@ pub(crate) fn clear_component_in(
             remove_file_if_exists(&basemind_dir.join(TELEMETRY_FILENAME))?;
             remove_file_if_exists(&basemind_dir.join(TELEMETRY_ROTATED_FILENAME))?;
         }
-        CacheComponent::All => remove_dir_if_exists(basemind_dir)?,
+        CacheComponent::All => {
+            clear_lance(basemind_dir)?;
+            remove_dir_if_exists(basemind_dir)?;
+        }
     }
     Ok(report)
 }
@@ -337,13 +341,17 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         None => 0,
     };
     let views_bytes = dir_size(&basemind_dir.join(VIEWS_DIR))?;
-    let lance_bytes = dir_size(&basemind_dir.join("lance"))?;
+    let group_lance_bytes = match crate::store_layout::group_lance_dir_of(basemind_dir) {
+        Some(dir) => dir_size(&dir)?,
+        None => 0,
+    };
+    let lance_bytes = dir_size(&basemind_dir.join("lance"))? + group_lance_bytes;
     let git_cache_bytes = dir_size(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?;
     let telemetry_bytes =
         file_size(&basemind_dir.join(TELEMETRY_FILENAME))? + file_size(&basemind_dir.join(TELEMETRY_ROTATED_FILENAME))?;
     let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
 
-    let total_bytes = dir_size(basemind_dir)? + blobs_bytes + memory_vectors_bytes;
+    let total_bytes = dir_size(basemind_dir)? + blobs_bytes + memory_vectors_bytes + group_lance_bytes;
     let accounted = blobs_bytes
         + views_bytes
         + lance_bytes
@@ -444,9 +452,10 @@ fn per_view_file_count(basemind_dir: &Path) -> Result<Vec<(String, usize)>, GcEr
     Ok(out)
 }
 
-/// Wipe every file/dir under `.basemind/lance/`, keeping the dir itself — mirrors the
-/// `wipe_on_mismatch` pattern in `src/lance/mod.rs`. Feature-gated: the lance store only
-/// exists in intelligence builds, so on a code-only build this is a no-op.
+/// Remove the workspace's vector stores: `lance/`, the repository group's document retrieval
+/// stores (shared with the group's other worktrees, whose next scans rebuild the rows from the
+/// cached blobs) and the per-view stores of earlier builds. Feature-gated: the stores only exist
+/// in intelligence builds, so on a code-only build this is a no-op.
 #[cfg(feature = "intelligence")]
 fn clear_lance(basemind_dir: &Path) -> Result<(), GcError> {
     #[cfg(feature = "documents")]
@@ -454,6 +463,9 @@ fn clear_lance(basemind_dir: &Path) -> Result<(), GcError> {
         for view in views.flatten() {
             remove_dir_if_exists(&view.path().join(crate::store_layout::RETRIEVAL_DIR))?;
         }
+    }
+    if let Some(group_lance) = crate::store_layout::group_lance_dir_of(basemind_dir) {
+        remove_dir_if_exists(&group_lance)?;
     }
     remove_dir_if_exists(&basemind_dir.join(crate::store::LANCE_DIR))
 }

@@ -1,0 +1,201 @@
+//! Reaping the document retrieval stores of repository groups no workspace belongs to any more.
+//!
+//! A group's retrieval store (`cache/groups/<group>/lance/`, ADR-0037 rule 3) holds every vector of
+//! the group's documents, so it is often the largest thing a deleted repository leaves behind. The
+//! workspace reaper ([`crate::store_gc_workspace`]) removes the workspaces of a deleted worktree;
+//! once no workspace marker names the group, its retrieval store is reaped too. The policy is as
+//! conservative as the workspace reaper's: a workspace whose group cannot be told (no marker but
+//! index state, or a marker that names no group for a root that is gone) could belong to any
+//! group, and then nothing is reaped. A group whose lock another process holds is skipped. The
+//! group index beside the store is left alone.
+
+use std::path::Path;
+
+use ahash::AHashSet;
+
+use crate::store::{CACHE_DIR, LockHolder, VIEWS_DIR, WORKSPACES_DIR, cache_root, read_workspace_marker};
+use crate::store_gc::{GcError, dir_size};
+use crate::store_layout::{GROUP_LANCE_DIR, GROUPS_DIR, repo_group_key};
+
+/// What a reap of the group retrieval stores removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GroupStoreReap {
+    /// Group retrieval stores removed.
+    pub reaped: usize,
+    /// Their on-disk size.
+    pub bytes_freed: u64,
+}
+
+/// Reap the retrieval store of every group no workspace of the machine-global cache names.
+pub fn reap_orphaned_group_stores() -> Result<GroupStoreReap, GcError> {
+    reap_orphaned_group_stores_in(&cache_root().join(CACHE_DIR))
+}
+
+/// The groups the workspaces under `workspaces_dir` belong to; `None` when one of them could belong
+/// to any group.
+fn named_groups(workspaces_dir: &Path) -> Option<AHashSet<String>> {
+    let mut named = AHashSet::new();
+    let Ok(entries) = std::fs::read_dir(workspaces_dir) else {
+        // No workspaces at all names no group; one that cannot be listed could name any. ~keep
+        return (!workspaces_dir.exists()).then_some(named);
+    };
+    for entry in entries.flatten() {
+        let workspace = entry.path();
+        if !workspace.is_dir() {
+            continue;
+        }
+        match read_workspace_marker(&workspace) {
+            Some(marker) => match marker.group {
+                Some(group) => {
+                    named.insert(group);
+                }
+                None if marker.root.exists() => {
+                    named.insert(repo_group_key(&marker.root));
+                }
+                None => return None,
+            },
+            None if workspace.join(VIEWS_DIR).exists() => return None,
+            None => {}
+        }
+    }
+    Some(named)
+}
+
+/// [`reap_orphaned_group_stores`] against an explicit `cache/` directory, so tests never touch the
+/// machine-global cache.
+pub(crate) fn reap_orphaned_group_stores_in(cache_dir: &Path) -> Result<GroupStoreReap, GcError> {
+    let mut report = GroupStoreReap::default();
+    let groups_dir = cache_dir.join(GROUPS_DIR);
+    if !groups_dir.is_dir() {
+        return Ok(report);
+    }
+    let Some(named) = named_groups(&cache_dir.join(WORKSPACES_DIR)) else {
+        tracing::debug!("a workspace's group is unknown; keeping every group retrieval store");
+        return Ok(report);
+    };
+    for entry in crate::store_gc::read_dir(&groups_dir)?.flatten() {
+        let group_dir = entry.path();
+        let store = group_dir.join(GROUP_LANCE_DIR);
+        if named.contains(entry.file_name().to_string_lossy().as_ref()) || !store.is_dir() {
+            continue;
+        }
+        let Ok(lock) = crate::store_lock::try_acquire_lock_as(&group_dir, LockHolder::Maintenance) else {
+            tracing::debug!(group = %group_dir.display(), "group is locked by another process; skipping");
+            continue;
+        };
+        let bytes = dir_size(&store)?;
+        std::fs::remove_dir_all(&store).map_err(|source| GcError::Io {
+            path: store.clone(),
+            source,
+        })?;
+        drop(lock);
+        report.reaped += 1;
+        report.bytes_freed += bytes;
+        tracing::info!(group = %group_dir.display(), bytes, "reaped the retrieval store of a group no workspace names");
+    }
+    Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::*;
+
+    /// `cache/` with a group store per name in `groups`, each holding a few bytes.
+    fn cache_with_groups(groups: &[&str]) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("cache");
+        for group in groups {
+            let store = cache
+                .join(GROUPS_DIR)
+                .join(group)
+                .join(GROUP_LANCE_DIR)
+                .join("model-768-x");
+            fs::create_dir_all(&store).expect("mk store");
+            fs::write(store.join("rows"), b"rows").expect("write rows");
+        }
+        (tmp, cache)
+    }
+
+    fn workspace(cache: &Path, key: &str, marker: Option<&str>) -> PathBuf {
+        let dir = cache.join(WORKSPACES_DIR).join(key);
+        fs::create_dir_all(dir.join(VIEWS_DIR)).expect("mk workspace");
+        if let Some(marker) = marker {
+            fs::write(dir.join(crate::store::WORKSPACE_MARKER_FILE), marker).expect("write marker");
+        }
+        dir
+    }
+
+    fn store_of(cache: &Path, group: &str) -> PathBuf {
+        cache.join(GROUPS_DIR).join(group).join(GROUP_LANCE_DIR)
+    }
+
+    #[test]
+    fn the_store_of_a_group_no_workspace_names_is_reaped() {
+        let (_tmp, cache) = cache_with_groups(&["live", "gone"]);
+        workspace(&cache, "w", Some(r#"{"root":"/gone","updated_unix":0,"group":"live"}"#));
+
+        let report = reap_orphaned_group_stores_in(&cache).expect("reap");
+
+        assert_eq!(report.reaped, 1);
+        assert!(report.bytes_freed > 0);
+        assert!(store_of(&cache, "live").exists(), "a named group keeps its store");
+        assert!(!store_of(&cache, "gone").exists(), "no workspace names it");
+        assert!(
+            cache.join(GROUPS_DIR).join("gone").exists(),
+            "only the store goes, not the group directory"
+        );
+    }
+
+    #[test]
+    fn a_workspace_of_unknown_group_keeps_every_store() {
+        let (_tmp, cache) = cache_with_groups(&["gone"]);
+        workspace(&cache, "markerless", None);
+        assert_eq!(reap_orphaned_group_stores_in(&cache).expect("reap").reaped, 0);
+
+        let (_tmp, cache) = cache_with_groups(&["gone"]);
+        workspace(&cache, "old", Some(r#"{"root":"/no/such/root","updated_unix":0}"#));
+        assert_eq!(reap_orphaned_group_stores_in(&cache).expect("reap").reaped, 0);
+        assert!(store_of(&cache, "gone").exists());
+    }
+
+    /// `cache stats` counts the group's retrieval store; `cache clear lance` and `cache clear all`
+    /// remove it, and leave the group index beside it.
+    #[cfg(feature = "intelligence")]
+    #[test]
+    fn cache_stats_count_and_clears_remove_the_group_store() {
+        use crate::store_cache_admin::{BlobStorePaths, CacheComponent, cache_stats_in, clear_component_in};
+        for component in [CacheComponent::Lance, CacheComponent::All] {
+            let (_tmp, cache) = cache_with_groups(&["g"]);
+            let index = cache.join(GROUPS_DIR).join("g").join(crate::index::INDEX_DIR);
+            fs::create_dir_all(&index).expect("mk group index");
+            let basemind_dir = workspace(&cache, "w", Some(r#"{"root":"/gone","updated_unix":0,"group":"g"}"#));
+            let blobs = BlobStorePaths {
+                root: cache.join("blobs"),
+                schema: crate::extract::SCHEMA_VER,
+                gc_state: cache.join("gc-state.json"),
+                repos: cache.join("repos"),
+            };
+            let store_bytes = dir_size(&store_of(&cache, "g")).expect("size");
+
+            let stats = cache_stats_in(&basemind_dir, &blobs).expect("stats");
+            assert!(stats.lance_bytes >= store_bytes && store_bytes > 0, "{stats:?}");
+            assert!(stats.total_bytes >= stats.lance_bytes);
+
+            clear_component_in(&basemind_dir, component, &blobs).expect("clear");
+            assert!(!store_of(&cache, "g").exists(), "{component:?} removes the group store");
+            assert!(index.exists(), "the group index stays");
+        }
+    }
+
+    #[test]
+    fn a_locked_group_is_skipped() {
+        let (_tmp, cache) = cache_with_groups(&["busy"]);
+        let _held = crate::store_lock::acquire_lock(&cache.join(GROUPS_DIR).join("busy")).expect("lock");
+
+        assert_eq!(reap_orphaned_group_stores_in(&cache).expect("reap").reaped, 0);
+        assert!(store_of(&cache, "busy").exists());
+    }
+}

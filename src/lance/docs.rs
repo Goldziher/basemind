@@ -31,7 +31,7 @@ const KEYS_PER_STATEMENT: usize = 2_000;
 
 /// Directory of a repository group's retrieval stores, under the group directory
 /// (`cache/groups/<group>/lance/`).
-pub const GROUP_STORE_DIR: &str = "lance";
+pub const GROUP_STORE_DIR: &str = crate::store_layout::GROUP_LANCE_DIR;
 
 /// The directory of the retrieval store for `model` at `dim`, under `parent`. The name ends in a
 /// hash of the model's own name, so two models whose readable slug collides never share, and wipe,

@@ -138,6 +138,13 @@ pub struct GcReport {
     /// [`Self::bytes_freed`], which counts only global-blob bytes.
     #[serde(default)]
     pub workspace_bytes_freed: u64,
+    /// Retrieval stores of repository groups no workspace names any more, reaped by the same sweep
+    /// (see [`crate::store_gc_groups`]).
+    #[serde(default)]
+    pub group_stores_reaped: usize,
+    /// Bytes reclaimed by reaping those stores. Disjoint from the other byte counters.
+    #[serde(default)]
+    pub group_store_bytes_freed: u64,
     /// Marker-less workspace dirs the next destructive sweep would reap (see
     /// [`markerless_workspace_candidates`]). Set only by [`gc_report_only`]; a destructive sweep
     /// counts the ones it removed in [`Self::workspaces_reaped`].
@@ -467,8 +474,8 @@ pub(crate) fn gc_global_blobs_in(
     gc_blobs_in(blobs_dir, &referenced, grace)
 }
 
-/// The daemon's full cache sweep: reap orphaned workspace cache dirs FIRST, then reference-count and
-/// sweep the global blob store.
+/// The daemon's full cache sweep: reap orphaned workspace cache dirs FIRST, then the retrieval stores
+/// of the groups no workspace names any more, then reference-count and sweep the global blob store.
 ///
 /// Order is load-bearing. An orphaned workspace (its worktree deleted) still votes in the blob GC's
 /// cross-workspace live set, so every blob it references is pinned in the machine-global store
@@ -476,9 +483,12 @@ pub(crate) fn gc_global_blobs_in(
 /// reclaims the blobs the orphan was pinning. The returned [`GcReport`] carries both halves.
 pub fn reap_and_gc_global() -> Result<GcReport, GcError> {
     let reaped = reap_orphaned_workspaces()?;
+    let groups = crate::store_gc_groups::reap_orphaned_group_stores()?;
     let mut report = gc_global_blobs()?;
     report.workspaces_reaped = reaped.reaped;
     report.workspace_bytes_freed = reaped.bytes_freed;
+    report.group_stores_reaped = groups.reaped;
+    report.group_store_bytes_freed = groups.bytes_freed;
     Ok(report)
 }
 
