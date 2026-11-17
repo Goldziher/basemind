@@ -1,11 +1,15 @@
 """Shared plumbing for the hardening scripts: isolation, process ownership, sampling, MCP stdio.
 
 Standard library only. Every basemind process these scripts start runs with a fresh
-`BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` and carries a per-run marker variable
-(`BASEMIND_HARDENING_SESSION`). The marker is how a run finds every process it owns, including the
-daemon that `basemind serve` auto-spawns detached (re-parented to init, so not a descendant), and
-it is checked again immediately before any signal, so a process this run did not start is never
-signalled.
+`BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` inside one `mkdtemp` root per run. Ownership is
+decided by that root: a process belongs to the run when its working directory or one of its open
+files lies inside the root, or when it descends from such a process. That finds the daemon `serve`
+auto-spawns detached (re-parented to init; its cwd is the run's comms dir and it holds the run's
+`daemon.lock`), every `serve` and CLI one-shot (cwd: the run's repo copy) and their children. The
+test is repeated immediately before any signal, so a process this run did not start, such as
+another session's daemon, is never signalled. (macOS no longer exposes another process's
+environment, so an environment marker cannot be used for this; `BASEMIND_HARDENING_SESSION` is
+still set, for a human reading `ps` output on Linux.)
 """
 
 from __future__ import annotations
@@ -121,13 +125,29 @@ def check_env(env: dict[str, str], iso: Isolation) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------
-# Process discovery: argv + environment of any same-user process (macOS KERN_PROCARGS2, Linux /proc)
+# Process discovery: argv, cwd and open files of same-user processes (macOS libproc, Linux /proc)
 # ---------------------------------------------------------------------------------------------------
 
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True) if (IS_MAC or IS_LINUX) else None
+_libproc = ctypes.CDLL("/usr/lib/libproc.dylib") if IS_MAC else None
+
+# <sys/proc_info.h>: proc_pidinfo flavors and struct offsets.
+_PROC_PIDLISTFDS = 1
+_PROC_PIDVNODEPATHINFO = 9
+_PROC_PIDFDVNODEPATHINFO = 2
+_PROX_FDTYPE_VNODE = 1
+_VNODE_INFO_SIZE = 152
+_MAXPATHLEN = 1024
+_VNODE_INFO_PATH_SIZE = _VNODE_INFO_SIZE + _MAXPATHLEN
+_PROC_FILEINFO_SIZE = 24
+_FDINFO_SIZE = 8
 
 
-def _procargs_mac(pid: int) -> tuple[list[str], list[str]] | None:
+def _cstr(raw: bytes) -> str:
+    return raw.split(b"\0", 1)[0].decode("utf-8", "replace")
+
+
+def _argv_mac(pid: int) -> list[str] | None:
     ctl_kern, kern_argmax, kern_procargs2 = 1, 8, 49
     argmax = ctypes.c_int(0)
     size = ctypes.c_size_t(ctypes.sizeof(argmax))
@@ -144,32 +164,75 @@ def _procargs_mac(pid: int) -> tuple[list[str], list[str]] | None:
         return None
     argc = int.from_bytes(raw[:4], sys.byteorder)
     rest = raw[4:]
-    end = rest.find(b"\0")
-    pos = end
-    while pos < len(rest) and rest[pos] == 0:
+    pos = rest.find(b"\0")
+    while 0 <= pos < len(rest) and rest[pos] == 0:
         pos += 1
-    parts = rest[pos:].split(b"\0")
-    argv = [p.decode("utf-8", "replace") for p in parts[:argc]]
-    env = [p.decode("utf-8", "replace") for p in parts[argc:] if p]
-    return argv, env
+    return [p.decode("utf-8", "replace") for p in rest[pos:].split(b"\0")[:argc]]
 
 
-def _procargs_linux(pid: int) -> tuple[list[str], list[str]] | None:
+def _cwd_mac(pid: int) -> str | None:
+    buf = ctypes.create_string_buffer(2 * _VNODE_INFO_PATH_SIZE)
+    if _libproc.proc_pidinfo(pid, _PROC_PIDVNODEPATHINFO, 0, buf, len(buf)) <= 0:
+        return None
+    return _cstr(buf.raw[_VNODE_INFO_SIZE:_VNODE_INFO_PATH_SIZE]) or None
+
+
+def _open_paths_mac(pid: int) -> list[str]:
+    need = _libproc.proc_pidinfo(pid, _PROC_PIDLISTFDS, 0, None, 0)
+    if need <= 0:
+        return []
+    buf = ctypes.create_string_buffer(need)
+    got = _libproc.proc_pidinfo(pid, _PROC_PIDLISTFDS, 0, buf, need)
+    paths = []
+    info = ctypes.create_string_buffer(_PROC_FILEINFO_SIZE + _VNODE_INFO_PATH_SIZE)
+    for off in range(0, max(got, 0), _FDINFO_SIZE):
+        fd = int.from_bytes(buf.raw[off : off + 4], sys.byteorder, signed=True)
+        kind = int.from_bytes(buf.raw[off + 4 : off + 8], sys.byteorder)
+        if kind != _PROX_FDTYPE_VNODE:
+            continue
+        if _libproc.proc_pidfdinfo(pid, fd, _PROC_PIDFDVNODEPATHINFO, info, len(info)) > 0:
+            paths.append(_cstr(info.raw[_PROC_FILEINFO_SIZE + _VNODE_INFO_SIZE :]))
+    return paths
+
+
+def _argv_linux(pid: int) -> list[str] | None:
     try:
-        argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-        env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return None
-    return [a.decode("utf-8", "replace") for a in argv if a], [e.decode("utf-8", "replace") for e in env if e]
+    return [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
 
 
-def procargs(pid: int) -> tuple[list[str], list[str]] | None:
-    """(argv, environ) of a same-user process, or None when it is gone or unreadable."""
-    if IS_MAC:
-        return _procargs_mac(pid)
-    if IS_LINUX:
-        return _procargs_linux(pid)
-    return None
+def _cwd_linux(pid: int) -> str | None:
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+
+
+def _open_paths_linux(pid: int) -> list[str]:
+    out = []
+    try:
+        names = os.listdir(f"/proc/{pid}/fd")  # noqa: PTH208 - /proc listing
+    except OSError:
+        return out
+    for name in names:
+        with contextlib.suppress(OSError):
+            out.append(os.readlink(f"/proc/{pid}/fd/{name}"))
+    return out
+
+
+def proc_argv(pid: int) -> list[str] | None:
+    """argv of a same-user process, or None when it is gone or unreadable."""
+    return _argv_mac(pid) if IS_MAC else _argv_linux(pid) if IS_LINUX else None
+
+
+def proc_cwd(pid: int) -> str | None:
+    return _cwd_mac(pid) if IS_MAC else _cwd_linux(pid) if IS_LINUX else None
+
+
+def proc_open_paths(pid: int) -> list[str]:
+    return _open_paths_mac(pid) if IS_MAC else _open_paths_linux(pid) if IS_LINUX else []
 
 
 def all_pids() -> dict[int, int]:
@@ -188,23 +251,47 @@ def all_pids() -> dict[int, int]:
     return table
 
 
-def marked_processes(session: str) -> dict[int, list[str]]:
-    """pid -> argv of every live process carrying this run's marker."""
-    needle = f"{SESSION_ENV}={session}"
-    found: dict[int, list[str]] = {}
+def _inside(path: str | None, root: Path) -> bool:
+    return bool(path) and (path == str(root) or path.startswith(str(root) + os.sep))
+
+
+def anchored(pid: int, root: Path, binary_names: tuple[str, ...] = ("basemind",)) -> bool:
+    """Whether `pid` has its cwd, or (for a basemind binary) an open file, inside `root`."""
+    if _inside(proc_cwd(pid), root):
+        return True
+    argv = proc_argv(pid) or []
+    if argv and Path(argv[0]).name in binary_names:
+        return any(_inside(p, root) for p in proc_open_paths(pid))
+    return False
+
+
+def owned_processes(root: Path) -> dict[int, list[str]]:
+    """pid -> argv of every live process of the run rooted at `root` (see the module docstring)."""
+    table = all_pids()
     me = os.getpid()
-    for pid in all_pids():
-        if pid == me:
-            continue
-        info = procargs(pid)
-        if info and needle in info[1]:
-            found[pid] = info[0]
-    return found
+    owned = {pid for pid in table if pid != me and anchored(pid, root)}
+    grew = True
+    while grew:
+        grew = False
+        for pid, ppid in table.items():
+            if ppid in owned and pid not in owned and pid != me:
+                owned.add(pid)
+                grew = True
+    return {pid: proc_argv(pid) or [] for pid in owned}
 
 
-def carries_marker(pid: int, session: str) -> bool:
-    info = procargs(pid)
-    return bool(info) and f"{SESSION_ENV}={session}" in info[1]
+def still_owned(pid: int, root: Path) -> bool:
+    """Re-check ownership of one pid right before signalling it."""
+    if anchored(pid, root):
+        return True
+    ppid = all_pids().get(pid)
+    seen = set()
+    while ppid and ppid not in seen and ppid > 1:
+        if anchored(ppid, root):
+            return True
+        seen.add(ppid)
+        ppid = all_pids().get(ppid)
+    return False
 
 
 def role_of(argv: list[str]) -> str:
@@ -229,12 +316,11 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def terminate_marked(session: str, grace: float = 5.0) -> list[int]:
-    """SIGTERM, then SIGKILL, every process carrying the marker. Returns the pids signalled."""
+def terminate_owned(root: Path, grace: float = 5.0) -> list[int]:
+    """SIGTERM, then SIGKILL, every process of the run. Returns the pids signalled."""
     signalled: list[int] = []
-    victims = marked_processes(session)
-    for pid in victims:
-        if carries_marker(pid, session):
+    for pid in owned_processes(root):
+        if still_owned(pid, root):
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGTERM)
                 signalled.append(pid)
@@ -242,7 +328,7 @@ def terminate_marked(session: str, grace: float = 5.0) -> list[int]:
     while time.monotonic() < deadline and any(pid_alive(p) for p in signalled):
         time.sleep(0.1)
     for pid in signalled:
-        if pid_alive(pid) and carries_marker(pid, session):
+        if pid_alive(pid) and still_owned(pid, root):
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
     return signalled
@@ -315,7 +401,6 @@ class _Timebase(ctypes.Structure):
     _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]  # noqa: RUF012 - ctypes layout
 
 
-_libproc = ctypes.CDLL("/usr/lib/libproc.dylib") if IS_MAC else None
 _TIMEBASE = 1.0
 if IS_MAC:
     _tb = _Timebase()
