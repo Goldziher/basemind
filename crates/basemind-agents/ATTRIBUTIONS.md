@@ -63,7 +63,9 @@ types, and the per-agent dialect of the ACP adapter.
   of running children are removed. `retire` is blocking, bounded by a budget, and observes the exit
   with `waitid(WNOWAIT)`, so the process group is always signalled before its leader is reaped and
   the group id cannot have been reused. A launch is refused while SIGCHLD is ignored and off Unix.
-  A keeper process, which monocode does not have, kills the group when the launcher dies.
+  A keeper process, which monocode does not have, kills the group when the launcher dies. The
+  harness leads a POSIX session of its own (`setsid`) rather than only a process group, so nothing
+  it starts can join a process group outside that session.
 - `agent.rs`: `AccessMode` becomes `PermissionMode` (`spec.rs`); its full-access variant needs an
   explicit opt-in naming the harness and the mode.
 - `provider/acp.rs`: Grok's arguments and `GROK_NO_AUTO_UPDATE`, the `yoloMode` `_meta`, and the

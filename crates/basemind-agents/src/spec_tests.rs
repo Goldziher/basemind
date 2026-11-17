@@ -24,7 +24,7 @@ fn the_child_environment_is_the_allow_list_plus_additions_and_identity() {
         ("path", "/lowercase-is-another-variable"),
     ]);
     let env = spec.child_env(parent);
-    let expected: BTreeMap<String, OsString> = [
+    let mut expected: BTreeMap<String, OsString> = [
         ("PATH", BIN_DIRS[0]),
         ("HOME", "/home/dev"),
         ("OPENAI_API_KEY", "from-the-spec"),
@@ -36,6 +36,9 @@ fn the_child_environment_is_the_allow_list_plus_additions_and_identity() {
     .into_iter()
     .map(|(name, value)| (name.to_owned(), value.into()))
     .collect();
+    if cfg!(windows) {
+        expected.insert("NoDefaultCurrentDirectoryInExePath".to_owned(), "1".into());
+    }
     assert_eq!(env, expected);
 }
 

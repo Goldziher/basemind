@@ -27,9 +27,8 @@
 //! Never panics: a parse failure, `.tsg` build error, or stitch error yields `None`, so the
 //! dispatcher falls back to the tree-sitter `locals` engine.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, LazyLock};
 
-use ahash::AHashMap;
 use stack_graphs::arena::Handle;
 use stack_graphs::graph::{Node, StackGraph};
 use stack_graphs::partial::PartialPaths;
@@ -39,6 +38,7 @@ use tree_sitter_stack_graphs::StackGraphLanguage;
 
 use crate::intel::model::{FileResolvedRefs, ResolvedEdge};
 use crate::lang::LangId;
+use crate::once_map::OnceMap;
 
 /// The vendored Python name-binding rules.
 const PYTHON_TSG: &str = include_str!("tsg/python.tsg");
@@ -78,27 +78,18 @@ struct LangEngine {
     sgl: StackGraphLanguage,
 }
 
-// SAFETY-free: StackGraphLanguage owns a tree_sitter::Language + parsed AST; both are Send+Sync.
-static ENGINES: OnceLock<std::sync::RwLock<AHashMap<LangId, Option<&'static LangEngine>>>> = OnceLock::new();
+// StackGraphLanguage owns a tree_sitter::Language + parsed AST; both are Send+Sync.
+static ENGINES: LazyLock<OnceMap<LangId, Option<Arc<LangEngine>>>> = LazyLock::new(OnceMap::default);
 
 /// Compile (once) and return the cached engine for `lang`, or `None` if the `.tsg` won't build.
 ///
-/// The compiled engine is leaked into a `'static` slot: there is exactly one per language for the
-/// life of the process, mirroring the query-cache pattern in `src/lang.rs`.
-fn engine(lang: LangId) -> Option<&'static LangEngine> {
-    let map = ENGINES.get_or_init(|| std::sync::RwLock::new(AHashMap::new()));
-    if let Some(cached) = map.read().ok().and_then(|m| m.get(lang).copied()) {
-        return cached;
-    }
-    let built = build_engine(lang);
-    if let Ok(mut m) = map.write() {
-        m.insert(lang, built);
-    }
-    built
+/// Workers that reach a language's first file together wait for one compile and share it.
+fn engine(lang: LangId) -> Option<Arc<LangEngine>> {
+    ENGINES.get_or_init(lang, || build_engine(lang))
 }
 
-/// Compile the `.tsg` for `lang` into a leaked `'static` engine.
-fn build_engine(lang: LangId) -> Option<&'static LangEngine> {
+/// Compile the `.tsg` for `lang`.
+fn build_engine(lang: LangId) -> Option<Arc<LangEngine>> {
     let ts_language = match crate::lang::language(lang) {
         Ok(l) => l,
         Err(err) => {
@@ -118,7 +109,7 @@ fn build_engine(lang: LangId) -> Option<&'static LangEngine> {
             return None;
         }
     };
-    Some(Box::leak(Box::new(LangEngine { sgl })))
+    Some(Arc::new(LangEngine { sgl }))
 }
 
 /// Resolve a single file's intra-file references via its stack graph. Returns `None` on any
@@ -128,7 +119,7 @@ pub fn resolve_stackgraph(lang: LangId, source: &[u8]) -> Option<FileResolvedRef
     let engine = engine(lang)?;
 
     let _slot = ResolveSlot::acquire();
-    let intra = match resolve_intra(engine, lang, src) {
+    let intra = match resolve_intra(&engine, lang, src) {
         Ok(edges) => edges,
         Err(err) => {
             tracing::debug!(lang, bytes = source.len(), error = %err, "stackgraph: intra-file resolution failed");
@@ -421,7 +412,7 @@ fn extract_exports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out
     };
 
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(query, root, source);
+    let mut matches = cursor.matches(&query, root, source);
     while let Some(m) = matches.next() {
         let Some(node) = m.captures().iter().find(|c| c.index == export_idx).map(|c| c.node) else {
             continue;
@@ -446,7 +437,7 @@ fn extract_imports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out
     let Some(local_idx) = local_idx else { return };
 
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(query, root, source);
+    let mut matches = cursor.matches(&query, root, source);
     while let Some(m) = matches.next() {
         let local_node = m.captures().iter().find(|c| c.index == local_idx).map(|c| c.node);
         let Some(local_node) = local_node else { continue };
@@ -470,22 +461,13 @@ fn extract_imports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out
     }
 }
 
-/// Compiled import query per language, cached for the process lifetime.
-fn import_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
-    static IMPORT_QUERIES: OnceLock<std::sync::RwLock<AHashMap<LangId, Option<&'static tree_sitter::Query>>>> =
-        OnceLock::new();
-    let map = IMPORT_QUERIES.get_or_init(|| std::sync::RwLock::new(AHashMap::new()));
-    if let Some(cached) = map.read().ok().and_then(|m| m.get(lang).copied()) {
-        return cached;
-    }
-    let built = build_import_query(lang);
-    if let Ok(mut m) = map.write() {
-        m.insert(lang, built);
-    }
-    built
+/// Compiled import query per language, built once and cached for the process lifetime.
+fn import_query(lang: LangId) -> Option<Arc<tree_sitter::Query>> {
+    static IMPORT_QUERIES: LazyLock<OnceMap<LangId, Option<Arc<tree_sitter::Query>>>> = LazyLock::new(OnceMap::default);
+    IMPORT_QUERIES.get_or_init(lang, || build_import_query(lang))
 }
 
-fn build_import_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
+fn build_import_query(lang: LangId) -> Option<Arc<tree_sitter::Query>> {
     let src = match lang {
         "python" => {
             "(import_from_statement module_name: (_) @module name: (dotted_name (identifier) @local))\n\
@@ -496,7 +478,7 @@ fn build_import_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
     };
     let ts_language = crate::lang::language(lang).ok()?;
     match tree_sitter::Query::new(&ts_language, src) {
-        Ok(q) => Some(Box::leak(Box::new(q))),
+        Ok(q) => Some(Arc::new(q)),
         Err(err) => {
             tracing::debug!(lang, error = %err, "stackgraph: import query failed to compile");
             None
@@ -504,22 +486,13 @@ fn build_import_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
     }
 }
 
-/// Compiled export query per language, cached for the process lifetime.
-fn export_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
-    static EXPORT_QUERIES: OnceLock<std::sync::RwLock<AHashMap<LangId, Option<&'static tree_sitter::Query>>>> =
-        OnceLock::new();
-    let map = EXPORT_QUERIES.get_or_init(|| std::sync::RwLock::new(AHashMap::new()));
-    if let Some(cached) = map.read().ok().and_then(|m| m.get(lang).copied()) {
-        return cached;
-    }
-    let built = build_export_query(lang);
-    if let Ok(mut m) = map.write() {
-        m.insert(lang, built);
-    }
-    built
+/// Compiled export query per language, built once and cached for the process lifetime.
+fn export_query(lang: LangId) -> Option<Arc<tree_sitter::Query>> {
+    static EXPORT_QUERIES: LazyLock<OnceMap<LangId, Option<Arc<tree_sitter::Query>>>> = LazyLock::new(OnceMap::default);
+    EXPORT_QUERIES.get_or_init(lang, || build_export_query(lang))
 }
 
-fn build_export_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
+fn build_export_query(lang: LangId) -> Option<Arc<tree_sitter::Query>> {
     let src = match lang {
         "python" => {
             "(module (function_definition name: (identifier) @export))\n\
@@ -538,7 +511,7 @@ fn build_export_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
     };
     let ts_language = crate::lang::language(lang).ok()?;
     match tree_sitter::Query::new(&ts_language, src) {
-        Ok(q) => Some(Box::leak(Box::new(q))),
+        Ok(q) => Some(Arc::new(q)),
         Err(err) => {
             tracing::debug!(lang, error = %err, "stackgraph: export query failed to compile");
             None
@@ -835,6 +808,45 @@ mod tests {
                 .find(|e| e.use_start == call)
                 .unwrap_or_else(|| panic!("the call to f{i} must resolve"));
             assert_eq!(edge.def_start, def, "f{i} must resolve to its own definition");
+        }
+    }
+
+    /// The resolve pass reaches its first Java files on every worker at once: one `.tsg` compile,
+    /// one engine and one import / export query per language, shared, none leaked.
+    #[test]
+    fn concurrent_first_use_builds_one_engine_per_language() {
+        if skip_if_no_grammar("java") {
+            return;
+        }
+        const THREADS: usize = 8;
+        let barrier = std::sync::Barrier::new(THREADS);
+        type Built = (
+            Option<Arc<LangEngine>>,
+            Option<Arc<tree_sitter::Query>>,
+            Option<Arc<tree_sitter::Query>>,
+        );
+        let built: Vec<Built> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        (engine("java"), import_query("java"), export_query("java"))
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().expect("worker")).collect()
+        });
+        fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+        let (engine0, import0, export0) = &built[0];
+        assert!(engine0.is_some() && import0.is_some() && export0.is_some());
+        for (engine, import, export) in &built {
+            assert!(same(engine, engine0) && same(import, import0) && same(export, export0));
         }
     }
 }

@@ -31,8 +31,12 @@ use crate::store_blob_codec::{
 
 const SINGLE_HEADER_LEN: usize = 16;
 const FILEMAP_HEADER_LEN: usize = 24;
+/// Fixed header of a [`BlobKind::Chunk`] envelope, which predates the extract epoch.
 #[cfg(feature = "code-search")]
 const CHUNK_HEADER_LEN: usize = 28;
+/// Fixed header of a [`BlobKind::EpochChunk`] envelope: the legacy 28 bytes, then the extract epoch.
+#[cfg(feature = "code-search")]
+const EPOCH_CHUNK_HEADER_LEN: usize = CHUNK_HEADER_LEN + 2;
 #[cfg(feature = "code-search")]
 const MAX_PEEK_ITEMS: usize = 10_000_000;
 
@@ -49,6 +53,7 @@ struct ChunkEnvelopePeek {
     config_digest: String,
     chunk_count: usize,
     embedding_count: usize,
+    extract_epoch: u16,
 }
 
 #[derive(Deserialize)]
@@ -277,14 +282,15 @@ fn encode_chunk_blob(blob: &crate::chunk::CodeChunkBlob) -> Result<Vec<u8>, Stor
     let model = blob.embedding_model.as_bytes();
     let model_len = u16::try_from(model.len()).map_err(|_| StoreError::BlobTooLarge)?;
     let digest = chunk_digest_region(&blob.config_digest);
-    let mut out = Vec::with_capacity(CHUNK_HEADER_LEN + model.len() + digest.len() + compressed.len());
-    encode_prefix(BlobKind::Chunk, blob.schema_ver, &mut out);
+    let mut out = Vec::with_capacity(EPOCH_CHUNK_HEADER_LEN + model.len() + digest.len() + compressed.len());
+    encode_prefix(BlobKind::EpochChunk, blob.schema_ver, &mut out);
     out.extend_from_slice(&checked_u32_len(bytes.len())?.to_le_bytes());
     out.extend_from_slice(&checked_u32_len(compressed.len())?.to_le_bytes());
     out.extend_from_slice(&blob.embedding_dim.to_le_bytes());
     out.extend_from_slice(&model_len.to_le_bytes());
     out.extend_from_slice(&checked_u32_len(blob.chunks.len())?.to_le_bytes());
     out.extend_from_slice(&checked_u32_len(blob.embeddings.len())?.to_le_bytes());
+    out.extend_from_slice(&blob.extract_epoch.to_le_bytes());
     out.extend_from_slice(model);
     out.extend_from_slice(digest);
     out.extend_from_slice(&compressed);
@@ -303,6 +309,17 @@ fn chunk_digest_region(digest: &str) -> &[u8] {
     }
 }
 
+/// Length of the fixed header of a chunk envelope of `kind`; `None` for a kind that is not a chunk
+/// envelope. The kind byte, not the blob length, says whether the epoch field is there.
+#[cfg(feature = "code-search")]
+fn chunk_header_len(kind: BlobKind) -> Option<usize> {
+    match kind {
+        BlobKind::Chunk => Some(CHUNK_HEADER_LEN),
+        BlobKind::EpochChunk => Some(EPOCH_CHUNK_HEADER_LEN),
+        BlobKind::Single | BlobKind::FileMap => None,
+    }
+}
+
 /// Parsed fixed + variable header of a chunk envelope, plus where the compressed payload starts.
 #[cfg(feature = "code-search")]
 struct ChunkHeader {
@@ -318,9 +335,7 @@ struct ChunkHeader {
 #[cfg(feature = "code-search")]
 fn chunk_header(path: &Path, bytes: &[u8], total_len: usize) -> Result<ChunkHeader, StoreError> {
     let prefix = envelope_prefix(path, bytes)?.ok_or_else(|| corrupt_blob(path))?;
-    if prefix.kind != BlobKind::Chunk {
-        return Err(corrupt_blob(path));
-    }
+    let header_len = chunk_header_len(prefix.kind).ok_or_else(|| corrupt_blob(path))?;
     let uncompressed_len = read_u32(path, bytes, 8)?;
     let stored_len = read_u32(path, bytes, 12)?;
     let embedding_dim = read_u16(path, bytes, 16)?;
@@ -330,9 +345,13 @@ fn chunk_header(path: &Path, bytes: &[u8], total_len: usize) -> Result<ChunkHead
     if chunk_count > MAX_PEEK_ITEMS || embedding_count > MAX_PEEK_ITEMS {
         return Err(corrupt_blob(path));
     }
-    let model_end = CHUNK_HEADER_LEN
-        .checked_add(model_len)
-        .ok_or_else(|| corrupt_blob(path))?;
+    // An envelope written before the epoch was stamped reads as epoch 0: stale, never an error.
+    let extract_epoch = if prefix.kind == BlobKind::EpochChunk {
+        read_u16(path, bytes, CHUNK_HEADER_LEN)?
+    } else {
+        0
+    };
+    let model_end = header_len.checked_add(model_len).ok_or_else(|| corrupt_blob(path))?;
     let legacy_end = model_end.checked_add(stored_len).ok_or_else(|| corrupt_blob(path))?;
     let digest_len = if legacy_end == total_len {
         0
@@ -344,13 +363,9 @@ fn chunk_header(path: &Path, bytes: &[u8], total_len: usize) -> Result<ChunkHead
     if payload_end != total_len {
         return Err(corrupt_blob(path));
     }
-    let embedding_model = std::str::from_utf8(
-        bytes
-            .get(CHUNK_HEADER_LEN..model_end)
-            .ok_or_else(|| corrupt_blob(path))?,
-    )
-    .map_err(|_| corrupt_blob(path))?
-    .to_string();
+    let embedding_model = std::str::from_utf8(bytes.get(header_len..model_end).ok_or_else(|| corrupt_blob(path))?)
+        .map_err(|_| corrupt_blob(path))?
+        .to_string();
     let config_digest = std::str::from_utf8(bytes.get(model_end..digest_end).ok_or_else(|| corrupt_blob(path))?)
         .map_err(|_| corrupt_blob(path))?
         .to_string();
@@ -362,6 +377,7 @@ fn chunk_header(path: &Path, bytes: &[u8], total_len: usize) -> Result<ChunkHead
             config_digest,
             chunk_count,
             embedding_count,
+            extract_epoch,
         },
         uncompressed_len,
         payload_start: digest_end,
@@ -378,9 +394,10 @@ fn chunk_payload<'a>(path: &Path, bytes: &'a [u8]) -> Result<CompressedPayload<'
     })
 }
 
-/// Read only a chunk sidecar's header from disk: the fixed 28 bytes, then the model name and digest
-/// region they describe, never the compressed payload. `Ok(None)` when the file is missing. Blobs that
-/// are not envelopes (legacy raw msgpack) are returned whole, since they have no header to stop at.
+/// Read only a chunk sidecar's header from disk: the fixed header (28 or 30 bytes by kind), then the
+/// model name and digest region it describes, never the compressed payload. `Ok(None)` when the file
+/// is missing. Blobs that are not envelopes (legacy raw msgpack) are returned whole, since they have
+/// no header to stop at.
 #[cfg(feature = "code-search")]
 fn read_chunk_header_prefix(path: &Path) -> Result<Option<(Vec<u8>, usize, bool)>, StoreError> {
     use std::io::Read;
@@ -396,13 +413,14 @@ fn read_chunk_header_prefix(path: &Path) -> Result<Option<(Vec<u8>, usize, bool)
     let total_len = usize::try_from(file.metadata().map_err(io_err)?.len()).map_err(|_| corrupt_blob(path))?;
     let mut head = vec![0u8; CHUNK_HEADER_LEN.min(total_len)];
     file.read_exact(&mut head).map_err(io_err)?;
-    if envelope_prefix(path, &head)?.is_none() {
+    let Some(prefix) = envelope_prefix(path, &head)? else {
         // Legacy raw blob: no envelope, so read the rest and decode it whole.
         file.read_to_end(&mut head).map_err(io_err)?;
         return Ok(Some((head, total_len, false)));
-    }
+    };
+    let header_len = chunk_header_len(prefix.kind).ok_or_else(|| corrupt_blob(path))?;
     let model_len = read_u16(path, &head, 18)? as usize;
-    let want = (CHUNK_HEADER_LEN + model_len + crate::config::rules::DIGEST_LEN).min(total_len);
+    let want = (header_len + model_len + crate::config::rules::DIGEST_LEN).min(total_len);
     let have = head.len();
     head.resize(want, 0);
     file.read_exact(&mut head[have..]).map_err(io_err)?;
@@ -424,6 +442,7 @@ fn public_chunk_peek(header: ChunkEnvelopePeek) -> crate::chunk::CodeChunkBlobPe
         embedding_dim: header.embedding_dim,
         embedding_model: header.embedding_model,
         config_digest: header.config_digest,
+        extract_epoch: header.extract_epoch,
         chunks: (0..header.chunk_count).map(|_| serde::de::IgnoredAny).collect(),
         embeddings: (0..header.embedding_count).map(|_| serde::de::IgnoredAny).collect(),
     }
@@ -697,8 +716,9 @@ impl Store {
     /// Cheaply read a chunk sidecar's embedding state without decoding the chunk text. Same contract
     /// as [`read_chunks_by_hex`](Self::read_chunks_by_hex) — `Ok(None)` when the file has no chunk
     /// blob, a schema mismatch surfaces as an error — but reads only the plain envelope header (counts,
-    /// embedding dim/model, config digest) from disk, never the compressed chunk/embedding payload. Legacy raw blobs use
-    /// the prior partial-msgpack decode. Backs the `embed_state_satisfied` unchanged-file fast path.
+    /// embedding dim/model, extract epoch, config digest) from disk, never the compressed
+    /// chunk/embedding payload. Legacy raw blobs use the prior partial-msgpack decode. Backs the
+    /// `embed_state_satisfied` unchanged-file fast path.
     #[cfg(feature = "code-search")]
     pub fn peek_chunk_state(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlobPeek>, StoreError> {
         let path = self.blob_path_chunk_hex(hash_hex);

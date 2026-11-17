@@ -1,8 +1,13 @@
 // Adapted from https://github.com/hardbeat920/monocode (crates/monocode-core/src/process.rs) at 09d04436babb39ad72198cdf22f735067027fc04, MIT.
-//! Process-group handling: a harness is started as the leader of its own group, so ending the
-//! session ends every helper that stayed in that group. A descendant that leaves the group
-//! (a daemonizing helper, a job started under job control) is not reached and survives the
-//! session; containing it needs a cgroup or a Job Object, which this crate does not set up.
+//! Process-group handling: a harness is started as the leader of its own POSIX session, and so
+//! of its own process group, so ending the session ends every helper that stayed in that group.
+//! A descendant that leaves the group (a daemonizing helper, a job started under job control) is
+//! not reached and survives the session; containing it needs a cgroup or a Job Object, which
+//! this crate does not set up.
+//!
+//! A session of its own also fences the harness in: `setpgid` only moves a process between
+//! groups of its own session, so nothing the harness starts can join a group of another
+//! session's harness, of the launcher, or of the terminal the launcher was started from.
 
 use std::process::{Child, Command};
 use std::sync::atomic::AtomicBool;
@@ -26,7 +31,8 @@ pub(crate) const TERM_GRACE: Duration = Duration::from_secs(2);
 #[cfg(unix)]
 pub(crate) const CWD_CHANGED: i32 = libc::ESTALE;
 
-/// Makes the child the leader of a new process group with the ordinary signal mask.
+/// Makes the child the leader of a new session, and so of a new process group, with the
+/// ordinary signal mask.
 pub(crate) fn isolate(command: &mut Command) {
     #[cfg(unix)]
     {
@@ -47,10 +53,14 @@ pub(crate) fn isolate(command: &mut Command) {
                 if status != 0 {
                     return Err(std::io::Error::from_raw_os_error(status));
                 }
+                // Not `process_group(0)`: a group leader may not call setsid, and std sets the
+                // group before running this closure.
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
-        command.process_group(0);
     }
     #[cfg(windows)]
     {

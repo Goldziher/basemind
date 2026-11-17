@@ -15,6 +15,7 @@
 //! | [`ProtectionReason::MostRecentlyUsed`] | Newest activity among workspaces that still hold a view. |
 //! | [`ProtectionReason::RecentlyBuilt`] | Built or rescanned within the grace window ([`cache_grace`]). |
 //! | [`ProtectionReason::NewerVersion`] | A view of it was written by a newer basemind sharing the cache. |
+//! | [`ProtectionReason::LegacyMemory`] | A view's index holds pre-0.30 memory notes that could not be moved. |
 //!
 //! "Used" is the newest mtime of `workspace.json`, `status.json` and each view's `index.msgpack`;
 //! every linked git worktree is its own workspace key, so the most recent one across all worktrees
@@ -45,6 +46,9 @@ pub enum ProtectionReason {
     RecentlyBuilt,
     /// A view of it was written by a newer basemind sharing the cache: that version's live index.
     NewerVersion,
+    /// A view's index holds memory notes a release before 0.30 kept there, which could not be moved
+    /// to the group store.
+    LegacyMemory,
 }
 
 /// A workspace the budget pass left alone although the cache is over budget.

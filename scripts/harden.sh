@@ -17,15 +17,18 @@ if [ -z "${BASEMIND_HARDEN_KEEP:-}" ]; then
   rm -rf "${BASEMIND_DATA_HOME}"
 fi
 
+# name|url|commit|depth. Each canary repo is pinned to a commit, so an upstream push cannot move a
+# canary or turn the nightly red on its own; move a pin deliberately, in its own commit. An empty
+# depth fetches the full history.
 REPOS=(
-  "ripgrep|https://github.com/BurntSushi/ripgrep.git|"
-  "tokio|https://github.com/tokio-rs/tokio.git|--depth=2000"
-  "typescript|https://github.com/microsoft/TypeScript.git|--depth=2000"
-  "react|https://github.com/facebook/react.git|--depth=2000"
-  "django|https://github.com/django/django.git|--depth=2000"
-  "requests|https://github.com/psf/requests.git|"
-  "gin|https://github.com/gin-gonic/gin.git|"
-  "ripgrep-shallow|https://github.com/BurntSushi/ripgrep.git|--depth=50"
+  "ripgrep|https://github.com/BurntSushi/ripgrep.git|178cc027e283fd965cb72d0a7395b219eada170c|"
+  "tokio|https://github.com/tokio-rs/tokio.git|f3e855fa55d6c1cc3e7a28e115a421b8ee5860bd|2000"
+  "typescript|https://github.com/microsoft/TypeScript.git|68672025cc6f01c845051d9f9b04200b0382942c|2000"
+  "react|https://github.com/facebook/react.git|1cd5eb8e0edb0b3a1ba33de9c886d91627f8b5ac|2000"
+  "django|https://github.com/django/django.git|d3954c981368eb4439be63f2f165d400f33bcd70|2000"
+  "requests|https://github.com/psf/requests.git|3c7baaa05ab4aa49cc819ce3a819d260de19c157|"
+  "gin|https://github.com/gin-gonic/gin.git|0f09c3a9b4626d9fe9979cf4d0521d6ae32ab646|"
+  "ripgrep-shallow|https://github.com/BurntSushi/ripgrep.git|178cc027e283fd965cb72d0a7395b219eada170c|50"
 )
 
 selected=("$@")
@@ -50,7 +53,7 @@ failed=()
 passed=()
 
 for entry in "${REPOS[@]}"; do
-  IFS='|' read -r name url extra <<<"${entry}"
+  IFS='|' read -r name url commit depth <<<"${entry}"
   should_run "${name}" || continue
 
   dest="${ROOT}/${name}"
@@ -59,12 +62,19 @@ for entry in "${REPOS[@]}"; do
   echo "== ${name}"
   echo "================================================================"
 
-  if [ ! -d "${dest}/.git" ]; then
-    echo "==> cloning ${url} → ${dest}"
-    # shellcheck disable=SC2086
-    git clone ${extra} "${url}" "${dest}"
+  if [ "$(git -C "${dest}" rev-parse HEAD 2>/dev/null || true)" != "${commit}" ]; then
+    echo "==> fetching ${url} at ${commit}${depth:+ (depth ${depth})} → ${dest}"
+    rm -rf "${dest}"
+    git init -q "${dest}"
+    git -C "${dest}" remote add origin "${url}"
+    git -C "${dest}" fetch -q ${depth:+--depth="${depth}"} origin "${commit}"
+    git -C "${dest}" checkout -q --detach FETCH_HEAD
+    [ "$(git -C "${dest}" rev-parse HEAD)" = "${commit}" ] || {
+      echo "error: ${dest} is not at the pinned ${commit}" >&2
+      exit 1
+    }
   else
-    echo "==> reusing existing clone at ${dest}"
+    echo "==> reusing the clone at ${dest} (${commit})"
   fi
 
   ok=1

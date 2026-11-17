@@ -1,0 +1,5 @@
+# The Rust release every build uses: local, CI and the release jobs. A new stable can otherwise
+# break `-D warnings` or the release build on tag day. Move it deliberately, in its own commit.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]

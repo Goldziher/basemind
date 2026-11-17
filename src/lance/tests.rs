@@ -593,3 +593,69 @@ fn an_open_that_waits_out_a_held_lock_fails_and_touches_nothing() {
     drop(held);
     drop(LanceStore::open(dir.path(), 4, "model").expect("opens once the lock is free"));
 }
+
+fn listing(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// A search from a process without the workspace lock, embedding with another preset, wiped the
+/// writer's tables; the writer's next open wiped them back, and the two did so on every search. A
+/// read-side open of a mismatched store is refused and leaves it exactly as it was.
+#[test]
+fn a_read_side_open_of_another_preset_refuses_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("lance");
+    drop(LanceStore::open(&store, 8, "balanced").expect("the writer builds the store"));
+    let meta = std::fs::read(store.join(META_FILE)).unwrap();
+    let store_id = std::fs::read(store.join(STORE_ID_FILE)).unwrap();
+    let before = listing(&store);
+    let keep = sentinel(&store);
+
+    let refused = LanceStore::open_existing(&store, 16, "fast")
+        .err()
+        .expect("another preset is refused");
+    assert!(refused.to_string().contains("balanced"), "{refused}");
+
+    assert!(keep.exists(), "nothing was wiped");
+    assert_eq!(std::fs::read(store.join(META_FILE)).unwrap(), meta);
+    assert_eq!(std::fs::read(store.join(STORE_ID_FILE)).unwrap(), store_id);
+    let mut after = listing(&store);
+    after.retain(|name| name != "sentinel");
+    assert_eq!(after, before);
+    assert!(
+        LanceStore::open_existing(&store, 8, "balanced").is_ok(),
+        "the matching preset reads it"
+    );
+}
+
+/// A read-side open where no store was built creates nothing.
+#[test]
+fn a_read_side_open_of_a_missing_store_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("lance");
+    assert!(LanceStore::open_existing(&store, 8, "balanced").is_err());
+    assert!(!store.exists());
+}
+
+/// A newer basemind's store is refused by the read side, not wiped.
+#[test]
+fn a_read_side_open_refuses_a_newer_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let newer = LanceMeta {
+        dim: 8,
+        embedding_model: "balanced".to_string(),
+        schema_ver: MEMORY_SCHEMA_VER + 1,
+    };
+    std::fs::write(dir.path().join(META_FILE), serde_json::to_vec(&newer).unwrap()).unwrap();
+    let keep = sentinel(dir.path());
+    let refused = LanceStore::open_existing(dir.path(), 8, "balanced")
+        .err()
+        .expect("refused");
+    assert!(refused.to_string().contains("newer"), "{refused}");
+    assert!(keep.exists());
+}

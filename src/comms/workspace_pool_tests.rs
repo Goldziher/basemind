@@ -114,6 +114,25 @@ fn rescan_indexes_sources_and_is_idempotent() {
 }
 
 #[test]
+fn the_pools_writer_lock_names_the_daemon_not_a_cli_rescan() {
+    // A CLI `scan` refused while the daemon holds the workspace prints the holder this sidecar
+    // names; it used to say "`basemind rescan` (pid <daemon>)", a process that never ran.
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
+    let ws = workspace_with_sources();
+    pool.rescan(ws.path(), None, false, false, &ScanCancel::default())
+        .expect("scan");
+    let basemind_dir = store::workspace_cache_dir(&canonical(&ws));
+    match store::probe_writer_lock(&basemind_dir) {
+        store::WriterProbe::Held { holder: Some(meta) } => {
+            assert_eq!(meta.command, "basemind comms daemon");
+            assert_eq!(meta.pid, std::process::id());
+        }
+        other => panic!("the pool holds the writer lock with a named holder, got {other:?}"),
+    }
+}
+
+#[test]
 fn lru_eviction_keeps_only_the_most_recent_within_the_cap() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(1);

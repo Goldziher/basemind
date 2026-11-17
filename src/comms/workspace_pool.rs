@@ -789,7 +789,7 @@ impl WorkspacePool {
         };
         let config_stamp = config::daemon::ConfigStamp::of(&resolved);
         let config = config::daemon::load_daemon(&resolved)?;
-        let store = Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?;
+        let store = Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Daemon)?;
         let rebuild_pending = store.index_rebuild_needed;
         if rebuild_pending {
             tracing::warn!(root = %resolved.display(), "index is empty over a populated file map; scheduling a full rebuild");

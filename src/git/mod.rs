@@ -8,12 +8,16 @@ mod commit;
 #[cfg(test)]
 pub(crate) use commit::FILE_LISTINGS;
 mod diff;
+mod eol_config;
 mod export;
 mod remote;
+mod status;
+mod tracked;
 mod worktree;
 use commit::{build_commit_info, commit_files, commit_touches_path, decode_path};
 pub use diff::FileDiff;
 pub use remote::{normalize_remote_url, scope_key};
+pub use tracked::TrackedFiles;
 pub use worktree::{BranchInfo, WorktreeInfo};
 
 use std::path::{Path, PathBuf};
@@ -223,15 +227,26 @@ fn delta_base_cache_bytes() -> usize {
 /// Trust-mapped open options carrying basemind's resource bounds, applied to every repository we
 /// open. Only the caches are touched: discovery, trust and permissions keep gix's defaults, so this
 /// changes what a repository *costs*, never what it *resolves to*.
-fn bounded_open_options() -> gix::sec::trust::Mapping<gix::open::Options> {
+/// `extra` adds further CLI-precedence overrides (the end-of-line spellings of [`eol_config`]).
+fn bounded_open_options(extra: &[String]) -> gix::sec::trust::Mapping<gix::open::Options> {
     let mut mapping = gix::sec::trust::Mapping::<gix::open::Options>::default();
-    let delta_cache = format!("core.deltaBaseCacheLimit={}", delta_base_cache_bytes());
+    let mut overrides = vec![format!("core.deltaBaseCacheLimit={}", delta_base_cache_bytes())];
+    overrides.extend_from_slice(extra);
     // ~keep CLI precedence, not API: an API override sits with the globals and a repository-local
     // ~keep `core.deltaBaseCacheLimit` would outrank it, which would let an untrusted checkout raise
     // ~keep the bound we set for our own protection.
-    mapping.full.modify(|o| o.cli_overrides([delta_cache.clone()]));
-    mapping.reduced.modify(|o| o.cli_overrides([delta_cache]));
+    mapping.full.modify(|o| o.cli_overrides(overrides.clone()));
+    mapping.reduced.modify(|o| o.cli_overrides(overrides));
     mapping
+}
+
+fn discover_with(start: &Path, extra: &[String]) -> Result<gix::ThreadSafeRepository, GitError> {
+    gix::ThreadSafeRepository::discover_opts(
+        start,
+        gix::discover::upwards::Options::default(),
+        bounded_open_options(extra),
+    )
+    .map_err(|_| GitError::NotARepo(start.to_path_buf()))
 }
 
 impl Repo {
@@ -242,12 +257,13 @@ impl Repo {
     /// with the whole repository must therefore consult [`Repo::origin_is_workdir`] rather than
     /// assume `start` is the repository.
     pub fn discover(start: &Path) -> Result<Self, GitError> {
-        let inner = gix::ThreadSafeRepository::discover_opts(
-            start,
-            gix::discover::upwards::Options::default(),
-            bounded_open_options(),
-        )
-        .map_err(|_| GitError::NotARepo(start.to_path_buf()))?;
+        let mut inner = discover_with(start, &[])?;
+        let local = inner.to_thread_local();
+        let config = local.config_snapshot();
+        let eol = eol_config::overrides(|key| config.string(key).map(|value| value.to_string()));
+        if !eol.is_empty() {
+            inner = discover_with(start, &eol)?;
+        }
         let workdir = inner
             .work_dir()
             .ok_or_else(|| GitError::Other("bare repositories are not supported".to_string()))?
@@ -497,10 +513,7 @@ impl Repo {
         let local = self.local();
         let mut out = WorkingTreeStatus::default();
 
-        let platform = local.status(gix::progress::Discard).map_err(|e| GitError::Read {
-            what: "status".to_string(),
-            msg: e.to_string(),
-        })?;
+        let platform = status::platform(&local, "status")?;
         let platform = match untracked {
             Some(untracked) => platform.untracked_files(untracked),
             None => platform,

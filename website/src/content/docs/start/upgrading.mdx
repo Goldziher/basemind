@@ -146,7 +146,8 @@ The command groups keep their names, and the old subcommands stay as shorthands 
 - **One vocabulary for a cut.** A page that ends at `limit` sets nothing but `next_cursor`; the
   token budget also sets `budgeted`; a cut the caller did not ask for sets `truncated` and
   `truncated_reason`, with `omitted` counting the items left out. A client that read `truncated` as
-  "there is another page" (`code_grep`, `code_symbols`, `find_files`) must read `next_cursor`.
+  "there is another page" (`code_grep`, `code_symbols`, `find_files`, a `memory_search` listing)
+  must read `next_cursor`.
   `truncation_reason` (`code_grep`), `total_hunks` (`git_diff`), `imports_truncated`
   (`code_outline`), `total_is_partial` (`code_refs`, `code_symbols`) and `partial` (`git_log`
   search) are gone, and `code_read` counts bytes in `omitted_bytes`. The full table is in

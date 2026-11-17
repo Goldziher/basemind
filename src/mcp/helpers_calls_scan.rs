@@ -98,16 +98,19 @@ pub(super) struct BudgetedCallPage {
 ///
 /// Hits are best-first (scan order). When the budget drops trailing hits the cursor is
 /// re-anchored to the last KEPT hit's Fjall key so the next page resumes immediately after
-/// it with no gap or overlap. `max_tokens = None` is a no-op (original page passes through).
-pub(super) fn budget_call_page(page: CallScanPage, max_tokens: Option<u32>) -> BudgetedCallPage {
+/// it with no gap or overlap. `max_tokens = None` keeps the whole page. Each hit is written as
+/// listed for a query of `name` ([`ReferenceHit::named`]) before it is costed, so the budget charges
+/// what is written.
+pub(super) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Option<u32>) -> BudgetedCallPage {
+    let hits: Vec<ReferenceHit> = page.hits.into_iter().map(|hit| hit.named(name)).collect();
     if max_tokens.is_none() {
         return BudgetedCallPage {
-            hits: page.hits,
+            hits,
             next_cursor: page.next_cursor,
             budgeted: false,
         };
     }
-    let budget = super::budget::apply_budget(page.hits, max_tokens);
+    let budget = super::budget::apply_budget_by_path(hits, max_tokens);
     if !budget.budgeted {
         return BudgetedCallPage {
             hits: budget.items,
@@ -121,6 +124,52 @@ pub(super) fn budget_call_page(page: CallScanPage, max_tokens: Option<u32>) -> B
         hits: budget.items,
         next_cursor,
         budgeted: true,
+    }
+}
+
+/// Set [`ReferenceHit::shared_line`] on each hit of a page: another call site of the same callee is
+/// on its line of its file, anywhere in the result. A scan lists one callee's sites in one file as a
+/// run in start-byte order, so a file whose runs lie inside the page holds every such site on the
+/// page. Only the files of the page's first and last hit can have a run cut by the page edge; their
+/// call sites are read whole.
+pub(super) async fn mark_shared_lines(
+    route: &super::index_route::IndexRoute,
+    cache: &super::MapCache,
+    hits: &mut [ReferenceHit],
+) {
+    let mut edges: Vec<crate::path::RelPath> = hits
+        .first()
+        .into_iter()
+        .chain(hits.last())
+        .map(|hit| hit.path.clone())
+        .collect();
+    edges.dedup();
+    let edge_calls = route.calls_in_files(cache, &edges).await.unwrap_or_default();
+    let flags: Vec<bool> = {
+        let mut on_page: ahash::AHashMap<(&crate::path::RelPath, u32, &str), usize> = ahash::AHashMap::new();
+        for hit in hits.iter() {
+            *on_page.entry((&hit.path, hit.line, hit.callee.as_str())).or_default() += 1;
+        }
+        let mut in_edge: ahash::AHashMap<(&crate::path::RelPath, u32, &str), usize> = ahash::AHashMap::new();
+        for (path, calls) in edges.iter().zip(&edge_calls) {
+            for call in calls {
+                *in_edge.entry((path, call.line, call.callee.as_str())).or_default() += 1;
+            }
+        }
+        hits.iter()
+            .map(|hit| {
+                let site = (&hit.path, hit.line, hit.callee.as_str());
+                let count = if edges.contains(&hit.path) && edge_calls.len() == edges.len() {
+                    in_edge.get(&site)
+                } else {
+                    on_page.get(&site)
+                };
+                hit.line != 0 && count.is_some_and(|count| *count > 1)
+            })
+            .collect()
+    };
+    for (hit, shared) in hits.iter_mut().zip(flags) {
+        hit.shared_line = shared;
     }
 }
 
@@ -203,6 +252,8 @@ pub(super) fn scan_calls_examining(
                 column,
                 callee,
                 resolved: None,
+                shared_line: false,
+                stale: false,
             });
             hit_keys.push(k.to_vec());
             hit_starts.push(start);
@@ -309,6 +360,8 @@ pub(super) fn scan_calls_in_ram_examining(
                 column: entry.column,
                 callee: entry.callee.clone(),
                 resolved: None,
+                shared_line: false,
+                stale: false,
             });
             hit_keys.push(entry.key.clone());
             hit_starts.push(entry.start_byte);

@@ -180,6 +180,47 @@ MIT OR Apache-2.0 is compatible with basemind's MIT license.
 
 ---
 
+## tree-sitter-go `locals.scm` (Go locals query)
+
+Intra-file scope-resolution query (`@local.scope` / `@local.definition` / `@local.reference`) for Go.
+
+- **Source**: <https://github.com/tree-sitter/tree-sitter-go>
+- **Upstream paths**: `queries/locals.scm`
+- **License**: MIT (Copyright (c) 2014 Max Brunsfeld)
+- **Location**: `src/queries/go-locals.scm`
+- **Upstream revision**: not recorded; the file and its commit (`e8919373`) say only that it was
+  adapted from the upstream query.
+- **Purpose**: Consumed by `crate::extract::locals` to bind each reference to the nearest enclosing
+  same-named definition.
+
+### Modifications
+
+- Reduced to function, method and block scopes, parameter, short-variable, `var` and `const`
+  definitions, and identifier references.
+
+---
+
+## tree-sitter-python `locals.scm` (Python locals query)
+
+Intra-file scope-resolution query (`@local.scope` / `@local.definition` / `@local.reference`) for
+Python.
+
+- **Source**: <https://github.com/tree-sitter/tree-sitter-python>
+- **Upstream paths**: `queries/locals.scm`
+- **License**: MIT (Copyright (c) 2016 Max Brunsfeld)
+- **Location**: `src/queries/python-locals.scm`
+- **Upstream revision**: not recorded; the file and its commit (`e8919373`) say only that it was
+  adapted from the upstream query.
+- **Purpose**: Consumed by `crate::extract::locals` to bind each reference to the nearest enclosing
+  same-named definition.
+
+### Modifications
+
+- Reduced to function, lambda and module scopes, parameter and assignment definitions, and
+  identifier references.
+
+---
+
 ## tree-sitter-javascript `locals.scm` (TypeScript / TSX locals queries)
 
 Intra-file scope-resolution queries (`@local.scope` / `@local.definition` / `@local.reference`) that

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:0c12c1a6b2a1fdfedd2fc358f3c3ec1d229423771c165d77772431eee1df4f40
-Source-Hash: blake3:4790ee5e237c434ff57929ff0428e9c5da0c4446ea6a6c82b509bbf114d292a7
+Content-Hash: blake3:d0fd7a6a94322c715ea9bc828643dec54501d1c22b987e9f32bf51a0c390f173
+Source-Hash: blake3:4d632858bc9c1e1cc25c6d72da03e532d15f2046b01eeb925a5a669d622811bc
 Schema-Version: v1
 -->
 
@@ -82,7 +82,8 @@ docs_search {"query":"rate limiting","mime_type":"text/html"}
   `"scope":"web:<host>"` to search them.
 - `memory_search` takes one selector: `query` (by meaning, ranked, no `cursor`), `key` (one note)
   or `prefix` (list by key prefix); with none it lists everything. `tag` filters a search or a
-  list. Saving an existing `key` replaces the note.
+  list. A list pages by `next_cursor`; `truncated` with `truncated_reason: "scan_cap"` means its
+  `total` stopped counting and is a lower bound. Saving an existing `key` replaces the note.
 - Memory is scoped by the normalised git `origin` URL, so clones of the same repo share stored
   entries and unrelated repos do not. `"visibility":"individual"` keeps a note to this agent.
 - `docs_search` returns 10 hits by default; lists take `limit` and page with `next_cursor` ->

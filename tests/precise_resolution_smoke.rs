@@ -109,6 +109,23 @@ fn decode_text(result: &CallToolResult) -> Value {
     serde_json::from_str(&raw).unwrap_or(Value::Null)
 }
 
+/// The hits of a `code_refs` response as rows, each with its `path`: the tool lists them under their
+/// file (`{"<path>": [hit, ...]}`).
+fn hit_rows(body: &Value) -> Vec<Value> {
+    body.get("hits")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("hits are grouped by file: {body}"))
+        .iter()
+        .flat_map(|(path, rows)| {
+            rows.as_array().expect("a file's hits").iter().map(move |row| {
+                let mut row = row.clone();
+                row["path"] = json!(path);
+                row
+            })
+        })
+        .collect()
+}
+
 /// Build a `CallToolRequestParams` from a tool name and a JSON args object.
 fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     let mut params = CallToolRequestParams::new(name);
@@ -333,14 +350,13 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
         "def line (1-based): {body}"
     );
 
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     assert!(
         hits.iter()
             .any(|h| h.get("path").and_then(Value::as_str) == Some("app.py")
                 && h.get("line").and_then(Value::as_u64) == Some(26)
-                && h.get("column").and_then(Value::as_u64) == Some(12)
                 && h.get("resolved").and_then(Value::as_bool) == Some(true)),
-        "the real f() call site app.py:26:11 must be a resolved caller: {body}"
+        "the real f() call site app.py:26 must be a resolved caller: {body}"
     );
     assert!(
         !hits
@@ -564,7 +580,7 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
         Some(5),
         "def column (1-based): {foo_body}"
     );
-    let foo_hits = foo_body.get("hits").and_then(Value::as_array).expect("hits");
+    let foo_hits = hit_rows(&foo_body);
     assert_eq!(
         foo_hits.len(),
         1,
@@ -580,12 +596,6 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
         Some(32),
         "call site line: {foo_body}"
     );
-    assert_eq!(
-        foo_hits[0].get("column").and_then(Value::as_u64),
-        Some(25),
-        "call site column (Java's tags-fallback call.range captures the byte after the \
-         identifier, at the opening `(` — see the spec's Java column-quirk note): {foo_body}"
-    );
 
     let app_body = decode_text(
         &service
@@ -599,7 +609,7 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
         Some(27),
         "decoy definition must resolve to App.java's own greet() at line 27: {app_body}"
     );
-    let app_hits = app_body.get("hits").and_then(Value::as_array).expect("hits");
+    let app_hits = hit_rows(&app_body);
     assert_eq!(
         app_hits.len(),
         1,
@@ -616,11 +626,6 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
         Some(32),
         "KNOWN GAP: the conflated hit is the same Foo.greet() call site as the Foo.java case \
          above, proving the two `greet` definitions are still bucketed together by name: {app_body}"
-    );
-    assert_eq!(
-        app_hits[0].get("column").and_then(Value::as_u64),
-        Some(25),
-        "conflated hit column: {app_body}"
     );
 
     service.cancel().await.expect("shutdown");

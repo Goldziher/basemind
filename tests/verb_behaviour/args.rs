@@ -21,7 +21,8 @@ async fn stringified_integers_and_booleans_are_coerced() {
     )
     .await;
     assert_eq!(
-        with_context["hits"][0]["context_before"], "    pub fn render(&self) -> u32 {",
+        super::rows(&with_context["hits"])[0]["context_before"],
+        "    pub fn render(&self) -> u32 {",
         "{with_context}"
     );
 
@@ -32,7 +33,7 @@ async fn stringified_integers_and_booleans_are_coerced() {
     )
     .await;
     assert!(
-        without_context["hits"][0].get("context_before").is_none(),
+        super::rows(&without_context["hits"])[0].get("context_before").is_none(),
         "{without_context}"
     );
 }

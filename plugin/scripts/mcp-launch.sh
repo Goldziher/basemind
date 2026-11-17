@@ -308,7 +308,8 @@ Darwin)
 Linux)
   case "$arch" in
   aarch64 | arm64) TRIPLE="aarch64-unknown-linux-gnu" ;;
-  *) TRIPLE="x86_64-unknown-linux-gnu" ;;
+  x86_64 | amd64) TRIPLE="x86_64-unknown-linux-gnu" ;;
+  *) die "Linux on $arch is not supported; basemind publishes x86_64 and aarch64 Linux binaries only" ;;
   esac
   ;;
 MINGW* | MSYS* | CYGWIN* | Windows_NT) TRIPLE="x86_64-pc-windows-msvc" ;;
@@ -379,9 +380,8 @@ resolve_latest_tag() {
 
 # Published, non-draft versions newest-first, up to 20 (bare "X.Y.Z", no leading "v"). Reached ~keep
 # only on the fallback path, so the unauthenticated API rate limit is never on the hot path. May ~keep
-# include prereleases, which /releases/latest excludes; that is acceptable here because every ~keep
-# candidate still has to clear MIN_SAFE_VERSION and release_is_installable, and a prerelease that ~keep
-# clears both is a working binary — strictly better than no MCP server at all. ~keep
+# include prereleases, which /releases/latest excludes; every candidate still has to share VERSION's ~keep
+# minor and clear MIN_SAFE_VERSION and release_is_installable. ~keep
 published_versions() {
   local tmp
   tmp="$(mktemp)"
@@ -407,9 +407,11 @@ release_is_installable() {
 
 # The pinned v${VERSION} assets are missing (release still publishing, or genuinely ~keep
 # incomplete). Keep the session working instead of leaving it with no MCP server: ~keep
-#   1. Re-exec pinned to the newest release whose assets actually exist; Claude Code ~keep
-#      auto-updates to v${VERSION} once it publishes. Skipped when already running a forced ~keep
-#      version, so it can never loop. ~keep
+#   1. Re-exec pinned to the newest release of the SAME minor whose assets actually exist; Claude ~keep
+#      Code auto-updates to v${VERSION} once it publishes. Another minor serves another tool surface ~keep
+#      and index schema, so the plugin's hooks and skills would name tools it lacks and every ~keep
+#      cache would be rebuilt: no session is better than that one. Skipped when already running a ~keep
+#      forced version, so it can never loop. ~keep
 #   2. Offline last resort: newest cached binary of the same schema minor. ~keep
 #   3. Give up with the incomplete-release message. ~keep
 #
@@ -427,6 +429,7 @@ fallback_or_die() {
       [ "$cand" = "$VERSION" ] && continue
       case " $tried " in *" $cand "*) continue ;; esac
       tried="$tried $cand"
+      [ "$(version_minor "$cand")" = "$(version_minor "$VERSION")" ] || continue
       version_ge "$cand" "$MIN_SAFE_VERSION" || continue
       attempts=$((attempts + 1))
       [ "$attempts" -gt 5 ] && break

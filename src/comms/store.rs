@@ -43,6 +43,19 @@ pub use idempotency::{IDEMPOTENCY_TTL, MAX_IDEMPOTENCY_KEY_BYTES, PostOutcome, v
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 const META_LAST_MAINTENANCE: &[u8] = b"last_maintenance_micros";
 pub(super) const STORE_DIR: &str = "store.fjall";
+
+/// Memtable ceiling of each keyspace, in bytes. fjall's default is 64 MiB per keyspace, and a
+/// memtable is held in RAM until it fills: every session's agent record stayed resident in the
+/// daemon until the `agents` keyspace alone held 64 MiB. fjall records the size when it creates a
+/// keyspace and keeps it on reopen, so a store created by an older build keeps 64 MiB until
+/// [`COMMS_SCHEMA_VER`](super::COMMS_SCHEMA_VER) next changes and the store is recreated.
+pub(super) const MEMTABLE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Creation options of every keyspace of the store.
+fn keyspace_options() -> KeyspaceCreateOptions {
+    KeyspaceCreateOptions::default().max_memtable_size(MEMTABLE_BYTES)
+}
+
 const LOCK_FILE: &str = ".lock";
 
 /// Default retention for thread messages. The daemon's periodic prune sweep deletes any message
@@ -175,7 +188,7 @@ impl CommsStore {
             source,
         })?;
         let mut db = Database::builder(&dir).worker_threads(1).open()?;
-        let mut meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+        let mut meta = db.keyspace("meta", keyspace_options)?;
         let on_disk_ver = meta
             .get(META_SCHEMA_VER)?
             .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
@@ -198,15 +211,15 @@ impl CommsStore {
                 source,
             })?;
             db = Database::builder(&dir).worker_threads(1).open()?;
-            meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+            meta = db.keyspace("meta", keyspace_options)?;
         }
-        let threads = db.keyspace("threads", KeyspaceCreateOptions::default)?;
-        let thread_members = db.keyspace("thread_members", KeyspaceCreateOptions::default)?;
-        let messages_by_thread = db.keyspace("messages_by_thread", KeyspaceCreateOptions::default)?;
-        let message_body = db.keyspace("message_body", KeyspaceCreateOptions::default)?;
-        let thread_subs = db.keyspace("thread_subs", KeyspaceCreateOptions::default)?;
-        let cursors = db.keyspace("cursors", KeyspaceCreateOptions::default)?;
-        let agents = db.keyspace("agents", KeyspaceCreateOptions::default)?;
+        let threads = db.keyspace("threads", keyspace_options)?;
+        let thread_members = db.keyspace("thread_members", keyspace_options)?;
+        let messages_by_thread = db.keyspace("messages_by_thread", keyspace_options)?;
+        let message_body = db.keyspace("message_body", keyspace_options)?;
+        let thread_subs = db.keyspace("thread_subs", keyspace_options)?;
+        let cursors = db.keyspace("cursors", keyspace_options)?;
+        let agents = db.keyspace("agents", keyspace_options)?;
 
         meta.insert(META_SCHEMA_VER, COMMS_SCHEMA_VER.to_be_bytes())?;
 

@@ -9,6 +9,13 @@ use crate::error::LaunchError;
 pub const ENV_AGENT_ID: &str = "BASEMIND_AGENT_ID";
 /// The variable naming the agent harness, used by the derived id.
 pub const ENV_HOST: &str = "BASEMIND_HOST";
+/// The variable carrying a launched agent's depth: 1 for an agent a top-level principal
+/// launched, one more for each launch below it. Informational: the supervisor reads the depth
+/// from its own record of the launch, never from this variable.
+pub const ENV_AGENT_DEPTH: &str = "BASEMIND_AGENT_DEPTH";
+/// The variable carrying a launched agent's launch token, which it presents to act as the
+/// session the supervisor launched (see [`crate::Caller::launched`]).
+pub const ENV_LAUNCH_TOKEN: &str = "BASEMIND_LAUNCH_TOKEN";
 
 const MAX_ID_BYTES: usize = 128;
 const MAX_SUB_NAME_BYTES: usize = 32;
@@ -23,6 +30,73 @@ const MAX_HOST_BYTES: usize = 16;
 pub struct AgentIdentity {
     principal: String,
     host: Option<String>,
+    lineage: Option<Lineage>,
+}
+
+/// Where a launched agent sits in the launch tree, exported beside its principal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Lineage {
+    depth: u32,
+    token: LaunchToken,
+}
+
+/// The secret a supervisor hands a launched agent, through [`ENV_LAUNCH_TOKEN`] only. A caller
+/// that presents it acts as that session. Its `Debug` output never shows the value.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct LaunchToken(String);
+
+impl std::fmt::Debug for LaunchToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LaunchToken(<redacted>)")
+    }
+}
+
+/// Bytes of operating-system randomness in a token: 256 bits.
+const TOKEN_BYTES: usize = 32;
+
+impl LaunchToken {
+    /// A fresh token: 32 bytes of the operating system's randomness, as lower-case hex.
+    pub(crate) fn generate() -> std::io::Result<Self> {
+        Ok(Self(hex(&random_bytes::<TOKEN_BYTES>()?)))
+    }
+
+    /// Whether `presented` is this token, compared in time independent of where they differ.
+    pub(crate) fn matches(&self, presented: &str) -> bool {
+        let (ours, theirs) = (self.0.as_bytes(), presented.as_bytes());
+        ours.len() == theirs.len() && ours.iter().zip(theirs).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn value(&self) -> &str {
+        &self.0
+    }
+}
+
+/// `N` bytes from the operating system's random source.
+pub(crate) fn random_bytes<const N: usize>() -> std::io::Result<[u8; N]> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let mut bytes = [0; N];
+        std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+    #[cfg(not(unix))]
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no random source off Unix",
+    ))
+}
+
+/// `bytes` as lower-case hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 impl AgentIdentity {
@@ -40,7 +114,11 @@ impl AgentIdentity {
         if !valid {
             return Err(LaunchError::InvalidIdentity(principal));
         }
-        Ok(Self { principal, host: None })
+        Ok(Self {
+            principal,
+            host: None,
+            lineage: None,
+        })
     }
 
     /// The same identity with an explicit `BASEMIND_HOST` instead of the harness id.
@@ -59,6 +137,23 @@ impl AgentIdentity {
         }
         self.host = Some(host);
         Ok(self)
+    }
+
+    /// The explicit host, when one was set.
+    pub(crate) fn host(&self) -> Option<&str> {
+        self.host.as_deref()
+    }
+
+    /// The same identity marked as launched at `depth`, carrying `token`.
+    pub(crate) fn with_lineage(mut self, depth: u32, token: LaunchToken) -> Self {
+        self.lineage = Some(Lineage { depth, token });
+        self
+    }
+
+    /// The launch depth this identity is exported with, when a supervisor launched it.
+    #[must_use]
+    pub fn depth(&self) -> Option<u32> {
+        self.lineage.as_ref().map(|lineage| lineage.depth)
     }
 
     /// The principal, as exported in `BASEMIND_AGENT_ID`.
@@ -85,12 +180,18 @@ impl AgentIdentity {
         Ok(composed)
     }
 
-    /// The variables to export, with `default_host` standing in when no host was set.
-    pub(crate) fn env(&self, default_host: &str) -> [(&'static str, String); 2] {
-        [
+    /// The variables to export, with `default_host` standing in when no host was set, and the
+    /// depth and launch token when a supervisor launched the agent.
+    pub(crate) fn env(&self, default_host: &str) -> Vec<(&'static str, String)> {
+        let mut env = vec![
             (ENV_AGENT_ID, self.principal.clone()),
             (ENV_HOST, self.host.clone().unwrap_or_else(|| default_host.to_owned())),
-        ]
+        ];
+        if let Some(lineage) = &self.lineage {
+            env.push((ENV_AGENT_DEPTH, lineage.depth.to_string()));
+            env.push((ENV_LAUNCH_TOKEN, lineage.token.0.clone()));
+        }
+        env
     }
 }
 
@@ -130,10 +231,37 @@ mod tests {
             identity.env("codex"),
             [(ENV_AGENT_ID, "lead".to_owned()), (ENV_HOST, "codex".to_owned())]
         );
+        assert_eq!(identity.depth(), None);
         assert_eq!(
             identity.clone().with_host("custom2").unwrap().env("codex")[1].1,
             "custom2"
         );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn no_launch_token_is_made_off_unix() {
+        let refused = LaunchToken::generate().map(|_| ()).map_err(|error| error.kind());
+        assert_eq!(refused, Err(std::io::ErrorKind::Unsupported));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launched_identity_exports_its_depth_and_token_and_hides_the_token_in_debug() {
+        let token = LaunchToken::generate().unwrap();
+        let secret = token.value().to_owned();
+        assert_eq!(secret.len(), 64);
+        assert!(secret.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(LaunchToken::generate().unwrap(), token, "two tokens were equal");
+        let identity = AgentIdentity::new("launched").unwrap().with_lineage(2, token.clone());
+        assert_eq!(identity.depth(), Some(2));
+        let env = identity.env("claude");
+        assert!(env.contains(&(ENV_AGENT_DEPTH, "2".to_owned())));
+        assert!(env.contains(&(ENV_LAUNCH_TOKEN, secret.clone())));
+        assert!(!format!("{identity:?}").contains(&secret));
+        assert!(token.matches(&secret));
+        assert!(!token.matches(&secret[1..]));
+        assert!(!token.matches(&format!("{}0", &secret[..63])) || secret.ends_with('0'));
     }
 
     #[test]

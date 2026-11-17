@@ -125,7 +125,7 @@ impl Filters<'_> {
             return Some(McpError::invalid_params(
                 format!(
                     "`{tool}`: these filters match only documents ({} indexed, e.g. `{}`), and `{tool}` searches \
-                     code files. Search documents with `docs_search`.",
+                     code and text files, not these. Search documents with `docs_search`.",
                     documents.passed,
                     documents.first.as_deref().unwrap_or_default()
                 ),

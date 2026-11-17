@@ -388,6 +388,30 @@ fn a_scan_into_a_read_only_opened_store_rebuilds_an_index_behind_its_file_map() 
     assert_eq!(settled.index.files.len(), 3);
 }
 
+/// After a power loss the fsynced file map can vouch for a generation the index journal lost. A
+/// read-only open in a process that holds the group index (here through another view's handle)
+/// reports the rescan owed, and does not serve the view's rows that the file map no longer matches.
+#[test]
+fn a_read_only_open_of_an_index_behind_its_file_map_reports_a_rescan_owed() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    scanned_store_with_an_index_behind(root);
+    // Another view's handle keeps the group open in this process once its store, and with it the
+    // workspace lock, is gone. ~keep
+    let holder = Store::open(root, basemind::store::VIEW_STAGED).expect("another view opens the group");
+    let _held = holder.index_db.clone().expect("a handle on the group");
+    drop(holder);
+
+    let store = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(
+        store.index_db.is_none(),
+        "rows the file map does not match are not served"
+    );
+    assert!(store.rescan_owed(), "with the rescan it owes reported");
+    assert!(store.needs_full_scan());
+}
+
 /// An incremental scan cannot rebuild the index from the paths it was handed, so it runs the full
 /// pass instead of re-indexing one file and sealing over the rest.
 #[test]

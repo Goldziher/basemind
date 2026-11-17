@@ -6,8 +6,8 @@ use std::path::Path;
 
 use ahash::AHashSet;
 
-use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, read_index};
-use crate::store_gc::{GcError, blob_stem, collect_referenced_hashes, read_dir};
+use crate::store::{StoreError, VIEWS_DIR};
+use crate::store_gc::blob_stem;
 
 /// The blob suffixes that belong to the CODE lane: produced by the code-map scan from a
 /// [`crate::store::FileEntry`] and live iff some workspace's `files` map references the hash. The
@@ -92,60 +92,62 @@ impl Drop for SweepLock {
     }
 }
 
-/// Collect one workspace's live hashes, healing view indexes that the current binary cannot read.
-///
-/// A schema-mismatched or corrupt `index.msgpack` is rebuildable cache state, not durable data. If
-/// it remains in the global mark set it blocks every workspace's GC forever. Remove only the bad
-/// view while holding the workspace lock, preserving `workspace.json`, `agent-id`, and durable
-/// memory. Transient I/O and lock failures remain fatal so an incomplete live set never drives a
-/// destructive sweep. A view a newer basemind wrote ([`StoreError::NewerSchema`]) is neither healed
-/// nor fatal: it is that binary's live data, kept, and it references only that binary's blob
-/// namespace, so [`collect_referenced_hashes`] passes over it.
-pub(crate) fn collect_workspace_hashes_healing_stale_views(workspace_dir: &Path) -> Result<LiveBlobs, GcError> {
-    match collect_referenced_hashes(workspace_dir) {
-        Ok(referenced) => Ok(referenced),
-        Err(GcError::Store(error)) if is_rebuildable_view_error(&error) => {
-            let _lock = acquire_lock(workspace_dir)?;
-            let views_dir = workspace_dir.join(VIEWS_DIR);
-            for entry in read_dir(&views_dir)? {
-                let entry = entry.map_err(|source| GcError::Io {
-                    path: views_dir.clone(),
-                    source,
-                })?;
-                let view_dir = entry.path();
-                if !view_dir.is_dir() || !view_dir.join(INDEX_FILE).exists() {
-                    continue;
-                }
-                if let Err(error) = read_index(&view_dir) {
-                    // A newer basemind's view beside the stale one is kept and passed over.
-                    if matches!(error, StoreError::NewerSchema { .. }) {
-                        continue;
-                    }
-                    if !is_rebuildable_view_error(&error) {
-                        return Err(GcError::Store(error));
-                    }
-                    std::fs::remove_dir_all(&view_dir).map_err(|source| GcError::Io {
-                        path: view_dir.clone(),
-                        source,
-                    })?;
-                    tracing::warn!(
-                        workspace = %workspace_dir.display(),
-                        view = %view_dir.display(),
-                        %error,
-                        "removed unreadable rebuildable view so global GC can continue"
-                    );
-                }
-            }
-            collect_referenced_hashes(workspace_dir)
+/// Move into the group store the memory notes a release before 0.30 left in the index of each view of
+/// `workspace`, before a collector removes that index. Only a writer open of the view moved them, so a
+/// workspace not opened for writing since the upgrade still held them, and evicting or reaping it
+/// destroyed notes a user wrote. Judged by the index itself: a writer open that met a newer notes store
+/// left the notes and still rewrote the file map. Returns `false` when they could not be moved: the
+/// caller must then leave the views alone. The caller holds the workspace lock.
+pub(crate) fn rescue_legacy_memory(workspace: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(workspace.join(VIEWS_DIR)) else {
+        return true;
+    };
+    for entry in entries.flatten() {
+        let view_dir = entry.path();
+        if !view_dir.join(crate::index::INDEX_DIR).is_dir() {
+            continue;
         }
-        Err(error) => Err(error),
+        let keep = |why: &str| {
+            tracing::warn!(view = %view_dir.display(), why, "keeping a view whose memory notes could not be moved");
+            false
+        };
+        match crate::index::memory_store::view_holds_legacy_rows(&view_dir) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(error) => return keep(&error.to_string()),
+        }
+        let Some(memory_dir) = group_memory_dir(workspace) else {
+            return keep("no workspace marker names the group of its notes");
+        };
+        match crate::index::IndexDb::open_with_memory(&view_dir, &memory_dir) {
+            Ok(db) if !db.holds_legacy_memory() => {}
+            Ok(_) => return keep("the group's notes store is a newer basemind's"),
+            Err(error) => return keep(&error.to_string()),
+        }
     }
+    true
 }
 
-fn is_rebuildable_view_error(error: &StoreError) -> bool {
+/// The notes store of the group `workspace` belongs to: resolved from its root while that exists,
+/// else the group its marker recorded. A root that is gone resolves to nothing: a linked worktree's
+/// group is not the hash of its own path.
+fn group_memory_dir(workspace: &Path) -> Option<std::path::PathBuf> {
+    let marker = crate::store_layout::read_workspace_marker(workspace)?;
+    if marker.root.exists() {
+        return Some(crate::store_layout::memory_store_dir(&marker.root));
+    }
+    marker.group.as_deref().map(crate::store_layout::group_memory_store_dir)
+}
+
+/// Whether `error` reading a file map marks a view the sweep passes over: an older schema or blob
+/// layout, a map of this version that does not decode, or one whose version cannot be read.
+pub(crate) fn is_rebuildable_view_error(error: &StoreError) -> bool {
     matches!(
         error,
-        StoreError::SchemaMismatch { .. } | StoreError::StaleBlobLayout { .. } | StoreError::Decode(_)
+        StoreError::SchemaMismatch { .. }
+            | StoreError::StaleBlobLayout { .. }
+            | StoreError::Decode(_)
+            | StoreError::UnreadableFileMap { .. }
     )
 }
 

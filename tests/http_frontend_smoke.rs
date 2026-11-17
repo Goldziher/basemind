@@ -48,24 +48,24 @@ fn encode_root(path: &std::path::Path) -> String {
 /// One HTTP/1.1 POST over loopback, returning `(status_code, body)`. `Connection: close` lets us
 /// read the body to EOF without parsing `Content-Length`.
 async fn http_post(addr: &str, target: &str, body: &[u8], extra_headers: &[(&str, &str)]) -> (u16, String) {
-    match http_post_once(addr, target, body, extra_headers).await {
-        Ok(response) => response,
-        Err(error) if is_connection_teardown(&error) => http_post_once(addr, target, body, extra_headers)
-            .await
-            .unwrap_or_else(|retry| panic!("read response (after retrying a {:?}): {retry}", error.kind())),
-        Err(error) => panic!("read response: {error}"),
-    }
+    http_post_with_host(addr, addr, target, body, extra_headers)
+        .await
+        .unwrap_or_else(|error| panic!("read response: {error}"))
 }
 
-async fn http_post_once(
+/// One HTTP/1.1 POST with an explicit `Host` header, the headers and the body written separately as
+/// a client streaming its body does. An I/O error is returned, not retried: a connection reset here
+/// is a refusal the server failed to deliver.
+async fn http_post_with_host(
     addr: &str,
+    host: &str,
     target: &str,
     body: &[u8],
     extra_headers: &[(&str, &str)],
 ) -> std::io::Result<(u16, String)> {
     let mut stream = TcpStream::connect(addr).await?;
     let mut request = format!(
-        "POST {target} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        "POST {target} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
     );
     for (name, value) in extra_headers {
@@ -86,25 +86,6 @@ async fn http_post_once(
         .unwrap_or_else(|| panic!("no status line in response: {text}"));
     let body = text.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
     Ok((status, body))
-}
-
-/// Whether an I/O error is the connection being torn down rather than an answer we should trust.
-///
-/// Observed twice, only inside a full-workspace `cargo test` run on a machine that was also short
-/// of disk: the client's `read_to_end` returns `ECONNRESET` instead of the response. It has never
-/// reproduced in isolation — six consecutive runs of this binary, serial and parallel, all pass —
-/// so what is retried here is a transient, not a verdict.
-///
-/// This does NOT weaken any assertion in this file. Every test asserts on a status code and a body;
-/// a retry that still cannot get a response fails exactly as before, and a server that genuinely
-/// refused would refuse both times. What it removes is a false red that would otherwise teach
-/// people to re-run this suite until it passes — which is how a real failure here would come to be
-/// ignored.
-fn is_connection_teardown(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::BrokenPipe
-    )
 }
 
 /// One HTTP/1.1 GET over loopback with an explicit `Host` header and an optional `Authorization`
@@ -460,6 +441,41 @@ async fn mcp_root_param_must_be_absolute_and_must_be_a_project() {
     )
     .await;
     assert_eq!(status, 200, "a repo subdirectory resolves to its repository: {body}");
+
+    served.stop().await;
+}
+
+/// A refusal must reach the client however the request body arrives. The front-end answers 403, 404
+/// and 400 before anything reads the body, and closing a socket with unread bytes in its receive
+/// buffer sends RST instead of FIN: the client's read then fails with `ECONNRESET` and the status is
+/// lost. Under load the body's segment often lands after the headers were parsed, which is how this
+/// surfaced as a flaky `connection reset` in the smoke above. A body larger than hyper's first read
+/// leaves bytes unread every time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_is_delivered_while_the_request_body_is_still_arriving() {
+    basemind::store::init_isolated_cache();
+
+    let served = serve().await;
+    let addr = served.addr.clone();
+    let bearer = format!("Bearer {}", served.token);
+    let headers = json_headers(&bearer);
+    let body = vec![b' '; 32 * 1024];
+
+    for (target, expected) in [
+        ("/nope".to_string(), 404),
+        ("/mcp".to_string(), 404),
+        ("/mcp?root=relative%2Fpath".to_string(), 400),
+        (format!("/mcp?root={}", encode_root(&filesystem_root())), 403),
+    ] {
+        let (status, _) = http_post_with_host(&addr, &addr, &target, &body, &headers)
+            .await
+            .unwrap_or_else(|error| panic!("POST {target}: the refusal was lost: {error}"));
+        assert_eq!(status, expected, "POST {target}");
+    }
+    let (status, _) = http_post_with_host(&addr, "evil.example", "/mcp?root=%2Ftmp", &body, &headers)
+        .await
+        .unwrap_or_else(|error| panic!("POST with a foreign Host: the refusal was lost: {error}"));
+    assert_eq!(status, 403, "a foreign Host is refused");
 
     served.stop().await;
 }

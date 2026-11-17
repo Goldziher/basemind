@@ -23,20 +23,61 @@ concurrency:
   group: publish-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
+# Read-only by default; each job that writes (the release record, a registry) asks for exactly that.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
+  ci_gate:
+    name: Require a green CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 250
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # A tag push runs on the tagged commit; a dispatch runs this workflow from a branch and names
+      # the tag to publish, whose commit is the one CI must have passed. A plugins-only dispatch
+      # publishes the dispatched commit itself.
+      - name: Resolve the commit being published
+        id: commit
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+          PLUGINS_ONLY: ${{ inputs.plugins-only }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$PLUGINS_ONLY" != "true" ]; then
+            [ -n "$TAG" ] || { echo "::error::a release dispatch must name the tag to publish"; exit 1; }
+            git fetch --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+            sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          else
+            sha="$GITHUB_SHA"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "publishing commit $sha"
+
+      - name: Require a successful ci run on that commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/require-green-ci.sh "${{ steps.commit.outputs.sha }}"
+
   meta:
     if: ${{ !inputs.plugins-only }}
     name: Resolve versions
+    needs: ci_gate
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       python_version: ${{ steps.version.outputs.python_version }}
       tag: ${{ steps.version.outputs.tag }}
-      crates_publishable: ${{ steps.publishability.outputs.crates_publishable }}
       crates_exists: ${{ steps.published.outputs.crates_exists }}
       npm_exists: ${{ steps.published.outputs.npm_exists }}
       opencode_exists: ${{ steps.published.outputs.opencode_exists }}
@@ -79,135 +120,35 @@ jobs:
           echo "Python version: $python_version"
 
       - name: Verify version consistency across all surfaces
+        run: python3 scripts/check_release_versions.py "${{ steps.version.outputs.version }}"
+
+      # The marker lets main name tools the pinned release lacks (tests/plugin_tool_skew.rs). A
+      # release ends that state: the commit it is cut from must not carry the marker.
+      - name: Refuse a release whose plugin content is marked unreleased
         run: |
           set -euo pipefail
-          target_version="${{ steps.version.outputs.version }}"
-          target_python_version="${{ steps.version.outputs.python_version }}"
-
-          echo "Verifying version consistency for: $target_version (Python form: $target_python_version)"
-
-          # Check Cargo.toml
-          cargo_version="$(grep -E '^version = "' Cargo.toml | head -1 | cut -d'"' -f2)"
-          if [ "$cargo_version" != "$target_version" ]; then
-            echo "::error::Cargo.toml version mismatch: expected $target_version, got $cargo_version"
+          if [ -e .github/unreleased-surface.toml ]; then
+            cat .github/unreleased-surface.toml
+            echo "::error::.github/unreleased-surface.toml is present: remove it in the release commit once the manifests pin a binary that serves the plugin content."
             exit 1
           fi
 
-          # Check npm-package/package.json
-          if [ -f npm-package/package.json ]; then
-            npm_version="$(jq -r '.version' npm-package/package.json)"
-            if [ "$npm_version" != "$target_version" ]; then
-              echo "::error::npm-package/package.json version mismatch: expected $target_version, got $npm_version"
-              exit 1
-            fi
-          fi
-
-          # Check pip-package/pyproject.toml (PyPI form)
-          if [ -f pip-package/pyproject.toml ]; then
-            pypi_version="$(grep -E '^version = "' pip-package/pyproject.toml | head -1 | cut -d'"' -f2)"
-            if [ "$pypi_version" != "$target_python_version" ]; then
-              echo "::error::pip-package/pyproject.toml version mismatch: expected $target_python_version, got $pypi_version"
-              exit 1
-            fi
-          fi
-
-          # Check pip-package/basemind/__init__.py
-          if [ -f pip-package/basemind/__init__.py ]; then
-            init_version="$(grep -E '^__version__ = "' pip-package/basemind/__init__.py | cut -d'"' -f2)"
-            if [ "$init_version" != "$target_python_version" ]; then
-              echo "::error::pip-package/basemind/__init__.py version mismatch: expected $target_python_version, got $init_version"
-              exit 1
-            fi
-          fi
-
-          # Check the generated Hermes PyPI package. The committed package lives at
-          # plugin/.hermes/package (the build input every other workflow uses); the guard used to
-          # name .hermes/package, which never exists at this point, so it silently never ran.
-          if [ -f plugin/.hermes/package/pyproject.toml ]; then
-            hermes_pypi_version="$(awk '/^version = / {value=$3; gsub(/[\"\047]/, "", value); print value; exit}' plugin/.hermes/package/pyproject.toml)"
-            if [ "$hermes_pypi_version" != "$target_python_version" ]; then
-              echo "::error::plugin/.hermes/package/pyproject.toml version mismatch: expected $target_python_version, got $hermes_pypi_version"
-              exit 1
-            fi
-          fi
-
-          # Check root package.json
-          if [ -f package.json ]; then
-            root_version="$(jq -r '.version' package.json)"
-            if [ "$root_version" != "$target_version" ]; then
-              echo "::error::package.json (root) version mismatch: expected $target_version, got $root_version"
-              exit 1
-            fi
-          fi
-
-          # Check opencode-plugin/package.json
-          if [ -f opencode-plugin/package.json ]; then
-            opencode_version="$(jq -r '.version' opencode-plugin/package.json)"
-            if [ "$opencode_version" != "$target_version" ]; then
-              echo "::error::opencode-plugin/package.json version mismatch: expected $target_version, got $opencode_version"
-              exit 1
-            fi
-          fi
-
-          # Check .claude-plugin/plugin.json
-          if [ -f .claude-plugin/plugin.json ]; then
-            claude_version="$(jq -r '.version' .claude-plugin/plugin.json)"
-            if [ "$claude_version" != "$target_version" ]; then
-              echo "::error::.claude-plugin/plugin.json version mismatch: expected $target_version, got $claude_version"
-              exit 1
-            fi
-          fi
-
-          # Check .claude-plugin/marketplace.json. ai-rulez owns this index and emits a minimal
-          # entry for a `[marketplace] members` bundle — the version lives in the member's own
-          # manifest, which .claude-plugin/plugin.json (checked above) carries. The key is
-          # therefore legitimately absent; enforce it only when an entry declares one.
-          if [ -f .claude-plugin/marketplace.json ]; then
-            marketplace_version="$(jq -r '.plugins[0].version // empty' .claude-plugin/marketplace.json)"
-            if [ -n "$marketplace_version" ] && [ "$marketplace_version" != "$target_version" ]; then
-              echo "::error::.claude-plugin/marketplace.json version mismatch: expected $target_version, got $marketplace_version"
-              exit 1
-            fi
-          fi
-
-          # Check .codex-plugin/plugin.json
-          if [ -f .codex-plugin/plugin.json ]; then
-            codex_version="$(jq -r '.version' .codex-plugin/plugin.json)"
-            if [ "$codex_version" != "$target_version" ]; then
-              echo "::error::.codex-plugin/plugin.json version mismatch: expected $target_version, got $codex_version"
-              exit 1
-            fi
-          fi
-
-          # Check .cursor-plugin/plugin.json
-          if [ -f .cursor-plugin/plugin.json ]; then
-            cursor_version="$(jq -r '.version' .cursor-plugin/plugin.json)"
-            if [ "$cursor_version" != "$target_version" ]; then
-              echo "::error::.cursor-plugin/plugin.json version mismatch: expected $target_version, got $cursor_version"
-              exit 1
-            fi
-          fi
-
-          # Check gemini-extension.json
-          if [ -f gemini-extension.json ]; then
-            gemini_version="$(jq -r '.version' gemini-extension.json)"
-            if [ "$gemini_version" != "$target_version" ]; then
-              echo "::error::gemini-extension.json version mismatch: expected $target_version, got $gemini_version"
-              exit 1
-            fi
-          fi
-
-          echo "✓ All version surfaces match: $target_version"
-
-      - name: Detect source-crate publishability
-        id: publishability
+      # A Git-pinned dependency cannot be published to crates.io. v0.33.0 skipped crates.io for
+      # that reason with a green run, so every registry but crates.io shipped it. A release that
+      # cannot reach a registry stops here instead, before anything is published.
+      - name: Require a crates.io-publishable manifest
         run: |
-          crates_publishable=true
-          if grep -Eq '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=.*git[[:space:]]*=' Cargo.toml; then
-            crates_publishable=false
-            echo "Skipping crates.io: the binary uses a Git-pinned dependency"
+          set -euo pipefail
+          if grep -En '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=.*git[[:space:]]*=' Cargo.toml; then
+            echo "::error::Cargo.toml has a Git-pinned dependency (above); crates.io cannot publish basemind. Publish or vendor it first."
+            exit 1
           fi
-          echo "crates_publishable=$crates_publishable" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: Require vendored crates to match their crates.io versions
+        run: python3 scripts/check_vendored_crates.py
 
       - name: Detect already-published versions
         id: published
@@ -302,6 +243,8 @@ jobs:
     if: >-
       ${{ !inputs.plugins-only && (needs.meta.outputs.release_assets_exist != 'true') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       release_id: ${{ steps.release_info.outputs.release_id }}
     steps:
@@ -382,324 +325,56 @@ jobs:
           fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
-  build-binaries:
-    name: Build binaries / ${{ matrix.triple }}
+  # Builds, packages and runs every archive on a clean runner (release-build.yaml). Read-only: the
+  # upload below is the one job that writes to the release.
+  build:
+    name: Build and smoke-test archives
     needs: [meta, create_release]
     if: >-
       ${{ !inputs.plugins-only && (needs.meta.outputs.release_assets_exist != 'true') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # ~keep MACOSX_DEPLOYMENT_TARGET holds the minimum macOS at 14.0 for the Rust and CMake-built
-          # ~keep code; without it, cmake targets the macos-26 runner's SDK.
-          - triple: aarch64-apple-darwin
-            os: macos-26
-            macos_deployment_target: "14.0"
-          - triple: x86_64-pc-windows-msvc
-            # Pinned to windows-2022 (VS2022 / MSVC 14.4x). `windows-latest` rolled to a VS18 /
-            # MSVC 14.51 image that fails to compile xberg-libwpd's vendored C++
-            # (`make_shared<WP6SubDocument>`); 14.4x — the toolchain that shipped every prior
-            # release — compiles it. Revisit when the newer MSVC (or upstream libwpd) handles it.
-            os: windows-2022
-    runs-on: ${{ matrix.os }}
-    env:
-      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-          targets: ${{ matrix.triple }}
-
-      - name: Install system dependencies
-        uses: ./.github/actions/install-system-deps
-
-      # workflow_dispatch checks out the requested tag, whose dependency action may predate the
-      # dual-name fix. Keep this bridge in the current workflow while tagged source stays immutable.
-      - name: Ensure both Windows zlib import-library names exist
-        if: matrix.triple == 'x86_64-pc-windows-msvc'
-        shell: pwsh
-        run: |
-          $zlibFix = "C:\zlibfix"
-          $zlib = Join-Path $zlibFix "zlib.lib"
-          $zlibStatic = Join-Path $zlibFix "zlibstatic.lib"
-          if (-not (Test-Path $zlibStatic) -and (Test-Path $zlib)) {
-            Copy-Item -Path $zlib -Destination $zlibStatic -Force
-          }
-          if (-not (Test-Path $zlibStatic)) {
-            throw "zlibstatic.lib was not produced in $zlibFix"
-          }
-
-      - name: Setup cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.triple }}
-
-      - name: Discard incomplete xberg Tesseract source cache
-        shell: bash
-        run: |
-          cache_root="target/${{ matrix.triple }}/xberg-tesseract-cache"
-          for source in leptonica tesseract; do
-            source_root="$cache_root/third_party/$source"
-            if [ -d "$source_root" ] && [ ! -f "$source_root/CMakeLists.txt" ]; then
-              echo "Removing incomplete xberg Tesseract cache: $cache_root"
-              rm -rf "$cache_root"
-              break
-            fi
-          done
-
-      - name: Build release binary
-        shell: bash
-        run: |
-          cargo build --release --features full --bin basemind \
-            --target "${{ matrix.triple }}"
-
-      - name: Package release
-        shell: bash
-        run: ./scripts/package-release.sh ${{ matrix.triple }}
-
-      - name: Verify release state before upload
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Refuse to upload while the tag is ambiguous or the draft has been promoted — the
-          # v0.27.0 state, in which uploads followed the tag onto a second release record.
-          bash .github/scripts/release-asset.sh resolve \
-            "${{ needs.meta.outputs.tag }}" true "${{ needs.create_release.outputs.release_id }}" >/dev/null
-
-      - name: Upload to GitHub release
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          triple="${{ matrix.triple }}"
-
-          if [ "$triple" = "x86_64-pc-windows-msvc" ]; then
-            archive="basemind-${triple}.zip"
-            content_type="application/zip"
-          else
-            archive="basemind-${triple}.tar.gz"
-            content_type="application/gzip"
-          fi
-
-          bash .github/scripts/release-asset.sh upload \
-            "${{ needs.create_release.outputs.release_id }}" "$archive" "$content_type"
-
-  build-linux-binaries:
-    name: Build Linux binaries / ${{ matrix.triple }}
-    needs: [meta, create_release]
-    if: >-
-      ${{ !inputs.plugins-only && (needs.meta.outputs.release_assets_exist != 'true') }}
-    runs-on: ${{ matrix.os }}
-    container: ${{ matrix.image }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - triple: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            image: quay.io/pypa/manylinux_2_28_x86_64:latest
-            protoc_arch: linux-x86_64
-          - triple: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            image: quay.io/pypa/manylinux_2_28_aarch64:latest
-            protoc_arch: linux-aarch_64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
-
-      - name: Install Rust (in container)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Pin CARGO_HOME/RUSTUP_HOME to absolute paths and export them to
-          # GITHUB_ENV. Container steps do not share $HOME reliably, so rustup
-          # installs its default toolchain under one HOME and a later step cannot
-          # find it ("no default is configured"). Fixed paths remove the ambiguity.
-          export CARGO_HOME=/opt/cargo
-          export RUSTUP_HOME=/opt/rustup
-          curl -fsSL https://sh.rustup.rs | \
-            sh -s -- -y --profile minimal --default-toolchain stable
-          export PATH="$CARGO_HOME/bin:$PATH"
-          rustup default stable
-          rustup target add "${{ matrix.triple }}"
-          echo "CARGO_HOME=/opt/cargo" >> "$GITHUB_ENV"
-          echo "RUSTUP_HOME=/opt/rustup" >> "$GITHUB_ENV"
-          echo "/opt/cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Install system dependencies (AlmaLinux 8)
-        shell: bash
-        run: |
-          set -euo pipefail
-          dnf install -y epel-release
-          dnf install -y dnf-plugins-core
-          # gh CLI for the release-asset upload from inside the container.
-          dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
-          # Core build + image/text libraries. Some codecs (libde265, x265, dav1d)
-          # and libmagic-devel are unavailable on AlmaLinux 8; libaom is via EPEL.
-          # tesseract-langpack-eng conflicts with tesseract, so install tesseract only.
-          dnf install -y \
-            gcc gcc-c++ make cmake pkgconfig \
-            openssl-devel \
-            tesseract \
-            libaom-devel \
-            patchelf gh \
-            git curl wget unzip
-          echo "gcc: $(gcc --version | head -1)"
-
-      - name: Install protoc from official release
-        shell: bash
-        run: |
-          set -euo pipefail
-          ver="28.2"
-          zip="protoc-${ver}-${{ matrix.protoc_arch }}.zip"
-          mkdir -p /usr/local/protoc
-          cd /tmp
-          curl -fsSL -o "$zip" \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${ver}/${zip}"
-          unzip -q "$zip" -d /usr/local/protoc
-          ln -sf /usr/local/protoc/bin/protoc /usr/local/bin/protoc
-          echo "PROTOC=/usr/local/bin/protoc" >> "$GITHUB_ENV"
-          protoc --version
-
-      - name: Build libheif from source (1.23.0)
-        shell: bash
-        run: |
-          set -euo pipefail
-          ver="1.23.0"
-          d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
-          cd "$d"
-          curl -fsSL -o libheif.tar.gz \
-            "https://github.com/strukturag/libheif/releases/download/v${ver}/libheif-${ver}.tar.gz"
-          tar xzf libheif.tar.gz
-          cd "libheif-${ver}"
-          mkdir build && cd build
-          # Disable codecs unavailable on AlmaLinux 8 (libde265, x265, dav1d);
-          # libaom is present via EPEL.
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DWITH_EXAMPLES=OFF \
-            -DWITH_GDK_PIXBUF=OFF \
-            -DBUILD_TESTING=OFF \
-            -DWITH_LIBDE265=OFF \
-            -DWITH_X265=OFF \
-            -DWITH_DAV1D=OFF \
-            -DWITH_AOM=ON
-          make -j"$(nproc)"
-          make install
-          ldconfig
-          {
-            echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-            echo "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}"
-          } >> "$GITHUB_ENV"
-
-      - name: Build release binary (native gcc + glibc-2.28 compat shim)
-        shell: bash
-        env:
-          TRIPLE: ${{ matrix.triple }}
-        run: |
-          set -euo pipefail
-          # Compile the glibc-2.28 compat shim and link it into the binary so
-          # ort's prebuilt ONNX Runtime (which references glibc 2.38 symbols)
-          # links against the 2.28 floor. Scoped to this target's RUSTFLAGS.
-          shim_obj="$PWD/glibc228_compat.o"
-          gcc -O2 -fPIC -c scripts/glibc228_compat.c -o "$shim_obj"
-          rustflags_var="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_RUSTFLAGS"
-          export "${rustflags_var}=-C link-arg=${shim_obj}"
-          cargo build --release --features full --bin basemind --target "$TRIPLE"
-
-      - name: Verify glibc floor (<= 2.28)
-        shell: bash
-        run: |
-          set -euo pipefail
-          bin="target/${{ matrix.triple }}/release/basemind"
-          max="$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1 || true)"
-          echo "highest glibc symbol required: ${max:-none}"
-          if [ -n "$max" ] && \
-             [ "$(printf '%s\nGLIBC_2.28\n' "$max" | sort -V | tail -1)" != "GLIBC_2.28" ]; then
-            echo "::error::basemind requires $max (> GLIBC_2.28); a dependency pulled a newer glibc symbol"
-            exit 1
-          fi
-          echo "✓ glibc floor verified: ${max:-none} <= GLIBC_2.28"
-
-      - name: Package release
-        shell: bash
-        run: ./scripts/package-release.sh ${{ matrix.triple }}
-
-      - name: Verify release state before upload
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Refuse to upload while the tag is ambiguous or the draft has been promoted — the
-          # v0.27.0 state, in which uploads followed the tag onto a second release record.
-          bash .github/scripts/release-asset.sh resolve \
-            "${{ needs.meta.outputs.tag }}" true "${{ needs.create_release.outputs.release_id }}" >/dev/null
-
-      - name: Upload to GitHub release
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          bash .github/scripts/release-asset.sh upload \
-            "${{ needs.create_release.outputs.release_id }}" \
-            "basemind-${{ matrix.triple }}.tar.gz" application/gzip
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-build.yaml
+    with:
+      ref: ${{ needs.meta.outputs.tag }}
+      version: ${{ needs.meta.outputs.version }}
 
   checksums:
     if: ${{ !inputs.plugins-only }}
-    name: Generate and upload checksums
-    needs: [meta, create_release, build-binaries, build-linux-binaries]
+    name: Upload archives, checksums and provenance
+    needs: [meta, create_release, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
+          ref: ${{ needs.meta.outputs.tag }}
+          persist-credentials: false
 
-      - name: Resolve the release id
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          id="$(bash .github/scripts/release-asset.sh resolve \
-            "${{ needs.meta.outputs.tag }}" true "${{ needs.create_release.outputs.release_id }}")"
-          echo "release_id=$id" >>"$GITHUB_ENV"
+      - name: Download the smoke-tested archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-archive-*
+          merge-multiple: true
+          path: dist
 
       - name: Verify all 4 platform archives are present
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # Checksums must cover every platform. Generating the file from a partial asset set is
           # what let v0.27.0 ship archives no downloader could verify.
-          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
-            -q '.[].name' >/tmp/release_assets.txt
-
           missing=0
           for asset in \
             basemind-x86_64-unknown-linux-gnu.tar.gz \
             basemind-aarch64-unknown-linux-gnu.tar.gz \
             basemind-aarch64-apple-darwin.tar.gz \
             basemind-x86_64-pc-windows-msvc.zip; do
-            if ! grep -qx "$asset" /tmp/release_assets.txt; then
-              echo "::error::release $release_id is missing $asset"
+            if [ ! -f "dist/$asset" ]; then
+              echo "::error::the build produced no $asset"
               missing=$((missing + 1))
             fi
           done
@@ -707,28 +382,41 @@ jobs:
             echo "::error::$missing of 4 platform archives missing; refusing to checksum a partial release"
             exit 1
           fi
-          echo "all 4 archives present on release $release_id"
+          ls -l dist
 
-      - name: Download archives and generate checksums
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate checksums
+        working-directory: dist
         run: |
           set -euo pipefail
-          while read -r name; do
-            bash .github/scripts/release-asset.sh download "$release_id" "$name" "$name"
-          done < <(grep -E '^basemind-.+\.(tar\.gz|zip)$' /tmp/release_assets.txt)
-
           sha256sum basemind-*.tar.gz basemind-*.zip | sort >"basemind_${{ needs.meta.outputs.version }}_checksums.txt"
           cat "basemind_${{ needs.meta.outputs.version }}_checksums.txt"
 
-      - name: Upload checksums to release
+      # Signed build provenance for each archive, verifiable with `gh attestation verify <file>
+      # --repo Goldziher/basemind`. The checksums file comes from the same release as the archive,
+      # so it proves integrity only; the attestation ties the archive to this workflow run.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/basemind-*.tar.gz
+            dist/basemind-*.zip
+
+      - name: Upload archives and checksums to the draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          bash .github/scripts/release-asset.sh upload \
-            "$release_id" \
-            "basemind_${{ needs.meta.outputs.version }}_checksums.txt" text/plain
+          # Refuse to upload while the tag is ambiguous or the draft has been promoted — the
+          # v0.27.0 state, in which uploads followed the tag onto a second release record.
+          release_id="$(bash .github/scripts/release-asset.sh resolve \
+            "${{ needs.meta.outputs.tag }}" true "${{ needs.create_release.outputs.release_id }}")"
+          for archive in dist/basemind-*.tar.gz; do
+            bash .github/scripts/release-asset.sh upload "$release_id" "$archive" application/gzip
+          done
+          bash .github/scripts/release-asset.sh upload "$release_id" \
+            dist/basemind-x86_64-pc-windows-msvc.zip application/zip
+          bash .github/scripts/release-asset.sh upload "$release_id" \
+            "dist/basemind_${{ needs.meta.outputs.version }}_checksums.txt" text/plain
 
   finalize_release:
     name: Publish GitHub release
@@ -736,6 +424,8 @@ jobs:
     if: >-
       ${{ !inputs.plugins-only && (always() && needs.meta.result == 'success') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       # The promotion step runs `.github/scripts/release-asset.sh`; without a checkout the
       # workspace is empty and `bash` exits 127. Every other job that uses the script checks
@@ -795,8 +485,12 @@ jobs:
     # irreversible, so don't publish source unless the platform binaries built and the ~keep
     # release promoted — keeps the surfaces atomic across a partial failure. ~keep
     if: >-
-      ${{ !inputs.plugins-only && (always() && needs.meta.outputs.crates_publishable == 'true' && needs.meta.outputs.crates_exists != 'true' && needs.finalize_release.result == 'success') }}
+      ${{ !inputs.plugins-only && (always() && needs.meta.outputs.crates_exists != 'true' && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -805,9 +499,17 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup-rust
+
+      # `cargo publish` verifies the packaged crate by building it, with default features unless
+      # told otherwise. basemind is verified with `full` below, which needs the system libraries.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
 
       - name: Authenticate to crates.io
         uses: rust-lang/crates-io-auth-action@v1
@@ -823,10 +525,14 @@ jobs:
           # depends on it: the two leaves, then stack-graphs, then tree-sitter-stack-graphs, then
           # basemind itself last. `cargo publish` waits for each to appear in the index before
           # returning, so the next publish resolves it.
+          # Re-running a tag finds its own earlier uploads, so "already exists" is a skip. That is
+          # only safe because meta's vendored-crate check has proven an existing version's source
+          # equals the tree's.
           publish() {
             pkg="$1"
-            echo "::group::cargo publish -p $pkg"
-            if cargo publish -p "$pkg" --allow-dirty 2>publish.err; then
+            shift
+            echo "::group::cargo publish -p $pkg $*"
+            if cargo publish -p "$pkg" --allow-dirty "$@" 2>publish.err; then
               cat publish.err; echo "::endgroup::"; return 0
             fi
             # Idempotent across re-runs of the same tag: a version already on crates.io is a skip.
@@ -839,7 +545,10 @@ jobs:
           publish basemind-tree-sitter-graph
           publish basemind-stack-graphs
           publish basemind-tree-sitter-stack-graphs
-          publish basemind
+          # The verification build resolves the forks from crates.io, as a user's build does, and
+          # with every feature the release binary has: a fork that drifted from its published
+          # version fails here instead of in a user's `cargo install --features full`.
+          publish basemind --features full
 
   publish_npm:
     name: Publish npm
@@ -847,6 +556,9 @@ jobs:
     if: >-
       ${{ !inputs.plugins-only && (always() && needs.meta.outputs.npm_exists != 'true' && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -881,6 +593,9 @@ jobs:
     if: >-
       ${{ !inputs.plugins-only && (always() && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -941,6 +656,9 @@ jobs:
     if: >-
       ${{ !inputs.plugins-only && (always() && needs.meta.outputs.pypi_exists != 'true' && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     environment: pypi
     steps:
       - name: Checkout
@@ -1162,6 +880,8 @@ jobs:
     if: >-
       ${{ !inputs.plugins-only && (always() && needs.finalize_release.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')) }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1176,8 +896,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${HOMEBREW_TOKEN:-}" ]; then
-            echo "HOMEBREW_TOKEN not set — skipping the Homebrew formula update."
-            exit 0
+            echo "::error::HOMEBREW_TOKEN is not set, so the Homebrew formula cannot be updated."
+            exit 1
           fi
           # Resolve rather than read create_release's output: this job also runs on the
           # already-complete path, where create_release is skipped and that output is empty.
@@ -1190,7 +910,10 @@ jobs:
           bash .github/scripts/release-asset.sh download "$release_id" "$checksums_file" checksums.txt
           ./scripts/update-homebrew-formula.sh "$version" checksums.txt > basemind.rb
 
-          git clone --depth 1 "https://x-access-token:${HOMEBREW_TOKEN}@github.com/Goldziher/homebrew-tap.git" tap
+          # The token goes in a per-command header, never into the clone URL that tap/.git/config keeps.
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HOMEBREW_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c http.extraheader="$auth" clone --depth 1 https://github.com/Goldziher/homebrew-tap.git tap
           cp basemind.rb tap/Formula/basemind.rb
           cd tap
           git config user.name "github-actions[bot]"
@@ -1200,7 +923,7 @@ jobs:
             echo "Formula already up to date."
           else
             git commit -m "basemind ${version}"
-            git push
+            git -c http.extraheader="$auth" push
           fi
 
   plugin_release_report:
@@ -1209,6 +932,8 @@ jobs:
     if: >-
       ${{ !inputs.plugins-only && (always()) }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1220,6 +945,7 @@ jobs:
 
   dispatch-plugin-npm:
     name: Publish missing npm plugin version
+    needs: ci_gate
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins-only && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
@@ -1290,6 +1016,7 @@ jobs:
 
   dispatch-plugin-hermes:
     name: Publish missing Hermes plugin version
+    needs: ci_gate
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins-only && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment: pypi

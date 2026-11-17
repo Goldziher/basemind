@@ -464,11 +464,16 @@ impl LaunchSpec {
     /// own, and the store and comms locations when the child has them.
     pub fn mcp_env_names(&self) -> Vec<String> {
         let server_env = self.mcp_server.iter().flat_map(|server| server.env.keys());
-        let wanted: Vec<&str> = [crate::identity::ENV_AGENT_ID, crate::identity::ENV_HOST]
-            .into_iter()
-            .chain(SHARED_STATE_ENV.iter().copied())
-            .chain(server_env.map(String::as_str))
-            .collect();
+        let wanted: Vec<&str> = [
+            crate::identity::ENV_AGENT_ID,
+            crate::identity::ENV_HOST,
+            crate::identity::ENV_AGENT_DEPTH,
+            crate::identity::ENV_LAUNCH_TOKEN,
+        ]
+        .into_iter()
+        .chain(SHARED_STATE_ENV.iter().copied())
+        .chain(server_env.map(String::as_str))
+        .collect();
         self.child_env(std::env::vars_os())
             .into_keys()
             .filter(|name| wanted.contains(&name.as_str()))

@@ -61,8 +61,15 @@ pub struct Score {
     pub gold: usize,
 }
 
+/// Whether `got` names the same thing as `gold`: the same path, or a commit sha `gold` holds whole
+/// and `got` abbreviates, as a `git_log` list writes it.
+fn same(gold: &str, got: &str) -> bool {
+    let hex = |text: &str| text.bytes().all(|b| b.is_ascii_hexdigit());
+    gold == got || (got.len() >= 7 && hex(got) && hex(gold) && gold.starts_with(got))
+}
+
 fn hits(gold: &Item, got: &Item, slack: u32) -> bool {
-    gold.path == got.path
+    same(&gold.path, &got.path)
         && match (gold.line, got.line) {
             (None, _) => true,
             (Some(_), None) => false,
@@ -175,6 +182,17 @@ mod tests {
         assert_eq!(it("a/b.py").line, None);
         assert_eq!(it("a:b.py").line, None);
         assert_eq!(it("x:y:7").path, "x:y");
+    }
+
+    #[test]
+    fn an_abbreviated_sha_finds_the_whole_one() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let p = score(&items(&["0123456789ab", "fedcba987654"]), &items(&[sha]), 0, None);
+        assert_eq!((p.precision, p.recall), (0.5, 1.0));
+        let short = score(&items(&["012345"]), &items(&[sha]), 0, None);
+        assert_eq!(short.recall, 0.0, "six digits name no commit");
+        let file = score(&items(&["deadbeef"]), &items(&["deadbeef.rs"]), 0, None);
+        assert_eq!(file.recall, 0.0, "a hex-named path is not a sha prefix of another path");
     }
 
     #[test]

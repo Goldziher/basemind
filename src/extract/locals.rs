@@ -18,13 +18,14 @@
 //! scope/definition/reference data — no grammar download required. Only the thin walk wrapper
 //! needs a real grammar.
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock};
 
 use ahash::AHashMap;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryCursor, Tree};
 
 use crate::lang::{self, LangError, LangId};
+use crate::once_map::OnceMap;
 
 /// Vendored `locals.scm` for override languages TSLP ships no usable upstream locals for
 /// (python, typescript, tsx, go — empirically confirmed `None` from `get_locals_query` in the
@@ -43,7 +44,7 @@ fn vendored_locals(lang: LangId) -> Option<&'static str> {
 }
 
 type CachedQuery = Option<Arc<Query>>;
-static LOCALS_QUERIES: OnceLock<RwLock<AHashMap<LangId, CachedQuery>>> = OnceLock::new();
+static LOCALS_QUERIES: LazyLock<OnceMap<LangId, lang::QueryOutcome>> = LazyLock::new(OnceMap::default);
 
 /// Compile + cache the `locals` query for a language.
 ///
@@ -56,28 +57,10 @@ static LOCALS_QUERIES: OnceLock<RwLock<AHashMap<LangId, CachedQuery>>> = OnceLoc
 /// empty bindings and callers fall back to today's name-based behavior). The negative result is
 /// cached to skip the lookup on every subsequent file of that language.
 pub fn locals_query(lang: LangId) -> Result<CachedQuery, LangError> {
-    let lock = LOCALS_QUERIES.get_or_init(|| RwLock::new(AHashMap::new()));
-    if let Some(slot) = lock.read().expect("locals query pool poisoned").get(&lang) {
-        return Ok(slot.as_ref().map(Arc::clone));
-    }
-    let source: Option<&'static str> =
-        vendored_locals(lang).or_else(|| tree_sitter_language_pack::get_locals_query(lang));
-    let cached = match source {
-        Some(src) => {
-            let ts_lang = lang::language(lang)?;
-            let query = Query::new(&ts_lang, src).map_err(|e| LangError::QueryCompile {
-                lang,
-                kind: "locals",
-                msg: format!("{e}"),
-            })?;
-            Some(Arc::new(query))
-        }
-        None => None,
-    };
-    lock.write()
-        .expect("locals query pool poisoned")
-        .insert(lang, cached.as_ref().map(Arc::clone));
-    Ok(cached)
+    LOCALS_QUERIES.get_or_try_init(lang, || {
+        let source = vendored_locals(lang).or_else(|| tree_sitter_language_pack::get_locals_query(lang));
+        lang::compile_outcome(lang, "locals", source.map(str::to_string))
+    })?
 }
 
 /// The definition span (and the reference's own end byte) a resolved reference binds to.

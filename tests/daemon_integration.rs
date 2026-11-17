@@ -1202,6 +1202,23 @@ fn writer_truth(repo: &Path, comms_dir: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap_or_else(|error| panic!("{args:?} is not JSON: {error}"))
 }
 
+/// The hits of a `code_refs` payload as rows, each with its `path`: the tool lists them under their
+/// file (`{"<path>": [hit, ...]}`).
+fn hit_rows(payload: &Value) -> Vec<Value> {
+    payload["hits"]
+        .as_object()
+        .unwrap_or_else(|| panic!("hits are grouped by file: {payload}"))
+        .iter()
+        .flat_map(|(path, rows)| {
+            rows.as_array().expect("a file's hits").iter().map(move |row| {
+                let mut row = row.clone();
+                row["path"] = json!(path);
+                row
+            })
+        })
+        .collect()
+}
+
 /// The tool payload inside a hosted JSON-RPC `tools/call` response.
 fn hosted_payload(response: &Value) -> Value {
     let text = response["result"]["content"]
@@ -1243,7 +1260,7 @@ async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value
             payload.get("notice").is_none() || payload["notice"].is_null(),
             "a complete answer carries no truncation notice: {payload}"
         );
-        hits.extend(payload["hits"].as_array().cloned().unwrap_or_default());
+        hits.extend(hit_rows(&payload));
         cursor = payload["next_cursor"].as_str().map(str::to_string);
         if cursor.is_none() {
             break;
@@ -1357,21 +1374,17 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
     };
     assert_eq!(u64::from(page.total), truth_refs["total"].as_u64().unwrap());
     assert!(!page.total_is_partial && !page.has_more);
-    let forwarded: Vec<(String, u64, u64)> = page
+    let forwarded: Vec<(String, u64)> = page
         .hits
         .iter()
-        // The wire page carries the index's 0-based column; a tool response writes it 1-based.
-        .map(|hit| (hit.path.to_string(), u64::from(hit.line), u64::from(hit.column) + 1))
+        .map(|hit| (hit.path.to_string(), u64::from(hit.line)))
         .collect();
-    let truth: Vec<(String, u64, u64)> = truth_refs["hits"]
-        .as_array()
-        .expect("truth hits")
+    let truth: Vec<(String, u64)> = hit_rows(&truth_refs)
         .iter()
         .map(|hit| {
             (
                 hit["path"].as_str().expect("path").to_string(),
                 hit["line"].as_u64().expect("line"),
-                hit["column"].as_u64().expect("column"),
             )
         })
         .collect();
@@ -1393,8 +1406,8 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         "hosted references total equals the writer's"
     );
     assert_eq!(
-        Value::Array(hits),
-        truth_refs["hits"],
+        hits,
+        hit_rows(&truth_refs),
         "hosted references, paginated, equal the writer's hits in order"
     );
     let (total, hits) = hosted_paginated(
@@ -1409,8 +1422,8 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         "hosted implementations total equals the writer's"
     );
     assert_eq!(
-        Value::Array(hits),
-        truth_impls["hits"],
+        hits,
+        hit_rows(&truth_impls),
         "hosted implementations, paginated, equal the writer's hits in order"
     );
 

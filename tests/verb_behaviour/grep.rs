@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use super::{call, started, started_with};
+use super::{call, rows, started, started_with};
 
 /// `^` and `$` anchor at every line, as in any grep. Anchored to the file instead, `^pub fn ` could
 /// match once per file at most and only on its first line.
@@ -17,15 +17,14 @@ async fn code_grep_regex_anchors_match_at_every_line() {
     )
     .await;
     assert_eq!(
-        starts["total_matches"], 7,
+        starts["total"], 7,
         "3 in outline.rs, 2 in callers.rs, 2 in crlf.rs; the indented `pub fn render` is not one: {starts}"
     );
-    assert_eq!(starts["total_files_matched"], 3, "{starts}");
-    let lines: Vec<(String, u64)> = starts["hits"]
+    assert_eq!(starts["hits"].as_object().map(|files| files.len()), Some(3), "{starts}");
+    let lines: Vec<(String, u64)> = starts["hits"]["src/outline.rs"]
         .as_array()
         .expect("hits")
         .iter()
-        .filter(|hit| hit["path"] == "src/outline.rs")
         .map(|hit| (hit["text"].as_str().unwrap().to_string(), hit["line"].as_u64().unwrap()))
         .collect();
     assert_eq!(
@@ -44,10 +43,7 @@ async fn code_grep_regex_anchors_match_at_every_line() {
         json!({ "pattern": "\\{\\}$", "regex": true, "path": "src/crlf.rs" }),
     )
     .await;
-    assert_eq!(
-        ends["total_matches"], 2,
-        "`$` matches before a CRLF terminator too: {ends}"
-    );
+    assert_eq!(ends["total"], 2, "`$` matches before a CRLF terminator too: {ends}");
 }
 
 /// A file `code_grep` could not search is counted, so "no hits" is not read as "not there".
@@ -68,7 +64,10 @@ async fn code_grep_counts_the_files_it_could_not_search() {
     .await;
     assert_eq!(body["skipped_files"], 2, "one is not UTF-8, one is gone: {body}");
     assert_eq!(
-        body["total_files_matched"], 1,
+        body["hits"]
+            .as_object()
+            .map(|files| files.keys().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["src/outline.rs"]),
         "src/outline.rs is still searched: {body}"
     );
 }
@@ -89,8 +88,8 @@ async fn code_grep_does_not_follow_an_indexed_file_swapped_for_a_link_out_of_the
     std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("src/callers.rs")).unwrap();
 
     let body = call(&client, "code_grep", json!({ "pattern": "SECRETTOKEN" })).await;
-    assert_eq!(body["hits"], json!([]), "{body}");
-    assert_eq!(body["total_matches"], 0, "{body}");
+    assert_eq!(body["hits"], json!({}), "{body}");
+    assert_eq!(body["total"], 0, "{body}");
     assert!(!body.to_string().contains("outside the repository"), "{body}");
     assert_eq!(body["skipped_files"], 1, "{body}");
 }
@@ -114,9 +113,8 @@ async fn code_grep_does_not_count_matches_through_a_directory_swapped_for_a_link
 
     for pattern in ["SECRETTOKEN", "^SECRET", "outside"] {
         let body = call(&client, "code_grep", json!({ "pattern": pattern, "regex": true })).await;
-        assert_eq!(body["hits"], json!([]), "{body}");
-        assert_eq!(body["total_matches"], 0, "{pattern}: {body}");
-        assert_eq!(body["total_files_matched"], 0, "{pattern}: {body}");
+        assert_eq!(body["hits"], json!({}), "{body}");
+        assert_eq!(body["total"], 0, "{pattern}: {body}");
         assert!(body.get("next_cursor").is_none(), "{pattern}: {body}");
         assert_eq!(
             body["skipped_files"], 2,
@@ -127,16 +125,16 @@ async fn code_grep_does_not_count_matches_through_a_directory_swapped_for_a_link
 
     let elsewhere = call(&client, "code_grep", json!({ "pattern": "def run" })).await;
     assert_eq!(
-        elsewhere["total_matches"], 2,
+        elsewhere["total"], 2,
         "files outside the swapped directory: {elsewhere}"
     );
 }
 
-/// `code_grep` covers code files. Filters that match only documents are answered with the tool
-/// that searches those, not with "no indexed path", which `find_files` would contradict.
+/// `code_grep` searches the text documents the document tier indexed (markdown, config, data) as
+/// well as code, so an exact string in a README is found where `find_files` lists it.
 #[cfg(feature = "documents")]
 #[test]
-fn code_grep_says_when_its_filters_match_only_documents() {
+fn code_grep_searches_the_text_documents_the_document_tier_indexed() {
     let dir = super::fixture_with(&[]);
     let root = dir.path();
     std::fs::create_dir_all(root.join("docs")).unwrap();
@@ -168,17 +166,18 @@ fn code_grep_says_when_its_filters_match_only_documents() {
     runtime.block_on(async {
         let client = super::serve(root).await;
         let listed = call(&client, "find_files", json!({ "path_prefix": "docs/" })).await;
-        assert_eq!(listed["files"][0]["path"], "docs/guide.md", "{listed}");
+        assert_eq!(listed["files"][0], "docs/guide.md", "{listed}");
 
         for arguments in [
-            json!({ "pattern": "harbour", "path": "docs/" }),
-            json!({ "pattern": "harbour", "language": "markdown" }),
+            json!({ "pattern": "harbour is run", "path": "docs/" }),
+            json!({ "pattern": "harbour is run", "language": "markdown" }),
         ] {
-            let refused = super::call_err(&client, "code_grep", arguments.clone()).await;
-            assert!(
-                refused.contains("match only documents (1 indexed, e.g. `docs/guide.md`)")
-                    && refused.contains("`docs_search`"),
-                "{arguments}: {refused}"
+            let found = call(&client, "code_grep", arguments.clone()).await;
+            let hits = rows(&found["hits"]);
+            assert_eq!(hits.len(), 1, "{arguments}: {found}");
+            assert_eq!(
+                (hits[0]["path"].as_str(), hits[0]["line"].as_u64()),
+                (Some("docs/guide.md"), Some(3))
             );
         }
         let _ = client.cancel().await;
@@ -203,12 +202,12 @@ async fn a_limit_cut_is_paging_and_not_truncation() {
     };
 
     let whole = call(&client, "code_grep", json!({ "pattern": "file_outline" })).await;
-    let total = whole["total_matches"].as_u64().expect("total_matches");
+    let total = whole["total"].as_u64().expect("total");
     assert!(total > 3, "{whole}");
     assert!(whole.get("next_cursor").is_none(), "{whole}");
 
     let limited = call(&client, "code_grep", json!({ "pattern": "file_outline", "limit": 2 })).await;
-    assert_eq!(limited["total_matches"].as_u64(), Some(total), "{limited}");
+    assert_eq!(limited["total"].as_u64(), Some(total), "{limited}");
     assert_paged(&limited);
 
     let budgeted = call(
@@ -244,10 +243,7 @@ async fn code_grep_reports_no_hit_past_the_last_line() {
         json!({ "pattern": "^$", "regex": true, "path": "tools.py" }),
     )
     .await;
-    assert_eq!(
-        blank["total_matches"], 0,
-        "tools.py has three lines and none is empty: {blank}"
-    );
+    assert_eq!(blank["total"], 0, "tools.py has three lines and none is empty: {blank}");
 
     let ends = call(
         &client,
@@ -255,10 +251,8 @@ async fn code_grep_reports_no_hit_past_the_last_line() {
         json!({ "pattern": "$", "regex": true, "path": "tools.py" }),
     )
     .await;
-    assert_eq!(ends["total_matches"], 3, "one per line: {ends}");
-    let lines: Vec<u64> = ends["hits"]
-        .as_array()
-        .expect("hits")
+    assert_eq!(ends["total"], 3, "one per line: {ends}");
+    let lines: Vec<u64> = rows(&ends["hits"])
         .iter()
         .map(|hit| hit["line"].as_u64().expect("line"))
         .collect();
@@ -287,9 +281,7 @@ async fn code_grep_and_code_read_agree_that_a_lone_carriage_return_ends_no_line(
         json!({ "pattern": "$", "regex": true, "path": "cr.py" }),
     )
     .await;
-    let lines: Vec<u64> = ends["hits"]
-        .as_array()
-        .expect("hits")
+    let lines: Vec<u64> = rows(&ends["hits"])
         .iter()
         .map(|hit| hit["line"].as_u64().expect("line"))
         .collect();
@@ -301,24 +293,77 @@ async fn code_grep_and_code_read_agree_that_a_lone_carriage_return_ends_no_line(
         json!({ "pattern": "^b", "regex": true, "path": "cr.py" }),
     )
     .await;
-    assert_eq!(starts["total_matches"], 0, "`b` does not start a line: {starts}");
+    assert_eq!(starts["total"], 0, "`b` does not start a line: {starts}");
     let after_crlf = call(
         &client,
         "code_grep",
         json!({ "pattern": "^d = 4$", "regex": true, "path": "cr.py" }),
     )
     .await;
-    assert_eq!(after_crlf["hits"][0]["line"], 3, "{after_crlf}");
+    assert_eq!(rows(&after_crlf["hits"])[0]["line"], 3, "{after_crlf}");
     let before_crlf = call(
         &client,
         "code_grep",
         json!({ "pattern": "c = 3$", "regex": true, "path": "cr.py" }),
     )
     .await;
-    assert_eq!(
-        before_crlf["total_matches"], 1,
-        "`$` matches before `\\r\\n`: {before_crlf}"
-    );
+    assert_eq!(before_crlf["total"], 1, "`$` matches before `\\r\\n`: {before_crlf}");
     let inside = call(&client, "code_grep", json!({ "pattern": "1\rb" , "path": "cr.py" })).await;
-    assert_eq!(inside["total_matches"], 1, "a literal still finds the byte: {inside}");
+    assert_eq!(inside["total"], 1, "a literal still finds the byte: {inside}");
+}
+
+/// Two matches on one line keep their columns when a page boundary splits them: a page of one hit
+/// still says where on the line its match is, so the pages together tell the two apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_pages_split_on_a_shared_line_keep_their_columns() {
+    let (_dir, client) = started_with(&[("src/twice.rs", "pub fn a() {\n    twice_x(); twice_x();\n}\n")]).await;
+    let mut columns = Vec::new();
+    let mut args = json!({ "pattern": "twice_x(", "limit": 1 });
+    for _ in 0..3 {
+        let page = call(&client, "code_grep", args.clone()).await;
+        for row in rows(&page["hits"]) {
+            assert_eq!(row["line"], 2, "{page}");
+            columns.push(row["column"].clone());
+        }
+        match page["next_cursor"].as_str() {
+            Some(cursor) => args["cursor"] = json!(cursor),
+            None => break,
+        }
+    }
+    assert_eq!(columns, [json!(5), json!(16)], "each page writes its hit's column");
+    let whole = call(&client, "code_grep", json!({ "pattern": "twice_x(" })).await;
+    let whole: Vec<_> = rows(&whole["hits"]).iter().map(|row| row["column"].clone()).collect();
+    assert_eq!(whole, columns, "paged and whole agree");
+}
+
+const APP_TOML: &str = "[client]\nretry_limit = 3\n";
+const NOTES_MD: &str = "# Notes\n\nThe retry_limit setting caps attempts.\n";
+
+/// Config and markdown files are searched too: an exact string in a config file is not a reason to
+/// fall back to `rg`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_searches_text_files_outside_code() {
+    let (_dir, client) = started_with(&[("cfg/app.toml", APP_TOML), ("docs/notes.md", NOTES_MD)]).await;
+
+    let found = call(&client, "code_grep", json!({ "pattern": "retry_limit" })).await;
+    let paths: Vec<String> = rows(&found["hits"])
+        .iter()
+        .map(|hit| format!("{}:{}", hit["path"].as_str().unwrap(), hit["line"]))
+        .collect();
+    assert_eq!(paths, ["cfg/app.toml:2", "docs/notes.md:3"], "{found}");
+
+    let markdown = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "retry_limit", "language": "markdown" }),
+    )
+    .await;
+    assert_eq!(markdown["total"], 1, "{markdown}");
+    let one_file = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "retry_limit", "path": "cfg/app.toml" }),
+    )
+    .await;
+    assert_eq!(one_file["total"], 1, "{one_file}");
 }

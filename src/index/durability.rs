@@ -17,8 +17,16 @@ use fjall::{Keyspace, PersistMode};
 
 use super::view::Part;
 use super::{INDEX_DIR, INDEX_SCHEMA_VER, IndexDb, IndexError, META_SCHEMA_VER};
+use crate::path::RelPath;
 
 const META_SCAN_GENERATION: &[u8] = b"scan_generation";
+/// Whether a pass that writes rows is open (see [`IndexDb::open_rows_pass`]): [`ROWS_PASS_OPEN`]
+/// from before its first row until the seal of the flush that ends it writes [`ROWS_PASS_ENDED`].
+const META_ROWS_UNLISTED: &[u8] = b"rows_unlisted";
+const ROWS_PASS_OPEN: [u8; 1] = [1];
+const ROWS_PASS_ENDED: [u8; 1] = [0];
+/// Paths whose rows one commit removes when an interrupted pass is cleaned up.
+const PURGE_PATHS_PER_COMMIT: usize = 256;
 /// Name prefix of an index directory renamed aside by [`discard_dir`] and not yet deleted.
 pub(crate) const DISCARD_PREFIX: &str = "index.fjall.discard-";
 
@@ -77,6 +85,18 @@ impl IndexDb {
     ///
     /// One fsync per call, so this belongs at the end of a scan's writes, never in the per-file loop.
     pub fn seal_scan(&self, file_map_generation: u64) -> Result<u64, IndexError> {
+        self.seal(file_map_generation, false)
+    }
+
+    /// [`Self::seal_scan`] for the flush that ends a pass which wrote rows: the same synced batch
+    /// records the pass ended, so the next pass need not look for rows no file map lists. No other
+    /// seal may: one that wrote no rows (the rewrite of an emptied file map, the claim of a store
+    /// opened read-only) would hide a pass that was killed before its file map was written.
+    pub(crate) fn seal_scan_ending_rows_pass(&self, file_map_generation: u64) -> Result<u64, IndexError> {
+        self.seal(file_map_generation, true)
+    }
+
+    fn seal(&self, file_map_generation: u64, ends_rows_pass: bool) -> Result<u64, IndexError> {
         let stored = self.scan_generation()?;
         if file_map_generation > stored {
             return Err(IndexError::BehindFileMap {
@@ -91,6 +111,10 @@ impl IndexDb {
         let mut batch = self.db.batch().durability(Some(PersistMode::SyncAll));
         self.meta
             .stage_insert(&mut batch, META_SCAN_GENERATION, generation.to_be_bytes().into());
+        if ends_rows_pass {
+            self.meta
+                .stage_insert(&mut batch, META_ROWS_UNLISTED, ROWS_PASS_ENDED.into());
+        }
         let sealed = batch.commit().map_err(IndexError::from);
         if let Err(error) = &sealed {
             self.record_commit_error(error);
@@ -98,6 +122,78 @@ impl IndexDb {
         sealed?;
         self.synced_seqno.store(synced_seqno, Ordering::Release);
         Ok(generation)
+    }
+
+    /// Whether rows of paths no file map lists may be left: a pass that writes rows began and its
+    /// ending flush never ran, or the index has no record at all (one from before the record, or
+    /// one just emptied, where the check finds nothing at the cost of one walk).
+    pub(crate) fn rows_may_be_unlisted(&self) -> Result<bool, IndexError> {
+        Ok(self
+            .meta
+            .get(META_ROWS_UNLISTED)?
+            .is_none_or(|bytes| bytes.as_ref() != ROWS_PASS_ENDED))
+    }
+
+    /// Record, before a pass commits its first row, that it is open. Its rows are listed by a file
+    /// map only once the flush that ends it is written, which clears the record
+    /// ([`Self::seal_scan_ending_rows_pass`]). Written without a sync: the journal keeps it ahead of
+    /// every row committed after it.
+    pub(crate) fn open_rows_pass(&self) -> Result<(), IndexError> {
+        if self.meta.get(META_ROWS_UNLISTED)?.as_deref() != Some(&ROWS_PASS_OPEN[..]) {
+            self.meta.insert(META_ROWS_UNLISTED, ROWS_PASS_OPEN)?;
+        }
+        Ok(())
+    }
+
+    /// Remove every row of `paths`, a few hundred paths per commit.
+    pub(crate) fn purge_paths(&self, paths: &[RelPath]) -> Result<(), IndexError> {
+        for chunk in paths.chunks(PURGE_PATHS_PER_COMMIT) {
+            let mut writer = self.writer();
+            for path in chunk {
+                writer.remove_file(path)?;
+                writer.remove_resolved_file(path)?;
+                #[cfg(feature = "code-search")]
+                writer.remove_bm25_file(path)?;
+            }
+            writer.commit()?;
+        }
+        Ok(())
+    }
+
+    /// Every path holding a row in a partition keyed by path, each once: one seek per distinct path
+    /// and partition, not a read of every row.
+    pub(crate) fn indexed_paths(&self) -> Result<ahash::AHashSet<RelPath>, IndexError> {
+        let mut paths = ahash::AHashSet::new();
+        for keyspace in [
+            &self.symbols_by_path,
+            &self.calls_by_path,
+            &self.imports_by_path,
+            &self.implementations_by_path,
+            &self.refs_by_path,
+            &self.code_bm25_by_path,
+        ] {
+            let mut from = Vec::new();
+            while let Some(row) = keyspace
+                .range(std::ops::Bound::Included(from.as_slice()), std::ops::Bound::Unbounded)
+                .next()
+            {
+                let (key, _) = row?;
+                let mut cursor = 0;
+                // A key that does not parse is stepped over, not taken for the end of the partition. ~keep
+                let next = match super::keys::read_len_prefixed_ref(&key, &mut cursor) {
+                    Some(rel) => {
+                        paths.insert(RelPath::from(rel));
+                        prefix_successor(&key[..cursor])
+                    }
+                    None => Some([&key[..], &[0]].concat()),
+                };
+                match next {
+                    Some(next) => from = next,
+                    None => break,
+                }
+            }
+        }
+        Ok(paths)
     }
 
     /// Fsync the journal if anything was written since the last [`Self::seal_scan`] or call of this,
@@ -160,6 +256,11 @@ impl IndexDb {
         self.db.journal_count() > RECLAIM_SEALED_JOURNALS && self.reclaim_journal()
     }
 
+    /// Whether no other clone of this handle is alive, so dropping it releases fjall's lock.
+    pub(crate) fn is_sole_handle(&self) -> bool {
+        std::sync::Arc::strong_count(&self.synced_seqno) == 1
+    }
+
     #[cfg(test)]
     pub(crate) fn has_unsynced_tail(&self) -> bool {
         self.db.seqno() != self.synced_seqno.load(Ordering::Acquire)
@@ -168,11 +269,18 @@ impl IndexDb {
     /// Empty every keyspace in place, leaving a current-schema index no scan has sealed. The
     /// in-place form of [`discard_index`], for a store that cannot drop every clone of its handle.
     ///
+    /// `meta` is emptied first and the journal synced before the rest: fjall writes a cleared
+    /// keyspace's empty version durably at once but journals the clear itself buffered, and recovery
+    /// replays a keyspace's journaled writes over an empty version. Unsynced, a power loss could bring
+    /// back a sealed generation that vouches for rows whose clear did reach the disk.
+    ///
     /// In a group index only this view's rows go: the rows the group shares by content, and the
     /// group's schema stamp, belong to every view.
     pub(crate) fn clear_for_rebuild(&self) -> Result<(), IndexError> {
         let shared = self.group.is_some();
-        for part in Part::ALL {
+        self.meta.clear(&self.db)?;
+        self.db.persist(PersistMode::SyncAll)?;
+        for part in Part::ALL.into_iter().filter(|part| *part != Part::Meta) {
             let keyspace = self.keyspace(part);
             if shared && !keyspace.is_view_scoped() {
                 continue;
@@ -184,6 +292,18 @@ impl IndexDb {
         }
         Ok(())
     }
+}
+
+/// The least key above every key that starts with `prefix`, or `None` when there is none.
+fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut next = prefix.to_vec();
+    while let Some(last) = next.pop() {
+        if last < u8::MAX {
+            next.push(last + 1);
+            return Some(next);
+        }
+    }
+    None
 }
 
 /// Delete the index database under `view_dir`. The caller must have dropped every handle to it.
@@ -303,6 +423,22 @@ mod tests {
             Some(INDEX_SCHEMA_VER),
             "the schema stamp survived the clear"
         );
+    }
+
+    /// One key that does not parse hid every path after it in its partition.
+    #[test]
+    fn indexed_paths_reads_past_a_key_it_cannot_parse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = IndexDb::open(dir.path()).expect("open");
+        let rows = db.keyspace(Part::SymbolsByPath);
+        rows.insert(&[0u8], "a key too short for its length prefix")
+            .expect("insert");
+        rows.insert(&[0u8, 4, b'a', b'.', b'r', b's', 0, 0], "row")
+            .expect("insert");
+
+        let paths = db.indexed_paths().expect("paths");
+
+        assert_eq!(paths.into_iter().collect::<Vec<_>>(), vec![RelPath::from("a.rs")]);
     }
 
     fn discarded_siblings(view_dir: &Path) -> Vec<String> {

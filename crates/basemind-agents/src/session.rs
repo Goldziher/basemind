@@ -379,6 +379,12 @@ impl Session {
         self.request_stop(self.shared.limits.stop_grace);
     }
 
+    /// A handle that stops, kills and answers this session from another thread, for a
+    /// supervisor whose own thread reads the events.
+    pub(crate) fn handle(&self) -> SessionHandle {
+        SessionHandle(self.shared.clone())
+    }
+
     /// Blocks until the session is over and returns how it ended.
     #[must_use]
     pub fn wait(self) -> FinishStatus {
@@ -391,10 +397,20 @@ impl Session {
     }
 
     fn send(&self, control: Control) -> Result<(), LaunchError> {
-        if self.shared.state().finished {
+        self.shared.send(control)
+    }
+
+    fn request_stop(&self, grace: Duration) {
+        self.shared.request_stop(grace);
+    }
+}
+
+impl Shared {
+    fn send(&self, control: Control) -> Result<(), LaunchError> {
+        if self.state().finished {
             return Err(LaunchError::SessionClosed);
         }
-        match (self.shared.control)(control) {
+        match (self.control)(control) {
             Ok(()) => Ok(()),
             Err(Undelivered::Full) => Err(LaunchError::ControlQueueFull),
             Err(Undelivered::Closed) => Err(LaunchError::SessionClosed),
@@ -403,7 +419,7 @@ impl Session {
 
     fn request_stop(&self, grace: Duration) {
         {
-            let mut state = self.shared.state();
+            let mut state = self.state();
             if state.finished {
                 return;
             }
@@ -414,11 +430,42 @@ impl Session {
                 state.stop_deadline = Some(state.stop_deadline.map_or(deadline, |at| at.min(deadline)));
             }
         }
-        self.shared.events.drain();
-        self.shared.wake.notify_all();
+        self.events.drain();
+        self.wake.notify_all();
         // Not delivered when the queue is full or the driver is gone: the watchdog still kills
         // the group at the stop deadline and then abandons the pipes.
-        let _ = (self.shared.control)(Control::Stop);
+        let _ = (self.control)(Control::Stop);
+    }
+}
+
+/// Control of a session from a thread other than the one reading its events: what
+/// [`Session`] offers but receiving, which stays with the session's owner.
+#[derive(Clone)]
+pub(crate) struct SessionHandle(Arc<Shared>);
+
+impl SessionHandle {
+    /// As [`Session::stop`].
+    pub fn stop(&self) {
+        self.0.request_stop(self.0.limits.stop_grace);
+    }
+
+    /// Kills the process group at once, without a stop grace, as dropping the session does.
+    pub fn kill(&self) {
+        self.0.kill_now.store(true, Ordering::SeqCst);
+        self.0.request_stop(Duration::ZERO);
+    }
+
+    /// As [`Session::approve`] and [`Session::deny`].
+    pub fn answer(&self, id: &str, allow: bool) -> Result<(), LaunchError> {
+        self.0.send(Control::Answer {
+            id: id.to_owned(),
+            allow,
+        })
+    }
+
+    /// The process id of the harness, which is also its process group id.
+    pub fn pid(&self) -> u32 {
+        self.0.pid
     }
 }
 
