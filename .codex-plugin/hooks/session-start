@@ -60,16 +60,15 @@ run_bounded() (
 #    worse than no hook at all: the agent burns calls hunting for them, then falls back to grep and
 #    reports basemind as broken. Ask the CLI, through the same launcher the MCP server uses, for
 #    this workspace's index status. That works on a default install (no HTTP front-end needed), and
-#    the first run also warms the version-matched binary cache. Bounded by `timeout` when available
-#    and fail-open: a failure only changes the context line, never the exit status.
-STATUS_TIMEOUT=20
+#    the first run also warms the version-matched binary cache. Bounded with or without a `timeout`
+#    binary and fail-open: a failure only changes the context line, never the exit status.
+#    BASEMIND_HOOK_STATUS_TIMEOUT (whole seconds) overrides the bound.
+STATUS_TIMEOUT="${BASEMIND_HOOK_STATUS_TIMEOUT:-20}"
+case "${STATUS_TIMEOUT}" in
+'' | *[!0-9]*) STATUS_TIMEOUT=20 ;;
+esac
 STATUS_RC=0
-STATUS_JSON=""
-if command -v timeout >/dev/null 2>&1; then
-  STATUS_JSON="$(timeout "${STATUS_TIMEOUT}" "${PLUGIN_ROOT}/scripts/mcp-launch.sh" status --root "${WORKSPACE}" --json 2>/dev/null)" || STATUS_RC=$?
-else
-  STATUS_JSON="$("${PLUGIN_ROOT}/scripts/mcp-launch.sh" status --root "${WORKSPACE}" --json 2>/dev/null)" || STATUS_RC=$?
-fi
+STATUS_JSON="$(run_bounded "${STATUS_TIMEOUT}" "${PLUGIN_ROOT}/scripts/mcp-launch.sh" status --root "${WORKSPACE}" --json </dev/null 2>/dev/null)" || STATUS_RC=$?
 
 FILE_COUNT=""
 SCHEMA_VER=""
@@ -96,7 +95,8 @@ if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ] && [ -z 
   CALL_TOOLS="${CALL_TOOLS} Claude Code registers each one as ${TOOL_PREFIX}<tool>."
 fi
 
-if [ "${STATUS_RC}" -eq 124 ]; then
+# 124 is `timeout`'s code; 143 is the TERM the watchdog sends where `timeout` is missing.
+if [ "${STATUS_RC}" -eq 124 ] || [ "${STATUS_RC}" -eq 143 ]; then
   STATUS_LINE="basemind status timed out after ${STATUS_TIMEOUT}s (the first run may still be installing the binary), so basemind is unverified. ${FALLBACK}"
 elif [ "${STATUS_RC}" -ne 0 ] || [ -z "${STATUS_JSON}" ]; then
   STATUS_LINE="basemind is unavailable: the launcher could not run \`basemind status\` (exit ${STATUS_RC}; binary missing or not installable). ${FALLBACK}"

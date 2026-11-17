@@ -18,6 +18,7 @@
           {
             "type": "command",
             "command": "\"${extensionPath}/hooks/run-hook.cmd\" session-start",
+            "timeout": 45000,
             "async": false
           }
         ]
@@ -29,6 +30,7 @@
           {
             "type": "command",
             "command": "\"${extensionPath}/hooks/run-hook.cmd\" inbox-notify",
+            "timeout": 20000,
             "async": false
           }
         ]

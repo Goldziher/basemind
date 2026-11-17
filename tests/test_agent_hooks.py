@@ -336,5 +336,27 @@ class AgentAsManifestTests(unittest.TestCase):
             self.assertTrue(os.access(ROOT / directory / "agent-as", os.X_OK), directory)
 
 
+class HookTimeoutTests(unittest.TestCase):
+    """Each hand-written manifest bounds every hook; the scripts bound themselves as well."""
+
+    # Gemini reads `timeout` in milliseconds, Codex and Cursor in seconds.
+    MANIFESTS = (
+        (".codex-plugin/hooks/hooks.json", 1),
+        (".cursor-plugin/hooks/hooks.json", 1),
+        ("gemini-extension.json", 1000),
+    )
+
+    def test_every_hook_has_a_timeout_under_a_minute(self) -> None:
+        for manifest, unit in self.MANIFESTS:
+            groups = json.loads((ROOT / manifest).read_text())["hooks"]
+            hooks = [hook for entries in groups.values() for entry in entries for hook in entry["hooks"]]
+            self.assertTrue(hooks, manifest)
+            for hook in hooks:
+                with self.subTest(manifest=manifest, command=hook["command"]):
+                    self.assertIn("timeout", hook)
+                    self.assertLessEqual(hook["timeout"], 60 * unit)
+                    self.assertGreaterEqual(hook["timeout"], 10 * unit)
+
+
 if __name__ == "__main__":
     unittest.main()

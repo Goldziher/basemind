@@ -387,6 +387,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The plugin launcher releases its install lock when a signal (a hook's time limit, a closed host)
   stops it mid-download, instead of making the next start wait 120 s for it.
+- The session-start hook bounds its `basemind status` probe without a `timeout` binary (stock
+  macOS), so a hung probe no longer holds the session.
 - A `code_search`, `docs_search` or `code_outline` cursor issued right after the server started is
   no longer refused as stale on the next page: the background warm of the in-RAM map counted as an
   index change, though none of the three lists is read from that map.

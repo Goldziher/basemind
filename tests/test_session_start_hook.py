@@ -159,6 +159,13 @@ esac""",
         self.executable(self.bin / "timeout", "exit 124")
         self.assertIn("timed out", self.invoke(""))
 
+    def test_a_hung_status_probe_is_cut_off_without_coreutils_timeout(self) -> None:
+        self.executable(self.root / "scripts/mcp-launch.sh", "exec sleep 60")
+        started = time.monotonic()
+        result = self.invoke("", BASEMIND_HOOK_STATUS_TIMEOUT="1")
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertIn("timed out after 1s", result)
+
     def test_malformed_inbox_leaves_startup_context_intact(self) -> None:
         self.executable(self.bin / "timeout", 'shift; exec "$@"')
         context = self.invoke('{"file_count":5,"schema_version":33}', inbox="not JSON")
