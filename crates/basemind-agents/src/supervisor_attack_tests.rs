@@ -694,3 +694,78 @@ cat > /dev/null
         "a session ran on after an allow it could not record: {state:?}"
     );
 }
+
+/// A Claude Code stand-in that asks for `count` tool approvals one after the other, reading
+/// each answer, touches `done` in the scratch directory, then keeps running.
+fn approvals_body(scratch: &Scratch, count: usize) -> String {
+    format!(
+        r#"{HANDSHAKE}i=0
+while [ "$i" -lt {count} ]; do
+  i=$((i + 1))
+  printf '%s\n' '{{"type":"control_request","request_id":"req-'"$i"'","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"true"}}}}}}'
+  read -r reply
+done
+touch '{done}'
+cat > /dev/null
+"#,
+        done = scratch.path.join("done").display()
+    )
+}
+
+/// A supervisor whose Claude Code config settles every approval with `verdict`.
+fn settling(
+    scratch: &Scratch,
+    verdict: crate::spec::ApprovalVerdict,
+    count: usize,
+) -> (Supervisor, Arc<MemoryAuditSink>) {
+    let mut config = scratch.config(HarnessKind::ClaudeCode, &approvals_body(scratch, count));
+    config.approval_policy = crate::test_support::always(verdict);
+    let spec = PolicySpec {
+        flavors: vec![FlavorPolicy {
+            approval_policy: true,
+            ..FlavorPolicy::supervised(HarnessKind::ClaudeCode)
+        }],
+        ..policy(&[])
+    };
+    start(spec, vec![config])
+}
+
+#[test]
+fn a_flood_of_policy_denials_is_coalesced() {
+    let scratch = Scratch::new();
+    let (supervisor, audit) = settling(&scratch, crate::spec::ApprovalVerdict::Deny, 200);
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !scratch.path.join("done").exists() {
+        assert!(Instant::now() < deadline, "the stand-in never had its 200 answers");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    supervisor.stop(&lead(), launched.id).unwrap();
+    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
+    let written = outcomes(&audit, AuditEvent::Approval).len();
+    assert!(
+        written <= crate::refusals::BURST as usize,
+        "{written} denial records for one session"
+    );
+}
+
+#[test]
+fn a_session_past_its_recorded_allows_is_stopped() {
+    let scratch = Scratch::new();
+    let count = crate::supervisor_pump::MAX_RECORDED_ALLOWS + 20;
+    let (supervisor, audit) = settling(&scratch, crate::spec::ApprovalVerdict::Allow, count);
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let state = supervisor.wait(launched.id, Duration::from_secs(60));
+    assert!(
+        matches!(state, Some(SessionState::Finished(_))),
+        "a session ran on past its recorded allows: {state:?}"
+    );
+    let allows = outcomes(&audit, AuditEvent::Approval)
+        .iter()
+        .filter(|outcome| **outcome == "allowed")
+        .count();
+    assert!(
+        allows <= crate::supervisor_pump::MAX_RECORDED_ALLOWS,
+        "{allows} allows recorded"
+    );
+}
