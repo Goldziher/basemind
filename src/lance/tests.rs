@@ -614,3 +614,32 @@ fn a_store_versioned_by_the_release_minor_is_older_and_wiped() {
     assert_eq!(written.schema_ver, VECTOR_STORE_VER);
     drop(store);
 }
+
+fn small_fragments(store: &LanceStore, table: &str) -> usize {
+    store.inner.rt().block_on(async {
+        let t = store.inner.connection.open_table(table).execute().await.unwrap();
+        t.stats().await.unwrap().fragment_stats.num_small_fragments
+    })
+}
+
+/// Each `basemind memory save` is its own process: one open, one upsert, gone. The per-process
+/// commit counter never reaches its period there, so the table's own fragment count bounds it.
+#[test]
+fn short_lived_memory_writers_keep_the_fragment_count_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let writes = super::batch::AUTO_COMPACT_SMALL_FRAGMENTS + 8;
+    for i in 0..writes {
+        let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+        store
+            .upsert_memory(memory_row(&format!("k{i}"), "note", i64::try_from(i).unwrap() + 1))
+            .unwrap();
+    }
+
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    let fragments = small_fragments(&store, MEMORY_TABLE);
+    assert!(
+        fragments < super::batch::AUTO_COMPACT_SMALL_FRAGMENTS,
+        "{fragments} small fragments after {writes} one-write processes"
+    );
+    assert_eq!(store.memory_stamps("s", "group", "").unwrap().stamps.len(), writes);
+}

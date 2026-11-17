@@ -77,6 +77,7 @@ impl LanceStore {
         self.inner.rt().block_on(async {
             let table = self.memory_table().await?;
             table.delete(&predicate).await.context("delete previous memory rows")?;
+            self.after_commit(&table, MEMORY_TABLE).await;
             table.add(batch).execute().await.context("insert memory rows")?;
             self.after_commit(&table, MEMORY_TABLE).await;
             anyhow::Ok(())
@@ -122,6 +123,7 @@ impl LanceStore {
         self.inner.rt().block_on(async {
             let table = self.memory_table().await?;
             let result = table.delete(&predicate).await.context("delete memory rows")?;
+            self.after_commit(&table, MEMORY_TABLE).await;
             anyhow::Ok(result.num_deleted_rows)
         })
     }
