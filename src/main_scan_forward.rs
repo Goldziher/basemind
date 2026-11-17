@@ -52,7 +52,7 @@ pub(super) fn unforwardable(matches: &clap::ArgMatches) -> Unforwardable {
 /// The message refusing a forwarded scan the user gave flags it cannot carry.
 fn refusal(pid: u32, flags: &[String]) -> String {
     format!(
-        "the basemind daemon (pid {pid}) hosts this workspace, so `basemind scan` is forwarded to it, and the \
+        "the basemind daemon (pid {pid}) is running, so `basemind scan` is forwarded to it, and the \
          forwarded scan cannot apply {}. Drop {}, put document options in basemind.toml, or stop the daemon \
          (`basemind comms stop`) and scan directly.",
         flags.join(", "),
