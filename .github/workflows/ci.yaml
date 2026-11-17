@@ -11,7 +11,9 @@ on:
 
 # ~keep The nightly gets a group of its own: sharing main's group let every push cancel it.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
+  # ~keep A push to main gets a group of its own (its sha): runs on main are never cancelled, and one
+  # ~keep that is still on its two-hour `full` legs must not hold every later push in the queue.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || (github.ref == 'refs/heads/main' && github.sha || github.ref) }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'schedule' }}
 
 permissions:
