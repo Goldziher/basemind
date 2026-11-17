@@ -14,21 +14,29 @@ either by hand. Regenerate with `python3 benchmarks/eval/docs/gen_corpus.py`. MI
 
 | Format | Files | MIME type | Selectivity |
 |---|---|---|---|
-| Markdown | 9 | `text/markdown` | 0.39 |
-| HTML | 4 | `text/html` | 0.17 |
-| PDF | 3 | `application/pdf` | 0.13 |
-| Email | 3 | `message/rfc822` | 0.13 |
-| Word | 2 | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | 0.09 |
-| Notebook | 2 | `application/x-ipynb+json` | 0.09 |
+| Markdown | 9 | `text/markdown` | 0.31 |
+| HTML | 4 | `text/html` | 0.14 |
+| PDF | 3 | `application/pdf` | 0.10 |
+| Email | 3 | `message/rfc822` | 0.10 |
+| Word | 2 | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | 0.07 |
+| Notebook | 2 | `application/x-ipynb+json` | 0.07 |
+| Plain text and log | 2 | `text/plain` | 0.07 |
+| CSV | 1 | `text/csv` | 0.03 |
+| JSON | 1 | `application/json` | 0.03 |
+| YAML | 1 | `application/yaml` | 0.03 |
+| TOML | 1 | `application/toml` | 0.03 |
 
 ## Tasks
 
-86 tasks, `mode: docs`, `k: 10`, gold paths relative to `corpus/`. `meta.variant` is `question`, `keywords`
-or `rare_term` (a term the script checks occurs in exactly one document). PDF golds carry `meta.gold_page`.
+93 tasks, `mode: docs`, `k: 10`, gold paths relative to `corpus/`. `meta.variant` is `question`, `keywords`
+or `rare_term` (a term the script checks occurs in exactly one document). PDF golds carry `meta.gold_page`;
+text and data golds carry `meta.gold_line`, the line that answers the query.
 
 - `docs-corpus-0001`..`0056`: unfiltered (`meta.selectivity: "none"`).
 - `0057`..`0081`: the same queries with `args.mime_type` set to the gold's type.
 - `0082`..`0086`: filtered queries whose topic has a near-duplicate in another format; the filter decides.
+- `0087`..`0093`: unfiltered queries on the text and data files (a log, a CSV, JSON, YAML, TOML, a wrapped
+  plain-text note).
 
 ## Running
 
@@ -43,5 +51,6 @@ runs `basemind admin eval --mode docs`. `summarize.py` breaks the run down by se
 p50 / p95 of response tokens and latency. `EVAL_RERANK=1` turns the reranker on; `EVAL_DISTRACTORS=N` adds N
 plain-text distractors (`grow_corpus.py`) that repeat the task queries, so the corpus holds more chunks than a lane's
 candidate cut and a filtered task only finds its gold if the filter runs first. `citations.py` checks the first gold
-hit's citation (section, PDF page, Markdown lines) against the task. Results
+hit's citation (section, PDF page, Markdown lines, the gold line of a text or data file) against the task. The
+`docs-eval` workflow (`workflow_dispatch`) runs all three on a release build and uploads the tables. Results
 before and after the ADR-0029 pipeline are in the polyrepo's `reports/retrieval-eval.md`.

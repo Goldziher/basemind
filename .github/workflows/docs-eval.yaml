@@ -1,0 +1,77 @@
+name: docs-eval
+
+# The docs_search retrieval eval (benchmarks/eval/docs): scan the corpus, score every task with
+# `basemind admin eval --mode docs`, break it down by selectivity, variant and gold format, and check
+# the citations (sections, PDF pages, Markdown lines, the gold line of text and data files). On demand
+# only: it downloads the embedding model and takes a release build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      features:
+        description: Cargo features of the build (needs documents)
+        type: string
+        default: comms documents memory
+      rerank:
+        description: Turn the reranker on
+        type: boolean
+        default: false
+
+concurrency:
+  group: docs-eval-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  eval:
+    name: docs eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
+
+      - name: Build
+        env:
+          FEATURES: ${{ inputs.features }}
+        run: cargo build --locked --release --features "$FEATURES"
+
+      - name: Run the eval
+        env:
+          EVAL_RERANK: ${{ inputs.rerank && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/docs-eval"
+          export BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)"
+          bin="$GITHUB_WORKSPACE/target/release/basemind"
+          benchmarks/eval/docs/run.sh "$bin" "$out"
+          python3 -I benchmarks/eval/docs/summarize.py benchmarks/eval/docs/tasks.jsonl \
+            "$out/results.ndjson" "docs eval" > "$out/summary.md"
+          python3 -I benchmarks/eval/docs/citations.py "$bin" "$out/workspace" \
+            benchmarks/eval/docs/tasks.jsonl "$out/citations.ndjson" > "$out/citations.md"
+          cat "$out/summary.md" "$out/citations.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: docs-eval
+          path: |
+            ${{ runner.temp }}/docs-eval/*.md
+            ${{ runner.temp }}/docs-eval/*.ndjson
+            ${{ runner.temp }}/docs-eval/report.json
+            ${{ runner.temp }}/docs-eval/scan.log
+          if-no-files-found: warn

@@ -1,0 +1,121 @@
+meter_id,district,reading_m3,read_on,status
+VW-4000,Harbour,12.0,2025-02-01,ok
+VW-4001,Ostbank,49.1,2025-02-02,ok
+VW-4002,Millfield,86.2,2025-02-03,ok
+VW-4003,Quayside,123.3,2025-02-04,ok
+VW-4004,Upper Varn,160.4,2025-02-05,ok
+VW-4005,Harbour,197.5,2025-02-06,ok
+VW-4006,Ostbank,234.6,2025-02-07,ok
+VW-4007,Millfield,271.7,2025-02-08,ok
+VW-4008,Quayside,308.8,2025-02-09,ok
+VW-4009,Upper Varn,345.9,2025-02-10,ok
+VW-4010,Harbour,382.0,2025-02-11,ok
+VW-4011,Ostbank,419.1,2025-02-12,estimated: no access
+VW-4012,Millfield,456.2,2025-02-13,ok
+VW-4013,Quayside,493.3,2025-02-14,ok
+VW-4014,Upper Varn,530.4,2025-02-15,ok
+VW-4015,Harbour,567.5,2025-02-16,ok
+VW-4016,Ostbank,604.6,2025-02-17,ok
+VW-4017,Millfield,641.7,2025-02-18,ok
+VW-4018,Quayside,678.8,2025-02-19,ok
+VW-4019,Upper Varn,715.9,2025-02-20,ok
+VW-4020,Harbour,752.0,2025-02-21,ok
+VW-4021,Ostbank,789.1,2025-02-22,ok
+VW-4022,Millfield,826.2,2025-02-23,ok
+VW-4023,Quayside,863.3,2025-02-24,ok
+VW-4024,Upper Varn,900.4,2025-02-25,ok
+VW-4025,Harbour,37.5,2025-02-26,ok
+VW-4026,Ostbank,74.6,2025-02-27,ok
+VW-4027,Millfield,111.7,2025-02-01,ok
+VW-4028,Quayside,148.8,2025-02-02,ok
+VW-4029,Upper Varn,185.9,2025-02-03,ok
+VW-4030,Harbour,222.0,2025-02-04,ok
+VW-4031,Ostbank,259.1,2025-02-05,ok
+VW-4032,Millfield,296.2,2025-02-06,ok
+VW-4033,Quayside,333.3,2025-02-07,ok
+VW-4034,Upper Varn,370.4,2025-02-08,ok
+VW-4035,Harbour,407.5,2025-02-09,ok
+VW-4036,Ostbank,444.6,2025-02-10,ok
+VW-4037,Millfield,481.7,2025-02-11,ok
+VW-4038,Quayside,518.8,2025-02-12,ok
+VW-4039,Upper Varn,555.9,2025-02-13,ok
+VW-4040,Harbour,592.0,2025-02-14,estimated: no access
+VW-4041,Ostbank,629.1,2025-02-15,ok
+VW-4042,Millfield,666.2,2025-02-16,ok
+VW-4043,Quayside,703.3,2025-02-17,ok
+VW-4044,Upper Varn,740.4,2025-02-18,ok
+VW-4045,Harbour,777.5,2025-02-19,ok
+VW-4046,Ostbank,814.6,2025-02-20,ok
+VW-4047,Millfield,851.7,2025-02-21,ok
+VW-4048,Quayside,888.8,2025-02-22,ok
+VW-4049,Upper Varn,25.9,2025-02-23,ok
+VW-4050,Harbour,62.0,2025-02-24,ok
+VW-4051,Ostbank,99.1,2025-02-25,ok
+VW-4052,Millfield,136.2,2025-02-26,ok
+VW-4053,Quayside,173.3,2025-02-27,ok
+VW-4054,Upper Varn,210.4,2025-02-01,ok
+VW-4055,Harbour,247.5,2025-02-02,ok
+VW-4056,Ostbank,284.6,2025-02-03,ok
+VW-4057,Millfield,321.7,2025-02-04,ok
+VW-4058,Quayside,358.8,2025-02-05,ok
+VW-4059,Upper Varn,395.9,2025-02-06,ok
+VW-4060,Harbour,432.0,2025-02-07,ok
+VW-4061,Ostbank,469.1,2025-02-08,ok
+VW-4062,Millfield,506.2,2025-02-09,ok
+VW-4063,Quayside,543.3,2025-02-10,ok
+VW-4064,Upper Varn,580.4,2025-02-11,ok
+VW-4065,Harbour,617.5,2025-02-12,ok
+VW-4066,Ostbank,654.6,2025-02-13,ok
+VW-4067,Millfield,691.7,2025-02-14,ok
+VW-4068,Quayside,728.8,2025-02-15,ok
+VW-4069,Upper Varn,765.9,2025-02-16,estimated: no access
+VW-4070,Harbour,802.0,2025-02-17,ok
+VW-4071,Ostbank,839.1,2025-02-18,ok
+VW-4072,Millfield,876.2,2025-02-19,ok
+VW-4073,Quayside,13.3,2025-02-20,suspected tamper: seal broken, flow reversed
+VW-4074,Upper Varn,50.4,2025-02-21,ok
+VW-4075,Harbour,87.5,2025-02-22,ok
+VW-4076,Ostbank,124.6,2025-02-23,ok
+VW-4077,Millfield,161.7,2025-02-24,ok
+VW-4078,Quayside,198.8,2025-02-25,ok
+VW-4079,Upper Varn,235.9,2025-02-26,ok
+VW-4080,Harbour,272.0,2025-02-27,ok
+VW-4081,Ostbank,309.1,2025-02-01,ok
+VW-4082,Millfield,346.2,2025-02-02,ok
+VW-4083,Quayside,383.3,2025-02-03,ok
+VW-4084,Upper Varn,420.4,2025-02-04,ok
+VW-4085,Harbour,457.5,2025-02-05,ok
+VW-4086,Ostbank,494.6,2025-02-06,ok
+VW-4087,Millfield,531.7,2025-02-07,ok
+VW-4088,Quayside,568.8,2025-02-08,ok
+VW-4089,Upper Varn,605.9,2025-02-09,ok
+VW-4090,Harbour,642.0,2025-02-10,ok
+VW-4091,Ostbank,679.1,2025-02-11,ok
+VW-4092,Millfield,716.2,2025-02-12,ok
+VW-4093,Quayside,753.3,2025-02-13,ok
+VW-4094,Upper Varn,790.4,2025-02-14,ok
+VW-4095,Harbour,827.5,2025-02-15,ok
+VW-4096,Ostbank,864.6,2025-02-16,ok
+VW-4097,Millfield,901.7,2025-02-17,ok
+VW-4098,Quayside,38.8,2025-02-18,estimated: no access
+VW-4099,Upper Varn,75.9,2025-02-19,ok
+VW-4100,Harbour,112.0,2025-02-20,ok
+VW-4101,Ostbank,149.1,2025-02-21,ok
+VW-4102,Millfield,186.2,2025-02-22,ok
+VW-4103,Quayside,223.3,2025-02-23,ok
+VW-4104,Upper Varn,260.4,2025-02-24,ok
+VW-4105,Harbour,297.5,2025-02-25,ok
+VW-4106,Ostbank,334.6,2025-02-26,ok
+VW-4107,Millfield,371.7,2025-02-27,ok
+VW-4108,Quayside,408.8,2025-02-01,ok
+VW-4109,Upper Varn,445.9,2025-02-02,ok
+VW-4110,Harbour,482.0,2025-02-03,ok
+VW-4111,Ostbank,519.1,2025-02-04,ok
+VW-4112,Millfield,556.2,2025-02-05,ok
+VW-4113,Quayside,593.3,2025-02-06,ok
+VW-4114,Upper Varn,630.4,2025-02-07,ok
+VW-4115,Harbour,667.5,2025-02-08,ok
+VW-4116,Ostbank,704.6,2025-02-09,ok
+VW-4117,Millfield,741.7,2025-02-10,ok
+VW-4118,Quayside,778.8,2025-02-11,ok
+VW-4119,Upper Varn,815.9,2025-02-12,ok

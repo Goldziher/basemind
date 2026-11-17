@@ -1,0 +1,18 @@
+# Cairnfall scoring constants used by the club's score app.
+
+[cairns]
+stone_points = 1
+completed_cairn_bonus = 4
+sigil_cairn_multiplier = 2
+
+[ridges]
+points_per_tile = 1
+unbroken_ridge_bonus = 3
+minimum_length = 3
+
+[weather]
+gale_discard_penalty = 2
+fog_hand_limit = 3
+
+[tiebreak]
+order = ["most_cairns", "longest_ridge", "fewest_discards"]
