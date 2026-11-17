@@ -102,9 +102,7 @@ jobs:
           "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
           "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
 
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
+      - uses: ./.github/actions/setup-rust
 
       - name: Install system dependencies
         uses: ./.github/actions/install-system-deps
