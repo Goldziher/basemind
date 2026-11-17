@@ -27,9 +27,6 @@ pub(crate) struct ServedWorkspace {
     /// Per-tool-call telemetry writer; appends to the workspace's `telemetry.jsonl`. One writer per
     /// served workspace, so connections sharing it share its rotation.
     pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
-    /// Writes go to the machine daemon (see [`ServerState::daemon_writer`]).
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) daemon_writer: bool,
     /// The daemon's own workspace pool, for a daemon-hosted workspace (see [`ServerState::host`]).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) host: Option<Arc<dyn super::HostBackend>>,
@@ -41,8 +38,6 @@ impl ServedWorkspace {
         Self {
             workspace,
             telemetry: Arc::new(super::telemetry::Telemetry::new(basemind_dir)),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_writer: false,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             host: None,
         }
@@ -61,23 +56,10 @@ pub(crate) struct ServerState {
     /// Per-tool-call telemetry writer, shared by every connection to this workspace. Always present
     /// (best-effort writes); the dashboard surfaces / statusline read from the same file.
     pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
-    /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
-    /// instead of writing locally. The store is opened read-only, but — unlike a plain
-    /// [`read_only`](Workspace::read_only) fallback — the empty-index auto-scan, the filesystem
-    /// watcher, and the `rescan` tool FORWARD their scans to the daemon over the socket and then
-    /// rebuild the in-RAM map from the daemon-written `index.msgpack`. Only ever true on a
-    /// `comms`-enabled build; always false otherwise, so the local-writer paths are unchanged.
-    ///
-    /// Only exists on a `comms` build: every read of this field lives behind the same `cfg`, so on
-    /// a non-`comms` build there is no daemon to forward to and the field would be dead.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) daemon_writer: bool,
     /// In-process host seam for a DAEMON-HOSTED read stack: the daemon's own workspace pool (the
-    /// machine's sole fjall writer). When `Some`, the writer / resolved-refs branch sites route
-    /// directly through it instead of forwarding to the daemon over a socket — closing the
-    /// daemon-dials-itself loopback and, crucially, serving resolved-refs from the pool's read-write
-    /// fjall index (which a `daemon_writer` serve's index-less store cannot see). `None` on every
-    /// non-hosted stack (in-process serve / CLI), where the `daemon_writer` FORWARD path stays live.
+    /// machine's sole fjall writer). When `Some`, scans, memory operations and the index reads the
+    /// hosted store cannot answer (it holds no index) run through it. `None` on every non-hosted
+    /// stack (in-process serve / CLI), which writes and reads its own store.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) host: Option<Arc<dyn super::HostBackend>>,
     /// Owner segment for the individual-memory tier: the session's principal, resolved by the one
@@ -109,8 +91,6 @@ impl ServerState {
         Self {
             shared: served.workspace,
             telemetry: served.telemetry,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_writer: served.daemon_writer,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             host: served.host,
             agent_id,

@@ -78,14 +78,23 @@ fn build_repo() -> TempDir {
     dir
 }
 
-/// Serve in-process as a `read_only` + `daemon_writer` server — the exact shape a `comms`-build
-/// `basemind serve` takes, so it holds no fjall index / git-history lock and forwards writes to the
-/// daemon (the property these tests assert).
+/// A real `basemind serve`: a stdio relay that the daemon hosts, so the serve process holds no
+/// fjall index or git-history lock (the property these tests assert).
 async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    let transport = basemind::mcp::serve_in_memory_daemon_writer(root, "working")
+    use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+
+    ensure_real_daemon();
+    let command = tokio::process::Command::new(env!("CARGO_BIN_EXE_basemind")).configure(|command| {
+        command
+            .arg("--root")
+            .arg(root)
+            .arg("serve")
+            .arg("--view")
+            .arg("working");
+    });
+    ().serve(TokioChildProcess::new(command).expect("spawn basemind serve"))
         .await
-        .expect("in-memory daemon-writer serve");
-    ().serve(transport).await.expect("rmcp handshake")
+        .expect("rmcp handshake over the relay")
 }
 
 /// The isolated comms dir `init_isolated_cache` pointed this process — and every child it spawns —
@@ -148,11 +157,11 @@ async fn sync(client: &mut CommsClient, root: &Path) -> SyncOutcome {
 /// serve that built the index in-process (the pre-fix behavior of a writable serve) would still be
 /// HOLDING the lock while it serves — and the daemon's own sync would then fail with `Locked`.
 ///
-/// So: with a live `daemon_writer` serve attached to the repo, an independent client asks the daemon
+/// So: with a live `serve` attached to the repo, an independent client asks the daemon
 /// to sync. Success is only possible if the serve process opened nothing. That the daemon can also
 /// READ the index back proves the build landed where the serve's queries look for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn daemon_writer_serve_holds_no_git_history_lock_so_the_daemon_can_build() {
+async fn a_live_serve_holds_no_git_history_lock_so_the_daemon_can_build() {
     let dir = build_repo();
     let root = dir.path();
 

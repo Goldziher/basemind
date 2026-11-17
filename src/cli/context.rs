@@ -144,7 +144,6 @@ pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -
                 background: false,
                 watch: false,
                 read_only: true,
-                daemon_writer: false,
                 lazy_cache: true,
             },
         ));

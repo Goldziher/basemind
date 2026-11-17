@@ -128,21 +128,3 @@ async fn serve_in_memory_configured(
     }
     Ok(spawn_over_duplex(server))
 }
-
-/// Serve in-memory as a `daemon_writer` server — the exact shape a `comms`-build `basemind serve`
-/// takes: open blobs-only (`read_only`, no fjall index lock) and forward every write to the machine
-/// daemon (the sole fjall writer). Use this for tests that assert daemon-writer semantics (e.g. that
-/// the serve holds no git-history lock so the daemon can build). Requires a running comms daemon for
-/// writes to land.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub async fn serve_in_memory_daemon_writer(root: &Path, view: &str) -> Result<tokio::io::DuplexStream> {
-    let store = Store::open_read_only_no_index(root, view).context("open store blobs-only")?;
-    let (config, repo, git_cache) = build_support_bits(root)?;
-    let options = ServerOptions {
-        read_only: true,
-        daemon_writer: true,
-        ..ServerOptions::default()
-    };
-    let server = BasemindServer::new_with_options(store, root.to_path_buf(), config, repo, git_cache, options);
-    Ok(spawn_over_duplex(server))
-}

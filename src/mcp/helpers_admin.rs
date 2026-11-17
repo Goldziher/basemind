@@ -255,9 +255,9 @@ struct RescanStats {
     extract_failed: usize,
 }
 
-/// Run the rescan and return its counts. A `daemon_writer` serve forwards the scan to the daemon
-/// and rebuilds its read-only map (the daemon RPC carries no per-file skip breakdown, so those read
-/// 0); every other serve scans locally under its own write lock via [`scan_and_refresh`].
+/// Run the rescan and return its counts. A daemon-hosted workspace scans through the daemon's pool
+/// and rebuilds its read-only map (the pool's report carries no per-file skip breakdown, so those
+/// read 0); every other serve scans locally under its own write lock via [`scan_and_refresh`].
 ///
 /// `scoped_paths` already encodes the caller's `full` flag — it is `None` for a full working-tree
 /// scan (which the daemon likewise treats as "scan everything") and `Some` only for an incremental
@@ -267,8 +267,9 @@ async fn fetch_rescan_stats(
     scoped_paths: Option<Vec<std::path::PathBuf>>,
 ) -> Result<RescanStats, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
-        let report = super::daemon_forward::writer_rescan_and_refresh(state, scoped_paths, false, true, true).await?;
+    if let Some(host) = &state.host {
+        let report =
+            super::daemon_forward::writer_rescan_and_refresh(state, host, scoped_paths, false, true, true).await?;
         return Ok(RescanStats {
             scanned: report.scanned,
             updated: report.updated,

@@ -997,3 +997,45 @@ async fn a_store_that_would_not_open_is_unavailable_at_once_to_the_next_call() {
 
 #[path = "memory_vectors_restart_tests.rs"]
 mod restart;
+
+/// A session that holds no index and is not hosted by the daemon (another process holds the lock and
+/// no daemon is up) refuses a memory call naming the fix, marked busy so the CLI exits `3`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_memory_call_without_an_index_is_refused_with_the_fix() {
+    use crate::store::{Store, VIEW_WORKING};
+
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    drop(Store::open(root, VIEW_WORKING).expect("create the workspace"));
+    let store = Store::open_read_only_no_index(root, VIEW_WORKING).expect("index-less store");
+    let telemetry_dir = store.basemind_dir.clone();
+    let shared = crate::mcp::Workspace::new(
+        store,
+        root.to_path_buf(),
+        Arc::new(crate::config::Config::with_defaults()),
+        None,
+        Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
+        None,
+        crate::mcp::ServerOptions {
+            read_only: true,
+            ..crate::mcp::ServerOptions::default()
+        }
+        .into(),
+    );
+    let state = ServerState::for_connection(
+        crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
+        "test".into(),
+    );
+    let params = crate::mcp::types_memory::MemoryGetParams {
+        key: "k".into(),
+        visibility: Default::default(),
+    };
+    let refused = crate::mcp::memory::run_memory_get(&state, params)
+        .await
+        .expect_err("a session with no index cannot read memory");
+    assert_eq!(refused.code, rmcp::model::ErrorCode::INVALID_REQUEST, "{refused:?}");
+    assert!(refused.message.contains("`basemind comms start`"), "{refused:?}");
+    let exit = crate::cli::run_tool("memory_get", Err(refused)).expect_err("refused");
+    assert_eq!(crate::cli::exit::exit_code_for(&exit), crate::cli::exit::BUSY);
+}
