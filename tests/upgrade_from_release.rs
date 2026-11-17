@@ -366,9 +366,20 @@ fn assert_old_stores_survive(env: &Env, new: &Path, old: &Path) {
         );
     }
     if cfg!(feature = "comms") {
-        // The thread itself may belong to a protocol generation this build does not read; the comms
-        // store the old release left must not stop this build from answering.
-        env.json(new, &["agents", "thread-list"]);
+        // ADR-0021 rule 12: a new protocol generation starts with an empty store and does not
+        // import the old one, whose `store.fjall` is left untouched. The old store must neither
+        // stop this build from answering nor be deleted by it.
+        let threads = env.json(new, &["agent", "threads"]);
+        assert!(
+            !threads.to_string().contains("upgrade-probe"),
+            "{}: a thread of the legacy store was imported: {threads}",
+            old.display()
+        );
+        assert!(
+            env.comms.join("store.fjall").is_dir(),
+            "{}: the upgrade removed the old release's comms store",
+            old.display()
+        );
     }
 }
 
