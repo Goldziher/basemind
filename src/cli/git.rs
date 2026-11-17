@@ -356,7 +356,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 to,
                 structural: structural.then_some(true),
             };
-            ("git_diff", server.git_diff_call(p).await)
+            ("git_diff", server.op_unpaged(p, Workspace::git_diff).await)
         }
         GitCmd::Status => {
             let p = GitDiffParams {
@@ -365,7 +365,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 to: None,
                 structural: None,
             };
-            ("git_diff", server.git_diff_call(p).await)
+            ("git_diff", server.op_unpaged(p, Workspace::git_diff).await)
         }
         GitCmd::DiffOutline { path, rev } => {
             let p = GitDiffParams {
@@ -374,7 +374,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 to: None,
                 structural: Some(true),
             };
-            ("git_diff", server.git_diff_call(p).await)
+            ("git_diff", server.op_unpaged(p, Workspace::git_diff).await)
         }
         GitCmd::Churn { window, top_k } => (
             "git_churn",
