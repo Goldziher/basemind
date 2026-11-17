@@ -272,13 +272,11 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
     }
 }
 
-// The daemon's scans and cache warms allocate and free many short-lived multi-MB buffers across
-// dozens of threads; the macOS system allocator keeps that high-water mark resident (a 5 GB
-// peak settling at 1.6 GB of live data). mimalloc returns freed pages to the OS. The leak-check
-// build (`system-allocator`) keeps the system allocator so `leaks` can scan the whole heap.
+// mimalloc (why: `basemind::allocator`); the leak-check build (`system-allocator`) keeps the system
+// allocator so `leaks` and valgrind can scan the whole heap.
 #[cfg(not(feature = "system-allocator"))]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: basemind::allocator::MiMalloc = basemind::allocator::MiMalloc;
 
 /// Exit-code contract: see [`basemind::cli::exit`].
 fn main() -> std::process::ExitCode {
@@ -809,5 +807,19 @@ fn cmd_serve(root: &std::path::Path, view: &str) -> Result<()> {
             "`basemind serve` needs the comms daemon to host the MCP server; rebuild with \
              `--features comms` (the stdio MCP server is served by relaying to that daemon)."
         )
+    }
+}
+
+#[cfg(test)]
+mod allocator_tests {
+    /// The binary's heap is mimalloc's in every shipped feature set, and the system allocator's in
+    /// the leak-check build: these tests link the binary's own `#[global_allocator]`.
+    #[test]
+    fn installs_mimalloc_unless_built_for_leak_checking() {
+        let block = Box::new([7u8; 64]);
+        assert_eq!(
+            basemind::allocator::owned_by_mimalloc(block.as_ptr()),
+            !cfg!(feature = "system-allocator")
+        );
     }
 }

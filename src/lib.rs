@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 pub mod alloc_tag;
+pub mod allocator;
 pub mod backpressure;
 mod boot_identity;
 #[cfg(feature = "code-search")]
