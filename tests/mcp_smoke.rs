@@ -466,8 +466,8 @@ async fn mcp_server_exercises_representative_tools() {
         page2.get("next_cursor").is_none(),
         "second page must NOT carry a next_cursor: {page2}"
     );
-    // All three calls are on one line of c.rs. A page writes a hit's column when another hit of the
-    // page shares its line, so the two on page 1 are told apart there.
+    // All three calls are on one line of c.rs. A call site writes its column when another call of the
+    // whole result shares its line, so every page tells its hits apart from the other pages' hits.
     let pos = |h: &Value| -> (u64, Option<u64>) {
         (
             h.get("line").and_then(Value::as_u64).unwrap_or(0),
@@ -479,10 +479,10 @@ async fn mcp_server_exercises_representative_tools() {
         p1_pos.iter().all(|(_, column)| column.is_some()) && p1_pos[0] != p1_pos[1],
         "two hits on one line carry distinct columns: {page1}"
     );
-    assert_eq!(
-        page2_hits.iter().map(pos).collect::<Vec<_>>(),
-        [(p1_pos[0].0, None)],
-        "the hit left for page 2 is the third on that line, alone on its page: {page2}"
+    let p2_pos: Vec<(u64, Option<u64>)> = page2_hits.iter().map(pos).collect();
+    assert!(
+        p2_pos.len() == 1 && p2_pos[0].0 == p1_pos[0].0 && p2_pos[0].1.is_some() && !p1_pos.contains(&p2_pos[0]),
+        "the hit left for page 2 is the third on that line and keeps its own column: {page2}"
     );
 
     let body = decode_text(

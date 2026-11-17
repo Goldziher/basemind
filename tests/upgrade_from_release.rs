@@ -227,7 +227,13 @@ impl Env {
     fn code_paths(&self, bin: &Path) -> Vec<String> {
         let listed: Vec<String> = self.json(bin, &["code", "files"])["files"]
             .as_array()
-            .map(|files| files.iter().filter_map(|f| f.as_str().map(String::from)).collect())
+            // ~keep A release before lean rows lists `{"path": ...}` objects; this build lists the paths.
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|f| f.as_str().or_else(|| f["path"].as_str()).map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         listed
             .into_iter()
