@@ -20,6 +20,15 @@ const QUICK: Timings = Timings {
     term_grace: Duration::from_millis(20),
 };
 
+/// What a scripted daemon does on SIGTERM.
+#[derive(Clone, Copy)]
+enum AfterTerm {
+    /// It exits within the grace.
+    Exits,
+    /// It is still running when the grace ends, and the lock and the pidfile then read as given.
+    Stays { lock: LockState, holder: Option<u32> },
+}
+
 /// A generation whose daemon behaves as scripted. `asked` records what reached it, in order.
 struct Scripted {
     dir: PathBuf,
@@ -36,8 +45,12 @@ struct Scripted {
     /// What the lock reads once the pidfile has been read, when that differs from `lock`.
     lock_after_pidfile: Option<LockState>,
     pidfile_read: Cell<bool>,
+    after_term: AfterTerm,
     asked: RefCell<Vec<&'static str>>,
     signalled: Cell<Option<u32>>,
+    /// Whether the forced kill after the SIGTERM grace was sent.
+    killed: Cell<bool>,
+    gone: Cell<bool>,
 }
 
 impl Scripted {
@@ -55,13 +68,24 @@ impl Scripted {
             holder_predates_record: true,
             lock_after_pidfile: None,
             pidfile_read: Cell::new(false),
+            after_term: AfterTerm::Exits,
             asked: RefCell::default(),
             signalled: Cell::new(None),
+            killed: Cell::new(false),
+            gone: Cell::new(false),
         }
     }
 
     fn asked(&self) -> Vec<&'static str> {
         self.asked.borrow().clone()
+    }
+
+    /// The state the daemon left once SIGTERM reached it, when it outlived the grace.
+    fn after_sigterm(&self) -> Option<(LockState, Option<u32>)> {
+        match self.after_term {
+            AfterTerm::Stays { lock, holder } if self.signalled.get().is_some() => Some((lock, holder)),
+            _ => None,
+        }
     }
 }
 
@@ -98,6 +122,9 @@ impl Generation for Scripted {
     }
 
     fn lock_state(&self) -> LockState {
+        if let Some((lock, _)) = self.after_sigterm() {
+            return lock;
+        }
         match self.lock_after_pidfile {
             Some(later) if self.pidfile_read.get() => later,
             _ => self.lock,
@@ -109,12 +136,13 @@ impl Generation for Scripted {
     }
 
     fn pid_is_live(&self, _pid: u32) -> bool {
-        self.process_live && self.signalled.get().is_none()
+        self.process_live && !self.gone.get()
     }
 
     fn recorded_holder(&self) -> Option<DaemonRecord> {
         self.pidfile_read.set(true);
-        self.holder.map(|pid| DaemonRecord {
+        let holder = self.after_sigterm().map_or(self.holder, |(_, holder)| holder);
+        holder.map(|pid| DaemonRecord {
             pid,
             kind: DaemonKind::Comms,
             dir: self.dir.clone(),
@@ -125,8 +153,13 @@ impl Generation for Scripted {
         })
     }
 
-    fn terminate(&self, pid: u32, _grace: Duration) -> bool {
+    fn terminate(&self, pid: u32, _grace: Duration, before_kill: &dyn Fn() -> bool) -> bool {
         self.signalled.set(Some(pid));
+        if matches!(self.after_term, AfterTerm::Stays { .. }) && !before_kill() {
+            return false;
+        }
+        self.killed.set(matches!(self.after_term, AfterTerm::Stays { .. }));
+        self.gone.set(true);
         true
     }
 }
@@ -354,4 +387,44 @@ async fn a_takeover_asks_nothing_of_a_daemon_that_does_not_answer_status() {
     assert_eq!(take_over(&generation).await.expect("settled"), Existing::Spawn);
     assert_eq!(generation.asked(), ["status"]);
     assert_eq!(generation.signalled.get(), None);
+}
+
+/// The lock and the pidfile are read again right before the forced kill, not only before SIGTERM:
+/// within the grace the daemon may release the lock while it drains, or exit and leave its pid to
+/// another process. Either way the kill is not sent.
+#[tokio::test]
+async fn the_forced_kill_waits_on_the_lock_and_pidfile_read_again_after_the_grace() {
+    let stays = |lock, holder| Scripted {
+        after_term: AfterTerm::Stays { lock, holder },
+        ..Scripted::silent_holder()
+    };
+
+    let still_holder = stays(LockState::Held, Some(DAEMON_PID));
+    assert_eq!(
+        reclaim(&still_holder, None, operator()).await,
+        Reclaimed::Gone { forced: true }
+    );
+    assert!(
+        still_holder.killed.get(),
+        "it still held the generation, so it was killed"
+    );
+
+    for (lock, holder, why) in [
+        (
+            LockState::Free,
+            Some(DAEMON_PID),
+            "it released the lock during the grace",
+        ),
+        (
+            LockState::Held,
+            Some(DAEMON_PID + 1),
+            "the pidfile now names another process",
+        ),
+        (LockState::Held, None, "the pidfile is gone"),
+    ] {
+        let left = stays(lock, holder);
+        assert_eq!(reclaim(&left, None, operator()).await, Reclaimed::Unidentified, "{why}");
+        assert_eq!(left.signalled.get(), Some(DAEMON_PID), "SIGTERM was sent: {why}");
+        assert!(!left.killed.get(), "no forced kill: {why}");
+    }
 }

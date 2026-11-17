@@ -42,6 +42,11 @@ impl HashRefs {
     pub(crate) fn is_held(&self, hash_hex: &str) -> bool {
         self.0.contains_key(&digest(hash_hex))
     }
+
+    /// How many distinct contents the manifest holds.
+    pub(crate) fn distinct(&self) -> usize {
+        self.0.len()
+    }
 }
 
 #[cfg(test)]
@@ -58,6 +63,7 @@ mod tests {
         assert!(refs.is_held("h1") && refs.is_held("h2"));
         refs.release("h1");
         assert!(!refs.is_held("h1") && refs.is_held("h2"));
+        assert_eq!(refs.distinct(), 1);
     }
 
     #[test]

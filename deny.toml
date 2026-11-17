@@ -36,6 +36,10 @@ ignore = [
   # lance 14 / lancedb 0.41, object_store, calamine and oauth2 (documents / vector stack). Drop once those
   # move to jiff or a maintained fork.
   "RUSTSEC-2026-0543",
+  # humantime and chrono-tz are unmaintained; same origin as chrono above (lance 14, object_store,
+  # arrow-array 58, datafusion-functions 54). Drop with the chrono entry.
+  "RUSTSEC-2026-0542",
+  "RUSTSEC-2026-0555",
 ]
 
 [licenses]

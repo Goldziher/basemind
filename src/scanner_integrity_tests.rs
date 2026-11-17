@@ -130,7 +130,7 @@ fn preflight_persists_the_emptied_file_map_of_an_index_it_rebuilds_in_place() {
 
     let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
     assert_eq!(in_place.index.files.len(), 1);
-    preflight(&mut in_place).expect("preflight");
+    let _owed = preflight(&mut in_place).expect("preflight");
 
     let on_disk = crate::store::read_index(&view_dir).expect("read").expect("a file map");
     assert!(on_disk.files.is_empty(), "no file map vouches for the emptied index");
@@ -566,4 +566,338 @@ fn a_workspace_awaiting_verification_needs_a_full_scan() {
 
     full_scan(dir.path(), &mut store);
     assert!(!store.needs_full_scan(), "the pass that verified withdraws the request");
+}
+
+/// A store opened without the workspace lock while another process held it has no index handle.
+/// Scanned in place, it raced that writer on the file map and recorded new hashes for files whose
+/// rows it never wrote, which the writer then skipped as unchanged. The scan is refused instead,
+/// and once the writer is gone the same store scans through an index it opens under the lock.
+#[test]
+fn a_scan_into_a_store_opened_beside_a_writer_is_refused_until_it_can_take_the_lock() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let writer = Store::open(root, VIEW_WORKING).expect("the writer");
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(in_place.index_db.is_none(), "the writer holds the index");
+    std::fs::write(root.join("alpha.rs"), b"pub fn gamma() -> u32 { 3 }\n").expect("edit");
+
+    let config = ConfigV1::with_defaults();
+    let refused = scan(
+        root,
+        &mut in_place,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .expect_err("a full scan beside a writer");
+    assert!(
+        matches!(&refused, ScanError::Store(error) if error.is_lock_contention()),
+        "{refused}"
+    );
+    let named = [root.join("alpha.rs")];
+    let refused = crate::scanner::scan_paths(root, &mut in_place, &config, &named, EmbedMode::Deferred)
+        .expect_err("an incremental scan beside a writer");
+    assert!(
+        matches!(&refused, ScanError::Store(error) if error.is_lock_contention()),
+        "{refused}"
+    );
+    assert!(!in_place.holds_writer_lock());
+    assert!(
+        crate::store::read_index(&in_place.view_dir)
+            .expect("read")
+            .is_none_or(|map| map.files.is_empty()),
+        "the refused scans wrote no file map"
+    );
+
+    drop(writer);
+    full_scan(root, &mut in_place);
+    assert!(in_place.holds_writer_lock());
+    let db = in_place.index_db.as_ref().expect("an index opened under the lock");
+    assert_eq!(db.view().symbols_by_name_lookup("gamma", 10).len(), 1);
+}
+
+/// A pass killed after committing a new file's rows and before writing the file map that lists it
+/// left those rows for good once the file was deleted: no scan looks at a path the map does not
+/// list, so `references` and `symbols` kept answering for a file that does not exist. The next
+/// pass, a watcher batch included, removes them.
+#[test]
+fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let ghost = root.join("ghost.rs");
+    std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let view_dir = store.view_dir.clone();
+    let db = store.index_db.clone().expect("index");
+    assert_eq!(db.view().symbols_by_name_lookup("ghost", 4).len(), 1);
+    // What the killed pass leaves: its open pass recorded, the rows of a file it had just indexed,
+    // and a file map that never listed that file.
+    db.open_rows_pass().expect("record the pass");
+    store.remove("ghost.rs");
+    let unlisted = store.index.clone();
+    drop(db);
+    drop(store);
+    let manifest = view_dir.join(crate::store::INDEX_FILE);
+    std::fs::write(&manifest, rmp_serde::to_vec_named(&unlisted).expect("encode")).expect("forge the file map");
+    std::fs::remove_file(&ghost).expect("delete");
+
+    let mut store = Store::open(root, VIEW_WORKING).expect("reopen");
+    let alpha = root.join("alpha.rs");
+    std::fs::write(&alpha, b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+    let config = ConfigV1::with_defaults();
+    let scanned = crate::scanner::scan_paths(root, &mut store, &config, &[alpha], EmbedMode::Deferred);
+    scanned.expect("incremental scan");
+
+    let view = store.index_view().expect("index");
+    assert!(
+        view.symbols_by_name_lookup("ghost", 4).is_empty(),
+        "the unlisted rows are gone"
+    );
+    assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
+}
+
+fn age(blob: &std::path::Path) -> std::time::SystemTime {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(7 * 3600);
+    std::fs::File::options()
+        .write(true)
+        .open(blob)
+        .and_then(|file| file.set_modified(aged))
+        .expect("age the blob");
+    aged
+}
+
+fn mtime(blob: &std::path::Path) -> std::time::SystemTime {
+    std::fs::metadata(blob).and_then(|meta| meta.modified()).expect("mtime")
+}
+
+/// The blob sweep keeps an unreferenced blob only within its grace, judged by mtime. A scan that
+/// reused an old blob no file map referenced left it to be swept before the map named it; the
+/// reuse now refreshes the blob's mtime.
+#[test]
+fn a_blob_reused_for_a_new_path_is_kept_young_for_the_sweep() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    // Content of its own: blobs are shared by every test, and another one ages or touches its own. ~keep
+    std::fs::write(root.join("alpha.rs"), b"pub fn reused_for_a_new_path() -> u32 { 1 }\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let hash_hex = store.lookup("alpha.rs").expect("entry").hash_hex.clone();
+    let blob = store.blob_path_fm_hex(&hash_hex);
+    let content = std::fs::read(root.join("alpha.rs")).expect("read");
+    std::fs::remove_file(root.join("alpha.rs")).expect("delete");
+    full_scan(root, &mut store);
+    assert!(!store.hash_is_held(&hash_hex), "no file map references the blob now");
+    let aged = age(&blob);
+    std::fs::write(root.join("beta.rs"), content).expect("the same content again");
+
+    let report = full_scan(root, &mut store);
+
+    assert_eq!(report.stats.reused_extraction, 1);
+    assert!(
+        mtime(&blob) > aged + std::time::Duration::from_secs(3600),
+        "the reused blob is young again"
+    );
+}
+
+/// A blob the file map already references is safe from the sweep, so reusing it costs no write:
+/// that reuse runs for every file of a rebuild and of the embedding pass.
+#[test]
+fn a_blob_the_file_map_already_references_is_not_touched_on_reuse() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    std::fs::write(root.join("alpha.rs"), b"pub fn referenced_on_reuse() -> u32 { 1 }\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let hash_hex = store.lookup("alpha.rs").expect("entry").hash_hex.clone();
+    let blob = store.blob_path_fm_hex(&hash_hex);
+    let aged = age(&blob);
+    std::fs::copy(root.join("alpha.rs"), root.join("beta.rs")).expect("copy");
+
+    let report = full_scan(root, &mut store);
+
+    assert_eq!(report.stats.reused_extraction, 1, "the copy reused the blob");
+    assert!(
+        mtime(&blob) < aged + std::time::Duration::from_secs(3600),
+        "a referenced blob is left as it was"
+    );
+}
+
+/// Stands in for a process killed mid-drive: unwinds out of the pass once its first chunk's rows
+/// are committed, before any file map lists them.
+struct KilledAfterFirstChunk;
+
+impl crate::scanner::ScanObserver for KilledAfterFirstChunk {
+    fn on_file(&mut self, _result: crate::scanner::FileResult) {}
+
+    fn on_batch(&mut self, _live_results: usize) {
+        std::panic::panic_any("killed after committing the chunk's rows");
+    }
+}
+
+fn killed_full_pass(root: &std::path::Path, store: &mut Store) {
+    let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::scanner::scan_with_observer(
+            root,
+            store,
+            &ConfigV1::with_defaults(),
+            ScanSource::WorkingTree,
+            EmbedMode::Deferred,
+            &crate::scanner::ScanCancel::new(),
+            &mut KilledAfterFirstChunk,
+        )
+    }));
+    assert!(pass.is_err(), "the pass was killed");
+}
+
+/// The issue #62 shape. A rebuild pass is killed after committing rows and before any file map lists
+/// them; the file is then deleted. The next writer open seals the index again while it rewrites the
+/// emptied file map, which wrote no rows: that seal must not pass for the end of the killed pass, or
+/// the deleted file's rows are served for good.
+#[test]
+fn rows_of_a_killed_rebuild_pass_outlive_no_seal_that_wrote_no_rows() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let ghost = root.join("ghost.rs");
+    std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+    let view_dir = {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        full_scan(root, &mut store);
+        store.view_dir.clone()
+    };
+    // An index behind its file map: the writer open discards it and empties the map for a rebuild. ~keep
+    let mut ahead = crate::store::read_index(&view_dir).expect("read").expect("a file map");
+    ahead.generation += 1;
+    let manifest = view_dir.join(crate::store::INDEX_FILE);
+    std::fs::write(&manifest, rmp_serde::to_vec_named(&ahead).expect("encode")).expect("forge the file map");
+
+    {
+        let mut store = Store::open(root, VIEW_WORKING).expect("the rebuilding open");
+        assert!(store.index.rebuild_pending && store.index.files.is_empty());
+        killed_full_pass(root, &mut store);
+        let db = store.index_db.as_ref().expect("index");
+        assert_eq!(
+            db.view().symbols_by_name_lookup("ghost", 4).len(),
+            1,
+            "the killed pass committed the file's rows, or this test proves nothing"
+        );
+    }
+    std::fs::remove_file(&ghost).expect("delete");
+
+    let mut store = Store::open(root, VIEW_WORKING).expect("the next writer open seals again");
+    assert!(store.index.rebuild_pending, "the rebuild is still owed");
+    full_scan(root, &mut store);
+
+    let view = store.index_view().expect("index");
+    assert!(
+        view.symbols_by_name_lookup("ghost", 4).is_empty(),
+        "the deleted file's rows are gone"
+    );
+    assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
+}
+
+/// The same through a store opened without the lock: the scan that claims it seals the index while
+/// it opens the index under the lock, which must not hide the killed pass either.
+#[test]
+fn rows_of_a_killed_pass_outlive_no_seal_of_a_store_claimed_in_place() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let ghost = root.join("ghost.rs");
+    {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        full_scan(root, &mut store);
+        std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+        killed_full_pass(root, &mut store);
+        let db = store.index_db.as_ref().expect("index");
+        assert_eq!(db.view().symbols_by_name_lookup("ghost", 4).len(), 1);
+    }
+    std::fs::remove_file(&ghost).expect("delete");
+    let writer = Store::open(root, VIEW_WORKING).expect("another writer");
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(in_place.index_db.is_none(), "the writer holds the index");
+    drop(writer);
+
+    let alpha = root.join("alpha.rs");
+    std::fs::write(&alpha, b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+    crate::scanner::scan_paths(
+        root,
+        &mut in_place,
+        &ConfigV1::with_defaults(),
+        &[alpha],
+        EmbedMode::Deferred,
+    )
+    .expect("incremental scan");
+
+    let view = in_place.index_view().expect("index");
+    assert!(view.symbols_by_name_lookup("ghost", 4).is_empty());
+    assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
+}
+
+/// A read-only open takes an index handle that stamps, migrates and sweeps nothing. A scan that
+/// claims the store writes through a handle opened as a writer's instead, which does all three.
+#[test]
+fn a_store_opened_read_only_scans_through_an_index_opened_for_writing() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let view_dir = {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        full_scan(root, &mut store);
+        store.view_dir.clone()
+    };
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(in_place.index_db.is_some(), "the read-only open took an index handle");
+    let leftover = view_dir.join("index.fjall.discard-4242-0");
+    std::fs::create_dir_all(&leftover).expect("what an interrupted discard leaves");
+
+    std::fs::write(root.join("alpha.rs"), b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+    full_scan(root, &mut in_place);
+
+    assert!(in_place.holds_writer_lock());
+    assert!(!leftover.exists(), "only a writer's open sweeps what a discard left");
+    let db = in_place.index_db.as_ref().expect("index");
+    assert_eq!(db.view().symbols_by_name_lookup("alpha", 4).len(), 1);
+}
+
+/// An incremental pass outside a hosting process wrote blobs without an fsync and left no evidence
+/// for a power loss to be found by. It holds a hosting marker while it runs.
+#[cfg(any(unix, windows))]
+#[test]
+fn an_incremental_pass_holds_a_hosting_marker_while_it_runs() {
+    struct SeesMarker(Vec<bool>);
+    impl crate::scanner::ScanObserver for SeesMarker {
+        fn on_file(&mut self, _result: crate::scanner::FileResult) {
+            let marker = crate::store::cache_root()
+                .join("hosting")
+                .join(std::process::id().to_string());
+            self.0.push(marker.exists());
+        }
+    }
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let alpha = root.join("alpha.rs");
+    std::fs::write(&alpha, b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+
+    let mut seen = SeesMarker(Vec::new());
+    crate::scanner::scan_paths_with_observer(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        &[alpha],
+        EmbedMode::Deferred,
+        &crate::scanner::ScanCancel::new(),
+        &mut seen,
+    )
+    .expect("incremental scan");
+
+    assert_eq!(seen.0, vec![true], "the pass ran under a hosting marker");
 }

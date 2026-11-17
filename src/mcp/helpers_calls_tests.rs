@@ -100,7 +100,6 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 },
                 &cache,
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("find_references"),
     );
@@ -129,7 +128,6 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                     cursor: None,
                 },
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("find_callers"),
     );
@@ -139,10 +137,12 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
         Some(4),
         "find_callers must NOT shrink to the resolution-visible subset: {callers}"
     );
-    let hits = callers.get("hits").and_then(serde_json::Value::as_array).expect("hits");
-    let paths: Vec<&str> = hits
-        .iter()
-        .filter_map(|h| h.get("path").and_then(serde_json::Value::as_str))
+    let paths: Vec<&str> = callers
+        .get("hits")
+        .and_then(serde_json::Value::as_object)
+        .expect("hits grouped by file")
+        .keys()
+        .map(String::as_str)
         .collect();
     assert!(
         paths.contains(&"caller_a.py") && paths.contains(&"caller_b.py"),
@@ -216,7 +216,6 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
                     cursor: None,
                 },
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("find_callers"),
     );
@@ -231,17 +230,23 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
         Some(1),
         "resolution can only PROVE the intra-file self-call — it must not pass that off as the total"
     );
-    let hits = body.get("hits").and_then(serde_json::Value::as_array).expect("hits");
-    let consumer_hits = hits
-        .iter()
-        .filter(|h| h.get("path").and_then(serde_json::Value::as_str) == Some("consumer.ts"))
-        .count();
+    let files = body
+        .get("hits")
+        .and_then(serde_json::Value::as_object)
+        .expect("hits grouped by file");
     assert_eq!(
-        consumer_hits, 2,
+        files
+            .get("consumer.ts")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(2),
         "the namespace-import callers resolution cannot see must still be reported: {body}"
     );
     assert!(
-        hits.iter().all(|h| h.get("resolved").is_some()),
+        files
+            .values()
+            .flat_map(|hits| hits.as_array().into_iter().flatten())
+            .all(|h| h.get("resolved").is_some()),
         "every hit is annotated so the agent can tell proven from unproven: {body}"
     );
 }
@@ -343,7 +348,6 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
                     cursor: None,
                 },
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("find_callers"),
     );
@@ -358,11 +362,23 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
         Some(3),
         "the other.ts same-name call site is still reported, not dropped: {body}"
     );
-    let hits = body.get("hits").and_then(serde_json::Value::as_array).expect("hits");
+    // Hits are listed under their file: `(path, hit)` for each.
+    let hits: Vec<(&str, &serde_json::Value)> = body
+        .get("hits")
+        .and_then(serde_json::Value::as_object)
+        .expect("hits grouped by file")
+        .iter()
+        .flat_map(|(path, hits)| {
+            hits.as_array()
+                .into_iter()
+                .flatten()
+                .map(move |hit| (path.as_str(), hit))
+        })
+        .collect();
     let proven: Vec<&str> = hits
         .iter()
-        .filter(|h| h.get("resolved").and_then(serde_json::Value::as_bool) == Some(true))
-        .filter_map(|h| h.get("path").and_then(serde_json::Value::as_str))
+        .filter(|(_, h)| h.get("resolved").and_then(serde_json::Value::as_bool) == Some(true))
+        .map(|(path, _)| *path)
         .collect();
     assert_eq!(
         proven,
@@ -371,8 +387,8 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
     );
     let unproven: Vec<&str> = hits
         .iter()
-        .filter(|h| h.get("resolved").and_then(serde_json::Value::as_bool) == Some(false))
-        .filter_map(|h| h.get("path").and_then(serde_json::Value::as_str))
+        .filter(|(_, h)| h.get("resolved").and_then(serde_json::Value::as_bool) == Some(false))
+        .map(|(path, _)| *path)
         .collect();
     assert_eq!(
         unproven,
@@ -395,6 +411,7 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
         column: 0,
         callee: "g".to_string(),
         resolved: Some(true),
+        shared_line: false,
     };
     let scan = scan_calls_in_ram(
         &super::super::helpers_calls_scan::InRamCallIndex::empty(),

@@ -48,7 +48,10 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
     .unwrap();
 
     if store.lookup("a.ts").is_none() || store.lookup("b.ts").is_none() {
-        eprintln!("typescript grammar unavailable in this environment — skipping cross-file assertions");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+            "the typescript grammar is unavailable",
+        );
         return;
     }
 

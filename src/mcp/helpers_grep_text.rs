@@ -2,11 +2,11 @@
 //!
 //! Split from `helpers_grep.rs` (the sweep) for the 1000-line cap.
 
-use super::types::{GrepHit, GrepSymbol};
+use super::types::GrepHit;
 use crate::path::RelPath;
 
 /// Longest line text a hit carries. A hit in a minified bundle would otherwise ship the bundle.
-const LINE_TEXT_MAX: usize = 400;
+pub(super) const LINE_TEXT_MAX: usize = 400;
 
 /// Line `line_idx` of `source` without its line terminator, borrowed.
 pub(super) fn line_text<'a>(source: &'a str, line_starts: &[usize], line_idx: usize) -> &'a str {
@@ -67,10 +67,7 @@ pub(super) fn annotate_symbols(cache: &super::MapCache, hits: &mut [GrepHit]) {
             .iter()
             .filter(|symbol| symbol.start_byte <= hit.start_byte && hit.start_byte < symbol.end_byte)
             .min_by_key(|symbol| symbol.end_byte - symbol.start_byte)
-            .map(|symbol| GrepSymbol {
-                name: symbol.name.clone(),
-                kind: super::helpers::kind_to_str(symbol.kind),
-            });
+            .map(|symbol| symbol.name.clone());
     }
 }
 

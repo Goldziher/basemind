@@ -407,7 +407,6 @@ impl MapCache {
 
     /// Whether `path` is one of the indexed files. Answered from the symbol-free view, so it costs
     /// no blob read.
-    #[cfg(test)]
     pub(crate) fn contains(&self, path: &crate::path::RelPath) -> bool {
         self.files.contains(path)
     }
@@ -437,14 +436,15 @@ impl MapCache {
     /// is one blob read, which is exactly what the old whole-corpus build paid per file up front.
     pub(crate) fn get(&self, path: &crate::path::RelPath) -> Option<Arc<FileMapL1>> {
         let meta = self.files.get(path)?;
-        self.l1.load(&meta.hash_hex)
+        self.l1.load(&meta.hash_hex, meta.extract_epoch)
     }
 
     /// The decoded outline of the content `hash_hex`, whichever path holds it. Outlines are keyed
     /// by content, so this is the outline of an index entry however old this snapshot's file view
-    /// is next to the store the entry came from.
-    pub(crate) fn outline_of_content(&self, hash_hex: &str) -> Option<Arc<FileMapL1>> {
-        self.l1.load(hash_hex)
+    /// is next to the store the entry came from. `extract_epoch` is that entry's epoch, so an
+    /// outline cached before a refresh rewrote the blob is not served for it.
+    pub(crate) fn outline_of_content(&self, hash_hex: &str, extract_epoch: u16) -> Option<Arc<FileMapL1>> {
+        self.l1.load(hash_hex, extract_epoch)
     }
 
     /// The term index, building it from one corpus stream on first use. Later calls (and the
@@ -505,7 +505,9 @@ impl MapCache {
     ///
     /// Sharing the L1 cache across the two snapshots is safe because it is keyed by CONTENT HASH:
     /// an updated path's new view entry names a new hash, so a reader still holding `self` keeps
-    /// resolving the old hash and cannot observe the newer content.
+    /// resolving the old hash and cannot observe the newer content. An extract-epoch refresh keeps
+    /// the hash and rewrites the blob; the new view entry names the newer epoch, which the cache
+    /// does not answer from an outline decoded under an older one.
     ///
     /// The lazy `calls`/`impls` projections start empty on the derived snapshot, so they are
     /// rebuilt from the post-rescan file view if ever needed and cannot drift out of sync.

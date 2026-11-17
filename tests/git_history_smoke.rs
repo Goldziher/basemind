@@ -68,10 +68,11 @@ fn sync(root: &Path) -> (GitHistoryIndex, RebuildOutcome) {
     (index, outcome)
 }
 
-/// Newest-first 40-hex shas of commits touching `path`, per the `git` CLI (the oracle). Uses
-/// `--full-history` to match the index's union-across-parents, exact-path semantics.
+/// Newest-first 40-hex shas of commits touching `path`, per the `git` CLI: `git log -- <path>`. It
+/// agrees with basemind's rule where no side of a merge that git prunes changed `path`; see
+/// [`full_history_touching`] for the rule itself.
 fn git_commits_touching(root: &Path, path: &str) -> Vec<String> {
-    capture(root, &["log", "--full-history", "--format=%H", "--", path])
+    capture(root, &["log", "--format=%H", "--", path])
         .lines()
         .map(|s| s.to_string())
         .collect()
@@ -183,8 +184,23 @@ fn reset_back_diverges_and_triggers_full_rebuild() {
     );
 }
 
+/// Newest-first shas of commits touching `path` per the live walk, the other half of `git_log
+/// {path}`.
+fn live_commits_touching(root: &Path, path: &str) -> Vec<String> {
+    let repo = Repo::discover(root).expect("repo discover");
+    let head = capture(root, &["rev-parse", "HEAD"]);
+    repo.log_window_touching(head.trim(), &path.as_bytes().into(), 0, 1000)
+        .expect("live walk")
+        .into_iter()
+        .map(|c| c.sha)
+        .collect()
+}
+
+/// A merge that only brings a branch in changes no path of its own: the index and the live walk
+/// leave it out, as `git log -- <path>` does here. One that changes a path against both parents (an
+/// evil merge) touches it.
 #[test]
-fn merge_commit_union_across_parents_matches_git() {
+fn a_merge_touches_only_the_paths_it_changes_against_every_parent() {
     let dir = init_repo();
     let root = dir.path();
     commit_file(root, "base.rs", "fn base() {}\n", "c1");
@@ -193,17 +209,126 @@ fn merge_commit_union_across_parents_matches_git() {
     run(root, &["checkout", "-q", "main"]);
     commit_file(root, "base.rs", "fn base2() {}\n", "main2");
     run(root, &["merge", "-q", "--no-ff", "feature", "-m", "merge"]);
+    fs::write(root.join("base.rs"), "fn evil() {}\n").unwrap();
+    run(root, &["commit", "-q", "--amend", "-am", "merge"]);
+    let merge = capture(root, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_eq!(
+        capture(root, &["rev-list", "--parents", "-n1", "HEAD"])
+            .split_whitespace()
+            .count(),
+        3
+    );
 
     let (index, _) = sync(root);
+    for path in ["shared.rs", "base.rs"] {
+        let git = git_commits_touching(root, path);
+        assert_eq!(index_commits_touching(&index, path), git, "index: {path}");
+        assert_eq!(live_commits_touching(root, path), git, "live walk: {path}");
+    }
+    assert!(!git_commits_touching(root, "shared.rs").contains(&merge));
+    assert!(git_commits_touching(root, "base.rs").contains(&merge));
+
+    let repo = Repo::discover(root).expect("repo discover");
+    let files = repo.commit_record(&merge).expect("merge record").files;
     assert_eq!(
-        index_commits_touching(&index, "shared.rs"),
-        git_commits_touching(root, "shared.rs"),
-        "merge handling matches git full-history"
+        files,
+        [("base.rs".into(), basemind::git::ChangeKind::Modified)],
+        "a merge lists what it changed against every parent"
     );
-    assert_eq!(
-        index_commits_touching(&index, "base.rs"),
-        git_commits_touching(root, "base.rs"),
+}
+
+/// basemind's rule per the `git` CLI: every commit `git log --full-history -- <path>` lists, less
+/// each merge that equals one of its parents at `path`. Unlike plain `git log -- <path>`, no side
+/// of a merge is pruned. Sorted, since the fixtures' commits share one timestamp.
+fn full_history_touching(root: &Path, path: &str) -> Vec<String> {
+    let mut shas: Vec<String> = capture(root, &["log", "--full-history", "--format=%H %P", "--", path])
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let sha = fields.next()?.to_string();
+            let parents: Vec<&str> = fields.collect();
+            let from_a_parent = parents.len() > 1
+                && parents.iter().any(|parent| {
+                    Command::new("git")
+                        .args(["diff", "--quiet", parent, &sha, "--", path])
+                        .current_dir(root)
+                        .status()
+                        .expect("git in PATH")
+                        .success()
+                });
+            (!from_a_parent).then_some(sha)
+        })
+        .collect();
+    shas.sort();
+    shas
+}
+
+/// A conflicted merge resolved to one side's version equals that parent at the path, so it is not
+/// listed; both sides' own commits are. Plain `git log -- <path>` follows only the side the merge
+/// kept and hides the other side's commit; basemind lists it, since that commit did change the path.
+#[test]
+fn a_merge_resolved_to_one_side_lists_both_sides_commits_and_not_the_merge() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_file(root, "x.rs", "fn x() {}\n", "c1");
+    run(root, &["checkout", "-qb", "feature"]);
+    commit_file(root, "x.rs", "fn feature() {}\n", "f1");
+    let f1 = capture(root, &["rev-parse", "HEAD"]).trim().to_string();
+    run(root, &["checkout", "-q", "main"]);
+    commit_file(root, "x.rs", "fn main_side() {}\n", "m1");
+    let m1 = capture(root, &["rev-parse", "HEAD"]).trim().to_string();
+    let conflicted = Command::new("git")
+        .args(["merge", "-q", "--no-ff", "feature", "-m", "merge"])
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .output()
+        .expect("git in PATH");
+    assert!(
+        !conflicted.status.success(),
+        "both sides changed x.rs, so the merge conflicts"
     );
+    run(root, &["checkout", "--theirs", "x.rs"]);
+    run(root, &["add", "x.rs"]);
+    run(root, &["commit", "-qm", "merge"]);
+    let merge = capture(root, &["rev-parse", "HEAD"]).trim().to_string();
+
+    let rule = full_history_touching(root, "x.rs");
+    assert!(
+        rule.contains(&m1) && rule.contains(&f1) && !rule.contains(&merge),
+        "{rule:?}"
+    );
+    assert!(
+        !git_commits_touching(root, "x.rs").contains(&m1),
+        "plain `git log` prunes the side the merge did not keep, which basemind does not"
+    );
+    let (index, _) = sync(root);
+    let sorted = |mut shas: Vec<String>| {
+        shas.sort();
+        shas
+    };
+    assert_eq!(sorted(index_commits_touching(&index, "x.rs")), rule, "index");
+    assert_eq!(sorted(live_commits_touching(root, "x.rs")), rule, "live walk");
+}
+
+/// A commit's file list names files. The tree diff also reports each directory on the way to a
+/// changed file, and those are not changes of their own.
+#[test]
+fn a_commit_lists_the_files_it_changed_and_no_directory() {
+    let dir = init_repo();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src/deep")).unwrap();
+    commit_file(root, "src/deep/a.rs", "fn a1() {}\n", "add");
+    commit_file(root, "src/deep/a.rs", "fn a2() {}\n", "edit");
+    let head = capture(root, &["rev-parse", "HEAD"]);
+
+    let expected = [("src/deep/a.rs".into(), basemind::git::ChangeKind::Modified)];
+    let repo = Repo::discover(root).expect("repo discover");
+    assert_eq!(repo.commit_record(head.trim()).expect("record").files, expected);
+    let (index, _) = sync(root);
+    assert_eq!(index.recent_commits(0, 1, true)[0].files, expected, "indexed file list");
 }
 
 #[test]
@@ -291,7 +416,7 @@ fn bench_rebuild_peak_rss() {
     let bdir = root.join(".basemind");
     std::fs::create_dir_all(&bdir).unwrap();
     let index = GitHistoryIndex::open(&bdir).expect("open");
-    index.clear(&bdir).expect("clear");
+    index.clear().expect("clear");
     let start = std::time::Instant::now();
     let outcome = builder::sync(&index, &repo, &bdir).expect("sync");
     let elapsed = start.elapsed();

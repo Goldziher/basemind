@@ -245,7 +245,6 @@ fn references_page(
             },
             cache,
             || None,
-            std::time::Instant::now(),
         ))
         .expect("references"),
     )
@@ -266,8 +265,21 @@ fn paginate(mut fetch: impl FnMut(Option<&str>) -> Value) -> Vec<Value> {
     }
 }
 
+/// Hits over every page; a page lists them under their file.
 fn hit_count(pages: &[Value]) -> usize {
-    pages.iter().map(|p| p["hits"].as_array().map_or(0, Vec::len)).sum()
+    pages
+        .iter()
+        .flat_map(|p| p["hits"].as_object().into_iter().flatten())
+        .map(|(_, hits)| hits.as_array().map_or(0, Vec::len))
+        .sum()
+}
+
+/// The first hit of a page, under whichever file is listed first.
+fn first_hit(page: &Value) -> &Value {
+    page["hits"]
+        .as_object()
+        .and_then(|files| files.values().next())
+        .map_or(&Value::Null, |hits| &hits[0])
 }
 
 /// Run `references` over every route and demand identical pages, cursors and totals.
@@ -343,7 +355,6 @@ fn forwarded_routes_never_build_the_in_ram_projection() {
             },
             &fx.cache,
             || None,
-            std::time::Instant::now(),
         ))
         .expect("implementations"),
     );
@@ -380,7 +391,6 @@ fn implementations_are_identical_on_every_route_including_language_filter_and_cu
                         },
                         &fx.cache,
                         || None,
-                        std::time::Instant::now(),
                     ))
                     .expect("implementations"),
                 )
@@ -413,7 +423,6 @@ fn implementations_are_identical_on_every_route_including_language_filter_and_cu
                 },
                 &fx.cache,
                 || None,
-                std::time::Instant::now(),
             ))
             .expect("implementations"),
         )
@@ -424,9 +433,9 @@ fn implementations_are_identical_on_every_route_including_language_filter_and_cu
         hit_count(&all)
     );
     assert!(
-        all[0]["hits"][0]["line"].as_u64().unwrap_or(0) > 0,
+        first_hit(&all[0])["line"].as_u64().unwrap_or(0) > 0,
         "the forwarded page carries the impl's position: {}",
-        all[0]["hits"][0]
+        first_hit(&all[0])
     );
 }
 
@@ -454,7 +463,6 @@ fn callers_scan_and_file_batches_are_identical_on_every_route() {
                         cursor: cursor.map(|c| super::cursor::Cursor(c.to_string())),
                     },
                     || None,
-                    std::time::Instant::now(),
                 ))
                 .expect("callers"),
             )

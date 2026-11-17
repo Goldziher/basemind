@@ -186,8 +186,8 @@ async fn code_grep_path_is_a_literal_substring_even_with_glob_characters() {
         json!({ "pattern": "bracket-needle", "path": "app/[id]/" }),
     )
     .await;
-    assert_eq!(body["total_matches"], 1, "{body}");
-    assert_eq!(body["hits"][0]["path"], "app/[id]/page.tsx", "{body}");
+    assert_eq!(body["total"], 1, "{body}");
+    assert!(body["hits"]["app/[id]/page.tsx"].is_array(), "{body}");
 
     let glob = call_err(
         &client,
@@ -271,7 +271,7 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
         json!({ "pattern": "zzz_not_here", "path": "src/" }),
     )
     .await;
-    assert_eq!(none["total_matches"], 0, "files were searched and none matched: {none}");
+    assert_eq!(none["total"], 0, "files were searched and none matched: {none}");
 
     for arguments in [
         json!({ "language": "cobol" }),
@@ -381,16 +381,8 @@ async fn a_filter_refusal_waits_for_a_finished_index() {
     basemind::store::write_status_sidecar(&cache, 5, 5, &basemind::store::ScanHealth::resolving());
 
     for (tool, arguments, total) in [
-        (
-            "code_grep",
-            json!({ "pattern": "fn", "language": "cobol" }),
-            "total_matches",
-        ),
-        (
-            "code_grep",
-            json!({ "pattern": "fn", "path": "no/such/dir/" }),
-            "total_matches",
-        ),
+        ("code_grep", json!({ "pattern": "fn", "language": "cobol" }), "total"),
+        ("code_grep", json!({ "pattern": "fn", "path": "no/such/dir/" }), "total"),
         ("find_files", json!({ "language": "cobol" }), "total"),
         ("find_files", json!({ "path_prefix": "nope/" }), "total"),
         (

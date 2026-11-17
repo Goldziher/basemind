@@ -6,8 +6,8 @@ description: Build or refresh the basemind index by running `basemind scan` via 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:0c5a70d31b91c510e7a3c3dc570275596a25679d0f84ab769b56172989fe0799
-Source-Hash: blake3:4790ee5e237c434ff57929ff0428e9c5da0c4446ea6a6c82b509bbf114d292a7
+Content-Hash: blake3:2663e8f6c476489e6b58d094ecb976c62f4845490a84b332e69e93b8f3d9da9a
+Source-Hash: blake3:801b6b31efa46f8e01bd204c51dc2cf3583e7c0789332eeac9cefacc7a7a54f5
 Schema-Version: v1
 -->
 
@@ -37,8 +37,8 @@ basemind scan ${ARGUMENTS:-}
 
 - Report files scanned / updated / skipped and elapsed time. Non-extractable files are
   **skipped**, not failures.
-- If a `basemind serve` MCP server already holds the store lock for this repo, `scan` errors on
-  the lock — use `basemind rescan [path…]` (forwards to the running daemon) or `index_rescan {}` over MCP instead (lock errors exit 3).
+- If the basemind daemon is running, `scan` is forwarded to it and reports `scan via daemon`. Another
+  process holding the store lock (`basemind watch`, another scan) makes `scan` exit 3 and name it.
 
 ## See also
 

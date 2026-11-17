@@ -52,6 +52,7 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         (ms > 0).then_some(ms)
     };
     let warming = state.shared.cache_warming.load(std::sync::atomic::Ordering::Relaxed);
+    let history_syncing = state.shared.history_syncing.load(std::sync::atomic::Ordering::Relaxed);
     let warm_ms = {
         let ms = state.shared.cache_warm_ms.load(std::sync::atomic::Ordering::Relaxed);
         (ms > 0).then_some(ms)
@@ -77,6 +78,7 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
                 index_build_ms,
                 warming,
                 warm_ms,
+                history_syncing,
                 notice,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
@@ -130,6 +132,7 @@ async fn run_status(state: &ServerState) -> Result<CallToolResult, McpError> {
         index_build_ms,
         warming,
         warm_ms,
+        history_syncing,
         notice,
         total_size_bytes: total_size,
         languages: by_lang,

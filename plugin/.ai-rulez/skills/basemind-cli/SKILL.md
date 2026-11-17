@@ -192,7 +192,7 @@ stops a scan cleanly: work already committed is kept.
 - `basemind hook install` resolves the hooks dir through git (`core.hooksPath` and linked worktrees
   work), never overwrites a pre-commit hook it did not write unless `--force` (the old one is kept
   as `pre-commit.bak`), and the installed hook fails open: it can never block a commit.
-- Memory, `refs`/`callers`, the grep prefilter and `rescan` are forwarded to a running daemon
+- Memory, `refs`/`callers`, the grep prefilter, `scan` and `rescan` are forwarded to a running daemon
   when there is one, so they work alongside a live server.
 - All paths are repository-relative with forward-slash separators.
 - The CLI opens the index read-only; safe to run alongside a live `basemind serve` process.

@@ -266,6 +266,10 @@ pub(crate) struct Filters {
     /// shortly before it may be lost too, so every indexed path is owed its rows again.
     #[cfg_attr(not(any(feature = "code-search", feature = "documents")), allow(dead_code))]
     pub(crate) vector_rows_unsure: bool,
+    /// Set by the first code-chunk embedding that fails in this pass (a model that cannot load or
+    /// download): the rest of the pass indexes the keyword lane only instead of retrying per file.
+    #[cfg(feature = "code-search")]
+    pub(crate) code_embed_failed: std::sync::atomic::AtomicBool,
 }
 
 impl Filters {
@@ -329,6 +333,8 @@ impl Filters {
             reflush_embeds: false,
             verify_blobs: false,
             vector_rows_unsure: false,
+            #[cfg(feature = "code-search")]
+            code_embed_failed: std::sync::atomic::AtomicBool::new(false),
         })
     }
 

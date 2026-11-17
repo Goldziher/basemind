@@ -240,8 +240,8 @@ fn text_response(status: StatusCode, message: &str) -> Response<HttpBody> {
 /// Closing a connection while unread data is still in the receive buffer makes the OS send RST
 /// rather than FIN, and the client then fails its *read* with `ECONNRESET` instead of seeing the
 /// response — so a caller with a bad token would get "connection reset by peer" rather than the 401
-/// that tells it what to do. Rejecting before routing (which is where the check belongs) means
-/// nothing downstream consumes the body, so the drain has to happen here.
+/// that tells it what to do. A refusal returned before rmcp is handed the request means nothing
+/// downstream consumes the body, so the drain has to happen here.
 ///
 /// Bounded, because an unauthenticated caller must not be able to make the daemon read as much as
 /// it cares to send. Past the cap we stop and accept the reset: a request body larger than this is
@@ -265,6 +265,14 @@ async fn drain_request_body(request: &mut Request<Incoming>) {
             Some(Err(_)) | None => return,
         }
     }
+}
+
+/// Answer `request` with `response` without serving it, after draining its body (see
+/// [`drain_request_body`]): every refusal the router returns before rmcp reads the body goes
+/// through here, or the client may see a connection reset in place of the status.
+async fn refuse(request: &mut Request<Incoming>, response: Response<HttpBody>) -> Response<HttpBody> {
+    drain_request_body(request).await;
+    response
 }
 
 /// The refusal for a request with no bearer token or the wrong one. Deliberately says nothing about
@@ -362,8 +370,7 @@ impl HttpRouter {
                 .and_then(|value| value.to_str().ok()),
         );
         if !presented.is_some_and(|token| self.token.matches(&token)) {
-            drain_request_body(&mut request).await;
-            return unauthorized_response();
+            return refuse(&mut request, unauthorized_response()).await;
         }
 
         // DNS-rebinding guard: a loopback-bound listener answers only requests whose `Host`/
@@ -372,10 +379,11 @@ impl HttpRouter {
         // stamp HTTP recency. Skipped on an explicit non-loopback bind (the remote-access opt-in in
         // `serve_http`), where the operator owns host/origin policy.
         if self.loopback && !host_is_loopback(&request) {
-            return text_response(
+            let forbidden = text_response(
                 StatusCode::FORBIDDEN,
                 "forbidden: Host header is not a loopback address (DNS-rebinding protection)",
             );
+            return refuse(&mut request, forbidden).await;
         }
 
         // Pin the daemon (and stamp HTTP recency) for the whole request so the idle reaper cannot
@@ -383,21 +391,24 @@ impl HttpRouter {
         let _activity = self.broker.begin_http_request();
 
         if request.uri().path() != MCP_PATH {
-            return text_response(StatusCode::NOT_FOUND, "not found: this server serves POST /mcp only");
+            let not_found = text_response(StatusCode::NOT_FOUND, "not found: this server serves POST /mcp only");
+            return refuse(&mut request, not_found).await;
         }
         let Some((raw_root, agent)) = parse_target(request.uri().query()) else {
-            return text_response(StatusCode::NOT_FOUND, "not found: missing ?root=<abs-repo-path>");
+            let not_found = text_response(StatusCode::NOT_FOUND, "not found: missing ?root=<abs-repo-path>");
+            return refuse(&mut request, not_found).await;
         };
         let root = match resolve_request_root(&raw_root) {
             Ok(root) => root,
-            Err((status, message)) => return text_response(status, &message),
+            Err((status, message)) => return refuse(&mut request, text_response(status, &message)).await,
         };
 
         let shared = match self.broker.host_read_stack(&root).await {
             Ok(shared) => shared,
             Err(error) => {
                 tracing::warn!(%error, root = %root.display(), "http: hosting read stack failed");
-                return text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
+                let not_found = text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
+                return refuse(&mut request, not_found).await;
             }
         };
         // Keep the workspace pinned against eviction for the request's lifetime.
@@ -405,7 +416,8 @@ impl HttpRouter {
             Ok(guard) => guard,
             Err(error) => {
                 tracing::warn!(%error, root = %root.display(), "http: workspace connection accounting failed");
-                return text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
+                let not_found = text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
+                return refuse(&mut request, not_found).await;
             }
         };
 
@@ -417,10 +429,11 @@ impl HttpRouter {
             Some(raw) => match AgentId::parse(raw) {
                 Ok(id) => id.into_string(),
                 Err(error) => {
-                    return text_response(
+                    let bad = text_response(
                         StatusCode::BAD_REQUEST,
                         &format!("bad request: invalid ?agent= ({error})"),
                     );
+                    return refuse(&mut request, bad).await;
                 }
             },
             None => identity::cli_agent_id(&root).into_string(),

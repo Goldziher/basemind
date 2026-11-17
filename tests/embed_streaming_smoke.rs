@@ -153,7 +153,10 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
             "every doc chunk carries a full-width embedding"
         );
     } else {
-        eprintln!("SKIP vector-landing assertions: embedder unavailable (offline / cold model)");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            "no vectors landed (embedder offline or model cold?)",
+        );
     }
 }
 

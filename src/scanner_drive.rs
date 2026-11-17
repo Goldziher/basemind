@@ -378,6 +378,25 @@ fn deferral_summary(deferred: usize, phase_budget_secs: u64) -> Option<String> {
     })
 }
 
+/// True when `status` is a failure of this attempt rather than a verdict on the file: the stale
+/// purge must then leave the file's existing entry alone.
+///
+/// A missing file and a path that is no longer a regular file inside the root (`InvalidInput`, see
+/// `read_working_tree`) are verdicts, as are the skips (too large, binary, non-UTF-8, no
+/// language): those entries go. Everything else that failed — an I/O error, a parse or document
+/// timeout, an extraction or blob-write error, a contained panic — may succeed on the next scan.
+pub(crate) fn keeps_prior_entry(status: &FileStatus) -> bool {
+    match status {
+        FileStatus::ReadFailed { kind, .. } => {
+            !matches!(kind, std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput)
+        }
+        FileStatus::ExtractFailed { .. } | FileStatus::ParseTimedOut => true,
+        #[cfg(feature = "documents")]
+        FileStatus::DocTimedOut | FileStatus::DocTombstoned => true,
+        _ => false,
+    }
+}
+
 /// Drain one chunk's parallel-map results into the single-threaded store, the stats, and the
 /// observer. The `Vec<FileResult>` dies with this call — that is the whole bound.
 fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
@@ -451,6 +470,18 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
         if matches!(o.status, FileStatus::Updated { .. } | FileStatus::Unchanged) {
             ctx.out.seen.insert(o.path.clone());
         }
+        // A failure that says nothing about the file (a read refused mid-edit, a parse timed out ~keep
+        // under load) keeps the rows the file already has; the failure is counted above and the ~keep
+        // next scan retries it. Purging here would make the index flap with machine load. ~keep
+        if keeps_prior_entry(&o.status) {
+            if ctx.store.lookup(&o.path).is_some() {
+                ctx.out.seen.insert(o.path.clone());
+            }
+            #[cfg(feature = "documents")]
+            if ctx.store.lookup_doc(&o.path).is_some() {
+                ctx.out.doc_seen.insert(o.path.clone());
+            }
+        }
         // A `DocIndexed` status is set by exactly the `scanner_docs_lane::process_doc` arm that ~keep
         // attaches a doc batch, so the status is a faithful stand-in for a `doc_batch` this loop ~keep
         // is about to take. ~keep
@@ -497,6 +528,10 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
         ctx.observer.on_file(FileResult::bare(o.path, o.status));
     }
 }
+
+#[cfg(test)]
+#[path = "scanner_drive_failure_tests.rs"]
+mod failure_tests;
 
 #[cfg(test)]
 mod tests {

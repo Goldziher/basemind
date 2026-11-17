@@ -11,12 +11,14 @@
 //! detection reuses a single `Finder` for the `"comment"` substring — no per-file allocation of the
 //! matcher and no re-parse (the caller passes the already-parsed tree root).
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use memchr::memmem::Finder;
 use tree_sitter::Node;
 
 use super::{RationaleKind, RationaleRecord};
+use crate::lang::LangId;
+use crate::once_map::OnceMap;
 
 /// Bounds the stack buffer used to case-fold the head of each comment for marker matching. Must be
 /// at least the longest marker keyword (`RATIONALE`, 9 bytes); the `(...)` owner tag and colon that
@@ -67,25 +69,46 @@ static COMMENT_KIND: LazyLock<Finder<'static>> = LazyLock::new(|| Finder::new(b"
 /// A comment is recorded when it carries a rationale marker OR contains at least one decision-record
 /// citation (a bare `// see ADR-7` still yields a `Cites` edge, classified as [`RationaleKind::Note`]).
 /// Records are returned in ascending `start_byte` order so downstream consumers see document order.
-pub(crate) fn extract_rationale(root: Node, source: &[u8]) -> Vec<RationaleRecord> {
-    let comment_finder = &*COMMENT_KIND;
+pub(crate) fn extract_rationale(lang: LangId, root: Node, source: &[u8]) -> Vec<RationaleRecord> {
+    let comment_kinds = comment_kinds(lang, &root.language());
+    let is_comment = |node: &Node| comment_kinds.get(usize::from(node.kind_id())).copied().unwrap_or(false);
     let mut out: Vec<RationaleRecord> = Vec::new();
     let mut cursor = root.walk();
     let mut stack: Vec<Node> = vec![root];
     while let Some(node) = stack.pop() {
-        if comment_finder.find(node.kind().as_bytes()).is_some() {
+        if is_comment(&node) {
             if let Some(record) = classify_comment(node, source) {
                 out.push(record);
             }
             // Comment nodes carry no child structure we care about — do not descend.
             continue;
         }
-        for child in node.children(&mut cursor) {
-            stack.push(child);
-        }
+        // An anonymous node is a token: it is never a comment and has no comment below it.
+        stack.extend(
+            node.children(&mut cursor)
+                .filter(|child| child.is_named() || child.is_extra()),
+        );
     }
     out.sort_by_key(|record| record.start_byte);
     out
+}
+
+/// Per language, which node kind ids name a comment: decided once from the kind names instead of
+/// a substring search on every node of every file.
+static COMMENT_KINDS: LazyLock<OnceMap<LangId, Arc<[bool]>>> = LazyLock::new(OnceMap::default);
+
+fn comment_kinds(lang: LangId, language: &tree_sitter::Language) -> Arc<[bool]> {
+    COMMENT_KINDS.get_or_init(lang, || {
+        let finder = &*COMMENT_KIND;
+        (0..language.node_kind_count())
+            .map(|id| {
+                u16::try_from(id)
+                    .ok()
+                    .and_then(|id| language.node_kind_for_id(id))
+                    .is_some_and(|kind| finder.find(kind.as_bytes()).is_some())
+            })
+            .collect()
+    })
 }
 
 /// Classify a single comment node, returning `None` when it carries neither a marker nor a citation.

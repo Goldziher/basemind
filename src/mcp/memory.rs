@@ -68,18 +68,26 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
         .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
 }
 
-/// Open the vector store at `dir` for `embedder`'s dimension and model, off the async runtime.
+/// Open the vector store at `dir` off the async runtime. Only a `writer` (holding the workspace lock)
+/// creates or rebuilds it; any other open reads a matching one ([`crate::lance::LanceStore::open_existing`]).
 #[cfg(feature = "intelligence")]
 async fn open_lance(
     dir: std::path::PathBuf,
     embedder: &crate::embeddings::SharedEmbedder,
+    writer: bool,
 ) -> Result<Arc<crate::lance::LanceStore>, String> {
     let (dim, model) = (embedder.dim(), embedder.model().to_string());
-    tokio::task::spawn_blocking(move || crate::lance::LanceStore::open(&dir, dim, &model))
-        .await
-        .map_err(|e| format!("lance open join: {e}"))?
-        .map(Arc::new)
-        .map_err(|e| format!("open LanceStore: {e}"))
+    tokio::task::spawn_blocking(move || {
+        if writer {
+            crate::lance::LanceStore::open(&dir, dim, &model)
+        } else {
+            crate::lance::LanceStore::open_existing(&dir, dim, &model)
+        }
+    })
+    .await
+    .map_err(|e| format!("lance open join: {e}"))?
+    .map(Arc::new)
+    .map_err(|e| format!("open LanceStore: {e}"))
 }
 
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
@@ -93,14 +101,14 @@ pub(super) async fn lance_store(
             let embedder = shared_embedder(state)
                 .await
                 .map_err(|e| format!("embedder init: {e}"))?;
-            let lance_dir = state
-                .shared
-                .store
-                .read()
-                .await
-                .basemind_dir
-                .join(crate::store::LANCE_DIR);
-            open_lance(lance_dir, &embedder).await
+            let (lance_dir, writer) = {
+                let store = state.shared.store.read().await;
+                (
+                    store.basemind_dir.join(crate::store::LANCE_DIR),
+                    store.holds_writer_lock(),
+                )
+            };
+            open_lance(lance_dir, &embedder, writer).await
         })
         .await
 }
@@ -113,15 +121,12 @@ pub(super) async fn lance_store(
 /// (Fjall, then async Lance) writes can interleave so the stores disagree.
 ///
 /// We serialize per key — unrelated keys still write in parallel — by handing
-/// out a per-key `tokio::sync::Mutex` from a process-global registry. The
-/// registry itself is guarded by a short-lived `std::sync::Mutex` (held only to
-/// clone an `Arc`, never across an `.await`).
+/// out a per-key `tokio::sync::Mutex` from a process-global registry, itself guarded
+/// by a short-lived `std::sync::Mutex` (held only to clone an `Arc`, never across an `.await`).
 ///
-/// The registry is an `LruCache` bounded at [`MEMORY_PUT_LOCK_CAP`] so it cannot
-/// grow without limit as distinct `(scope, key)` pairs are written over the
-/// process lifetime. The cap is generous enough that realistic key counts never
-/// evict. Eviction is safe for correctness: any task already holding the `Arc`
-/// keeps its mutex alive after the entry is dropped from the cache. The single
+/// The registry is an `LruCache` bounded at [`MEMORY_PUT_LOCK_CAP`] so it cannot grow
+/// without limit as distinct `(scope, key)` pairs are written. Eviction is safe for
+/// correctness: a task already holding the `Arc` keeps its mutex alive. The single
 /// rare-eviction caveat is that if a key's lock is evicted while one put holds
 /// it and a *second* put for the same key arrives, the second put mints a fresh
 /// mutex and the two no longer serialize — a window only reachable when more
@@ -468,9 +473,12 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
         cursor_bytes,
     )
     .await?;
+    // ~keep Derived from the count rather than the wire flag, which also reports a `limit` cut.
+    let truncated = page.total as usize > super::memory_ops::list_scan_cap(limit);
     json_result(&MemoryListResponse {
         total: page.total as usize,
-        truncated: page.truncated,
+        truncated,
+        truncated_reason: truncated.then_some("scan_cap"),
         entries: page.entries.into_iter().map(wire_to_entry).collect(),
         next_cursor: page.next_cursor.as_deref().map(Cursor::encode_fjall),
         elapsed_us: elapsed_us(__body),
