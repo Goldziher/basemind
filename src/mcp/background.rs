@@ -397,16 +397,15 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
                         continue;
                     }
                 };
-                let fingerprint = super::map_fingerprint::index_fingerprint(&new_store);
-                if fingerprint == state.shared.cache.load().fingerprint {
+                let budget = super::l1_cache::budget_bytes_from(&state.shared.config.resources);
+                let Some(new_cache) = state.shared.cache.load_full().refreshed(&new_store, budget) else {
                     tracing::debug!("view watcher: index rewritten but unchanged; keeping the current MapCache");
                     continue;
-                }
-                let budget = super::l1_cache::budget_bytes_from(&state.shared.config.resources);
-                let new_cache = Arc::new(MapCache::build(&new_store, budget));
+                };
+                let new_cache = Arc::new(new_cache);
                 tracing::info!(
                     files = new_cache.len(),
-                    "view watcher: rebuilt MapCache from refreshed index"
+                    "view watcher: refreshed MapCache from the rewritten index"
                 );
                 state.shared.cache.store(new_cache);
                 state.shared.note_index_changed();

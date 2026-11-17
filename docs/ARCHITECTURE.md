@@ -207,7 +207,7 @@ src/
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer; the key is the tool name
 │   └── budget.rs, toon.rs, lean.rs, lenient.rs, notifications.rs,
 │       completions.rs, prompts.rs, tokens.rs, background.rs, daemon_forward.rs,
-│       map_fingerprint.rs, identity.rs — response budgeting, TOON/lean output
+│       identity.rs — response budgeting, TOON/lean output
 │       shaping, request leniency, daemon-forward plumbing for Seam B
 ├── stdio_relay.rs          — protocol-aware stdio relay behind `basemind serve`; survives a
 │                             daemon replacement without closing the host's pipes

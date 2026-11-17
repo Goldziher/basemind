@@ -165,10 +165,19 @@ impl IndexWriter {
     /// the defining site → `find_references`) and `refs_by_path` (keyed by the use site →
     /// `goto_definition`). Atomic within the batch. Cross-file edges are staged by the resolve
     /// pass separately once import resolution lands.
+    ///
+    /// An existing intra-file edge that `refs` keeps is left in place rather than deleted and
+    /// inserted again: the index after the batch is the same, and a full rescan, which re-resolves
+    /// every file, then writes only the edges that changed instead of every edge of the repository.
     pub fn upsert_resolved_file(&mut self, use_rel: &RelPath, refs: &FileResolvedRefs) -> Result<(), IndexError> {
-        self.stage_resolved_deletes_for(use_rel)?;
+        let mut fresh: ahash::AHashSet<(u32, u32)> =
+            refs.intra.iter().map(|edge| (edge.use_start, edge.def_start)).collect();
+        self.stage_resolved_deletes_keeping(use_rel, &mut fresh)?;
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         for edge in &refs.intra {
+            if !fresh.remove(&(edge.use_start, edge.def_start)) {
+                continue;
+            }
             stage_insert(
                 batch,
                 staged_bytes,
@@ -402,6 +411,17 @@ impl IndexWriter {
     /// Stage deletes for every resolved edge whose use is in `use_rel`. Scans `refs_by_path`
     /// under the file prefix, reconstructs each companion `refs_by_def` key, and removes both.
     fn stage_resolved_deletes_for(&mut self, use_rel: &RelPath) -> Result<(), IndexError> {
+        self.stage_resolved_deletes_keeping(use_rel, &mut ahash::AHashSet::new())
+    }
+
+    /// [`Self::stage_resolved_deletes_for`], leaving in place each intra-file edge whose
+    /// `(use_start, def_start)` is in `keep`. A kept edge is taken out of `keep`, so what remains
+    /// there is what the caller still has to insert.
+    fn stage_resolved_deletes_keeping(
+        &mut self,
+        use_rel: &RelPath,
+        keep: &mut ahash::AHashSet<(u32, u32)>,
+    ) -> Result<(), IndexError> {
         self.stage_import_probe_deletes_for(use_rel)?;
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let prefix = keys::refs_by_path_prefix(use_rel);
@@ -409,6 +429,9 @@ impl IndexWriter {
         for guard in db.refs_by_path.prefix(prefix) {
             let (k, _) = guard.into_inner()?;
             if let Some((_use_path, use_start, def_path, def_start)) = keys::parse_ref_by_path(&k) {
+                if def_path == *use_rel && keep.remove(&(use_start, def_start)) {
+                    continue;
+                }
                 found.push(((*k).to_vec(), def_path, def_start, use_start));
             }
         }
