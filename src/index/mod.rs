@@ -804,6 +804,13 @@ impl IndexDb {
         writer::IndexWriter::new(self.clone())
     }
 
+    /// Bytes written to memtables and not yet flushed to disk, summed over every keyspace (fjall's
+    /// own ledger: charged on insert, released when a flush completes). This is the index's
+    /// resident write buffer, the share of a scan's footprint that fjall rather than basemind holds.
+    pub fn unflushed_bytes(&self) -> u64 {
+        self.db.write_buffer_size()
+    }
+
     /// Mark the probe keyspaces complete (`true`) or in flux (`false`). The wholesale pass clears
     /// the stamp before it rewrites any importer and sets it only after the stitch committed.
     pub fn set_import_probes_complete(&self, complete: bool) -> Result<(), IndexError> {
