@@ -669,10 +669,12 @@ mod tests {
             PhasePeak {
                 phase: "extract",
                 peak_bytes: 512 * 1024 * 1024,
+                millis: 0,
             },
             PhasePeak {
                 phase: "resolve",
                 peak_bytes: 3 * 1024 * 1024 * 1024,
+                millis: 0,
             },
         ];
         assert_eq!(

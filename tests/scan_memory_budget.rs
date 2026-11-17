@@ -36,7 +36,11 @@
 //! are off because loading an ONNX model would dwarf and hide the scan itself — the same reason
 //! `tests/embed_streaming_smoke.rs` documents that it cannot assert an absolute ceiling.
 
+use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use basemind::config::Config;
 use basemind::scanner::{EmbedMode, ScanSource, scan};
@@ -194,6 +198,40 @@ fn warm_up() {
     scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("warm scan");
 }
 
+/// Write past libtest's output capture: `eprintln!` is captured and shown only for a failing test,
+/// and CI runs `--quiet`, so a passing run would otherwise leave no number to compare against.
+fn report_line(line: &str) {
+    let _ = writeln!(std::io::stderr(), "scan_memory_budget: {line}");
+}
+
+/// The highest unflushed fjall write buffer seen while `scan` runs, sampled on its own thread. It is
+/// the part of the footprint the index's memtables hold, which `ru_maxrss` cannot separate out.
+struct WriteBufferWatch {
+    stop: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<u64>,
+}
+
+impl WriteBufferWatch {
+    fn start(index: basemind::index::IndexDb) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut high = 0;
+            while !flag.load(Ordering::Relaxed) {
+                high = high.max(index.unflushed_bytes());
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            high.max(index.unflushed_bytes())
+        });
+        Self { stop, thread }
+    }
+
+    fn finish(self) -> u64 {
+        self.stop.store(true, Ordering::Relaxed);
+        self.thread.join().expect("write-buffer sampler")
+    }
+}
+
 fn peak_bytes() -> u64 {
     basemind::sysres::sample()
         .peak_bytes
@@ -215,7 +253,11 @@ fn a_full_scan_stays_inside_an_affine_memory_budget() {
 
     let config = lean_config();
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
+    let watch = WriteBufferWatch::start(store.index_db.clone().expect("a writable store has an index"));
+    let started = Instant::now();
     let report = scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    let scan_secs = started.elapsed().as_secs_f64();
+    let unflushed_high = watch.finish();
 
     assert!(
         report.stats.scanned >= FILES,
@@ -228,12 +270,24 @@ fn a_full_scan_stays_inside_an_affine_memory_budget() {
     let delta = peak.saturating_sub(baseline);
     let budget = BASE_OVERHEAD_BYTES + PER_FILE_BYTES * (FILES as u64);
 
-    eprintln!(
-        "scan_memory_budget: {FILES} files, peak delta {} MiB, budget {} MiB ({}% used)",
+    report_line(&format!(
+        "{FILES} files in {scan_secs:.1}s, peak delta {} MiB, budget {} MiB ({}% used), baseline peak {} MiB, \
+         fjall unflushed high {} MiB",
         delta / (1 << 20),
         budget / (1 << 20),
         delta * 100 / budget.max(1),
-    );
+        baseline / (1 << 20),
+        unflushed_high / (1 << 20),
+    ));
+    for phase in &report.phase_peaks {
+        report_line(&format!(
+            "  phase {:<10} footprint peak {:>5} MiB ({:>+5} MiB over baseline peak), {:>7.1}s",
+            phase.phase,
+            phase.peak_bytes / (1 << 20),
+            (i128::from(phase.peak_bytes) - i128::from(baseline)) / (1 << 20),
+            phase.millis as f64 / 1000.0,
+        ));
+    }
 
     assert!(
         delta <= budget,
