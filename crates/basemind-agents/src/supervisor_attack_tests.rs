@@ -268,7 +268,7 @@ fn a_detached_process_that_joins_a_sibling_sessions_group_does_not_take_it_down(
 }
 
 #[test]
-fn a_detached_process_that_joins_the_launchers_group_is_still_reaped() {
+fn a_detached_process_cannot_join_the_launchers_group_and_is_still_reaped() {
     let Some(perl) = perl() else {
         return;
     };
@@ -288,12 +288,11 @@ fn a_detached_process_that_joins_the_launchers_group_is_still_reaped() {
     let _reclaim = Reclaim(attacker);
     let outcome = attack_outcome(&scratch);
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Completed);
+    // The harness leads a session of its own, so the join across sessions is refused.
+    assert_eq!(outcome, "refused", "a launched process joined the launcher's group");
     let survived =
         crate::procinfo::info(attacker.id.pid).is_some_and(|now| now.start == attacker.id.start && !now.zombie);
-    assert!(
-        !survived,
-        "a process in the launcher's group outlived its session ({outcome})"
-    );
+    assert!(!survived, "a detached process outlived its session");
 }
 
 /// An adapter whose launch panics, as a bug in an adapter would.
