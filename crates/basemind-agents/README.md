@@ -73,7 +73,9 @@ config is trusted.
   that server as loaded from `--mcp-config` (`source: "dynamic"`) and only built-in plugins.
   Codex, Gemini, Cursor and OpenCode are not launched over one of their project files in the
   working directory or above it. Only the MCP tools the config names are pre-approved (Claude
-  Code only).
+  Code only). Claude Code's init frame is checked again every turn. A Codex turn notification
+  without the `threadId` its schema requires fails the session, so a sub-agent's turn can neither
+  end the session's turn nor escape the turn count.
 - The harness executable and the MCP server's command resolve to absolute paths outside the root,
   with no link on the way inside it; the child's `PATH` keeps only absolute entries outside the
   root.

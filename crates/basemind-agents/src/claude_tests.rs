@@ -713,6 +713,19 @@ fn the_init_frame_must_report_the_requested_mode_and_only_the_injected_servers()
     }
 }
 
+#[test]
+fn a_later_init_frame_reporting_another_mode_fails_the_session() {
+    let (sink, _events) = EventSink::for_test(None, 2);
+    let mut protocol = started(&sink);
+    let mut out = Vec::new();
+    let result = json!({"type": "result", "result": "Done."});
+    assert_eq!(protocol.frame(result, &mut out, &sink).unwrap(), Step::TurnDone);
+    let mut init = init(None);
+    init["permissionMode"] = "acceptEdits".into();
+    let error = protocol.frame(init, &mut out, &sink).unwrap_err();
+    assert!(error.to_string().contains("acceptEdits"), "{error}");
+}
+
 /// `system/init` as Claude Code 2.1.325 sent it under the adapter's flags, with one injected
 /// server (`stub`).
 const LIVE_INIT: &str = include_str!("../tests/fixtures/live/claude-2.1.325-init.json");

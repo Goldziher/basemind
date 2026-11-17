@@ -21,7 +21,7 @@ fn in_turn(sink: &EventSink) -> CodexProtocol {
     for frame in [
         json!({"id": 1, "result": {}}),
         json!({"id": 2, "result": {"thread": {"id": "thread-1"}}}),
-        json!({"method": "turn/started", "params": {"turn": {"id": "turn-1"}}}),
+        json!({"method": "turn/started", "params": {"threadId": "thread-1", "turn": {"id": "turn-1"}}}),
     ] {
         protocol.frame(frame, &mut out, sink).unwrap();
     }
@@ -146,7 +146,7 @@ fn deltas_and_the_completed_item_yield_each_text_once() {
     for frame in transcript {
         assert_eq!(protocol.frame(frame, &mut out, &sink).unwrap(), Step::Continue);
     }
-    let done = json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}});
+    let done = json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}});
     assert_eq!(protocol.frame(done, &mut out, &sink).unwrap(), Step::TurnDone);
     assert_eq!(
         events.try_iter().skip(1).collect::<Vec<_>>(),
@@ -459,7 +459,7 @@ fn failures_end_the_session_and_a_retried_error_does_not() {
 
     let failures = [
         json!({"method": "error", "params": {"error": {"message": "model unavailable"}}}),
-        json!({"method": "turn/completed", "params": {"turn": {"status": "failed", "error": {"message": "context overflow"}}}}),
+        json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"status": "failed", "error": {"message": "context overflow"}}}}),
         json!({"id": "basemind-turn-1", "error": {"message": "quota", "codexErrorInfo": "usageLimitExceeded"}}),
     ];
     for (frame, expected) in
@@ -488,7 +488,7 @@ fn an_interrupted_turn_cancels_its_running_tools() {
         written(&out)[0]["params"],
         json!({"threadId": "thread-1", "turnId": "turn-1"})
     );
-    let aborted = json!({"method": "turn/aborted", "params": {"turn": {"id": "turn-1"}}});
+    let aborted = json!({"method": "turn/aborted", "params": {"threadId": "thread-1", "turn": {"id": "turn-1"}}});
     assert_eq!(protocol.frame(aborted, &mut out, &sink).unwrap(), Step::TurnDone);
     let last = events.try_iter().last().unwrap();
     assert!(matches!(last, Event::ToolCall(call) if call.state == ToolState::Cancelled));
@@ -504,7 +504,6 @@ fn frames_with_missing_or_mistyped_members_are_ignored() {
         json!({}),
         json!([]),
         json!({"method": 12}),
-        json!({"method": "turn/started"}),
         json!({"method": "item/started", "params": {"item": {"type": "userMessage"}}}),
         json!({"method": "unknown/notification", "params": {}}),
         json!({"id": 99, "result": {"turn": {"id": "not-ours"}}}),
@@ -521,9 +520,9 @@ fn a_turn_the_harness_starts_beyond_the_limit_is_refused() {
     let (sink, _events) = EventSink::for_test(None, 1);
     let mut protocol = in_turn(&sink);
     let mut out = Vec::new();
-    let done = json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}});
+    let done = json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}});
     assert_eq!(protocol.frame(done, &mut out, &sink).unwrap(), Step::TurnDone);
-    let another = json!({"method": "turn/started", "params": {"turn": {"id": "turn-2"}}});
+    let another = json!({"method": "turn/started", "params": {"threadId": "thread-1", "turn": {"id": "turn-2"}}});
     let error = protocol.frame(another, &mut out, &sink).unwrap_err();
     assert!(matches!(error, LaunchError::TurnLimit(1)), "{error}");
 }
@@ -533,7 +532,7 @@ fn a_follow_up_starts_a_second_turn_with_its_own_request_id() {
     let (sink, _events) = EventSink::for_test(None, 2);
     let mut protocol = in_turn(&sink);
     let mut out = Vec::new();
-    let done = json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}});
+    let done = json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}});
     protocol.frame(done, &mut out, &sink).unwrap();
     protocol.prompt("Now fix it.", &mut out, &sink).unwrap();
     let frame = &written(&out)[0];
@@ -541,7 +540,7 @@ fn a_follow_up_starts_a_second_turn_with_its_own_request_id() {
     assert_eq!(frame["params"]["input"][0]["text"], "Now fix it.");
     let announced = json!({"id": "basemind-turn-2", "result": {"turn": {"id": "turn-2"}}});
     protocol.frame(announced, &mut out, &sink).unwrap();
-    let started = json!({"method": "turn/started", "params": {"turn": {"id": "turn-2"}}});
+    let started = json!({"method": "turn/started", "params": {"threadId": "thread-1", "turn": {"id": "turn-2"}}});
     protocol.frame(started, &mut out, &sink).unwrap();
     assert_eq!(sink.turns(), 2);
 }
@@ -629,7 +628,7 @@ fn deferred_requests_are_capped_and_withdrawn_when_resolved_elsewhere_or_the_tur
     );
     assert!(!protocol.answer("codex-1", true, &mut out).unwrap());
 
-    let completed = json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}});
+    let completed = json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}});
     protocol.frame(completed, &mut out, &sink).unwrap();
     let withdrawn = events
         .try_iter()
@@ -733,6 +732,20 @@ fn turns_of_another_thread_neither_count_nor_end_ours() {
 }
 
 #[test]
+fn a_turn_frame_without_a_thread_id_fails_the_session() {
+    for frame in [
+        json!({"method": "turn/started"}),
+        json!({"method": "turn/started", "params": {"turn": {"id": "turn-9"}}}),
+        json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}}),
+    ] {
+        let (sink, _events) = EventSink::for_test(None, 1);
+        let mut protocol = in_turn(&sink);
+        let error = protocol.frame(frame.clone(), &mut Vec::new(), &sink).unwrap_err();
+        assert!(error.to_string().contains("without a threadId"), "{frame}: {error}");
+    }
+}
+
+#[test]
 fn a_file_change_request_carries_every_change_or_is_denied_unasked() {
     let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Allow), 1);
     let mut protocol = in_turn(&sink);
@@ -830,7 +843,7 @@ fn requests_still_pending_when_the_turn_ends_or_stops_are_declined_on_the_wire()
         protocol.frame(request, &mut out, &sink).unwrap();
     }
     assert!(out.is_empty());
-    let done = json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}});
+    let done = json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}});
     protocol.frame(done, &mut out, &sink).unwrap();
     let mut answered = written(&out);
     answered.sort_by_key(|frame| frame["id"].as_u64());
@@ -857,7 +870,7 @@ fn requests_still_pending_when_the_turn_ends_or_stops_are_declined_on_the_wire()
 
     out.clear();
     protocol.prompt("Go on.", &mut out, &sink).unwrap();
-    let announced = json!({"method": "turn/started", "params": {"turn": {"id": "turn-2"}}});
+    let announced = json!({"method": "turn/started", "params": {"threadId": "thread-1", "turn": {"id": "turn-2"}}});
     protocol.frame(announced, &mut out, &sink).unwrap();
     let request = json!({"id": 3, "method": "item/commandExecution/requestApproval", "params": {"command": "ls"}});
     protocol.frame(request, &mut out, &sink).unwrap();

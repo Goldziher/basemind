@@ -196,9 +196,9 @@ read -r thread
 printf '%s\n' "$thread" > "{dir}/thread"
 printf '%s\n' '{{"id":2,"result":{{"thread":{{"id":"thread-1"}}}}}}'
 read -r turn
-printf '%s\n' '{{"method":"turn/started","params":{{"turn":{{"id":"turn-1"}}}}}}'
+printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"thread-1","turn":{{"id":"turn-1"}}}}}}'
 printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"itemId":"m1","delta":"It builds."}}}}'
-printf '%s\n' '{{"method":"turn/completed","params":{{"turn":{{"id":"turn-1","status":"completed"}}}}}}'
+printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"completed"}}}}}}'
 cat > /dev/null
 "#,
         dir = dir.path().display()
@@ -294,8 +294,8 @@ read -r initialized
 read -r thread
 printf '%s\n' '{{"id":2,"result":{{"thread":{{"id":"thread-1"}}}}}}'
 read -r turn
-printf '%s\n' '{{"method":"turn/started","params":{{"turn":{{"id":"turn-1"}}}}}}'
-printf '%s\n' '{{"method":"turn/started","params":{{"turn":{{"id":"turn-2"}}}}}}'
+printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"thread-1","turn":{{"id":"turn-1"}}}}}}'
+printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"thread-1","turn":{{"id":"turn-2"}}}}}}'
 cat > /dev/null
 "#,
         spawn_grandchild(&pidfile)
@@ -366,7 +366,7 @@ read -r initialized
 read -r thread
 printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}'
 read -r turn
-printf '%s\n' '{"method":"turn/started","params":{"turn":{"id":"turn-1"}}}'
+printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}'
 printf '%s\n' '{"id":"r-1","method":"item/commandExecution/requestApproval","params":{"itemId":"c1","command":"ls"}}'
 sleep 0.3
 printf '%s\n' '{"method":"error","params":{"error":{"message":"stream lost"}}}'

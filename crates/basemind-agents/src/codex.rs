@@ -383,8 +383,8 @@ impl CodexProtocol {
         (request, true)
     }
 
-    /// Whether a notification belongs to our thread. One without a `threadId` is taken as
-    /// ours, as is everything before the thread is known.
+    /// Whether a turn notification belongs to our thread; everything before the thread is
+    /// known is taken as ours.
     fn ours(&self, params: &Value) -> bool {
         match (params["threadId"].as_str(), &self.thread) {
             (Some(thread), Some(ours)) => thread == ours,
@@ -585,6 +585,12 @@ impl CodexProtocol {
     ) -> Result<Step, LaunchError> {
         let params = &frame["params"];
         let request = frame.get("id");
+        let turn_event = matches!(method, "turn/started" | "turn/completed" | "turn/aborted");
+        if turn_event && self.thread.is_some() && params["threadId"].as_str().is_none() {
+            // Codex 0.169's schema requires it. Without it a sub-agent's turn could end ours,
+            // or a turn of ours escape the count, so the session fails instead.
+            return Err(LaunchError::Protocol(format!("Codex sent {method} without a threadId")));
+        }
         match method {
             // Codex runs further threads (sub-agents) on the same connection: only our
             // thread's turns count and end ours.
