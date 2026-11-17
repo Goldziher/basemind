@@ -319,3 +319,58 @@ types, and the per-agent dialect of the ACP adapter.
 MIT is permissive and compatible with basemind's MIT license. monocode's `NOTICE` lists third-party
 material (Zed's GPUI under Apache-2.0, mermaid-rs-renderer, Hugeicons, CodeMirror, cuelume) that
 belongs to its native user interface; none of it is in the files this crate derives from.
+
+---
+
+## mimalloc_rust `GlobalAlloc` shim
+
+The `GlobalAlloc` implementation that installs mimalloc as basemind's global allocator.
+
+- **Source**: <https://github.com/purpleprotocol/mimalloc_rust> (crates.io `mimalloc` 0.1.52)
+- **Upstream path**: `src/lib.rs` (`impl GlobalAlloc for MiMalloc`)
+- **Upstream commit**: `abcd2be6171e89190f8087fcaccf001d8bd5bc96`
+- **License**: MIT (Copyright 2019 Octavian Oncescu); notice reproduced below
+- **Location**: `src/allocator.rs`
+- **Purpose**: Forward `alloc`, `alloc_zeroed`, `dealloc` and `realloc` to mimalloc's aligned
+  entry points through `libmimalloc-sys`, which basemind already depends on, so the leak-check
+  build (`system-allocator`) leaves no dependency unused.
+
+### Modifications
+
+- Calls `libmimalloc-sys` by path, with `cast()` instead of `as` pointer casts and per-call
+  `SAFETY` comments; the four methods keep upstream's behaviour (always the `_aligned` entry
+  points, `dealloc` ignoring the layout).
+- Adds `owned_by_mimalloc` (`mi_is_in_heap_region`) and the tests that use it; leaves out
+  upstream's `extended` helpers module.
+
+### License
+
+```text
+Copyright 2019 Octavian Oncescu
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+MIT is compatible with basemind's MIT license.
