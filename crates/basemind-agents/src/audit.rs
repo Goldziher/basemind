@@ -392,15 +392,16 @@ impl AuditSink for FileAuditSink {
 }
 
 /// Whether `record` may use the part of the cap kept for what must not go unrecorded: a
-/// launch, an exit, a registration or its release, an allow, or a stop that stopped a session
-/// (at most one per session). Never a refusal, a denial or a repeated stop, which a caller can
+/// launch, an exit, a registration or its release, an allow or an allow that did not reach the
+/// harness, or a stop that stopped a session (at most one per session). Never a refusal, a denial or a repeated stop, which a caller can
 /// loop on.
 pub(crate) fn kept_for(record: &AuditRecord) -> bool {
     match record.event {
         AuditEvent::Launch | AuditEvent::Exit => true,
         AuditEvent::Registration => matches!(record.outcome, "registered" | "unregistered"),
-        AuditEvent::Approval | AuditEvent::ApprovalAnswer => {
-            record.approval.as_ref().is_some_and(|approval| approval.allowed)
+        AuditEvent::Approval => record.approval.as_ref().is_some_and(|approval| approval.allowed),
+        AuditEvent::ApprovalAnswer => {
+            record.approval.as_ref().is_some_and(|approval| approval.allowed) || record.outcome == "allow_undelivered"
         }
         AuditEvent::Stop => matches!(record.outcome, "requested" | "cascaded"),
         AuditEvent::Refusal => false,

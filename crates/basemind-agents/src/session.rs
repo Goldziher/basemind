@@ -467,6 +467,12 @@ impl SessionHandle {
     pub fn pid(&self) -> u32 {
         self.0.pid
     }
+
+    /// Whether the session is over, so a control sent now is refused.
+    #[cfg(all(test, unix))]
+    pub(crate) fn finished(&self) -> bool {
+        self.0.state().finished
+    }
 }
 
 impl Drop for Session {
