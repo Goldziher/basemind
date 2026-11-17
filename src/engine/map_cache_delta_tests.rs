@@ -79,6 +79,7 @@ fn source(token: &str, n: usize) -> String {
 /// step the refreshed map equals a map built from scratch over the same store.
 #[test]
 fn a_refreshed_map_equals_a_rebuilt_one() {
+    crate::store::init_isolated_cache();
     for seed in [0x9e37_79b9_7f4a_7c15_u64, 0x2545_f491_4f6c_dd1d] {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -175,6 +176,7 @@ fn epoch_round_trip(store: &mut Store, cache: &mut MapCache, rel: &RelPath, labe
 /// outline of the content it replaced, and a rescan that changed nothing publishes nothing.
 #[test]
 fn a_refresh_after_one_edit_decodes_one_outline() {
+    crate::store::init_isolated_cache();
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let token = "delta_one_edit";

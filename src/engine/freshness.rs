@@ -317,6 +317,7 @@ mod tests {
     fn the_outline_served_is_the_one_the_stamp_names_when_the_map_lags_the_store() {
         use crate::store::{Store, VIEW_WORKING};
 
+        crate::store::init_isolated_cache();
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         let path = RelPath::from("a.rs");
