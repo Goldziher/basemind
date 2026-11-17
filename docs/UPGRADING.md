@@ -6,6 +6,30 @@ basemind keeps its index in a machine-global cache (`BASEMIND_DATA_HOME`, defaul
 by every workspace. An upgrade never asks you to wipe it. This page says what happens to the old shape and what
 is cleaned up.
 
+## Upgrading from 0.33 to 0.34
+
+0.34 bumps the release minor, replaces the MCP tools and the agent messaging protocol. In order:
+
+1. Update the plugin and the binary together, then restart every session. The marketplace plugins,
+   npm and pip run the binary their manifest pins. OpenCode's `basemind-opencode` package, Hermes and
+   the status line run `basemind` from `PATH`, so update that binary too.
+2. Run `basemind comms stop`, so the 0.33 daemon is replaced (see "Upgrading to agent comms v2").
+3. Run `basemind scan`. The index is wiped and rebuilt at its first open, and the blob store moves to
+   `cache/blobs/v34/`, so every file is re-extracted and every document re-embedded once (see "What
+   changes on upgrade").
+4. Re-run `basemind init` (or `/bm-init`) in each repository that has a basemind rules block. A block
+   written by 0.33 or earlier routes agents to `code` mode `outline` and the other retired tools;
+   init replaces the block in place with the verb-tool routing. Pass `--yes` when running it
+   without a terminal, or it only prints what it would change.
+5. Replace `permissions.allow` entries in `.claude/settings.json` and `.claude/settings.local.json`
+   that name a retired tool (`mcp__plugin_basemind_basemind__code`, `__git`, `__memory`, `__admin`,
+   `__graph`, `__web`, `__shell`, `__workspace`, `__agents`) or the `mcp__plugin_basemind_basemind__*`
+   wildcard, which also approves the tools that write. `basemind init --settings-target local` (or
+   `shared`) does this: it removes those entries and lists each read-only tool, under both the plugin
+   prefix and `mcp__basemind__`. `memory_save`, `index_rescan` and the agent tools keep asking.
+6. Update scripts and prompts for the tool renames ("Tool mapping" below) and the `basemind agent`
+   CLI ("Upgrading to agent comms v2").
+
 ## Upgrading to the verb tools (ADR-0018)
 
 The release after 0.33 replaces the mode-dispatched MCP tools `code`, `git`, `memory` and `admin`
