@@ -336,6 +336,12 @@ impl GitHistoryIndex {
         }
     }
 
+    /// Whether the index under `basemind_dir` exists. Only a build creates it: a reader that finds
+    /// none answers as an unbuilt index (history tools live-walk) instead of creating an empty one.
+    pub fn exists(basemind_dir: &Path) -> bool {
+        basemind_dir.join(GIT_HISTORY_DIR).is_dir()
+    }
+
     /// A handle backed by an index another process holds (the DAEMON's), reached through
     /// `forwarder`. Takes no lock and performs no IO: this is what every front-end running under a
     /// live daemon holds — a `daemon_writer` serve, and the one-shot CLI — instead of opening the
