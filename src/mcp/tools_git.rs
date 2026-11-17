@@ -10,7 +10,6 @@ use rmcp::tool;
 
 use super::BasemindServer;
 use super::strict::Strict;
-use super::types::{FindCommitsByPathParams, HotFilesParams};
 use super::types_tools::{GitBlameParams, GitDiffParams, GitLogParams};
 use crate::engine::Workspace;
 
@@ -84,29 +83,18 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
-    /// Body of `git_log`, shared with `basemind git log`.
+    /// Body of the `git_log` tool.
     pub(crate) async fn git_log_call(&self, p: GitLogParams) -> Result<CallToolResult, McpError> {
         self.op(p, Workspace::git_log).await
     }
 
-    /// Body of `git_blame`, shared with `basemind git blame`.
+    /// Body of the `git_blame` tool.
     pub(crate) async fn git_blame_call(&self, p: GitBlameParams) -> Result<CallToolResult, McpError> {
         self.op(p, Workspace::git_blame).await
     }
 
-    /// Body of `git_diff`, shared with `basemind git diff`.
+    /// Body of the `git_diff` tool.
     pub(crate) async fn git_diff_call(&self, p: GitDiffParams) -> Result<CallToolResult, McpError> {
         self.op_unpaged(p, Workspace::git_diff).await
-    }
-
-    /// Churn-ranked files. No MCP tool: `basemind git churn`.
-    pub(crate) async fn git_churn_call(&self, p: HotFilesParams) -> Result<CallToolResult, McpError> {
-        self.cli_op(p, Workspace::git_churn).await
-    }
-
-    /// Commits whose changed paths match a regex. No MCP tool of its own (`git_log` with a
-    /// directory `path` covers the common case): `basemind git by-path`.
-    pub(crate) async fn git_by_path_call(&self, p: FindCommitsByPathParams) -> Result<CallToolResult, McpError> {
-        self.cli_op(p, Workspace::git_by_path).await
     }
 }
