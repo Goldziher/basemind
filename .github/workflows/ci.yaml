@@ -255,13 +255,15 @@ jobs:
       - uses: actions/checkout@v7
       - uses: xberg-io/actions/setup-mise@v1
         with:
-          install-args: python uv
+          install-args: python uv node
       # ~keep The session-start tests skip themselves without `jq`, so its absence must fail the step.
       - name: pytest (plugin launcher and session-start hook)
         run: |
           set -euo pipefail
           command -v jq
-          uv run --no-project --with pytest python -m pytest -v tests/test_mcp_launch_prune.py tests/test_session_start_hook.py tests/test_agent_hooks.py
+          uv run --no-project --with pytest python -m pytest -v tests/test_mcp_launch_prune.py tests/test_mcp_launch_signals.py tests/test_session_start_hook.py tests/test_agent_hooks.py tests/test_pre_tool_guard_hook.py
+      - name: node (npm wrapper installer)
+        run: node --test tests/npm_install_https.test.cjs
 
   hermes:
     name: hermes plugin package
