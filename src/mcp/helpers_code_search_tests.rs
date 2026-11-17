@@ -1,0 +1,105 @@
+//! Hit hydration of `code_search`: a hit cites the paths that hold its content now, and each
+//! sidecar is decoded once per query.
+
+use std::path::Path;
+
+use super::*;
+use crate::config::ConfigV1;
+use crate::scanner::{EmbedMode, ScanSource, scan};
+use crate::search::bm25::bm25_search;
+
+const BODY: &str = "/// Retry a failed upload with exponential backoff.\npub fn retry_upload(attempts: u32) -> u32 {\n    \
+                    attempts * 2\n}\n";
+
+fn scanned(root: &Path) -> Store {
+    crate::store::init_isolated_cache();
+    let cfg = ConfigV1::with_defaults();
+    let mut store = Store::open(root, crate::store::VIEW_WORKING).expect("open");
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("scan");
+    store
+}
+
+fn keyword_seeds(store: &Store, query: &str) -> Vec<CodeSearchHit> {
+    let db = store.index_db.as_ref().expect("index db");
+    bm25_search(&db.view(), query, 50)
+        .into_iter()
+        .map(|hit| seed(hit.chunk_id))
+        .collect()
+}
+
+#[test]
+fn a_renamed_file_is_cited_at_its_new_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("old.rs"), BODY).unwrap();
+    drop(scanned(dir.path()));
+    std::fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).unwrap();
+    let store = scanned(dir.path());
+
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0);
+
+    assert!(!hydrated.hits.is_empty(), "the keyword lane finds the chunk");
+    for hit in &hydrated.hits {
+        assert_eq!(hit.path, "new.rs", "{hit:?}");
+        assert!(hit.also_at.is_empty(), "{hit:?}");
+    }
+    assert_eq!(hydrated.omitted, 0);
+}
+
+#[test]
+fn identical_files_are_one_hit_listing_every_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["b.rs", "a.rs", "vendor_copy.rs"] {
+        std::fs::write(dir.path().join(name), BODY).unwrap();
+    }
+    let store = scanned(dir.path());
+
+    let seeds = keyword_seeds(&store, "retry upload");
+    let distinct = seeds.len();
+    // A vector lane holds one row per path, so the same id can be ranked more than once.
+    let doubled: Vec<CodeSearchHit> = seeds.iter().flat_map(|s| [s.clone(), s.clone()]).collect();
+    let hydrated = hydrate_hits(&store, doubled, 10, 10);
+
+    assert_eq!(hydrated.hits.len(), distinct, "one hit per chunk, not per copy");
+    let top = &hydrated.hits[0];
+    assert_eq!(top.path, "a.rs", "the first sorted path is cited");
+    assert_eq!(top.also_at, ["b.rs", "vendor_copy.rs"]);
+    assert_eq!(
+        hydrated.texts.len(),
+        hydrated.hits.len(),
+        "rerank bodies line up with hits"
+    );
+}
+
+#[test]
+fn a_chunk_no_file_holds_is_dropped_and_counted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.rs"), BODY).unwrap();
+    let store = scanned(dir.path());
+    let mut seeds = vec![seed("00ff:0".to_string())];
+    seeds.extend(keyword_seeds(&store, "retry upload"));
+
+    let hydrated = hydrate_hits(&store, seeds, 10, 0);
+
+    assert_eq!(hydrated.omitted, 1);
+    assert!(hydrated.hits.iter().all(|h| h.path == "a.rs"));
+}
+
+#[test]
+fn each_sidecar_is_decoded_once_per_query() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let body: String = (0..12)
+        .map(|i| format!("/// Retry step {i}.\npub fn retry_step_{i}(n: u32) -> u32 {{ n + {i} }}\n\n"))
+        .collect();
+    std::fs::write(dir.path().join("steps.rs"), body).unwrap();
+    let store = scanned(dir.path());
+    let seeds = keyword_seeds(&store, "retry");
+    assert!(seeds.len() > 1, "several chunks of one file rank: {}", seeds.len());
+
+    let mut hydrator = ChunkHydrator::new(&store);
+    hydrator.resolve_paths(seeds.iter().map(|s| s.chunk_id.as_str()));
+    for hit in &seeds {
+        assert!(hydrator.chunk(&hit.chunk_id).is_some());
+    }
+
+    assert_eq!(hydrator.decodes(), 1, "{} chunks, one sidecar", seeds.len());
+}

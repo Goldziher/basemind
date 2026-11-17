@@ -101,6 +101,16 @@ pub struct CodeChunkBlob {
     pub config_digest: String,
 }
 
+/// A [`CodeChunkBlob`] decoded without its embeddings: the chunks a search hit is built from. The
+/// `embeddings` element is skipped as an unknown field, so a hit never allocates its file's vectors.
+/// Field names MUST stay in lock-step with [`CodeChunkBlob`].
+#[derive(Debug, Deserialize)]
+pub struct CodeChunkTexts {
+    /// Blob schema version — checked against the current release schema, same as the full decode.
+    pub schema_ver: u16,
+    pub chunks: Vec<CodeChunk>,
+}
+
 /// A cheap partial decode of a [`CodeChunkBlob`] sidecar: only what `embed_state_satisfied` needs to
 /// decide whether an unchanged file's embedding requirement is already met — without allocating the
 /// (potentially large) chunk text / `searchable_text` strings.

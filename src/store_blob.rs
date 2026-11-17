@@ -712,6 +712,20 @@ impl Store {
         Ok(Some(blob))
     }
 
+    /// Read a file's code chunks without their embeddings. Same contract as
+    /// [`read_chunks_by_hex`](Self::read_chunks_by_hex); backs `code_search` hit hydration.
+    #[cfg(feature = "code-search")]
+    pub fn read_chunk_texts_by_hex(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkTexts>, StoreError> {
+        let path = self.blob_path_chunk_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let decoded = decode_chunk_or_legacy(&path, &bytes)?;
+        let blob: crate::chunk::CodeChunkTexts = rmp_serde::from_slice(&decoded)?;
+        check_schema(blob.schema_ver)?;
+        Ok(Some(blob))
+    }
+
     /// Cheaply read a chunk sidecar's embedding state without decoding the chunk text. Same contract
     /// as [`read_chunks_by_hex`](Self::read_chunks_by_hex) — `Ok(None)` when the file has no chunk
     /// blob, a schema mismatch surfaces as an error — but reads only the plain envelope header (counts,
