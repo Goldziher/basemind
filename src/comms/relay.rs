@@ -34,6 +34,11 @@ pub const RELAY_MAGIC: [u8; 8] = *b"BMRELAY1";
 /// says hello must not do that for good.
 pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long a relay client waits for the daemon's [`RelayWelcome`]. The daemon builds the
+/// session's read stack before it answers, queued behind a machine-wide build gate for up to 15
+/// minutes, so this covers that wait and the build after it.
+pub const CLIENT_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
 /// Largest piece of a relay frame's body allocated before it has arrived.
 const FRAME_READ_CHUNK: usize = 64 * 1024;
 
@@ -189,7 +194,25 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec
 /// the caller can immediately hand it to rmcp when `welcome.accepted`. Any I/O or decode failure
 /// (including an older daemon that rejected the preamble as an over-long frame) surfaces as an
 /// `io::Error`, which the caller retries as a failed connection.
+///
+/// Bounded by [`CLIENT_HANDSHAKE_TIMEOUT`]: a daemon that accepted the link and then never answers
+/// (wedged, or stuck past its own build gate) fails the attempt with `TimedOut`, which the caller
+/// retries like any failed connection, instead of parking it for good.
 pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    hello: &RelayHello,
+) -> std::io::Result<RelayWelcome> {
+    tokio::time::timeout(CLIENT_HANDSHAKE_TIMEOUT, client_handshake_unbounded(stream, hello))
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("the daemon did not answer the relay hello within {CLIENT_HANDSHAKE_TIMEOUT:?}"),
+            ))
+        })
+}
+
+async fn client_handshake_unbounded<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     hello: &RelayHello,
 ) -> std::io::Result<RelayWelcome> {
@@ -397,6 +420,25 @@ mod tests {
             as_len > MAX_FRAME_BYTES,
             "preamble prefix {as_len} must exceed MAX_FRAME_BYTES {MAX_FRAME_BYTES} for fallback"
         );
+    }
+
+    /// A daemon that accepts the link and never answers fails the attempt, rather than parking
+    /// the relay's connection attempt for good.
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_that_never_answers_the_hello_times_the_handshake_out() {
+        let (mut client, _server) = tokio::io::duplex(4096);
+        let hello = RelayHello {
+            relay_proto_ver: RELAY_PROTO_VER,
+            root: std::path::PathBuf::from("/repo/root"),
+            view: "main".to_string(),
+            principal: Principal::parse("claude-code").expect("principal"),
+            host: None,
+            notices: Vec::new(),
+        };
+        let error = client_handshake(&mut client, &hello)
+            .await
+            .expect_err("no welcome ever comes");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
     }
 
     /// A frame's body is read as it arrives; a short one is an error naming what was missing.
