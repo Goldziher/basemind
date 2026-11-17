@@ -404,6 +404,49 @@ pub(crate) fn finalize_bm25_stats_if_any(store: &Store, config: &Config, sweep: 
 #[cfg(not(feature = "code-search"))]
 pub(crate) fn finalize_bm25_stats_if_any(_store: &Store, _config: &Config, _sweep: bool) {}
 
+/// A full pass's BM25 tally, opened before the drive (see `index::bm25_pass`).
+#[cfg(feature = "code-search")]
+pub(crate) type Bm25PassOpt = Option<crate::index::bm25_pass::Bm25Pass>;
+#[cfg(not(feature = "code-search"))]
+pub(crate) type Bm25PassOpt = Option<()>;
+
+/// Open the full pass's BM25 tally, so the pass can retire the postings it orphaned and update the
+/// stats from what it changed instead of walking both keyspaces at the end. `None` (the lanes then
+/// sweep and recompute as before) when chunking is off, the index is read-only, or the open failed.
+#[cfg(feature = "code-search")]
+pub(crate) fn begin_bm25_pass_if_any(store: &Store, config: &Config) -> Bm25PassOpt {
+    if !crate::scanner_code::should_chunk(config) {
+        return None;
+    }
+    let db = store.index_db.as_ref()?;
+    db.begin_bm25_pass()
+        .inspect_err(|error| tracing::warn!(%error, "open BM25 pass failed; the pass ends with a full sweep"))
+        .ok()
+}
+
+#[cfg(not(feature = "code-search"))]
+pub(crate) fn begin_bm25_pass_if_any(_store: &Store, _config: &Config) -> Bm25PassOpt {
+    None
+}
+
+/// End a full pass's BM25 upkeep: from its tally when it has one, else the full sweep and
+/// recompute of [`finalize_bm25_stats_if_any`].
+#[cfg(feature = "code-search")]
+pub(crate) fn finish_bm25_pass(store: &Store, config: &Config, pass: Bm25PassOpt) {
+    let Some(pass) = pass else {
+        finalize_bm25_stats_if_any(store, config, true);
+        return;
+    };
+    if let Err(error) = pass.finish() {
+        tracing::warn!(?error, "finalize BM25 index failed; the next full pass sweeps");
+    }
+}
+
+#[cfg(not(feature = "code-search"))]
+pub(crate) fn finish_bm25_pass(store: &Store, config: &Config, _pass: Bm25PassOpt) {
+    finalize_bm25_stats_if_any(store, config, true);
+}
+
 #[cfg(feature = "code-search")]
 pub(crate) fn bm25_posting_candidates<'a>(
     store: &Store,
