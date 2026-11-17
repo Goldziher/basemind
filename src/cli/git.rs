@@ -18,6 +18,19 @@ use crate::mcp::params::*;
 use super::render::{Emit, emit};
 use super::{resolve_path, run_tool};
 
+/// Whether `cmd` reads only the repository (commits, blobs, the working tree, the git-history index)
+/// and never a view's index, so it answers the same on every view. A symbol's history picks the
+/// definition from the view's outline, and a structural diff compares against the view's map.
+pub(crate) fn reads_only_the_repository(cmd: &GitCmd) -> bool {
+    !matches!(
+        cmd,
+        GitCmd::Log { symbol: Some(_), .. }
+            | GitCmd::SymbolHistory { .. }
+            | GitCmd::Diff { structural: true, .. }
+            | GitCmd::DiffOutline { .. }
+    )
+}
+
 #[derive(Subcommand, Debug)]
 pub enum GitCmd {
     /// Commit history: recent commits, a path's history, a commit search, a symbol's history, or

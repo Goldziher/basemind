@@ -72,17 +72,34 @@ impl Tools {
     }
 }
 
-/// The backend for one CLI command: the daemon when it is up, `forward` allows it and the view is
-/// the working tree (the only view the daemon hosts), else an in-process server.
-pub async fn build_tools(root: &Path, view: &str, documents: DocumentsCliOverrides, forward: bool) -> Result<Tools> {
+/// Which calls of a CLI command may go to the daemon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Forward {
+    /// None: the command is not a tool call (`admin telemetry`, `admin eval`).
+    Never,
+    /// A call on the working view, the only view the daemon hosts.
+    WorkingView,
+    /// A call that reads only the repository, never a view's index, so its answer is the same on
+    /// every view: the daemon's working-view session answers it whatever `--view` names.
+    AnyView,
+}
+
+/// The backend for one CLI command: the daemon when it is up and `forward` allows it for `view`,
+/// else an in-process server.
+pub async fn build_tools(root: &Path, view: &str, documents: DocumentsCliOverrides, forward: Forward) -> Result<Tools> {
+    let forwarded = match forward {
+        Forward::Never => false,
+        Forward::WorkingView => view == crate::store::VIEW_WORKING,
+        Forward::AnyView => true,
+    };
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if forward && view == crate::store::VIEW_WORKING && super::rescan::daemon_is_up() {
+    if forwarded && super::rescan::daemon_is_up() {
         return Ok(Tools {
             root: root.to_path_buf(),
             backend: Backend::Daemon(super::forward::DaemonSession::open(root).await?),
         });
     }
-    let _ = forward;
+    let _ = forwarded;
     Ok(Tools {
         root: root.to_path_buf(),
         backend: Backend::Local(Box::new(build_server(root, view, documents)?)),

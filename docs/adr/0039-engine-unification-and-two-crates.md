@@ -93,12 +93,19 @@ ADR-0023 and ADR-0032 stand except where this record changes them.
      exit 4 and names `basemind comms stop`. It never reads an older daemon's `isError` answers as
      successes. A relay protocol bump would have made every older `serve` refuse a newer daemon of
      its generation, which ADR-0024 rule 2 has it use as it is.
-   - A view other than the working tree runs in process, as the daemon hosts only the working view.
-     Its git-history tools live-walk while the daemon is up. Fjall locks the database directory
-     exclusively on every open, readers included (`try_lock` in fjall 3.1's `locked_file.rs`), and
-     the daemon holds `git-history.fjall/`. On this repository (2,349 commits), `git log --path
-     src/store.rs` (95 commits) takes a p50 of 180 ms that way, against 32 ms when the read was
-     forwarded over the daemon socket and 22 ms for the forwarded working-view call.
+   - A git call that reads only the repository (commits, blobs, the working tree, the
+     git-history index) answers the same on every view, so it is forwarded to the daemon's
+     working-view session whatever `--view` names: `git log` without `symbol`, `git blame`,
+     `git diff` without `structural`, `git churn` and `git by-path`. A test pins each byte for byte
+     against the in-process answer on the working view and on a `rev-*` view.
+   - Every other call on a view other than the working tree runs in process, as the daemon hosts
+     only the working view. While the daemon is up, its git-history reads live-walk. Fjall locks the
+     database directory exclusively on every open, readers included (`try_lock` in fjall 3.1's
+     `locked_file.rs`), and the daemon holds `git-history.fjall/`. Only a symbol's history
+     (`git log --path --symbol`) and a structural diff are git calls among them. On this repository
+     (2,349 commits), `git log --path src/store.rs --symbol lookup` on a `rev-*` view takes a p50 of
+     1,733 ms, against 1,296 ms when its history was read over the daemon socket. The same call
+     without `--symbol` is forwarded: 19 ms on either view.
    - `admin telemetry` and `admin eval` are not tool calls and run in process.
 
 ## Consequences

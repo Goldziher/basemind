@@ -419,3 +419,71 @@ fn a_call_on_another_view_runs_in_process_next_to_the_daemon() {
         .count();
     assert_eq!(hosted, 0, "{}", text(&out));
 }
+
+/// A git call that reads only the repository answers the same on every view, so with the daemon up
+/// it is forwarded whatever `--view` names: byte for byte what it prints in process on the working
+/// view and on a `rev-*` view. A symbol's history reads the view's outline, so it stays in process.
+#[test]
+fn a_view_independent_git_call_on_another_view_is_forwarded_and_answers_alike() {
+    let env = Env::new();
+    std::fs::write(env.root().join("a.rs"), b"pub fn alpha() -> u32 { 1 }\n").unwrap();
+    git(env.root(), &["commit", "-qam", "widen alpha"]);
+    for args in [&["scan", "--quiet"][..], &["scan", "--quiet", "--rev", "HEAD"][..]] {
+        let scan = env.run(args);
+        assert_eq!(code(&scan), 0, "{}", text(&scan));
+    }
+    let head = Command::new("git")
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .current_dir(env.root())
+        .output()
+        .expect("git rev-parse");
+    let rev_view = format!("rev-{}", String::from_utf8_lossy(&head.stdout).trim());
+    let calls: &[&[&str]] = &[
+        &["git", "log"],
+        &["git", "log", "--limit", "1"],
+        &["git", "log", "--path", "a.rs"],
+        &["git", "blame", "a.rs"],
+        &["git", "blame", "a.rs", "--symbol", "alpha"],
+        &["git", "diff"],
+        &["git", "diff", "a.rs"],
+        &["git", "churn"],
+        &["git", "by-path", "a"],
+        &["git", "log", "--path", "missing.rs"],
+    ];
+    let on = |view: &str, call: &[&str]| -> (i32, String, String) {
+        let args: Vec<&str> = ["--view", view, "--json"].iter().chain(call).copied().collect();
+        let out = env.run(&args);
+        (code(&out), answer(&out), diagnostics(&out))
+    };
+    let in_process: Vec<_> = calls.iter().map(|call| on(&rev_view, call)).collect();
+    for (call, rev) in calls.iter().zip(&in_process) {
+        assert_eq!(
+            &on("working", call),
+            rev,
+            "basemind {call:?} answers differently on {rev_view}"
+        );
+    }
+    assert_eq!(in_process[0].0, 0, "{}", in_process[0].2);
+    assert_eq!(in_process[9].0, 2, "{}", in_process[9].2);
+
+    let log = env.home.path().join("daemon-stderr.log");
+    let _daemon = Daemon::start_logged(&env, &log);
+    for (call, expected) in calls.iter().zip(&in_process) {
+        assert_eq!(
+            &on(&rev_view, call),
+            expected,
+            "basemind {call:?} on {rev_view} differs through the daemon"
+        );
+    }
+    let symbol_history = on(&rev_view, &["git", "log", "--path", "a.rs", "--symbol", "alpha"]);
+    assert_eq!(symbol_history.0, 0, "{}", symbol_history.2);
+    let hosted = std::fs::read_to_string(&log)
+        .expect("daemon log")
+        .matches("relay: hosting rmcp session")
+        .count();
+    assert_eq!(
+        hosted,
+        calls.len(),
+        "each repository-only call is forwarded; the symbol history is not"
+    );
+}
