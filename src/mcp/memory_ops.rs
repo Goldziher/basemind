@@ -388,7 +388,7 @@ pub(crate) fn delete_core(
 
 /// Truncate a value to [`MEMORY_PREVIEW_CHARS`] characters (never bytes), appending an ellipsis when
 /// clipped. Char-boundary safe.
-fn preview(value: &str) -> String {
+pub(crate) fn preview(value: &str) -> String {
     if value.len() > MEMORY_PREVIEW_CHARS {
         format!(
             "{}…",
