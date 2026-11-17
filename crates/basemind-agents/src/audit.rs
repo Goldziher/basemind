@@ -395,7 +395,7 @@ impl AuditSink for FileAuditSink {
 /// launch, an exit, a registration or its release, an allow, or a stop that stopped a session
 /// (at most one per session). Never a refusal, a denial or a repeated stop, which a caller can
 /// loop on.
-fn kept_for(record: &AuditRecord) -> bool {
+pub(crate) fn kept_for(record: &AuditRecord) -> bool {
     match record.event {
         AuditEvent::Launch | AuditEvent::Exit => true,
         AuditEvent::Registration => matches!(record.outcome, "registered" | "unregistered"),

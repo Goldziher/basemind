@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
@@ -120,6 +120,8 @@ pub(crate) struct Inner {
     pub(crate) registrations: AtomicU32,
     /// The allows given over the supervisor's life, against the budget's `max_allows`.
     allows: Arc<AtomicU32>,
+    /// Set once a record the reserve holds room for could not be written.
+    pub(crate) exhausted: Arc<AtomicBool>,
     refusals: Refusals,
     /// Serializes registrations, each with its record.
     pub(crate) registering: Mutex<()>,
@@ -150,11 +152,19 @@ impl Inner {
         })
     }
 
-    /// Appends `record`, counting a failure.
+    /// Appends `record`, counting a failure. A record the reserve was claimed for that still
+    /// cannot be written exhausts the log: from then on the supervisor launches and allows
+    /// nothing, and tells the observer once.
     pub(crate) fn audit(&self, record: &AuditRecord) -> std::io::Result<()> {
         let written = self.audit.record(record);
         if written.is_err() {
             self.audit_failures.fetch_add(1, Ordering::SeqCst);
+            if crate::audit::kept_for(record)
+                && !self.exhausted.swap(true, Ordering::SeqCst)
+                && let Some(observer) = self.observer.get()
+            {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer.audit_exhausted()));
+            }
         }
         written
     }
@@ -287,6 +297,7 @@ impl Supervisor {
                 audit_failures: AtomicU64::new(0),
                 registrations: AtomicU32::new(0),
                 allows: Arc::default(),
+                exhausted: Arc::default(),
                 refusals: Refusals::default(),
                 registering: Mutex::new(()),
             }),
@@ -299,6 +310,17 @@ impl Supervisor {
     pub fn with_observer(self, observer: Arc<dyn SessionObserver>) -> Self {
         let _ = self.inner.observer.set(observer);
         self
+    }
+
+    /// Whether the audit log is exhausted: a record the supervisor's reserve was claimed for
+    /// could not be written (a write error, or another writer filled the file). From then on
+    /// every launch is refused with [`SupervisorError::AuditExhausted`] and no allow is given;
+    /// sessions already running go on, and their stops and exits are attempted. The observer
+    /// hears it once ([`SessionObserver::audit_exhausted`]); the embedding should surface it and
+    /// have the operator rotate the log before building a new supervisor.
+    #[must_use]
+    pub fn audit_exhausted(&self) -> bool {
+        self.inner.exhausted.load(Ordering::SeqCst)
     }
 
     /// The policy in force.
@@ -376,7 +398,11 @@ impl Supervisor {
             }
         };
         let id = table.next;
-        let allowance = Allowance::new(inner.allows.clone(), inner.policy.budget().max_allows);
+        let allowance = Allowance::new(
+            inner.allows.clone(),
+            inner.policy.budget().max_allows,
+            inner.exhausted.clone(),
+        );
         let prepared = LaunchToken::generate()
             .and_then(|token| Ok((token, crate::identity::random_bytes::<4>()?)))
             .map_err(SupervisorError::Token)

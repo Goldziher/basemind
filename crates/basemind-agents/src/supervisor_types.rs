@@ -172,6 +172,11 @@ pub struct Launched {
 pub trait SessionObserver: Send + Sync {
     /// `event` happened in `session`.
     fn event(&self, session: SessionId, event: &Event);
+
+    /// The audit log became exhausted ([`Supervisor::audit_exhausted`](crate::Supervisor::audit_exhausted)):
+    /// called once, on the thread whose record failed. Every launch is refused from then on;
+    /// the embedding should tell the operator, outside the log. Does nothing by default.
+    fn audit_exhausted(&self) {}
 }
 
 /// Why the supervisor refused a request. Every variant has a stable [`code`](Self::code), the
@@ -259,6 +264,11 @@ pub enum SupervisorError {
     /// (64 over its life), which its share of the audit log's reserve was sized for.
     #[error("the supervisor's registrations are spent")]
     RegistrationLimit,
+    /// A record the supervisor's share of the audit log's reserve was claimed for could not be
+    /// written, so it launches nothing more
+    /// ([`Supervisor::audit_exhausted`](crate::Supervisor::audit_exhausted)).
+    #[error("the audit log is exhausted; launching stays off until it is rotated")]
+    AuditExhausted,
 }
 
 impl SupervisorError {
@@ -286,6 +296,7 @@ impl SupervisorError {
             Self::RoleBound => "role_bound",
             Self::AllowsExhausted => "allows_exhausted",
             Self::RegistrationLimit => "registration_limit",
+            Self::AuditExhausted => "audit_exhausted",
         }
     }
 }

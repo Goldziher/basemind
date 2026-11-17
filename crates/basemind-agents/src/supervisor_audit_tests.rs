@@ -228,3 +228,64 @@ fn a_launch_that_failed_after_its_record_spends_the_budget() {
     assert_eq!(refused.err().map(|error| error.code()), Some("budget_exhausted"));
     assert_eq!(outcomes(&audit, AuditEvent::Launch), ["accepted"]);
 }
+
+/// A log whose reserve is gone: every launch record fails, and each attempt is counted.
+#[derive(Default)]
+struct NoRoom {
+    launches_tried: std::sync::atomic::AtomicUsize,
+}
+
+impl AuditSink for NoRoom {
+    fn record(&self, record: &AuditRecord) -> std::io::Result<()> {
+        if record.event == AuditEvent::Launch {
+            self.launches_tried.fetch_add(1, Ordering::SeqCst);
+            return Err(std::io::Error::other("the audit log is full"));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn an_exhausted_reserve_refuses_every_launch_and_says_so_outside_the_log() {
+    let scratch = Scratch::new();
+    let sink = Arc::new(NoRoom::default());
+    let told = Arc::new(Told::default());
+    let supervisor = registered(
+        Supervisor::new(
+            LaunchPolicy::new(policy(&[HarnessKind::ClaudeCode])).unwrap(),
+            vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())],
+            registry(),
+            sink.clone(),
+        )
+        .unwrap(),
+    )
+    .with_observer(told.clone());
+    assert!(!supervisor.audit_exhausted());
+    let first = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request());
+    assert_eq!(first.err().map(|error| error.code()), Some("audit_failed"));
+    assert!(supervisor.audit_exhausted());
+    assert_eq!(told.0.load(Ordering::SeqCst), 1, "the observer was not told");
+    for _ in 0..3 {
+        let refused = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request());
+        assert_eq!(refused.err().map(|error| error.code()), Some("audit_exhausted"));
+    }
+    assert_eq!(
+        sink.launches_tried.load(Ordering::SeqCst),
+        1,
+        "a launch was tried on an exhausted log"
+    );
+    assert!(supervisor.list().is_empty());
+    assert_eq!(told.0.load(Ordering::SeqCst), 1, "the observer was told more than once");
+}
+
+/// Counts how often it was told the log is exhausted.
+#[derive(Default)]
+struct Told(std::sync::atomic::AtomicUsize);
+
+impl SessionObserver for Told {
+    fn event(&self, _: SessionId, _: &crate::event::Event) {}
+
+    fn audit_exhausted(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
