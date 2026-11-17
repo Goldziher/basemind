@@ -4,20 +4,21 @@
 //! `opencode acp` 2.3.0 runs `opencode serve --stdio`, its MCP servers and plugins in a group of
 //! their own; they exit once the server's input closes, about 1.7 s after the session's group
 //! died, and once took more than 3 s. While a session of such a flavor runs, the process table
-//! is read every [`POLL`] and every process proven to be the session's at that moment is
-//! recorded by pid and start time: a descendant of the harness by parent links, or a member of
-//! the POSIX session the harness leads (only a descendant can be one). A process that called
-//! `setsid` records the session it leads as the session's too.
+//! is read every [`POLL`] and every process taken for the session's by these rules is recorded
+//! by pid and start time: a descendant of the harness by parent links (to a parent
+//! that started no later than the child), or a member of the POSIX session the harness or a
+//! recorded descendant leads, while that leader is in the same listing.
 //!
 //! Once the session has ended, [`Detached::reap`] waits for those processes to exit and kills
-//! what is left. A process group is signalled only when every process in it is the session's;
+//! what is left: the processes recorded, and members of a recorded session whose leader is
+//! still listed. A process group is signalled only when every process in it is the session's;
 //! otherwise each of the session's processes in it is signalled alone, and each only after its
 //! pid and start time were checked again (through a pidfd on Linux, which closes the gap
 //! between that check and the signal). Nothing is killed without a listing of the process
 //! table. A descendant that left before the first listing, or started and left between two,
 //! is not seen.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -88,14 +89,18 @@ impl Detached {
             record.leader = None;
             return false;
         }
-        let mut ours: BTreeSet<i32> = BTreeSet::from([leader.pid]);
+        let listed = listed(procs);
+        // The session's processes by pid, with their start times.
+        let mut ours: BTreeMap<i32, u64> = BTreeMap::from([(leader.pid, leader.start)]);
         // Parent links first, to a fixed point: a child is listed with a pid larger or smaller
-        // than its parent's, so one pass in pid order is not enough.
+        // than its parent's, so one pass in pid order is not enough. A parent that started
+        // after its child is a later holder of the pid, not its parent.
         loop {
             let before = ours.len();
             for proc in procs {
-                let parent_ours = ours.contains(&proc.ppid);
-                if (parent_ours || in_sessions(&record.sessions, proc)) && ours.insert(proc.pid) {
+                let parent_ours = ours.get(&proc.ppid).is_some_and(|start| *start <= proc.start);
+                if (parent_ours || in_sessions(&record.sessions, &listed, proc)) && !ours.contains_key(&proc.pid) {
+                    ours.insert(proc.pid, proc.start);
                     remember(&mut record, proc);
                 }
             }
@@ -135,19 +140,29 @@ impl Detached {
     /// The session's processes still running in `procs`.
     fn left(&self, procs: &[ProcInfo]) -> Vec<ProcInfo> {
         let record = self.record();
+        let listed = listed(procs);
         procs
             .iter()
-            .filter(|proc| !proc.zombie && (record.procs.contains(&proc.id()) || in_sessions(&record.sessions, proc)))
+            .filter(|proc| {
+                !proc.zombie && (record.procs.contains(&proc.id()) || in_sessions(&record.sessions, &listed, proc))
+            })
             .copied()
             .collect()
     }
 }
 
-/// Whether `proc` is in a session a recorded process leads.
-fn in_sessions(sessions: &BTreeSet<ProcId>, proc: &ProcInfo) -> bool {
+/// Every process in `procs`, zombies included.
+fn listed(procs: &[ProcInfo]) -> BTreeSet<ProcId> {
+    procs.iter().map(ProcInfo::id).collect()
+}
+
+/// Whether `proc` is in a session a recorded process leads, while that leader is in the same
+/// listing (alive or a zombie): once it is gone its pid, and so the session id, can name an
+/// unrelated session, and only the processes recorded individually are the session's.
+fn in_sessions(sessions: &BTreeSet<ProcId>, listed: &BTreeSet<ProcId>, proc: &ProcInfo) -> bool {
     sessions
         .iter()
-        .any(|leader| proc.sid == leader.pid && proc.start >= leader.start)
+        .any(|leader| listed.contains(leader) && proc.sid == leader.pid && proc.start >= leader.start)
 }
 
 fn remember(record: &mut Record, proc: &ProcInfo) {
@@ -335,6 +350,54 @@ mod tests {
         assert!(!detached.contains(procs[6].id()));
         // A reused pid is not the recorded process.
         assert!(!detached.contains(ProcId { pid: 502, start: 101 }));
+    }
+
+    #[test]
+    fn a_session_id_counts_only_while_its_leader_is_listed() {
+        let detached = Detached::default();
+        detached.follow(leader());
+        // A descendant leads a session of its own; its member is recorded.
+        detached.observe(&[
+            proc(500, 1, 500, 500),
+            proc(504, 500, 504, 504),
+            proc(505, 504, 504, 504),
+        ]);
+        // 504 is gone and an unrelated process took its pid and leads a session of that id, as
+        // a new terminal would; it and its member are not the session's, alive leader or not.
+        let reused = ProcInfo {
+            start: 300,
+            ..proc(504, 1, 504, 504)
+        };
+        let member = ProcInfo {
+            start: 301,
+            ..proc(606, 504, 504, 504)
+        };
+        assert!(detached.observe(&[proc(500, 1, 500, 500), reused, member]));
+        assert!(!detached.contains(reused.id()) && !detached.contains(member.id()));
+        assert!(detached.left(&[reused, member]).is_empty());
+        // The members recorded while their leader lived are still the session's.
+        assert_eq!(detached.left(&[proc(505, 1, 504, 504)]), [proc(505, 1, 504, 504)]);
+    }
+
+    #[test]
+    fn a_parent_link_counts_only_to_a_parent_older_than_its_child() {
+        let detached = Detached::default();
+        detached.follow(leader());
+        // 700 names 501 as its parent but started before it: 501 is a later holder of the pid.
+        let older = ProcInfo {
+            start: 50,
+            ..proc(700, 501, 700, 700)
+        };
+        let child = ProcInfo {
+            start: 150,
+            ..proc(501, 500, 500, 500)
+        };
+        detached.observe(&[proc(500, 1, 500, 500), child, older]);
+        assert!(detached.contains(child.id()));
+        assert!(
+            !detached.contains(older.id()),
+            "a process was taken for the child of a newer one"
+        );
     }
 
     #[test]
