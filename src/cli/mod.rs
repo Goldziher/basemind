@@ -140,7 +140,11 @@ pub fn run(
         .context("build tokio runtime")?;
 
     runtime.block_on(async move {
-        let forward = !matches!(&cmd, ToolCmd::Admin(admin) if admin::runs_in_process(admin));
+        let forward = match &cmd {
+            ToolCmd::Admin(admin) if admin::runs_in_process(admin) => context::Forward::Never,
+            ToolCmd::Git(git) if git::reads_only_the_repository(git) => context::Forward::AnyView,
+            _ => context::Forward::WorkingView,
+        };
         let tools = context::build_tools(root, view, documents, forward).await?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
