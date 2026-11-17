@@ -420,7 +420,7 @@ impl WorkspacePool {
         let full = full || rebuild_pending || from_layered || store.needs_full_scan();
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
         if store.layered_read.is_some() {
-            *store = Store::open_with_holder(&entry.root, VIEW_WORKING, LockHolder::Rescan)?;
+            *store = Store::open_with_holder(&entry.root, VIEW_WORKING, LockHolder::Daemon)?;
         }
         if !incremental {
             let last = entry.last_full.lock().unwrap_or_else(PoisonError::into_inner);
@@ -821,7 +821,7 @@ impl WorkspacePool {
         }
         let store = match cold {
             Some(store) => store,
-            None => Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Rescan)?,
+            None => Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Daemon)?,
         };
         let rebuild_pending = store.index_rebuild_needed;
         if rebuild_pending {

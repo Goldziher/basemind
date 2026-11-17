@@ -31,7 +31,7 @@ WARMUP, LOAD, IDLE = 120.0, 600.0, 180.0
 DAEMON, MAIN = 4242, 4343
 
 
-def healthy(rng: random.Random) -> list[dict[str, Any]]:
+def healthy(rng: random.Random, load: float = LOAD) -> list[dict[str, Any]]:
     """A run whose memory ramps during warm-up then plateaus with noise, and whose idle is quiet."""
     recs: list[dict[str, Any]] = [
         {
@@ -39,7 +39,7 @@ def healthy(rng: random.Random) -> list[dict[str, Any]]:
             "t": 0,
             "binary": "synthetic",
             "version": "synthetic",
-            "duration": LOAD,
+            "duration": load,
             "warmup": WARMUP,
             "idle": IDLE,
             "sample_every": EVERY,
@@ -49,8 +49,8 @@ def healthy(rng: random.Random) -> list[dict[str, Any]]:
     t = 2.0
     cpu = {DAEMON: 0.0, MAIN: 0.0}
     short_pid = 9000
-    while t < LOAD + IDLE:
-        phase = "warmup" if t < WARMUP else "load" if t < LOAD else "idle"
+    while t < load + IDLE:
+        phase = "warmup" if t < WARMUP else "load" if t < load else "idle"
         for pid, role, base in ((DAEMON, "daemon", 400), (MAIN, "serve", 20)):
             ramp = min(t, WARMUP) / WARMUP
             mem = (base * (0.5 + 0.5 * ramp) + rng.gauss(0, base * 0.03)) * MIB
@@ -122,10 +122,10 @@ def healthy(rng: random.Random) -> list[dict[str, Any]]:
                 "ms": 3.0,
             }
         )
-        if abs(t - LOAD) < EVERY / 2:
+        if abs(t - load) < EVERY / 2:
             recs.append({"kind": "phase", "t": t, "name": "idle_start"})
         t += EVERY
-    end = LOAD + IDLE
+    end = load + IDLE
     recs += [
         {"kind": "shutdown", "t": end + 1, "step": "main_stdin_eof", "exited": True, "secs": 0.2},
         {"kind": "shutdown", "t": end + 2, "step": "host_sigkill", "exited": True, "secs": 0.3},
@@ -161,6 +161,31 @@ def late_plateau(rng: random.Random) -> list[dict[str, Any]]:
     for r in recs:
         if r.get("kind") == "proc" and r["pid"] == DAEMON:
             extra = 20 * MIB * min(max(r["t"] - WARMUP, 0), 180) / 60
+            r["footprint"] += int(extra)
+            r["rss"] += int(extra)
+    return recs
+
+
+LONG_LOAD = 3600.0
+
+
+def long_plateau(rng: random.Random) -> list[dict[str, Any]]:
+    """An hour of load where a cache fills for ten minutes after warm-up and then holds: passes."""
+    recs = healthy(rng, LONG_LOAD)
+    for r in recs:
+        if r.get("kind") == "proc" and r["pid"] == DAEMON:
+            extra = 30 * MIB * min(max(r["t"] - WARMUP, 0), 600) / 600
+            r["footprint"] += int(extra)
+            r["rss"] += int(extra)
+    return recs
+
+
+def slow_leak(rng: random.Random) -> list[dict[str, Any]]:
+    """An hour of load gaining 0.5 MiB/min: under the slope rule's 1 MiB/min, caught by the floor."""
+    recs = healthy(rng, LONG_LOAD)
+    for r in recs:
+        if r.get("kind") == "proc" and r["pid"] == DAEMON:
+            extra = 0.5 * MIB * r["t"] / 60
             r["footprint"] += int(extra)
             r["rss"] += int(extra)
     return recs
@@ -202,6 +227,8 @@ def checked_nothing(_rng: random.Random) -> list[dict[str, Any]]:
 CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set[str]]] = [
     ("healthy", healthy, 0, set()),
     ("late-plateau", late_plateau, 0, set()),
+    ("long-plateau", long_plateau, 0, set()),
+    ("slow-leak", slow_leak, 1, {"R2f"}),
     ("rss-climb", rss_climb, 1, {"R2"}),
     ("idle-busy", idle_busy, 1, {"R6"}),
     ("fd-leak", fd_leak, 1, {"R3"}),
