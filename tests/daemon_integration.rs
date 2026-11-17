@@ -1449,7 +1449,12 @@ async fn daemon_hosts_cold_layered_files_and_symbols_without_standalone_fjall() 
         "\"$schema\" = \"v1\"\n[documents]\nenabled=false\nembed=false\n[code_search]\nenabled=false\nembed=false\n",
     )
     .unwrap();
-    for index in 0..10 {
+    // ~keep The daemon's watcher may rescan between writing `committed.rs` and committing it, when
+    // ~keep `cold.rs` and `committed.rs` are both overlay candidates. Over the overlay budget (10% of
+    // ~keep the base's files, 20% of its bytes) that pass promotes the workspace to a standalone
+    // ~keep index, which is right for the product and fails this test. With 10 files it did whenever
+    // ~keep the commit outlasted the watcher's debounce; 40 keeps every interleaving under budget.
+    for index in 0..40 {
         std::fs::write(root.join(format!("keep_{index}.rs")), format!("fn keep_{index}() {{}}")).unwrap();
     }
     git(&["add", "."]);
