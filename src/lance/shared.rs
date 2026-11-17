@@ -33,6 +33,7 @@ impl<'a> LivePaths<'a> {
         paths
     }
 
+    #[cfg(any(feature = "documents", feature = "code-search"))]
     pub(super) fn from_exact(entries: impl IntoIterator<Item = (&'a str, u32, &'a str)>) -> Self {
         let mut paths = Self::default();
         for (key, ordinal, path) in entries {

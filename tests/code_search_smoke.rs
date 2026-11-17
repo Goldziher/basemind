@@ -6,7 +6,8 @@
 //!
 //! The embedding model downloads on first use. When it is unavailable (offline CI, cold grammar),
 //! the scan still succeeds but produces no vectors, so `code semantic` yields no hits or errors —
-//! the test then SKIPS gracefully rather than failing, per the plan's cold-start contract.
+//! the test then fails unless `BASEMIND_TEST_ALLOW_NO_EMBEDDER` allows the skip
+//! (`basemind::testing::unavailable`).
 //!
 //! These invocations were left on the removed `basemind query …` group by the nine-domain
 //! consolidation. Because the whole file is `code-search`-gated and that feature is in no default

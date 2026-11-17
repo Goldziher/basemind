@@ -196,14 +196,11 @@ launcher downloads the matching published basemind binary, or uses `BASEMIND_BIN
 <details>
 <summary><strong>Hermes</strong></summary>
 
-[Install the program](#install-the-program) first. Install the locally generated wheel into the
-same Python environment Hermes runs in, then enable the plugin:
+[Install the program](#install-the-program) first. Install the plugin into the same Python
+environment Hermes runs in, at the version of your `basemind` binary, then enable it:
 
 ```bash
-git clone https://github.com/Goldziher/basemind
-cd basemind
-uv build --wheel --out-dir dist/hermes plugin/.hermes/package
-python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-0.29.3-py3-none-any.whl
+python -m pip install "basemind-hermes-plugin==$(basemind --version | awk '{print $2}')"
 hermes plugins enable basemind
 ```
 
@@ -213,8 +210,13 @@ The binary must be on `PATH`. Comms notifications are
 best-effort. You can also configure `mcp_servers.basemind` with `command: basemind` and
 `args: [serve]` for direct access to the tools.
 
-PyPI version 0.29.3 predates the skill-registration fix and MCP bridge. Use the source wheel above
-until a newer release includes these changes; reinstalling that published version will not add them.
+To run a binary built from a checkout, build the wheel from the same checkout, so its skills name
+the tools that binary serves:
+
+```bash
+uv build --wheel --out-dir dist/hermes plugin/.hermes/package
+python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-*.whl
+```
 
 </details>
 

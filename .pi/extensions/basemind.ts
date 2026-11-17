@@ -89,7 +89,7 @@ index and the same capabilities:
 
 - Outline a file: \`basemind code outline <path>\`
 - Find a symbol: \`basemind code symbols <name>\`
-- Find call sites: \`basemind code references <name>\`
+- Find call sites: \`basemind code refs <name>\`
 - Find callers: \`basemind code callers <path> <name>\`
 - Regex over content: \`basemind code grep <pattern>\`
 - Git history / blame: \`basemind git recent\`, \`basemind git blame <path>\`

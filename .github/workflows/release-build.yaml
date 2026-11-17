@@ -1,0 +1,321 @@
+name: Release build
+
+# Builds, packages and smoke-tests the four release archives. publish.yaml calls it for a tag and
+# uploads the result; ci.yaml calls it nightly so the publish build (the `full` feature set on
+# windows-2022 and in the manylinux containers, which no test leg builds) breaks there first rather
+# than on tag day. It only reads: uploading belongs to the caller.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref (tag or sha) to build
+        required: true
+        type: string
+      version:
+        description: Version every archive's binary must report
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-native:
+    name: Build / ${{ matrix.triple }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ~keep MACOSX_DEPLOYMENT_TARGET holds the minimum macOS at 14.0 for the Rust and CMake-built
+          # ~keep code; without it, cmake targets the macos-26 runner's SDK.
+          - triple: aarch64-apple-darwin
+            os: macos-26
+            macos_deployment_target: "14.0"
+          - triple: x86_64-pc-windows-msvc
+            # Pinned to windows-2022 (VS2022 / MSVC 14.4x). `windows-latest` rolled to a VS18 /
+            # MSVC 14.51 image that fails to compile xberg-libwpd's vendored C++
+            # (`make_shared<WP6SubDocument>`); 14.4x — the toolchain that shipped every prior
+            # release — compiles it. Revisit when the newer MSVC (or upstream libwpd) handles it.
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
+
+      # workflow_dispatch checks out the requested tag, whose dependency action may predate the
+      # dual-name fix. Keep this bridge in the current workflow while tagged source stays immutable.
+      - name: Ensure both Windows zlib import-library names exist
+        if: matrix.triple == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $zlibFix = "C:\zlibfix"
+          $zlib = Join-Path $zlibFix "zlib.lib"
+          $zlibStatic = Join-Path $zlibFix "zlibstatic.lib"
+          if (-not (Test-Path $zlibStatic) -and (Test-Path $zlib)) {
+            Copy-Item -Path $zlib -Destination $zlibStatic -Force
+          }
+          if (-not (Test-Path $zlibStatic)) {
+            throw "zlibstatic.lib was not produced in $zlibFix"
+          }
+
+      - name: Setup cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.triple }}
+          cache-on-failure: true
+
+      - name: Discard incomplete xberg Tesseract source cache
+        shell: bash
+        run: |
+          cache_root="target/${{ matrix.triple }}/xberg-tesseract-cache"
+          for source in leptonica tesseract; do
+            source_root="$cache_root/third_party/$source"
+            if [ -d "$source_root" ] && [ ! -f "$source_root/CMakeLists.txt" ]; then
+              echo "Removing incomplete xberg Tesseract cache: $cache_root"
+              rm -rf "$cache_root"
+              break
+            fi
+          done
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          cargo build --locked --release --features full --bin basemind \
+            --target "${{ matrix.triple }}"
+
+      - name: Package release
+        shell: bash
+        run: ./scripts/package-release.sh ${{ matrix.triple }}
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-archive-${{ matrix.triple }}
+          path: basemind-${{ matrix.triple }}.*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux:
+    name: Build / ${{ matrix.triple }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ~keep Pinned by digest so a rebuilt `latest` cannot change the release toolchain between
+          # ~keep two runs of the same tag. Move tag and digest together (quay.io/pypa tag list).
+          - triple: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            image: quay.io/pypa/manylinux_2_28_x86_64:2026.11.14-1@sha256:d086f64cddcace250ef0f0073583c51b8298159303290a730c9f59bd91edfd2c
+            protoc_arch: linux-x86_64
+            protoc_sha256: 2febfd42b59ce93a28eb789019a470a3dd0449619bc04f84dad1333da261dec1
+            rustup_sha256: b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+          - triple: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux_2_28_aarch64:2026.11.14-1@sha256:34a5e614a4eb26f73f8bf44cbbf2acf8011620453d03ea35a58537bb3cde44de
+            protoc_arch: linux-aarch_64
+            protoc_sha256: 91d8253cdc0f0f0fc51c2b69c80677996632f525ad84504bfa5b4ee38ad3e49c
+            rustup_sha256: 9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Install Rust (in container)
+        shell: bash
+        env:
+          TRIPLE: ${{ matrix.triple }}
+          RUSTUP_SHA256: ${{ matrix.rustup_sha256 }}
+        run: |
+          set -euo pipefail
+          # Pin CARGO_HOME/RUSTUP_HOME to absolute paths and export them to
+          # GITHUB_ENV. Container steps do not share $HOME reliably, so rustup
+          # installs its default toolchain under one HOME and a later step cannot
+          # find it ("no default is configured"). Fixed paths remove the ambiguity.
+          export CARGO_HOME=/opt/cargo
+          export RUSTUP_HOME=/opt/rustup
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          # rustup-init itself, checked against a pinned hash, instead of piping a script to sh.
+          curl -fsSL -o /tmp/rustup-init \
+            "https://static.rust-lang.org/rustup/archive/1.29.3/${TRIPLE}/rustup-init"
+          echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c -
+          chmod +x /tmp/rustup-init
+          /tmp/rustup-init -y --profile minimal --default-toolchain "$channel"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          rustup target add "$TRIPLE"
+          echo "CARGO_HOME=/opt/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=/opt/rustup" >> "$GITHUB_ENV"
+          echo "/opt/cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install system dependencies (AlmaLinux 8)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf install -y epel-release
+          dnf install -y dnf-plugins-core
+          # Core build + image/text libraries. Some codecs (libde265, x265, dav1d)
+          # and libmagic-devel are unavailable on AlmaLinux 8; libaom is via EPEL.
+          # tesseract-langpack-eng conflicts with tesseract, so install tesseract only.
+          dnf install -y \
+            gcc gcc-c++ make cmake pkgconfig \
+            openssl-devel \
+            tesseract \
+            libaom-devel \
+            patchelf \
+            git curl wget unzip
+          echo "gcc: $(gcc --version | head -1)"
+
+      - name: Install protoc from official release
+        shell: bash
+        env:
+          PROTOC_SHA256: ${{ matrix.protoc_sha256 }}
+        run: |
+          set -euo pipefail
+          ver="28.2"
+          zip="protoc-${ver}-${{ matrix.protoc_arch }}.zip"
+          mkdir -p /usr/local/protoc
+          cd /tmp
+          curl -fsSL -o "$zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${ver}/${zip}"
+          echo "${PROTOC_SHA256}  ${zip}" | sha256sum -c -
+          unzip -q "$zip" -d /usr/local/protoc
+          ln -sf /usr/local/protoc/bin/protoc /usr/local/bin/protoc
+          echo "PROTOC=/usr/local/bin/protoc" >> "$GITHUB_ENV"
+          protoc --version
+
+      - name: Build libheif from source (1.23.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="1.23.0"
+          d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
+          cd "$d"
+          curl -fsSL -o libheif.tar.gz \
+            "https://github.com/strukturag/libheif/releases/download/v${ver}/libheif-${ver}.tar.gz"
+          echo "4c9182b18897617182eed12ab5eb9f9d855b3aa3a736d6bdb31abc034ec7d393  libheif.tar.gz" | sha256sum -c -
+          tar xzf libheif.tar.gz
+          cd "libheif-${ver}"
+          mkdir build && cd build
+          # Disable codecs unavailable on AlmaLinux 8 (libde265, x265, dav1d);
+          # libaom is present via EPEL.
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DWITH_EXAMPLES=OFF \
+            -DWITH_GDK_PIXBUF=OFF \
+            -DBUILD_TESTING=OFF \
+            -DWITH_LIBDE265=OFF \
+            -DWITH_X265=OFF \
+            -DWITH_DAV1D=OFF \
+            -DWITH_AOM=ON
+          make -j"$(nproc)"
+          make install
+          ldconfig
+          {
+            echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build release binary (native gcc + glibc-2.28 compat shim)
+        shell: bash
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          # Compile the glibc-2.28 compat shim and link it into the binary so
+          # ort's prebuilt ONNX Runtime (which references glibc 2.38 symbols)
+          # links against the 2.28 floor. Scoped to this target's RUSTFLAGS.
+          shim_obj="$PWD/glibc228_compat.o"
+          gcc -O2 -fPIC -c scripts/glibc228_compat.c -o "$shim_obj"
+          rustflags_var="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_RUSTFLAGS"
+          export "${rustflags_var}=-C link-arg=${shim_obj}"
+          cargo build --locked --release --features full --bin basemind --target "$TRIPLE"
+
+      - name: Verify glibc floor (<= 2.28)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.triple }}/release/basemind"
+          max="$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1 || true)"
+          echo "highest glibc symbol required: ${max:-none}"
+          if [ -n "$max" ] && \
+             [ "$(printf '%s\nGLIBC_2.28\n' "$max" | sort -V | tail -1)" != "GLIBC_2.28" ]; then
+            echo "::error::basemind requires $max (> GLIBC_2.28); a dependency pulled a newer glibc symbol"
+            exit 1
+          fi
+          echo "✓ glibc floor verified: ${max:-none} <= GLIBC_2.28"
+
+      - name: Package release
+        shell: bash
+        run: ./scripts/package-release.sh ${{ matrix.triple }}
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-archive-${{ matrix.triple }}
+          path: basemind-${{ matrix.triple }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Each archive runs on a stock runner that never built it: the bundled libraries, RUNPATH and
+  # code signature are what a user's machine sees, not the build host's.
+  smoke:
+    name: Smoke / ${{ matrix.triple }}
+    needs: [build-native, build-linux]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triple: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: basemind-x86_64-unknown-linux-gnu.tar.gz
+          - triple: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            archive: basemind-aarch64-unknown-linux-gnu.tar.gz
+          - triple: aarch64-apple-darwin
+            os: macos-26
+            archive: basemind-aarch64-apple-darwin.tar.gz
+          - triple: x86_64-pc-windows-msvc
+            os: windows-2022
+            archive: basemind-x86_64-pc-windows-msvc.zip
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: python
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-archive-${{ matrix.triple }}
+          path: ${{ runner.temp }}/archive
+      - name: Run the packaged binary
+        shell: bash
+        env:
+          ARCHIVE: ${{ runner.temp }}/archive/${{ matrix.archive }}
+          VERSION: ${{ inputs.version }}
+        run: python scripts/smoke_release_archive.py "$ARCHIVE" "$VERSION"

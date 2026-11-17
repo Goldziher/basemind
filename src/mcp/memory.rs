@@ -70,7 +70,7 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
 
 /// Open the vector store at `dir` off the async runtime. Only a `writer` (holding the workspace lock)
 /// creates or rebuilds it; any other open reads a matching one ([`crate::lance::LanceStore::open_existing`]).
-#[cfg(feature = "intelligence")]
+#[cfg(any(feature = "documents", feature = "code-search"))]
 async fn open_lance(
     dir: std::path::PathBuf,
     embedder: &crate::embeddings::SharedEmbedder,
@@ -90,7 +90,7 @@ async fn open_lance(
     .map_err(|e| format!("open LanceStore: {e}"))
 }
 
-#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+#[cfg(any(feature = "documents", feature = "code-search"))]
 pub(super) async fn lance_store(
     state: &ServerState,
 ) -> Result<Arc<crate::lance::LanceStore>, super::lance_cell::Unavailable> {

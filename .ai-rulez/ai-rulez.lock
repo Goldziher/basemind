@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.4'
 scope = 'all'
-tree = 'sha256:74fa77216d58a5898300bddee5f6cdedd2b85d9a7caebefa3212adb1666de330'
+tree = 'sha256:cd8d6fd8c93ef44b1b57436141d71525353ea46a109f9d4d92b0a1e74dac57da'
 
 [[served]]
 name = 'adr-workflow'
@@ -232,7 +232,7 @@ digest = 'sha256:ff9e2660b0851ae58c9e5912a62c7e57a598ef95db774fe7cbe1e4950679b70
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:b6b56bd5973388ac137f86be3a65ee59a73289ab576b25cb02fe15442ebf6680'
+digest = 'sha256:04ec69be5b165850ba7e356cd034db3bb692b88da24950164ef9a9a8d53f47b8'
 
 [[item]]
 kind = 'context'
@@ -286,7 +286,7 @@ digest = 'sha256:de5f1b738a9101ac064e363c8a60db9a35cf2b1e2275fd77e4fb94f609a9578
 kind = 'rule'
 id = 'release-versioning'
 path = 'rules/release-versioning.md'
-digest = 'sha256:96eca079872a6471bf1544074311004946435bfb055a3cb12aecc3d08457483f'
+digest = 'sha256:1d0a810135a21108c90e7dbef7f7e9781e1ec3695caff4d3cc1b2f18f6cd97fb'
 
 [[item]]
 kind = 'rule'

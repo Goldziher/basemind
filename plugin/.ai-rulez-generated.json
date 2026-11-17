@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:801b6b31efa46f8e01bd204c51dc2cf3583e7c0789332eeac9cefacc7a7a54f5",
+  "source_hash": "blake3:e04000860518cfe2d5a383a6f5f2c06662ef3bd7e62970921ce8d941b0940e20",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -586,6 +586,10 @@
       "content_hash": "blake3:440db0c1e280151df8563b620e8beb4a63b19cca39bdd88ea3259b29e4ea2f00",
       "mode": "0644"
     },
+    "LICENSE": {
+      "content_hash": "blake3:d1bfb631a9fdfb985d9a91a730e43b37a647187bbdc29893e87bce5a87c1fde9",
+      "mode": "0644"
+    },
     "assets/GEMINI.md": {
       "content_hash": "blake3:88ee6abf950716cd45ec834b02850ad33d2673621d64dc4a02e4d365377f311d",
       "mode": "0644"
@@ -679,7 +683,7 @@
       "mode": "0644"
     },
     "scripts/mcp-launch.sh": {
-      "content_hash": "blake3:4669fed355f3982ce67b5ad26e1c661634b8cc57ebcb7f7afa36fd942a7ca301",
+      "content_hash": "blake3:766dcfacfc3143c5f61d05ab7a2d5f69923e795b4c69c02923c5e470dcbb9d4f",
       "mode": "0755"
     },
     "skills/basemind-cli/SKILL.md": {
@@ -764,6 +768,7 @@
     }
   },
   "includes": [
+    "LICENSE",
     "assets/GEMINI.md",
     "hooks/inbox-notify",
     "hooks/pre-tool-guard",
