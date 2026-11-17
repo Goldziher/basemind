@@ -82,7 +82,8 @@ config is trusted.
   skill or agent. A project's `.claude/` and `.mcp.json` are not refused: Claude Code 2.1.325 and
   2.1.326 did not load them under these flags, and the checks above catch one that is.
   Codex, Gemini, Cursor and OpenCode are not launched over one of their project files in the
-  working directory or above it. Only the MCP tools the config names are pre-approved (Claude
+  working directory or above it, and Gemini, Cursor, Grok, Hermes and a generic ACP agent not over
+  a `.env*` file there, which could redirect their endpoint or proxy and so their credentials. Only the MCP tools the config names are pre-approved (Claude
   Code only). Claude Code's init frame is checked again every turn. A Codex turn notification
   without the `threadId` its schema requires fails the session, so a sub-agent's turn can neither
   end the session's turn nor escape the turn count.
@@ -155,6 +156,11 @@ protocol captures. Recorded frames, redacted, are the fixtures in `tests/fixture
   generate-json-schema --experimental` printed; no live request carried them. Under approval policy `never` an MCP call failed instead of running. A project
   `.codex/config.toml` was not loaded in an untrusted project (skills still load); it is in a
   trusted one, so the check stays.
+- **`.env` and `bunfig.toml` (2026-11-17).** Claude Code 2.1.326 and OpenCode 2.3.0 are
+  Bun-compiled; neither ran a working directory's `bunfig.toml` preload nor read its `.env` or
+  `.env.local`, and Codex 0.169 did not read a working directory's `.env` (it reads
+  `$CODEX_HOME/.env`, which is user configuration). Gemini CLI's `.env` lookup is from its
+  documentation and was not run.
 - **OpenCode 2.3.0** (`opencode acp`) speaks ACP on stdio. `session/new` returns no `modes`; its
   mode is the `mode` config option (`build`, `plan`), and `session/set_mode` `plan` is accepted.
   By default it wrote a file unasked; under `OPENCODE_CONFIG_CONTENT={"permission":"ask"}` it asked

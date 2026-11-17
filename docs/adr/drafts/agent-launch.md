@@ -120,7 +120,11 @@ id that fails the grammar stops the launch.
      `.mcp.json`, user plugins and claude.ai connectors were not loaded. Codex, Gemini, Cursor and
      OpenCode are not launched over a project file of theirs in the working directory or above it
      (for Cursor, anything in `.cursor/` but `rules`); a path that cannot be read counts as
-     present.
+     present. Gemini CLI, which reads the first `.env` above its working directory, and the ACP
+     agents whose loaders are unknown (Cursor, Grok, Hermes, generic) are not launched over a
+     `.env*` file there either: `GOOGLE_GEMINI_BASE_URL` or `HTTPS_PROXY` in it would send their
+     credentials elsewhere. Claude Code 2.1.326, Codex 0.169 and OpenCode 2.3.0 were seen not to
+     read one, nor a `bunfig.toml`; Gemini's lookup is from its documentation and not run.
    - **Executables.** The harness executable and the MCP server's command are resolved to absolute
      paths at the plan, against the absolute entries of the launcher's `PATH`, and refused when
      they lie inside the root, directly, at the end of their links or through any link on the

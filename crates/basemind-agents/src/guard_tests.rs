@@ -198,3 +198,42 @@ fn a_root_at_or_above_home_or_around_a_configuration_directory_is_refused() {
         );
     }
 }
+
+#[test]
+fn a_dotenv_file_refuses_a_harness_that_may_load_it() {
+    let outer = tempfile::tempdir().unwrap();
+    let outer = outer.path().canonicalize().unwrap();
+    let cwd = outer.join("repo/app");
+    std::fs::create_dir_all(&cwd).unwrap();
+    for name in [".env", ".env.local"] {
+        let file = outer.join("repo").join(name);
+        std::fs::write(&file, "GEMINI_API_KEY=x\n").unwrap();
+        for flavor in [
+            AcpFlavor::Gemini,
+            AcpFlavor::Cursor,
+            AcpFlavor::Grok,
+            AcpFlavor::Hermes,
+            AcpFlavor::Generic,
+        ] {
+            let kind = HarnessKind::Acp(flavor);
+            assert!(
+                matches!(
+                    check_project_config(kind, &cwd, None),
+                    Err(LaunchError::ProjectConfig { ref path, .. }) if *path == file
+                ),
+                "{kind} launched over {name}"
+            );
+        }
+        // Verified live not to read a working directory's `.env`.
+        for kind in [
+            HarnessKind::ClaudeCode,
+            HarnessKind::Codex,
+            HarnessKind::Acp(AcpFlavor::OpenCode),
+        ] {
+            assert!(check_project_config(kind, &cwd, None).is_ok(), "{kind} refused {name}");
+        }
+        std::fs::remove_file(&file).unwrap();
+    }
+    std::fs::write(outer.join("repo/environment.txt"), "").unwrap();
+    assert!(check_project_config(HarnessKind::Acp(AcpFlavor::Gemini), &cwd, None).is_ok());
+}

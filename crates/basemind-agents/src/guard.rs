@@ -209,6 +209,32 @@ fn project_config(kind: HarnessKind) -> &'static [(&'static str, &'static [&'sta
     }
 }
 
+/// Whether `kind` may load a `.env` file (`.env`, `.env.local`, ...) from the directory it
+/// works in or an ancestor, where a variable such as `GOOGLE_GEMINI_BASE_URL` or `HTTPS_PROXY`
+/// would redirect its requests and credentials. Gemini CLI reads the first `.env` above its
+/// working directory (from its documentation; not run here). Claude Code 2.1.326, Codex 0.169
+/// and OpenCode 2.3.0 were seen not to read one there; Cursor, Grok, Hermes and a generic agent
+/// were not checked, so they are refused too.
+fn loads_dotenv(kind: HarnessKind) -> bool {
+    matches!(
+        kind,
+        HarnessKind::Acp(
+            AcpFlavor::Gemini | AcpFlavor::Cursor | AcpFlavor::Grok | AcpFlavor::Hermes | AcpFlavor::Generic
+        )
+    )
+}
+
+/// The first `.env` file in `dir`, or `dir/.env` itself when the directory cannot be listed.
+fn dotenv(dir: &Path) -> Option<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return loadable(&dir.join(".env"), &[]);
+    };
+    entries
+        .flatten()
+        .find(|entry| entry.file_name().to_str().is_some_and(|name| name.starts_with(".env")))
+        .map(|entry| entry.path())
+}
+
 /// The first thing at `path` the harness may load: `path` itself, or, for a directory with
 /// `allowed` entries, its first entry not among them. Anything that cannot be looked at counts
 /// as present, so an unreadable directory refuses the launch rather than passing it.
@@ -245,13 +271,14 @@ fn loadable(path: &Path, allowed: &[&str]) -> Option<std::path::PathBuf> {
 pub(crate) fn check_project_config(kind: HarnessKind, cwd: &Path, home: Option<&Path>) -> Result<(), LaunchError> {
     let home = home.and_then(|home| home.canonicalize().ok());
     for dir in cwd.ancestors().filter(|dir| Some(*dir) != home.as_deref()) {
-        for (name, allowed) in project_config(kind) {
-            if let Some(path) = loadable(&dir.join(name), allowed) {
-                return Err(LaunchError::ProjectConfig {
-                    harness: kind.id(),
-                    path,
-                });
-            }
+        let files = project_config(kind)
+            .iter()
+            .find_map(|(name, allowed)| loadable(&dir.join(name), allowed));
+        if let Some(path) = files.or_else(|| loads_dotenv(kind).then(|| dotenv(dir)).flatten()) {
+            return Err(LaunchError::ProjectConfig {
+                harness: kind.id(),
+                path,
+            });
         }
     }
     Ok(())
