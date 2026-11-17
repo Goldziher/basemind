@@ -621,17 +621,19 @@ pub(super) async fn scan_and_refresh(
             .shared
             .corpus_bytes
             .store(corpus_bytes, std::sync::atomic::Ordering::Relaxed);
-        let cache = if was_scoped {
-            state.shared.cache.load().with_delta(&store, &updated, &removed)
+        let current = state.shared.cache.load();
+        if was_scoped {
+            Some(current.with_delta(&store, &updated, &removed))
         } else {
-            super::MapCache::build(
+            current.refreshed(
                 &store,
                 super::l1_cache::budget_bytes_from(&state.shared.config.resources),
             )
-        };
-        std::sync::Arc::new(cache)
+        }
     };
-    state.shared.cache.store(new_cache);
+    if let Some(cache) = new_cache {
+        state.shared.cache.store(std::sync::Arc::new(cache));
+    }
     state.shared.note_index_changed();
 
     Ok(report)

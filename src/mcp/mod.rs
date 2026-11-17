@@ -72,7 +72,6 @@ mod lance_cell;
 mod lean;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod lenient;
-mod map_fingerprint;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod memory;
 #[cfg(feature = "memory")]

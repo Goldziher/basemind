@@ -51,6 +51,7 @@ const STREAM_CHUNK: usize = 256;
 ///
 /// Every field is already in `store.index.files`; they are copied into the view so a read tool can
 /// answer membership / language / size questions without taking the store lock.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FileMeta {
     /// Content hash of the source file — the [`L1Cache`] key and the blob name to read on a miss.
     pub(crate) hash_hex: Box<str>,
@@ -59,6 +60,9 @@ pub(crate) struct FileMeta {
     /// File mtime in nanoseconds as indexed (0 = unknown); with `size_bytes` the stamp grep holds the
     /// live file to before trusting the content's bloom.
     pub(crate) mtime_ns: i64,
+    /// The extract epoch the index entry names ([`crate::store::FileEntry::extract_epoch`]). A
+    /// cached outline older than it was decoded before a refresh rewrote the blob under this hash.
+    pub(crate) extract_epoch: u16,
 }
 
 /// Sorted view of every indexed file that has a readable L1 blob.
@@ -84,17 +88,33 @@ impl FileIndexView {
             .index
             .files
             .par_iter()
-            .filter_map(|(path, entry)| {
-                let blob = store.blob_path_fm_hex(&entry.hash_hex);
-                let exists = blob.is_file()
-                    || store
-                        .fallback_blobs_dir
-                        .as_ref()
-                        .is_some_and(|fallback| blob.file_name().is_some_and(|name| fallback.join(name).is_file()));
-                exists.then(|| (path.clone(), FileMeta::from(entry)))
-            })
+            .filter_map(|(path, entry)| has_blob(store, entry).then(|| (path.clone(), FileMeta::from(entry))))
             .collect();
         Self { files }
+    }
+
+    /// The paths a [`build`](Self::build) over `store` would map differently from this view:
+    /// `updated` are in `store`'s index and absent here or projected differently (a path left out
+    /// for a missing blob is re-probed), `removed` are here and no longer in the index.
+    ///
+    /// [`with_delta`](Self::with_delta) over exactly these paths yields the view `build` would. The
+    /// comparison allocates nothing for an unchanged path, so a refresh whose scan changed a
+    /// handful of files costs one pass over the index rather than a whole projection.
+    pub(crate) fn diff(&self, store: &crate::store::Store) -> (Vec<RelPath>, Vec<RelPath>) {
+        let updated = store
+            .index
+            .files
+            .iter()
+            .filter(|(path, entry)| !self.files.get(*path).is_some_and(|meta| meta.projects(entry)))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let removed = self
+            .files
+            .keys()
+            .filter(|path| !store.index.files.contains_key(*path))
+            .cloned()
+            .collect();
+        (updated, removed)
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -105,7 +125,6 @@ impl FileIndexView {
         self.files.get(path)
     }
 
-    #[cfg(test)]
     pub(crate) fn contains(&self, path: &RelPath) -> bool {
         self.files.contains_key(path)
     }
@@ -140,7 +159,7 @@ impl FileIndexView {
         }
         for path in updated {
             match store.index.files.get(path) {
-                Some(entry) if store.blob_path_fm_hex(&entry.hash_hex).is_file() => {
+                Some(entry) if has_blob(store, entry) => {
                     files.insert(path.clone(), FileMeta::from(entry));
                 }
                 _ => {
@@ -152,6 +171,28 @@ impl FileIndexView {
     }
 }
 
+/// Whether `entry`'s L1 blob is present in `store`'s blob directory or its fallback: the files a
+/// view maps, since the old whole-corpus build dropped a file whose blob failed to read.
+pub(crate) fn has_blob(store: &crate::store::Store, entry: &crate::store::FileEntry) -> bool {
+    let blob = store.blob_path_fm_hex(&entry.hash_hex);
+    blob.is_file()
+        || store
+            .fallback_blobs_dir
+            .as_ref()
+            .is_some_and(|fallback| blob.file_name().is_some_and(|name| fallback.join(name).is_file()))
+}
+
+impl FileMeta {
+    /// Whether `entry` projects to this meta. Field by field, so no meta is built to compare.
+    fn projects(&self, entry: &crate::store::FileEntry) -> bool {
+        *self.hash_hex == *entry.hash_hex
+            && *self.language == *entry.language
+            && self.size_bytes == entry.size_bytes
+            && self.mtime_ns == entry.mtime
+            && self.extract_epoch == entry.extract_epoch
+    }
+}
+
 impl From<&crate::store::FileEntry> for FileMeta {
     fn from(entry: &crate::store::FileEntry) -> Self {
         Self {
@@ -159,6 +200,7 @@ impl From<&crate::store::FileEntry> for FileMeta {
             language: entry.language.as_str().into(),
             size_bytes: entry.size_bytes,
             mtime_ns: entry.mtime,
+            extract_epoch: entry.extract_epoch,
         }
     }
 }
@@ -170,6 +212,7 @@ impl Clone for FileMeta {
             language: self.language.clone(),
             size_bytes: self.size_bytes,
             mtime_ns: self.mtime_ns,
+            extract_epoch: self.extract_epoch,
         }
     }
 }
@@ -340,8 +383,36 @@ impl L1Cache {
         None
     }
 
-    /// Drop the cached value of `hash_hex`, if any.
-    fn forget(&self, hash_hex: &str) {
+    /// Whether this cache reads the blob directories `store` reads. A reopened store that names
+    /// others (a layered base published since) needs a cache of its own.
+    pub(crate) fn serves(&self, store: &crate::store::Store) -> bool {
+        self.blobs_dir == store.blobs_dir && self.fallback == store.fallback_blobs_dir
+    }
+
+    /// Drop the outlines of the `superseded` hashes no path of `next` still names: content a rescan
+    /// replaced or removed. Kept, they would hold the budget until evicted while no current path
+    /// can reach them. A reader still on the previous snapshot reads such a blob again on a miss,
+    /// which costs latency, never an answer.
+    pub(crate) fn forget_superseded(&self, mut superseded: ahash::AHashSet<&str>, next: &FileIndexView) {
+        for meta in next.files.values() {
+            if superseded.is_empty() {
+                return;
+            }
+            superseded.remove(&*meta.hash_hex);
+        }
+        for hash_hex in superseded {
+            self.forget(hash_hex);
+        }
+    }
+
+    /// Whether an outline of `hash_hex` is cached.
+    #[cfg(test)]
+    pub(crate) fn holds(&self, hash_hex: &str) -> bool {
+        self.lock().lru.contains(hash_hex)
+    }
+
+    /// Drop the cached value of `hash_hex`, if any, so the next read decodes its blob again.
+    pub(crate) fn forget(&self, hash_hex: &str) {
         let mut guard = self.lock();
         if let Some(previous) = guard.lru.pop(hash_hex) {
             guard.charged = guard.charged.saturating_sub(l1_heap_bytes(&previous));
