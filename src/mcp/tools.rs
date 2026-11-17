@@ -54,8 +54,8 @@ impl BasemindServer {
         description = "Use for \"where is X defined\" when you know (part of) the name: finds \
         functions, types, constants and other symbols by name across the repository; a row is \
         `path`, `line`, `kind`, `name`, `signature`. Ranked: the exact name first, then prefix, \
-        then substring, then (with `fuzzy`) fuzzy matches. Definitions only: for any text use \
-        `code_grep`. \
+        then substring, then (with `fuzzy`) fuzzy matches; `stale`: file edited since the scan, \
+        `line` is current. Definitions only: for any text use `code_grep`. \
         Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
         annotations(
             read_only_hint = true,
@@ -140,14 +140,14 @@ impl BasemindServer {
     }
 
     #[tool(
-        title = "Find usages",
-        description = "Use for \"what calls X\", \"what implements X\", \"what imports X\" and \
-        \"which definition does this reference bind to\". `relation` picks the question; the name \
-        is matched exactly. `hits` maps each file to its hits, each a `line` (plus `callee` when \
-        it is not `name`). `path` pins the definition in that file; a hit then has `resolved` \
-        true (proven to bind to it), false (checked, not proven) or absent (not checked: \
-        `resolution` says why). A pinned file edited since it was indexed is an error naming \
-        `index_rescan`. \
+        title = "Find call sites, implementations and importers",
+        description = "Use for \"what calls X\", \"what implements X\", \"what imports X\", \"which \
+        definition does this bind to\" (`relation`). Callers are call sites only, not type uses or \
+        `use` lines (`code_grep`). `match` `exact`: the name or a path ending in it; `substring`: \
+        any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` \
+        if edited since the scan. Without `path` hits match by name only; \
+        `path` pins the definition there and sets `resolved` true (proven), false (not proven) or \
+        absent (`resolution` says why). \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,

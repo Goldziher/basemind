@@ -424,6 +424,11 @@ impl MapCache {
         self.doc_paths.binary_search(path).is_ok()
     }
 
+    /// What the index recorded about `path`'s content, without faulting in its outline.
+    pub(crate) fn meta(&self, path: &crate::path::RelPath) -> Option<&l1_cache::FileMeta> {
+        self.files.get(path)
+    }
+
     /// The language recorded for `path` at scan time, without faulting in its outline.
     pub(crate) fn language_of(&self, path: &crate::path::RelPath) -> Option<&str> {
         self.files.get(path).map(|meta| &*meta.language)

@@ -25,8 +25,7 @@ impl BasemindServer {
         arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow \
         it. A row is a 12-digit `sha`, `summary`, `author` and time; `rev` shows one commit in \
         full. A symbol's or a directory's history is read one window of commits per page: follow \
-        `next_cursor`, even from an empty page (`truncated_reason` `window`). Restart without a \
-        cursor refused because the git-history index came up between pages. \
+        `next_cursor`, even from an empty page (`truncated_reason` `window`). \
         Example: {\"path\":\"src/store.rs\",\"limit\":5}",
         annotations(
             read_only_hint = true,
