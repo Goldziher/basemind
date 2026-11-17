@@ -4,6 +4,7 @@
 use super::attack_tests::{approvals_body, consenting, replies};
 use super::tests::*;
 use super::*;
+use crate::event::FinishStatus;
 use crate::policy::{Budget, PolicySpec};
 use crate::spec::ApprovalVerdict;
 
@@ -288,5 +289,84 @@ impl SessionObserver for Told {
 
     fn audit_exhausted(&self) {
         self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_registration_that_could_not_be_recorded_exhausts_the_log() {
+    let scratch = Scratch::new();
+    let sink = Arc::new(super::attack_tests::SlowSink {
+        failing: vec![AuditEvent::Registration],
+        ..Default::default()
+    });
+    let supervisor = Supervisor::new(
+        LaunchPolicy::new(policy(&[HarnessKind::ClaudeCode])).unwrap(),
+        vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())],
+        registry(),
+        sink,
+    )
+    .unwrap();
+    let bound = supervisor.register_launcher_in_process("lead");
+    assert_eq!(bound.map_err(|error| error.code()), Err("audit_failed"));
+    assert!(
+        supervisor.audit_exhausted(),
+        "a kept record failed and the log was not exhausted"
+    );
+    // The binding was undone, and launching is off.
+    let refused = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request());
+    assert_eq!(refused.err().map(|error| error.code()), Some("audit_exhausted"));
+}
+
+#[test]
+fn every_kept_record_of_a_run_fits_the_bound_the_reserve_was_sized_by() {
+    let scratch = Scratch::new();
+    let mut config = scratch.config(HarnessKind::ClaudeCode, &approvals_body(&scratch, 1));
+    config.approval_policy = crate::test_support::always(ApprovalVerdict::Ask);
+    let configs = vec![config];
+    let bound = crate::supervisor_reserve::record_bound(&configs);
+    let (supervisor, audit) = start(consenting(), configs);
+    let recorder = Arc::new(Recorder::default());
+    let supervisor = supervisor.with_observer(recorder.clone());
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let approval = loop {
+        if let Some(approval) = recorder.approval() {
+            break approval;
+        }
+        assert!(Instant::now() < deadline, "no approval request");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    supervisor
+        .answer(&supervisor.operator().unwrap(), launched.id, &approval, true)
+        .unwrap();
+    await_replies(&scratch, 1);
+    supervisor.stop(&lead(), launched.id).unwrap();
+    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
+    supervisor.unregister_launcher("third");
+    drop(supervisor);
+    let kept: Vec<AuditRecord> = audit.records().into_iter().filter(crate::audit::kept_for).collect();
+    // Every kind of kept record was written, so the bound was checked against each.
+    let mut kinds: Vec<_> = kept.iter().map(|record| (record.event, record.outcome)).collect();
+    kinds.sort_by_key(|(event, outcome)| (event.id(), *outcome));
+    kinds.dedup();
+    assert_eq!(
+        kinds,
+        [
+            (AuditEvent::Approval, "allowed"),
+            (AuditEvent::ApprovalAnswer, "allowed"),
+            (AuditEvent::Exit, "stopped"),
+            (AuditEvent::Launch, "accepted"),
+            (AuditEvent::Registration, "registered"),
+            (AuditEvent::Registration, "unregistered"),
+            (AuditEvent::Stop, "requested"),
+        ]
+    );
+    for record in &kept {
+        let line = record.to_json_line().len() as u64 + 1;
+        assert!(
+            line <= bound,
+            "a {} record of {line} bytes is over the bound of {bound}",
+            record.event.id()
+        );
     }
 }
