@@ -4,6 +4,33 @@
 
 use super::*;
 
+/// Rescans that may hold a blocking thread at once. A scan holds its thread for the whole pass, and
+/// the daemon's blocking pool (16 threads) also runs every agent request, read-stack build and
+/// forwarded read. A burst of rescans across workspaces took every thread and queued all of those
+/// behind the scans.
+const MAX_CONCURRENT_RESCANS: usize = 4;
+
+static RESCAN_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_CONCURRENT_RESCANS);
+
+/// Run `f` on a blocking thread once one of `slots` is free. The permit moves into the closure, so
+/// it is held until the work itself ends, even when the caller stops waiting for it.
+async fn on_blocking_slot<T, F>(slots: &'static tokio::sync::Semaphore, f: F) -> Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    // The semaphore is a static that is never closed. ~keep
+    let permit = slots
+        .acquire()
+        .await
+        .unwrap_or_else(|_| unreachable!("rescan slots are never closed"));
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+}
+
 impl Broker {
     /// Scan/rescan a workspace on the sole-writer pool. The scan is CPU-bound, so it runs on a
     /// blocking thread while the reactor keeps serving other links. A scan/store error becomes a
@@ -39,7 +66,11 @@ impl Broker {
         let pool = Arc::clone(&self.workspaces);
         let cancel = self.scan_cancel.clone();
         let started = Instant::now();
-        match tokio::task::spawn_blocking(move || pool.rescan_as(&root, paths, full, embed, verify, &cancel)).await {
+        match on_blocking_slot(&RESCAN_SLOTS, move || {
+            pool.rescan_as(&root, paths, full, embed, verify, &cancel)
+        })
+        .await
+        {
             // A cancelled pass committed only part of the tree — surface it as an error so no ~keep
             // client mistakes the partial index for a completed rescan. ~keep
             Ok(Ok((_, true))) => CommsResponse::Error {
@@ -113,5 +144,35 @@ impl Broker {
                 0
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::on_blocking_slot;
+
+    /// Rescans past the bound wait for a slot instead of taking more blocking threads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rescans_past_the_bound_wait_for_a_slot() {
+        static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+        static RUNNING: AtomicUsize = AtomicUsize::new(0);
+        static PEAK: AtomicUsize = AtomicUsize::new(0);
+        let tasks: Vec<_> = (0..6)
+            .map(|_| {
+                tokio::spawn(on_blocking_slot(&SLOTS, || {
+                    let now = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+                    PEAK.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(50));
+                    RUNNING.fetch_sub(1, Ordering::SeqCst);
+                }))
+            })
+            .collect();
+        for task in tasks {
+            task.await.expect("join").expect("blocking work");
+        }
+        assert_eq!(PEAK.load(Ordering::SeqCst), 2, "at most the slot count run at once");
     }
 }

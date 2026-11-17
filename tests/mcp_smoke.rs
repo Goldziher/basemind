@@ -1938,308 +1938,6 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
     let _ = service.cancel().await;
 }
 
-/// End-to-end comms round-trip through the real `CommsClient` over an isolated Unix-socket
-/// broker — NOT the user's daemon. A throwaway `UdsFrontend` is bound to a temp socket and a
-/// temp store, then two clients with DISTINCT agent ids exercise the front-matter/body split:
-///
-/// * agent A posts (subject + body) to a shared room,
-/// * agent B's `read_history` returns the FRONT-MATTER (subject present) and NOT the body,
-/// * agent B's `get_body` returns the body,
-/// * agent B's inbox shows the unread message, then 0 unread after a `mark_read` pass.
-///
-/// Isolation: a per-test temp dir for the store + a per-test socket path, so the test daemon
-/// never touches the user's real `comms.sock` and parallel test runs do not collide.
-// `UdsFrontend` (and the `UnixListener` this test binds) is `#[cfg(unix)]` inside `frontend_uds`,
-#[cfg(all(feature = "comms", unix))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn comms_round_trip_front_matter_then_body_then_inbox() {
-    use std::sync::Arc;
-
-    use basemind::comms::client::CommsClient;
-    use basemind::comms::daemon::Broker;
-    use basemind::comms::frontend_uds::UdsFrontend;
-    use basemind::comms::ids::AgentId;
-    use basemind::comms::singleton::CommsPaths;
-    use basemind::comms::store::CommsStore;
-    use basemind::comms::transport::CommsFrontend;
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket_path = dir.path().join("c.sock");
-    let paths = CommsPaths {
-        comms_dir: dir.path().to_path_buf(),
-        socket_path: socket_path.clone(),
-    };
-
-    let store = Arc::new(CommsStore::open(dir.path()).expect("open comms store"));
-    let broker = Arc::new(Broker::new(store));
-    let listener = {
-        let std_listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind temp socket");
-        std_listener.set_nonblocking(true).expect("nonblocking");
-        tokio::net::UnixListener::from_std(std_listener).expect("adopt listener")
-    };
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let frontend = UdsFrontend::from_listener(listener, socket_path.clone());
-    let serve = tokio::spawn(async move { Box::new(frontend).serve(broker, shutdown_rx).await });
-
-    let agent_a = AgentId::parse("agent-a").expect("agent a");
-    let agent_b = AgentId::parse("agent-b").expect("agent b");
-    let mut a = CommsClient::connect(&paths, agent_a, None, None)
-        .await
-        .expect("connect a");
-    let mut b = CommsClient::connect(&paths, agent_b, None, None)
-        .await
-        .expect("connect b");
-
-    let thread = a
-        .start_thread(
-            Some("Team".to_string()),
-            None,
-            vec![basemind::comms::ids::AgentId::parse("agent-b").unwrap()],
-        )
-        .await
-        .expect("start thread")
-        .id;
-
-    let subject = "deploy status";
-    let body = b"all systems green".to_vec();
-    let message_id = a
-        .post_message(
-            thread.clone(),
-            subject.to_string(),
-            body.clone(),
-            vec!["ops".to_string()],
-            None,
-        )
-        .await
-        .expect("post");
-
-    let (history, _next) = b.read_history(thread.clone(), None, 10, None).await.expect("history");
-    assert_eq!(history.len(), 1, "exactly one posted message");
-    let seq_meta = &history[0];
-    let meta = &seq_meta.meta;
-    assert_eq!(seq_meta.seq, 1, "front-matter carries the per-thread seq");
-    assert_eq!(meta.subject, subject, "front-matter carries the subject");
-    assert_eq!(meta.id, message_id, "front-matter id matches the posted id");
-    assert_eq!(
-        meta.body_len,
-        body.len() as u32,
-        "front-matter carries body_len, not the body"
-    );
-    let meta_json = serde_json::to_value(meta).expect("serialize meta");
-    assert!(
-        meta_json.get("body").is_none(),
-        "history front-matter must NOT include the body: {meta_json}"
-    );
-    assert!(
-        meta_json.get("body_len").is_some(),
-        "history front-matter must include body_len: {meta_json}"
-    );
-
-    let fetched = b.get_body(message_id.clone()).await.expect("get_body");
-    assert_eq!(
-        fetched.as_deref(),
-        Some(body.as_slice()),
-        "message_get returns the exact body"
-    );
-
-    let (inbox, unread, _c) = b
-        .read_inbox(None, None, None, 10, true, None)
-        .await
-        .expect("inbox read+mark");
-    assert_eq!(inbox.len(), 1, "the posted message is in B's inbox");
-    assert_eq!(inbox[0].meta.subject, subject, "inbox carries front-matter subject");
-    assert_eq!(unread, 0, "mark_read drained the unread count in this page");
-
-    let (inbox2, unread2, _c2) = b
-        .read_inbox(None, None, None, 10, false, None)
-        .await
-        .expect("inbox re-read");
-    assert!(inbox2.is_empty(), "no unread messages remain after mark_read");
-    assert_eq!(unread2, 0, "unread count stays 0 after mark_read");
-
-    let second_id = a
-        .post_message(thread.clone(), "second".to_string(), b"more".to_vec(), vec![], None)
-        .await
-        .expect("post second");
-    let (inbox3, _u3, _c3) = b
-        .read_inbox(None, None, None, 10, false, None)
-        .await
-        .expect("inbox shows second");
-    assert_eq!(inbox3.len(), 1, "the second message is unread in B's inbox");
-    assert_eq!(inbox3[0].meta.id, second_id, "inbox shows the second message");
-
-    let (acked, cursors_advanced) = b.ack_inbox(vec![second_id.clone()], None, None).await.expect("ack");
-    assert_eq!(acked, 1, "exactly one message acked");
-    assert_eq!(
-        cursors_advanced,
-        vec![(thread.as_str().to_string(), 2)],
-        "ack advances B's thread cursor to seq 2"
-    );
-
-    let (inbox4, _u4, _c4) = b
-        .read_inbox(None, None, None, 10, false, None)
-        .await
-        .expect("inbox after ack");
-    assert!(inbox4.is_empty(), "ack removed the message from B's inbox");
-
-    let (history_after, _n) = b
-        .read_history(thread.clone(), None, 10, None)
-        .await
-        .expect("history after ack");
-    assert_eq!(history_after.len(), 2, "ack does not delete from the shared log");
-
-    let _ = shutdown_tx.send(true);
-    let _ = serve.await;
-}
-
-/// `inbox_wait` end to end over the same isolated UDS broker setup as the round-trip test above:
-/// agent-b posts, agent-a's `inbox_wait` (short timeout) returns promptly with the new message and
-/// `timed_out: false`; a second `inbox_wait` with nothing new posted times out.
-#[cfg(all(feature = "comms", unix))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn comms_inbox_wait_delivers_then_times_out() {
-    use std::sync::Arc;
-
-    use basemind::comms::client::CommsClient;
-    use basemind::comms::daemon::Broker;
-    use basemind::comms::frontend_uds::UdsFrontend;
-    use basemind::comms::ids::AgentId;
-    use basemind::comms::singleton::CommsPaths;
-    use basemind::comms::store::CommsStore;
-    use basemind::comms::transport::CommsFrontend;
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket_path = dir.path().join("c.sock");
-    let paths = CommsPaths {
-        comms_dir: dir.path().to_path_buf(),
-        socket_path: socket_path.clone(),
-    };
-
-    let store = Arc::new(CommsStore::open(dir.path()).expect("open comms store"));
-    let broker = Arc::new(Broker::new(store));
-    let listener = {
-        let std_listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind temp socket");
-        std_listener.set_nonblocking(true).expect("nonblocking");
-        tokio::net::UnixListener::from_std(std_listener).expect("adopt listener")
-    };
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let frontend = UdsFrontend::from_listener(listener, socket_path.clone());
-    let serve = tokio::spawn(async move { Box::new(frontend).serve(broker, shutdown_rx).await });
-
-    let agent_a = AgentId::parse("agent-a").expect("agent a");
-    let agent_b = AgentId::parse("agent-b").expect("agent b");
-    let mut a = CommsClient::connect(&paths, agent_a, None, None)
-        .await
-        .expect("connect a");
-    let mut b = CommsClient::connect(&paths, agent_b, None, None)
-        .await
-        .expect("connect b");
-
-    let thread = a
-        .start_thread(
-            Some("Team".to_string()),
-            None,
-            vec![basemind::comms::ids::AgentId::parse("agent-b").unwrap()],
-        )
-        .await
-        .expect("start thread")
-        .id;
-
-    b.post_message(
-        thread.clone(),
-        "deploy status".to_string(),
-        b"all green".to_vec(),
-        vec![],
-        None,
-    )
-    .await
-    .expect("b posts");
-
-    let (timed_out, rows, unread, _next) = a
-        .wait_inbox(None, None, None, None, None, 100, std::time::Duration::from_secs(10))
-        .await
-        .expect("first wait_inbox");
-    assert!(!timed_out, "a's wait must resolve from b's pre-existing post");
-    assert_eq!(rows.len(), 1, "exactly the one posted message");
-    assert_eq!(rows[0].meta.subject, "deploy status");
-    assert_eq!(
-        unread, 0,
-        "the single post was returned in rows; none remain beyond this page"
-    );
-
-    // `wait_inbox` never marks read (per its tool contract) — the caller acks once it has handled ~keep
-    // the page. Advance a's read cursor past b's post so the next wait sees a genuinely empty inbox ~keep
-    // and blocks to the timeout rather than re-delivering the same message. ~keep
-    a.read_inbox(None, None, None, 100, true, None)
-        .await
-        .expect("mark the delivered page read");
-
-    let (timed_out2, rows2, _unread2, _next2) = a
-        .wait_inbox(None, None, None, None, None, 100, std::time::Duration::from_millis(300))
-        .await
-        .expect("second wait_inbox");
-    assert!(timed_out2, "no new post landed; the second wait must time out");
-    assert!(rows2.is_empty(), "a timed-out wait returns no rows");
-
-    let _ = shutdown_tx.send(true);
-    let _ = serve.await;
-}
-
-/// Agent lifecycle modes stay in the flat schema and reject fields belonging to another mode
-/// before a cleanup can reach the broker.
-#[cfg(all(feature = "comms", unix))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agents_cleanup_and_status_are_advertised_and_validate_fields() {
-    let dir = build_repo();
-    let root = dir.path();
-    run_scan(root);
-    let transport = basemind::mcp::serve_in_memory(root, "working")
-        .await
-        .expect("in-memory serve");
-    let service = ().serve(transport).await.expect("rmcp handshake");
-
-    let tools = service.list_all_tools().await.expect("list tools");
-    let agents = tools
-        .iter()
-        .find(|tool| tool.name == "agents")
-        .expect("agents advertised");
-    let modes = agents
-        .input_schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .and_then(|properties| properties.get("mode"))
-        .and_then(|mode| mode.get("enum"))
-        .and_then(Value::as_array)
-        .expect("agents advertises a flat mode enum");
-    for expected in ["cleanup", "status"] {
-        assert!(
-            modes.iter().any(|mode| mode.as_str() == Some(expected)),
-            "agents mode enum is missing {expected:?}: {modes:?}"
-        );
-    }
-
-    let cleanup = service
-        .call_tool(call_params(
-            "agents",
-            json!({ "mode": "cleanup", "thread": "th-invalid" }),
-        ))
-        .await
-        .expect_err("cleanup rejects a thread filter");
-    assert!(format!("{cleanup:?}").contains("mode `cleanup` does not accept `thread`"));
-    let status = service
-        .call_tool(call_params("agents", json!({ "mode": "status", "apply": true })))
-        .await
-        .expect_err("status rejects cleanup's apply flag");
-    assert!(format!("{status:?}").contains("mode `status` does not accept `apply`"));
-    let apply = service
-        .call_tool(call_params("agents", json!({ "mode": "cleanup", "apply": true })))
-        .await
-        .expect_err("MCP cleanup is preview-only");
-    assert!(format!("{apply:?}").contains("preview-only over MCP"));
-
-    let _ = service.cancel().await;
-}
-
 /// Spawn `basemind serve` against `root`, optionally setting `BASEMIND_MCP_LEAN`, and return the
 /// connected rmcp client service.
 async fn spawn_serve(root: &Path, lean: Option<&str>) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
@@ -2428,10 +2126,10 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     let full = spawn_serve(root, None).await;
     let full_tools = full.list_all_tools().await.expect("list tools (full)");
     let full_names: Vec<&str> = full_tools.iter().map(|t| t.name.as_ref()).collect();
-    // The surface is the verb tools plus `agents` under `comms`. Hosts load every
-    // schema on every session, so a count that creeps up is a regression, not growth: asserted as
-    // a ceiling plus the always-on names, rather than a floor that any addition would satisfy.
-    let ceiling = basemind::mcp::params::VERB_TOOLS.len() + 1;
+    // The surface is the verb tools plus, under `comms`, the three deferred agent tools. A count
+    // that creeps up is a regression, not growth: asserted as a ceiling plus the always-on names,
+    // rather than a floor that any addition would satisfy.
+    let ceiling = basemind::mcp::params::VERB_TOOLS.len() + basemind::mcp::agent_tools::AGENT_TOOLS.len();
     assert!(
         full_tools.len() <= ceiling,
         "the surface must stay at {ceiling} tools or fewer, got {}: {full_names:?}",
@@ -3412,7 +3110,7 @@ async fn git_tools_reject_inexact_arguments() {
 /// advertising one fails here until it is put in one of the lists in `basemind::mcp::replay`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_advertised_tool_has_a_replay_decision() {
-    use basemind::mcp::replay::{NEVER_REPLAY_TOOLS, REPLAY_BY_MODE_TOOLS, REPLAY_SAFE_TOOLS, decisions};
+    use basemind::mcp::replay::{KEYED_REPLAY_TOOLS, NEVER_REPLAY_TOOLS, REPLAY_SAFE_TOOLS, decisions};
 
     let dir = build_repo();
     let root = dir.path();
@@ -3426,7 +3124,7 @@ async fn every_advertised_tool_has_a_replay_decision() {
             decisions(&tool.name),
             1,
             "`{}` is advertised and must be in exactly one of REPLAY_SAFE_TOOLS, NEVER_REPLAY_TOOLS and \
-             REPLAY_BY_MODE_TOOLS (src/mcp/replay.rs): decide whether the relay may send it twice",
+             KEYED_REPLAY_TOOLS (src/mcp/replay.rs): decide whether the relay may send it twice",
             tool.name
         );
     }
@@ -3435,7 +3133,7 @@ async fn every_advertised_tool_has_a_replay_decision() {
         assert!(advertised(listed), "`{listed}` has a replay decision and is not a tool");
     }
     if cfg!(feature = "comms") {
-        for listed in REPLAY_BY_MODE_TOOLS {
+        for listed in KEYED_REPLAY_TOOLS {
             assert!(advertised(listed), "`{listed}` has a replay decision and is not a tool");
         }
     }

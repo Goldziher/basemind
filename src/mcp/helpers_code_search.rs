@@ -336,7 +336,7 @@ async fn forward_fjall_lanes(
         };
     }
 
-    let mut client = match super::helpers_comms::connect_ephemeral_client(state).await {
+    let mut client = match super::helpers_daemon::connect_ephemeral_client(state).await {
         Ok(client) => client,
         Err(error) => {
             return Ok(LaneOutcome {

@@ -55,10 +55,14 @@ def expected_files(root: Path) -> dict[str, Path]:
     # ai-rulez source tree (`include` in config.plugins.toml).
     for package in ("npm-package", "pip-package", "opencode-plugin", "plugin/.ai-rulez"):
         files[f"{package}/LICENSE"] = root / "LICENSE"
+    # The marketplace clone's copy, which `/bm-statusline` falls back to and settings.json names.
+    files[".claude-plugin/statusline.sh"] = root / "plugin/.ai-rulez/scripts/statusline.sh"
     files["opencode-plugin/.pi/extensions/basemind.ts"] = root / ".pi/extensions/basemind.ts"
     for tree in TREES[:2]:
         for name in ("session-start", "inbox-notify", "run-hook.cmd"):
             files[f"{tree}/hooks/{name}"] = root / "plugin/.ai-rulez/hooks" / name
+    # Only Codex applies the input agent-as rewrites; Cursor's manifest does not run it.
+    files[".codex-plugin/hooks/agent-as"] = root / "plugin/.ai-rulez/hooks/agent-as"
     return files
 
 

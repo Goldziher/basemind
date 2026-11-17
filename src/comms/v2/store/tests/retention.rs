@@ -221,3 +221,67 @@ fn sweep_removes_rows_it_cannot_decode_and_goes_on() {
     );
     assert_eq!(store.sweep(), Ok(SweepReport::default()));
 }
+
+#[test]
+fn a_post_racing_the_sweep_of_its_idle_thread_lands_whole_or_not_at_all() {
+    let harness = Harness::new();
+    let threads: Vec<ThreadId> = (0..96)
+        .map(|n| start(&harness, "a", &format!("topic {n}"), &["b"]).thread)
+        .collect();
+    harness.clock.advance(MESSAGE_TTL + Duration::from_secs(1));
+
+    let start = std::sync::Barrier::new(2);
+    let outcomes: Vec<Result<PostReply, CommsError>> = std::thread::scope(|scope| {
+        let sweeping = scope.spawn(|| {
+            start.wait();
+            let mut report = harness.store().sweep_bounded(2).expect("sweep");
+            while report.more {
+                report = harness.store().sweep_bounded(2).expect("sweep");
+            }
+        });
+        let posting = scope.spawn(|| {
+            start.wait();
+            threads
+                .iter()
+                .map(|thread| harness.post(&caller("a"), into(thread, "late")))
+                .collect::<Vec<_>>()
+        });
+        sweeping.join().expect("sweeper");
+        posting.join().expect("poster")
+    });
+    harness.store().sweep().expect("a last sweep");
+
+    let mut landed = 0;
+    for (thread, outcome) in threads.iter().zip(outcomes) {
+        let read = harness.inbox(
+            &caller("b"),
+            InboxBody {
+                select: crate::comms::v2::api::InboxSelect::Thread(thread.clone()),
+                ..history()
+            },
+        );
+        match outcome {
+            Ok(reply) => {
+                landed += 1;
+                let history = read.expect("a thread posted to survives the sweep");
+                assert_eq!(
+                    bodies(&history),
+                    ["late"],
+                    "only the new post is younger than the retention"
+                );
+                assert_eq!(history.messages[0].id, reply.id);
+            }
+            Err(CommsError::ThreadNotFound { .. }) => {
+                assert!(
+                    matches!(read, Err(CommsError::ThreadNotFound { .. })),
+                    "a refused post leaves no thread behind: {read:?}"
+                );
+            }
+            Err(other) => panic!("a post racing the sweep failed otherwise: {other:?}"),
+        }
+    }
+    eprintln!(
+        "{landed} of {} posts landed before their thread was swept",
+        threads.len()
+    );
+}

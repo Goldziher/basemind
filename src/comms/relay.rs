@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::ids::AgentId;
+use super::v2::api::Principal;
 
 /// The 8-byte preamble a relay client writes first, before any [`RelayHello`], so the daemon's
 /// accept loop can distinguish a relay (rmcp JSON-RPC) connection from a legacy msgpack comms
@@ -34,16 +34,27 @@ pub const RELAY_MAGIC: [u8; 8] = *b"BMRELAY1";
 /// says hello must not do that for good.
 pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long a relay client waits for the daemon's [`RelayWelcome`]. The daemon builds the
+/// session's read stack before it answers, queued behind a machine-wide build gate for up to 15
+/// minutes, so this covers that wait and the build after it.
+pub const CLIENT_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+/// Largest piece of a relay frame's body allocated before it has arrived.
+const FRAME_READ_CHUNK: usize = 64 * 1024;
+
 /// The relay handshake's own protocol version, negotiated in [`RelayHello`] / [`RelayWelcome`].
 ///
 /// Independent of [`super::protocol::PROTO_VER`]: the relay envelope can change shape without a
-/// comms-protocol bump, and vice versa. Bumped on any breaking change to the relay handshake.
-pub const RELAY_PROTO_VER: u32 = 1;
+/// comms-protocol bump, and vice versa. Bumped on any breaking change to the relay handshake: 1→2
+/// when [`RelayHello`] began naming the session's principal and host (ADR-0021) in place of a
+/// per-connection agent id.
+pub const RELAY_PROTO_VER: u32 = 2;
 
 /// The relay client's opening message, sent immediately after [`RELAY_MAGIC`].
 ///
-/// Identifies the rmcp session's target workspace (`root` + `view`) and the connecting agent
-/// identity so the daemon can bind the forwarded JSON-RPC session to the right hot workspace.
+/// Identifies the rmcp session's target workspace (`root` + `view`) and who the session is, so the
+/// daemon can bind the forwarded JSON-RPC session to the right hot workspace and serve its agent
+/// tools as that principal (ADR-0021).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayHello {
     /// The relay-handshake protocol version the client speaks.
@@ -52,8 +63,15 @@ pub struct RelayHello {
     pub root: std::path::PathBuf,
     /// The view name within that workspace.
     pub view: String,
-    /// The connecting agent's identity.
-    pub agent: AgentId,
+    /// The principal the session resolved, through the resolver the CLI and the hooks use.
+    pub principal: Principal,
+    /// The agent harness (`BASEMIND_HOST`).
+    #[serde(default)]
+    pub host: Option<String>,
+    /// What the session's first agent-tool reply tells the agent about its identity: a
+    /// configured id that was refused.
+    #[serde(default)]
+    pub notices: Vec<String>,
 }
 
 /// The daemon's reply to a [`RelayHello`].
@@ -158,8 +176,16 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec
             format!("relay frame length {len} exceeds MAX_FRAME_BYTES {MAX_FRAME_BYTES}"),
         ));
     }
-    let mut body = vec![0u8; len];
-    reader.read_exact(&mut body).await?;
+    // Grow with what arrives rather than allocating the declared length up front: a peer could
+    // otherwise make the daemon allocate 16 MiB per link before sending a byte of body. ~keep
+    let mut body = Vec::with_capacity(len.min(FRAME_READ_CHUNK));
+    let read = (&mut *reader).take(len as u64).read_to_end(&mut body).await?;
+    if read < len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("relay frame ended after {read} of {len} bytes"),
+        ));
+    }
     Ok(body)
 }
 
@@ -168,21 +194,94 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec
 /// the caller can immediately hand it to rmcp when `welcome.accepted`. Any I/O or decode failure
 /// (including an older daemon that rejected the preamble as an over-long frame) surfaces as an
 /// `io::Error`, which the caller retries as a failed connection.
+///
+/// Bounded by [`CLIENT_HANDSHAKE_TIMEOUT`]: a daemon that accepted the link and then never answers
+/// (wedged, or stuck past its own build gate) fails the attempt with `TimedOut`, which the caller
+/// retries like any failed connection, instead of parking it for good.
 pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    hello: &RelayHello,
+) -> std::io::Result<RelayWelcome> {
+    tokio::time::timeout(CLIENT_HANDSHAKE_TIMEOUT, client_handshake_unbounded(stream, hello))
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("the daemon did not answer the relay hello within {CLIENT_HANDSHAKE_TIMEOUT:?}"),
+            ))
+        })
+}
+
+async fn client_handshake_unbounded<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     hello: &RelayHello,
 ) -> std::io::Result<RelayWelcome> {
     stream.write_all(&RELAY_MAGIC).await?;
     write_frame(stream, &encode_io(hello)?).await?;
-    let body = read_frame(stream).await?;
+    let body = read_frame(stream).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            // ~keep A daemon of relay protocol 1 cannot read this hello and closes the link
+            // ~keep without a welcome; one of protocol 2 or later declines a skew in a welcome.
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!(
+                    "the daemon closed the link without answering this relay's hello (relay protocol \
+                     {RELAY_PROTO_VER}); it is most likely an older basemind that cannot read it"
+                ),
+            )
+        } else {
+            error
+        }
+    })?;
     decode_io(&body)
+}
+
+/// The one field every relay hello carries, read from a hello whose other fields are another
+/// version's.
+#[derive(Deserialize)]
+struct HelloVersion {
+    relay_proto_ver: u32,
+}
+
+/// A relay hello written for another relay protocol version, whose fields this binary cannot read:
+/// the daemon answers it with [`decline::PROTO_SKEW`] instead of dropping the link.
+#[derive(Debug)]
+pub struct SkewedHello {
+    /// The version the client speaks.
+    pub relay_proto_ver: u32,
+}
+
+impl std::fmt::Display for SkewedHello {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "relay hello of protocol {}, this daemon speaks {RELAY_PROTO_VER}",
+            self.relay_proto_ver
+        )
+    }
+}
+
+impl std::error::Error for SkewedHello {}
+
+/// Decode a [`RelayHello`]. A body that does not decode but names another protocol version is a
+/// [`SkewedHello`] inside the `InvalidData` error, for the caller to decline.
+fn decode_hello(body: &[u8]) -> std::io::Result<RelayHello> {
+    decode_io(body).map_err(|error| match decode::<HelloVersion>(body) {
+        Ok(version) if version.relay_proto_ver != RELAY_PROTO_VER => std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            SkewedHello {
+                relay_proto_ver: version.relay_proto_ver,
+            },
+        ),
+        _ => error,
+    })
 }
 
 /// Daemon side, phase 1 — read the [`RelayHello`] frame. Called by the accept loop AFTER it has
 /// already consumed the 8-byte [`RELAY_MAGIC`] preamble it peeked to route the connection here.
 pub async fn read_hello<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<RelayHello> {
     let body = read_frame(reader).await?;
-    decode_io(&body)
+    decode_hello(&body)
 }
 
 /// Daemon side, phase 1 — consume the [`RELAY_MAGIC`] preamble the accept loop peeked and read
@@ -218,13 +317,43 @@ mod tests {
     use super::super::transport::MAX_FRAME_BYTES;
     use super::*;
 
+    /// A relay of protocol 1 named an `agent` (an `AgentId`, a string on the wire) and no
+    /// principal; its hello must still be read as far as its version, so the daemon can decline it
+    /// as skewed.
+    #[test]
+    fn an_older_relays_hello_is_recognised_as_skewed() {
+        #[derive(Serialize)]
+        struct HelloV1 {
+            relay_proto_ver: u32,
+            root: std::path::PathBuf,
+            view: String,
+            agent: String,
+        }
+        let body = encode(&HelloV1 {
+            relay_proto_ver: 1,
+            root: "/repo".into(),
+            view: "working".to_string(),
+            agent: "a".to_string(),
+        })
+        .expect("encode");
+        let error = decode_hello(&body).expect_err("a v1 hello does not decode");
+        let skewed = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<SkewedHello>())
+            .expect("recognised as skewed");
+        assert_eq!(skewed.relay_proto_ver, 1);
+        assert!(decode_hello(b"\x01garbage").is_err());
+    }
+
     #[test]
     fn relay_hello_round_trips_through_msgpack() {
         let hello = RelayHello {
             relay_proto_ver: RELAY_PROTO_VER,
             root: std::path::PathBuf::from("/repo/root"),
             view: "main".to_string(),
-            agent: AgentId::parse("claude-code").expect("agent"),
+            principal: Principal::parse("claude-code").expect("principal"),
+            host: None,
+            notices: Vec::new(),
         };
         let bytes = encode(&hello).expect("encode");
         let back: RelayHello = decode(&bytes).expect("decode");
@@ -293,6 +422,68 @@ mod tests {
         );
     }
 
+    /// A daemon that accepts the link and never answers fails the attempt, rather than parking
+    /// the relay's connection attempt for good.
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_that_never_answers_the_hello_times_the_handshake_out() {
+        let (mut client, _server) = tokio::io::duplex(4096);
+        let hello = RelayHello {
+            relay_proto_ver: RELAY_PROTO_VER,
+            root: std::path::PathBuf::from("/repo/root"),
+            view: "main".to_string(),
+            principal: Principal::parse("claude-code").expect("principal"),
+            host: None,
+            notices: Vec::new(),
+        };
+        let error = client_handshake(&mut client, &hello)
+            .await
+            .expect_err("no welcome ever comes");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+    }
+
+    /// A frame's body is read as it arrives; a short one is an error naming what was missing.
+    #[tokio::test]
+    async fn a_frame_shorter_than_its_length_is_refused() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        writer.write_all(&1000u32.to_be_bytes()).await.expect("len");
+        writer.write_all(&[7u8; 10]).await.expect("body");
+        drop(writer);
+        let error = read_frame(&mut reader).await.expect_err("short frame");
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(error.to_string().contains("10 of 1000"), "{error}");
+    }
+
+    /// A daemon of relay protocol 1 drops a hello it cannot decode; the relay says so rather than
+    /// reporting a bare end of stream.
+    #[tokio::test]
+    async fn a_daemon_that_closes_without_a_welcome_is_named_as_likely_older() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let hello = RelayHello {
+            relay_proto_ver: RELAY_PROTO_VER,
+            root: std::path::PathBuf::from("/repo/root"),
+            view: "main".to_string(),
+            principal: Principal::parse("claude-code").expect("principal"),
+            host: None,
+            notices: Vec::new(),
+        };
+        let server_task = tokio::spawn(async move {
+            let mut magic = [0u8; RELAY_MAGIC.len()];
+            server.read_exact(&mut magic).await.expect("read magic");
+            let _ = read_frame(&mut server).await.expect("read the hello frame");
+            drop(server);
+        });
+        let error = client_handshake(&mut client, &hello)
+            .await
+            .expect_err("no welcome came");
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(error.to_string().contains("older basemind"), "{error}");
+        server_task.await.expect("server task");
+    }
+
     /// Drive both ends of the handshake over an in-memory duplex: the client writes MAGIC + hello,
     /// the server consumes the 8 magic bytes (as the accept loop would after a peek), reads the
     /// hello, replies with a welcome, and the client decodes it. A trailing raw byte written after
@@ -307,7 +498,9 @@ mod tests {
             relay_proto_ver: RELAY_PROTO_VER,
             root: std::path::PathBuf::from("/repo/root"),
             view: "main".to_string(),
-            agent: AgentId::parse("claude-code").expect("agent"),
+            principal: Principal::parse("claude-code").expect("principal"),
+            host: None,
+            notices: Vec::new(),
         };
         let welcome = RelayWelcome {
             relay_proto_ver: RELAY_PROTO_VER,

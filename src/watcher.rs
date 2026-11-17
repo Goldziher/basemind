@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use notify::event::CreateKind;
+use notify::event::{CreateKind, RemoveKind};
 use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, DebouncedEvent, NoCache, new_debouncer_opt};
 use thiserror::Error;
@@ -275,11 +275,18 @@ pub fn watch_paths_reloading(
             #[cfg(target_os = "linux")]
             if matches!(&ev.event.kind, EventKind::Create(CreateKind::Folder)) {
                 for p in &ev.event.paths {
-                    if p.is_dir()
+                    if filter.is_watchable_dir(p)
                         && let Err(e) = debouncer.watch(p, RecursiveMode::NonRecursive)
                     {
                         warn!(path = %p.display(), error = %e, "inotify re-arm failed");
                     }
+                }
+            }
+            // The kernel drops a removed directory's watch; the debouncer keeps its root until told.
+            #[cfg(target_os = "linux")]
+            if matches!(&ev.event.kind, EventKind::Remove(RemoveKind::Folder)) {
+                for p in &ev.event.paths {
+                    let _ = debouncer.unwatch(p);
                 }
             }
             candidates.extend(ev.event.paths.iter().cloned());
@@ -291,7 +298,7 @@ pub fn watch_paths_reloading(
         // it; re-arm any that is a directory, or a subtree created during the burst stays unwatched.
         #[cfg(target_os = "linux")]
         for p in &coalesced {
-            if p.is_dir()
+            if filter.is_watchable_dir(p)
                 && let Err(e) = debouncer.watch(p, RecursiveMode::NonRecursive)
             {
                 warn!(path = %p.display(), error = %e, "inotify re-arm failed");

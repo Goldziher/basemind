@@ -30,9 +30,10 @@ mod imp {
     use tokio_util::bytes::{Bytes, BytesMut};
     use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
+    use crate::comms::accept_gate::{self, AcceptBackoff};
     use crate::comms::daemon::Broker;
     use crate::comms::protocol::{CommsOut, CommsRequest};
-    use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link};
+    use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, holds_whole_frame, serve_link};
 
     /// Read chunk size pulled from the pipe per `read_buf` call.
     const READ_CHUNK: usize = 8 * 1024;
@@ -123,7 +124,9 @@ mod imp {
     impl CommsLink for NamedPipeLink {
         async fn recv(&mut self) -> std::io::Result<Option<CommsRequest>> {
             loop {
-                if let Some(frame) = self.codec.decode(&mut self.read_buf)? {
+                if holds_whole_frame(&self.read_buf)?
+                    && let Some(frame) = self.codec.decode(&mut self.read_buf)?
+                {
                     let req = rmp_serde::from_slice(&frame)
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
                     return Ok(Some(req));
@@ -179,17 +182,37 @@ mod imp {
             mut shutdown: watch::Receiver<bool>,
         ) -> std::io::Result<()> {
             broker.mark_active().await;
+            let slots = accept_gate::connection_slots();
+            let mut backoff = AcceptBackoff::new("pipe");
             let mut server = self.first;
             loop {
+                let slot = tokio::select! {
+                    slot = accept_gate::next_slot(&slots) => slot,
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
                 tokio::select! {
                     conn = server.connect() => {
-                        if let Err(e) = conn {
-                            tracing::warn!(error = %e, "comms: pipe connect failed");
-                            server = ServerOptions::new().create(&self.pipe_name)?;
+                        if let Err(error) = conn {
+                            drop(slot);
+                            backoff.failed(&error).await;
+                            let Some(next) = next_instance(&self.pipe_name, &mut backoff, &mut shutdown).await else {
+                                break;
+                            };
+                            server = next;
                             continue;
                         }
+                        backoff.succeeded();
                         let connected = server;
-                        server = ServerOptions::new().create(&self.pipe_name)?;
+                        // A failed create used to end the front-end through `?`. ~keep
+                        let Some(next) = next_instance(&self.pipe_name, &mut backoff, &mut shutdown).await else {
+                            break;
+                        };
+                        server = next;
                         let guard = broker.register_link();
                         let broker = broker.clone();
                         // ~keep Route a RELAY (rmcp) connection apart from a legacy comms link. Windows
@@ -198,8 +221,15 @@ mod imp {
                         // ~keep length-delimited frame's first byte (0x00 for any body < 16 MiB). A relay
                         // ~keep session is hosted by the broker; everything else is a legacy comms link.
                         tokio::spawn(async move {
+                            let _slot = slot;
                             let mut connected = connected;
-                            let first = match connected.read_u8().await {
+                            let first = match tokio::time::timeout(
+                                accept_gate::FIRST_BYTE_TIMEOUT,
+                                connected.read_u8(),
+                            )
+                            .await
+                            .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
+                            {
                                 Ok(byte) => byte,
                                 // ~keep A connection that yields no first byte (EOF/error) has nothing to
                                 // ~keep serve on either path, so drop it. The Unix peek instead routes such
@@ -219,8 +249,8 @@ mod imp {
                             }
                         });
                     }
-                    _ = shutdown.changed() => {
-                        if *shutdown.borrow() {
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() {
                             break;
                         }
                     }
@@ -228,6 +258,29 @@ mod imp {
             }
             broker.drain_links(crate::comms::daemon::DRAIN_GRACE).await;
             Ok(())
+        }
+    }
+
+    /// Create the next pipe instance, backing off while creation fails: `None` once shutdown is
+    /// asked for first.
+    async fn next_instance(
+        pipe_name: &OsString,
+        backoff: &mut AcceptBackoff,
+        shutdown: &mut watch::Receiver<bool>,
+    ) -> Option<NamedPipeServer> {
+        loop {
+            if *shutdown.borrow() {
+                return None;
+            }
+            match ServerOptions::new().create(pipe_name) {
+                Ok(server) => return Some(server),
+                Err(error) => tokio::select! {
+                    () = backoff.failed(&error) => {}
+                    changed = shutdown.changed() => if changed.is_err() {
+                        return None;
+                    },
+                },
+            }
         }
     }
 }

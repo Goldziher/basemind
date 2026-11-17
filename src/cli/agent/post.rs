@@ -41,6 +41,6 @@ pub fn run_post(
     render::post(&reply, opts, out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "post_tests.rs"]
 mod tests;

@@ -102,8 +102,7 @@ impl Generation for Scripted {
             build_id: String::new(),
             proto_ver: PROTO_VER + 1,
             uptime_secs: 1,
-            threads: 0,
-            subscribers: 0,
+            agent_store: "open".to_string(),
         })
     }
 

@@ -30,61 +30,6 @@ async fn dial_missing_socket_reports_daemon_not_running_with_start_hint() {
     );
 }
 
-/// Nothing drains `pending_notifications` for a client that only issues ordinary requests, so
-/// the buffer itself has to be the bound: past the cap the queue must stay at the cap and shed
-/// its OLDEST entries, never grow with the broker's push volume.
-#[test]
-fn buffering_notifications_past_the_cap_holds_at_the_cap() {
-    let mut queue = std::collections::VecDeque::new();
-
-    for _ in 0..PENDING_NOTIFICATION_CAP {
-        buffer_notification(&mut queue, CommsNotification::Shutdown);
-    }
-    assert_eq!(
-        queue.len(),
-        PENDING_NOTIFICATION_CAP,
-        "the cap is reached but not exceeded"
-    );
-
-    for _ in 0..(PENDING_NOTIFICATION_CAP * 3) {
-        buffer_notification(&mut queue, CommsNotification::Shutdown);
-    }
-    assert_eq!(
-        queue.len(),
-        PENDING_NOTIFICATION_CAP,
-        "four times the cap of pushes must still leave exactly the cap resident"
-    );
-}
-
-/// The eviction has to be oldest-first: the newest notifications are the ones a `wait` caller
-/// would act on, so shedding those instead would make the bound cost correctness. The single
-/// `Message` is enqueued FIRST, so it is the one entry the cap must drop.
-#[test]
-fn buffering_evicts_the_oldest_notification_first() {
-    let mut queue = std::collections::VecDeque::new();
-
-    buffer_notification(&mut queue, CommsNotification::Message(test_message_meta()));
-    for _ in 0..(PENDING_NOTIFICATION_CAP - 1) {
-        buffer_notification(&mut queue, CommsNotification::Shutdown);
-    }
-    assert!(
-        matches!(queue.front(), Some(CommsNotification::Message(_))),
-        "precondition: the queue is exactly full and the Message is still the oldest entry"
-    );
-
-    buffer_notification(&mut queue, CommsNotification::Shutdown);
-
-    assert_eq!(queue.len(), PENDING_NOTIFICATION_CAP, "the cap still holds");
-    assert!(
-        matches!(queue.front(), Some(CommsNotification::Shutdown)),
-        "the oldest entry (the Message) must be the one dropped"
-    );
-    assert!(
-        !queue.iter().any(|n| matches!(n, CommsNotification::Message(_))),
-        "the evicted entry must be gone from the queue entirely"
-    );
-}
-
 /// A scripted broker on a Unix socket: answers `Hello` bare, then each correlated `Call` in
 /// order, sleeping `delays[i]` before reply `i`. Returns the paths to dial.
 fn scripted_broker(delays: Vec<std::time::Duration>) -> (CommsPaths, tokio::task::JoinHandle<()>, std::path::PathBuf) {
@@ -122,7 +67,7 @@ fn scripted_broker(delays: Vec<std::time::Duration>) -> (CommsPaths, tokio::task
                     }
                     served += 1;
                     let response = match *request {
-                        CommsRequest::ListAgents { .. } => CommsResponse::Agents(Vec::new()),
+                        CommsRequest::Ping => CommsResponse::Pong,
                         CommsRequest::AccessedPaths => CommsResponse::Accessed { workspaces: Vec::new() },
                         other => panic!("unscripted request {other:?}"),
                     };
@@ -157,12 +102,11 @@ fn rand_suffix() -> u128 {
 #[tokio::test]
 async fn dropped_request_does_not_poison_the_next_response() {
     let (paths, server, dir) = scripted_broker(vec![std::time::Duration::from_millis(200)]);
-    let agent = AgentId::parse("agent-1".to_string()).expect("agent");
-    let mut client = CommsClient::connect_with_respawn(&paths, agent, None, None, |_| Ok(()))
+    let mut client = CommsClient::connect_with_respawn(&paths, ClientHello::anonymous(), |_| Ok(()))
         .await
         .expect("connect");
 
-    let abandoned = tokio::time::timeout(std::time::Duration::from_millis(30), client.list_agents(None)).await;
+    let abandoned = tokio::time::timeout(std::time::Duration::from_millis(30), client.ping()).await;
     assert!(abandoned.is_err(), "the first request must be cut off mid-flight");
 
     let workspaces = client
@@ -180,22 +124,15 @@ async fn dropped_request_does_not_poison_the_next_response() {
 #[tokio::test]
 async fn silent_broker_yields_a_retryable_unresponsive_error() {
     let (paths, server, dir) = scripted_broker(vec![std::time::Duration::from_secs(30)]);
-    let agent = AgentId::parse("agent-1".to_string()).expect("agent");
-    let mut client = CommsClient::connect_with_respawn(&paths, agent, None, None, |_| Ok(()))
+    let mut client = CommsClient::connect_with_respawn(&paths, ClientHello::anonymous(), |_| Ok(()))
         .await
         .expect("connect")
         .with_request_timeout(std::time::Duration::from_millis(100));
 
     let started = std::time::Instant::now();
-    let err = client.list_agents(None).await.expect_err("no reply must time out");
+    let err = client.ping().await.expect_err("no reply must time out");
     assert!(
-        matches!(
-            err,
-            CommsClientError::Unresponsive {
-                what: "list_agents",
-                ..
-            }
-        ),
+        matches!(err, CommsClientError::Unresponsive { what: "ping", .. }),
         "{err:?}"
     );
     assert!(err.to_string().contains("broker unresponsive"), "{err}");
@@ -217,12 +154,9 @@ async fn handshake_against_a_mute_listener_times_out() {
         comms_dir: dir.clone(),
         socket_path,
     };
-    let agent = AgentId::parse("agent-1".to_string()).expect("agent");
     let Err(err) = CommsClient::connect_bounded(
         &paths,
-        agent,
-        None,
-        None,
+        ClientHello::anonymous(),
         |_| Ok(()),
         std::time::Duration::from_millis(100),
     )
@@ -237,17 +171,91 @@ async fn handshake_against_a_mute_listener_times_out() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-fn test_message_meta() -> crate::comms::model::MessageMeta {
-    crate::comms::model::MessageMeta {
-        id: "m1".to_string(),
-        thread: ThreadId::parse("t1".to_string()).expect("valid thread id"),
-        from: AgentId::parse("agent-1".to_string()).expect("valid agent id"),
-        from_name: None,
-        ts_micros: 0,
-        subject: "s".to_string(),
-        tags: Vec::new(),
-        reply_to: None,
-        body_len: 0,
-        body_sha: String::new(),
-    }
+/// A broker that answers `Hello` on every link, counts each correlated request it reads, and
+/// hangs up without replying: a daemon that committed the request and died before its answer.
+fn hanging_up_broker() -> (
+    CommsPaths,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+    std::path::PathBuf,
+) {
+    let dir = std::env::temp_dir().join(format!("bm-client-{}-{}", std::process::id(), rand_suffix()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let socket_path = dir.join("c.sock");
+    let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+    let paths = CommsPaths {
+        comms_dir: dir.clone(),
+        socket_path,
+    };
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&seen);
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut codec = LengthDelimitedCodec::new();
+            let mut buf = BytesMut::new();
+            loop {
+                let frame = loop {
+                    if let Some(f) = codec.decode(&mut buf).expect("decode") {
+                        break Some(f);
+                    }
+                    if stream.read_buf(&mut buf).await.unwrap_or(0) == 0 {
+                        break None;
+                    }
+                };
+                let Some(frame) = frame else { break };
+                match rmp_serde::from_slice::<CommsRequest>(&frame).expect("req") {
+                    CommsRequest::Hello { .. } => {
+                        let out = CommsOut::Response(CommsResponse::Welcome {
+                            proto_ver: PROTO_VER,
+                            daemon_version: "test".to_string(),
+                        });
+                        let mut framed = BytesMut::new();
+                        codec
+                            .encode(Bytes::from(rmp_serde::to_vec_named(&out).expect("encode")), &mut framed)
+                            .expect("frame");
+                        stream.write_all(&framed).await.expect("write");
+                    }
+                    _ => {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (paths, seen, handle, dir)
+}
+
+/// A CLI post carries no replay key, so a link lost after the daemon read it must not send it
+/// again: the daemon may have committed it.
+#[tokio::test]
+async fn a_post_whose_link_broke_is_not_sent_twice() {
+    let (paths, seen, server, dir) = hanging_up_broker();
+    let mut client = CommsClient::connect_with_respawn(&paths, ClientHello::anonymous(), |_| Ok(()))
+        .await
+        .expect("connect");
+    let body = super::super::v2::api::PostBody {
+        target: super::super::v2::api::PostTarget::Thread(
+            super::super::v2::api::ThreadId::parse("t-aaaaaa").expect("thread id"),
+        ),
+        body: "once".to_string(),
+    };
+    assert!(client.agent_post(None, body).await.is_err());
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the post reached the daemon once"
+    );
+
+    assert!(client.ping().await.is_err());
+    assert!(
+        seen.load(std::sync::atomic::Ordering::SeqCst) > 2,
+        "a ping, which changes nothing, is sent again after the link breaks"
+    );
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
 }

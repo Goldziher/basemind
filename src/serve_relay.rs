@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result};
-use basemind::comms::ids::AgentId;
-use basemind::comms::{identity, relay, singleton};
+use basemind::comms::{relay, singleton};
 
 use crate::relay_refusal::RelayRefusal;
 use crate::stdio_relay::{self, StopPacing};
@@ -23,7 +22,15 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
         .context("build tokio runtime")?;
 
     let served = runtime.block_on(async move {
-        let agent = identity::mcp_session_agent_id(root);
+        let identity =
+            basemind::comms::v2::identity::resolve_for_root(root).context("resolve this session's agent identity")?;
+        let agent = Identity {
+            principal: identity.principal.clone(),
+            host: std::env::var(basemind::comms::v2::identity::HOST_ENV)
+                .ok()
+                .filter(|host| !host.is_empty()),
+            notices: identity.notices(),
+        };
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let view = view.to_owned();
         let pacing = Arc::new(Mutex::new(StopPacing::default()));
@@ -45,6 +52,14 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
     served
 }
 
+/// Who this session is, sent in every relay hello (ADR-0021).
+#[derive(Clone)]
+struct Identity {
+    principal: basemind::comms::v2::Principal,
+    host: Option<String>,
+    notices: Vec<String>,
+}
+
 #[cfg(unix)]
 type RelayStream = tokio::net::UnixStream;
 
@@ -56,7 +71,7 @@ type RelayStream = tokio::net::windows::named_pipe::NamedPipeClient;
 async fn open_relay_connection(
     root: PathBuf,
     view: String,
-    agent: AgentId,
+    agent: Identity,
     pacing: Arc<Mutex<StopPacing>>,
 ) -> Result<RelayStream> {
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
@@ -73,7 +88,9 @@ async fn open_relay_connection(
         relay_proto_ver: relay::RELAY_PROTO_VER,
         root,
         view,
-        agent,
+        principal: agent.principal,
+        host: agent.host,
+        notices: agent.notices,
     };
     let welcome = relay::client_handshake(&mut stream, &hello)
         .await
@@ -105,15 +122,13 @@ async fn relay_connect_stream(socket_path: &Path) -> std::io::Result<tokio::net:
 /// Dial the daemon's relay endpoint: a named pipe on Windows, retrying while the pipe is busy.
 #[cfg(windows)]
 async fn relay_connect_stream(socket_path: &Path) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-
     const ERROR_PIPE_BUSY: i32 = 231;
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
     const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
     let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
     loop {
-        match ClientOptions::new().open(socket_path) {
+        match basemind::comms::pipe_owner::open_verified(socket_path) {
             Ok(client) => return Ok(client),
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                 if std::time::Instant::now() >= deadline {

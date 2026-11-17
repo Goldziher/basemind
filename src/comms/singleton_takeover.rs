@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::super::protocol::StatusReport;
-use super::super::store::STORE_DIR;
+use super::super::v2::store::STORE_DIR;
 use super::probe::{StopOutcome, force_terminate, request_stop_within};
 use super::{
     CommsPaths, ENDPOINT_TIMEOUT, Liveness, NO_AUTOSPAWN_ENV, SPAWN_POLL_INTERVAL, SingletonError, SpawnPolicy,
@@ -213,10 +213,15 @@ fn classify(report: &StatusReport, ours: Ours) -> Verdict {
     let same_proto = report.proto_ver == ours.proto_ver;
     if version_is_older(&report.version, ours.version) {
         Verdict::Replace { usable: same_proto }
-    } else if same_proto || !version_is_older(ours.version, &report.version) {
-        // The same release on another protocol does not occur between releases; the handshake
-        // reports it rather than this binary stopping a daemon that is not older than itself.
+    } else if version_is_older(ours.version, &report.version) {
+        if same_proto { Verdict::Use } else { Verdict::RefuseNewer }
+    } else if same_proto {
         Verdict::Use
+    } else if report.proto_ver < ours.proto_ver {
+        // One release on two protocols is a development build on either side of a protocol bump.
+        // The newer protocol wins: using the older daemon fails every call that needs the new
+        // protocol, and nothing would ever replace it. ~keep
+        Verdict::Replace { usable: false }
     } else {
         Verdict::RefuseNewer
     }

@@ -88,7 +88,6 @@ impl ServerHandler for BasemindServer {
         if client_supports_tasks && tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
             return tasks::run_slow_tool(self, request, context, admission, self.task_threshold()).await;
         }
-        let should_deliver_comms = request.name != "agents";
         let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
         let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
@@ -101,17 +100,6 @@ impl ServerHandler for BasemindServer {
         } else {
             self.tool_router.call(tcc).await?
         };
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        let mut response = response;
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if should_deliver_comms
-            && let rmcp::model::CallToolResponse::Complete(result) = &mut response
-            && let Some(notice) = super::helpers_comms::take_delivery_notice(&self.state).await
-        {
-            result.content.push(rmcp::model::ContentBlock::text(notice));
-        }
-        #[cfg(not(all(feature = "comms", any(unix, windows))))]
-        let _ = should_deliver_comms;
         Ok(response)
     }
 
@@ -271,7 +259,8 @@ pub(super) fn server_config() -> ServerConfig {
          narrow the call); a failure is a \
          tool result with isError naming the fix; a notice field means the result is incomplete \
          and says why. An unknown argument is rejected, never ignored.\n\
-         Only when collaborating with other agents in this repository: the agents tool (mode inbox, \
-         thread_list, message, post) carries scoped threads. Skip it when working alone.",
+         Only when collaborating with other agents in this repository: the deferred tools agent_post, \
+         agent_inbox and agent_threads (find them by tool search) carry threads of messages; reading \
+         marks read, and a subagent passes `as` to keep its own inbox. Skip them when working alone.",
     )
 }

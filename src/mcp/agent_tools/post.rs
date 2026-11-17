@@ -43,6 +43,6 @@ pub fn run_agent_post(
     Ok(AgentPostResponse::from_reply(reply, notices))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
 #[path = "post_tests.rs"]
 mod tests;

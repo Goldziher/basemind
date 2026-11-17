@@ -10,6 +10,16 @@
             "async": false
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*basemind.*__agent_(post|inbox|threads)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CURSOR_PLUGIN_ROOT:-.}/hooks/run-hook.cmd\" agent-as",
+            "async": false
+          }
+        ]
       }
     ],
     "SessionStart": [

@@ -11,6 +11,7 @@ These use a duck-typed fake ``ctx`` — no Hermes dependency — and assert the 
 from __future__ import annotations
 
 import importlib.util
+import json
 import tomllib
 from pathlib import Path
 
@@ -124,7 +125,7 @@ def test_register_wires_comms_hooks():
 
 
 def test_hooks_are_fail_open_without_a_basemind_binary(monkeypatch):
-    monkeypatch.setattr(hermes, "_run_basemind_json", lambda *a, **k: None)
+    monkeypatch.setattr(hermes, "_run_basemind", lambda *a, **k: None)
     ctx = RecordingCtx()
     hermes.register(ctx)
     ctx.hooks["on_session_start"]()
@@ -141,26 +142,54 @@ def test_register_never_raises_on_a_minimal_ctx():
     hermes.register(Bare())
 
 
-def test_session_start_context_lists_messages(monkeypatch):
-    monkeypatch.setattr(
-        hermes,
-        "_run_basemind_json",
-        lambda *a, **k: {"messages": [{"subject": "hi", "from": "peer", "id": "m1", "ts_micros": 5}]},
-    )
+def fake_cli(monkeypatch, inbox, name="session-1a2b3c4d"):
+    """Stand in for the binary: `hook name` prints `name`, `inbox` prints `inbox` as JSON; calls are recorded."""
+    calls = []
+
+    def run(args, timeout, stdin=None):
+        calls.append((list(args), stdin))
+        if args[:3] == ["agent", "hook", "name"]:
+            return name
+        if args[:2] == ["agent", "inbox"]:
+            return json.dumps(inbox)
+        return None
+
+    monkeypatch.setattr(hermes, "_run_basemind", run)
+    return calls
+
+
+def test_session_start_context_names_the_deferred_tools_and_counts_unread(monkeypatch):
+    calls = fake_cli(monkeypatch, {"messages": [{"subject": "hi", "from": "peer", "id": "t-abcdef.1"}]})
     text = hermes._session_start_context("/tmp")
-    assert "[hi] from peer (id: m1)" in text
+    assert "agent_post" in text and "agent_inbox" in text and "agent_threads" in text
+    assert "You have 1 unread agent message(s)" in text
     assert hermes._DISCIPLINE in text
+    args = calls[0][0]
+    assert args[:2] == ["agent", "inbox"] and "--peek" in args and "--json" in args
 
 
-def test_delta_context_baselines_then_reports_new(monkeypatch, tmp_path):
-    monkeypatch.setattr(hermes, "tempfile", hermes.tempfile)
-    monkeypatch.setattr(hermes.tempfile, "gettempdir", lambda: str(tmp_path))
-    msgs = [{"subject": "a", "from": "p", "id": "m1", "ts_micros": 10}]
-    monkeypatch.setattr(hermes, "_run_basemind_json", lambda *a, **k: {"messages": msgs})
-    assert hermes._delta_context("/tmp", "sid") is None
-    msgs.append({"subject": "b", "from": "p", "id": "m2", "ts_micros": 20})
-    out = hermes._delta_context("/tmp", "sid")
-    assert out is not None and "id: m2" in out and "id: m1" not in out
+def test_session_start_context_without_messages_has_no_count(monkeypatch):
+    fake_cli(monkeypatch, {"messages": []})
+    text = hermes._session_start_context("/tmp")
+    assert "agent_threads" in text and "unread agent message" not in text
+
+
+def test_delta_context_announces_as_the_principal_and_keeps_no_state(monkeypatch):
+    # Hermes cannot rewrite a tool call's arguments, so its agent tools act as the principal.
+    msgs = [{"subject": "auth", "from": "peer", "id": "t-abcdef.3", "body_bytes": 42}]
+    calls = fake_cli(monkeypatch, {"messages": msgs})
+    out = hermes._delta_context("/tmp")
+    assert "from peer in auth (t-abcdef.3, 42 bytes)" in out
+    assert "agent_inbox" in out
+    args = calls[0][0]
+    assert args[:2] == ["agent", "inbox"] and "--announce" in args and "--as" not in args
+    assert all(call[0][:3] != ["agent", "hook", "name"] for call in calls)
+    assert hermes._delta_context("/tmp") == out
+
+
+def test_delta_context_is_silent_without_messages(monkeypatch):
+    fake_cli(monkeypatch, {"messages": []})
+    assert hermes._delta_context("/tmp") is None
 
 
 def test_pyproject_declares_the_hermes_entry_point():

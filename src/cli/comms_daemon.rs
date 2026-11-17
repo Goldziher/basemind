@@ -12,13 +12,16 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+use crate::comms::agents_hub::AgentHub;
 use crate::comms::daemon::Broker;
 use crate::comms::singleton;
-use crate::comms::store::CommsStore;
 
-/// How often the message-TTL sweep runs. Hourly is ample: messages already drop out of the
-/// default 24h recency reads long before [`MESSAGE_TTL`](crate::comms::store::MESSAGE_TTL).
+/// How often the registry prune and the hot-workspace eviction run.
 const PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// How often the agent store's sweep and flush run (ADR-0021). Each sweep removes a bounded batch,
+/// so it runs often enough to keep up with a busy store.
+const AGENT_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// How often the hosted-read-stack sweep runs. Two orders tighter than [`PRUNE_EVERY`] because it
 /// sheds something two orders larger: an hourly clock would leave an O(corpus) read stack resident
@@ -57,7 +60,7 @@ const STARTUP_GC_DELAY: std::time::Duration = std::time::Duration::from_secs(10 
 #[cfg(unix)]
 const OWNERSHIP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Test-only hook: artificially delay the comms store open by this many milliseconds, so tests can
+/// Test-only hook: artificially delay the agent store open by this many milliseconds, so tests can
 /// prove the daemon answers `Ping` while the store is still opening. Unset in production.
 const TEST_STORE_OPEN_DELAY_ENV: &str = "BASEMIND_TEST_COMMS_STORE_OPEN_DELAY_MS";
 
@@ -72,6 +75,14 @@ fn test_store_open_delay() -> Option<std::time::Duration> {
 /// token, so a scan winds down within one file; this timeout is the backstop for the pathological
 /// case where that one file is stuck inside non-cooperative work (e.g. an ONNX embed call).
 const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long a new daemon waits for a lock holder that does not answer: a draining daemon has
+/// unlinked its endpoint and holds the lock through its drain grace and runtime teardown.
+const HOLDER_DRAIN_WAIT: std::time::Duration = crate::comms::daemon::DRAIN_GRACE
+    .saturating_add(RUNTIME_SHUTDOWN_TIMEOUT.saturating_add(std::time::Duration::from_secs(5)));
+
+/// How often a waiting daemon tries the lock again.
+const HOLDER_DRAIN_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The `(device, inode)` identity of the socket file, or `None` when it is absent / unstattable.
 /// The ownership watchdog compares this against the value captured at bind time to detect an
@@ -101,6 +112,8 @@ pub fn run() -> Result<()> {
     #[cfg(feature = "intelligence")]
     crate::embeddings::bound_ort_memory(DAEMON_ORT_THREADS);
 
+    crate::comms::fd_budget::raise_to_budget();
+
     // The daemon is mostly idle I/O relay, so a handful of async workers is plenty; the blocking pool
     // (GC, read-stack builds, git-history syncs) is capped well under tokio's default of 512 and its
     // idle threads are reaped quickly.
@@ -112,23 +125,33 @@ pub fn run() -> Result<()> {
         .build()
         .context("build tokio runtime")?;
 
-    let result = runtime.block_on(async move {
-        // Single-owner lock FIRST, before bind: a redundant daemon converges (exit 0) without ever
-        // touching the live daemon's socket. This — plus the machine-registry entry it writes — is
-        // the authoritative "one daemon per comms dir" gate, uniform across Unix and Windows.
-        use crate::comms::daemon_lock::{DaemonLock, DaemonLockOutcome};
-        let _daemon_lock = match DaemonLock::acquire(&paths.comms_dir, env!("CARGO_PKG_VERSION")) {
-            Ok(DaemonLockOutcome::Acquired(lock)) => lock,
-            Ok(DaemonLockOutcome::AlreadyHeld(holder)) => {
-                tracing::info!(
-                    holder_pid = holder.as_ref().map(|record| record.pid),
-                    "comms daemon: another daemon already owns this comms dir; converging (exit 0)"
-                );
-                return Ok(());
-            }
-            Err(error) => return Err(anyhow::anyhow!("acquire daemon lock: {error}")),
-        };
+    // Single-owner lock FIRST, before bind: a redundant daemon converges (exit 0) without ever
+    // touching the live daemon's socket. This — plus the machine-registry entry it writes — is the
+    // authoritative "one daemon per comms dir" gate, uniform across Unix and Windows. It is held
+    // until after the runtime's teardown below, so it is released last: a successor that took it
+    // while this daemon still held its stores found the comms store locked and exited.
+    use crate::comms::daemon_lock::{DaemonKind, DaemonLock, DaemonLockOutcome};
+    let socket_path = paths.socket_path.clone();
+    let daemon_lock = match DaemonLock::acquire_waiting(
+        DaemonKind::Comms,
+        &paths.comms_dir,
+        env!("CARGO_PKG_VERSION"),
+        &crate::daemon_lock::daemons_dir(),
+        (HOLDER_DRAIN_WAIT, HOLDER_DRAIN_POLL),
+        || singleton::probe_alive(&socket_path),
+    ) {
+        Ok(DaemonLockOutcome::Acquired(lock)) => lock,
+        Ok(DaemonLockOutcome::AlreadyHeld(holder)) => {
+            tracing::info!(
+                holder_pid = holder.as_ref().map(|record| record.pid),
+                "comms daemon: another daemon already owns this comms dir; converging (exit 0)"
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(anyhow::anyhow!("acquire daemon lock: {error}")),
+    };
 
+    let result = runtime.block_on(async move {
         // Held until this block returns: a daemon that is killed leaves the marker for the next.
         let _hosting = crate::scan_evidence::HostingMarker::begin();
 
@@ -141,9 +164,10 @@ pub fn run() -> Result<()> {
             Err(e) => return Err(anyhow::anyhow!("bind comms socket: {e}")),
         };
 
-        // Answer `Ping` (and park everything else) while the store opens: the open is fsync-heavy
-        // and can take tens of seconds on a contended disk, and a liveness probe must not read that
-        // as a dead daemon. Unix only; the Windows pipe front-end still starts after the open.
+        // Answer `Ping` (and park everything else) while the broker is built: opening the machine
+        // registry can stall on a contended disk, and a liveness probe must not read that as a dead
+        // daemon. The agent store opens on a thread of its own and parks only agent requests. Unix
+        // only; the Windows pipe front-end starts once the broker exists.
         #[cfg(unix)]
         let early = crate::comms::frontend_uds::EarlyAccept::start(listener, paths.socket_path.clone());
 
@@ -153,28 +177,7 @@ pub fn run() -> Result<()> {
             crate::version::build_id();
         });
 
-        let comms_dir = paths.comms_dir.clone();
-        let opened = tokio::task::spawn_blocking(move || {
-            if let Some(delay) = test_store_open_delay() {
-                std::thread::sleep(delay);
-            }
-            CommsStore::open(&comms_dir)
-        })
-        .await
-        .context("join comms store open")?;
-        let store = match opened {
-            Ok(store) => Arc::new(store),
-            // The store flock is the second per-comms-dir guard. If a peer holds it we lost the race
-            // (e.g. a socket false-reclaim): converge quietly rather than exiting non-zero.
-            Err(crate::comms::store::CommsStoreError::Locked(path)) => {
-                tracing::info!(
-                    path = %path.display(),
-                    "comms daemon: store already owned by another daemon; converging (exit 0)"
-                );
-                return Ok(());
-            }
-            Err(error) => return Err(anyhow::anyhow!("open comms store: {error}")),
-        };
+        let agents = AgentHub::open_after(&paths.comms_dir, test_store_open_delay().unwrap_or_default());
         log_retention_policy();
         let machine_registry = match crate::registry::Registry::from_data_home() {
             Ok(registry) => registry,
@@ -184,9 +187,13 @@ pub fn run() -> Result<()> {
                     .context("open fallback machine registry")?
             }
         };
-        let broker = Arc::new(Broker::with_registry(store, machine_registry));
-        broker.install_comms_dir(paths.comms_dir.clone());
-        broker.run_retention_maintenance().await;
+        let broker = Arc::new(Broker::with_registry(agents, machine_registry));
+        // The first sweep runs as soon as the store has opened, not on the first maintenance tick.
+        let broker_for_first_sweep = broker.clone();
+        tokio::spawn(async move {
+            broker_for_first_sweep.agents_opened().await;
+            broker_for_first_sweep.maintain_agents().await;
+        });
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         broker.install_shutdown(shutdown_tx);
@@ -253,12 +260,21 @@ pub fn run() -> Result<()> {
             prune_missing_registry_rows(&broker_for_prune).await;
             loop {
                 tick.tick().await;
-                broker_for_prune.run_retention_maintenance().await;
                 let evicted = broker_for_prune.evict_idle_workspaces(WORKSPACE_HOT_TTL);
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
                 }
                 prune_missing_registry_rows(&broker_for_prune).await;
+            }
+        });
+
+        let broker_for_agents = broker.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(AGENT_SWEEP_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                broker_for_agents.maintain_agents().await;
             }
         });
 
@@ -353,7 +369,10 @@ pub fn run() -> Result<()> {
 
         #[cfg(unix)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(UdsFrontendBox(
-            early.finish(broker.clone()).await.context("hand the socket to the front-end")?,
+            early
+                .finish(broker.clone())
+                .await
+                .context("hand the socket to the front-end")?,
         ));
         #[cfg(windows)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(NamedPipeFrontendBox(
@@ -363,26 +382,18 @@ pub fn run() -> Result<()> {
             ),
         ));
         let broker_for_exit = broker.clone();
-        frontend
+        let served = frontend
             .serve_obj(broker, shutdown_rx)
             .await
-            .context("comms front-end serve loop")?;
-        // A daemon that gave up because its store became permanently unusable did NOT stop cleanly.
-        // Exiting non-zero is what distinguishes it from an idle reap or a `Stop` RPC for whatever
-        // supervises the process; the drain that got us here has already released the flock and the
-        // socket, so the next `comms start` gets a clean daemon. See `Broker::hit_fatal_store_failure`.
-        if broker_for_exit.hit_fatal_store_failure() {
-            let detail = crate::comms::store_health::read(&paths.comms_dir)
-                .map(|record| record.error)
-                .unwrap_or_else(|| "see the daemon log".to_string());
-            return Err(anyhow::anyhow!(
-                "comms store is permanently unusable ({detail}); released the daemon lock and exited so a clean daemon can take over"
-            ));
-        }
+            .context("comms front-end serve loop");
+        broker_for_exit.shed_hosted_stacks().await;
+        served?;
+        broker_for_exit.maintain_agents().await;
         Ok(())
     });
     // Bounded teardown instead of the implicit unbounded drop — see [`RUNTIME_SHUTDOWN_TIMEOUT`]. ~keep
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+    drop(daemon_lock);
     result?;
     Ok(())
 }
@@ -435,19 +446,16 @@ async fn prune_missing_registry_rows(broker: &Broker) {
 }
 
 fn log_retention_policy() {
-    use crate::comms::store::{
-        EPHEMERAL_AGENT_TTL, MAX_ACTIVE_THREADS, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, THREAD_IDLE_TTL,
-        THREAD_RETENTION_TTL,
+    use crate::comms::v2::api::{
+        MAX_ACTIVE_THREADS_PER_REPO, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, REPLAY_TTL, SEEN_TTL,
     };
     tracing::info!(
         message_ttl_secs = MESSAGE_TTL.as_secs(),
         max_messages_per_thread = MAX_MESSAGES_PER_THREAD,
-        thread_idle_ttl_secs = THREAD_IDLE_TTL.as_secs(),
-        thread_retention_ttl_secs = THREAD_RETENTION_TTL.as_secs(),
-        ephemeral_agent_ttl_secs = EPHEMERAL_AGENT_TTL.as_secs(),
-        claim_ttl_secs = crate::comms::identity::CLAIM_TTL.as_secs(),
-        max_active_threads = MAX_ACTIVE_THREADS,
-        "comms: effective retention policy"
+        max_active_threads_per_repo = MAX_ACTIVE_THREADS_PER_REPO,
+        seen_ttl_secs = SEEN_TTL.as_secs(),
+        replay_ttl_secs = REPLAY_TTL.as_secs(),
+        "comms: agent store retention"
     );
 }
 

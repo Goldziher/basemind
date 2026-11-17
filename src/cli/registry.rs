@@ -3,7 +3,7 @@
 //! CLI only: the registry has no MCP tool.
 //!
 //! The registry lives in the always-on comms broker daemon (its sole writer). Like the
-//! [`agents`](super::agents) group — and unlike the code-map / memory CLI groups — these
+//! [`agent`](super::agent) group — and unlike the code-map / memory CLI groups — these
 //! subcommands connect to the daemon DIRECTLY via [`CommsClient::ensure_and_connect`] rather than
 //! building a full [`BasemindServer`](crate::mcp::BasemindServer), so they take no repo index lock
 //! and cannot clash with a running `basemind serve`.
@@ -13,79 +13,55 @@
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
 use std::io::Write;
-use std::path::Path;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::cli::render::render_json;
-use crate::comms::client::{CommsClient, scope_context_for};
-use crate::comms::ids::AgentId;
+use crate::comms::client::{ClientHello, CommsClient};
 use crate::registry::{BranchRecord, WorkspaceKind, WorkspaceRecord, WorktreeRecord};
 
 /// The `workspace` listings; they talk to the broker daemon directly.
 #[derive(Subcommand, Debug)]
 pub enum WorkspaceCmd {
     /// List every registered workspace in the machine registry (git + plain).
-    Workspaces {
-        /// Act as this sub-identity instead of the CLI's default agent id.
-        #[arg(long)]
-        as_agent: Option<String>,
-    },
+    Workspaces,
     /// List the worktrees of a registered repo by id.
     Worktrees {
         /// The repo id (normalized remote URL or `path:<root>`) whose worktrees to list.
         repo_id: String,
-        /// Act as this sub-identity instead of the CLI's default agent id.
-        #[arg(long)]
-        as_agent: Option<String>,
     },
     /// List the local branches of a registered repo by id.
     Branches {
         /// The repo id whose branches to list.
         repo_id: String,
-        /// Act as this sub-identity instead of the CLI's default agent id.
-        #[arg(long)]
-        as_agent: Option<String>,
     },
 }
 
-/// Resolve the CLI agent identity through the ONE shared resolver
-/// ([`crate::comms::identity::cli_agent_id`]) — the same identity the `serve` session in this
-/// workspace uses.
-fn cli_agent_id(root: &Path) -> AgentId {
-    crate::comms::identity::cli_agent_id(root)
-}
-
-/// Connect a [`CommsClient`] to the broker as a resolved identity.
-async fn connect_as(root: &Path, as_agent: Option<String>) -> Result<CommsClient> {
-    let agent = match as_agent {
-        Some(raw) => AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?,
-        None => cli_agent_id(root),
-    };
-    let (remote, cwd) = scope_context_for(root);
-    CommsClient::ensure_and_connect(agent, remote, cwd)
+/// Connect a [`CommsClient`] to the broker. The listings act as no agent.
+async fn connect() -> Result<CommsClient> {
+    CommsClient::ensure_and_connect(ClientHello::anonymous())
         .await
         .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))
 }
 
 /// Dispatch one `workspace` subcommand. Builds a small current-thread runtime, then runs it.
-pub fn run(root: &Path, json: bool, cmd: WorkspaceCmd) -> Result<()> {
+pub fn run(json: bool, cmd: WorkspaceCmd) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
     runtime.block_on(async move {
         let mut out = std::io::stdout().lock();
-        dispatch(root, json, cmd, &mut out).await
+        dispatch(json, cmd, &mut out).await
     })
 }
 
 /// Run the listing: resolve the identity, connect, call the client method, and render to `out`.
-async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Write) -> Result<()> {
+async fn dispatch(json: bool, cmd: WorkspaceCmd, out: &mut impl Write) -> Result<()> {
     match cmd {
-        WorkspaceCmd::Workspaces { as_agent } => {
-            let mut client = connect_as(root, as_agent).await?;
+        WorkspaceCmd::Workspaces => {
+            let mut client = connect().await?;
             let workspaces = client
                 .list_workspaces()
                 .await
@@ -114,8 +90,8 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
                 }
             }
         }
-        WorkspaceCmd::Worktrees { repo_id, as_agent } => {
-            let mut client = connect_as(root, as_agent).await?;
+        WorkspaceCmd::Worktrees { repo_id } => {
+            let mut client = connect().await?;
             let label = repo_id.clone();
             let worktrees = client
                 .list_worktrees(repo_id)
@@ -145,8 +121,8 @@ async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Wri
                 }
             }
         }
-        WorkspaceCmd::Branches { repo_id, as_agent } => {
-            let mut client = connect_as(root, as_agent).await?;
+        WorkspaceCmd::Branches { repo_id } => {
+            let mut client = connect().await?;
             let label = repo_id.clone();
             let branches = client
                 .list_branches(repo_id)

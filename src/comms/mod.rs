@@ -1,19 +1,30 @@
-//! Agent-to-agent communication substrate: multi-dimension THREADS, a per-agent inbox, and the
-//! singleton broker daemon that backs them.
-//!
-//! A thread is a conversation addressed by at least two of `subject` / `path` (globset) /
-//! `members`. Discovery is scoped — a thread is never globally visible; there is no auto-join.
-//! [`ids`] holds the validated identifier newtypes that double as composite-key segments in the
-//! comms store; the rest of the module adds the transport traits, the second Fjall-backed
-//! `CommsStore`, the broker, and the front-ends (Unix socket, in-process, future A2A HTTP).
+//! The singleton daemon and its clients: agent messaging (ADR-0021, in [`v2`] and
+//! [`agents_hub`]), the hot workspaces it hosts for `basemind serve`, the forwarded index work, and
+//! the front-ends (Unix socket or named pipe, in-process, streamable HTTP).
 
 pub mod identity;
 pub mod ids;
 
+/// The back-off, connection cap and first-byte deadline every accept loop shares.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod accept_gate;
+/// The daemon's file-descriptor budget and the `RLIMIT_NOFILE` raise at start.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod fd_budget;
+/// Opening the daemon's named pipe only when this user's process serves it.
+#[cfg(all(feature = "comms", windows))]
+pub mod pipe_owner;
+
+/// The daemon's agent store, wait and session count (ADR-0021).
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod agents_hub;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod blob_gc_gate;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod client;
+/// The agent requests of a client, and the daemon's agent store as an `AgentOps` for the CLI.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod client_agents;
 /// Second `impl CommsClient` block: the daemon-forwarding rescan / memory /
 /// resolved-refs / git-history RPCs, split out of `client.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -21,9 +32,10 @@ mod client_forward;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod code_search_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod cursor;
-#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon;
+/// Second `impl Broker` block: `Hello` and the agent requests, split out of `daemon.rs`.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod daemon_agents;
 /// Second `impl Broker` block: the forwarded memory / resolved-refs handlers, split
 /// out of `daemon.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -32,14 +44,6 @@ mod daemon_forward_handlers;
 /// re-exported from it so their historical `daemon::` path stays stable.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_guards;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod daemon_handler_helpers;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod daemon_handlers;
-/// Second `impl Broker` block: terminal-store-failure detection and the self-shutdown it triggers,
-/// split out of `daemon.rs` for the line cap.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod daemon_health;
 /// Second `impl Broker` block: the streamable-HTTP per-request seam (activity guard, workspace
 /// read-stack resolution, connection accounting), split out of `daemon.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -71,12 +75,8 @@ pub mod http_auth;
 pub mod http_frontend;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod index_read_proto;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod keys;
 #[cfg(all(feature = "comms", feature = "memory"))]
 pub mod memory_proto;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod model;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod protocol;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -86,11 +86,7 @@ pub mod relay;
 mod relay_decline;
 pub mod resolved_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod scope;
-#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod singleton;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod store;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod store_health;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -99,8 +95,8 @@ pub mod v2;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod workspace_pool;
 
-/// A fresh, collision-resistant key for one logical post (pid + clock + counter + a per-process
-/// random seed; no crypto strength needed, only uniqueness per agent and thread).
+/// A fresh, collision-resistant key for one relayed request (pid + clock + counter + a per-process
+/// random seed; no crypto strength needed, only uniqueness per agent).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub fn new_idempotency_key() -> String {
     use std::hash::{BuildHasher as _, Hasher as _};
@@ -119,9 +115,3 @@ pub fn new_idempotency_key() -> String {
         hasher.finish()
     )
 }
-
-/// Schema version for the comms store, bound to the release minor exactly like
-/// `INDEX_SCHEMA_VER` and the blob `SCHEMA_VER`. An older on-disk version wipes the comms store and
-/// the daemon rebuilds it from scratch — comms history is durable-but-disposable scratch, not a
-/// source of truth. A newer one is refused, so an older binary never destroys a newer daemon's store.
-pub const COMMS_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32;

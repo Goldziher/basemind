@@ -165,8 +165,7 @@ fn status(pid: u32, version: &str, proto_ver: u32) -> CommsResponse {
         build_id: "scripted".to_string(),
         proto_ver,
         uptime_secs: 1,
-        threads: 0,
-        subscribers: 0,
+        agent_store: "open".to_string(),
     })
 }
 
@@ -247,7 +246,16 @@ fn the_table_asks_only_an_older_daemon_to_stop() {
     assert_eq!(classify(&report(NEWER, PROTO_VER), OURS), Verdict::Use);
     assert_eq!(classify(&report(NEWER, OTHER_PROTO), OURS), Verdict::RefuseNewer);
     assert_eq!(classify(&report(OURS.version, PROTO_VER), OURS), Verdict::Use);
-    assert_eq!(classify(&report(OURS.version, OTHER_PROTO), OURS), Verdict::Use);
+    assert_eq!(
+        classify(&report(OURS.version, OTHER_PROTO), OURS),
+        Verdict::RefuseNewer,
+        "a build of this release on a newer protocol is not this binary's to use or stop"
+    );
+    assert_eq!(
+        classify(&report(OURS.version, PROTO_VER - 1), OURS),
+        Verdict::Replace { usable: false },
+        "a build of this release on an older protocol (a dev build before the bump) is replaced"
+    );
     assert_eq!(
         classify(&report(OLDER, PROTO_VER), OURS),
         Verdict::Replace { usable: true }
@@ -425,7 +433,7 @@ async fn a_silent_daemon_the_pidfile_does_not_name_is_reported_not_signalled_or_
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_daemon_of_the_same_release_on_another_protocol_is_not_asked_to_stop() {
+async fn a_daemon_of_the_same_release_on_a_newer_protocol_is_refused_not_asked_to_stop() {
     let dir = tempfile::tempdir().expect("tempdir");
     let stand_in = StandIn::spawn();
     let paths = generation(dir.path(), Some(stand_in.0));
@@ -435,7 +443,13 @@ async fn a_daemon_of_the_same_release_on_another_protocol_is_not_asked_to_stop()
         _ => Some(CommsResponse::Ok),
     });
 
-    assert_eq!(settle(&paths).await.expect("left to the handshake"), Existing::Use);
+    let error = settle(&paths)
+        .await
+        .expect_err("the newer protocol wins within one release");
+    assert!(
+        matches!(error, SingletonError::NewerDaemon { pid: reported, .. } if reported == pid),
+        "{error}"
+    );
     assert_eq!(daemon.asked(), ["status"], "it must not be asked to stop");
     assert!(stand_in.alive());
 }
@@ -551,7 +565,7 @@ async fn a_daemon_refusing_with_a_store_error_is_reported_with_its_store_and_the
             "{error}"
         );
         let message = error.to_string();
-        let store = dir.path().join("store.fjall");
+        let store = dir.path().join(crate::comms::v2::store::STORE_DIR);
         assert!(message.contains(&store.display().to_string()), "{message}");
         assert!(message.contains("Poisoned"), "{message}");
         assert!(message.contains("basemind comms stop --all"), "{message}");

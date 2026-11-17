@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use basemind::comms::daemon::Broker;
 use basemind::comms::http_frontend;
-use basemind::comms::store::CommsStore;
 
 /// Without the operator grant, `serve_http` returns without binding a socket, without publishing a
 /// portfile, and without failing — the daemon's UDS relay is unaffected. The fixed default port is
@@ -30,8 +29,9 @@ async fn listener_does_not_bind_without_the_operator_grant() {
     }
 
     let comms_dir = tempfile::tempdir().expect("comms tempdir");
-    let store = Arc::new(CommsStore::open(comms_dir.path()).expect("open comms store"));
-    let broker = Arc::new(Broker::new(store));
+    let broker = Arc::new(Broker::new(basemind::comms::agents_hub::AgentHub::open(
+        comms_dir.path(),
+    )));
 
     // A portfile from an earlier, granted daemon must be cleared, not left advertising a dead port.
     let portfile = http_frontend::portfile_path(comms_dir.path());

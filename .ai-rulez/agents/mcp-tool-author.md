@@ -24,8 +24,8 @@ question an existing tool answers, add an argument there instead. If it is a new
 the eval harness (`basemind admin eval`) must show against the `rg`/`git` baseline; do not grow the
 surface on intuition.
 
-`agents` is still mode-dispatched (`src/mcp/mode.rs`) until its own redesign.
-A new mode there follows the last section of the `mcp-tool-checklist` skill.
+The agent tools (`agent_post`, `agent_inbox`, `agent_threads`) are deferred verb tools specified in
+`docs/comms-v2.md`; a change to their fields starts from that document and ADR-0021.
 
 ## Before you write
 

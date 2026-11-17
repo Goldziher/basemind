@@ -5,7 +5,7 @@ use super::*;
 #[tokio::test]
 async fn stop_refuses_to_disconnect_another_live_link() {
     let (_dir, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
+    let tx = CancellationToken::new();
     let mut session = Session::default();
     let active_relay = broker
         .try_register_relay()
@@ -30,7 +30,7 @@ async fn stop_refuses_to_disconnect_another_live_link() {
 #[tokio::test]
 async fn stop_refuses_to_disconnect_an_active_http_connection() {
     let (_dir, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
+    let tx = CancellationToken::new();
     let mut session = Session::default();
     let active_http = broker
         .try_begin_http_connection()
@@ -58,7 +58,7 @@ async fn stop_is_refused_while_a_relay_session_is_still_being_set_up() {
     use tokio::io::AsyncWriteExt as _;
 
     let (_dir, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
+    let tx = CancellationToken::new();
     let mut session = Session::default();
     let (mut client, server) = tokio::io::duplex(4096);
     client
@@ -99,7 +99,7 @@ async fn a_relay_link_that_never_sends_its_hello_stops_holding_the_daemon() {
     use tokio::io::AsyncWriteExt as _;
 
     let (_dir, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
+    let tx = CancellationToken::new();
     let mut session = Session::default();
     for preamble in [&crate::comms::relay::RELAY_MAGIC[..], &[]] {
         let (mut client, server) = tokio::io::duplex(4096);
@@ -134,7 +134,7 @@ async fn a_relay_link_that_never_sends_its_hello_stops_holding_the_daemon() {
 #[tokio::test]
 async fn a_relay_handshake_that_loses_to_a_stop_is_declined_as_draining() {
     let (_dir, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
+    let tx = CancellationToken::new();
     let mut session = Session::default();
     let workspace = tempfile::tempdir().expect("workspace");
     crate::store::init_isolated_cache();
@@ -150,7 +150,9 @@ async fn a_relay_handshake_that_loses_to_a_stop_is_declined_as_draining() {
         relay_proto_ver: crate::comms::relay::RELAY_PROTO_VER,
         root: workspace.path().to_path_buf(),
         view: crate::store::VIEW_WORKING.to_string(),
-        agent: crate::comms::ids::AgentId::parse("claude-code").expect("agent"),
+        principal: crate::comms::v2::Principal::parse("claude-code").expect("principal"),
+        host: None,
+        notices: Vec::new(),
     };
     let welcome = crate::comms::relay::client_handshake(&mut client, &hello)
         .await

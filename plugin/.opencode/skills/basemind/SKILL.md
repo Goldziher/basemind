@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:f1a534ace69c73648ba36354ae1ba93fdb8fa398e5f20fdbc63d0905b1073007
-Source-Hash: blake3:4d632858bc9c1e1cc25c6d72da03e532d15f2046b01eeb925a5a669d622811bc
+Content-Hash: blake3:4eb980af891c8555c35d119760a82ed358183bf247dd4e9e47f81721f69afdaa
+Source-Hash: blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8
 Schema-Version: v1
 -->
 
@@ -21,7 +21,8 @@ content-addressed blob store + Fjall inverted index (and, when enabled, a LanceD
 structural, historical, and semantic questions resolve in milliseconds without reading whole files.
 
 Each job is its own tool with an exact schema. The tools are always loaded: call them directly, no
-tool search needed.
+tool search needed. Agent messaging is the exception: `agent_post`, `agent_inbox` and
+`agent_threads` are deferred, so find them by tool search.
 
 ## Capabilities
 
@@ -41,7 +42,8 @@ This umbrella skill covers the whole surface. For focused workflows:
 - **`basemind-code-search`**: outlines, symbol search, usages, grep, search by meaning.
 - **`basemind-git-history`**: log, blame, diffs.
 - **`basemind-documents`**: document search and memory.
-- **`basemind-comms`**: coordinating with other agents in the same repo over the broker.
+- **`basemind-comms`**: coordinating with other agents in the same repo (the deferred `agent_post`, `agent_inbox` and
+  `agent_threads` tools).
 - **`basemind-cli`**: the same surface driven headlessly from the CLI.
 
 ## When to reach for it (instead of `grep` / `read_file`)

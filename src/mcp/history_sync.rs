@@ -71,13 +71,9 @@ pub(super) fn request(state: &ServerState) {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if index.is_daemon_backed() {
         let root = shared.root.clone();
-        let agent_id = state.agent_id.clone();
         runtime.spawn(async move {
             let _syncing = syncing;
-            let Ok(agent) = crate::comms::ids::AgentId::parse(agent_id) else {
-                return;
-            };
-            match crate::git_history::remote::request_sync(root, agent).await {
+            match crate::git_history::remote::request_sync(root).await {
                 Some(outcome) => tracing::info!(?outcome, "git-history index synced by the daemon"),
                 None => tracing::warn!("git-history index sync unavailable; history tools live-walk"),
             }

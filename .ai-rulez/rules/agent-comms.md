@@ -22,16 +22,15 @@ take exact arguments; they return paths, 1-based lines, and signatures — a fra
 of reading source. basemind first; shell is the fallback.
 
 **Communicate with other agents.** You may be one of several agents working this repo at once.
-Coordination runs over THREADS — scoped conversations addressed by at least two of {subject,
-path-glob, members}, discovered by scope (you're a member, your cwd matches the thread's path-glob,
-or a subject filter) — never globally — and joined explicitly (no auto-join). All of this is the
-`agents` MCP tool (`--features comms`), which is still dispatched by a required `mode`. On start, `agents inbox` (and `agents
-thread_list` for threads in scope, then `agents history` on the relevant one); `history` and `inbox`
-return front-matter only (subject / from / id) — call `agents message` with an id to read a body.
-`agents thread_start {subject, path_glob?, members?}` opens a thread (you're the creator/admin; a
-human is also admin). Post a concise `agents post {thread, subject, body, reply_to?, idempotency_key?}` when you begin,
-finish, or hit a decision, and reply (`reply_to`) to messages about your work. `agents ack` clears
-read messages; idle threads auto-archive (or `agents archive` closes one). Don't stay silent when
-collaborating. An orchestrator can drive many named subagents via `as_agent` (each with its own
-identity and inbox), manage membership with `agents add_member` / `agents remove_member`, and
-discover peers via `agents list`. See the `basemind-multi-agent-room` skill for coordinating a team.
+Messaging is opt-in and secondary to code navigation: three deferred MCP tools (`--features comms`),
+found by tool search, not loaded at session start. `agent_post {body, subject?, thread?, reply_to?,
+to?, paths?}` sends: `subject` starts a thread, `thread` or `reply_to` continues one, and `to` makes a
+new thread invitation-only (without it the thread is open to the repository). `agent_inbox {}` reads
+unread messages with bodies inline and marks them read; `peek: true` does not, `unread: false` reads
+history, `id` reads one message whole, `wait_secs` (0 to 40) waits in the daemon. `agent_threads`
+lists threads (`query`, `path`), describes one (`thread`), and changes it with `join`, `leave`,
+`invite` or `archive`. Post a concise note when you begin, finish, or hit a decision, and reply
+(`reply_to`) to messages about your work. Every tool takes an optional `as` (`[a-z0-9_-]{1,32}`) for
+a sub-identity: a subagent that wants its own inbox passes it. The CLI mirrors the tools
+(`basemind agent post|inbox|threads`) and adds `basemind agent status` and `basemind agent cleanup`.
+Spec: `docs/comms-v2.md`. See the `basemind-multi-agent-room` skill for coordinating a team.

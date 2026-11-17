@@ -20,8 +20,8 @@ a **new tool** (a question no existing tool asks). A new tool ships only if the 
 (`src/eval/`, `basemind admin eval`) shows it beats the `rg`/`git` baseline on correctness or
 tokens, because every tool is always loaded and costs bytes in every session.
 
-`agents` (`--features comms`) is still mode-dispatched until its own redesign;
-see the last section.
+The three agent tools (`--features comms`) are verb tools too, but deferred and specified in
+`docs/comms-v2.md` (ADR-0021).
 
 Every file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — split a helper into
 `helpers_<area>.rs` rather than raising it.
@@ -134,14 +134,6 @@ It opens with "Use …" and the question the tool answers in the words an agent 
 of `rg`/`grep`", "where is X defined", "who last changed this"), states the contract (literal vs
 regex, exact vs substring, name-only vs resolved, what is cut or capped), and ends with exactly one `Example: {…}`
 call that is valid for the schema. Keep it to a few sentences: the byte ceiling is shared.
-
-## Adding a mode to `agents`
-
-Add the variant to the tool's `define_mode!` block in `src/mcp/mode.rs`, any new parameter as an
-optional sibling field on its flat params struct (`types_comms.rs`), the
-dispatch arm plus the `reject_unsupported` field list in the helper, the CLI subcommand, and a
-`pair(tool, mode, cli)` row in `tests/cli_parity/capabilities.rs`. Never
-`#[derive(JsonSchema)]` on a doc-commented enum: it emits `oneOf`.
 
 ## Verification
 

@@ -1,5 +1,5 @@
 ---
-description: Orchestrate a team of named subagents in shared threads. One orchestrator drives multiple peers with distinct identities; each subagent sees its own inbox and can cross-check findings by posting to a thread the peer is a member of.
+description: Orchestrate a team of subagents in shared threads. Each subagent acts under its own sub-identity (`as`), reads its own inbox, and cross-checks peers by posting to threads they are members of.
 name: basemind-multi-agent-room
 license: MIT
 metadata:
@@ -9,162 +9,119 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:41b7052307802a3d619dc2626644ca36a0e8161731b38544942515ce81c2820a
-Source-Hash: blake3:4d632858bc9c1e1cc25c6d72da03e532d15f2046b01eeb925a5a669d622811bc
+Content-Hash: blake3:bfca36214b26e30be142464929b11cc46b02ec45001d406806459755b1392db6
+Source-Hash: blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8
 Schema-Version: v1
 -->
 
 # Multi-agent thread orchestration
 
-Run a team of NAMED subagents that coordinate in shared THREADS, all driven by one
-orchestrator. Each subagent has its own identity and inbox, and posts to threads the
-relevant peers are members of.
+Run a team of subagents that coordinate in shared threads, driven by one orchestrator. Each
+subagent acts as its own sub-identity, has its own inbox, and posts to threads its peers are
+members of. The tools are the deferred `agent_post`, `agent_inbox` and `agent_threads` (find them
+by tool search); the `basemind-comms` skill has the full contract.
 
 ## When to use it
 
-Orchestrate subagents when:
+- Several reviewers need to see each other's work (code review, audit, cross-validation).
+- A subagent hands findings to a peer for verification.
+- The team needs one narrative, readable as a thread history.
+- Independent work runs in parallel and is synthesized afterwards.
 
-- Multiple reviewers need to see each other's work (code review, audit, cross-validation).
-- A subagent should hand off findings to a peer for verification.
-- The team needs a shared narrative (all readable in one thread history).
-- You want to parallelize independent work (each agent runs concurrently) and then synthesize.
+## Identity model
+
+All subagents of one checkout share a principal. `as: "<name>"` (`[a-z0-9_-]{1,32}`) makes the
+call act as `<principal>.<name>`: a separate read position and inbox, the same membership. An actor's
+own posts are never unread for it, but a sibling's are, so a parent and a subagent that passes
+`as` can talk. A subagent that omits `as` shares the parent's read position and cannot message it.
+In Claude Code the PreToolUse hook injects `<agent_type>-<8 hex>` when a call has no `as`; that
+name is not predictable, so tell any subagent you will address to pass an explicit `as`.
 
 ## Setup
 
-1. **Start a thread and name its members.** A thread is addressed by at least two of three
-   coordinates — `{subject, path-glob, members}`. For a private team, list the members explicitly
-   so only they see it; discovery is scoped, never global, so unrelated agents never surface it.
+1. **Open a thread.** Without `to` it is open to the repository; with `to` it is invitation-only
+   and only the listed principals discover it. A sub-identity named in `to` makes its principal
+   the member.
 
    ```text
-   agents {mode: "thread_start", subject: "review-pr-42", members: ["security", "perf"]}
+   agent_post {subject: "review-pr-42", body: "Reviewing PR 42; post findings here.",
+               paths: ["src/auth/"], as: "lead"}
    ```
 
-2. **Assign each subagent a short name.** Pass `as_agent` to every tool call the subagent makes.
-   Names like `"security"`, `"perf"`, `"correctness"` are clearer than defaults. A named member
-   must join with `agents` mode `join` (or be added with mode `add_member`) before it can post.
+   The reply carries the thread id (`t-abcdef`).
 
-3. **Distribute the subagent contract.** Each subagent's prompt should include:
-   - Its assigned `as_agent` name (e.g. `"security"`).
-   - The shared thread's subject (e.g. `"review-pr-42"`).
-   - Instructions to:
-     - Call `agents {mode: "register", as_agent: "security", name: "Security Reviewer", …}` once.
-     - Call `agents {mode: "join", thread: "review-pr-42", as_agent: "security"}` to participate.
-     - Call `agents` mode `post` with `as_agent: "security"` to share findings.
-     - Call `agents` mode `inbox` with `as_agent: "security"` to see addressed messages.
+2. **Give each subagent a name and the thread id.** Its prompt includes:
+   - its `as` name (`security`, `perf`, `correctness`);
+   - the thread id;
+   - to pass `as` on every agent tool call.
+
+3. **Members join.** On an open thread a subagent runs
+   `agent_threads {thread: "t-abcdef", join: true, as: "security"}`. Membership is per principal,
+   so the orchestrator can also `invite` agents of other checkouts.
 
 ## Broadcast vs targeted hand-off
 
-- **Thread post** (`agents` mode `post` + `as_agent`): everyone on the thread sees it. Use for:
-  - Announcing a finding the whole team should see.
-  - Replying to a peer's discovery (`reply_to: <id>` keeps it linked).
-  - Summarizing your work.
-
-- **Targeted hand-off**: to reach one peer privately, use `agents` mode `thread_start` for a two-member thread
-  (`members: ["security", "perf"]`) — only those two discover it. Use for:
-  - Asking a peer to cross-check your finding.
-  - Sharing a detail not ready for the whole team.
-  - Hand-off: `"I found X; can you validate my approach?"`.
+- **Thread post**: everyone on the thread sees it. Use it for findings the team should see,
+  replies (`reply_to` keeps them linked) and summaries.
+- **Targeted hand-off**: `agent_post {subject: "cross-check", body, to: ["<peer-principal>"]}`
+  makes an invitation-only thread. `to` names principals; it cannot name only yourself. Use it
+  to ask one peer to validate a finding.
 
 ## Reading and synthesis
 
-As the orchestrator:
+The orchestrator:
 
-1. Let all subagents post to their threads (in parallel).
-2. Read the shared thread: `agents {mode: "history", thread: "review-pr-42"}` (front-matter only).
-3. For each message that matters, fetch the body: `agents {mode: "message", message_id: "…"}`.
-4. Read each subagent's inbox with `agents` mode `inbox` and its `as_agent` identity.
-   (Messages appear as front-matter; bodies come from mode `message`.)
-5. Synthesize: combine the findings into a verdict, decision, or report.
+1. Lets subagents post in parallel.
+2. Blocks on peers instead of polling: `agent_inbox {wait_secs: 30, as: "lead"}` returns as soon
+   as a peer posts; bodies are inline (cut at 4 KiB; `{id: "t-abcdef.4"}` reads one whole).
+3. Reads a thread's full history: `agent_inbox {thread: "t-abcdef", unread: false}`.
+4. Looks without consuming: `peek: true`.
+5. Synthesizes the findings into a verdict or report.
 
-## Example: two-agent security + performance cross-check
+Reading marks messages read for that actor only. A reply that does not fit the 16 KiB budget
+returns `more: true`; read again.
 
-**Orchestrator setup:**
+## Example: security and performance cross-check
 
-```text
-agents {mode: "thread_start", subject: "review-auth-pr", members: ["security", "perf"]}
-
-# Spawn agent "security"
-# Prompt: "You are agent 'security' on thread 'review-auth-pr'. Register yourself,
-# join the thread, analyze the diff for auth bugs, post findings, and start a
-# two-member thread with 'perf' asking them to check your fix's perf implications."
-
-# Spawn agent "perf"
-# Prompt: "You are agent 'perf' on thread 'review-auth-pr'. Register yourself,
-# join the thread, analyze the diff for performance regressions, post findings, and
-# reply to 'security' with your take on their auth fix."
-```
-
-**Agent "security" steps:**
+Orchestrator:
 
 ```text
-agents {
-  mode: "register", as_agent: "security", name: "Security Reviewer", description: "Auth auditor"
-}
-agents {mode: "join", thread: "review-auth-pr", as_agent: "security"}
-agents {
-  mode: "post", thread: "review-auth-pr", as_agent: "security", subject: "SQL injection check",
-  body: "Parameter X is quoted..."
-}
-agents {
-  mode: "thread_start", subject: "cross-check-sanitized-input",
-  members: ["security", "perf"], as_agent: "security"
-}
-agents {
-  mode: "post", thread: "cross-check-sanitized-input", as_agent: "security",
-  subject: "Cross-check: sanitized input",
-  body: "I added validation at line 42..."
-}
-agents {mode: "inbox", as_agent: "security", mark_read: true}  # See perf's response
+agent_post {subject: "review-auth-pr", body: "Review the diff.", as: "lead"}
+# spawn "security" and "perf" with: thread id, their `as` name, the rule to pass `as` on every call
 ```
 
-**Agent "perf" steps:**
+Subagent `security`:
 
 ```text
-agents {
-  mode: "register", as_agent: "perf", name: "Performance Reviewer", description: "Latency auditor"
-}
-agents {mode: "join", thread: "review-auth-pr", as_agent: "perf"}
-agents {
-  mode: "post", thread: "review-auth-pr", as_agent: "perf", subject: "Cache impact check",
-  body: "New validation adds ~2ms..."
-}
-agents {
-  mode: "post", thread: "cross-check-sanitized-input", as_agent: "perf",
-  subject: "Auth fix validated",
-  body: "Sanitization looks solid...", reply_to: "msg-sec-2"
-}
+agent_threads {thread: "t-abcdef", join: true, as: "security"}
+agent_post {thread: "t-abcdef", body: "Parameter X is quoted; no injection.", as: "security"}
+agent_inbox {as: "security"}
 ```
 
-**Orchestrator synthesis:**
+Subagent `perf`:
 
 ```text
-agents {mode: "history", thread: "review-auth-pr"}  # See front matter
-agents {mode: "message", message_id: "msg-sec-1"}  # Get security's body
-agents {mode: "message", message_id: "msg-perf-1"}  # Get perf's body
-agents {mode: "history", thread: "cross-check-sanitized-input"}
-agents {mode: "message", message_id: "msg-perf-2"}  # Get perf's hand-off body
-# Synthesize: "Security + perf sign off. Ready to merge."
+agent_threads {thread: "t-abcdef", join: true, as: "perf"}
+agent_post {thread: "t-abcdef", body: "New validation adds ~2 ms.", as: "perf"}
+agent_post {reply_to: "t-abcdef.2", body: "Sanitization looks solid.", as: "perf"}
 ```
 
-## Recency and thread freshness
+Orchestrator synthesis:
 
-Reads default to RECENT so stale chatter never confuses an agent:
+```text
+agent_inbox {wait_secs: 30, as: "lead"}
+agent_inbox {thread: "t-abcdef", unread: false, as: "lead"}
+```
 
-- `agents` modes `history` / `inbox` return only the **last 24 hours** by default. Pass
-  `since_hours: N` for a wider window, or `since_hours: 0` for the full append-only log. Nothing is
-  ever deleted — older history stays reachable explicitly.
-- Every front-matter row carries `age_secs` (seconds since the message was posted) so you can gauge
-  staleness without converting timestamps yourself.
-- `agents` mode `thread_list` flags each thread `stale: true` after over 7 days without a post.
-  The CLI renders this as an `ACTIVE` / `STALE` marker per thread. Idle threads auto-archive; skip
-  stale ones unless you are intentionally reviewing old context.
+## Cleanup
 
-## Notes
+Archive a finished thread with `agent_threads {thread, archive: true}` (creator only); an archived
+thread cannot be posted to or reopened. An operator can archive any thread with
+`basemind agent cleanup --archive <thread>`, which also runs a retention sweep.
 
-- A named member must join with `agents` mode `join` (or be added with `add_member`) before posting.
-- A private two-member thread reaches exactly one peer — only its members discover it.
-- Front-matter-only reads (history, inbox) are cheap. Fetch bodies only when needed.
-- The CLI offers parity: `basemind agents post … --as-agent security`,
-  `basemind agents thread-start --subject <subject> --member perf --as-agent security`,
-  `basemind agents history <thread> --since-hours 0` (all history),
-  `basemind agents thread-list` (shows ACTIVE / STALE per thread).
+## CLI parity
+
+`basemind agent post --body … --thread <t> --as security`,
+`basemind agent inbox --thread <t> --unread false --as lead`,
+`basemind agent threads --thread <t> --join --as perf`. `basemind agent status` shows who the
+checkout acts as and the store state.

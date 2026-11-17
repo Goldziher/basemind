@@ -1,4 +1,4 @@
-//! `agent threads` against the in-memory store: listing, discovery, the four changes, paging,
+//! `agent threads` against the test store: listing, discovery, the four changes, paging,
 //! and what is refused.
 
 use super::*;
@@ -6,7 +6,7 @@ use crate::cli::agent::args::AgentCmd;
 use crate::cli::agent::test_support::{caller, json, parse, refusal, text};
 use crate::cli::exit::{ERROR, USAGE};
 use crate::comms::v2::api::MIN_QUERY_CHARS;
-use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
+use crate::comms::v2::store::test_agents::{TEST_EPOCH_MICROS, TestAgents};
 use crate::comms::v2::{Actor, Cursor, IdKind, InvalidId, ThreadFilter, ThreadId, ThreadUpdate};
 use crate::path::RelPath;
 
@@ -14,7 +14,7 @@ use crate::path::RelPath;
 const OPEN_FOR_CREATOR: &str = "t-aaaaaa\ttopic\topen\tmember\tunread 0\t1m\t-\n";
 
 /// Agent `a` starts a thread about `src/comms` that is open to the repository.
-fn open(fake: &FakeAgents) {
+fn open(fake: &TestAgents) {
     text(
         fake,
         "a",
@@ -23,7 +23,7 @@ fn open(fake: &FakeAgents) {
 }
 
 /// Agent `a` starts an invitation-only thread with `b`.
-fn invitation_only(fake: &FakeAgents) {
+fn invitation_only(fake: &TestAgents) {
     text(
         fake,
         "a",
@@ -51,7 +51,7 @@ fn refused_with(flags: &[&str]) -> CommsError {
 
 #[test]
 fn threads_lists_one_thread_per_line() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     invitation_only(&fake);
 
     assert_eq!(
@@ -67,7 +67,7 @@ fn threads_lists_one_thread_per_line() {
 
 #[test]
 fn threads_describes_one_thread() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     open(&fake);
 
     assert_eq!(
@@ -78,7 +78,7 @@ fn threads_describes_one_thread() {
 
 #[test]
 fn threads_discovers_open_threads_by_query_and_path() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     open(&fake);
     let found = "t-aaaaaa\ttopic\topen\tnot-member\tunread 0\t1m\ta\n";
 
@@ -94,7 +94,7 @@ fn threads_discovers_open_threads_by_query_and_path() {
 
 #[test]
 fn threads_join_then_leave() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     open(&fake);
 
     assert_eq!(
@@ -109,7 +109,7 @@ fn threads_join_then_leave() {
 
 #[test]
 fn threads_invite_lists_the_agents_not_seen() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     open(&fake);
 
     assert_eq!(
@@ -128,7 +128,7 @@ fn threads_invite_lists_the_agents_not_seen() {
 
 #[test]
 fn threads_archive_hides_the_thread_from_the_default_listing() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     open(&fake);
     let archived = "t-aaaaaa\ttopic\topen,archived\tmember\tunread 0\t1m\t-\n";
 
@@ -142,7 +142,7 @@ fn threads_archive_hides_the_thread_from_the_default_listing() {
 
 #[test]
 fn threads_archive_by_another_agent_is_a_runtime_error_with_its_fix() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     open(&fake);
 
     let (code, message) = refusal(&fake, "b", &["threads", "--thread", "t-aaaaaa", "--archive"]);
@@ -158,7 +158,7 @@ fn threads_archive_by_another_agent_is_a_runtime_error_with_its_fix() {
 
 #[test]
 fn threads_pages_a_listing_with_the_cursor() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     for subject in ["one", "two", "three"] {
         text(&fake, "a", &["post", "--subject", subject, "--body", "hello"]);
     }
@@ -185,7 +185,7 @@ fn threads_pages_a_listing_with_the_cursor() {
 
 #[test]
 fn threads_json_is_the_reply() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     open(&fake);
     let expected = fake.threads_query(&caller("a"), ThreadQuery::default()).expect("list");
 
@@ -193,7 +193,7 @@ fn threads_json_is_the_reply() {
     assert_eq!(listed, serde_json::to_value(&expected).expect("serializable"));
     assert_eq!(listed["threads"][0]["id"], "t-aaaaaa");
     assert_eq!(listed["threads"][0]["paths"], serde_json::json!(["src/comms"]));
-    assert_eq!(listed["threads"][0]["last_activity_micros"], FAKE_EPOCH_MICROS);
+    assert_eq!(listed["threads"][0]["last_activity_micros"], TEST_EPOCH_MICROS);
 
     let joined = json(&fake, "b", &["threads", "--thread", "t-aaaaaa", "--join"]);
     assert_eq!(joined["threads"][0]["member"], true);
@@ -202,7 +202,7 @@ fn threads_json_is_the_reply() {
 
 #[test]
 fn threads_as_a_sub_identity_lists_its_principals_threads_with_its_own_unread_count() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     text(
         &fake,
         "a",
@@ -218,7 +218,7 @@ fn threads_as_a_sub_identity_lists_its_principals_threads_with_its_own_unread_co
 
 #[test]
 fn threads_archived_is_read_by_naming_it_and_closed_to_posts_joins_and_invitations() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     open(&fake);
     text(&fake, "b", &["threads", "--thread", "t-aaaaaa", "--join"]);
     text(&fake, "a", &["post", "--thread", "t-aaaaaa", "--body", "second"]);
@@ -389,7 +389,7 @@ fn threads_refuses_malformed_values() {
 
 #[test]
 fn threads_refused_flags_are_a_usage_error() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
 
     assert_eq!(
         refusal(&fake, "a", &["threads", "--join"]),

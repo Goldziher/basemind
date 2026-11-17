@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.4'
 scope = 'all'
-tree = 'sha256:bdb437bc5177ae7df99fc24074b4ca6ed822971e6b03b906a07dad00d5499497'
+tree = 'sha256:3bc719ffef02da474b284bc99ec35eaa5f5309c8dcafb2e9f4e027040e9679c8'
 
 [[item]]
 kind = 'command'
@@ -22,7 +22,7 @@ digest = 'sha256:fad8ccdb7efc4b27c8eb65c854331a1565fdcbfb1185d3429f44f9fe432405d
 kind = 'command'
 id = 'bm-init'
 path = 'commands/bm-init.md'
-digest = 'sha256:aed27c998273d6a55cc022347c381242f219695c9cf7f703074f0f7d5126b22f'
+digest = 'sha256:5bda2b1c4d4157cd532719d4ab1a3dc07e36c4a0815663df9bbb2f97ea7cf6be'
 
 [[item]]
 kind = 'command'
@@ -40,19 +40,19 @@ digest = 'sha256:4be937bc70951463ccffbe4017c8a1d283e860da99897f8ab481e030abbbf1b
 kind = 'command'
 id = 'bm-statusline'
 path = 'commands/bm-statusline.md'
-digest = 'sha256:edd551ba8eff4dbe320ebb59382ef0cdec02cfd5cb56e8d311a839008f89340e'
+digest = 'sha256:97e4cf0bb225e72bab95c0e967264d9176013f89c8c8a7f98fae1ebe1cc67218'
 
 [[item]]
 kind = 'skill'
 id = 'basemind'
 path = 'skills/basemind'
-digest = 'sha256:64bacb83af4d30d0304c0a2fd761330172b8825b6803047aaa3973b9e9c2bfb6'
+digest = 'sha256:f75fa051c809464b9cf109b849caf151993f09e111ad57abf3f67e7582247cd7'
 
 [[item]]
 kind = 'skill'
 id = 'basemind-cli'
 path = 'skills/basemind-cli'
-digest = 'sha256:2e8018499c95108435dcde7db4ec9b2fd6efd6a0ca11b7f4197c208d2d5a247e'
+digest = 'sha256:0f9c4a9ed1123f159936dc42a3a2bfffdb6fd53e09b7ef0c1ea1a4fdca57e699'
 
 [[item]]
 kind = 'skill'
@@ -64,7 +64,7 @@ digest = 'sha256:25fd5ece42a99291d050605a6d2e1c2dc49ca6e990ecb2c3b421674bea2890b
 kind = 'skill'
 id = 'basemind-comms'
 path = 'skills/basemind-comms'
-digest = 'sha256:ce554d8f3c16b765165bc95cc54c56f6144e7173614f8eeb21bd9d3c994be622'
+digest = 'sha256:cbd309679c48f6c6911aee50cfa6fc53b3e1bdc5b24a921b9ae2574ade606352'
 
 [[item]]
 kind = 'skill'
@@ -88,7 +88,7 @@ digest = 'sha256:b1570bec351fb1577f8e2f9b15f13620382dde3c5ef99ad2ddd7dc22c9d8c8b
 kind = 'skill'
 id = 'basemind-multi-agent-room'
 path = 'skills/basemind-multi-agent-room'
-digest = 'sha256:317244207c6d3aa8f73ac1be8ee47abafe753287669d4e68d797a27f934879ad'
+digest = 'sha256:9af0de879f1e2f213d07e3f65fada08f2e7c302498913f9ff019bbf21bfebfe6'
 
 [[item]]
 kind = 'skill'

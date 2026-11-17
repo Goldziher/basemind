@@ -4,10 +4,15 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+
+from test_agent_hooks import DAEMON_SPAWNING_CLI
 
 ROOT = Path(__file__).resolve().parent.parent
 HOOK = ROOT / "plugin/.ai-rulez/hooks/session-start"
@@ -29,8 +34,8 @@ VERB_TOOLS = (
     "index_status",
     "index_rescan",
 )
-# Still mode-dispatched, and advertised only by a build with agent coordination.
-COORDINATION_TOOLS = ("agents",)
+# Deferred: a host finds them by tool search, so the hook names them without listing them as loaded.
+DEFERRED_AGENT_TOOLS = ("agent_post", "agent_inbox", "agent_threads")
 # A routed call: a tool name followed by its JSON arguments.
 ROUTED_CALL = re.compile(r"\b([a-z]+_[a-z]+) (\{[^{}]*\})")
 # The surface ADR-0018 removed: the mode-dispatched `code` / `git` / `memory` / `admin` tools.
@@ -49,7 +54,7 @@ class SessionStartTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for command in ("jq", "dirname", "sed", "grep", "wc", "tr"):
+        for command in ("jq", "dirname", "sed", "grep", "wc", "tr", "cat", "sleep", "pkill"):
             (self.bin / command).symlink_to(shutil.which(command))
         hooks = self.root / "hooks"
         hooks.mkdir()
@@ -60,7 +65,16 @@ class SessionStartTests(unittest.TestCase):
         self.executable(
             scripts / "mcp-launch.sh",
             """case "$1" in
-agents) printf '%s' "$INBOX_RESULT" ;;
+agent)
+  [ -n "${SPAWN_DAEMON:-}" ] && exec "$PYTHON" -c "$DAEMON_SPAWNING_CLI" "$HOME/daemon-pid"
+  if [ "$2" = hook ]; then
+    cat > "$HOME/hook-stdin"
+    printf '%s' "${NAME_RESULT-session-1a2b3c4d}"
+    exit "${AGENT_EXIT:-0}"
+  fi
+  printf '%s\\n' "$@" > "$HOME/inbox-args"
+  printf '%s' "$INBOX_RESULT"
+  ;;
 status)
   printf '%s\\n' "$@" > "$HOME/status-args"
   printf '%s' "$STATUS_RESULT"
@@ -74,7 +88,7 @@ esac""",
         path.write_text(f"#!/bin/bash\n{body}\n")
         path.chmod(0o755)
 
-    def invoke(self, response: str, *, inbox: str = "", exit_code: int = 0) -> str:
+    def invoke(self, response: str, *, inbox: str = "", exit_code: int = 0, **extra: str) -> str:
         env = {
             **os.environ,
             "HOME": str(self.root),
@@ -84,11 +98,13 @@ esac""",
             "STATUS_RESULT": response,
             "STATUS_EXIT": str(exit_code),
             "INBOX_RESULT": inbox,
+            **extra,
         }
         env.pop("CURSOR_PLUGIN_ROOT", None)
         env.pop("COPILOT_CLI", None)
         output = subprocess.run(
             ["/bin/bash", self.hook],
+            input=json.dumps({"session_id": "s1", "source": "startup"}),
             cwd=self.root,
             env=env,
             capture_output=True,
@@ -104,7 +120,7 @@ esac""",
         result = self.invoke('{"file_count":631,"schema_version":33}')
         self.assertIn("basemind verified: 631 files indexed (schema 33).", result)
         self.assertIn("always loaded, so call them directly with no tool search", result)
-        self.assertIn(", ".join((*VERB_TOOLS, *COORDINATION_TOOLS)), result)
+        self.assertIn(", ".join(VERB_TOOLS), result)
         self.assertIn("mcp__plugin_basemind_basemind__<tool>", result)
         self.assertNotIn("ToolSearch", result)
         self.assertIn('code_grep {"pattern":"cache_root("}', result)
@@ -128,7 +144,7 @@ esac""",
     def test_tool_names_are_exactly_the_advertised_surface(self) -> None:
         declared = re.search(r'^TOOL_NAMES="([^"]*)"$', HOOK.read_text(), re.MULTILINE)
         self.assertIsNotNone(declared, "the hook must declare TOOL_NAMES")
-        self.assertEqual(declared.group(1).split(), [*VERB_TOOLS, *COORDINATION_TOOLS])
+        self.assertEqual(declared.group(1).split(), list(VERB_TOOLS))
 
     def test_routing_names_only_verb_tools(self) -> None:
         result = self.invoke('{"file_count":631,"schema_version":33}')
@@ -143,11 +159,73 @@ esac""",
         self.executable(self.bin / "timeout", "exit 124")
         self.assertIn("timed out", self.invoke(""))
 
+    def test_a_hung_status_probe_is_cut_off_without_coreutils_timeout(self) -> None:
+        self.executable(self.root / "scripts/mcp-launch.sh", "exec sleep 60")
+        started = time.monotonic()
+        result = self.invoke("", BASEMIND_HOOK_STATUS_TIMEOUT="1")
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertIn("timed out after 1s", result)
+
     def test_malformed_inbox_leaves_startup_context_intact(self) -> None:
         self.executable(self.bin / "timeout", 'shift; exec "$@"')
         context = self.invoke('{"file_count":5,"schema_version":33}', inbox="not JSON")
         self.assertIn("basemind verified", context)
         self.assertNotIn("No messages in your inbox", context)
+
+    def test_agent_tools_are_named_as_deferred_and_not_as_loaded(self) -> None:
+        result = self.invoke('{"file_count":5,"schema_version":33}')
+        self.assertIn("opt-in through the deferred tools agent_post, agent_inbox and agent_threads", result)
+        self.assertIn("find them by tool search", result)
+        self.assertIn("passes `as`", result)
+        loaded = result.split("Its tools are always loaded")[1].split(".")[0]
+        for tool in DEFERRED_AGENT_TOOLS:
+            self.assertNotIn(tool, loaded)
+        self.assertNotIn("THREADS", result)
+        self.assertNotIn("agents", result)
+
+    def test_unread_messages_are_counted_with_a_peek(self) -> None:
+        self.executable(self.bin / "timeout", 'shift; exec "$@"')
+        status = '{"file_count":5,"schema_version":33}'
+        none = self.invoke(status, inbox='{"messages":[],"more":false}')
+        self.assertNotIn("unread agent message", none)
+        some = self.invoke(status, inbox='{"messages":[{"id":"t-abcdef.1"},{"id":"t-abcdef.2"}],"more":false}')
+        self.assertIn("You have 2 unread agent message(s); read them with agent_inbox.", some)
+        args = (self.root / "inbox-args").read_text().splitlines()
+        self.assertEqual(args[:3], ["agent", "inbox", "--peek"])
+        self.assertIn("--json", args)
+        more = self.invoke(status, inbox='{"messages":[{"id":"t-abcdef.1"}],"more":true}')
+        self.assertIn("You have at least 1 unread agent message(s)", more)
+
+    def test_the_peek_reads_as_the_actor_the_agent_tools_act_as(self) -> None:
+        status = '{"file_count":5,"schema_version":33}'
+        inbox = '{"messages":[{"id":"t-abcdef.1"}],"more":false}'
+        self.invoke(status, inbox=inbox)
+        self.assertEqual(json.loads((self.root / "hook-stdin").read_text())["session_id"], "s1")
+        args = (self.root / "inbox-args").read_text().splitlines()
+        self.assertEqual(args[args.index("--as") + 1], "session-1a2b3c4d")
+        self.invoke(status, inbox=inbox, NAME_RESULT="")
+        args = (self.root / "inbox-args").read_text().splitlines()
+        self.assertNotIn("--as", args, "a host that injects no name reads as the principal")
+
+    def test_the_watchdog_leaves_a_daemon_the_cli_started_running(self) -> None:
+        started = time.monotonic()
+        result = self.invoke(
+            '{"file_count":5,"schema_version":33}',
+            SPAWN_DAEMON="1",
+            PYTHON=sys.executable,
+            DAEMON_SPAWNING_CLI=DAEMON_SPAWNING_CLI,
+        )
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertIn("basemind verified", result)
+        daemon = int((self.root / "daemon-pid").read_text())
+        self.addCleanup(os.kill, daemon, signal.SIGKILL)
+        os.kill(daemon, 0)
+
+    def test_a_build_without_agent_messaging_names_no_agent_tool(self) -> None:
+        result = self.invoke('{"file_count":5,"schema_version":33}', AGENT_EXIT="2")
+        for tool in DEFERRED_AGENT_TOOLS:
+            self.assertNotIn(tool, result)
+        self.assertFalse((self.root / "inbox-args").exists())
 
     def test_session_start_hook_runs_on_resume(self) -> None:
         manifest = json.loads((ROOT / "plugin/hooks/hooks.json").read_text())

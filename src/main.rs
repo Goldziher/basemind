@@ -53,7 +53,7 @@ struct Cli {
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
     /// subcommands (code / git / memory / admin / status / cache), the
-    /// coordination groups (agents / workspace / comms / daemon) and doctor. It is ignored, with a
+    /// coordination groups (agent / workspace / comms / daemon) and doctor. It is ignored, with a
     /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
     /// serve.
     #[arg(long, global = true)]
@@ -132,12 +132,13 @@ enum Cmd {
         #[command(subcommand)]
         action: CommsLifecycleCmd,
     },
-    /// Multi-agent coordination: identities, scoped threads, messages, inbox (needs
-    /// `--features comms`). Talks to the broker daemon directly, like `comms`.
+    /// Agent messaging: post, read and manage threads with the other agents of this repository
+    /// (needs `--features comms`). Mirrors the `agent_post`, `agent_inbox` and `agent_threads` MCP
+    /// tools, plus `status`, `cleanup` and the hooks' `hook`.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    Agents {
+    Agent {
         #[command(subcommand)]
-        action: basemind::cli::agents::AgentsCmd,
+        action: basemind::cli::agent::AgentCmd,
     },
     /// Machine-registry listings: workspaces / worktrees / branches (needs `--features comms`).
     /// Talks to the broker daemon directly, like `comms`.
@@ -166,8 +167,7 @@ enum DaemonCmd {
 /// Subcommands for `basemind comms`: the broker daemon's lifecycle only.
 ///
 /// These manage the singleton broker process (`Daemon`/`Start`/`Stop`/`Status`/`Doctor`). The agent
-/// coordination verbs it used to carry now live in their own group, `basemind agents` (see
-/// `cli::agents`).
+/// messaging commands live in their own group, `basemind agent` (see `cli::agent`).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 #[derive(Subcommand, Debug)]
 enum CommsLifecycleCmd {
@@ -389,9 +389,9 @@ fn run() -> Result<()> {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => comms_cli::cmd_comms(action, json),
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        Cmd::Agents { action } => basemind::cli::agents::run(&root, json, action),
+        Cmd::Agent { action } => basemind::cli::agent::run(&root, json, action),
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        Cmd::Workspace { action } => basemind::cli::registry::run(&root, json, action),
+        Cmd::Workspace { action } => basemind::cli::registry::run(json, action),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Daemon { action } => comms_cli::cmd_daemon(action, json),
     }
@@ -410,7 +410,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
     let consumes_json = consumes_json
         || matches!(
             cmd,
-            Cmd::Comms { .. } | Cmd::Agents { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. }
+            Cmd::Comms { .. } | Cmd::Agent { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. }
         );
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve);
 

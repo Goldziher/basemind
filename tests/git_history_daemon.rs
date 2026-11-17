@@ -22,7 +22,6 @@ use std::process::Command;
 use std::time::Duration;
 
 use basemind::comms::client::CommsClient;
-use basemind::comms::ids::AgentId;
 use basemind::comms::singleton::{CommsPaths, probe_alive};
 use basemind::git_history::proto::{GitHistoryOp, GitHistoryReply, SyncOutcome};
 use rmcp::ServiceExt;
@@ -127,16 +126,11 @@ fn ensure_real_daemon() {
 }
 
 /// Connect to the daemon serving this process's isolated cache.
-async fn connect(root: &Path, agent: &str) -> CommsClient {
+async fn connect(_root: &Path, agent: &str) -> CommsClient {
     ensure_real_daemon();
-    CommsClient::connect(
-        &comms_paths(),
-        AgentId::parse(agent).expect("agent id"),
-        None,
-        Some(root.to_path_buf()),
-    )
-    .await
-    .unwrap_or_else(|e| panic!("connect {agent}: {e}"))
+    CommsClient::connect(&comms_paths(), basemind::comms::client::ClientHello::anonymous())
+        .await
+        .unwrap_or_else(|e| panic!("connect {agent}: {e}"))
 }
 
 async fn sync(client: &mut CommsClient, root: &Path) -> SyncOutcome {

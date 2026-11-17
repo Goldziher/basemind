@@ -15,15 +15,19 @@
 use std::sync::Arc;
 
 use basemind::comms::daemon::Broker;
-use basemind::comms::store::CommsStore;
 use basemind::registry::Registry;
 
 /// Build a broker over an isolated store + registry rooted in `dir`.
 fn broker_with_registry(dir: &std::path::Path) -> (Arc<Broker>, std::path::PathBuf) {
     let registry_dir = dir.join("registry");
     let registry = Registry::open(&registry_dir).expect("open registry");
-    let store = Arc::new(CommsStore::open(&dir.join("comms")).expect("open comms store"));
-    (Arc::new(Broker::with_registry(store, registry)), registry_dir)
+    (
+        Arc::new(Broker::with_registry(
+            basemind::comms::agents_hub::AgentHub::open(&dir.join("comms")),
+            registry,
+        )),
+        registry_dir,
+    )
 }
 
 #[tokio::test]
@@ -43,8 +47,10 @@ async fn prune_drops_workspaces_whose_root_is_gone_and_keeps_the_rest() {
     }
 
     let registry = Registry::open(&registry_dir).expect("reopen registry");
-    let store = Arc::new(CommsStore::open(&tmp.path().join("comms")).expect("open comms store"));
-    let broker = Broker::with_registry(store, registry);
+    let broker = Broker::with_registry(
+        basemind::comms::agents_hub::AgentHub::open(&tmp.path().join("comms")),
+        registry,
+    );
 
     std::fs::remove_dir_all(&gone).expect("delete one workspace root");
 

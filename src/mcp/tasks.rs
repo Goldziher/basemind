@@ -39,14 +39,7 @@ tokio::task_local! {
 /// cancellation loses only recomputable work. NEVER add a call that writes (`index_rescan`,
 /// `memory_save`, a registry mutation): dropping those at an await point could strand a
 /// half-applied write. Keyed like [`SLOW_CALLS`].
-pub(super) const CANCEL_AWARE_READS: &[&str] = &[
-    "code_grep",
-    "code_search",
-    "docs_search",
-    // Read-only long poll; it opens its own comms link whose drop is the cleanup, so abandoning it
-    // (or cancelling its token) is exactly what frees the broker subscriber.
-    "agents:wait",
-];
+pub(super) const CANCEL_AWARE_READS: &[&str] = &["code_grep", "code_search", "docs_search"];
 
 /// Whether this call is one of the [`CANCEL_AWARE_READS`].
 pub(super) fn is_cancel_aware_read(name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
@@ -235,18 +228,16 @@ mod tests {
         for tool in ["code_grep", "code_search", "docs_search"] {
             assert!(is_cancel_aware_read(tool, None), "{tool}");
         }
-        assert!(is_cancel_aware_read(
-            "agents",
-            Some(&args(serde_json::json!({ "mode": "wait" })))
-        ));
-        for tool in ["index_rescan", "memory_save", "code_outline"] {
+        // A waiting agent_inbox marks what it returns read, so dropping it is not free.
+        for tool in [
+            "index_rescan",
+            "memory_save",
+            "code_outline",
+            "agent_inbox",
+            "agent_post",
+        ] {
             assert!(!is_cancel_aware_read(tool, None), "{tool}");
         }
-        assert!(!is_cancel_aware_read(
-            "agents",
-            Some(&args(serde_json::json!({ "mode": "post" })))
-        ));
-        assert!(!is_cancel_aware_read("agents", None));
     }
 
     /// Holds a heavy admission permit; dropping it (as a cancelled handler future does) frees it.

@@ -75,6 +75,13 @@ type = "command"
 command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" pre-tool-guard"
 
 [[plugin.hooks]]
+event = "PreToolUse"
+matcher = "mcp__.*basemind.*__agent_(post|inbox|threads)"
+[[plugin.hooks.hooks]]
+type = "command"
+command = "\"${PLUGIN_ROOT}/hooks/run-hook.cmd\" agent-as"
+
+[[plugin.hooks]]
 event = "UserPromptSubmit"
 [[plugin.hooks.hooks]]
 type = "command"

@@ -81,13 +81,15 @@ pub(super) async fn run_goto_definition(
         .as_ref()
         .and_then(|r| containing_edge(&r.intra, pos))
         .map(|e| e.def_start);
-    let resolved: Option<(RelPath, u32)> = match intra_def {
-        Some(def_start) => Some(
-            resolve_definition(state, &store, &params.path, def_start)
-                .await
-                .unwrap_or((params.path.clone(), def_start)),
-        ),
-        None => resolve_definition(state, &store, &params.path, pos).await,
+    let (resolved, refused) = match intra_def {
+        Some(def_start) => {
+            let hop = resolve_definition(state, &store, &params.path, def_start).await;
+            (Some(hop.found.unwrap_or((params.path.clone(), def_start))), false)
+        }
+        None => {
+            let hop = resolve_definition(state, &store, &params.path, pos).await;
+            (hop.found, hop.refused)
+        }
     };
 
     let definition = match resolved {
@@ -96,10 +98,11 @@ pub(super) async fn run_goto_definition(
     };
 
     let (line, column) = offset_to_line_col(&source, pos);
-    let resolution = if definition.is_none() && !resolution_ran {
-        resolution_gap(Some(&entry.language), pass_complete)
-    } else {
-        None
+    let resolution = match &definition {
+        Some(_) => None,
+        None if refused => Some(SNAPSHOT_REFUSED.to_string()),
+        None if !resolution_ran => resolution_gap(Some(&entry.language), pass_complete),
+        None => None,
     };
     json_result(&GotoDefinitionResponse {
         path: params.path,
@@ -148,6 +151,57 @@ pub(super) fn resolve_pass_complete(store: &crate::store::Store) -> bool {
     crate::store::read_status_sidecar(&store.basemind_dir).is_none_or(|status| !status.is_degraded())
 }
 
+/// A definition the daemon resolved, kept only when it belongs to the snapshot this session reads:
+/// the daemon's resolve pass is settled and its index holds the use file and the landing file with
+/// the content the session's does. An edge from another snapshot would put the agent on a line of
+/// other content, so it is refused, and the reply says the index is updating.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn in_snapshot(
+    store: &crate::store::Store,
+    use_path: &RelPath,
+    definition: Option<crate::comms::resolved_proto::ResolvedDefinition>,
+) -> Resolved {
+    let Some(definition) = definition else {
+        return Resolved::default();
+    };
+    let session_use = store.lookup(use_path).map(|entry| entry.hash_hex.as_str());
+    let session_landing = store.lookup(&definition.path).map(|entry| entry.hash_hex.as_str());
+    if definition.landing_hash.is_none() && session_landing.is_none() {
+        tracing::debug!(path = %definition.path, "goto_definition: neither index holds the landing file");
+    }
+    let (path, daemon_use, daemon_landing, settled) = (
+        definition.path.clone(),
+        definition.use_hash.clone(),
+        definition.landing_hash.clone(),
+        definition.settled,
+    );
+    match definition.for_snapshot(session_use, session_landing) {
+        Some(found) => Resolved {
+            found: Some(found),
+            refused: false,
+        },
+        None => {
+            tracing::debug!(%path, ?daemon_use, ?session_use, ?daemon_landing, ?session_landing, settled,
+                "goto_definition: the daemon's edge is from another snapshot; refused");
+            Resolved {
+                found: None,
+                refused: true,
+            }
+        }
+    }
+}
+
+/// What resolving a use found: the definition, or whether one was found and refused because the
+/// daemon's index and this session's did not hold the same content.
+#[derive(Default)]
+struct Resolved {
+    found: Option<(RelPath, u32)>,
+    refused: bool,
+}
+
+/// `resolution` value when the daemon's edge came from another snapshot of the files involved.
+pub(super) const SNAPSHOT_REFUSED: &str = "the index is updating for the files involved; retry in a moment";
+
 /// The definition the use at `(use_path, use_start)` binds to. A `daemon_writer` serve has no open
 /// index, so the cross-file hop (`refs_by_path`) forwards to the machine daemon — the sole fjall
 /// writer, which holds it; every other serve reads its open index or the intra-file `.rref` blob
@@ -158,7 +212,7 @@ async fn resolve_definition(
     store: &crate::store::Store,
     use_path: &RelPath,
     use_start: u32,
-) -> Option<(RelPath, u32)> {
+) -> Resolved {
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let _ = state;
     #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -174,26 +228,26 @@ async fn resolve_definition(
             use_start,
         };
         return match tokio::task::spawn_blocking(move || host.host_resolved_refs(&root, query)).await {
-            Ok(Ok(ResolvedRefResult::Definition(definition))) => definition,
-            Ok(Ok(_)) => None,
+            Ok(Ok(ResolvedRefResult::Definition(definition))) => in_snapshot(store, use_path, definition),
+            Ok(Ok(_)) => Resolved::default(),
             Ok(Err(error)) => {
                 tracing::debug!(%error, "goto_definition: host resolved-refs failed; no cross-file binding");
-                None
+                Resolved::default()
             }
             Err(join) => {
                 tracing::debug!(%join, "goto_definition: host resolved-refs task panicked; no cross-file binding");
-                None
+                Resolved::default()
             }
         };
     }
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
         use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
-        let client = match super::helpers_comms::resolve_comms_client(state, None).await {
+        let client = match super::helpers_daemon::daemon_client(state).await {
             Ok(client) => client,
             Err(error) => {
                 tracing::debug!(%error, "goto_definition: daemon client unavailable; no cross-file binding");
-                return None;
+                return Resolved::default();
             }
         };
         let query = ResolvedRefQuery::DefinitionOf {
@@ -206,15 +260,18 @@ async fn resolve_definition(
             .resolved_refs(state.shared.root.clone(), query)
             .await
         {
-            Ok(ResolvedRefResult::Definition(definition)) => definition,
-            Ok(_) => None,
+            Ok(ResolvedRefResult::Definition(definition)) => in_snapshot(store, use_path, definition),
+            Ok(_) => Resolved::default(),
             Err(error) => {
                 tracing::debug!(%error, "goto_definition: daemon resolved-refs forward failed; no cross-file binding");
-                None
+                Resolved::default()
             }
         };
     }
-    crate::query::definition_of(store, use_path, use_start)
+    Resolved {
+        found: crate::query::definition_of(store, use_path, use_start),
+        refused: false,
+    }
 }
 
 /// The 0-based byte column where `name` first occurs as a whole identifier on `line` of `source`

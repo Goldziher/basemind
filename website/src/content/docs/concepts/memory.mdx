@@ -16,12 +16,13 @@ separate — no leakage.
 
 Any agent can:
 
-- **Write a note:** `memory put {key: "auth-flow", value: "…"}` stores a key-value pair.
-- **Search by meaning:** `memory search {query: "password validation"}` finds stored notes by
+- **Write a note:** `memory_save {"key":"auth-flow","value":"…"}` stores a key-value pair.
+- **Search by meaning:** `memory_search {"query":"password validation"}` finds stored notes by
   semantic similarity, even if the exact words don't match.
-- **Retrieve exact keys:** `memory get {key: "auth-flow"}` fetches one stored note.
-- **List by prefix:** `memory list {prefix: "auth-"}` finds all keys starting with a prefix.
-- **Delete:** `memory delete {key: "auth-flow"}` removes a note.
+- **Retrieve exact keys:** `memory_search {"key":"auth-flow"}` fetches one stored note.
+- **List by prefix:** `memory_search {"prefix":"auth-"}` finds all keys starting with a prefix.
+- **Delete:** `basemind memory delete auth-flow` removes a note. Deleting is CLI only; no MCP tool
+  removes a note.
 
 ## What notes look like
 
@@ -49,7 +50,7 @@ Shared memory is useful for:
 
 Memory search is powered by LanceDB's vector embeddings. You don't need exact keywords — search
 by meaning. If you stored "All inputs are parameterized at the database driver", you can find it
-with `memory search {query: "SQL injection prevention"}`.
+with `memory_search {"query":"SQL injection prevention"}`.
 
 ## Scoping
 

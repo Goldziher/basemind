@@ -7,8 +7,8 @@ use super::*;
 
 fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
-    (dir, Arc::new(Broker::new(store)))
+    let agents = super::super::agents_hub::AgentHub::open(dir.path());
+    (dir, Arc::new(Broker::new(agents)))
 }
 
 /// Run a `git` subcommand in `repo` with a fixed identity, asserting success. Mirrors the fixture
@@ -92,7 +92,7 @@ async fn hosted_git_history_runs_in_process() {
 async fn rescan_is_refused_while_draining() {
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
+    let tx = CancellationToken::new();
 
     broker.begin_drain().await;
 
@@ -125,7 +125,7 @@ async fn rescan_is_refused_while_draining() {
 async fn rescan_request_indexes_a_workspace_and_surfaces_it_as_accessed() {
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
+    let tx = CancellationToken::new();
     let mut session = Session::default();
 
     // The workspace-root allow-list (issue #62) only opens a project; `.git/` is invisible to the
@@ -203,7 +203,7 @@ async fn git_history_refuses_a_non_project_root_without_minting_cache_state() {
 #[tokio::test]
 async fn stop_is_refused_while_a_forwarded_rescan_is_running() {
     let (_dir, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
+    let tx = CancellationToken::new();
     let ws = tempfile::tempdir().expect("workspace");
     let gate = broker.workspaces.blob_gc_gate();
     let (release, released) = std::sync::mpsc::channel::<()>();

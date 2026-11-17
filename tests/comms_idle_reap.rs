@@ -25,7 +25,6 @@ use std::time::{Duration, Instant};
 
 use basemind::comms::client::CommsClient;
 use basemind::comms::daemon::{IDLE_REAP_AFTER_ENV, IDLE_REAP_CHECK_EVERY_ENV};
-use basemind::comms::ids::AgentId;
 use basemind::comms::singleton::{CommsPaths, comms_socket_path, generation_dir, probe_alive};
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
@@ -134,7 +133,7 @@ fn idle_daemon_self_terminates_and_a_fresh_one_respawns() {
     let paths = paths_for(&comms_dir);
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     runtime.block_on(async {
-        let mut client = CommsClient::connect(&paths, AgentId::parse("reap-probe").expect("agent id"), None, None)
+        let mut client = CommsClient::connect(&paths, basemind::comms::client::ClientHello::anonymous())
             .await
             .expect("the respawned daemon must serve a fresh client");
         client.status().await.expect("respawned daemon answers Status");
@@ -155,7 +154,7 @@ fn daemon_with_a_connected_client_does_not_reap() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
 
     let client = runtime.block_on(async {
-        CommsClient::connect(&paths, AgentId::parse("holder").expect("agent id"), None, None)
+        CommsClient::connect(&paths, basemind::comms::client::ClientHello::anonymous())
             .await
             .expect("connect to daemon")
     });

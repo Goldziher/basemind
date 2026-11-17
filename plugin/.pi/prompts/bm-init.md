@@ -6,8 +6,8 @@ description: Onboard (or refresh) basemind in this repo — write basemind.toml 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:7db9ce4d4695183d01130a6e3df855f927e3321d498bff345c2df9efdb7a863a
-Source-Hash: blake3:4d632858bc9c1e1cc25c6d72da03e532d15f2046b01eeb925a5a669d622811bc
+Content-Hash: blake3:f79a8df7187f05437f2ec10ef1d0287c26da5f1a84587ec143f01aa15f8ac689
+Source-Hash: blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8
 Schema-Version: v1
 -->
 
@@ -40,9 +40,9 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
    gitignored `.ai-rulez/local/rules/basemind-usage.md` instead of asking (never the committed
    `.ai-rulez/rules/basemind-usage.md`, and never CLAUDE.md/AGENTS.md).
 
-3. **Ask about auto-approving basemind's MCP tools (one short question).** basemind can add one
-   `permissions.allow` glob entry so Claude Code stops prompting for approval on its own tools.
-   Present the choice:
+3. **Ask about auto-approving basemind's read-only MCP tools (one short question).** basemind can
+   add one `permissions.allow` entry per read-only tool so Claude Code stops prompting for them;
+   `memory_save`, `index_rescan` and the agent tools still ask. Present the choice:
    - `.claude/settings.local.json` — personal, gitignored (**recommended default**)
    - `.claude/settings.json` — committed, shared with everyone on the repo
    - `none` — skip this step
@@ -63,7 +63,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
    basemind init --yes --rules-target claude-local --settings-target local --with code-search-navigation --with git-history
    ```
 
-   Preview without writing using `--print`.
+   Preview without writing using `--print`. Without `--yes` and without a terminal, init writes
+   nothing and only prints what it would change, so ask the user before passing `--yes`.
 
 5. **Report what changed** — which files were written or kept (`basemind.toml`, the chosen rules
    file, the settings file if opted into), whether the delimited block was created or updated in
@@ -86,8 +87,9 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
   the pattern automatically with `--yes`, so a personal `.local` file is never one accidental
   `git add -A` away from being committed.
 - The settings-permissions step is opt-in and defaults to **skipped** non-interactively — pass
-  `--settings-target local` (or `shared`) explicitly to enable it. The merge only ever
-  adds/dedupes basemind's own entry inside `permissions.allow`; every other key in
+  `--settings-target local` (or `shared`) explicitly to enable it. The merge adds each
+  read-only tool once to `permissions.allow` and removes only the `mcp__plugin_basemind_basemind__*`
+  wildcard older releases wrote and entries for retired tools (`__code`, `__git`, …); every other key in
   `.claude/settings*.json` (e.g. `skillOverrides`), and its position in the file, is left exactly
   as it was.
 - An existing `basemind.toml` is kept verbatim, never clobbered.

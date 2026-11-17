@@ -78,7 +78,7 @@ pub(super) enum Route {
 /// never takes over one, and never fails: a daemon that cannot be reached or asked is no daemon.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(super) async fn route(root: &std::path::Path) -> Route {
-    use basemind::comms::client::{CommsClient, scope_context_for};
+    use basemind::comms::client::{ClientHello, CommsClient};
 
     if !basemind::cli::rescan::daemon_is_up() {
         return Route::Direct;
@@ -86,9 +86,7 @@ pub(super) async fn route(root: &std::path::Path) -> Route {
     let Ok(paths) = basemind::comms::singleton::resolve_paths() else {
         return Route::Direct;
     };
-    let agent = basemind::comms::identity::cli_agent_id(root);
-    let (remote, cwd) = scope_context_for(root);
-    let connected = CommsClient::connect_with_respawn(&paths, agent, remote, cwd, |_| {
+    let connected = CommsClient::connect_with_respawn(&paths, ClientHello::anonymous(), |_| {
         Err(std::io::Error::other("a scan does not start a daemon"))
     })
     .await;

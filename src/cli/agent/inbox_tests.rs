@@ -1,4 +1,4 @@
-//! `agent inbox` against the in-memory store: marking and peeking, paging, the injected wait,
+//! `agent inbox` against the test store: marking and peeking, paging, the injected wait,
 //! and what is refused.
 
 use std::cell::RefCell;
@@ -10,8 +10,8 @@ use crate::cli::agent::test_support::{TEXT, caller, capture, json, owner, parse,
 use crate::cli::exit::{ERROR, USAGE, exit_code_for};
 use crate::comms::v2::api::{MAX_INLINE_BODY_BYTES, MAX_WAIT_SECS};
 use crate::comms::v2::conformance::ConformanceHarness;
-use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
 use crate::comms::v2::front::Session;
+use crate::comms::v2::store::test_agents::{TEST_EPOCH_MICROS, TestAgents};
 use crate::comms::v2::{Caller, IdKind, InboxBody, InboxReply, InvalidId, Mark, ReadKind, ThreadId, WaitOutcome};
 
 const FIRST: &str = "t-aaaaaa.1\ta\ttopic\t1m\nhello\n\n";
@@ -19,7 +19,7 @@ const SECOND: &str = "t-aaaaaa.2\ta\ttopic\t1m\nsecond\n\n";
 const THIRD: &str = "t-aaaaaa.3\ta\ttopic\t1m\nthird\n\n";
 
 /// Agent `a` starts an invitation-only thread with `b` and posts `hello`.
-fn start(fake: &FakeAgents) {
+fn start(fake: &TestAgents) {
     text(
         fake,
         "a",
@@ -28,7 +28,7 @@ fn start(fake: &FakeAgents) {
 }
 
 /// [`start`], then two more posts by `a`.
-fn start_with_three(fake: &FakeAgents) {
+fn start_with_three(fake: &TestAgents) {
     start(fake);
     for body in ["second", "third"] {
         text(fake, "a", &["post", "--thread", "t-aaaaaa", "--body", body]);
@@ -66,7 +66,7 @@ fn empty_reply(wait: WaitOutcome) -> InboxReply {
 
 #[test]
 fn inbox_prints_one_block_per_message_and_marks_it_read() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start(&fake);
 
     assert_eq!(text(&fake, "b", &["inbox"]), FIRST);
@@ -75,7 +75,7 @@ fn inbox_prints_one_block_per_message_and_marks_it_read() {
 
 #[test]
 fn inbox_peek_leaves_the_message_unread() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start(&fake);
 
     assert_eq!(text(&fake, "b", &["inbox", "--peek"]), FIRST);
@@ -86,7 +86,7 @@ fn inbox_peek_leaves_the_message_unread() {
 
 #[test]
 fn inbox_that_marks_continues_from_the_read_position() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start_with_three(&fake);
 
     assert_eq!(
@@ -98,7 +98,7 @@ fn inbox_that_marks_continues_from_the_read_position() {
 
 #[test]
 fn inbox_peek_pages_with_the_cursor() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start_with_three(&fake);
 
     let page = json(&fake, "b", &["inbox", "--peek", "--limit", "2"]);
@@ -118,7 +118,7 @@ fn inbox_peek_pages_with_the_cursor() {
 
 #[test]
 fn inbox_history_returns_own_posts_and_marks_nothing() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start_with_three(&fake);
 
     assert_eq!(
@@ -134,7 +134,7 @@ fn inbox_history_returns_own_posts_and_marks_nothing() {
 
 #[test]
 fn inbox_cuts_a_long_body_and_reads_it_whole_by_id() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let body = "x".repeat(MAX_INLINE_BODY_BYTES + 1);
     text(
         &fake,
@@ -156,7 +156,7 @@ fn inbox_cuts_a_long_body_and_reads_it_whole_by_id() {
 
 #[test]
 fn inbox_json_is_the_reply() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start(&fake);
     let peek = InboxBody {
         mark: Mark::Peek,
@@ -177,7 +177,7 @@ fn inbox_json_is_the_reply() {
 
 #[test]
 fn inbox_as_a_sibling_reads_the_principals_mail_at_its_own_position() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start_with_three(&fake);
 
     assert_eq!(
@@ -199,7 +199,7 @@ fn inbox_as_a_sibling_reads_the_principals_mail_at_its_own_position() {
 
 #[test]
 fn inbox_announce_lists_front_matter_once_and_marks_nothing_read() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start_with_three(&fake);
     let marks = || fake.position(&ThreadId::parse("t-aaaaaa").expect("thread id"), &caller("b").actor);
 
@@ -218,7 +218,7 @@ fn inbox_announce_lists_front_matter_once_and_marks_nothing_read() {
             "id": "t-aaaaaa.3",
             "subject": "topic",
             "from": "a",
-            "ts_micros": FAKE_EPOCH_MICROS + 2,
+            "ts_micros": TEST_EPOCH_MICROS + 2,
             "reply_to": null,
             "body": "",
             "body_bytes": 5,
@@ -258,7 +258,7 @@ fn inbox_refuses_announce_beside_a_flag_that_asks_for_another_read() {
 
 #[test]
 fn inbox_prints_the_sessions_notices_after_the_replys() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start(&fake);
     let own = ["2 live sessions share the identity b".to_string()];
     let owner = owner("b");
@@ -349,7 +349,7 @@ fn inbox_accepts_defaults_passed_explicitly() {
 
 #[test]
 fn inbox_refused_flags_are_a_usage_error() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
 
     assert_eq!(
         refusal(&fake, "b", &["inbox", "--cursor", "abc"]),
@@ -359,7 +359,7 @@ fn inbox_refused_flags_are_a_usage_error() {
 
 #[test]
 fn inbox_refused_by_the_store_is_a_runtime_error_with_its_fix() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start(&fake);
 
     let (code, message) = refusal(&fake, "c", &["inbox", "--thread", "t-aaaaaa"]);
@@ -376,7 +376,7 @@ fn inbox_refused_by_the_store_is_a_runtime_error_with_its_fix() {
 
 #[test]
 fn inbox_without_a_wait_never_calls_the_waiting_read() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start(&fake);
     let waits = RefCell::new(0u32);
     let wait = |_: &Caller, _: InboxBody, _: Duration| -> Result<InboxReply, CommsError> {
@@ -394,7 +394,7 @@ fn inbox_without_a_wait_never_calls_the_waiting_read() {
 
 #[test]
 fn inbox_with_a_wait_hands_the_whole_read_to_the_waiting_read() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     start(&fake);
     let asked = RefCell::new(Vec::new());
     let wait = |caller: &Caller, body: InboxBody, wait: Duration| -> Result<InboxReply, CommsError> {
@@ -428,7 +428,7 @@ fn inbox_with_a_wait_hands_the_whole_read_to_the_waiting_read() {
 
 #[test]
 fn inbox_reports_a_wait_that_timed_out() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let wait = |_: &Caller, _: InboxBody, _: Duration| -> Result<InboxReply, CommsError> {
         Ok(empty_reply(WaitOutcome::TimedOut))
     };
@@ -449,7 +449,7 @@ fn inbox_reports_a_wait_that_timed_out() {
 
 #[test]
 fn inbox_wait_out_of_range_is_refused_before_anything_waits() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let waits = RefCell::new(0u32);
     let wait = |_: &Caller, _: InboxBody, _: Duration| -> Result<InboxReply, CommsError> {
         *waits.borrow_mut() += 1;
@@ -478,7 +478,7 @@ fn inbox_wait_out_of_range_is_refused_before_anything_waits() {
 
 #[test]
 fn inbox_surfaces_a_failure_of_the_waiting_read() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
 
     let (code, message) = refusal(&fake, "b", &["inbox", "--wait-secs", "5"]);
 

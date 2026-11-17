@@ -141,6 +141,7 @@ class OtherVersionsTests(unittest.TestCase):
         cache: Path | None = None,
         path_prefix: Path | None = None,
         prune_after_days: str | None = None,
+        args: tuple[str, ...] = ("serve",),
     ) -> None:
         env = {
             **os.environ,
@@ -156,7 +157,7 @@ class OtherVersionsTests(unittest.TestCase):
         if prune_after_days is not None:
             env["BASEMIND_PRUNE_AFTER_DAYS"] = prune_after_days
         subprocess.run(
-            ["/bin/bash", self.plugin / "scripts/mcp-launch.sh", "serve"],
+            ["/bin/bash", self.plugin / "scripts/mcp-launch.sh", *args],
             env=env,
             capture_output=True,
             text=True,
@@ -191,6 +192,13 @@ class OtherVersionsTests(unittest.TestCase):
 
         self.assertFalse(unused.exists(), "an unused version directory is removed")
         self.assertTrue(self.version_dir(CURRENT).is_dir())
+
+    def test_an_agent_command_from_a_hook_prunes_nothing(self) -> None:
+        unused = self.other_version_binary(UNUSED).parent
+
+        self.launch(args=("agent", "hook", "name"))
+
+        self.assertTrue(unused.exists(), "the hooks' agent commands leave pruning to other launches")
 
     def test_a_symlinked_version_directory_is_left_alone_and_its_target_survives(self) -> None:
         build = self.root / "a-build-directory"
@@ -432,6 +440,151 @@ class CachePathWithBackslashTests(OtherVersionsTests):
     @unittest.skip("a Windows path has no backslash in a name: there it separates directories")
     def test_git_bash_prunes_an_unused_version_and_keeps_one_a_process_runs_from(self) -> None:
         pass
+
+
+@unittest.skipIf(sys.platform == "win32", "the launcher runs under bash")
+class HostDetectionTests(unittest.TestCase):
+    """The launcher names the harness in BASEMIND_HOST before it execs the binary."""
+
+    HARNESS_VARIABLES = (
+        "BASEMIND_HOST",
+        "CURSOR_PLUGIN_ROOT",
+        "COPILOT_CLI",
+        "CLAUDECODE",
+        "CLAUDE_PLUGIN_ROOT",
+        "GEMINI_CLI",
+        "PLUGIN_ROOT",
+        "CODEX_PLUGIN_ROOT",
+    )
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        plugin = self.root / "plugin"
+        (plugin / ".claude-plugin").mkdir(parents=True)
+        (plugin / ".claude-plugin/plugin.json").write_text(json.dumps({"version": CURRENT}))
+        (plugin / "scripts").mkdir()
+        shutil.copyfile(LAUNCHER, plugin / "scripts/mcp-launch.sh")
+        self.launcher = plugin / "scripts/mcp-launch.sh"
+        self.binary = self.root / "basemind"
+        self.binary.write_text(
+            f'#!/bin/sh\n[ "$1" = --version ] && echo "basemind {CURRENT}" && exit 0\nprintf "%s" "${{BASEMIND_HOST-unset}}"\n'
+        )
+        self.binary.chmod(0o755)
+
+    def host(self, parent: str = "/bin/bash", **harness: str) -> str:
+        """The BASEMIND_HOST the binary sees when `parent` starts the launcher with only `harness` set."""
+        env = {key: value for key, value in os.environ.items() if key not in self.HARNESS_VARIABLES}
+        env.update(
+            HOME=str(self.root), XDG_CACHE_HOME=str(self.root / "cache"), BASEMIND_BIN=str(self.binary), **harness
+        )
+        return subprocess.run(
+            # The trailing `:` keeps `parent` from exec-ing the launcher, so it stays its parent.
+            [parent, "-c", '/bin/bash "$0" serve; :', str(self.launcher)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout
+
+    def test_each_harness_is_named(self) -> None:
+        self.assertEqual(self.host(CURSOR_PLUGIN_ROOT="/p"), "cursor")
+        self.assertEqual(self.host(COPILOT_CLI="1"), "copilot")
+        self.assertEqual(self.host(CLAUDECODE="1"), "claude")
+        self.assertEqual(self.host(CLAUDE_PLUGIN_ROOT=str(self.root / "plugin")), "claude")
+        self.assertEqual(self.host(GEMINI_CLI="1"), "gemini")
+
+    def test_a_harness_that_shares_claudes_variable_is_named_for_itself(self) -> None:
+        plugin = str(self.root / "plugin")
+        self.assertEqual(self.host(CLAUDE_PLUGIN_ROOT=plugin, CURSOR_PLUGIN_ROOT="/p"), "cursor")
+        self.assertEqual(self.host(CLAUDE_PLUGIN_ROOT=plugin, COPILOT_CLI="1"), "copilot")
+
+    def test_claude_code_and_codex_name_one_host_for_serve_and_the_hooks(self) -> None:
+        plugin = str(self.root / "plugin")
+        # Observed: Claude Code gives hooks and its MCP server CLAUDECODE and CLAUDE_PLUGIN_ROOT.
+        self.assertEqual(self.host(CLAUDECODE="1", CLAUDE_PLUGIN_ROOT=plugin), "claude")
+        # Codex 0.169 gives plugin hooks PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT, and starts its MCP
+        # servers itself with neither, so `serve` is known by its parent.
+        self.assertEqual(self.host(PLUGIN_ROOT=plugin, CLAUDE_PLUGIN_ROOT=plugin), "codex")
+        self.assertEqual(self.host(CODEX_PLUGIN_ROOT=plugin), "codex")
+        codex = self.root / "bin" / "codex"
+        codex.parent.mkdir()
+        codex.symlink_to("/bin/bash")
+        self.assertEqual(self.host(parent=str(codex)), "codex")
+
+    def test_codex_started_from_claude_code_names_codex_for_its_hooks(self) -> None:
+        plugin = str(self.root / "plugin")
+        # Codex hooks inherit the environment Codex was started in, CLAUDECODE included.
+        self.assertEqual(self.host(CLAUDECODE="1", PLUGIN_ROOT=plugin, CLAUDE_PLUGIN_ROOT=plugin), "codex")
+        self.assertEqual(self.host(CLAUDECODE="1", CODEX_PLUGIN_ROOT=plugin), "codex")
+
+    def test_no_harness_leaves_the_host_unset(self) -> None:
+        self.assertEqual(self.host(), "unset")
+
+    def test_an_explicit_host_wins(self) -> None:
+        self.assertEqual(self.host(BASEMIND_HOST="mine", CLAUDECODE="1", CURSOR_PLUGIN_ROOT="/p"), "mine")
+
+
+@unittest.skipIf(sys.platform == "win32" or shutil.which("node") is None, "needs node and a Unix shell")
+class McpJsonFallbackTests(unittest.TestCase):
+    """The Codex config's fallback, used when no installed plugin holds codex-mcp-launch.mjs."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        server = json.loads((ROOT / ".mcp.json").read_text())["mcpServers"]["basemind"]
+        self.command = [shutil.which("node"), *server["args"]]
+        (self.root / "codex-home").mkdir()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.work = self.root / "work"
+        (self.work / "scripts").mkdir(parents=True)
+        report = '#!/bin/sh\nprintf "%s %s" "$(basename "$0")" "${BASEMIND_HOST-unset}"\n'
+        for stub in (self.work / "scripts/mcp-launch.sh", self.bin / "basemind"):
+            stub.write_text(report)
+            stub.chmod(0o755)
+
+    def host(self, *, launcher: bool, **harness: str) -> str:
+        if not launcher:
+            (self.work / "scripts/mcp-launch.sh").unlink()
+        env = {key: value for key, value in os.environ.items() if key not in HostDetectionTests.HARNESS_VARIABLES}
+        env.update(
+            CODEX_HOME=str(self.root / "codex-home"),
+            PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            **harness,
+        )
+        return subprocess.run(
+            self.command, cwd=self.work, env=env, capture_output=True, text=True, timeout=30, check=True
+        ).stdout
+
+    def test_codex_is_named_through_the_launcher(self) -> None:
+        self.assertEqual(self.host(launcher=True), "mcp-launch.sh codex")
+
+    def test_codex_is_named_for_a_bare_binary(self) -> None:
+        self.assertEqual(self.host(launcher=False), "basemind codex")
+
+    def test_claude_code_running_the_development_config_is_named_claude(self) -> None:
+        self.assertEqual(self.host(launcher=True, CLAUDECODE="1"), "mcp-launch.sh claude")
+
+    def test_an_explicit_host_wins(self) -> None:
+        self.assertEqual(self.host(launcher=False, BASEMIND_HOST="mine"), "basemind mine")
+
+    def test_the_installed_codex_launcher_names_the_same_host(self) -> None:
+        script = (ROOT / "scripts/codex-mcp-launch.mjs").as_uri()
+        probe = f'import("{script}").then(m => process.stdout.write(m.launchEnvironment().BASEMIND_HOST))'
+
+        def host(**harness: str) -> str:
+            env = {key: value for key, value in os.environ.items() if key not in HostDetectionTests.HARNESS_VARIABLES}
+            env.update(harness)
+            node = [shutil.which("node"), "-e", probe]
+            return subprocess.run(node, env=env, capture_output=True, text=True, timeout=30, check=True).stdout
+
+        self.assertEqual(host(), "codex")
+        self.assertEqual(host(CLAUDECODE="1"), "claude")
+        self.assertEqual(host(BASEMIND_HOST="mine", CLAUDECODE="1"), "mine")
 
 
 if __name__ == "__main__":

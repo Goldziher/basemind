@@ -112,25 +112,11 @@ pub fn all() -> Vec<Exception> {
             "the shorthand's `--rev` is the revision the working tree is compared against",
         ),
         alias("rescan", "path", "paths", "variadic positional for the MCP list"),
-        alias("agents post", "tag", "tags", REPEATABLE),
-        alias(
-            "agents ack",
-            "message_id",
-            "message_ids",
-            "repeatable CLI flag for the MCP reference list",
-        ),
-        alias(
-            "agents message",
-            "message_id",
-            "message_ref",
-            "CLI positional accepts a compact reference or legacy ID",
-        ),
-        alias("agents register", "skill", "skills", REPEATABLE),
         // ---- CLI-only arguments ----
         cli_only(
-            "agents cleanup",
-            "dry_run",
-            "no-op flag (preview is the default); MCP expresses intent through `apply`",
+            "agent inbox",
+            "announce",
+            "the hooks' announcing read; not a field of `agent_inbox` (ADR-0021)",
         ),
         cli_only(
             "rescan",

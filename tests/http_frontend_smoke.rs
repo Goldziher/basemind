@@ -21,7 +21,6 @@ use std::time::Duration;
 
 use basemind::comms::daemon::Broker;
 use basemind::comms::http_frontend;
-use basemind::comms::store::CommsStore;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -170,8 +169,9 @@ impl ServedHttp {
 async fn serve() -> ServedHttp {
     grant_http_listener();
     let comms_dir = tempfile::tempdir().expect("comms tempdir");
-    let store = Arc::new(CommsStore::open(comms_dir.path()).expect("open comms store"));
-    let broker = Arc::new(Broker::new(store));
+    let broker = Arc::new(Broker::new(basemind::comms::agents_hub::AgentHub::open(
+        comms_dir.path(),
+    )));
 
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let broker_for_http = broker.clone();
@@ -254,6 +254,12 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         "tools/list must expose the full tool surface, got {}",
         tools.len()
     );
+    for agent_tool in ["agent_post", "agent_inbox", "agent_threads"] {
+        assert!(
+            !tools.iter().any(|tool| tool["name"] == agent_tool),
+            "agent messaging is not served over HTTP (ADR-0021 rule 17), so `{agent_tool}` is not listed: {parsed}"
+        );
+    }
 
     // --- routing: a non-/mcp path is a 404 ---
     let (status, _) = http_post(&addr, "/nope", b"{}", &headers).await;

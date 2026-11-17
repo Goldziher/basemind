@@ -217,7 +217,21 @@ pub(crate) fn resolve_refs_against(
             ResolvedRefResult::References(crate::query::resolved_references(store, def_path, *def_start))
         }
         ResolvedRefQuery::DefinitionOf { use_path, use_start } => {
-            ResolvedRefResult::Definition(crate::query::definition_of(store, use_path, *use_start))
+            // ~keep Read before the edge: a rescan that lands between this and the edge read then
+            // ~keep pairs a new edge with the old use hash, which the client refuses, never an old
+            // ~keep edge with the new hash.
+            let use_hash = store.lookup(use_path).map(|entry| entry.hash_hex.clone());
+            let settled =
+                crate::store::read_status_sidecar(&store.basemind_dir).is_none_or(|status| !status.is_degraded());
+            ResolvedRefResult::Definition(crate::query::definition_of(store, use_path, *use_start).map(
+                |(path, start)| crate::comms::resolved_proto::ResolvedDefinition {
+                    landing_hash: store.lookup(&path).map(|entry| entry.hash_hex.clone()),
+                    use_hash,
+                    settled,
+                    path,
+                    start,
+                },
+            ))
         }
     }
 }

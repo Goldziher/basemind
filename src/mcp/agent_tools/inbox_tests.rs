@@ -1,4 +1,4 @@
-//! `agent_inbox` against the in-memory reference store.
+//! `agent_inbox` against the store in a temporary directory.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -13,11 +13,11 @@ use crate::comms::v2::api::{
     RESPONSE_BUDGET_BYTES, RepoKey, WaitOutcome,
 };
 use crate::comms::v2::conformance::{ConformanceHarness, wait_then_read};
-use crate::comms::v2::fake::{FAKE_EPOCH_MICROS, FakeAgents};
+use crate::comms::v2::store::test_agents::{TEST_EPOCH_MICROS, TestAgents};
 
 /// A store in which alice has started `t-aaaaaa` with bob and posted `bodies` into it.
-fn thread_with(bodies: &[&str]) -> (FakeAgents, Agent, Agent) {
-    let fake = FakeAgents::new();
+fn thread_with(bodies: &[&str]) -> (TestAgents, Agent, Agent) {
+    let fake = TestAgents::new();
     let (alice, bob) = (Agent::new("alice"), Agent::new("bob"));
     for (index, body) in bodies.iter().enumerate() {
         let arguments = match index {
@@ -34,7 +34,7 @@ fn ids(response: &AgentInboxResponse) -> Vec<String> {
 }
 
 /// How many messages `agent_threads` counts as unread for `agent` in `t-aaaaaa`.
-fn unread(fake: &FakeAgents, agent: &Agent) -> u64 {
+fn unread(fake: &TestAgents, agent: &Agent) -> u64 {
     let described = agent
         .threads(fake, json!({ "thread": "t-aaaaaa" }))
         .expect("the thread described");
@@ -42,7 +42,7 @@ fn unread(fake: &FakeAgents, agent: &Agent) -> u64 {
 }
 
 /// Every page of a read that pages with a cursor, as the ids on each page.
-fn pages(fake: &FakeAgents, agent: &Agent, arguments: &Value) -> Vec<Vec<String>> {
+fn pages(fake: &TestAgents, agent: &Agent, arguments: &Value) -> Vec<Vec<String>> {
     let mut pages = Vec::new();
     let mut cursor = None;
     for _ in 0..16 {
@@ -79,7 +79,7 @@ fn no_arguments_returns_the_unread_messages_and_marks_them_read() {
                 id: message("t-aaaaaa.1"),
                 subject: "auth refactor".to_string(),
                 from: actor("alice"),
-                ts_micros: FAKE_EPOCH_MICROS,
+                ts_micros: TEST_EPOCH_MICROS,
                 reply_to: None,
                 body: "first".to_string(),
                 body_bytes: 5,
@@ -99,7 +99,7 @@ fn no_arguments_returns_the_unread_messages_and_marks_them_read() {
                 "id": "t-aaaaaa.1",
                 "subject": "auth refactor",
                 "from": "alice",
-                "ts_micros": FAKE_EPOCH_MICROS,
+                "ts_micros": TEST_EPOCH_MICROS,
                 "body": "first",
                 "body_bytes": 5,
             }],
@@ -189,7 +189,6 @@ fn an_unknown_field_is_refused_naming_the_accepted_ones() {
         "`id`",
         "`unread`",
         "`peek`",
-        "`announce`",
         "`wait_secs`",
         "`limit`",
         "`cursor`",
@@ -197,7 +196,7 @@ fn an_unknown_field_is_refused_naming_the_accepted_ones() {
     ] {
         assert!(accepted.contains(field), "{field} is missing from: {accepted}");
     }
-    assert_eq!(accepted.matches('`').count(), 18, "nine fields: {accepted}");
+    assert_eq!(accepted.matches('`').count(), 16, "eight fields: {accepted}");
     assert!(!accepted.contains("(required)"), "{accepted}");
 }
 
@@ -255,7 +254,6 @@ fn a_field_at_its_default_or_empty_counts_as_left_out() {
                 "thread": "",
                 "unread": true,
                 "peek": false,
-                "announce": false,
                 "wait_secs": 0,
                 "limit": 20,
                 "cursor": "",
@@ -412,88 +410,13 @@ fn an_invalid_as_is_refused_and_as_never_names_another_principal() {
     assert_eq!(fake.position(&thread("t-aaaaaa"), &actor("bob.alice")), Some((1, 1)));
 }
 
+/// The announcing read is the hooks', through the CLI: the MCP tool has no field for it.
 #[test]
-fn announce_lists_front_matter_once_and_leaves_the_messages_unread() {
-    let (fake, _alice, bob) = thread_with(&["first", "the second one", "third"]);
-    let marks = || fake.position(&thread("t-aaaaaa"), &actor("bob"));
-
-    let told = bob
-        .inbox(&fake, json!({ "announce": true, "limit": 2 }))
-        .expect("an announcing read");
-
-    assert_eq!(ids(&told), ["t-aaaaaa.1", "t-aaaaaa.2"], "at most `limit`");
-    assert!(told.more);
-    assert_eq!(told.next_cursor, None);
-    assert!(told.read_to.is_empty());
-    assert!(told.messages.iter().all(|message| message.body.is_empty()));
-    assert_eq!(told.messages[1].body_bytes, 14);
-    assert_eq!(
-        serde_json::to_value(&told).expect("serialize"),
-        json!({
-            "messages": [
-                {
-                    "id": "t-aaaaaa.1",
-                    "subject": "auth refactor",
-                    "from": "alice",
-                    "ts_micros": FAKE_EPOCH_MICROS,
-                    "body_bytes": 5,
-                },
-                {
-                    "id": "t-aaaaaa.2",
-                    "subject": "auth refactor",
-                    "from": "alice",
-                    "ts_micros": FAKE_EPOCH_MICROS + 1,
-                    "body_bytes": 14,
-                },
-            ],
-            "more": true,
-            "notices": [],
-        })
-    );
-    assert_eq!(marks(), Some((0, 2)), "only the announcement mark moved");
-    assert_eq!(unread(&fake, &bob), 3);
-
-    let rest = bob.inbox(&fake, json!({ "announce": true })).expect("the rest");
-    assert_eq!(ids(&rest), ["t-aaaaaa.3"]);
-    assert!(!rest.more);
+fn announce_is_not_a_field_of_the_tool() {
+    let refusal = parse_error::<AgentInboxParams>(json!({ "announce": true }));
     assert!(
-        bob.inbox(&fake, json!({ "announce": true }))
-            .expect("nothing new to announce")
-            .messages
-            .is_empty()
-    );
-    assert_eq!(marks(), Some((0, 3)));
-
-    let read = bob.inbox(&fake, json!({})).expect("the read that marks");
-    assert_eq!(ids(&read), ["t-aaaaaa.1", "t-aaaaaa.2", "t-aaaaaa.3"]);
-    assert_eq!(read.messages[1].body, "the second one");
-    assert_eq!(marks(), Some((3, 3)));
-}
-
-#[test]
-fn announce_is_refused_beside_a_field_that_asks_for_another_read() {
-    let (fake, _alice, bob) = thread_with(&["first"]);
-    let announcing = |field: &str, value: Value| {
-        let mut arguments = json!({ "announce": true });
-        arguments[field] = value;
-        refused(bob.inbox(&fake, arguments))
-    };
-
-    assert_eq!(announcing("id", json!("t-aaaaaa.1")), not_applicable("id", "announce"));
-    assert_eq!(announcing("peek", json!(true)), not_applicable("peek", "announce"));
-    assert_eq!(announcing("unread", json!(false)), not_applicable("unread", "announce"));
-    assert_eq!(
-        announcing("wait_secs", json!(5)),
-        not_applicable("wait_secs", "announce")
-    );
-    assert!(
-        announcing("cursor", json!("abc")).starts_with("`agent_inbox`: `cursor` does not apply"),
-        "an announcing read takes no cursor"
-    );
-    assert_eq!(
-        fake.position(&thread("t-aaaaaa"), &actor("bob")),
-        Some((0, 0)),
-        "a refused read announces nothing"
+        refusal.starts_with("`agent_inbox`: unknown field `announce`"),
+        "{refusal}"
     );
 }
 
@@ -536,7 +459,7 @@ fn a_delivered_message_is_passed_on_as_the_store_returned_it() {
         id: message(&format!("t-aaaaaa.{seq}")),
         subject: "topic".to_string(),
         from: actor("alice"),
-        ts_micros: FAKE_EPOCH_MICROS,
+        ts_micros: TEST_EPOCH_MICROS,
         reply_to: None,
         body,
         body_bytes,

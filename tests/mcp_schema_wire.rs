@@ -71,14 +71,9 @@ const INSTRUCTIONS_CEILING: usize = 4096;
 /// ceiling raised.
 const VERB_TOOLS_BYTE_CEILING: usize = 20_000;
 
-/// Ceiling for the mode-dispatched domain tool a `comms` build still adds (`agents`). It predates
-/// ADR-0018 and is replaced by its own verb tools in later work; until then this only stops it
-/// growing.
-#[cfg(feature = "comms")]
-const DOMAIN_TOOLS_BYTE_CEILING: usize = 8_000;
-
-/// The mode-dispatched domain tools still advertised by a `comms` build.
-const DOMAIN_TOOLS: [&str; 1] = ["agents"];
+/// The deferred agent tools a `comms` build adds (ADR-0021), outside the verb tools' ceiling and
+/// under one of their own.
+const DOMAIN_TOOLS: &[&str] = basemind::mcp::agent_tools::AGENT_TOOLS;
 
 /// Fields each verb tool cannot run without. Everything else in its schema must be optional.
 const REQUIRED: [(&str, &[&str]); 15] = [
@@ -200,7 +195,7 @@ async fn the_advertised_tools_are_exactly_the_verb_tools() {
 
 /// A host that defers MCP tools loads only their names until a tool-search round trip; this marker
 /// keeps the schema loaded from the start of the session. It is spent on the verb tools only: the
-/// mode-dispatched domain tool stays deferred, so its bytes are not paid on every session.
+/// agent tools stay deferred, so their bytes are paid only by a session that coordinates.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_the_verb_tools_are_marked_always_load() {
     let (_dir, tools, _) = list_tools().await;
@@ -213,7 +208,7 @@ async fn only_the_verb_tools_are_marked_always_load() {
             assert_eq!(
                 marker,
                 None,
-                "`{}` is a domain tool and must stay deferred, got {}",
+                "`{}` is an agent tool and must stay deferred, got {}",
                 tool.name,
                 wire.get("_meta").cloned().unwrap_or_default(),
             );
@@ -231,7 +226,7 @@ async fn only_the_verb_tools_are_marked_always_load() {
         assert_eq!(
             tools.len() - verbs.len(),
             DOMAIN_TOOLS.len(),
-            "a comms build advertises the domain tool, so the deferred branch above ran"
+            "a comms build advertises the agent tools, so the deferred branch above ran"
         );
     }
 }
@@ -266,9 +261,18 @@ async fn tools_list_stays_under_the_byte_ceiling() {
             .collect();
         assert_eq!(domains.len(), DOMAIN_TOOLS.len());
         let domain_bytes = size(&domains);
+        let ceiling = basemind::mcp::agent_tools::AGENT_TOOLS_BYTE_CEILING;
+        println!(
+            "tools/list: the agent tools serialize to {domain_bytes} bytes ({})",
+            domains
+                .iter()
+                .map(|tool| format!("{} {}", tool.name, size(&[*tool])))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         assert!(
-            domain_bytes <= DOMAIN_TOOLS_BYTE_CEILING,
-            "`agents` serializes to {domain_bytes} bytes, over {DOMAIN_TOOLS_BYTE_CEILING}"
+            domain_bytes <= ceiling,
+            "the agent tools serialize to {domain_bytes} bytes, over {ceiling}"
         );
     }
 }
@@ -408,5 +412,33 @@ async fn verb_tool_annotations_are_exact() {
              byte ceiling both rule out",
             tool.name
         );
+    }
+}
+
+/// The agent tools' annotations say what each can do: posting and a marking read change state
+/// every time; a thread change made twice changes nothing further; none destroys anything.
+#[cfg(feature = "comms")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_tool_annotations_are_exact() {
+    let (_dir, tools, _) = list_tools().await;
+    for (name, idempotent) in [("agent_post", false), ("agent_inbox", false), ("agent_threads", true)] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("`{name}` is advertised"));
+        assert!(
+            tool.title.as_deref().is_some_and(|title| !title.is_empty()),
+            "`{name}` has a title"
+        );
+        let annotations = tool.annotations.as_ref().expect("annotations");
+        assert_eq!(annotations.read_only_hint, Some(false), "`{name}` read_only_hint");
+        assert_eq!(annotations.destructive_hint, Some(false), "`{name}` destructive_hint");
+        assert_eq!(
+            annotations.idempotent_hint,
+            Some(idempotent),
+            "`{name}` idempotent_hint"
+        );
+        assert_eq!(annotations.open_world_hint, Some(false), "`{name}` open_world_hint");
+        assert!(tool.output_schema.is_none(), "`{name}` declares an output schema");
     }
 }

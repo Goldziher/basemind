@@ -7,7 +7,7 @@ use super::*;
 use crate::comms::v2::api::{
     IdKind, InboxSelect, InvalidId, MAX_POST_BODY_BYTES, MessageId, ReadKind, ThreadId, WaitOutcome,
 };
-use crate::comms::v2::fake::FakeAgents;
+use crate::comms::v2::store::test_agents::TestAgents;
 
 /// Longest principal the id grammar allows: any sub-identity of it is over the id length limit.
 const LONGEST_PRINCIPAL_LEN: usize = 128;
@@ -228,7 +228,7 @@ fn announce_is_refused_beside_every_field_that_asks_for_another_read() {
 
 #[test]
 fn a_read_goes_to_the_store_unless_it_asks_to_wait() {
-    let fake = FakeAgents::new();
+    let fake = TestAgents::new();
     let owner = Owner::new("alice");
     let caller = owner.session().caller(None).expect("the principal");
     let asked = RefCell::new(Vec::new());

@@ -122,6 +122,7 @@ fn only_a_marking_read_moves_read_seq_and_a_writing_read_never_moves_back() {
     let mut position = Position {
         read_seq: 2,
         notified_seq: 5,
+        scan_seq: 0,
     };
 
     assert!(!position.advance(ReadKind::Peek, 9));
@@ -143,6 +144,7 @@ fn a_new_actor_starts_at_its_principals_read_position_or_the_members_start() {
     let at = |seq| Position {
         read_seq: seq,
         notified_seq: seq,
+        scan_seq: seq,
     };
 
     assert_eq!(Position::start(None, 0), at(0), "a member from creation");

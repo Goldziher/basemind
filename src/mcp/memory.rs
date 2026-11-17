@@ -267,7 +267,7 @@ async fn memory_put_fjall(
             value: value.to_string(),
             tags: tags.to_vec(),
         };
-        let outcome = super::helpers_comms::dispatch_memory_op(state, op).await?;
+        let outcome = super::helpers_daemon::dispatch_memory_op(state, op).await?;
         return match outcome {
             MemoryOutcome::Put { created_at, updated_at } => Ok((created_at, updated_at)),
             other => Err(McpError::internal_error(
@@ -315,7 +315,7 @@ pub(super) async fn memory_get_wire(
             owner: owner.to_string(),
             key: key.to_string(),
         };
-        return match super::helpers_comms::dispatch_memory_op(state, op).await? {
+        return match super::helpers_daemon::dispatch_memory_op(state, op).await? {
             MemoryOutcome::Got(entry) => Ok(entry),
             other => Err(McpError::internal_error(
                 format!("memory_get: unexpected daemon outcome {other:?}"),
@@ -378,7 +378,7 @@ async fn memory_get_chunk_wire(
             owner: owner.to_string(),
             keys: keys.to_vec(),
         };
-        return match super::helpers_comms::dispatch_memory_op(state, op).await? {
+        return match super::helpers_daemon::dispatch_memory_op(state, op).await? {
             MemoryOutcome::GotMany(entries) if (1..=wanted).contains(&entries.len()) => Ok(entries),
             other => Err(McpError::internal_error(
                 format!("memory_get_many: unexpected daemon outcome {other:?}"),
@@ -424,7 +424,7 @@ pub(super) async fn memory_stamps_wire(
                 owner: owner.to_string(),
                 keys: chunk.to_vec(),
             };
-            match super::helpers_comms::dispatch_memory_op(state, op).await? {
+            match super::helpers_daemon::dispatch_memory_op(state, op).await? {
                 MemoryOutcome::Stamps(read) if read.len() == chunk.len() => stamps.extend(read),
                 other => {
                     return Err(McpError::internal_error(
@@ -522,7 +522,7 @@ pub(super) async fn memory_list_page(
             limit: limit as u32,
             cursor,
         };
-        return match super::helpers_comms::dispatch_memory_op(state, op).await? {
+        return match super::helpers_daemon::dispatch_memory_op(state, op).await? {
             MemoryOutcome::Listed {
                 entries,
                 total,
@@ -594,7 +594,7 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
             owner: owner.to_string(),
             key: key.to_string(),
         };
-        let outcome = super::helpers_comms::dispatch_memory_op(state, op).await?;
+        let outcome = super::helpers_daemon::dispatch_memory_op(state, op).await?;
         return match outcome {
             MemoryOutcome::Deleted { deleted } => Ok(deleted),
             other => Err(McpError::internal_error(

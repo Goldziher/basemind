@@ -283,7 +283,7 @@ agent_id = "my-agent"
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | bool | `true` | Reserved: the `comms` cargo feature alone decides whether comms runs. |
-| `agent_id` | string | auto | Stable identity presented to the broker. Falls back to `BASEMIND_AGENT_ID`, then a generated per-session id. |
+| `agent_id` | string | auto | Stable identity (the principal) presented to the broker, used when `BASEMIND_AGENT_ID` is unset or invalid; otherwise the id is derived as `<host>-<repo>-<6 hex>`. Must match `[A-Za-z0-9_:-]{1,128}`; `.` is forbidden. |
 | `idle_timeout_secs` | integer | `1800` | Reserved: idle window before the broker sheds caches. |
 | `max_messages_per_room` | integer | `1000` | Reserved: per-thread front-matter retention cap. |
 | `retention_secs` | integer | `604800` | Reserved: message retention window; older messages become prune-eligible. |
@@ -484,7 +484,7 @@ ONNX Runtime). Opt into the rest:
 | `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only; not in the published binaries. | no |
 | `memory` | LanceDB-backed shared memory (`memory_save`, `memory_search`). | yes |
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code_search`). | yes |
-| `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (the `agents` tool and the `workspace` CLI listings; Unix domain sockets + Windows named pipes). | yes |
+| `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (the `agent_post`, `agent_inbox` and `agent_threads` tools, the `basemind agent` CLI and the `workspace` CLI listings; Unix domain sockets + Windows named pipes). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `code_refs` resolution (oxc). | yes |
 | `full` | `documents` + `documents-ocr` + `documents-ner` + `memory` + `code-search` + `comms` + `code-intel`. | — |
 

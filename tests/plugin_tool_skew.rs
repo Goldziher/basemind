@@ -68,19 +68,7 @@ const UNRELEASED_SURFACE_MARKER: &str = ".github/unreleased-surface.toml";
 /// Names the plugin content references although the binary does not serve them, each with the
 /// reason it is tolerated. An entry that stops being a mismatch fails the test, so the list cannot
 /// outlive the skew it records.
-const KNOWN_MISMATCHES: &[(&str, &str)] = &[
-    (
-        "word:path_glob",
-        "the session-start hook and the Hermes plugin describe `agents` thread scoping with `path_glob`; the \
-         binary's argument is `path`. The hook and Hermes text is being rewritten with comms v2.",
-    ),
-    (
-        "agents.message_id",
-        "the comms skills call `agents {mode: \"message\", message_id: ...}`; the schema advertises `message_ref` \
-         and accepts `message_id` only as an unadvertised serde alias (src/mcp/types_comms.rs).",
-    ),
-    ("word:message_id", "the same alias, named in prose of the comms skills."),
-];
+const KNOWN_MISMATCHES: &[(&str, &str)] = &[];
 
 /// Result fields and values the plugin prose names that the fixture's minimal calls cannot produce
 /// (a second page, a cut body, a feature this build may lack), with where the binary defines them.
@@ -107,7 +95,6 @@ const NOT_TOOL_VOCABULARY: &[&str] = &[
     "cache_root",
     "grep_args",
     "grep_call",
-    "long_description",
     "mime_type",
     "open_store",
     "parse_config",
@@ -139,7 +126,9 @@ fn minimal_call(tool: &str) -> Option<(Value, Option<&'static str>)> {
         "memory_search" => (json!({"query": "probe"}), None),
         "index_status" => (json!({}), Some("file_count")),
         "index_rescan" => (json!({}), Some("scanned")),
-        "agents" => (json!({"mode": "list"}), Some("agents")),
+        "agent_post" => (json!({"subject": "skew probe", "body": "the gate's call"}), None),
+        "agent_inbox" => (json!({}), None),
+        "agent_threads" => (json!({}), None),
         _ => return None,
     })
 }
@@ -179,7 +168,7 @@ fn collect_files(path: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-const TOOL: &str = r"(?:code|git|docs|memory|index|find)_[a-z][a-z_]*";
+const TOOL: &str = r"(?:(?:code|git|docs|memory|index|find)_[a-z][a-z_]*|agent_(?:post|inbox|threads))";
 
 /// The top-level keys of the JSON-ish object that opens at `text[open]` (a `{`), with nested objects,
 /// arrays and strings skipped. Keys may be quoted, escaped-quoted or bare (`{ mode: "post" }`).
@@ -239,9 +228,11 @@ fn object_keys(text: &str, open: usize) -> Vec<String> {
 /// The names one file's text refers to:
 ///
 /// - a tool: `mcp__<server>__<tool>`, the `TOOL_NAMES="…"` list a hook prints, a snake_case name
-///   from the verb-tool families (`code_`, `git_`, `docs_`, `memory_`, `index_`, `find_`), or
-///   `agents` named as a call;
-/// - `agents:<mode>`: a mode of `agents` named in a call or in prose (`` `agents` mode `post` ``);
+///   from the verb-tool families (`code_`, `git_`, `docs_`, `memory_`, `index_`, `find_`) or one of
+///   the three agent tools (`agent_post`, `agent_inbox`, `agent_threads`);
+/// - `agents`, the removed coordination tool, named as a call (`agents {`, `agents mode`,
+///   `` `agents` tool``), so content still teaching it fails. A bare `` `agents` `` is left alone:
+///   it also names the `AGENTS.md` rules target;
 /// - `<tool>.<argument>`: a top-level key of an argument object given to a tool, as a JSON example
 ///   (`code_grep {"pattern":"x"}`), a call (`code_grep({ pattern: "x" })`), or an MCP request
 ///   (`{"name": "code_grep", "arguments": {...}}`);
@@ -252,17 +243,13 @@ fn names_in(text: &str) -> BTreeSet<String> {
     let namespaced = Regex::new(r"mcp__(?:plugin_basemind_basemind|basemind)__([a-z][a-z0-9_]*)").unwrap();
     let list = Regex::new(r#"TOOL_NAMES="([^"]*)""#).unwrap();
     let family = Regex::new(&format!(r"\b({TOOL})\b")).unwrap();
-    let agents = Regex::new(r"`agents`|\bagents\s*\(?\s*\{|\bagents mode\b").unwrap();
-    let call = Regex::new(&format!(r"\b({TOOL}|agents)\s*\(?\s*\{{")).unwrap();
+    let agents = Regex::new(r"`agents` (?:tool|mode)|\bagents\s*\(?\s*\{|\bagents mode\b").unwrap();
+    let call = Regex::new(&format!(r"\b({TOOL})\s*\(?\s*\{{")).unwrap();
     let request = Regex::new(&format!(
-        r#"\\?"name\\?"\s*:\s*\\?"({TOOL}|agents)\\?"\s*,\s*\\?"arguments\\?"\s*:\s*\{{"#
+        r#"\\?"name\\?"\s*:\s*\\?"({TOOL})\\?"\s*,\s*\\?"arguments\\?"\s*:\s*\{{"#
     ))
     .unwrap();
-    let agents_mode = Regex::new(
-        r#"agents\s*\(?\s*\{\s*\\?"?mode\\?"?\s*:\s*\\?["']([a-z_]+)|`agents` mode `([a-z_]+)`|\bagents mode ([a-z_]+)"#,
-    )
-    .unwrap();
-    let line_tool = Regex::new(&format!(r"\b({TOOL}|agents)\b")).unwrap();
+    let line_tool = Regex::new(&format!(r"\b({TOOL})\b")).unwrap();
     let word = Regex::new(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b").unwrap();
 
     let mut names = BTreeSet::new();
@@ -282,11 +269,6 @@ fn names_in(text: &str) -> BTreeSet<String> {
         let whole = caps.get(0).unwrap();
         for arg in object_keys(text, whole.end() - 1) {
             names.insert(format!("{}.{arg}", &caps[1]));
-        }
-    }
-    for caps in agents_mode.captures_iter(text) {
-        if let Some(mode) = (1..=3).find_map(|i| caps.get(i)) {
-            names.insert(format!("agents:{}", mode.as_str()));
         }
     }
     for line in text.lines().filter(|line| line_tool.is_match(line)) {
@@ -388,7 +370,7 @@ fn extract_references(root: &Path, content_roots: &[&str], top_level: &BTreeSet<
     Ok(content)
 }
 
-/// What a binary serves: names (tools, `agents:<mode>`, `<tool>.<argument>`) and the vocabulary a
+/// What a binary serves: names (tools and `<tool>.<argument>`) and the vocabulary a
 /// `word:` reference may use (those plus every mode, schema property and result field).
 #[derive(Default)]
 struct Served {
@@ -407,12 +389,9 @@ impl Served {
             }
             collect_keys(&tool["inputSchema"], &mut served.words);
             if let Some(modes) = tool["inputSchema"]["properties"]["mode"]["enum"].as_array() {
-                for mode in modes.iter().filter_map(Value::as_str) {
-                    served.words.insert(mode.to_string());
-                    if name == "agents" {
-                        served.names.insert(format!("agents:{mode}"));
-                    }
-                }
+                served
+                    .words
+                    .extend(modes.iter().filter_map(Value::as_str).map(str::to_string));
             }
             served.names.insert(name);
         }
@@ -894,9 +873,8 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
 
     let _ = writeln!(
         out,
-        "plugin-skew: launched via {how}; it advertises {} tools and {} agents modes: {:?}",
+        "plugin-skew: launched via {how}; it advertises {} tools: {:?}",
         tool_names.len(),
-        served.names.iter().filter(|n| n.starts_with("agents:")).count(),
         tool_names
     );
     let _ = writeln!(
@@ -913,10 +891,9 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
     );
 
     assert!(!tool_names.is_empty(), "the server advertised no tools");
-    assert!(
-        served.names.iter().any(|n| n.starts_with("agents:")),
-        "the agents tool advertised no `mode` enum to compare against"
-    );
+    for tool in ["agent_post", "agent_inbox", "agent_threads"] {
+        assert!(served.names.contains(tool), "a comms build advertises `{tool}`");
+    }
     assert!(
         refs.keys().filter(|n| !n.starts_with("word:")).count() >= 10,
         "only {} tool names extracted: the extraction is broken",
@@ -1087,7 +1064,7 @@ fn the_release_the_manifests_pin_serves_what_the_plugin_names() {
     let served = Served::from_tools(&server.list_tools());
     drop(server);
 
-    // Tools, agents modes and call arguments. Prose words are the tree test's job, since a release
+    // Tools and call arguments. Prose words are the tree test's job, since a release
     // cannot be asked for result fields it may name differently; so are the KNOWN_MISMATCHES.
     let mut missing: Vec<String> = missing_from(&content.refs, &served)
         .into_iter()
@@ -1217,8 +1194,9 @@ fn a_missing_or_empty_content_root_is_an_error() {
 #[test]
 fn every_spelling_of_a_tool_name_is_recognised() {
     let text = "call mcp__plugin_basemind_basemind__code_outline; TOOL_NAMES=\"find_files agents zzz_odd\"; \
-                use git_log {} and `agents` mode `post`; mcp__basemind__docs_search; agents { mode: \"inbox\" } git_log {\"rev\":\"x\"} code_grep {\"pattern\":\"a\",\"regex\":true} \
-                agents {mode: \"wait\"}; call agents mode message";
+                use git_log {} and `agents` mode `post`; mcp__basemind__docs_search; git_log {\"rev\":\"x\"} \
+                code_grep {\"pattern\":\"a\",\"regex\":true} agent_post {\"subject\":\"s\",\"body\":\"b\"} \
+                read with agent_inbox; mcp__plugin_basemind_basemind__agent_threads; comms.agent_id";
     let names = names_in(text);
     for want in [
         "code_outline",
@@ -1227,15 +1205,16 @@ fn every_spelling_of_a_tool_name_is_recognised() {
         "zzz_odd",
         "git_log",
         "docs_search",
-        "agents:post",
-        "agents:inbox",
-        "agents:wait",
-        "agents:message",
         "git_log.rev",
         "code_grep.regex",
+        "agent_post",
+        "agent_post.subject",
+        "agent_inbox",
+        "agent_threads",
     ] {
         assert!(names.contains(want), "{want} missing from {names:?}");
     }
+    assert!(!names.contains("agent_id"), "a config key is not a tool: {names:?}");
 }
 
 #[test]
@@ -1243,7 +1222,7 @@ fn arguments_are_read_from_every_call_form() {
     let text = r#"
         code_grep({ pattern: "x", filter: { language: "rust" } })
         await client.callTool({"name": "code_read", "arguments": {"path": "a", "range": {"start": 1}}})
-        agents { mode: "thread_start", subject: "s", path_glob: "src/**" }
+        agent_post({ subject: "s", body: "b", paths: ["src/**"] })
         code_symbols {\"name\":\"alpha\"}
     "#;
     let names = names_in(text);
@@ -1252,10 +1231,9 @@ fn arguments_are_read_from_every_call_form() {
         "code_grep.filter",
         "code_read.path",
         "code_read.range",
-        "agents.mode",
-        "agents.subject",
-        "agents.path_glob",
-        "agents:thread_start",
+        "agent_post.subject",
+        "agent_post.body",
+        "agent_post.paths",
         "code_symbols.name",
     ] {
         assert!(names.contains(want), "{want} missing from {names:?}");
@@ -1270,7 +1248,8 @@ fn arguments_are_read_from_every_call_form() {
 
 #[test]
 fn prose_words_next_to_a_tool_are_vocabulary_references() {
-    let names = names_in("Use agents to open threads scoped by subject, path_glob and members.\nno tool: other_word\n");
+    let names =
+        names_in("Use agent_threads to list threads scoped by subject, path_glob and members.\nno tool: other_word\n");
     assert!(names.contains("word:path_glob"), "{names:?}");
     assert!(
         !names.contains("word:other_word"),

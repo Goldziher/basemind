@@ -3,8 +3,8 @@
 //! Every [`AgentOps`](super::api::AgentOps) implementation answers the same questions: may this
 //! caller post here, where does this actor start reading, what does a read move, which threads
 //! does a listing show, what does a sweep remove. They are answered once, here, as pure functions
-//! over facts the implementation looks up, so the in-memory reference and a store-backed
-//! implementation cannot drift apart on a rule. What stays with an implementation is only how it
+//! over facts the implementation looks up, so no implementation can drift from them on a
+//! rule. What stays with an implementation is only how it
 //! finds the facts and how it writes the outcome.
 
 use std::collections::BTreeMap;
@@ -64,13 +64,18 @@ pub fn seen_due(recorded_micros: Option<i64>, now_micros: i64) -> bool {
     recorded_micros.is_none_or(|recorded| now_micros.saturating_sub(recorded) >= ttl_micros(SEEN_REFRESH_INTERVAL))
 }
 
-/// An actor's two marks in one thread.
+/// An actor's two marks in one thread, and how far its own posts above them were passed over.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     /// Sequence number of the last message read.
     pub read_seq: u64,
     /// Sequence number of the last message an announcing read told the actor about.
     pub notified_seq: u64,
+    /// Every message in `read_seq + 1..=scan_seq` is the actor's own post, so a read need not walk
+    /// them again. Not a mark: no sibling starts from it and no reply reports it. It keeps a thread
+    /// in which the actor posted more than one read's scan budget from being read without end.
+    #[serde(default)]
+    pub scan_seq: u64,
 }
 
 impl Position {
@@ -83,6 +88,7 @@ impl Position {
         Self {
             read_seq: seq,
             notified_seq: seq,
+            scan_seq: seq,
         }
     }
 
@@ -90,8 +96,8 @@ impl Position {
     pub fn floor(self, kind: ReadKind) -> u64 {
         match kind {
             ReadKind::History | ReadKind::ById => 0,
-            ReadKind::Announcing => self.read_seq.max(self.notified_seq),
-            ReadKind::Marking | ReadKind::Peek => self.read_seq,
+            ReadKind::Announcing => self.read_seq.max(self.notified_seq).max(self.scan_seq),
+            ReadKind::Marking | ReadKind::Peek => self.read_seq.max(self.scan_seq),
         }
     }
 
@@ -108,6 +114,13 @@ impl Position {
             return true;
         }
         false
+    }
+
+    /// Record that every message from above `read_seq` up to `seq` is the actor's own post, so a
+    /// read starts past them. `read_seq` and `notified_seq` stay: a sibling still starts before
+    /// these posts, and they were never announced.
+    pub fn pass_own(&mut self, seq: u64) {
+        self.scan_seq = self.scan_seq.max(seq);
     }
 }
 

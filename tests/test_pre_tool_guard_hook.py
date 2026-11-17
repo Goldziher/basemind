@@ -48,7 +48,7 @@ class PreToolGuardTests(unittest.TestCase):
         output = subprocess.run(
             ["/bin/bash", str(HOOK)],
             input=json.dumps(payload),
-            env={**os.environ, "TMPDIR": self.tmp, "BASEMIND_GUARD": "nudge"},
+            env={**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "nudge"},
             capture_output=True,
             text=True,
             timeout=15,
@@ -102,7 +102,7 @@ class PreToolGuardTests(unittest.TestCase):
                 self.assert_names_only_verb_tools(decision["additionalContext"])
 
     def test_redirect_reason_is_a_verb_tool_call(self) -> None:
-        env = {**os.environ, "TMPDIR": self.tmp, "BASEMIND_GUARD": "redirect"}
+        env = {**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "redirect"}
         for tool, tool_input in (("Grep", {"pattern": "x"}), ("Glob", {"pattern": "**/*.rs"})):
             payload = json.dumps({"session_id": "s", "tool_name": tool, "tool_input": tool_input})
             out = subprocess.run(
@@ -131,8 +131,22 @@ class PreToolGuardTests(unittest.TestCase):
         self.assertNotEqual(self.bash("rg a", agent_id="a2"), "")
         self.assertNotEqual(self.bash("git blame x", agent_id="a1"), "")
 
+    def test_markers_stay_in_a_private_directory_and_never_follow_a_planted_link(self) -> None:
+        self.assertNotEqual(self.bash("rg a", agent_id="own"), "")
+        private = Path(self.tmp) / f"basemind-{os.getuid()}"
+        self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(any((private / "guard").iterdir()), "the marker is in the private directory")
+
+        shutil.rmtree(private)
+        elsewhere = Path(self.tmp) / "elsewhere"
+        elsewhere.mkdir()
+        private.symlink_to(elsewhere)
+        self.assertNotEqual(self.bash("rg a", agent_id="planted"), "")
+        self.assertNotEqual(self.bash("rg a", agent_id="planted"), "", "no marker, so the advice repeats")
+        self.assertEqual(list(elsewhere.iterdir()), [], "nothing is written through the link")
+
     def test_redirect_mode_never_denies_bash(self) -> None:
-        env = {**os.environ, "TMPDIR": self.tmp, "BASEMIND_GUARD": "redirect"}
+        env = {**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "redirect"}
         payload = json.dumps({"session_id": "s", "tool_name": "Bash", "tool_input": {"command": "rg x"}})
         out = subprocess.run(
             ["/bin/bash", str(HOOK)], input=payload, env=env, capture_output=True, text=True, check=True

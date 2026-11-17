@@ -25,7 +25,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import warnings
 from builtins import BaseExceptionGroup, ExceptionGroup
 from datetime import timedelta
@@ -54,16 +53,10 @@ _DISCIPLINE = (
 )
 
 _COMMS_TOOLS = (
-    "basemind first, shell/grep/git fallback — prefer basemind over grep, over naked git, and for "
-    "docs/RAG/NER and parsing. You are connected to basemind agent-comms — coordinate "
-    "with other agents via THREADS: scoped conversations addressed by at least two of {subject, "
-    "path-glob, members}, discovered by scope (you're a member, your cwd matches the path-glob, or a "
-    "subject filter) — never globally — and joined explicitly (no auto-join). All coordination uses "
-    "the agents tool with a required mode: thread_list to see threads in scope and history to skim "
-    "one; inbox to scan your inbox (front-matter only — subject/from/id — never bodies, to stay "
-    "token-frugal); message with message_id to read one body on demand; thread_start with subject "
-    "plus path_glob and/or members to open a thread; post with thread, subject, body, and optional reply_to to "
-    "send. Prefer posting a concise status/question over staying silent when collaborating."
+    "Agent messaging is opt-in through three deferred tools, found by tool search: agent_post to "
+    "send (subject starts a thread, thread or reply_to continues one), agent_inbox to read unread "
+    "messages (bodies inline; reading marks them read, peek does not) and agent_threads to find, "
+    "join, leave, invite to or archive threads. A subagent that wants its own inbox passes as."
 )
 
 
@@ -160,64 +153,55 @@ def _register_hooks(ctx) -> None:
     def on_session_start(**_kwargs):
         _inject(_session_start_context(os.getcwd()))
 
-    def pre_llm_call(**kwargs):
-        sid = str(kwargs.get("task_id") or kwargs.get("session_id") or "default")
-        _inject(_delta_context(os.getcwd(), sid))
+    def pre_llm_call(**_kwargs):
+        _inject(_delta_context(os.getcwd()))
 
     _safe_call(reg, "on_session_start", on_session_start)
     _safe_call(reg, "pre_llm_call", pre_llm_call)
 
 
 def _session_start_context(cwd: str) -> str:
-    """Boot context: the operating discipline, plus a condensed comms inbox if the broker responds."""
-    messages = _inbox_messages(cwd, 8)
-    if messages is None:
-        return _DISCIPLINE
+    """Boot context: the operating discipline, the deferred agent tools, and a count of unread messages."""
+    messages = _inbox_messages(cwd, ["--peek"], 5)
     if messages:
-        return (
-            f"{_DISCIPLINE} {_COMMS_TOOLS}\n"
-            "Recent messages (front-matter only; use agents mode message with message_id to read a body):\n"
-            f"{_format_lines(messages)}"
-        )
-    return f"{_DISCIPLINE} {_COMMS_TOOLS} No messages in your threads yet — start one to kick things off."
+        return f"{_DISCIPLINE} {_COMMS_TOOLS} You have {len(messages)} unread agent message(s); read them with agent_inbox."
+    return f"{_DISCIPLINE} {_COMMS_TOOLS}"
 
 
-def _delta_context(cwd: str, session_id: str) -> str | None:
-    """Per-turn delta: inject only messages newer than this session's high-water mark."""
-    messages = _inbox_messages(cwd, 30)
+def _delta_context(cwd: str) -> str | None:
+    """Per-turn delta: an announcing read lists unread messages once, as front matter, and marks none read.
+
+    Hermes cannot rewrite a tool call's arguments, so its agent tool calls act as the principal and
+    this read does too: a session-scoped name would announce to an actor that never reads.
+    """
+    messages = _inbox_messages(cwd, ["--announce"], 10)
     if not messages:
         return None
-    max_ts = max((_ts(m) for m in messages), default=0)
-    hwm_file = _hwm_path(session_id)
-    if not hwm_file.exists():
-        _write_text(hwm_file, str(max_ts))
-        return None
-    hwm = _read_int(hwm_file)
-    fresh = [m for m in messages if _ts(m) > hwm]
-    if not fresh:
-        return None
-    _write_text(hwm_file, str(max_ts))
     return (
-        "New basemind agent-comms message(s) since your last turn (front-matter only — call "
-        "agents mode message with message_id to read a body):\n"
-        f"{_format_lines(fresh)}\n"
-        "Reply with agents mode post and thread, subject, body, and reply_to if warranted."
+        "Unread agent messages from basemind (announced once, not yet read):\n"
+        f"{_format_lines(messages)}\n"
+        "Read them with agent_inbox (bodies inline; id reads one whole message). Reply with agent_post if warranted."
     )
 
 
-def _inbox_messages(cwd: str, limit: int):
-    """Return the inbox message list (possibly empty), or ``None`` when the broker is unavailable."""
-    data = _run_basemind_json(["agents", "inbox", "--root", cwd, "--json", "--limit", str(limit)], timeout=6)
-    if data is None:
+def _inbox_messages(cwd: str, flags: list[str], limit: int):
+    """Return the inbox message list (possibly empty), or ``None`` when the daemon is unavailable."""
+    out = _run_basemind(["agent", "inbox", *flags, "--root", cwd, "--json", "--limit", str(limit)], timeout=6)
+    if not out:
         return None
-    messages = data.get("messages")
+    try:
+        data = json.loads(out)
+    except Exception:
+        return None
+    messages = data.get("messages") if isinstance(data, dict) else None
     return messages if isinstance(messages, list) else []
 
 
-def _run_basemind_json(args, timeout):
+def _run_basemind(args, timeout, stdin=None):
     try:
         proc = subprocess.run(  # noqa: S603,S607 - fixed argv, no shell
             ["basemind", *args],
+            input=stdin,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -226,26 +210,14 @@ def _run_basemind_json(args, timeout):
         return None
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
-    try:
-        return json.loads(proc.stdout)
-    except Exception:
-        return None
+    return proc.stdout
 
 
 def _format_lines(messages) -> str:
-    return "\n".join(f"  • [{m.get('subject', '')}] from {m.get('from', '')} (id: {m.get('id', '')})" for m in messages)
-
-
-def _ts(message) -> int:
-    try:
-        return int(message.get("ts_micros") or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _hwm_path(session_id: str) -> Path:
-    safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in session_id) or "default"
-    return Path(tempfile.gettempdir()) / f"basemind-comms-hwm-{safe}"
+    return "\n".join(
+        f"  - from {m.get('from', '')} in {m.get('subject', '')} ({m.get('id', '')}, {m.get('body_bytes', 0)} bytes)"
+        for m in messages
+    )
 
 
 def _front_matter_value(body: str, key: str) -> str | None:
@@ -279,20 +251,6 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _write_text(path: Path, text: str) -> None:
-    try:
-        path.write_text(text, encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _read_int(path: Path) -> int:
-    try:
-        return int(path.read_text(encoding="utf-8").strip() or "0")
-    except Exception:
-        return 0
-
-
 PLUGIN_NAME = "basemind"
 CLI_COMMAND = "basemind"
 SERVER_ARGUMENTS = ["serve"]
@@ -312,7 +270,9 @@ TOOL_NAMES = [
     "memory_search",
     "index_status",
     "index_rescan",
-    "agents",
+    "agent_post",
+    "agent_inbox",
+    "agent_threads",
 ]
 DISCOVERY_TOOL = "list_tools"
 REQUEST_TIMEOUT_SECONDS = 300

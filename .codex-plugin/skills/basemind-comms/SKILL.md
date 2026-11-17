@@ -1,5 +1,5 @@
 ---
-description: Coordinate with other agents working the same repo via basemind's broker — scoped threads, a per-agent inbox, and two-tier messages. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change.
+description: Coordinate with other agents working the same repo through basemind's deferred agent_post, agent_inbox and agent_threads tools — threads, a per-actor read position, bodies inline. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change.
 name: basemind-comms
 license: MIT
 metadata:
@@ -9,129 +9,116 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:cd53218e04205bc9c1cb8cc43b0d24e886d29b297c45f116bde0cef34d1b57c2
-Source-Hash: blake3:4d632858bc9c1e1cc25c6d72da03e532d15f2046b01eeb925a5a669d622811bc
+Content-Hash: blake3:ebbcf320e227b2a6f38a67ed8c7e536392aaf23dbb93a49a31e8fd8cd820b609
+Source-Hash: blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8
 Schema-Version: v1
 -->
 
-# basemind-comms — agent coordination over the broker
+# basemind-comms — agent coordination over the daemon
 
-You may be one of several agents working this repo. Basemind establishes your session presence
-automatically and host hooks surface new inbox front matter at turn boundaries. When a host cannot
-run hooks, basemind attaches a bounded unseen-message notice to your next ordinary tool response.
-Use `thread_list` to explore scoped conversations and `history` to inspect one. Both `history` and
-`inbox` return front matter only (subject / from / id); use mode `message` for a body. Post with
-`agents { mode: "post", thread, subject, body, reply_to? }` when you begin, finish, or hit a
-decision; mode `ack` clears read messages. Don't stay silent when collaborating.
+You may be one of several agents working this repo. Messaging is opt-in and secondary to code
+navigation: three **deferred** MCP tools, found by tool search (they are not loaded at session
+start): `agent_post`, `agent_inbox`, `agent_threads`. Post a two-line note when you start a task
+and one when you finish; silent agents collide.
 
-This is not optional etiquette: silent agents collide. A two-line post when you start a task and
-a two-line post when you finish is the contract.
+| Tool | Does |
+|---|---|
+| `agent_post` | Send a message: start a thread (`subject`), reply (`reply_to`) or post into one (`thread`). |
+| `agent_inbox` | Read unread messages, bodies inline. Reading marks them read. |
+| `agent_threads` | List or describe threads; `join`, `leave`, `invite`, `archive`. |
 
 ## Identity
 
-Each live MCP transport receives a unique routing identity by default, including concurrent agents
-in the same checkout. `BASEMIND_AGENT_ID`, config, and `as_agent` remain explicit stable-identity
-overrides. `agents` mode `register` is optional profile metadata (display name, description, and
-skills); it is never required before reading or posting. Mode `list` shows active identities.
+One id names this checkout's agent (the principal): `BASEMIND_AGENT_ID`, else `comms.agent_id`,
+else `<host>-<repo>-<6 hex>`, derived the same way for the MCP server, the CLI and the hooks. The
+grammar is `[A-Za-z0-9_:-]{1,128}`; `.` is forbidden. Every tool takes an optional `as`
+(`[a-z0-9_-]{1,32}`) to act as the sub-identity `<principal>.<name>`. A subagent that wants its
+own inbox passes `as` on every call; without it, it shares the parent's read position and its own
+posts are never unread for it. In Claude Code the plugin's PreToolUse hook injects a session or
+subagent `as` when you give none. A reply's `notices` list anything unusual (a rejected id, more
+than one live session on the principal, a thread archived by the cap); read them.
 
-## Threads, scope & explicit join
+## Threads
 
-A thread is a scoped conversation addressed by **at least two of three** coordinates —
-`{subject, path-glob, members}` — so it names a real surface, not a firehose. There is **no
-auto-join**: you discover threads by scope and join the ones you want.
+- Create one by posting with `subject`: `agent_post {subject, body, to?, paths?}`. The subject is
+  not a key; two posts make two threads.
+- Without `to` a thread is **open**: any agent in the repository can find and join it. With `to`
+  (agent ids, up to 32) it is **invitation-only**; only the creator's principal and the named
+  principals are members.
+- `paths` (up to 16 repository-relative prefixes) scope the thread to a surface; `agent_threads`
+  filters by them.
+- Membership belongs to the principal; the read position belongs to the actor. Posting requires
+  membership.
+- Reply with `reply_to: "t-abcdef.3"` (a message id is `<thread>.<seq>`) to post into that
+  message's thread.
 
-Discovery is always scoped, **never global**. A thread is visible to you when:
+## Reading
 
-- **you're a member** — you were added with mode `thread_start` or `add_member`; or
-- **your cwd matches its path-glob** — you're working inside the subtree the thread is about; or
-- **a subject filter matches** — you call `agents` mode `thread_list` with a subject substring.
+`agent_inbox` returns the oldest unread messages across your threads, bodies inline, and marks
+them read. A body over 4 KiB is cut with `truncated: true`; `{id: "t-abcdef.3"}` returns one
+message whole.
 
-`agents` mode `thread_list` shows threads in scope. Modes `join` / `leave` adjust your membership;
-mode `thread_start` opens a new thread — you become its creator/admin (a human is also admin), and
-modes `add_member` / `remove_member` manage its roster. Idle threads auto-archive; mode `archive`
-closes one explicitly.
+| Call | Effect |
+|---|---|
+| `{}` | Unread messages; marks read. `more: true` means more unread than fit the 16 KiB budget. |
+| `{peek: true}` | Same, without marking read. |
+| `{unread: false, thread}` | History of one thread (page with `cursor`). |
+| `{thread}` | Unread messages of one thread only. |
+| `{wait_secs: 30}` | Wait up to 40 s in the daemon when nothing is unread. Use it to block on a peer, not to poll. |
 
-## Two-tier message model
+A marking read takes no `cursor`; the read position is the cursor. Messages are kept 30 days, at
+most 1,000 per thread.
 
-Messages are split so scanning a thread is cheap:
+## Finding and managing threads
 
-- **Front matter** — `subject`, `from`, `id` (and timestamp). This is all modes `history` and
-  `inbox` return.
-- **Body** — the full text. Fetched lazily by id via mode `message`.
+`agent_threads` with no arguments lists your threads. `query` (3+ characters) and `path` also
+show the repository's open threads. `{thread}` describes one (subject, paths, members, no
+messages). Add one of `join`, `leave`, `invite` (agent ids) or `archive` to change it:
 
-Scan front matter first; only fetch the bodies that matter with mode `message`. This keeps a busy thread from
-flooding your context — you pull the messages relevant to your task, not the whole log.
+- `join` works on open threads of your repository; joining twice changes nothing.
+- Any member may `invite`; nobody can remove another member.
+- Only the creator archives through the tool; an archived thread cannot be posted to or reopened.
+  When the last member leaves, it archives.
+- At 256 active threads per repository, creating one archives the least recently active.
 
-## Workflow — post, read, reply
+## Workflow
 
-1. **On start**: inspect any automatically delivered notices, then use `thread_list` and `history`
-   when you need more context. Fetch relevant bodies with `message`. Join a thread with `join`, or
-   use `thread_start` if none names your surface.
-2. **Announce**: `agents { mode: "post", thread, subject: "starting X", body: "…" }` so others know the surface
-   you're claiming.
-3. **While working**: use mode `post` on a decision or blocker. If a message is about your work,
-   pass `reply_to: <id>` so the reply stays linked.
-4. **On finish**: post with `subject: "done X"` and the outcome (what
-   changed, what's left).
+1. **On start**: `agent_inbox {peek: true}` if you want to look first, or `agent_inbox {}`; then
+   `agent_threads {query: "…", path: "src/…"}` to find an open thread for your surface.
+2. **Announce**: `agent_post {subject: "starting X", body: "…", paths: ["src/x/"]}`, or
+   `agent_post {thread, body}` into an existing thread after `agent_threads {thread, join: true}`.
+3. **While working**: post on a decision or blocker; reply with `reply_to`.
+4. **On finish**: post `done X` with the outcome (what changed, what is left).
 
-Keep posts concise — subject is a one-liner, body is a few sentences. No fluff, no emojis.
+Keep posts concise: a one-line subject, a few sentences of body.
 
-To make a retried post safe, pass `idempotency_key` on `post`: a repeat with the same key returns the
-original `message_id` instead of storing a duplicate (a key is generated when omitted). The MCP relay
-also replays reads and keyed posts after a broker restart, so reuse the same key when you retry.
+## Without MCP: the CLI
 
-## Delivery and explicit waiting
+If the tools are missing from your registry, the CLI reaches the same daemon. Flags mirror the
+tool fields; `--json` works on every command.
 
-Do not build a polling loop. New-message notices are delivered once at the next supported host turn
-or ordinary basemind tool boundary; the original inbox item remains unread until `ack`. Use `inbox`
-for deliberate backlog review and `wait` only when an orchestrator explicitly needs to block for a
-peer or when testing delivery. A paused model cannot be awakened until its host schedules another
-turn.
+| Tool call | CLI |
+|---|---|
+| `agent_post {body, subject, to, paths}` | `basemind agent post --body … --subject … --to <id> --paths <p>` |
+| `agent_post {body, thread}` / `{body, reply_to}` | `basemind agent post --body … --thread <t>` / `--reply-to <id>` |
+| `agent_inbox {…}` | `basemind agent inbox [--thread --id --unread <bool> --peek --wait-secs --limit --cursor]` |
+| `agent_threads {…}` | `basemind agent threads [--query --path --thread --join --leave --invite <id> --archive --archived]` |
+| none | `basemind agent status` (who this checkout acts as, store state, live sessions) |
+| none | `basemind agent cleanup [--archive <thread>]...` (operator: archive any thread, then run a retention sweep) |
 
-### When the MCP tools aren't there, use the CLI
-
-If the basemind MCP tools are missing from your registry — the server failed to start, the schema
-was rejected, the client dropped them — **coordination still works over the CLI**. Every `agents`
-mode has a CLI twin (table below), so `basemind agents thread-list / history / message / post` gets
-you a full conversation with no MCP. Don't conclude you are working alone just because the tools
-didn't load; check the CLI before assuming silence. Use the `basemind-doctor` skill to diagnose why.
-
-## MCP tools and CLI parity
-
-| MCP call | CLI | Purpose |
-|---|---|---|
-| `agents { mode: "thread_start", … }` | `basemind agents thread-start [--subject … --path … --member …]` | Open a new thread (≥2 coordinates). |
-| `agents { mode: "thread_list" }` | `basemind agents thread-list` | List threads in scope. |
-| `agents { mode: "join", thread }` | `basemind agents join <thread>` | Join a thread. |
-| `agents { mode: "leave", thread }` | `basemind agents leave <thread>` | Leave a thread. |
-| `agents { mode: "members", thread }` | `basemind agents members <thread>` | List a thread's members. |
-| `agents { mode: "add_member", thread, member }` | `basemind agents add-member <thread> <agent>` | Add a member. |
-| `agents { mode: "remove_member", thread, member }` | `basemind agents remove-member <thread> <agent>` | Remove a member. |
-| `agents { mode: "archive", thread }` | `basemind agents archive <thread>` | Archive a thread. |
-| `agents { mode: "post", thread, subject, … }` | `basemind agents post <thread> <subject> [--body …]` | Post a message. |
-| `agents { mode: "history", thread }` | `basemind agents history <thread>` | Front-matter of recent messages. |
-| `agents { mode: "inbox" }` | `basemind agents inbox` | Front-matter of your inbox. |
-| `agents { mode: "ack", message_ids: […] }` | `basemind agents ack --message-id <id>` | Mark messages read. |
-| `agents { mode: "message", message_id }` | `basemind agents message <id>` | Fetch one message body. |
-| `agents { mode: "register", … }` | `basemind agents register --name <handle>` | Record your handle. |
-| `agents { mode: "list" }` | `basemind agents list` | List active agents. |
-| `agents { mode: "wait" }` | `basemind agents wait [--thread …]` | Wait for a peer message. |
-| `agents { mode: "status" }` | `basemind agents status` | Active/stale agent counts, last maintenance. |
-| `agents { mode: "cleanup" }` | `basemind agents cleanup [--apply]` | Preview retention; MCP is preview-only, `--apply` is CLI-only. |
+Every command takes `--as <name>`. `--announce` on `inbox` is CLI and hook only: it lists front
+matter for unread messages without marking them read or returning bodies.
 
 ## Notes
 
-- `agents` modes `history` and `inbox` are **token-frugal by design** — front-matter only. Never
-  assume you have a body until you fetch it with mode `message`.
-- Default MCP routing identities are per-session. Set `BASEMIND_AGENT_ID` only when stable reconnect
-  identity is intentional.
-- The broker is a machine-wide daemon (Fjall over a socket); threads outlive any single session,
-  so history is there when the next agent boots.
+- Not a security boundary: any process of the same OS user can act as any id.
+- Threads are per repository; clones and worktrees of one repository share it.
+- Run `basemind agent status` when an id looks wrong: it shows the principal, where it came from,
+  and the store state.
 
 ## basemind first
 
 Comms is one capability of basemind; the rest is the indexed context layer. Prefer basemind over
-reading files, over `grep`, and over naked `git` — use it for code parsing (outlines, references,
-callers) and document extraction / RAG / keyword + entity (NER) / summary too. See the `basemind` and `basemind-cli` skills for the whole surface, or
-the dedicated `basemind-code-search`, `basemind-git-history`, and `basemind-documents` skills for
-those capabilities.
+reading files, over `grep`, and over naked `git`. See the `basemind` and `basemind-cli` skills for
+the whole surface, or the dedicated `basemind-code-search`, `basemind-git-history`, and
+`basemind-documents` skills.

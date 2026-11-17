@@ -48,7 +48,7 @@ Every list command takes the paging and budget flags its tool takes:
 | Group | Gate |
 |---|---|
 | `code`, `git`, `memory`, `admin` | always available |
-| `agents`, `workspace` | `--features comms` |
+| `agent`, `workspace` | `--features comms` |
 
 Prebuilt downloads (Homebrew, npm, pip, GitHub releases) ship the build with `comms`.
 
@@ -161,78 +161,52 @@ basemind admin eval --tasks <FILE> [--out --report --markdown --baseline --toler
 | `tokens --stdin` | Count tokens in stdin with the o200k tokenizer and print just the integer (needs the `tokenizer` feature, which `documents` includes). CLI-only; no `--json` envelope. |
 | `eval --tasks <FILE> [...]` | Score retrieval quality, latency and token savings over a JSONL task file. CLI-only; see [Evaluation](/reference/evaluation/). |
 
-## `agents` — multi-agent coordination
+## `agent` — multi-agent coordination
 
-Requires `--features comms`. A thread is addressed by at least two of `--subject`, `--path`, and
-`--member`; `thread-start` rejects fewer than two. Every command accepts `--as-agent <id>` to act as
-a named sub-identity instead of the CLI's default agent (used for orchestrating several named
-subagents).
+Requires `--features comms`. The three commands mirror the MCP tools `agent_post`, `agent_inbox`
+and `agent_threads` flag for field; `--json` prints the tool's response. Every command takes
+`--as <name>` to act as the sub-identity `<principal>.<name>` instead of the checkout's principal
+(used for orchestrating several subagents).
 
 ```bash
-basemind agents register [--name --description --version --skill --as-agent]
-basemind agents list [--thread --as-agent]
-basemind agents thread-start [--subject --path --member --as-agent]
-basemind agents thread-list [--subject-contains --include-archived --as-agent]
-basemind agents join <thread> [--as-agent]
-basemind agents leave <thread> [--as-agent]
-basemind agents members <thread> [--as-agent]
-basemind agents add-member <thread> <member> [--as-agent]
-basemind agents remove-member <thread> <member> [--as-agent]
-basemind agents archive <thread> [--as-agent]
-basemind agents post <thread> <subject> [--body --tag --reply-to --as-agent]
-basemind agents history <thread> [--cursor --limit --since-hours --as-agent]
-basemind agents message <message-id> [--as-agent]
-basemind agents inbox [--cursor --limit --mark-read --since-hours --as-agent]
-basemind agents ack [--message-id --thread --to-seq --as-agent]
-basemind agents wait [--thread --timeout-secs --since-hours --cursor --as-agent]
-basemind agents cleanup [--dry-run --apply --message-ttl-hours --thread-idle-hours --thread-retention-hours --agent-ttl-hours --claim-ttl-hours --as-agent]
-basemind agents status [--agent-ttl-hours --as-agent]
+basemind agent post --body <text> (--subject <s> [--to <id>...] [--paths <p>...] | --thread <t> | --reply-to <id>) [--as]
+basemind agent inbox [--thread --id --unread <bool> --peek --announce --wait-secs --limit --cursor --as]
+basemind agent threads [--query --path --thread --join --leave --invite <id>... --archive --archived --limit --cursor --as]
+basemind agent status
+basemind agent cleanup [--archive <thread>...]
+basemind agent hook pre-tool-use
+basemind agent hook name
 ```
 
 | Command | Purpose |
 |---|---|
-| `register [--name --description --version --skill --as-agent]` | Publish or update this agent's identity card with the broker. |
-| `list [--thread --as-agent]` | Agents known to the broker, optionally restricted to one thread's members. |
-| `thread-start [--subject --path --member --as-agent]` | Open a thread addressed by subject, path-glob, and/or members. |
-| `thread-list [--subject-contains --include-archived --as-agent]` | Threads discoverable to you: membership, cwd path-match, or subject filter — never all threads. |
-| `join <thread> [--as-agent]` | Join a thread so its messages reach your inbox. |
-| `leave <thread> [--as-agent]` | Leave a thread you joined. |
-| `members <thread> [--as-agent]` | Who belongs to a thread. |
-| `add-member <thread> <member> [--as-agent]` | Add an agent to a thread you created. |
-| `remove-member <thread> <member> [--as-agent]` | Remove an agent from a thread you created. |
-| `archive <thread> [--as-agent]` | Close a thread; creator or human admin only. |
-| `post <thread> <subject> [--body --tag --reply-to --as-agent]` | Send a message to a thread. |
-| `history <thread> [--cursor --limit --since-hours --as-agent]` | A thread's messages as front-matter only; bodies come from `message`. |
-| `message <message-id> [--as-agent]` | Read one message body by id — the only path to a body. |
-| `inbox [--cursor --limit --mark-read --since-hours --as-agent]` | Unread messages across your joined threads, front-matter only. `--mark-read` advances read cursors. |
-| `ack [--message-id --thread --to-seq --as-agent]` | Clear messages you have read from your inbox. |
-| `wait [--thread --timeout-secs --since-hours --cursor --as-agent]` | Block until a peer posts, or the timeout elapses (default 30s, capped at 40s so the call ends before typical MCP host timeouts). |
-| `cleanup [--dry-run --apply ...]` | Preview stale agent, claim, message and thread retention; `--apply` performs it. TTL flags override the windows in hours. |
-| `status [--agent-ttl-hours --as-agent]` | Active and stale agent counts plus the last maintenance time. |
+| `post` | Send a message. `--subject` starts a thread (`--to` makes it invitation-only, `--paths` scopes it); `--thread` or `--reply-to` continues one. |
+| `inbox` | Read unread messages, bodies inline; reading marks read. `--peek` does not, `--unread false` reads history, `--id` reads one message whole, `--wait-secs` (0 to 40) waits. `--announce` lists front matter only and never marks read (CLI and hooks only). |
+| `threads` | List threads (`--query`, `--path`), describe one (`--thread`), or change it with `--join`, `--leave`, `--invite`, `--archive`. |
+| `status` | Who this checkout acts as (principal, where the id came from, host, root) and the daemon's agent store: directory, state (open, newer, unreadable), version, posts, live serve sessions of this principal, repository. |
+| `cleanup [--archive <thread>...]` | Operator: archive each named thread, whoever created it, then run one retention sweep. |
+| `hook pre-tool-use` / `hook name` | Read a hook event JSON on stdin: the first answers a `PreToolUse` event for an agent tool with the `as` to inject, the second prints the session's name. For the plugin hooks. |
 
 ## `workspace` — machine-wide repo/worktree registry
 
 Requires `--features comms`. Read-only listings of the daemon's registry; they have no MCP tool.
 
 ```bash
-basemind workspace workspaces [--as-agent]
-basemind workspace worktrees <repo-id> [--as-agent]
-basemind workspace branches <repo-id> [--as-agent]
+basemind workspace workspaces
+basemind workspace worktrees <repo-id>
+basemind workspace branches <repo-id>
 ```
 
 | Command | Purpose |
 |---|---|
-| `workspaces [--as-agent]` | Every repository the machine daemon has indexed. |
-| `worktrees <repo-id> [--as-agent]` | Git worktrees of a registered repo, with their branches. |
-| `branches <repo-id> [--as-agent]` | Branches known to a registered repo. |
+| `workspaces` | Every repository the machine daemon has indexed. |
+| `worktrees <repo-id>` | Git worktrees of a registered repo, with their branches. |
+| `branches <repo-id>` | Branches known to a registered repo. |
 
 ## `comms` — broker daemon lifecycle
 
-Requires `--features comms`. This is the ONLY surviving `basemind comms` surface — the messaging
-verbs it used to carry (`register`, `agents`, `thread-start`, `threads`, `join`, `post`, `read`,
-`inbox`, `wait`, …) now live under `basemind agents` (above); `comms read <id>` became
-`agents message <id>`, `comms agents` became `agents list`, `comms threads` became
-`agents thread-list`.
+Requires `--features comms`. This is the daemon lifecycle only; messaging lives under
+`basemind agent` (above). `basemind agents` is gone: its verbs map to `agent post|inbox|threads`.
 
 ```bash
 basemind comms daemon
@@ -314,7 +288,7 @@ the index directly and read-only.
 <Aside type="note">
 Global flags (`--root`, `--quiet`, `--verbose`, `--no-color`, `--json`, `--view`) apply across all
 subcommands, though `--json` only takes effect on the tool subcommands (`code`, `git`,
-`memory`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agents`,
+`memory`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agent`,
 `workspace`, `daemon`); `--view` also applies to `serve`. Ignored flags log a warning. Cursor-based pagination
 (`--cursor`) is covered in the paging table above.
 </Aside>

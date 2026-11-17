@@ -6,12 +6,36 @@ basemind keeps its index in a machine-global cache (`BASEMIND_DATA_HOME`, defaul
 by every workspace. An upgrade never asks you to wipe it. This page says what happens to the old shape and what
 is cleaned up.
 
+## Upgrading from 0.33 to 0.34
+
+0.34 bumps the release minor, replaces the MCP tools and the agent messaging protocol. In order:
+
+1. Update the plugin and the binary together, then restart every session. The marketplace plugins,
+   npm and pip run the binary their manifest pins. OpenCode's `basemind-opencode` package, Hermes and
+   the status line run `basemind` from `PATH`, so update that binary too.
+2. Run `basemind comms stop`, so the 0.33 daemon is replaced (see "Upgrading to agent comms v2").
+3. Run `basemind scan`. The index is wiped and rebuilt at its first open, and the blob store moves to
+   `cache/blobs/v34/`, so every file is re-extracted and every document re-embedded once (see "What
+   changes on upgrade").
+4. Re-run `basemind init` (or `/bm-init`) in each repository that has a basemind rules block. A block
+   written by 0.33 or earlier routes agents to `code` mode `outline` and the other retired tools;
+   init replaces the block in place with the verb-tool routing. Pass `--yes` when running it
+   without a terminal, or it only prints what it would change.
+5. Replace `permissions.allow` entries in `.claude/settings.json` and `.claude/settings.local.json`
+   that name a retired tool (`mcp__plugin_basemind_basemind__code`, `__git`, `__memory`, `__admin`,
+   `__graph`, `__web`, `__shell`, `__workspace`, `__agents`) or the `mcp__plugin_basemind_basemind__*`
+   wildcard, which also approves the tools that write. `basemind init --settings-target local` (or
+   `shared`) does this: it removes those entries and lists each read-only tool, under both the plugin
+   prefix and `mcp__basemind__`. `memory_save`, `index_rescan` and the agent tools keep asking.
+6. Update scripts and prompts for the tool renames ("Tool mapping" below) and the `basemind agent`
+   CLI ("Upgrading to agent comms v2").
+
 ## Upgrading to the verb tools (ADR-0018)
 
 The release after 0.33 replaces the mode-dispatched MCP tools `code`, `git`, `memory` and `admin`
 with 15 tools, one per job ([ADR-0018](adr/0018-mcp-verb-tools.md)). The change is breaking and has
-no aliases: a call to an old tool name fails, and no tool takes a `mode` argument any more. `agents`
-is unchanged; the `workspace` tool is removed (see below). The plugin's skills, commands, hooks and rules ship in the same
+no aliases: a call to an old tool name fails, and no tool takes a `mode` argument any more. The
+`agents` tool is replaced by three deferred tools (see "Upgrading to agent comms v2"); the `workspace` tool is removed (see below). The plugin's skills, commands, hooks and rules ship in the same
 release and the plugin downloads the matching binary, so update both together.
 
 The tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`): a host that defers MCP tools
@@ -254,6 +278,48 @@ against every parent, as `git log --cc` does; so `git_log {path}` no longer list
 the path unchanged from one side. It still lists every other commit that changed the path: unlike
 `git log -- <path>`, it prunes no side of a merge.
 
+## Upgrading to agent comms v2 (ADR-0021)
+
+The `agents` MCP tool and the `basemind agents` CLI group are removed in the same release, with no
+aliases ([`comms-v2.md`](comms-v2.md) is the spec). Three deferred tools replace them: `agent_post`,
+`agent_inbox` and `agent_threads`; the CLI is `basemind agent post|inbox|threads`, plus
+`basemind agent status` and `basemind agent cleanup`.
+
+- **Restart every session.** The comms protocol goes from 6 to 7 and the relay protocol from 1 to 2.
+  A client and a daemon of different versions refuse each other at connect, and a session that
+  still runs an older binary has no messaging until it restarts. Run `basemind comms stop` after the
+  upgrade so the old daemon is replaced; update the plugin and the binary together.
+- **Old threads and messages are not imported.** The agent store is now `agents.fjall` in the
+  protocol generation's directory (`comms/g1/`) and starts empty. The previous `store.fjall` is
+  never read and is left where it is; `basemind comms cleanup` removes the pre-generation one once
+  no daemon holds its lock. Agents on a 0.33 binary and agents on this release do not see each
+  other's threads.
+- **Rename in scripts and prompts:**
+
+| Old | New |
+| --- | --- |
+| `as_agent` (field, `--as-agent`) | `as` (`--as`), `[a-z0-9_-]{1,32}`, acts as `<principal>.<name>` |
+| `basemind agents <verb>` | `basemind agent post\|inbox\|threads\|status\|cleanup` |
+| `agents` `thread_start` / `post` / `inbox` / `message` / `ack` / `wait` | `agent_post {subject, body}` / `agent_post {body, thread}` / `agent_inbox {}` / `agent_inbox {id}` / reading marks read / `agent_inbox {wait_secs}` |
+| `idempotency_key`, `since_hours`, `mark_read`, `message_ref` | gone; the relay replays with its own key, `unread: false` reads history |
+
+The full mode mapping is in the CHANGELOG.
+
+- **Identity ids.** `BASEMIND_AGENT_ID` and `comms.agent_id` must match `[A-Za-z0-9_:-]{1,128}`; a
+  `.` is now forbidden because it separates a principal from its `as` name. A value that fails is
+  skipped with a notice, and the id falls back to `<host>-<repo>-<6 hex>`. `BASEMIND_HOST` names the
+  harness and is set by the plugin launchers; set it yourself for a harness that is not launched
+  through them.
+- **Behaviour.** Reading marks messages read (`peek: true` does not). Idle threads no longer
+  archive after three days; messages and idle threads are removed after 30 days. A thread is
+  addressed by a subject and open to its repository, or invitation-only with `to`. `basemind agent
+  cleanup --archive <thread>` archives any thread.
+- **Operator-visible.** `basemind comms status` prints `agent_store=…` in place of
+  `threads=… subscribers=…`, and `basemind comms doctor --json` reports `"agent_store"` in place of
+  `"threads"`; adjust scripts that parse either. The plugin hooks' inbox announcements need `jq`.
+  The agent tools are not listed over the HTTP front-end. The hooks inject a session `as` only on
+  Claude Code and Codex.
+
 ## Running two basemind versions side by side
 
 The release after 0.33 moves the daemon's socket, lock, log and comms store from the comms directory
@@ -426,7 +492,7 @@ Also check scripts for these behaviour changes:
   interrupted. `scan` and `rescan` exit `3` (not `0`) when another process holds the lock.
 - The timing footer is on stderr; stdout carries only the answer. Human output no longer truncates
   values to 200 characters.
-- `agents` and `workspace` `--json` now use the MCP response shapes.
+- `agents` and `workspace` `--json` now use the MCP response shapes
 - MCP logging is gone, and the `memory` tool no longer accepts the `documents.*` / `llm.*` override fields.
 
 ## What changes on upgrade, and how it migrates

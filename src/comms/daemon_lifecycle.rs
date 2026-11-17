@@ -3,12 +3,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tokio::sync::mpsc;
-
 use super::daemon::{Broker, LifecycleState, RelayGuard};
 use super::daemon_guards::HandshakeGuard;
 use super::daemon_http::HttpActivityGuard;
-use super::protocol::{CommsNotification, CommsOut, CommsResponse};
+use super::protocol::CommsResponse;
 
 impl Broker {
     /// Register an established MCP relay unless shutdown has already started.
@@ -31,7 +29,8 @@ impl Broker {
         HandshakeGuard { broker: self.clone() }
     }
 
-    /// Pin an accepted HTTP connection unless shutdown has already started.
+    /// Stamp HTTP activity for an accepted connection unless shutdown has already started. The
+    /// caller drops the guard at once: a connection does not pin the daemon, a request does.
     pub async fn try_begin_http_connection(self: &Arc<Self>) -> Option<HttpActivityGuard> {
         let registry = self.registry.lock().await;
         if matches!(registry.state, LifecycleState::Draining | LifecycleState::Stopped) {
@@ -42,55 +41,56 @@ impl Broker {
 
     /// Refuse a user-requested stop while it would disconnect another persistent client.
     pub(super) async fn on_stop(&self) -> CommsResponse {
-        let sinks: Vec<mpsc::Sender<CommsOut>> = {
+        {
             let mut registry = self.registry.lock().await;
             let relays = self.relay_count.load(Ordering::SeqCst) + self.relay_handshakes.load(Ordering::SeqCst);
-            let subscriptions = self.subscriber_count.load(Ordering::SeqCst);
             let http = self.http_inflight.load(Ordering::SeqCst);
             let work = self.work_inflight.load(Ordering::SeqCst);
-            let active = relays + subscriptions + http + work;
-            if active != 0 {
+            if relays + http + work != 0 {
                 return CommsResponse::Error {
                     code: "daemon_busy".to_string(),
                     message: format!(
                         "refusing to stop while persistent clients or work are active \
-                         (relays={relays}, subscriptions={subscriptions}, http={http}, work={work})"
+                         (relays={relays}, http={http}, work={work})"
                     ),
                 };
             }
             registry.state = LifecycleState::Draining;
-            registry.sinks.values().map(|sink| sink.tx.clone()).collect()
-        };
-        self.finish_drain(sinks).await;
+        }
+        self.finish_drain().await;
         CommsResponse::Ok
     }
 
-    /// Enter the Draining state, notify every live sink to disconnect, and fire the accept-loop
+    /// Enter the Draining state and fire the accept-loop
     /// shutdown signal so the front-end stops accepting. Firing the signal is what makes a `Stop`
     /// RPC (and SIGTERM/idle-reap/ownership-loss, which all route here) actually terminate the
     /// daemon rather than merely notify connected clients. Idempotent — repeated drains re-send
     /// `true`, which the watch receiver already holds.
     pub async fn begin_drain(&self) {
-        let sinks: Vec<mpsc::Sender<CommsOut>> = {
-            let mut reg = self.registry.lock().await;
-            reg.state = LifecycleState::Draining;
-            reg.sinks.values().map(|s| s.tx.clone()).collect()
-        };
-        self.finish_drain(sinks).await;
+        self.registry.lock().await.state = LifecycleState::Draining;
+        self.finish_drain().await;
     }
 
-    /// The tail shared by [`Broker::begin_drain`] and [`Broker::try_begin_idle_drain`]: tell every
-    /// live sink we are going away, then fire the accept-loop shutdown signal. Split out so the
-    /// idle path can make its decision under the registry lock without holding it across the sends.
-    pub(super) async fn finish_drain(&self, sinks: Vec<mpsc::Sender<CommsOut>>) {
-        // Trip the scan token FIRST: a mid-flight rescan must start winding down before (not ~keep
-        // after) clients are told to disconnect, or the runtime teardown blocks on it. ~keep
+    /// The tail shared by [`Broker::begin_drain`] and [`Broker::try_begin_idle_drain`]: cancel
+    /// in-flight scans, then fire the accept-loop shutdown signal.
+    pub(super) async fn finish_drain(&self) {
+        // Trip the scan token FIRST: a mid-flight rescan must start winding down before the ~keep
+        // runtime teardown, or the teardown blocks on it. ~keep
         self.scan_cancel.cancel();
-        for tx in sinks {
-            let _ = tx.send(CommsOut::Notification(CommsNotification::Shutdown)).await;
-        }
+        // A waiting `agent_inbox` can wait 40 s, longer than the drain grace: end it now. ~keep
+        self.agents.shut_down();
         if let Some(shutdown) = self.shutdown.get() {
             let _ = shutdown.send(true);
+        }
+    }
+
+    /// Drop every hosted read stack once the front-end has stopped. Each stack holds the broker and
+    /// the workspace pool as its hosts, a cycle that otherwise kept the comms store and every open
+    /// workspace store alive until the process exited, past the release of the daemon lock.
+    pub async fn shed_hosted_stacks(&self) {
+        let shed = self.workspaces.shed_read_stacks().await;
+        if shed > 0 {
+            tracing::info!(shed, "comms: released hosted read stacks for shutdown");
         }
     }
 

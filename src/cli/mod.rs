@@ -13,8 +13,6 @@
 
 pub mod admin;
 pub mod agent;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod agents;
 pub mod choices;
 pub mod code;
 #[cfg(all(feature = "comms", any(unix, windows)))]

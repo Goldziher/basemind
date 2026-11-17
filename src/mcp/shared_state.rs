@@ -90,8 +90,8 @@ pub(crate) struct SharedReadStack {
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(feature = "code-search")]
     pub(crate) lance: super::lance_cell::LanceCell,
-    /// Owner of this workspace's `individual` memory notes: a durable identity, unlike the
-    /// per-session routing id (see `identity::resolve_memory_owner`).
+    /// Owner of this workspace's `individual` memory notes: the checkout's comms v2 principal
+    /// (`identity::resolve_agent_id`), which is the same at every server start.
     #[cfg(feature = "memory")]
     pub(crate) memory_owner: String,
     /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
@@ -249,7 +249,7 @@ impl SharedReadStack {
             "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
         #[cfg(feature = "memory")]
-        let memory_owner = super::identity::resolve_memory_owner(&config, &store);
+        let memory_owner = super::identity::resolve_agent_id(&store.root);
         let outline_cache: Arc<OutlineCache> = Arc::new(OutlineCache::default());
         let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
         Self {

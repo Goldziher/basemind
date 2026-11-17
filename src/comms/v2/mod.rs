@@ -17,9 +17,6 @@ pub mod api;
 pub mod conformance;
 pub mod cursor;
 pub mod error;
-/// In-memory reference implementation, for tests of anything built on [`AgentOps`].
-#[cfg(any(test, feature = "test-support"))]
-pub mod fake;
 pub mod fields;
 /// What the tools and the CLI do the same way: the session, the requests, the refusal wording.
 pub mod front;
@@ -39,5 +36,3 @@ pub use api::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use conformance::ConformanceHarness;
-#[cfg(any(test, feature = "test-support"))]
-pub use fake::FakeAgents;
