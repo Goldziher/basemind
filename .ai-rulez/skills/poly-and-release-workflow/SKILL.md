@@ -27,7 +27,7 @@ Why this order:
 - `cargo fmt` first so clippy / poly don't fail on formatting.
 - Clippy strict (`-D warnings`) — surface real issues before the broader poly sweep.
 - Unit + integration tests catch logic regressions before the slow harness.
-- `poly lint .` is the meta-linter: typos, markdownlint (120-char cap), cargo-deny licenses, cargo-machete unused deps, rustdoc-lint, rust-max-lines (1000-line cap on `src/**/*.rs`).
+- `poly lint .` is the meta-linter: typos, markdownlint (120-char cap), cargo-deny licenses, cargo-machete unused deps, rustdoc-lint. The 1000-line cap on `src/**/*.rs` is `tests/max_lines.rs`, run by `cargo test`.
 
 ## Harden harness
 
@@ -55,4 +55,4 @@ BASEMIND_HARDEN_NO_BUILD=1 \
 - typos: fix the misspelling; prefer the dictionary correction unless it's a proper noun.
 - markdownlint MD013 (line length > 120): split the line; for table cells, shorten the cell or move details to a code block under the table.
 - cargo-deny license rejection: add the SPDX expression to `deny.toml`'s `licenses.allow` only if the license is genuinely permissive (Apache, MIT family, ISC, 0BSD, BSL, Unicode). Anything copyleft (GPL family) — escalate.
-- rust-max-lines: extract a submodule or helper file. Do not raise the cap.
+- `tests/max_lines.rs` (1000-line cap): extract a submodule or helper file. Do not raise the cap.
