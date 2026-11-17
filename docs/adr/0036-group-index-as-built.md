@@ -44,6 +44,19 @@ force for the clauses that changed. A clause not named here stands.
    binary first scans it", becomes:** the per-view `index.fjall` is deleted at the writer open of
    each view, before the view is reconciled with the group. The workspace's `lance/` stays until the
    group vector store of ADR-0029 replaces it, since it is still the vector store in use.
+5. **ADR-0028 rule 2, BM25 rows, as built first:** postings are shared by every view of the group
+   and keyed `term ‖ bm25 key ‖ ordinal`, the 16-byte key covering content hash, language, extract
+   epoch and the `[code_search]` chunk digest. Each view keeps its path-keyed `code_bm25_by_path`
+   rows for now (rule 6 drops them later): they name the keys the view holds, which its queries
+   count and score, give its BM25 totals, and list the terms whose postings a retired chunk leaves.
+   A posting is deleted only when no view's forward rows name its key, under a per-group gate that a
+   posting commit holds shared and the retirement or sweep exclusively.
+6. **ADR-0028 rule 7, order, stands:** name scans order rows by key, offset, path. Each returned page
+   is sorted by path, and a cursor encodes the key position.
+7. **Rebuilds within the unreleased minor:** the group database records its row layout in group
+   `meta`. An open that finds another layout in a database with an incarnation empties every
+   keyspace and takes a new incarnation, so every view's file map is emptied and rescanned. A
+   read-only open of such a database answers from blobs. `INDEX_PARTITION_REVISION` is not touched.
 
 ## Consequences
 

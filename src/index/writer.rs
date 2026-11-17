@@ -24,6 +24,10 @@ pub struct IndexWriter {
     /// same way. Callers batch against [`Self::staged_bytes`]; see
     /// `scanner_index_batch::WorkerIndexBatch`.
     staged_bytes: u64,
+    /// The batch inserts BM25 postings, so its commit holds the group's BM25 gate shared.
+    writes_postings: bool,
+    /// The batch changes this view's BM25 forward rows, so its commit invalidates the live-key cache.
+    changes_bm25_forward: bool,
     /// Test-only fault seam: make the next [`Self::upsert_file`] (or `upsert_bm25_file`) stage its
     /// deletes and inserts and *then* fail. The real failures have exactly that shape — a fjall read
     /// error inside `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and
@@ -109,6 +113,8 @@ impl IndexWriter {
             db,
             batch,
             staged_bytes: 0,
+            writes_postings: false,
+            changes_bm25_forward: false,
             #[cfg(test)]
             fail_after_staging: false,
         }
@@ -202,11 +208,18 @@ impl IndexWriter {
         self.stage_resolved_deletes_for(use_rel)
     }
 
-    /// Atomically replace the file's forward rows and upsert its content-addressed postings.
+    /// Atomically replace the file's forward rows and upsert its postings under `content`, the
+    /// [`keys::Bm25Key`] of the file's content and chunk settings. The postings are shared by every
+    /// view of the group holding the same key; the forward rows are this view's.
     #[cfg(feature = "code-search")]
-    pub fn upsert_bm25_file(&mut self, rel: &RelPath, postings: &[ChunkPosting]) -> Result<(), IndexError> {
+    pub fn upsert_bm25_file(
+        &mut self,
+        rel: &RelPath,
+        content: &keys::Bm25Key,
+        postings: &[ChunkPosting],
+    ) -> Result<(), IndexError> {
         self.stage_bm25_deletes_for(rel)?;
-        self.stage_bm25_inserts_for(rel, postings)?;
+        self.stage_bm25_inserts_for(rel, content, postings)?;
         #[cfg(test)]
         if self.fail_after_staging {
             return Err(IndexError::Io {
@@ -217,7 +230,8 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Drop the file's forward rows. Shared postings are retired after the scanner commits all paths.
+    /// Drop the file's forward rows. Its postings stay, unread by this view, until a retirement or
+    /// the group's posting sweep finds no view naming their key.
     #[cfg(feature = "code-search")]
     pub fn remove_bm25_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         self.stage_bm25_deletes_for(rel)
@@ -317,9 +331,15 @@ impl IndexWriter {
                 source: std::io::Error::other("injected commit failure"),
             });
         }
+        let gate = self.writes_postings.then(|| self.db.bm25_gate.read());
         let result = self.batch.commit().map_err(IndexError::from);
+        drop(gate);
         if let Err(error) = &result {
             self.db.record_commit_error(error);
+        }
+        if self.changes_bm25_forward {
+            // After the commit, failed or not: a cache built from rows read before it is stale. ~keep
+            self.db.bm25_live.invalidate();
         }
         result
     }
@@ -468,6 +488,7 @@ impl IndexWriter {
             .prefix_keys(&keys::code_bm25_by_path_prefix(rel))
             .map(|key| key.map(|key| key.to_vec()))
             .collect::<Result<_, _>>()?;
+        self.changes_bm25_forward |= !keys.is_empty();
         for key in keys {
             stage_remove(batch, staged_bytes, &db.code_bm25_by_path, key);
         }
@@ -484,15 +505,24 @@ impl IndexWriter {
         );
     }
 
-    /// Stage inserts for `rel`'s BM25 postings: one `code_bm25_postings` entry per `(term, chunk)`
-    /// carrying `tf ‖ doclen`, plus one `code_bm25_by_path` forward entry per chunk carrying
-    /// `doclen ‖ msgpack(terms)` so the next re-scan can delete these in O(prefix).
+    /// Stage inserts for `rel`'s BM25 postings: one shared `code_bm25_postings` entry per
+    /// `(term, chunk)` carrying `tf ‖ doclen`, plus one `code_bm25_by_path` forward entry per chunk
+    /// carrying `doclen ‖ content hash ‖ terms`. A posting whose chunk id does not parse is skipped.
     #[cfg(feature = "code-search")]
-    fn stage_bm25_inserts_for(&mut self, rel: &RelPath, postings: &[ChunkPosting]) -> Result<(), IndexError> {
+    fn stage_bm25_inserts_for(
+        &mut self,
+        rel: &RelPath,
+        content: &keys::Bm25Key,
+        postings: &[ChunkPosting],
+    ) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         for posting in postings {
+            let Some((hash, ordinal)) = keys::split_chunk_id(&posting.chunk_id) else {
+                tracing::debug!(path = %rel, chunk = %posting.chunk_id, "index: unparsable chunk id; posting skipped");
+                continue;
+            };
             for (term, tf) in &posting.terms {
-                if let Some(posting_key) = keys::code_bm25_posting(term, &posting.chunk_id) {
+                if let Some(posting_key) = keys::code_bm25_posting(term, content, ordinal) {
                     stage_insert(
                         batch,
                         staged_bytes,
@@ -504,17 +534,19 @@ impl IndexWriter {
             }
             let mut term_names: Vec<&str> = posting.terms.iter().map(|(t, _)| t.as_str()).collect();
             term_names.sort_unstable();
-            let terms_bytes = rmp_serde::to_vec(&term_names)?;
-            let mut value = Vec::with_capacity(4 + terms_bytes.len());
-            value.extend_from_slice(&posting.doclen.to_be_bytes());
-            value.extend_from_slice(&terms_bytes);
+            let terms = rmp_serde::to_vec(&term_names)?;
+            let Some(value) = keys::code_bm25_by_path_value(posting.doclen, hash, &terms) else {
+                continue;
+            };
             stage_insert(
                 batch,
                 staged_bytes,
                 &db.code_bm25_by_path,
-                keys::code_bm25_by_path(rel, &posting.chunk_id),
+                keys::code_bm25_by_path(rel, content, ordinal),
                 value,
             );
+            self.writes_postings = true;
+            self.changes_bm25_forward = true;
         }
         Ok(())
     }

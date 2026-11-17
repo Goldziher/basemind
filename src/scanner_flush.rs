@@ -404,29 +404,23 @@ pub(crate) fn finalize_bm25_stats_if_any(_store: &Store, _config: &Config, _swee
 pub(crate) fn bm25_posting_candidates<'a>(
     store: &Store,
     paths: impl IntoIterator<Item = &'a String>,
-) -> ahash::AHashSet<Vec<u8>> {
+) -> crate::index::bm25_live::Bm25Candidates {
     let Some(db) = store.index_db.as_ref() else {
-        return ahash::AHashSet::new();
+        return Default::default();
     };
     db.bm25_posting_candidates(paths).unwrap_or_else(|error| {
         tracing::warn!(%error, "collect BM25 retirement candidates failed; retry on full scan");
-        ahash::AHashSet::new()
+        Default::default()
     })
 }
 
+/// Delete the postings of chunks the pass replaced or dropped that no view of the group holds.
 #[cfg(feature = "code-search")]
-pub(crate) fn retire_bm25_postings(store: &Store, candidates: ahash::AHashSet<Vec<u8>>) {
-    let Some(db) = store.index_db.as_ref().filter(|_| !candidates.is_empty()) else {
+pub(crate) fn retire_bm25_postings(store: &Store, candidates: crate::index::bm25_live::Bm25Candidates) {
+    let Some(db) = store.index_db.as_ref() else {
         return;
     };
-    let liveness = match store.content_liveness() {
-        Ok(liveness) => liveness,
-        Err(error) => {
-            tracing::warn!(%error, "retire BM25 postings skipped; retry on full scan");
-            return;
-        }
-    };
-    if let Err(error) = db.retire_bm25_postings(candidates, |hash| liveness.holds(hash)) {
+    if let Err(error) = db.retire_bm25_postings(candidates) {
         tracing::warn!(%error, "retire BM25 postings failed; retry on full scan");
     }
 }

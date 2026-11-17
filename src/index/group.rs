@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, Weak};
 use ahash::AHashMap;
 use fjall::{Database, Keyspace, PersistMode};
 
+use super::bm25_live::{Bm25Gate, Bm25LiveCache};
 use super::scoped::Scoped;
 use super::view::Part;
 use super::{IndexDb, IndexError};
@@ -33,7 +34,15 @@ const META_VIEW_RECORD: &[u8] = b"\xffgroup/view/";
 const FIRST_VIEW_ID: u32 = 1;
 
 /// Keyspaces the group shares by content: no view prefix.
-const SHARED_PARTS: [Part; 1] = [Part::GrepBloom];
+const SHARED_PARTS: [Part; 2] = [Part::GrepBloom, Part::CodeBm25Postings];
+
+/// `meta` row holding the layout of the group's rows ([`GROUP_FORMAT`]).
+const META_FORMAT: &[u8] = b"\xffgroup/format";
+/// The layout of the rows in a group database. Bumped when a stage of ADR-0028 changes a key shape
+/// within an unreleased minor: an open that finds another value (or none, in a database that has an
+/// incarnation) empties every keyspace and takes a new incarnation, so every view's file map names a
+/// gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content.
+const GROUP_FORMAT: u32 = 2;
 
 /// Keeps the cross-process group lock held for as long as the database is open.
 pub(crate) type GroupLock = Box<dyn Send + Sync>;
@@ -47,6 +56,10 @@ pub(crate) struct GroupDb {
     incarnation: u64,
     /// Serialises view-id allocation within the process; the lock serialises it across processes.
     allocation: Mutex<()>,
+    /// Each view's BM25 live-key cache, shared by every handle on the view.
+    bm25_live: Mutex<AHashMap<u32, Arc<Bm25LiveCache>>>,
+    /// Orders the BM25 posting sweep against posting commits, across every view of the group.
+    bm25_gate: Bm25Gate,
     _lock: GroupLock,
 }
 
@@ -128,15 +141,14 @@ impl GroupDb {
             return Ok(Some(held));
         }
         let fresh = super::IndexDb::open_group_for_reading(dir)?;
-        let Some(incarnation) = fresh
-            .keyspace(Part::Meta)
-            .raw()
-            .get(META_INCARNATION)?
-            .as_deref()
-            .and_then(read_u64)
-        else {
+        let meta = fresh.keyspace(Part::Meta).raw();
+        let Some(incarnation) = meta.get(META_INCARNATION)?.as_deref().and_then(read_u64) else {
             return Ok(None);
         };
+        if meta.get(META_FORMAT)?.as_deref().and_then(read_u32) != Some(GROUP_FORMAT) {
+            // Rows of another layout: a writer rebuilds them; a reader must not parse them. ~keep
+            return Ok(None);
+        }
         let opened = Arc::new(Self::from_open(dir, fresh, incarnation, lock));
         registry.retain(|_, handle| handle.strong_count() > 0);
         registry.insert(dir.to_path_buf(), Arc::downgrade(&opened));
@@ -155,6 +167,8 @@ impl GroupDb {
             embeddings: fresh.embeddings.clone(),
             incarnation,
             allocation: Mutex::new(()),
+            bm25_live: Mutex::default(),
+            bm25_gate: Bm25Gate::default(),
             _lock: lock,
         }
     }
@@ -163,12 +177,22 @@ impl GroupDb {
         let fresh = super::IndexDb::open_without_memory(dir)?;
         let wiped_on_open = fresh.wiped_on_open();
         let meta = fresh.keyspace(Part::Meta).raw().clone();
-        let incarnation = match meta.get(META_INCARNATION)?.as_deref().and_then(read_u64) {
-            Some(incarnation) if !wiped_on_open => incarnation,
+        let stored = meta.get(META_INCARNATION)?.as_deref().and_then(read_u64);
+        let current_format = meta.get(META_FORMAT)?.as_deref().and_then(read_u32) == Some(GROUP_FORMAT);
+        let incarnation = match stored {
+            Some(incarnation) if !wiped_on_open && current_format => incarnation,
             _ => {
+                if stored.is_some() && !current_format {
+                    tracing::info!(dir = %dir.display(), "group index rows are of an older layout; rebuilding it");
+                    for part in Part::ALL {
+                        fresh.keyspace(part).raw().clear()?;
+                    }
+                }
                 let incarnation = new_incarnation(dir);
                 let mut batch = fresh.db.batch().durability(Some(PersistMode::SyncAll));
                 batch.insert(&meta, META_INCARNATION, incarnation.to_be_bytes());
+                batch.insert(&meta, META_FORMAT, GROUP_FORMAT.to_be_bytes());
+                batch.insert(&meta, super::META_SCHEMA_VER, super::INDEX_SCHEMA_VER.to_be_bytes());
                 batch.commit()?;
                 incarnation
             }
@@ -274,6 +298,14 @@ impl GroupDb {
             importers_by_probe: scoped(Part::ImportersByProbe),
             code_bm25_postings: scoped(Part::CodeBm25Postings),
             code_bm25_by_path: scoped(Part::CodeBm25ByPath),
+            bm25_live: Arc::clone(
+                self.bm25_live
+                    .lock()
+                    .expect("bm25 live caches")
+                    .entry(view_id)
+                    .or_default(),
+            ),
+            bm25_gate: Arc::clone(&self.bm25_gate),
             grep_bloom: scoped(Part::GrepBloom),
             embeddings: self.embeddings.clone(),
             fault: Arc::default(),

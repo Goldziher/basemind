@@ -219,12 +219,17 @@ impl<'a> WorkerIndexBatch<'a> {
     /// runs on essentially every scan (`code_search.enabled` defaults on, independent of
     /// `embed`). Before this counted, BM25 rode entirely outside the only bound that existed.
     #[cfg(feature = "code-search")]
-    pub(crate) fn stage_bm25(&mut self, rel: &RelPath, postings: &[crate::search::bm25::ChunkPosting]) {
+    pub(crate) fn stage_bm25(
+        &mut self,
+        rel: &RelPath,
+        content: &crate::index::keys::Bm25Key,
+        postings: &[crate::search::bm25::ChunkPosting],
+    ) {
         let Some(index) = self.index else {
             return;
         };
         let writer = self.writer.get_or_insert_with(|| index.writer());
-        if writer.upsert_bm25_file(rel, postings).is_err() {
+        if writer.upsert_bm25_file(rel, content, postings).is_err() {
             tracing::warn!(rel = %rel, "bm25 upsert failed; the file is left for the next scan");
             self.lost_in_flight = true;
         }
@@ -560,7 +565,11 @@ mod tests {
         // the per-file fjall write-lock contention the batching exists to remove. ~keep
         let (_control_dir, control) = fresh_index();
         let mut under_budget = WorkerIndexBatch::with_budget(Some(&control), 8 * 1024 * 1024, &LEDGER);
-        under_budget.stage_bm25(&RelPath::from("src/small.rs"), &postings(1, 4));
+        under_budget.stage_bm25(
+            &RelPath::from("src/small.rs"),
+            &crate::index::keys::bm25_content_key("hash", "rust", "digest"),
+            &postings(1, 4),
+        );
         assert!(
             control
                 .keyspace_for_test(crate::index::view::Part::CodeBm25Postings)
@@ -573,7 +582,11 @@ mod tests {
         assert_eq!(LEDGER.in_flight(), 0);
 
         let mut batch = WorkerIndexBatch::with_budget(Some(&db), 8 * 1024, &LEDGER);
-        batch.stage_bm25(&RelPath::from("src/generated.rs"), &postings(4, 512));
+        batch.stage_bm25(
+            &RelPath::from("src/generated.rs"),
+            &crate::index::keys::bm25_content_key("hash", "rust", "digest"),
+            &postings(4, 512),
+        );
 
         assert_eq!(batch.staged, 0, "bm25 staging must not bump the file counter");
         assert!(
@@ -825,11 +838,19 @@ mod tests {
         let mut batch = WorkerIndexBatch::with_budget(Some(&db), u64::MAX, &LEDGER);
 
         assert!(batch.stage(&RelPath::from("src/ok.rs"), &l1, None));
-        batch.stage_bm25(&RelPath::from("src/ok.rs"), &postings);
+        batch.stage_bm25(
+            &RelPath::from("src/ok.rs"),
+            &crate::index::keys::bm25_content_key("hash", "rust", "digest"),
+            &postings,
+        );
         batch.push_result(updated("src/ok.rs"));
         assert!(batch.stage(&RelPath::from("src/doomed.rs"), &l1, None));
         batch.writer.as_mut().expect("writer").fail_after_staging = true;
-        batch.stage_bm25(&RelPath::from("src/doomed.rs"), &postings);
+        batch.stage_bm25(
+            &RelPath::from("src/doomed.rs"),
+            &crate::index::keys::bm25_content_key("hash", "rust", "digest"),
+            &postings,
+        );
         batch.writer.as_mut().expect("writer").fail_after_staging = false;
         batch.push_result(updated("src/doomed.rs"));
 
@@ -900,6 +921,7 @@ mod tests {
                 #[cfg(feature = "code-search")]
                 batch.stage_bm25(
                     rel,
+                    &crate::index::keys::bm25_content_key(&rel.to_str_lossy(), "rust", "digest"),
                     &[crate::search::bm25::ChunkPosting {
                         chunk_id: format!("{rel}:0"),
                         doclen: 3,

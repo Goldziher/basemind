@@ -13,13 +13,18 @@
 //! prefix scan; the posting-list length is that term's document frequency (`df`). The corpus-global
 //! `N` (chunk count) and `avgdl` (average document length) come from the `meta`-stored stats that
 //! [`crate::index::IndexDb::recompute_bm25_stats`] refreshes at the end of each scan.
+//!
+//! In a group index the postings are shared by every view, keyed by content
+//! ([`crate::index::keys::Bm25Key`]). A query counts and scores only the postings of the chunks its
+//! own view holds ([`IndexView::bm25_live`]), so its scores equal those of a standalone index.
 
 use std::cmp::Ordering;
 
 use ahash::{AHashMap, AHashSet};
 
 use crate::chunk::CodeChunk;
-use crate::index::keys;
+use crate::index::bm25_live::Bm25Live;
+use crate::index::keys::{self, Bm25Key};
 use crate::index::view::{IndexView, Part};
 
 /// Upper bound on a single token's byte length. Tokens longer than this (minified blobs, base64
@@ -180,11 +185,15 @@ pub fn bm25_search(db: &dyn IndexView, query: &str, limit: usize) -> Vec<Bm25Hit
     bm25_search_counted(db, query, limit, MAX_CANDIDATES).0
 }
 
-/// Count `term`'s postings, stopping once the count passes `stop_after`.
-fn document_frequency(db: &dyn IndexView, term: &str, stop_after: u64) -> u64 {
+/// Count `term`'s postings among the chunks the view holds, stopping once the count passes
+/// `stop_after`.
+fn document_frequency(db: &dyn IndexView, live: &Bm25Live, term: &str, stop_after: u64) -> u64 {
     let mut df = 0u64;
     for row in db.prefix(Part::CodeBm25Postings, &keys::code_bm25_postings_prefix(term)) {
-        if row.is_ok() {
+        let Ok((key, _)) = row else {
+            continue;
+        };
+        if keys::parse_code_bm25_posting_chunk(&key).is_some_and(|(content, _)| live.hash_of(&content).is_some()) {
             df += 1;
             if df > stop_after {
                 break;
@@ -216,13 +225,23 @@ pub fn bm25_search_counted(
     if n == 0 {
         return (Vec::new(), work);
     }
+    let live = match db.bm25_live() {
+        Ok(live) => live,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                "bm25: the view's live chunks could not be read; no keyword hits"
+            );
+            return (Vec::new(), work);
+        }
+    };
     let avgdl = (total_len as f32 / n as f32).max(1.0);
     let common = n / COMMON_TERM_DIVISOR;
 
     let mut counted: Vec<(String, u64)> = terms
         .into_iter()
         .map(|term| {
-            let df = document_frequency(db, &term, common);
+            let df = document_frequency(db, &live, &term, common);
             (term, df)
         })
         .filter(|(_, df)| *df > 0)
@@ -234,12 +253,12 @@ pub fn bm25_search_counted(
     } else {
         // Every term is common: score them all, with their exact frequency.
         for (term, df) in &mut counted {
-            *df = document_frequency(db, term, u64::MAX);
+            *df = document_frequency(db, &live, term, u64::MAX);
         }
     }
     counted.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
-    let mut scores: AHashMap<String, f32> = AHashMap::new();
+    let mut scores: AHashMap<(Bm25Key, u32), f32> = AHashMap::new();
     for (term, df) in &counted {
         work.terms_scored += 1;
         let idf = bm25_idf(n, *df);
@@ -251,17 +270,20 @@ pub fn bm25_search_counted(
                     continue;
                 }
             };
-            let (Some(chunk_id), Some((tf, doclen))) = (
-                keys::parse_code_bm25_posting_chunk_id(&k),
+            let (Some(chunk), Some((tf, doclen))) = (
+                keys::parse_code_bm25_posting_chunk(&k),
                 keys::parse_code_bm25_posting_value(&v),
             ) else {
                 continue;
             };
+            if live.hash_of(&chunk.0).is_none() {
+                continue;
+            }
             let gain = bm25_term_score(tf, doclen, avgdl, idf);
-            if let Some(score) = scores.get_mut(chunk_id) {
+            if let Some(score) = scores.get_mut(&chunk) {
                 *score += gain;
             } else if scores.len() < max_candidates {
-                scores.insert(chunk_id.to_string(), gain);
+                scores.insert(chunk, gain);
             }
         }
     }
@@ -269,7 +291,13 @@ pub fn bm25_search_counted(
 
     let mut hits: Vec<Bm25Hit> = scores
         .into_iter()
-        .map(|(chunk_id, score)| Bm25Hit { chunk_id, score })
+        .filter_map(|((content, ordinal), score)| {
+            let hash = live.hash_of(&content)?;
+            Some(Bm25Hit {
+                chunk_id: format!("{hash}:{ordinal}"),
+                score,
+            })
+        })
         .collect();
     hits.sort_by(|a, b| {
         b.score

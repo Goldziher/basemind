@@ -359,6 +359,12 @@ pub trait IndexView: Send + Sync {
         Some((n, stat(META_BM25_TOTAL_LEN).unwrap_or(0)))
     }
 
+    /// The BM25 chunks this view holds: the keys of its `code_bm25_by_path` rows, each with its
+    /// content hash. The scorer reads only postings of these keys.
+    fn bm25_live(&self) -> Result<std::sync::Arc<super::bm25_live::Bm25Live>, IndexError> {
+        super::bm25_live::Bm25Live::from_rows(self.iter(Part::CodeBm25ByPath)).map(std::sync::Arc::new)
+    }
+
     /// The stored trigram bloom row for the content `hash_hex`.
     fn grep_bloom_row(&self, hash_hex: &str) -> Option<IndexBytes> {
         self.get(Part::GrepBloom, hash_hex.as_bytes()).ok().flatten()
@@ -398,6 +404,10 @@ impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
 
     fn iter<'a>(&'a self, part: Part) -> KvIter<'a> {
         self.db().keyspace(part).iter()
+    }
+
+    fn bm25_live(&self) -> Result<std::sync::Arc<super::bm25_live::Bm25Live>, IndexError> {
+        self.db().bm25_live()
     }
 
     fn callee_keys_matching<'a>(
@@ -495,6 +505,11 @@ mod recording {
         fn iter<'a>(&'a self, part: Part) -> KvIter<'a> {
             self.log.record("iter", Some(part));
             self.inner.iter(part)
+        }
+
+        fn bm25_live(&self) -> Result<Arc<crate::index::bm25_live::Bm25Live>, IndexError> {
+            self.log.record("bm25_live", None);
+            self.inner.bm25_live()
         }
 
         fn callee_keys_matching<'a>(

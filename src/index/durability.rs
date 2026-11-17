@@ -287,6 +287,7 @@ impl IndexDb {
             }
             keyspace.clear(&self.db)?;
         }
+        self.bm25_live.invalidate();
         if !shared {
             self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
         }

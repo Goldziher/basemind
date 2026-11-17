@@ -170,10 +170,12 @@ fn both_search_lanes_read_through_the_view() {
         [
             "get:meta",
             "get:meta",
+            "bm25_live",
             "prefix:code_bm25_postings",
             "prefix:code_bm25_postings"
         ],
-        "keyword lane: both corpus stats, the query term's document frequency, then its postings"
+        "keyword lane: both corpus stats, the view's live chunks, the query term's document frequency, \
+         then its postings"
     );
 }
 

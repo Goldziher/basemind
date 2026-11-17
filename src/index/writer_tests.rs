@@ -557,6 +557,7 @@ fn bm25_dual_partition_consistency() {
     use crate::search::bm25::ChunkPosting;
     let (_d, db) = fresh_db();
     let rel = RelPath::from("src/foo.rs");
+    let content = keys::bm25_content_key("h", "rust", "digest");
 
     let postings = vec![
         ChunkPosting {
@@ -571,51 +572,64 @@ fn bm25_dual_partition_consistency() {
         },
     ];
     let mut w = db.writer();
-    w.upsert_bm25_file(&rel, &postings).unwrap();
+    w.upsert_bm25_file(&rel, &content, &postings).unwrap();
     w.commit().unwrap();
 
     assert_eq!(db.code_bm25_postings.iter().count(), 3);
     assert_eq!(db.code_bm25_by_path.iter().count(), 2);
+    let live = db.bm25_live().unwrap();
+    assert_eq!((live.len(), live.hash_of(&content)), (1, Some("h")));
 
-    let mut spawn_docs: Vec<(String, u32, u32)> = db
+    let mut spawn_docs: Vec<(keys::Bm25Key, u32, u32, u32)> = db
         .code_bm25_postings
         .raw()
         .prefix(keys::code_bm25_postings_prefix("spawn"))
         .map(|g| {
             let (k, v) = g.into_inner().unwrap();
-            let chunk_id = keys::parse_code_bm25_posting_chunk_id(&k).unwrap().to_string();
+            let (key, ordinal) = keys::parse_code_bm25_posting_chunk(&k).unwrap();
             let (tf, doclen) = keys::parse_code_bm25_posting_value(&v).unwrap();
-            (chunk_id, tf, doclen)
+            (key, ordinal, tf, doclen)
         })
         .collect();
     spawn_docs.sort();
-    assert_eq!(spawn_docs, vec![("h:0".to_string(), 2, 3), ("h:1".to_string(), 1, 1)]);
+    assert_eq!(spawn_docs, vec![(content, 0, 2, 3), (content, 1, 1, 1)]);
 
     let sibling = RelPath::from("src/sibling.rs");
     let mut w = db.writer();
-    w.upsert_bm25_file(&sibling, &postings).unwrap();
+    w.upsert_bm25_file(&sibling, &content, &postings).unwrap();
     w.commit().unwrap();
     db.recompute_bm25_stats().unwrap();
     assert_eq!(db.view().bm25_stats(), Some((4, 8)));
-    assert_eq!(db.code_bm25_postings.iter().count(), 3);
+    assert_eq!(
+        db.code_bm25_postings.iter().count(),
+        3,
+        "one content, one set of postings"
+    );
 
     let candidates = db.bm25_posting_candidates(&["src/foo.rs".to_string()]).unwrap();
-    assert_eq!(candidates.len(), 3);
     let mut w = db.writer();
     w.remove_bm25_file(&rel).unwrap();
     w.commit().unwrap();
-    db.retire_bm25_postings(candidates, |hash| hash == "h").unwrap();
+    db.retire_bm25_postings(candidates).unwrap();
     db.recompute_bm25_stats().unwrap();
     assert_eq!(db.view().bm25_stats(), Some((2, 4)));
-    assert_eq!(db.code_bm25_postings.iter().count(), 3);
+    assert_eq!(
+        db.code_bm25_postings.iter().count(),
+        3,
+        "the sibling path still holds the content, so its postings stay"
+    );
     assert_eq!(db.code_bm25_by_path.iter().count(), 2);
 
     let candidates = db.bm25_posting_candidates(&["src/sibling.rs".to_string()]).unwrap();
-    assert_eq!(candidates.len(), 3);
     let mut w = db.writer();
     w.remove_bm25_file(&sibling).unwrap();
     w.commit().unwrap();
-    db.retire_bm25_postings(candidates, |_| false).unwrap();
+    assert_eq!(
+        db.bm25_live().unwrap().len(),
+        0,
+        "the commit invalidated the cached live keys"
+    );
+    db.retire_bm25_postings(candidates).unwrap();
     assert!(db.code_bm25_postings.iter().next().is_none());
     assert!(db.code_bm25_by_path.iter().next().is_none());
 }
