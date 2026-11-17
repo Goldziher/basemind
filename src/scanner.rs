@@ -458,7 +458,7 @@ pub fn scan_with_observer(
     // happened. The breadcrumb says a scan died here; this says how its memory got there. ~keep
     let phase_peaks = crate::scan_phase_peaks::PhasePeaks::default();
     let _memory_log = crate::scan_evidence::MemoryLog::start(root, phase_peaks.clone());
-    preflight(store)?;
+    let unlisted = preflight(store)?;
 
     let submodule_roots = submodule_roots_for_source(root, &source);
     let mut filters = Filters::build(config, submodule_roots)?;
@@ -499,7 +499,11 @@ pub fn scan_with_observer(
     // owing only an incremental pass's share is taken, so a draining daemon is not held up. ~keep
     if cancel.is_cancelled() {
         report.cancelled = true;
-        flush_code_map(store, &ScanHealth::partial("cancelled", seen_count, total_candidates))?;
+        flush_code_map(
+            store,
+            &ScanHealth::partial("cancelled", seen_count, total_candidates),
+            false,
+        )?;
         let (docs, code) = (driven.doc_batches, driven.code_batches);
         flush_vector_lanes(store, config, &filters, &scope, docs, code, REQUEUE_PER_INCREMENTAL)?;
         phase_peaks.sample_now();
@@ -557,6 +561,7 @@ pub fn scan_with_observer(
         observer.on_file(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
+    let purge_failure = purge_failure.or_else(|| unlisted.purge(store).err());
     // Only a working-tree pass writes bloom rows; a rev or staged pass would sweep them all away.
     if matches!(source, ScanSource::WorkingTree) {
         crate::scanner_integrity::sweep_grep_bloom_rows(store);
@@ -582,7 +587,7 @@ pub fn scan_with_observer(
         Some(error) => ScanHealth::partial(format!("purge failed: {error}"), seen_count, total_candidates),
         None => ScanHealth::resolving(),
     };
-    flush_code_map(store, &health)?;
+    flush_code_map(store, &health, purge_failure.is_none())?;
     if let Some(error) = purge_failure {
         return Err(error);
     }
@@ -739,11 +744,13 @@ fn scan_paths_inner(
     verify_named: bool,
 ) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
+    #[cfg(any(unix, windows))] // Blobs written without an fsync; free inside a hosting process. ~keep
+    let _hosting = crate::scan_evidence::HostingMarker::begin();
+    crate::scanner_integrity::claim_writer(store)?;
     if crate::scanner_integrity::needs_full_rebuild(store)? {
         return scan_with_observer(root, store, config, source, embed, cancel, observer);
     }
     store.retry_vector_store();
-    crate::scanner_integrity::absorb_owed_rows(store);
     let mut filter = IndexFilter::new(root, config)?;
     if verify_named {
         filter.verify_blobs();
@@ -825,6 +832,7 @@ fn scan_paths_inner(
         .collect();
     #[cfg(feature = "code-search")]
     let bm25_candidates = crate::scanner_flush::bm25_posting_candidates(store, rels.iter().chain(&removed));
+    crate::scanner_integrity::begin_rows(store)?;
     let drive = ScanDrive {
         root,
         filters: filter.filters(),
@@ -893,7 +901,11 @@ fn scan_paths_inner(
     #[cfg(feature = "code-search")]
     crate::scanner_flush::retire_bm25_postings(store, bm25_candidates);
 
-    store.flush()?;
+    if cancel.is_cancelled() || purge_failure.is_some() {
+        store.flush()?;
+    } else {
+        store.flush_ending_rows_pass()?;
+    }
     store.write_status_sidecar();
     if let Some(error) = purge_failure {
         return Err(error);

@@ -19,7 +19,7 @@
 //! admits a single holder per directory, so the process owning the [`IndexDb`](super::IndexDb) is
 //! the only writer and sees every name.
 
-use std::collections::HashSet;
+use ahash::AHashSet;
 use std::ops::Bound;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -116,7 +116,7 @@ impl Snapshot {
 struct State {
     snapshot: Option<Arc<Snapshot>>,
     /// Names recorded but not yet in `snapshot`.
-    extra: HashSet<String>,
+    extra: AHashSet<String>,
     building: bool,
     /// The build failed; every query keeps using the full walk.
     disabled: bool,

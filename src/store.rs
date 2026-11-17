@@ -1,5 +1,3 @@
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use ahash::AHashMap;
@@ -16,7 +14,11 @@ use crate::store_hash_refs::HashRefs;
 mod base_open;
 #[path = "store_durability.rs"]
 mod durability;
+#[path = "store_file_map.rs"]
+mod file_map;
 pub use durability::RESCAN_OWED;
+use file_map::migrate_legacy_index_into_views;
+pub(crate) use file_map::{check_schema, read_index, wipe_view, written_by_newer};
 
 /// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
 /// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like
@@ -80,6 +82,10 @@ pub enum StoreError {
         /// sidecar is missing/corrupt — the message then falls back to a generic guess.
         holder: Option<LockMeta>,
     },
+    /// The file map's version fields cannot be read, so which basemind wrote it is unknown. A
+    /// writer open sets it aside and rebuilds; nothing deletes it.
+    #[error("file map {path} is unreadable; `basemind scan` sets it aside and rebuilds the view")]
+    UnreadableFileMap { path: PathBuf },
     #[error("working view migration recovery failed: {0}")]
     Migration(#[source] anyhow::Error),
     #[error("inverted index error: {0}")]
@@ -506,10 +512,16 @@ impl Store {
                 wipe_view(&view_dir)?;
                 Index::empty()
             }
-            Err(error @ StoreError::StaleBlobLayout { .. }) => {
+            // A map that does not decode is rebuildable cache; refusing it left the workspace unopenable
+            // until someone cleared the cache. Its index goes too: no map lists the files of its rows. ~keep
+            Err(
+                error @ (StoreError::StaleBlobLayout { .. }
+                | StoreError::Decode(_)
+                | StoreError::UnreadableFileMap { .. }),
+            ) => {
                 reset_stale_schema = true;
                 tracing::info!(view, %error, "refreshing view in place (every file is extracted again)");
-                durability::discard_view_of_a_stale_layout(&view_dir)?;
+                durability::discard_view_of_a_stale_layout(&view_dir, &error)?;
                 Index::empty()
             }
             Err(e) => return Err(e),
@@ -633,6 +645,12 @@ impl Store {
         } else {
             None
         };
+        // The journal lost the tail a fsynced file map vouches for: serve, but say a rescan is owed. ~keep
+        if let Some(db) = index_db.as_ref()
+            && db.scan_generation().is_ok_and(|sealed| index.generation > sealed)
+        {
+            index_rebuild_needed = true;
+        }
         let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);
         Ok(Self {
             root: root.to_path_buf(),
@@ -711,6 +729,15 @@ impl Store {
         }
     }
 
+    /// Have the next pass extract `rel` again although its content is unchanged: its entry's
+    /// extraction epoch is reset, which no pass takes for current.
+    #[cfg(feature = "code-search")]
+    pub(crate) fn extract_again(&mut self, rel: &str) {
+        if let Some(entry) = self.index.files.get_mut(bstr::BStr::new(rel.as_bytes())) {
+            entry.extract_epoch = 0;
+        }
+    }
+
     /// True when some indexed file holds the content `hash_hex`.
     pub fn hash_is_held(&self, hash_hex: &str) -> bool {
         self.hash_refs.is_held(hash_hex)
@@ -747,42 +774,25 @@ impl Store {
     /// with no index handle writes no rows, so its file map keeps the generation it carries. The
     /// paths owed vector rows are written first: the map must not claim a file whose debt is lost.
     pub fn flush(&mut self) -> Result<(), StoreError> {
+        self.flush_sealing(false)
+    }
+
+    /// [`Self::flush`] for the flush that ends a pass which wrote rows and was not cancelled: its
+    /// seal records the pass ended ([`IndexDb::seal_scan_ending_rows_pass`]).
+    pub(crate) fn flush_ending_rows_pass(&mut self) -> Result<(), StoreError> {
+        self.flush_sealing(true)
+    }
+
+    fn flush_sealing(&mut self, ends_rows_pass: bool) -> Result<(), StoreError> {
         self.pending_vectors.persist(&self.view_dir)?;
         if let Some(db) = self.index_db.as_ref() {
-            self.index.generation = db.seal_scan(self.index.generation)?;
+            self.index.generation = if ends_rows_pass {
+                db.seal_scan_ending_rows_pass(self.index.generation)?
+            } else {
+                db.seal_scan(self.index.generation)?
+            };
         }
-        let final_path = self.view_dir.join(INDEX_FILE);
-        let tmp_path = self.view_dir.join(format!("{INDEX_FILE}.tmp"));
-        let bytes = rmp_serde::to_vec_named(&self.index)?;
-        {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|source| StoreError::Io {
-                    path: tmp_path.clone(),
-                    source,
-                })?;
-            f.write_all(&bytes).map_err(|source| StoreError::Io {
-                path: tmp_path.clone(),
-                source,
-            })?;
-            f.sync_all().map_err(|source| StoreError::Io {
-                path: tmp_path.clone(),
-                source,
-            })?;
-        }
-        std::fs::rename(&tmp_path, &final_path).map_err(|source| StoreError::Io {
-            path: final_path,
-            source,
-        })?;
-        // The rename is durable only once the directory entry is. Not fatal: the new file map is
-        // already in place, and some filesystems refuse to fsync a directory.
-        if let Err(error) = crate::store_base::sync_directory(&self.view_dir) {
-            tracing::warn!(%error, "could not fsync the view directory after writing the file map");
-        }
-        Ok(())
+        file_map::write_file_map(&self.view_dir, &self.index)
     }
 
     /// Refresh the cheap `status.json` sidecar for a shell statusline (see [`StatusSidecar`]).
@@ -804,7 +814,9 @@ impl Store {
             return;
         }
         let file_count = self.index.files.len();
-        let blob_count = count_fm_blobs(&self.blobs_dir);
+        // This workspace's distinct contents, not a directory listing of the machine-wide blob
+        // namespace, which every watcher batch paid for and which counted every workspace's blobs. ~keep
+        let blob_count = self.hash_refs.distinct();
         write_status_sidecar(&self.basemind_dir, file_count, blob_count, health);
     }
 
@@ -835,18 +847,6 @@ fn ensure_dir(p: &Path) -> Result<(), StoreError> {
     })
 }
 
-/// Delete the index file in a single view's directory.
-pub(crate) fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
-    let index_path = view_dir.join(INDEX_FILE);
-    if index_path.exists() {
-        std::fs::remove_file(&index_path).map_err(|source| StoreError::Io {
-            path: index_path,
-            source,
-        })?;
-    }
-    Ok(())
-}
-
 /// Empty an explicit blob directory (keeping the directory itself). Used by
 /// `store_gc::clear_component` for an explicit `Blobs` component clear (the CLI / MCP admin
 /// surface): production passes the GLOBAL blob store ([`global_blobs_dir`]), unit tests pass a
@@ -871,66 +871,6 @@ pub(crate) fn wipe_blobs_in(blobs_dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Pre-views installs kept `index.msgpack` at the top of `.basemind/`. After the upgrade,
-/// each view lives under `.basemind/views/<view>/`. If we detect the legacy file AND no
-/// working-view file exists yet, move it in place. Idempotent: re-runs are no-ops.
-fn migrate_legacy_index_into_views(basemind_dir: &Path) -> Result<(), StoreError> {
-    let legacy = basemind_dir.join(INDEX_FILE);
-    if !legacy.exists() {
-        return Ok(());
-    }
-    let working_dir = basemind_dir.join(VIEWS_DIR).join(VIEW_WORKING);
-    let working_index = working_dir.join(INDEX_FILE);
-    if working_index.exists() {
-        let _ = std::fs::remove_file(&legacy);
-        return Ok(());
-    }
-    ensure_dir(&working_dir)?;
-    std::fs::rename(&legacy, &working_index).map_err(|source| StoreError::Io {
-        path: working_index,
-        source,
-    })?;
-    tracing::info!("migrated .basemind/index.msgpack → .basemind/views/{VIEW_WORKING}/index.msgpack");
-    Ok(())
-}
-
-/// Read and deserialize a view's `index.msgpack`. `Ok(None)` when the file is absent;
-/// `Err(StoreError::SchemaMismatch)` on an older version, `Err(StoreError::NewerSchema)` on a newer
-/// one, `Err(StoreError::StaleBlobLayout)` on a map of an earlier blob store layout. Reused by
-/// `store_gc` to enumerate the live blob hashes referenced by every view.
-pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
-    /// The one field every layout of the file map has had.
-    #[derive(Deserialize)]
-    struct Version {
-        schema_ver: u16,
-    }
-    let path = view_dir.join(INDEX_FILE);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    // The version is read on its own first: a newer map need not decode as this one, and a decode
-    // failure must not read as a damaged map that may be removed. ~keep
-    if let Ok(Version { schema_ver }) = rmp_serde::from_slice(&bytes) {
-        check_schema(schema_ver)?;
-    }
-    let index: Index = rmp_serde::from_slice(&bytes)?;
-    check_schema(index.schema_ver)?;
-    if index.blob_layout < crate::store_layout::BLOB_LAYOUT {
-        return Err(StoreError::StaleBlobLayout {
-            found: index.blob_layout,
-            expected: crate::store_layout::BLOB_LAYOUT,
-        });
-    }
-    Ok(Some(index))
-}
-
-/// Acquire the store's advisory `.lock` (exclusive flock, with bounded retry).
-/// Reused by `store_gc::run_gc` so the mark+sweep races neither a concurrent scan
-/// nor a `basemind watch`.
 /// Retries a rightful writer performs when opening the Fjall index hits a *transient* fjall
 /// `Locked`. The caller already holds the `.basemind/.lock` advisory lock, so it is the sole
 /// legitimate writer — any fjall contention here is a short-lived reader open (a CLI `query` /
@@ -957,23 +897,6 @@ pub(crate) fn open_index_with_retry(root: &Path, view_dir: &Path) -> Result<Inde
             }
             Err(other) => return Err(other),
         }
-    }
-}
-
-/// Guard every blob / index read against a foreign on-disk schema: an older one is a rebuildable
-/// [`StoreError::SchemaMismatch`], a newer one a [`StoreError::NewerSchema`] no caller may wipe.
-/// `pub(crate)` because the blob accessors that call it live in [`crate::store_blob`].
-pub(crate) fn check_schema(found: u16) -> Result<(), StoreError> {
-    match found.cmp(&SCHEMA_VER) {
-        std::cmp::Ordering::Equal => Ok(()),
-        std::cmp::Ordering::Less => Err(StoreError::SchemaMismatch {
-            found,
-            expected: SCHEMA_VER,
-        }),
-        std::cmp::Ordering::Greater => Err(StoreError::NewerSchema {
-            stored: found,
-            current: SCHEMA_VER,
-        }),
     }
 }
 

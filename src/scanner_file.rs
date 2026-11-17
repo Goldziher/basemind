@@ -119,6 +119,46 @@ pub(crate) fn run_candidates(
     })
 }
 
+/// Refresh the mtime of the blobs a scan reuses for a path the file map does not yet name them for.
+/// The blob sweep keeps an unreferenced blob only within its grace, judged by mtime, so an old blob
+/// reused here could be swept before this scan's file map named it, leaving the map naming a
+/// missing blob. Best-effort: a blob that is not there needs no protection.
+///
+/// Only a new reference needs it: a blob the file map already holds, or one a pending rebuild pins,
+/// counts as referenced for the sweep, and a rebuild or an embedding pass reuses every file's blob,
+/// so touching those would cost three metadata writes per file. A sweep that read the blob's mtime
+/// just before the touch can still remove it; that window is a few microseconds and accepted.
+fn touch_reused_blobs(store: &Store, hash_hex: &str) {
+    if store.hash_is_held(hash_hex)
+        || store
+            .index
+            .rebuild_pins
+            .binary_search_by(|pin| pin.as_str().cmp(hash_hex))
+            .is_ok()
+    {
+        return;
+    }
+    let paths = [
+        Some(store.blob_path_fm_hex(hash_hex)),
+        Some(store.blob_path_rref_hex(hash_hex)),
+        #[cfg(feature = "code-search")]
+        Some(store.blob_path_chunk_hex(hash_hex)),
+        #[cfg(not(feature = "code-search"))]
+        None,
+    ];
+    for path in paths.into_iter().flatten() {
+        let touched = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(SystemTime::now()));
+        if let Err(error) = touched
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(%error, path = %path.display(), "could not refresh a reused blob's mtime");
+        }
+    }
+}
+
 /// True when the extraction blobs required to classify a file as `Unchanged` are present on disk for
 /// `hash_hex`: the combined-filemap blob always, plus the code-chunk sidecar when code-search
 /// chunking is enabled (so toggling the feature on re-chunks rather than being skipped as unchanged).
@@ -375,6 +415,9 @@ fn process_file(
         None
     };
     let reused = reused_pair.is_some();
+    if reused {
+        touch_reused_blobs(store, hash_hex_str);
+    }
 
     let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) = match reused_pair {
         Some(pair) => pair,

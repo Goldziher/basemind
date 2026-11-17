@@ -42,7 +42,7 @@ use crate::store::{
     CACHE_DIR, LOCK_FILE, LOCK_META_FILE, WORKSPACES_DIR, acquire_lock, cache_root, read_workspace_marker,
     writer_lock_is_held,
 };
-use crate::store_cache_admin::TELEMETRY_FILENAME;
+use crate::store_cache_admin::{TELEMETRY_FILENAME, TELEMETRY_ROTATED_FILENAME};
 use crate::store_gc::{GcError, dir_size};
 use crate::store_layout::AGENT_ID_FILE;
 
@@ -50,7 +50,13 @@ use crate::store_layout::AGENT_ID_FILE;
 /// identity, the telemetry log, and the store lock with its holder sidecar. None of them is index
 /// state, and each is recreated on demand. Any other entry (a subdirectory, a symlink, an unknown
 /// file, an unparsable `workspace.json`) keeps the dir.
-const DISPOSABLE_LEFTOVERS: [&str; 4] = [AGENT_ID_FILE, TELEMETRY_FILENAME, LOCK_FILE, LOCK_META_FILE];
+const DISPOSABLE_LEFTOVERS: [&str; 5] = [
+    AGENT_ID_FILE,
+    TELEMETRY_FILENAME,
+    TELEMETRY_ROTATED_FILENAME,
+    LOCK_FILE,
+    LOCK_META_FILE,
+];
 
 /// How long a marker-less dir of [`DISPOSABLE_LEFTOVERS`] must sit untouched before it is reaped.
 /// A scan creates its dir and takes `.lock` before it writes the marker, and the identity resolver
@@ -74,7 +80,9 @@ pub struct ReapReport {
     /// Kept because the recorded root still exists.
     pub kept_live: usize,
     /// Kept because the root cannot be verified: no marker and the dir is not provably disposable,
-    /// or the recorded root sits on a volume that is not mounted.
+    /// or the recorded root sits on a volume that is not mounted. Also kept: an orphan whose view
+    /// holds memory notes a release before 0.30 kept there, which could not be moved to the group
+    /// store.
     pub kept_unverifiable: usize,
     /// Skipped because another process holds the workspace `.lock`.
     pub skipped_locked: usize,
@@ -134,11 +142,30 @@ fn reap_orphaned_workspaces_at(workspaces_dir: &Path, now: SystemTime) -> Result
             }
             continue;
         };
-        if marker.root.exists() {
-            report.kept_live += 1;
-            continue;
+        // Only a definite "not found" reads as deleted: `exists()` is false for a root this process
+        // may not stat (EPERM, EACCES) or a stale mount (ESTALE), and that cache is not an orphan. ~keep
+        match marker.root.try_exists() {
+            Ok(true) => {
+                report.kept_live += 1;
+                continue;
+            }
+            Err(error) => {
+                report.kept_unverifiable += 1;
+                tracing::debug!(
+                    workspace = %workspace_dir.display(),
+                    root = %marker.root.display(),
+                    %error,
+                    "workspace root cannot be checked; keeping"
+                );
+                continue;
+            }
+            Ok(false) => {}
         }
-        if marker.root.parent().is_some_and(|parent| !parent.exists()) {
+        if marker
+            .root
+            .parent()
+            .is_some_and(|parent| !matches!(parent.try_exists(), Ok(true)))
+        {
             report.kept_unverifiable += 1;
             tracing::debug!(
                 workspace = %workspace_dir.display(),
@@ -157,6 +184,10 @@ fn reap_orphaned_workspaces_at(workspaces_dir: &Path, now: SystemTime) -> Result
             );
             continue;
         };
+        if !crate::store_gc_live::rescue_legacy_memory(&workspace_dir) {
+            report.kept_unverifiable += 1;
+            continue;
+        }
         let bytes = dir_size(&workspace_dir)?;
         crate::store_lock::remove_dir_under_lock(&workspace_dir).map_err(|source| GcError::Io {
             path: workspace_dir.clone(),
@@ -397,6 +428,145 @@ mod tests {
             b"memory",
             "group memory is never reaped"
         );
+    }
+
+    /// A release before 0.30 kept memory notes in each view's index. Reaping an orphan no writer had
+    /// opened since the upgrade deleted them; they are moved to a group store first.
+    #[test]
+    fn reaping_an_orphan_moves_its_pre_030_memory_notes_to_a_group_store_first() {
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let root = make_root(tmp.path(), "gone-0-29");
+        let workspace = seed_workspace(&workspaces, "key-0-29", Some(&root), &[]);
+        plant_legacy_notes(&workspace, 29);
+        let marker_root = read_workspace_marker(&workspace).expect("marker").root;
+        fs::remove_dir_all(&root).expect("delete the repo");
+
+        let report = reap_orphaned_workspaces_in(&workspaces).expect("reap");
+
+        assert_eq!(report.reaped, 1);
+        assert!(!workspace.exists());
+        let reader = tmp.path().join("reader");
+        let memory_dir = crate::store_layout::memory_store_dir(&marker_root);
+        let db = crate::index::IndexDb::open_with_memory(&reader, &memory_dir).expect("open the group store");
+        assert_eq!(db.notes().get(b"k").unwrap().as_deref(), Some(&b"only copy"[..]));
+    }
+
+    /// Give the working view of `workspace` a file map of `schema_ver` and an index holding a note
+    /// in the keyspace releases before 0.30 kept notes in.
+    fn plant_legacy_notes(workspace: &Path, schema_ver: u16) {
+        let working = workspace.join(VIEWS_DIR).join("working");
+        let mut map = Index::empty();
+        map.schema_ver = schema_ver;
+        fs::write(
+            working.join(INDEX_FILE),
+            rmp_serde::to_vec_named(&map).expect("encode index"),
+        )
+        .expect("write the file map");
+        let db = fjall::Database::builder(working.join(crate::index::INDEX_DIR))
+            .open()
+            .expect("open the view's index");
+        let notes = db
+            .keyspace("memory_by_key", fjall::KeyspaceCreateOptions::default)
+            .expect("the notes keyspace of a 0.29 view");
+        notes
+            .insert(b"k".to_vec(), b"only copy".to_vec())
+            .expect("write a note");
+    }
+
+    fn group_note(memory_dir: &Path, reader: &Path) -> Option<Vec<u8>> {
+        let db = crate::index::IndexDb::open_with_memory(reader, memory_dir).expect("open the group store");
+        db.notes().get(b"k").expect("read").map(|note| note.to_vec())
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@e.x"])
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// The notes of a deleted linked worktree belong to its clone's group. Resolved from the root
+    /// that is gone, the group fell back to the hash of that root, a group no worktree reads.
+    #[test]
+    fn reaping_a_deleted_linked_worktree_moves_its_notes_to_its_clones_group() {
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let main = make_root(tmp.path(), "main");
+        git(&main, &["init", "--quiet"]);
+        fs::write(main.join("src/lib.rs"), b"pub fn f() {}\n").expect("write");
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "--quiet", "-m", "init"]);
+        let linked = tmp.path().join("linked");
+        let linked_arg = linked.to_str().expect("utf-8 path");
+        git(&main, &["worktree", "add", "--quiet", "-b", "side", linked_arg]);
+        let workspace = seed_workspace(&workspaces, "key-linked", Some(&linked), &[]);
+        plant_legacy_notes(&workspace, 29);
+        fs::remove_dir_all(&linked).expect("delete the linked worktree");
+
+        let report = reap_orphaned_workspaces_in(&workspaces).expect("reap");
+
+        assert_eq!(report.reaped, 1);
+        let group = crate::store_layout::memory_store_dir(&main);
+        assert_eq!(
+            group_note(&group, &tmp.path().join("reader")).as_deref(),
+            Some(&b"only copy"[..]),
+            "the note is in the group every worktree of the clone reads"
+        );
+    }
+
+    /// A file map written at 0.30 or later does not prove the notes were moved: a writer open that
+    /// met a newer notes store left them in place and still rewrote the map. Collection checks the
+    /// index itself.
+    #[test]
+    fn reaping_moves_notes_a_current_file_map_still_sits_over() {
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let root = make_root(tmp.path(), "gone-current");
+        let workspace = seed_workspace(&workspaces, "key-current", Some(&root), &[]);
+        plant_legacy_notes(&workspace, crate::extract::SCHEMA_VER);
+        let marker_root = read_workspace_marker(&workspace).expect("marker").root;
+        fs::remove_dir_all(&root).expect("delete the repo");
+
+        let report = reap_orphaned_workspaces_in(&workspaces).expect("reap");
+
+        assert_eq!(report.reaped, 1);
+        let group = crate::store_layout::memory_store_dir(&marker_root);
+        assert_eq!(
+            group_note(&group, &tmp.path().join("reader")).as_deref(),
+            Some(&b"only copy"[..])
+        );
+    }
+
+    /// A root this process may not stat is not a deleted root: `exists()` read the permission error
+    /// as "gone" and the reaper deleted a live workspace's cache.
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_whose_root_cannot_be_checked_is_never_reaped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let guarded = tmp.path().join("guarded");
+        let root = make_root(&guarded, "repo");
+        let workspace = seed_workspace(&workspaces, "key-guarded", Some(&root), &["e".repeat(64).as_str()]);
+        fs::set_permissions(&guarded, fs::Permissions::from_mode(0o000)).expect("deny the parent");
+        let unreadable = root.try_exists().is_err();
+
+        let report = reap_orphaned_workspaces_in(&workspaces);
+        fs::set_permissions(&guarded, fs::Permissions::from_mode(0o755)).expect("restore");
+        let report = report.expect("reap");
+
+        assert!(unreadable, "the root could not be checked, or this test proves nothing");
+        assert_eq!(report.reaped, 0, "a root that cannot be checked is not a deleted one");
+        assert_eq!(report.kept_unverifiable, 1);
+        assert!(workspace.exists());
     }
 
     #[test]

@@ -193,6 +193,24 @@ pub(crate) fn holds_legacy_rows(view_db: &Database) -> bool {
     view_db.keyspace_exists(MEMORY_BY_KEY)
 }
 
+/// [`holds_legacy_rows`] for the index under `view_dir`, opened on its own without a notes store.
+/// For a collector that must not remove the notes with the view; the caller holds the workspace
+/// lock.
+pub(crate) fn view_holds_legacy_rows(view_dir: &Path) -> Result<bool, IndexError> {
+    let db = Database::builder(view_dir.join(super::INDEX_DIR))
+        .worker_threads(FJALL_WORKER_THREADS)
+        .open()?;
+    Ok(holds_legacy_rows(&db))
+}
+
+impl super::IndexDb {
+    /// Whether this index still holds notes of the layout from before the group store: a writer
+    /// open that met a newer notes store leaves them where they are.
+    pub(crate) fn holds_legacy_memory(&self) -> bool {
+        holds_legacy_rows(&self.db)
+    }
+}
+
 /// The only fields the merge needs; a `MemoryRecord` is stored as a named msgpack map, so unknown
 /// fields are skipped.
 #[derive(Deserialize, Default)]

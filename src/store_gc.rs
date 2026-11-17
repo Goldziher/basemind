@@ -28,7 +28,7 @@ use crate::store::{
     CACHE_DIR, INDEX_FILE, StoreError, VIEWS_DIR, WORKSPACES_DIR, cache_root, global_blobs_dir, read_index,
 };
 pub use crate::store_gc_live::LiveBlobs;
-use crate::store_gc_live::{SweepLock, collect_workspace_hashes_healing_stale_views};
+use crate::store_gc_live::{SweepLock, is_rebuildable_view_error};
 
 /// The blob filename suffixes the scanner emits today, all keyed by one content hash.
 /// Used to strip the suffix off a blob filename to recover its hex stem. The four suffixes are
@@ -193,6 +193,21 @@ pub struct GcReport {
 /// incomplete is the safe failure mode: the caller surfaces the error and the operator can
 /// re-scan to rebuild the offending view's index before retrying GC.
 pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<LiveBlobs, GcError> {
+    collect_view_hashes(basemind_dir, false)
+}
+
+/// [`collect_referenced_hashes`] for the machine-wide sweep, which passes over a view of an older
+/// schema or blob layout, or one that does not decode, instead of failing on it. Such a view is
+/// rebuildable cache that names no blob this binary's sweep may keep for it: an older schema's or
+/// layout's blobs are outside this namespace, and a map that does not decode is replaced, with its
+/// blobs extracted again, by the next writer open. It is left in place, never removed: another
+/// installed basemind may be using it, and only a writer open of the view moves out the memory
+/// notes a release before 0.30 kept in its index.
+pub(crate) fn collect_referenced_hashes_skipping_stale_views(basemind_dir: &Path) -> Result<LiveBlobs, GcError> {
+    collect_view_hashes(basemind_dir, true)
+}
+
+fn collect_view_hashes(basemind_dir: &Path, skip_stale: bool) -> Result<LiveBlobs, GcError> {
     let mut referenced = LiveBlobs::default();
     let views_dir = basemind_dir.join(VIEWS_DIR);
     if !views_dir.exists() {
@@ -217,6 +232,10 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<LiveBlobs, GcErr
             // A newer basemind's view names blobs of its own namespace only: it has no vote in
             // this one, and must not stop the sweep of it.
             Err(StoreError::NewerSchema { .. }) => continue,
+            Err(e) if skip_stale && is_rebuildable_view_error(&e) => {
+                tracing::debug!(view = %view_dir.display(), error = %e, "passing over a stale view");
+                continue;
+            }
             Err(e) => return Err(GcError::Store(e)),
         };
         for entry in index.files.values() {
@@ -344,8 +363,9 @@ fn sweep_stray_tmp(path: &Path, now: SystemTime, grace: Duration, report: &mut G
 /// workspace references it. This enumerates `cache_root()/cache/workspaces/<key>/` and unions
 /// [`collect_referenced_hashes`] over each — the complete cross-workspace live set the daemon (the
 /// sole fjall writer, which alone sees every workspace) sweeps against. Schema-mismatched or corrupt
-/// view caches are removed under the workspace lock and rebuilt lazily; transient I/O and lock
-/// failures still abort the sweep so an incomplete live set never drives a delete.
+/// view caches are passed over, not removed, and no workspace lock is taken, so a workspace another
+/// process holds cannot stop the sweep ([`collect_referenced_hashes_skipping_stale_views`]);
+/// transient I/O failures still abort it so an incomplete live set never drives a delete.
 pub fn collect_referenced_hashes_global() -> Result<LiveBlobs, GcError> {
     collect_referenced_hashes_global_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR))
 }
@@ -367,7 +387,7 @@ pub(crate) fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Resu
         if !workspace_dir.is_dir() {
             continue;
         }
-        referenced.extend(collect_workspace_hashes_healing_stale_views(&workspace_dir)?);
+        referenced.extend(collect_referenced_hashes_skipping_stale_views(&workspace_dir)?);
     }
     Ok(referenced)
 }

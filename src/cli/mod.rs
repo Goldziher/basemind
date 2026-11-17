@@ -94,6 +94,14 @@ pub fn run_tool(tool: &str, result: Result<CallToolResult, McpError>) -> Result<
         if e.code == rmcp::model::ErrorCode::INVALID_PARAMS {
             return exit::CliExit::usage(format!("{tool}: {message}"));
         }
+        if e.data
+            .as_ref()
+            .and_then(|data| data.get(crate::mcp::BUSY_DATA))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return exit::CliExit::busy(format!("{tool}: {message}"));
+        }
         if message.contains("index not available") {
             return exit::CliExit::busy(format!(
                 "{tool}: {message}. Another basemind process holds the index lock and no daemon is \
@@ -130,9 +138,8 @@ pub fn run(
         .build()
         .context("build tokio runtime")?;
 
-    let intent = context::Intent::Read;
     runtime.block_on(async move {
-        let server = context::build_server_for(root, view, documents, intent)?;
+        let server = context::build_server(root, view, documents)?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
         let opts = Emit {
@@ -158,4 +165,29 @@ pub fn run_cache(root: &Path, cmd: admin::CacheCmd, json: bool) -> Result<()> {
     admin::run_cache(root, cmd, json, &mut out)?;
     out.flush().context("flush stdout")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rescan refused because another process holds the workspace lock exits `3`, as every other
+    /// lock contention does, not `1`.
+    #[test]
+    fn a_rescan_refused_for_the_workspace_lock_exits_busy() {
+        let locked = crate::scanner::ScanError::Store(crate::store::StoreError::Locked {
+            path: std::path::PathBuf::from(".lock"),
+            holder: None,
+        });
+        let error = run_tool("rescan", Err(crate::mcp::rescan_error(&locked))).expect_err("refused");
+        assert_eq!(exit::exit_code_for(&error), exit::BUSY);
+
+        let failed = crate::scanner::ScanError::Store(crate::store::StoreError::BlobTooLarge);
+        let error = run_tool("rescan", Err(crate::mcp::rescan_error(&failed))).expect_err("failed");
+        assert_eq!(
+            exit::exit_code_for(&error),
+            exit::ERROR,
+            "any other failure stays a runtime error"
+        );
+    }
 }

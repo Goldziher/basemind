@@ -142,6 +142,15 @@ pub fn memory_store_dir(root: &Path) -> PathBuf {
     repo_group_dir(root).join(MEMORY_STORE_DIR)
 }
 
+/// [`memory_store_dir`] of the group keyed `group` ([`repo_group_key`]), for a root that is gone.
+pub fn group_memory_store_dir(group: &str) -> PathBuf {
+    cache_root()
+        .join(CACHE_DIR)
+        .join(REPOS_DIR)
+        .join(group)
+        .join(MEMORY_STORE_DIR)
+}
+
 /// Directory, beside [`MEMORY_STORE_DIR`], that holds the vector stores of the memory notes: one
 /// subdirectory per embedding model and dimension.
 pub const MEMORY_VECTORS_DIR: &str = "memory.lance";
@@ -185,6 +194,11 @@ pub struct WorkspaceMarker {
     pub root: PathBuf,
     /// Unix-epoch seconds when the marker was (re)written. Diagnostics only.
     pub updated_unix: i64,
+    /// The root's repository group ([`repo_group_key`]), recorded while the root exists: a collector
+    /// that finds the root gone can no longer resolve it, and a linked worktree's group is not the
+    /// hash of its own root. `None` in a marker written before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// Idempotently record `root` in `basemind_dir/workspace.json`.
@@ -197,6 +211,7 @@ pub fn ensure_workspace_marker(basemind_dir: &Path, root: &Path) {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if let Some(existing) = read_workspace_marker(basemind_dir)
         && existing.root == canonical
+        && existing.group.is_some()
     {
         return;
     }
@@ -204,9 +219,11 @@ pub fn ensure_workspace_marker(basemind_dir: &Path, root: &Path) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let group = Some(repo_group_key(&canonical));
     let marker = WorkspaceMarker {
         root: canonical,
         updated_unix,
+        group,
     };
     let Ok(bytes) = serde_json::to_vec(&marker) else {
         return;
@@ -234,8 +251,8 @@ pub struct StatusSidecar {
     /// Number of code files in the working view's index (`Index::files.len()` — the same population
     /// the MCP `status` tool reports as `file_count`).
     pub file_count: usize,
-    /// Number of content-addressed filemap blobs on disk (`*.fm.msgpack` in the global blob store),
-    /// counted consistently with the MCP `status` tool's `blob_count`.
+    /// Number of distinct file contents the working view's file map holds, one filemap blob each.
+    /// Unlike the MCP `status` tool's `blob_count`, it counts this workspace's blobs only.
     pub blob_count: usize,
     /// Unix-epoch seconds when the sidecar was written (i.e. when the scan that produced it finished).
     pub scanned_unix: i64,

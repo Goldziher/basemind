@@ -39,15 +39,15 @@ pub enum RebuildOutcome {
 /// And only a repository the caller actually rooted at is built: `repo` reaching here from a
 /// workspace root *below* its workdir means an ancestor repository was inherited, which
 /// [`history_scope_ok`](super::history_scope_ok) refuses.
-pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+pub fn sync(index: &GitHistoryIndex, repo: &Repo, _basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
     // Run on a small dedicated pool, not rayon's global one: a first build walks hundreds of thousands
     // of commits in parallel, and on the global pool it starves every other par_iter in the process
     // (a read-stack warm that takes 12 s took 469 s while a 248k-commit build was running).
     // Under thread exhaustion the pool cannot be built; degrade to the caller's thread (slower, and on
     // rayon's global pool) rather than panicking.
     match history_pool() {
-        Some(pool) => pool.install(|| sync_inner(index, repo, basemind_dir)),
-        None => sync_inner(index, repo, basemind_dir),
+        Some(pool) => pool.install(|| sync_inner(index, repo)),
+        None => sync_inner(index, repo),
     }
 }
 
@@ -68,7 +68,7 @@ fn history_pool() -> Option<&'static rayon::ThreadPool> {
     .as_ref()
 }
 
-fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, GitHistoryError> {
     index.require_local()?;
     if !super::history_scope_ok(repo) {
         return Err(GitHistoryError::ForeignHistory {
@@ -91,7 +91,7 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Resu
         && repo.is_ancestor(&last_hex, &head)
         && fingerprint_ok(index, repo, &head)
     {
-        return append_since(index, repo, &last_hex, &head);
+        return append_since(index, repo, &last_hex, &head).inspect_err(|_| record_failure(index, &head));
     }
 
     // The index tracks ONE head, and every worktree of a clone shares it. A linked worktree on its
@@ -101,15 +101,54 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Resu
     // build is left to a linked worktree; afterwards it may append (above) but never wipe. The index
     // is a pure accelerator (tools use it only when `last_indexed_head == HEAD`), so a linked
     // worktree at any other head reads via the live walk: correct, just slower.
+    // An interrupted index makes `is_empty` true, so a linked worktree may rebuild it here and the
+    // main checkout then rebuild it again for its own head ("history-rewrite"): the ping-pong above,
+    // once per interruption. ~keep
     if repo.is_linked_worktree() && !index.is_empty() {
         return Ok(RebuildOutcome::Skipped {
             reason: "linked worktree diverges from the indexed head",
         });
     }
 
-    let reason = if index.is_empty() { "initial" } else { "history-rewrite" };
-    index.clear(basemind_dir)?;
-    rebuild(index, repo, reason)
+    let interrupted = index.build_interrupted();
+    if interrupted && backing_off(index, &head, now_unix()) {
+        return Ok(RebuildOutcome::Skipped {
+            reason: "a build at this head failed within the hour",
+        });
+    }
+    let reason = if interrupted {
+        "interrupted"
+    } else if index.is_empty() {
+        "initial"
+    } else {
+        "history-rewrite"
+    };
+    index.clear()?;
+    rebuild(index, repo, reason).inspect_err(|_| record_failure(index, &head))
+}
+
+/// How long a sync at the HEAD a build or append failed for leaves the index to the live walk. A
+/// failure that recurs (a commit `commit_record` cannot read, a full disk) would otherwise cost a walk
+/// of the whole history on every scan and every serve start.
+const FAILED_BUILD_BACKOFF_SECS: u64 = 3600;
+
+/// Whether the last failed build was for `head` and is younger than [`FAILED_BUILD_BACKOFF_SECS`].
+fn backing_off(index: &GitHistoryIndex, head: &str, now: u64) -> bool {
+    keys::sha_hex_to_raw(head)
+        .and_then(|head20| index.failed_build_at(&head20))
+        .is_some_and(|failed| now.saturating_sub(failed) < FAILED_BUILD_BACKOFF_SECS)
+}
+
+fn record_failure(index: &GitHistoryIndex, head: &str) {
+    if let Some(head20) = keys::sha_hex_to_raw(head) {
+        index.record_failed_build(&head20, now_unix());
+    }
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Defense-in-depth: even when the ancestry check passes, a rewrite below `last_head` (graft,
@@ -143,6 +182,7 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
     let mut writer = index.writer()?;
+    writer.begin()?;
 
     let written = fold_chunked(
         index,
@@ -193,6 +233,7 @@ fn append_since(
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
     let mut writer = index.writer()?;
+    writer.begin()?;
 
     let added = fold_chunked(
         index,
@@ -246,7 +287,8 @@ const RECORD_CHUNK: usize = 8192;
 /// absolute position in `chrono` (`start_ord` plus the global offset) so a `None`/unparsable record
 /// still consumes its slot, preserving the positional ordinal contract the non-chunked fold had.
 /// Returns the number of commits actually written. `dedup` skips commits already present in
-/// `gh_ord_by_sha` (the incremental append's defensive guard).
+/// `gh_ord_by_sha` (the incremental append's defensive guard). It never meets a row a cut-off run
+/// left, because such a run leaves the index marked in progress and the next sync rebuilds it.
 #[allow(clippy::too_many_arguments)]
 fn fold_chunked(
     index: &GitHistoryIndex,
@@ -367,5 +409,209 @@ impl<'a> PathInterner<'a> {
         self.cache.insert(rel.clone(), id);
         writer.put_path(rel, id)?;
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e.x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e.x")
+            .output()
+            .expect("git in PATH");
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8(out.stdout).expect("utf8")
+    }
+
+    fn commit(root: &Path, path: &str, content: &str, msg: &str) {
+        std::fs::write(root.join(path), content).expect("write the file");
+        git(root, &["add", path]);
+        git(root, &["commit", "-qm", msg]);
+    }
+
+    fn touching(index: &GitHistoryIndex, path: &str) -> Vec<String> {
+        index
+            .commits_touching(&RelPath::from(path.as_bytes()), 0, 100)
+            .into_iter()
+            .map(|c| c.sha)
+            .collect()
+    }
+
+    /// A sync killed after the writer's first batch commit leaves the new commits' rows durable and
+    /// their postings and head not. The retry used to skip every commit it found a row for, so they
+    /// never reached a posting list and the index then claimed to be fresh.
+    #[test]
+    fn an_append_cut_off_after_a_batch_commit_is_rebuilt_not_skipped() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q"]);
+        git(root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        let repo = Repo::discover(root).expect("discover");
+        sync(&index, &repo, cache.path()).expect("first build");
+
+        commit(root, "a.rs", "2", "c2");
+        commit(root, "a.rs", "3", "c3");
+        let repo = Repo::discover(root).expect("rediscover");
+        let last = index.last_indexed_head_hex().expect("an indexed head");
+        let new_shas = repo.new_commit_shas(&last).expect("new commits");
+        assert_eq!(new_shas.len(), 2);
+        let chrono: Vec<&String> = new_shas.iter().rev().collect();
+        {
+            let mut writer = index.writer().expect("writer");
+            writer.begin().expect("mark the append");
+            let mut interner = PathInterner::new(&index, index.next_path_id());
+            let mut postings = AHashMap::new();
+            let mut term_postings = AHashMap::new();
+            fold_chunked(
+                &index,
+                &repo,
+                &chrono,
+                index.next_ord(),
+                true,
+                &mut interner,
+                &mut postings,
+                &mut term_postings,
+                &mut writer,
+            )
+            .expect("fold the new commits");
+            writer.flush().expect("commit the batch");
+        }
+        assert_eq!(
+            index.last_indexed_head_hex(),
+            None,
+            "a cut-off append is never served as fresh"
+        );
+
+        let outcome = sync(&index, &repo, cache.path()).expect("resync");
+        assert_eq!(
+            outcome,
+            RebuildOutcome::FullRebuild {
+                reason: "interrupted",
+                commits: 3
+            }
+        );
+        let head = git(root, &["rev-parse", "HEAD"]);
+        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(head.trim()));
+        let expected: Vec<String> = git(root, &["log", "--full-history", "--format=%H", "--", "a.rs"])
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(expected.len(), 3);
+        assert_eq!(
+            touching(&index, "a.rs"),
+            expected,
+            "every commit is in the posting list"
+        );
+    }
+
+    /// A build that fails at a commit it cannot read fails again at that commit: a sync at the same
+    /// HEAD leaves the marked index to the live walk for an hour instead of walking the whole
+    /// history each time, then tries again.
+    #[test]
+    fn a_failed_build_is_not_retried_at_the_same_head_within_the_hour() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        let repo = Repo::discover(root).expect("discover");
+        let head = git(root, &["rev-parse", "HEAD"]);
+        let head20 = keys::sha_hex_to_raw(head.trim()).expect("a sha");
+        index
+            .writer()
+            .expect("writer")
+            .begin()
+            .expect("a build that was cut off");
+        index.record_failed_build(&head20, now_unix());
+
+        let outcome = sync(&index, &repo, cache.path()).expect("sync");
+        assert!(matches!(outcome, RebuildOutcome::Skipped { .. }), "{outcome:?}");
+        assert!(index.build_interrupted(), "the marked index is left as it was");
+
+        index.record_failed_build(&head20, now_unix() - FAILED_BUILD_BACKOFF_SECS);
+        let outcome = sync(&index, &repo, cache.path()).expect("sync");
+        assert_eq!(
+            outcome,
+            RebuildOutcome::FullRebuild {
+                reason: "interrupted",
+                commits: 1
+            }
+        );
+        assert_eq!(index.failed_build_at(&head20), None, "a stamped head clears the record");
+    }
+
+    /// An append cut off after a batch commit left a new path's id rows durable while the next free
+    /// id was never advanced. A retry that reused the id gave it to another path, whose history then
+    /// served the first path's commits. The cut-off index is rebuilt instead, so no id names two
+    /// paths and each path's history is its own.
+    #[test]
+    fn a_retry_after_a_cut_off_append_never_gives_one_path_id_to_two_paths() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("first build");
+
+        commit(root, "b.rs", "1", "adds b");
+        let repo = Repo::discover(root).expect("rediscover");
+        let last = index.last_indexed_head_hex().expect("an indexed head");
+        let new_shas = repo.new_commit_shas(&last).expect("new commits");
+        let chrono: Vec<&String> = new_shas.iter().rev().collect();
+        {
+            let mut writer = index.writer().expect("writer");
+            writer.begin().expect("mark the append");
+            let mut interner = PathInterner::new(&index, index.next_path_id());
+            let (mut postings, mut term_postings) = (AHashMap::new(), AHashMap::new());
+            fold_chunked(
+                &index,
+                &repo,
+                &chrono,
+                index.next_ord(),
+                true,
+                &mut interner,
+                &mut postings,
+                &mut term_postings,
+                &mut writer,
+            )
+            .expect("fold");
+            writer.flush().expect("commit the batch: b.rs's id rows are durable");
+        }
+        commit(root, "c.rs", "1", "adds c");
+        commit(root, "b.rs", "2", "edits b");
+        let repo = Repo::discover(root).expect("rediscover");
+
+        sync(&index, &repo, cache.path()).expect("retry");
+
+        let local = index.local().expect("local");
+        let paths: Vec<RelPath> = (0..index.next_path_id())
+            .map(|id| local.path_for_id(id).expect("every id names a path"))
+            .collect();
+        let distinct: ahash::AHashSet<&RelPath> = paths.iter().collect();
+        assert_eq!(distinct.len(), paths.len(), "no id names two paths: {paths:?}");
+        for path in ["a.rs", "b.rs", "c.rs"] {
+            let expected: Vec<String> = git(root, &["log", "--full-history", "--format=%H", "--", path])
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(touching(&index, path), expected, "{path}'s history is its own");
+        }
     }
 }
