@@ -13,8 +13,9 @@ async fn assert_foreign_cursor_is_refused(
     tool_b: &'static str,
     mut query_b: Value,
 ) {
-    // A cursor can also go stale between two calls (the map finishes warming, the watcher rescans),
-    // which is the other refusal and says so. The page is then simply asked for again.
+    // A cursor can also go stale between two calls (the map finishes warming, the watcher rescans,
+    // the git-history index comes up), which is the other refusal and says so. The page is then
+    // simply asked for again.
     let mut attempts = 0;
     let cursor = loop {
         let first = call(client, tool_a, query_a.clone()).await;
@@ -38,7 +39,7 @@ async fn assert_foreign_cursor_is_refused(
         let message = super::text_of(&second);
         attempts += 1;
         assert!(
-            message.contains("changed since this cursor was issued") && attempts < 5,
+            message.contains("since this cursor was issued") && attempts < 5,
             "the cursor must continue its own query: {message}"
         );
     };
