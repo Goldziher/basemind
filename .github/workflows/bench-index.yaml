@@ -42,12 +42,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
+      - uses: ./.github/actions/setup-rust
 
       - name: Install system dependencies
         uses: ./.github/actions/install-system-deps
+
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: python
+
+      # ~keep Both bench builds use their own target dir under RUNNER_TEMP, deleted after the copy;
+      # ~keep only the registry and git sources are worth caching.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-index-${{ inputs.features }}
+          cache-targets: "false"
 
       - name: Check out the baseline
         env:
