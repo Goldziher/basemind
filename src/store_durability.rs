@@ -166,7 +166,7 @@ impl Store {
                 super::wipe_view(&self.view_dir)?;
                 Index::empty()
             }
-            Err(StoreError::StaleBlobLayout { .. }) => {
+            Err(StoreError::StaleBlobLayout { .. } | StoreError::Decode(_)) => {
                 self.reset_stale_schema = true;
                 discard_view_of_a_stale_layout(&self.view_dir)?;
                 Index::empty()

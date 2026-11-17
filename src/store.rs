@@ -506,7 +506,9 @@ impl Store {
                 wipe_view(&view_dir)?;
                 Index::empty()
             }
-            Err(error @ StoreError::StaleBlobLayout { .. }) => {
+            // A map that does not decode is rebuildable cache; refusing it left the workspace unopenable
+            // until someone cleared the cache. Its index goes too: no map lists the files of its rows. ~keep
+            Err(error @ (StoreError::StaleBlobLayout { .. } | StoreError::Decode(_))) => {
                 reset_stale_schema = true;
                 tracing::info!(view, %error, "refreshing view in place (every file is extracted again)");
                 durability::discard_view_of_a_stale_layout(&view_dir)?;

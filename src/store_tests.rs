@@ -638,3 +638,23 @@ fn a_vector_store_that_would_not_open_is_tried_once_per_scan_pass() {
     .expect("scan");
     assert!(store.lance_or_open(4, "model").is_ok(), "the next pass opens it");
 }
+
+/// A torn or undecodable file map failed every writer open, `scan` included, until a daemon GC or a
+/// cache clear removed it. The open now discards the view and the index it fed, and a scan rebuilds.
+#[test]
+fn a_writer_open_rebuilds_a_view_whose_file_map_does_not_decode() {
+    use crate::index::view::IndexView;
+
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let view_dir = scanned_view(root);
+    std::fs::write(view_dir.join(INDEX_FILE), b"\xff\xff torn \x00").expect("tear the file map");
+
+    let mut store = Store::open(root, VIEW_WORKING).expect("the writer open replaces the torn map");
+    assert!(store.index.files.is_empty());
+    let view = store.index_view().expect("index");
+    assert!(view.symbols_index_is_empty(), "the index it fed is discarded too");
+    rescan(root, &mut store).expect("scan");
+    assert_eq!(store.index.files.len(), 1);
+}
