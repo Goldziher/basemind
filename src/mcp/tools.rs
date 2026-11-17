@@ -19,7 +19,6 @@ use rmcp::tool;
 use super::BasemindServer;
 use super::adapter::{self, Op};
 use super::cursor_bind::bound;
-use super::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
 use super::helpers_code;
 use super::strict::Strict;
 use super::types_tools::{
@@ -264,14 +263,9 @@ impl BasemindServer {
         )
     }
 
-    /// Body of `find_files`, shared with `basemind code find`.
+    /// Body of the `find_files` tool.
     pub(crate) async fn find_files_call(&self, p: FindFilesToolParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "find_files",
-            p,
-            bound(p, |p| helpers_code::find_files(&self.state, p)).await
-        )
+        self.op(p, Workspace::find_files).await
     }
 
     /// Fetch one semantic-search chunk body. No MCP tool (`code_read` reads a hit's span):
@@ -290,18 +284,6 @@ impl BasemindServer {
             Err(super::tool_contract::feature_missing("code chunk", "code-search"))
         }
     }
-}
-
-/// Resolve the effective `list_files` page limit and report whether the caller's
-/// requested limit was clamped to [`LIST_LIMIT_MAX`].
-///
-/// Returns `(effective_limit, clamped)` where `clamped` is true iff the caller asked
-/// for more than the cap allows — surfaced honestly to the client rather than silently
-/// truncating (bug #17).
-pub(super) fn effective_list_limit(requested: Option<u32>) -> (usize, bool) {
-    let asked = requested.unwrap_or(LIST_LIMIT_DEFAULT);
-    let clamped = asked > LIST_LIMIT_MAX;
-    (asked.min(LIST_LIMIT_MAX) as usize, clamped)
 }
 
 /// Count content-addressed blobs in the GLOBAL blob store by tallying `.fm.msgpack` files
@@ -347,35 +329,6 @@ fn blob_divergence_note(file_count: usize, blob_count: usize) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
-
-    #[test]
-    fn list_limit_under_cap_is_not_clamped() {
-        let (limit, clamped) = effective_list_limit(Some(100));
-        assert_eq!(limit, 100);
-        assert!(!clamped, "a request under the cap must not be flagged clamped");
-    }
-
-    #[test]
-    fn list_limit_at_cap_is_not_clamped() {
-        let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX));
-        assert_eq!(limit, LIST_LIMIT_MAX as usize);
-        assert!(!clamped, "a request exactly at the cap is honored, not clamped");
-    }
-
-    #[test]
-    fn list_limit_over_cap_is_clamped_and_signalled() {
-        let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX + 1));
-        assert_eq!(limit, LIST_LIMIT_MAX as usize, "limit is clamped to the cap");
-        assert!(clamped, "exceeding the cap must set the clamp flag (bug #17)");
-    }
-
-    #[test]
-    fn list_limit_default_when_absent() {
-        let (limit, clamped) = effective_list_limit(None);
-        assert_eq!(limit, LIST_LIMIT_DEFAULT as usize);
-        assert!(!clamped);
-    }
 
     #[test]
     fn status_note_absent_when_index_and_blobs_agree() {

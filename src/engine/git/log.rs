@@ -2,8 +2,8 @@
 //! operations behind them.
 //!
 //! This file owns the commit-log family (`status`, `recent`, `touching`, `churn`, `search`);
-//! `by_path` lives in `helpers_git_by_path.rs`, and the operations scoped to a single path (`diff`,
-//! `diff_outline`, `blame`, `blame_symbol`, `symbol_history`) in `helpers_git_file.rs`. The split
+//! `by_path` lives in `by_path.rs`, and the operations scoped to a single path (`diff`,
+//! `diff_outline`, `blame`, `blame_symbol`, `symbol_history`) in `file.rs`. The split
 //! is only about the 1000-line per-file cap.
 
 use super::by_path::{LIVE_WALK, by_path};

@@ -12,17 +12,16 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::{
-    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_files,
-    run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
+    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_implementations,
+    run_find_references, run_workspace_grep,
 };
 use super::index_route::IndexRoute;
 use super::tool_contract::budget;
 use super::types::{
-    DependentsResponse, FindCallersParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
-    ListFilesParams, WorkspaceGrepParams,
+    DependentsResponse, FindCallersParams, FindReferencesParams, GotoDefinitionParams, WorkspaceGrepParams,
 };
 use super::types_impls::FindImplementationsParams;
-use super::types_tools::{CodeGrepParams, CodeRefsParams, CodeSearchParams, FindFilesToolParams};
+use super::types_tools::{CodeGrepParams, CodeRefsParams, CodeSearchParams};
 
 /// `code_grep`: content search over every indexed code file.
 pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
@@ -83,42 +82,6 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
     {
         let _ = (state, p);
         Err(super::tool_contract::feature_missing("code_search", "code-search"))
-    }
-}
-
-/// `find_files`: fuzzy file-name search, or a plain listing when `query` is omitted.
-pub(super) async fn find_files(state: &ServerState, p: FindFilesToolParams) -> Result<CallToolResult, McpError> {
-    match p.query.filter(|query| !query.trim().is_empty()) {
-        Some(query) => {
-            run_find_files(
-                state,
-                FindFilesParams {
-                    query,
-                    path_prefix: p.path_prefix,
-                    language: p.language,
-                    limit: p.limit,
-                    max_tokens: budget(p.max_tokens),
-                    format: None,
-                    cursor: p.cursor,
-                },
-            )
-            .await
-        }
-        None => {
-            run_list_files(
-                state,
-                ListFilesParams {
-                    path_contains: None,
-                    path_prefix: p.path_prefix,
-                    language: p.language,
-                    limit: p.limit,
-                    max_tokens: budget(p.max_tokens),
-                    format: None,
-                    cursor: p.cursor,
-                },
-            )
-            .await
-        }
     }
 }
 

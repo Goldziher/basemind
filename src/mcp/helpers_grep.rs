@@ -14,11 +14,11 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
-use super::helpers_filters::{Filters, PathFilter};
 use super::helpers_grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
 use super::index_route::blocking;
 use super::tool_contract::{IndexedFiles, Sweep};
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
+use crate::engine::filters::{Filters, PathFilter};
 use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
 
@@ -124,9 +124,9 @@ pub(super) async fn run_workspace_grep(
         .chain(documents.iter().map(|(path, meta)| (path, meta)))
         .collect();
     if candidates.is_empty()
-        && let Some(refusal) = super::helpers_files::grep_selects_no_file(state, &cache, &filters)
+        && let Some(refusal) = crate::engine::filters::grep_selects_no_file(&state.shared, &cache, &filters)
     {
-        return Err(refusal);
+        return Err(refusal.into());
     }
 
     let window = candidates.get(skip_files.min(candidates.len())..).unwrap_or(&[]);

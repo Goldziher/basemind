@@ -6,6 +6,7 @@ pub(crate) mod budget;
 pub(crate) mod cursor;
 pub(crate) mod error;
 pub(crate) mod files;
+pub(crate) mod filters;
 pub(crate) mod freshness;
 pub(crate) mod git;
 pub(crate) mod l1_cache;

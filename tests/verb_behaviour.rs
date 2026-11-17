@@ -19,6 +19,8 @@ mod args;
 mod bounds;
 #[path = "verb_behaviour/cursors.rs"]
 mod cursors;
+#[path = "verb_behaviour/files.rs"]
+mod files;
 #[path = "verb_behaviour/git.rs"]
 mod git;
 #[path = "verb_behaviour/grep.rs"]

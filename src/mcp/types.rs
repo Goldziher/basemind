@@ -13,65 +13,6 @@ use crate::path::RelPath;
 pub(crate) use crate::engine::types::LifecycleNotice;
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct ListFilesParams {
-    /// Optional substring matched against the path. Cheaper than reading a glob crate.
-    #[serde(default)]
-    pub path_contains: Option<String>,
-    /// Optional prefix the path must start with.
-    #[serde(default)]
-    pub path_prefix: Option<String>,
-    /// Filter by language (e.g. "rust", "python").
-    #[serde(default)]
-    pub language: Option<String>,
-    /// Cap. Default 200, max 5000.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Optional token budget bounding the returned file list (not the whole envelope).
-    /// Entries are kept in order until the budget is hit; the rest are dropped and the
-    /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `files` list — far fewer tokens than JSON for large listings.
-    #[serde(default)]
-    pub format: Option<String>,
-    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
-    /// the in-RAM index snapshot and invalidate on rescan.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct FindFilesParams {
-    /// Fuzzy query matched as a subsequence against each indexed path (fzf/fd-style — letters
-    /// of `query` must appear in order in the path, not necessarily contiguous). Case-insensitive.
-    pub query: String,
-    /// Optional prefix filter applied before scoring (e.g. "src/mcp/").
-    #[serde(default)]
-    pub path_prefix: Option<String>,
-    /// Filter by language (e.g. "rust", "python"), applied before scoring.
-    #[serde(default)]
-    pub language: Option<String>,
-    /// Cap. Default 200, max 5000 (same convention as `list_files`).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Optional token budget bounding the returned file list (not the whole envelope).
-    /// Entries are kept in score order until the budget is hit; the rest are dropped and the
-    /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `files` list — far fewer tokens than JSON for large listings.
-    #[serde(default)]
-    pub format: Option<String>,
-    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
-    /// the in-RAM index snapshot (and the score ordering computed for `query`); a rescan
-    /// invalidates them same as `list_files`.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FindReferencesParams {
     /// The callee identifier to look up. Substring match — case-sensitive, no scope
     /// resolution; both `Foo::bar()` and `bar()` register as callee `"bar"`. Use with
@@ -145,33 +86,6 @@ pub struct GotoDefinitionParams {
 }
 
 pub(super) use crate::engine::types::default_true;
-
-/// Response of `find_files`: a fuzzy search ranked best first, or a listing in path order.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct FilesResponse {
-    /// Files that match, from this page on: `next_cursor` continues past this one.
-    pub total: usize,
-    /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
-    /// was clamped down to it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub limit_clamped: bool,
-    /// True when a `max_tokens` budget dropped trailing files. Page the rest with `next_cursor`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    /// Repo-relative paths: by descending match quality for a query (ties by path), else by path.
-    pub files: Vec<RelPath>,
-    /// Opaque cursor to pass back on the next call when more results are available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Cursor>,
-    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
-    /// (a rescan happened between calls). The caller must restart pagination from the top.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub cursor_invalidated: bool,
-    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
-    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice: Option<LifecycleNotice>,
-}
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct DependentsResponse {
