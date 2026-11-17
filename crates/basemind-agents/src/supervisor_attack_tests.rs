@@ -9,6 +9,7 @@ use super::tests::*;
 use super::*;
 use crate::audit::MemoryAuditSink;
 use crate::claude::ClaudeCodeAdapter;
+use crate::error::LaunchError;
 use crate::event::{Event, FinishStatus};
 use crate::peer::Peer;
 use crate::policy::{FlavorPolicy, PolicySpec};
