@@ -10,33 +10,37 @@ use crate::index::IndexDb;
 use crate::scanner::ScanError;
 use crate::store::{ScanHealth, Store};
 
-/// Run before a full scan touches the index: forget a full-disk latch from an earlier pass (the
-/// space check below decides whether it is cured), refuse a poisoned handle outright, empty an index
-/// that is behind its file map so the pass rebuilds it, and refuse a volume without room for the
-/// index.
+/// Run before a full scan touches the index: take the writer's place ([`claim_writer`]), forget a
+/// full-disk latch from an earlier pass (the space check below decides whether it is cured), refuse
+/// a poisoned handle outright, empty an index that is behind its file map so the pass rebuilds it,
+/// and refuse a volume without room for the index.
 pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
     crate::scan_evidence::settle_dead_hosts();
     store.retry_vector_store();
-    absorb_owed_rows(store);
+    claim_writer(store)?;
     if let Some(db) = store.index_db.as_ref() {
         db.clear_recoverable_fault();
         if let Some(reason) = db.fatal_fault() {
             return Err(ScanError::IndexFault(reason));
         }
     }
-    store.open_index_owed_to_scan()?;
     store.rebuild_index_if_behind()?;
     ensure_space(store)
 }
 
-/// For a store opened without the workspace lock and now scanned in place: take in the owed set
-/// as it is on disk, which another process may have added to since this store loaded it. A store
-/// that holds the lock is the only writer of the set and has nothing to take in.
-pub(crate) fn absorb_owed_rows(store: &mut Store) {
-    if !store.holds_writer_lock() {
+/// Make this store the workspace's writer before a scan writes into it: a store opened without the
+/// workspace lock takes it, or the scan is refused while another process holds it (see
+/// [`Store::take_writer_lock`]), and the store gets the index handle its open did not take. Having
+/// just taken the lock, it takes in the owed set as it is on disk, which another process may have
+/// added to since this store loaded it. A store that held the lock from its open is the only
+/// writer of the set and has nothing to take in.
+pub(crate) fn claim_writer(store: &mut Store) -> Result<(), ScanError> {
+    if store.take_writer_lock()? {
         let on_disk = crate::store_pending::PendingVectors::load(&store.view_dir);
         store.pending_vectors.absorb(on_disk);
     }
+    store.open_index_owed_to_scan()?;
+    Ok(())
 }
 
 /// Whether an incremental scan must hand over to a full one: only a full pass can rebuild an index

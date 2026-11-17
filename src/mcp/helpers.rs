@@ -606,7 +606,13 @@ pub(super) async fn scan_and_refresh(
     })
     .await
     .map_err(|e| McpError::internal_error(format!("scan join: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("rescan: {e}"), None))?;
+    .map_err(|e| match &e {
+        // Another process writes this workspace: the caller can retry or rescan through it. ~keep
+        crate::scanner::ScanError::Store(store) if store.is_lock_contention() => {
+            McpError::invalid_request(format!("rescan: {e}"), None)
+        }
+        _ => McpError::internal_error(format!("rescan: {e}"), None),
+    })?;
 
     if was_scoped && report.stats.updated == 0 && report.stats.removed == 0 {
         return Ok(report);

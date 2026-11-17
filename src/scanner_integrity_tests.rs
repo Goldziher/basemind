@@ -567,3 +567,38 @@ fn a_workspace_awaiting_verification_needs_a_full_scan() {
     full_scan(dir.path(), &mut store);
     assert!(!store.needs_full_scan(), "the pass that verified withdraws the request");
 }
+
+/// A store opened without the workspace lock while another process held it has no index handle.
+/// Scanned in place, it raced that writer on the file map and recorded new hashes for files whose
+/// rows it never wrote, which the writer then skipped as unchanged. The scan is refused instead,
+/// and once the writer is gone the same store scans through an index it opens under the lock.
+#[test]
+fn a_scan_into_a_store_opened_beside_a_writer_is_refused_until_it_can_take_the_lock() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let writer = Store::open(root, VIEW_WORKING).expect("the writer");
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(in_place.index_db.is_none(), "the writer holds the index");
+    std::fs::write(root.join("alpha.rs"), b"pub fn gamma() -> u32 { 3 }\n").expect("edit");
+
+    let config = ConfigV1::with_defaults();
+    let refused = scan(root, &mut in_place, &config, ScanSource::WorkingTree, EmbedMode::Deferred)
+        .expect_err("a full scan beside a writer");
+    assert!(matches!(&refused, ScanError::Store(error) if error.is_lock_contention()), "{refused}");
+    let named = [root.join("alpha.rs")];
+    let refused = crate::scanner::scan_paths(root, &mut in_place, &config, &named, EmbedMode::Deferred)
+        .expect_err("an incremental scan beside a writer");
+    assert!(matches!(&refused, ScanError::Store(error) if error.is_lock_contention()), "{refused}");
+    assert!(!in_place.holds_writer_lock());
+    assert!(
+        crate::store::read_index(&in_place.view_dir).expect("read").is_none_or(|map| map.files.is_empty()),
+        "the refused scans wrote no file map"
+    );
+
+    drop(writer);
+    full_scan(root, &mut in_place);
+    assert!(in_place.holds_writer_lock());
+    let db = in_place.index_db.as_ref().expect("an index opened under the lock");
+    assert_eq!(db.view().symbols_by_name_lookup("gamma", 10).len(), 1);
+}
