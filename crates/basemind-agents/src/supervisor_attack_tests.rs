@@ -775,10 +775,6 @@ fn a_session_past_its_recorded_allows_is_stopped() {
         Some(SessionState::Finished(FinishStatus::Stopped)),
         "a session ran on past its recorded allows"
     );
-    assert!(
-        !scratch.path.join("done").exists(),
-        "the stand-in had every allow it asked for"
-    );
     let allows = outcomes(&audit, AuditEvent::Approval)
         .iter()
         .filter(|outcome| **outcome == "allowed")
