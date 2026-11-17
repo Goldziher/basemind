@@ -251,6 +251,7 @@ fn legacy_uncompressed_chunk_blobs_remain_readable_and_peekable() {
     let blob = crate::chunk::CodeChunkBlob {
         config_digest: String::new(),
         schema_ver: SCHEMA_VER,
+        extract_epoch: 0,
         embedding_dim: 768,
         embedding_model: "balanced".to_string(),
         chunks: Vec::new(),
@@ -261,6 +262,7 @@ fn legacy_uncompressed_chunk_blobs_remain_readable_and_peekable() {
 
     assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
     let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("legacy chunk peek");
+    assert_eq!(peek.extract_epoch, 0);
     assert_eq!(peek.embedding_dim, 768);
     assert_eq!(peek.embedding_model, "balanced");
     assert_eq!(peek.chunks.len(), 0);
@@ -277,6 +279,7 @@ fn chunk_peek_reads_plain_metadata_without_decompressing_payload() {
     let blob = crate::chunk::CodeChunkBlob {
         config_digest: String::new(),
         schema_ver: SCHEMA_VER,
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
         embedding_dim: 768,
         embedding_model: "balanced".to_string(),
         chunks: Vec::new(),
@@ -293,6 +296,11 @@ fn chunk_peek_reads_plain_metadata_without_decompressing_payload() {
         .peek_chunk_state(&hash_hex)
         .expect("plain chunk metadata remains readable")
         .expect("chunk peek present");
+    assert_eq!(
+        peek.extract_epoch,
+        crate::extract::EXTRACT_EPOCH,
+        "the epoch is in the plain header"
+    );
     assert_eq!(peek.embedding_dim, 768);
     assert_eq!(peek.embedding_model, "balanced");
     assert_eq!(peek.chunks.len(), 0);
@@ -343,6 +351,7 @@ fn chunk_peek_prefix_read_recovers_digest_and_counts_with_large_payload() {
     let blob = crate::chunk::CodeChunkBlob {
         config_digest: digest.clone(),
         schema_ver: SCHEMA_VER,
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
         embedding_dim: 4,
         embedding_model: "balanced".to_string(),
         chunks: (0..200).map(noisy_chunk).collect(),
@@ -356,7 +365,81 @@ fn chunk_peek_prefix_read_recovers_digest_and_counts_with_large_payload() {
 
     let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("peek present");
     assert_eq!(peek.config_digest, digest);
+    assert_eq!(peek.extract_epoch, crate::extract::EXTRACT_EPOCH);
     assert_eq!(peek.chunks.len(), 200);
     assert_eq!(peek.embeddings.len(), 200);
+    assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
+}
+
+/// A chunk envelope as written before the header carried the extract epoch: kind `Chunk`, a 28-byte
+/// fixed header, and a payload without the field.
+#[cfg(feature = "code-search")]
+fn pre_epoch_chunk_envelope(blob: &crate::chunk::CodeChunkBlob) -> Vec<u8> {
+    let bytes = rmp_serde::to_vec_named(blob).unwrap();
+    let compressed = compress_payload(&bytes).unwrap();
+    let model = blob.embedding_model.as_bytes();
+    let mut out = Vec::new();
+    encode_prefix(BlobKind::Chunk, blob.schema_ver, &mut out);
+    out.extend_from_slice(&checked_u32_len(bytes.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(compressed.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(&blob.embedding_dim.to_le_bytes());
+    out.extend_from_slice(&u16::try_from(model.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(blob.chunks.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(&checked_u32_len(blob.embeddings.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(model);
+    out.extend_from_slice(chunk_digest_region(&blob.config_digest));
+    out.extend_from_slice(&compressed);
+    out
+}
+
+/// A sidecar written before the chunk header carried the extract epoch must read as epoch 0, so the
+/// scanner re-chunks it, and must not be an error, which would drop it as damaged.
+#[cfg(feature = "code-search")]
+#[test]
+fn a_chunk_envelope_without_an_epoch_reads_as_epoch_zero() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = "7".repeat(64);
+    let blob = crate::chunk::CodeChunkBlob {
+        config_digest: "d".repeat(crate::config::rules::DIGEST_LEN),
+        schema_ver: SCHEMA_VER,
+        extract_epoch: 0,
+        embedding_dim: 4,
+        embedding_model: "balanced".to_string(),
+        chunks: (0..3).map(noisy_chunk).collect(),
+        embeddings: (0..3).map(|i| vec![i as f32; 4]).collect(),
+    };
+    std::fs::write(store.blob_path_chunk_hex(&hash_hex), pre_epoch_chunk_envelope(&blob)).unwrap();
+
+    let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("peek present");
+    assert_eq!(peek.extract_epoch, 0, "no epoch in the header reads as stale");
+    assert_eq!(peek.config_digest, blob.config_digest);
+    assert_eq!(peek.chunks.len(), 3);
+    assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
+}
+
+/// The writer stamps the epoch, and a stamped sidecar round-trips with it in the header and payload.
+#[cfg(feature = "code-search")]
+#[test]
+fn a_written_chunk_sidecar_carries_its_extract_epoch() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = "8".repeat(64);
+    let blob = crate::chunk::CodeChunkBlob {
+        config_digest: String::new(),
+        schema_ver: SCHEMA_VER,
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
+        embedding_dim: 0,
+        embedding_model: String::new(),
+        chunks: (0..2).map(noisy_chunk).collect(),
+        embeddings: Vec::new(),
+    };
+    store.write_chunks_hex(&hash_hex, &blob).expect("write chunk blob");
+
+    let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("peek present");
+    assert_eq!(peek.extract_epoch, crate::extract::EXTRACT_EPOCH);
+    assert_eq!(peek.chunks.len(), 2);
     assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
 }

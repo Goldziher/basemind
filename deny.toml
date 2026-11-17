@@ -23,17 +23,23 @@ ignore = [
   "RUSTSEC-2026-0367",
   "RUSTSEC-2026-0368",
   "RUSTSEC-2026-0369",
-  "RUSTSEC-2026-0429",
   # calamine 0.36.1 CFB/OLE2 parser panic + unbounded allocation on malformed `.xls`/`.xlsb`; reachable only
   # through calamine's reader API, which basemind exercises through document RAG's spreadsheet parsing with
   # the same 0.38.0 fix blocked by the xberg ^0.36.1 pin above. Drop alongside the zip block.
-  "RUSTSEC-2026-0436",
   # zstd 0.13.3 / zstd-safe 7.3.0 stream-context reuse, Seekable length and legacy-frame flaws. Pulled in only by
   # arrow-ipc 58 (via lancedb 0.41.0 -> arrow ^58), which pins zstd ^0.13; 0.13.3 and 7.3.0 are the last releases of
   # those lines, and only arrow-ipc 60 moves to the patched zstd 0.14. Drop these once lancedb takes arrow 60.
   "RUSTSEC-2026-0391",
   "RUSTSEC-2026-0398",
   "RUSTSEC-2026-0403",
+  # chrono is unmaintained. basemind does not use it; it is pulled in only through arrow 58, datafusion 54,
+  # lance 14 / lancedb 0.41, object_store, calamine and oauth2 (documents / vector stack). Drop once those
+  # move to jiff or a maintained fork.
+  "RUSTSEC-2026-0543",
+  # humantime and chrono-tz are unmaintained; same origin as chrono above (lance 14, object_store,
+  # arrow-array 58, datafusion-functions 54). Drop with the chrono entry.
+  "RUSTSEC-2026-0542",
+  "RUSTSEC-2026-0555",
 ]
 
 [licenses]

@@ -280,7 +280,53 @@ impl LanceStore {
             write_meta(&meta_path, &expected)?;
         }
         ensure_store_id(dir)?;
+        Self::connect(dir, dim, embedding_model, true)
+    }
 
+    /// Open the store at `dir` for reading only, for a caller that does not hold the workspace
+    /// lock: it never wipes, creates or writes. A store that is absent, of another dimension, model
+    /// or schema, or of a newer basemind is refused with the reason, and left as it is: wiping it
+    /// here destroyed the writer's tables, and a writer and a reader of different presets then wiped
+    /// each other on every search.
+    pub fn open_existing(dir: &Path, dim: u16, embedding_model: &str) -> Result<Self> {
+        let meta_path = dir.join(META_FILE);
+        if !meta_path.exists() {
+            return Err(anyhow!(
+                "no vector store has been built at {} yet; run `basemind scan`",
+                dir.display()
+            ));
+        }
+        // Held while the check runs and the connection opens: a writer's wipe waits on it. ~keep
+        let _opening = lock_open(dir, OPEN_LOCK_WAIT)?;
+        let bytes = std::fs::read(&meta_path).with_context(|| format!("read {}", meta_path.display()))?;
+        if let Ok(MetaVersion { schema_ver }) = serde_json::from_slice(&bytes)
+            && schema_ver > MEMORY_SCHEMA_VER
+        {
+            return Err(anyhow!(
+                "the vector store at {} was written by a newer basemind (schema {schema_ver}); this binary \
+                 understands {MEMORY_SCHEMA_VER}: upgrade basemind",
+                dir.display()
+            ));
+        }
+        let actual: LanceMeta = serde_json::from_slice(&bytes)
+            .with_context(|| format!("unreadable {}; `basemind scan` rebuilds it", meta_path.display()))?;
+        if (actual.dim, actual.embedding_model.as_str(), actual.schema_ver) != (dim, embedding_model, MEMORY_SCHEMA_VER)
+        {
+            return Err(anyhow!(
+                "the vector store at {} was built for {} ({} dimensions, schema {}), and this session \
+                 embeds with {embedding_model} ({dim} dimensions, schema {MEMORY_SCHEMA_VER}): search with \
+                 the preset the scan used, or run `basemind scan` with this one",
+                dir.display(),
+                actual.embedding_model,
+                actual.dim,
+                actual.schema_ver
+            ));
+        }
+        Self::connect(dir, dim, embedding_model, false)
+    }
+
+    /// Connect to the store at `dir`, creating its missing tables when `create_tables`.
+    fn connect(dir: &Path, dim: u16, embedding_model: &str, create_tables: bool) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -291,6 +337,9 @@ impl LanceStore {
             .with_context(|| format!("open lancedb at {uri}"))?;
 
         runtime.block_on(async {
+            if !create_tables {
+                return anyhow::Ok(());
+            }
             ensure_table(&connection, DOCUMENTS_TABLE, documents_schema(dim)).await?;
             ensure_table(&connection, MEMORY_TABLE, memory_schema(dim)).await?;
             #[cfg(feature = "code-search")]

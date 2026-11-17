@@ -14,6 +14,20 @@ pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
     fs::create_dir(path)
 }
 
+/// The worktree changed while a delta over it was being scanned, so the delta was not published.
+/// Transient: the edit that caused it is seen by the next pass. A caller must not take it as the
+/// layered index being unusable, which would promote the workspace to a standalone index for good.
+#[derive(Debug)]
+pub struct WorktreeChanged;
+
+impl std::fmt::Display for WorktreeChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the worktree changed while its delta was scanned; scan again once it settles")
+    }
+}
+
+impl std::error::Error for WorktreeChanged {}
+
 pub(super) struct Scratch(pub(super) PathBuf);
 
 impl Drop for Scratch {

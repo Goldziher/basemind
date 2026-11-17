@@ -35,7 +35,6 @@ const DIFF_TEXT_MAX: usize = 128 * 1024;
 /// The `diff` operation: content hunks for one path between `rev_old` and either another revision
 /// or, when `rev_new` is `None`, the file as it is in the working tree.
 pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     reject_external_path(&params.path)?;
     // Between two revisions only blobs are read, so the lexical check (`..`, absolute) is the whole
@@ -90,7 +89,6 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
         truncated_reason,
         omitted: total_hunks - hunks.len(),
         hunks,
-        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -112,7 +110,6 @@ fn capped_hunks(hunks: Vec<crate::git::Hunk>) -> (Vec<HunkView>, bool) {
         }
         text_bytes += hunk.text.len();
         views.push(HunkView {
-            kind: hunk.kind.as_str(),
             old_line_start: hunk.old_line_start,
             old_line_count: hunk.old_line_count,
             new_line_start: hunk.new_line_start,
@@ -180,7 +177,6 @@ pub(super) fn detect_lang(state: &ServerState, path: impl AsRef<std::ffi::OsStr>
 /// vice versa — "what did this branch add" without reading source. Synchronous: the caller waits for
 /// the code map first, then runs this off the reactor.
 pub(super) fn run_diff_outline(state: &ServerState, params: DiffOutlineParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let rev_spec = params.rev.as_deref().unwrap_or("HEAD");
     let rev_sha = repo
@@ -272,7 +268,6 @@ pub(super) fn run_diff_outline(state: &ServerState, params: DiffOutlineParams) -
         removed,
         common,
         note,
-        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -448,7 +443,6 @@ pub(super) fn run_blame_symbol(state: &ServerState, params: BlameSymbolParams) -
 /// cursor to the commit after it, so every change back to the introduction is reachable however
 /// many commits lie in between; a page can then be short, or empty, and still not be the last.
 pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let kind = params.kind.as_deref().map(parse_kind).transpose()?;
     let limit = params.limit.unwrap_or(20).min(100) as usize;
@@ -511,10 +505,8 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     };
 
     let head = head_sha(repo)?;
-    let invalidated = |params: SymbolHistoryParams| {
+    let invalidated = || {
         json_result(&SymbolHistoryResponse {
-            path: params.path,
-            name: params.name,
             kind: kind.map(|k| kind_to_str(k).to_string()),
             commits_inspected: 0,
             history: Vec::new(),
@@ -525,7 +517,6 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
             truncated_reason: None,
             next_cursor: None,
             cursor_invalidated: true,
-            elapsed_us: elapsed_us(started),
         })
     };
 
@@ -533,7 +524,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
     // commit on an earlier page defined the name. Its snapshot says which list the offset counts
     // in: the live walk simplifies history where the index keeps every commit touching the file.
     let Some((packed, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
-        return invalidated(params);
+        return invalidated();
     };
     let start = usize::try_from(packed & !MATCHED_EARLIER).unwrap_or(usize::MAX);
     let defined_earlier = packed & MATCHED_EARLIER != 0;
@@ -590,8 +581,7 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
             history.push((
                 start + index,
                 SymbolHistoryEntry {
-                    sha: c.sha.clone(),
-                    short_sha: c.short_sha.clone(),
+                    sha: super::helpers::abbreviated_sha(c.sha.clone()),
                     summary: c.summary.clone(),
                     author: c.author.clone(),
                     author_time_unix: c.author_time_unix,
@@ -633,8 +623,6 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
         None
     };
     json_result(&SymbolHistoryResponse {
-        path: params.path,
-        name: params.name,
         kind: kind.map(|k| kind_to_str(k).to_string()),
         commits_inspected: u32::try_from(inspected).unwrap_or(u32::MAX),
         history: page,
@@ -648,7 +636,6 @@ pub(super) fn run_symbol_history(state: &ServerState, params: SymbolHistoryParam
             super::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)
         }),
         cursor_invalidated: false,
-        elapsed_us: elapsed_us(started),
     })
 }
 

@@ -1,12 +1,14 @@
 use std::cell::RefCell;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use ahash::{AHashMap, AHashSet};
 use thiserror::Error;
 use tree_sitter::{Language, ParseOptions, Parser, Query, QueryCursor, Tree};
+
+use crate::once_map::OnceMap;
 
 /// Hard ceiling on a single tree-sitter parse. Defends against pathological inputs that
 /// hang the recovery loop (e.g. multi-megabyte minified bundles with deep arrow chains).
@@ -21,6 +23,11 @@ pub const DEFAULT_PARSE_TIMEOUT: Duration = Duration::from_millis(5_000);
 /// (called ×2 per file when eager L2 is on — once for L1, once for L2).
 static PARSE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 
+/// The per-parse timeout in effect: `BASEMIND_PARSE_TIMEOUT_MS`, else [`DEFAULT_PARSE_TIMEOUT`].
+pub fn parse_timeout() -> Duration {
+    parse_timeout_from_env()
+}
+
 fn parse_timeout_from_env() -> Duration {
     *PARSE_TIMEOUT.get_or_init(|| {
         std::env::var("BASEMIND_PARSE_TIMEOUT_MS")
@@ -31,7 +38,7 @@ fn parse_timeout_from_env() -> Duration {
     })
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum LangError {
     #[error("language pack error: {0}")]
     Pack(String),
@@ -386,14 +393,14 @@ impl QueryKind {
 /// language has no override section + no TSLP fallback for this kind. The `None` is cached
 /// to avoid re-doing the negative lookup for every file in that language.
 type CachedQuery = Option<Arc<Query>>;
-type QueryMap = AHashMap<(LangId, QueryKind), CachedQuery>;
-static QUERIES: OnceLock<RwLock<QueryMap>> = OnceLock::new();
+/// What a query cache holds: the compiled query, or the compile error it will keep producing.
+pub(crate) type QueryOutcome = Result<CachedQuery, LangError>;
+static QUERIES: LazyLock<OnceMap<(LangId, QueryKind), QueryOutcome>> = LazyLock::new(OnceMap::default);
 
 /// Per-language cache for the combined L1 query (symbols + imports + implementations in one
 /// `Arc<Query>`). Keyed by `LangId` alone — cheaper to look up than the per-`(lang, kind)` map
 /// and avoids three separate lock acquisitions per file.
-type CombinedL1Map = AHashMap<LangId, CachedQuery>;
-static COMBINED_L1_QUERIES: OnceLock<RwLock<CombinedL1Map>> = OnceLock::new();
+static COMBINED_L1_QUERIES: LazyLock<OnceMap<LangId, QueryOutcome>> = LazyLock::new(OnceMap::default);
 
 /// Per-capture classification for the combined L1 query. Lets `run_combined` dispatch by
 /// capture index (a `Copy` array lookup) instead of `str::starts_with` on every query match.
@@ -417,8 +424,8 @@ pub struct ClassifiedQuery {
     pub classes: Box<[CaptureClass]>,
 }
 
-type ClassifiedL1Map = AHashMap<LangId, Option<Arc<ClassifiedQuery>>>;
-static CLASSIFIED_COMBINED_L1: OnceLock<RwLock<ClassifiedL1Map>> = OnceLock::new();
+type ClassifiedOutcome = Result<Option<Arc<ClassifiedQuery>>, LangError>;
+static CLASSIFIED_COMBINED_L1: LazyLock<OnceMap<LangId, ClassifiedOutcome>> = LazyLock::new(OnceMap::default);
 
 /// Extract a single named query (S-expression `;; @section name`) from the .scm source.
 ///
@@ -648,20 +655,37 @@ fn rewrite_capture(cap: &str, kind: PatternKind) -> String {
 
 /// Per-language cache of the adapted `tags.scm` string. Populated on first lookup;
 /// stays for process lifetime. Bound is the size of TSLP's registry — small.
-type AdaptedTagsMap = AHashMap<LangId, Arc<str>>;
-static ADAPTED_TAGS: OnceLock<RwLock<AdaptedTagsMap>> = OnceLock::new();
+static ADAPTED_TAGS: LazyLock<OnceMap<LangId, Option<Arc<str>>>> = LazyLock::new(OnceMap::default);
 
 fn tslp_tags_adapted(lang: LangId) -> Option<Arc<str>> {
-    let lock = ADAPTED_TAGS.get_or_init(|| RwLock::new(AHashMap::new()));
-    if let Some(cached) = lock.read().expect("adapted tags pool poisoned").get(&lang) {
-        return Some(Arc::clone(cached));
-    }
-    let raw = tree_sitter_language_pack::get_tags_query(lang)?;
-    let adapted: Arc<str> = Arc::from(adapt_tslp_tags(raw));
-    lock.write()
-        .expect("adapted tags pool poisoned")
-        .insert(lang, Arc::clone(&adapted));
-    Some(adapted)
+    ADAPTED_TAGS.get_or_init(lang, || {
+        tree_sitter_language_pack::get_tags_query(lang).map(|raw| Arc::from(adapt_tslp_tags(raw)))
+    })
+}
+
+/// Compile `src` for `lang` as the cached outcome of a query lookup. A compile error is part of the
+/// outcome, built and logged once per process; a grammar that cannot be loaded is the outer error,
+/// which is not cached.
+pub(crate) fn compile_outcome(
+    lang: LangId,
+    kind: &'static str,
+    src: Option<String>,
+) -> Result<QueryOutcome, LangError> {
+    let Some(src) = src else {
+        return Ok(Ok(None));
+    };
+    let ts_lang = language(lang)?;
+    Ok(Query::new(&ts_lang, &src)
+        .map(|query| Some(Arc::new(query)))
+        .map_err(|e| {
+            let error = LangError::QueryCompile {
+                lang,
+                kind,
+                msg: format!("{e}"),
+            };
+            tracing::warn!(%error, "query does not compile; extraction fails for every file of this language");
+            error
+        }))
 }
 
 /// Look up the combined L1 query for a language, fusing the `symbols`, `imports`, and
@@ -676,12 +700,12 @@ fn tslp_tags_adapted(lang: LangId) -> Option<Arc<str>> {
 /// no implementations from either the override path or TSLP). Returns `Err` only when a
 /// section source is present but fails to compile.
 pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError> {
-    let lock = COMBINED_L1_QUERIES.get_or_init(|| RwLock::new(AHashMap::new()));
-    if let Some(slot) = lock.read().expect("combined L1 query pool poisoned").get(&lang) {
-        return Ok(slot.as_ref().map(Arc::clone));
-    }
+    COMBINED_L1_QUERIES.get_or_try_init(lang, || compile_outcome(lang, "combined_l1", combined_l1_source(lang)))?
+}
 
-    let combined_src: Option<String> = if let Some(raw) = override_query_source(lang) {
+/// The `symbols`, `imports` and `implementations` sections of `lang`'s query source, joined.
+fn combined_l1_source(lang: LangId) -> Option<String> {
+    if let Some(raw) = override_query_source(lang) {
         let sym = extract_section(raw, "symbols").unwrap_or_default();
         let imp = extract_section(raw, "imports").unwrap_or_default();
         let imp_l = extract_section(raw, "implementations").unwrap_or_default();
@@ -702,25 +726,7 @@ pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError>
                 Some(combined)
             }
         })
-    };
-
-    let cached = match combined_src {
-        Some(src) => {
-            let ts_lang = language(lang)?;
-            let query = Query::new(&ts_lang, &src).map_err(|e| LangError::QueryCompile {
-                lang,
-                kind: "combined_l1",
-                msg: format!("{e}"),
-            })?;
-            Some(Arc::new(query))
-        }
-        None => None,
-    };
-
-    lock.write()
-        .expect("combined L1 query pool poisoned")
-        .insert(lang, cached.as_ref().map(Arc::clone));
-    Ok(cached)
+    }
 }
 
 /// Like [`try_get_combined_l1_query`] but also returns a per-capture classification table
@@ -729,12 +735,18 @@ pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError>
 /// The returned [`ClassifiedQuery`] has `classes[i]` set for every capture index `i` in the
 /// compiled query. Cached globally per language; built at most once per process per language.
 pub fn try_get_classified_combined_l1_query(lang: LangId) -> Result<Option<Arc<ClassifiedQuery>>, LangError> {
-    let lock = CLASSIFIED_COMBINED_L1.get_or_init(|| RwLock::new(AHashMap::new()));
-    if let Some(slot) = lock.read().expect("classified L1 query pool poisoned").get(&lang) {
-        return Ok(slot.as_ref().map(Arc::clone));
-    }
+    CLASSIFIED_COMBINED_L1.get_or_try_init(lang, || classify_combined_l1(lang))?
+}
 
-    let cached: Option<Arc<ClassifiedQuery>> = match try_get_combined_l1_query(lang)? {
+/// The classified outcome to cache: a compile error is cached like the query it classifies, a
+/// grammar that could not be loaded is not.
+fn classify_combined_l1(lang: LangId) -> Result<ClassifiedOutcome, LangError> {
+    let query = match try_get_combined_l1_query(lang) {
+        Ok(query) => query,
+        Err(error @ LangError::QueryCompile { .. }) => return Ok(Err(error)),
+        Err(error) => return Err(error),
+    };
+    let cached: Option<Arc<ClassifiedQuery>> = match query {
         Some(query) => {
             let classes: Box<[CaptureClass]> = query
                 .capture_names()
@@ -755,11 +767,7 @@ pub fn try_get_classified_combined_l1_query(lang: LangId) -> Result<Option<Arc<C
         }
         None => None,
     };
-
-    lock.write()
-        .expect("classified L1 query pool poisoned")
-        .insert(lang, cached.as_ref().map(Arc::clone));
-    Ok(cached)
+    Ok(Ok(cached))
 }
 
 /// Look up a `(lang, kind)` query, returning `Ok(Some(arc))` when one exists,
@@ -785,36 +793,20 @@ pub fn try_get_classified_combined_l1_query(lang: LangId) -> Result<Option<Arc<C
 ///    unsupported language should use [`get_query`], which turns this into an error;
 ///    `try_get_query` degrades silently by design.
 pub fn try_get_query(lang: LangId, kind: QueryKind) -> Result<CachedQuery, LangError> {
-    let lock = QUERIES.get_or_init(|| RwLock::new(AHashMap::new()));
-    if let Some(slot) = lock.read().expect("query pool poisoned").get(&(lang, kind)) {
-        return Ok(slot.as_ref().map(Arc::clone));
-    }
+    QUERIES.get_or_try_init((lang, kind), || {
+        compile_outcome(lang, kind.name(), query_source(lang, kind))
+    })?
+}
 
-    let source: Option<String> = if let Some(raw) = override_query_source(lang) {
+/// `lang`'s source for the `kind` section: its override, else the adapted TSLP `tags.scm`.
+fn query_source(lang: LangId, kind: QueryKind) -> Option<String> {
+    if let Some(raw) = override_query_source(lang) {
         extract_section(raw, kind.name())
     } else if matches!(kind, QueryKind::Symbols | QueryKind::Calls | QueryKind::Implementations) {
         tslp_tags_adapted(lang).and_then(|adapted| extract_section(&adapted, kind.name()))
     } else {
         None
-    };
-
-    let cached = match source {
-        Some(src) => {
-            let ts_lang = language(lang)?;
-            let query = Query::new(&ts_lang, &src).map_err(|e| LangError::QueryCompile {
-                lang,
-                kind: kind.name(),
-                msg: format!("{e}"),
-            })?;
-            Some(Arc::new(query))
-        }
-        None => None,
-    };
-
-    lock.write()
-        .expect("query pool poisoned")
-        .insert((lang, kind), cached.as_ref().map(Arc::clone));
-    Ok(cached)
+    }
 }
 
 /// Strict variant of [`try_get_query`] for callers that treat missing sections as errors.

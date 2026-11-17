@@ -79,10 +79,15 @@ def leak_rows(reports: Path, skipped: str | None) -> list[Row]:
     if data is None:
         return [("one-shot leak check", "-", "0 definite leaks", verdict(None))]
     rows = []
+    threshold = "0 definite leaks" if data["tool"] == "valgrind" else "only pooled tree-sitter roots, <= cap"
     for r in data["runs"]:
-        ok = r["inspected"] and r["leaks"] == 0
+        reasons = r.get("reasons", [])
         value = f"{r['leaks']} leaks, {r['bytes']} bytes" if r["inspected"] else "checker could not inspect"
-        rows.append((f"leaks ({data['tool']}) {r['label']}", value, "0 definite leaks", verdict(ok)))
+        if r.get("pooled"):
+            value += f" ({r['pooled']} pooled)"
+        if reasons:
+            value += "; " + "; ".join(reasons)
+        rows.append((f"leaks ({data['tool']}) {r['label']}", value, threshold, verdict(not reasons)))
     return rows
 
 

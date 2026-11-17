@@ -115,6 +115,40 @@ def growth_rule(
     )
 
 
+def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: argparse.Namespace) -> None:
+    """Fail when the memory floor keeps rising on a long run, below what the slope rule can see.
+
+    The load phase is cut into four equal windows and each window's floor is its 10th-percentile
+    sample, which ignores the sawtooth of memtables and transient scan peaks. A cache that fills
+    and stops leaves the floors of windows 2-4 level; a leak lifts every floor. The rise from
+    window 2 to window 4, per minute between their centres, must stay under `--floor-tol`. Window
+    1 is left out because a cache may still be filling there. Runs shorter than
+    `--floor-min-minutes` are not judged: over ten minutes a 0.25 MiB/min leak is a few MiB, under
+    the sampling noise.
+    """
+    if len(points) < 40:  # noqa: PLR2004 - ten samples per window at least
+        v.add(label, True, f"not judged: {len(points)} samples")
+        return
+    minutes = (points[-1][0] - points[0][0]) / 60.0
+    if minutes < args.floor_min_minutes:
+        v.add(label, True, f"not judged: {minutes:.1f} min of load < {args.floor_min_minutes} min")
+        return
+    quarter = len(points) // 4
+    windows = [points[i * quarter : (i + 1) * quarter] for i in range(4)]
+    floors = [statistics.quantiles([y for _, y in w], n=10)[0] / MIB for w in windows]
+    centres = [statistics.fmean(t for t, _ in w) / 60.0 for w in windows]
+    rate = (floors[3] - floors[1]) / (centres[3] - centres[1])
+    rising = floors[1] <= floors[2] <= floors[3] and rate > args.floor_tol
+    v.add(
+        label,
+        not rising,
+        f"window floors {' / '.join(f'{f:.1f}' for f in floors)} MiB, windows 2-4 rise {rate:+.3f} MiB/min "
+        f"(tolerance {args.floor_tol}) over {minutes:.1f} min",
+        f"{rate:+.3f} MiB/min (floors {floors[1]:.1f} / {floors[2]:.1f} / {floors[3]:.1f} MiB)",
+        f"{args.floor_tol} MiB/min",
+    )
+
+
 def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:  # noqa: C901, PLR0912, PLR0915
     v = Verdict()
     meta = next((r for r in records if r.get("kind") == "meta"), {})
@@ -162,6 +196,8 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
         growth_rule(
             v, f"R2 {role} {pid} memory ({mem_key})", [(r["t"], r[mem_key]) for r in series], args.mem_tol, "MiB", MIB
         )
+        if role == "daemon":
+            floor_rule(v, f"R2f daemon {pid} memory floor ({mem_key})", [(r["t"], r[mem_key]) for r in series], args)
         if mem_key != "rss":
             growth_rule(
                 v, f"R2 {role} {pid} memory (rss)", [(r["t"], r["rss"]) for r in series], args.mem_tol, "MiB", MIB
@@ -182,12 +218,23 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
         )
     else:
         v.add("R5 no process accumulation under load", False, f"{len(census)} census samples in load")
+    # macOS reuses pids within a long soak: a later CLI one-shot or session can get a closed
+    # session's pid, so only a `serve` sample taken before that pid opened another session counts.
+    reopened: dict[int, list[float]] = {}
+    for r in records:
+        if r.get("kind") == "session" and r.get("event") == "open":
+            reopened.setdefault(r["pid"], []).append(r["t"])
     lingering = []
     for pid, close in sessions_close.items():
         if not close.get("exited"):
             lingering.append(f"{pid} did not exit after {close.get('how')}")
             continue
-        late = [r["t"] for r in by_pid.get(pid, []) if r["t"] > close["t"] + args.exit_grace]
+        next_open = min((t for t in reopened.get(pid, []) if t > close["t"]), default=float("inf"))
+        late = [
+            r["t"]
+            for r in by_pid.get(pid, [])
+            if r["role"] == "serve" and close["t"] + args.exit_grace < r["t"] < next_open
+        ]
         if late:
             lingering.append(f"{pid} still sampled {late[-1] - close['t']:.0f}s after {close.get('how')}")
     v.add(
@@ -378,6 +425,12 @@ def main() -> int:
     ap.add_argument("--json", type=Path, help="also write the rule verdicts as JSON")
     ap.add_argument(
         "--mem-tol", type=float, default=1.0, help="MiB/min a long-lived process may still grow (default 1.0)"
+    )
+    ap.add_argument(
+        "--floor-tol", type=float, default=0.25, help="MiB/min the daemon's memory floor may rise (default 0.25)"
+    )
+    ap.add_argument(
+        "--floor-min-minutes", type=float, default=30.0, help="load minutes before the floor rule judges (default 30)"
     )
     ap.add_argument("--fd-tol", type=float, default=0.2, help="fds/min (default 0.2)")
     ap.add_argument("--thread-tol", type=float, default=0.2, help="threads/min (default 0.2)")

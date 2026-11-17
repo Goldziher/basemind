@@ -42,13 +42,6 @@ impl Matching {
     pub(crate) fn from_substring(substring: bool) -> Self {
         if substring { Self::Substring } else { Self::Exact }
     }
-
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            Self::Exact => "exact",
-            Self::Substring => "substring",
-        }
-    }
 }
 
 /// Whether `identifier` names `name`: equal to it, or a qualified path whose last segment (or

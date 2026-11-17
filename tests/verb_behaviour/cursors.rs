@@ -13,36 +13,17 @@ async fn assert_foreign_cursor_is_refused(
     tool_b: &'static str,
     mut query_b: Value,
 ) {
-    // A cursor can also go stale between two calls (the map finishes warming, the watcher rescans,
-    // the git-history index comes up), which is the other refusal and says so. The page is then
-    // simply asked for again.
-    let mut attempts = 0;
-    let cursor = loop {
-        let first = call(client, tool_a, query_a.clone()).await;
-        let cursor = first["next_cursor"].clone();
-        assert!(
-            cursor.is_string(),
-            "{tool_a} {query_a} must have a second page: {first}"
-        );
-        let mut same_query = query_a.clone();
-        same_query["cursor"] = cursor.clone();
-        let second = client
-            .call_tool(
-                rmcp::model::CallToolRequestParams::new(tool_a)
-                    .with_arguments(same_query.as_object().cloned().expect("object")),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{tool_a}: {error}"));
-        if second.is_error != Some(true) {
-            break cursor;
-        }
-        let message = super::text_of(&second);
-        attempts += 1;
-        assert!(
-            message.contains("since this cursor was issued") && attempts < 5,
-            "the cursor must continue its own query: {message}"
-        );
-    };
+    // The harness starts once the git-history sync is over and nothing rescans unasked, so the
+    // cursor continues its own query on the first try; a stale refusal here is a real failure.
+    let first = call(client, tool_a, query_a.clone()).await;
+    let cursor = first["next_cursor"].clone();
+    assert!(
+        cursor.is_string(),
+        "{tool_a} {query_a} must have a second page: {first}"
+    );
+    let mut same_query = query_a.clone();
+    same_query["cursor"] = cursor.clone();
+    call(client, tool_a, same_query).await;
 
     query_b["cursor"] = cursor;
     let message = call_err(client, tool_b, query_b.clone()).await;

@@ -16,6 +16,9 @@ pub(crate) enum BlobKind {
     Single = 1,
     FileMap = 2,
     Chunk = 3,
+    /// A chunk envelope whose fixed header ends with the extract epoch its chunks were cut under.
+    /// A [`Self::Chunk`] envelope predates the field and reads as epoch `0`.
+    EpochChunk = 4,
 }
 
 impl BlobKind {
@@ -24,6 +27,7 @@ impl BlobKind {
             1 => Some(Self::Single),
             2 => Some(Self::FileMap),
             3 => Some(Self::Chunk),
+            4 => Some(Self::EpochChunk),
             _ => None,
         }
     }

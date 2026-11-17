@@ -180,6 +180,7 @@ pub(super) fn call_page_from_wire(wire: WireCallScan) -> CallScanPage {
             column: hit.column,
             callee: hit.callee,
             resolved: None,
+            shared_line: false,
         });
         hit_keys.push(hit.key);
         hit_starts.push(hit.start_byte);

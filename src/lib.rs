@@ -33,6 +33,7 @@ pub mod lance;
 pub mod lang;
 pub mod lang_rules;
 pub mod mcp;
+mod once_map;
 pub mod path;
 pub mod process_start;
 pub mod query;
@@ -96,5 +97,18 @@ pub mod testing {
     /// the smoke tests to forge stale cursors and verify `cursor_invalidated` plumbing.
     pub fn encode_in_memory_cursor(offset: u64, snapshot_id: u32) -> String {
         crate::mcp::cursor::Cursor::encode_in_memory(offset, snapshot_id).0
+    }
+
+    /// End a test whose precondition is missing (a grammar, an embedding model): it fails unless
+    /// `allow` names a set environment variable, and a skip is then written straight to the process's
+    /// stderr, which libtest does not capture, so it shows in a passing run. A plain `eprintln!` and
+    /// `return` passed green having checked nothing, in CI as well.
+    pub fn unavailable(allow: &str, what: &str) {
+        use std::io::Write as _;
+        assert!(
+            std::env::var_os(allow).is_some(),
+            "{what}. Nothing was checked. Set {allow}=1 to skip this where it cannot be provided."
+        );
+        let _ = writeln!(std::io::stderr().lock(), "SKIP ({allow}): {what}");
     }
 }

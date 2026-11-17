@@ -515,7 +515,10 @@ impl IndexDb {
     /// The notes keyspace of a handle that has one.
     #[cfg(test)]
     pub(crate) fn notes(&self) -> &Keyspace {
-        &self.memory().expect("this handle holds the notes").memory_by_key
+        self.memory()
+            .expect("this handle holds the notes")
+            .notes_for_write()
+            .expect("create the notes store")
     }
 
     /// True when this open discarded an index written under another schema revision; the caller

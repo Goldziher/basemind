@@ -28,6 +28,11 @@
 //! changed paths point at new hashes, so a reader still holding the previous snapshot keeps
 //! resolving its own (older) hashes and can never observe the newer file. No invalidation pass, and
 //! two paths with identical content share one entry.
+//!
+//! The one write that keeps a hash is an extract-epoch refresh: a newer extractor rewrites the blob
+//! of unchanged content in place. [`FileMeta`] therefore carries the entry's epoch, and a cached
+//! outline decoded under an older epoch is a miss for it, so the refreshed blob is read again while
+//! a reader still holding the previous snapshot keeps its hit.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -59,6 +64,9 @@ pub(crate) struct FileMeta {
     /// File mtime in nanoseconds as indexed (0 = unknown); with `size_bytes` the stamp grep holds the
     /// live file to before trusting the content's bloom.
     pub(crate) mtime_ns: i64,
+    /// The extract epoch the index entry names ([`crate::store::FileEntry::extract_epoch`]). A
+    /// cached outline older than it was decoded before a refresh rewrote the blob under this hash.
+    pub(crate) extract_epoch: u16,
 }
 
 /// Sorted view of every indexed file that has a readable L1 blob.
@@ -105,7 +113,6 @@ impl FileIndexView {
         self.files.get(path)
     }
 
-    #[cfg(test)]
     pub(crate) fn contains(&self, path: &RelPath) -> bool {
         self.files.contains_key(path)
     }
@@ -159,6 +166,7 @@ impl From<&crate::store::FileEntry> for FileMeta {
             language: entry.language.as_str().into(),
             size_bytes: entry.size_bytes,
             mtime_ns: entry.mtime,
+            extract_epoch: entry.extract_epoch,
         }
     }
 }
@@ -170,6 +178,7 @@ impl Clone for FileMeta {
             language: self.language.clone(),
             size_bytes: self.size_bytes,
             mtime_ns: self.mtime_ns,
+            extract_epoch: self.extract_epoch,
         }
     }
 }
@@ -248,10 +257,19 @@ impl L1Cache {
 
     /// The decoded L1 for `hash_hex`, from the cache or from the blob.
     ///
+    /// `min_epoch` is the extract epoch of the index entry naming `hash_hex`: a cached value decoded
+    /// under an older epoch predates the refresh that rewrote the blob, so it is read again.
+    ///
     /// `None` means the blob is gone or undecodable — the same outcome the old whole-corpus build
     /// produced by dropping the file from the map.
-    pub(crate) fn load(&self, hash_hex: &str) -> Option<Arc<FileMapL1>> {
-        if let Some(hit) = self.lock().lru.get(hash_hex).cloned() {
+    pub(crate) fn load(&self, hash_hex: &str, min_epoch: u16) -> Option<Arc<FileMapL1>> {
+        let hit = self
+            .lock()
+            .lru
+            .get(hash_hex)
+            .filter(|hit| hit.extract_epoch >= min_epoch)
+            .cloned();
+        if let Some(hit) = hit {
             return Some(hit);
         }
         let decoded = Arc::new(self.read_blob(hash_hex)?);
@@ -265,14 +283,18 @@ impl L1Cache {
     /// The hot case — a repo small enough to sit entirely inside the budget — never leaves the
     /// first lock, so streaming a warm corpus costs one mutex round trip per chunk rather than the
     /// per-file rayon fan-out an unconditional parallel decode would pay.
-    fn load_chunk(&self, hashes: &[&str]) -> Vec<Option<Arc<FileMapL1>>> {
+    fn load_chunk(&self, metas: &[&FileMeta]) -> Vec<Option<Arc<FileMapL1>>> {
         use rayon::prelude::*;
-        let mut slots: Vec<Option<Arc<FileMapL1>>> = vec![None; hashes.len()];
+        let mut slots: Vec<Option<Arc<FileMapL1>>> = vec![None; metas.len()];
         let mut misses: Vec<usize> = Vec::new();
         {
             let mut guard = self.lock();
-            for (i, hash) in hashes.iter().enumerate() {
-                match guard.lru.get(*hash) {
+            for (i, meta) in metas.iter().enumerate() {
+                let hit = guard
+                    .lru
+                    .get(&*meta.hash_hex)
+                    .filter(|hit| hit.extract_epoch >= meta.extract_epoch);
+                match hit {
                     Some(hit) => slots[i] = Some(Arc::clone(hit)),
                     None => misses.push(i),
                 }
@@ -283,11 +305,11 @@ impl L1Cache {
         }
         let decoded: Vec<(usize, Option<Arc<FileMapL1>>)> = misses
             .par_iter()
-            .map(|&i| (i, self.read_blob(hashes[i]).map(Arc::new)))
+            .map(|&i| (i, self.read_blob(&metas[i].hash_hex).map(Arc::new)))
             .collect();
         for (i, value) in decoded {
             if let Some(value) = value {
-                self.admit(hashes[i], &value);
+                self.admit(&metas[i].hash_hex, &value);
                 slots[i] = Some(value);
             }
         }
@@ -427,22 +449,22 @@ where
     F: FnMut(&RelPath, &FileMapL1) -> bool,
 {
     let mut paths: Vec<&RelPath> = Vec::with_capacity(STREAM_CHUNK);
-    let mut hashes: Vec<&str> = Vec::with_capacity(STREAM_CHUNK);
+    let mut metas: Vec<&FileMeta> = Vec::with_capacity(STREAM_CHUNK);
     for (path, meta) in view.iter() {
         paths.push(path);
-        hashes.push(&meta.hash_hex);
-        if paths.len() == STREAM_CHUNK && !drain(cache, &mut paths, &mut hashes, &mut f) {
+        metas.push(meta);
+        if paths.len() == STREAM_CHUNK && !drain(cache, &mut paths, &mut metas, &mut f) {
             return;
         }
     }
-    drain(cache, &mut paths, &mut hashes, &mut f);
+    drain(cache, &mut paths, &mut metas, &mut f);
 }
 
-fn drain<F>(cache: &L1Cache, paths: &mut Vec<&RelPath>, hashes: &mut Vec<&str>, f: &mut F) -> bool
+fn drain<F>(cache: &L1Cache, paths: &mut Vec<&RelPath>, metas: &mut Vec<&FileMeta>, f: &mut F) -> bool
 where
     F: FnMut(&RelPath, &FileMapL1) -> bool,
 {
-    let loaded = cache.load_chunk(hashes);
+    let loaded = cache.load_chunk(metas);
     let mut keep_going = true;
     for (path, value) in paths.iter().zip(loaded) {
         if let Some(value) = value
@@ -453,7 +475,7 @@ where
         }
     }
     paths.clear();
-    hashes.clear();
+    metas.clear();
     keep_going
 }
 
@@ -562,7 +584,7 @@ mod tests {
         assert!(cache.charged_bytes() <= 4096, "charged={}", cache.charged_bytes());
         let huge = Arc::new(l1_with("huge", 1_000_000));
         cache.admit("ff", &huge);
-        assert!(cache.load("ff").is_some(), "the newest entry is never evicted");
+        assert!(cache.load("ff", 0).is_some(), "the newest entry is never evicted");
     }
 
     /// A damaged blob must not stay where every later scan would trust it for existing.
@@ -578,8 +600,34 @@ mod tests {
         std::fs::write(&path, torn).unwrap();
         let cache = L1Cache::new(blobs, 0);
 
-        assert!(cache.load(&hash).is_none());
+        assert!(cache.load(&hash, 0).is_none());
         assert!(!path.exists(), "the damaged blob must be removed");
+    }
+
+    /// An extract-epoch refresh rewrites a blob under the same content hash. An entry naming the
+    /// newer epoch must get the rewritten outline, not the one decoded before the rewrite, while a
+    /// caller still at the older epoch keeps hitting the cache.
+    #[test]
+    fn an_outline_cached_before_an_epoch_refresh_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = "e".repeat(64);
+        let path = dir.path().join(format!("{hash}.fm.msgpack"));
+        let old_epoch = crate::extract::EXTRACT_EPOCH - 1;
+        let mut stale = l1_with("before", 1);
+        stale.extract_epoch = old_epoch;
+        std::fs::write(&path, crate::store_blob::frame_filemap(&stale, None).unwrap()).unwrap();
+        let cache = L1Cache::new(dir.path().to_path_buf(), 0);
+        assert_eq!(cache.load(&hash, old_epoch).unwrap().symbols[0].name, "before");
+
+        let refreshed = l1_with("after", 1);
+        std::fs::write(&path, crate::store_blob::frame_filemap(&refreshed, None).unwrap()).unwrap();
+        let misses = cache.misses();
+        assert_eq!(cache.load(&hash, old_epoch).unwrap().symbols[0].name, "before");
+        assert_eq!(cache.misses(), misses, "a caller at the older epoch still hits");
+
+        let newest = cache.load(&hash, crate::extract::EXTRACT_EPOCH).unwrap();
+        assert_eq!(newest.symbols[0].name, "after");
+        assert_eq!(newest.extract_epoch, crate::extract::EXTRACT_EPOCH);
     }
 
     /// A scan can rename a good blob over the damaged one between the failed read and the unlink.

@@ -95,15 +95,18 @@ fn migration_merges_conflicting_rows_by_timestamp() {
     {
         let store = open_shared(&memory_dir, Version::Stamp).unwrap();
         store
-            .memory_by_key
+            .notes_for_write()
+            .unwrap()
             .insert(b"both-store-newer".to_vec(), row("store", 20))
             .unwrap();
         store
-            .memory_by_key
+            .notes_for_write()
+            .unwrap()
             .insert(b"both-view-newer".to_vec(), row("store", 10))
             .unwrap();
         store
-            .memory_by_key
+            .notes_for_write()
+            .unwrap()
             .insert(b"store-only".to_vec(), row("store", 1))
             .unwrap();
     }
@@ -149,7 +152,11 @@ fn migration_is_idempotent_across_reopens() {
     IndexDb::open_with_memory(&view, &memory_dir).unwrap();
     {
         let store = open_shared(&memory_dir, Version::Stamp).unwrap();
-        store.memory_by_key.insert(b"k".to_vec(), row("newer", 8)).unwrap();
+        store
+            .notes_for_write()
+            .unwrap()
+            .insert(b"k".to_vec(), row("newer", 8))
+            .unwrap();
     }
 
     let db = IndexDb::open_with_memory(&view, &memory_dir).unwrap();
@@ -320,7 +327,11 @@ fn a_newer_memory_store_detaches_memory_and_leaves_the_code_index_open() {
     {
         let db = IndexDb::open_with_memory(&view, &memory_dir).expect("first open");
         db.notes().insert(b"k".to_vec(), row("kept", 5)).unwrap();
-        db.memory().unwrap().db.persist(PersistMode::SyncAll).unwrap();
+        db.memory()
+            .unwrap()
+            .db_for_test()
+            .persist(PersistMode::SyncAll)
+            .unwrap();
     }
     stamp_version(&memory_dir, MEMORY_STORE_VER + 1);
 
@@ -383,12 +394,13 @@ fn a_view_holding_old_memory_rows_is_not_wiped_while_the_store_is_newer() {
 }
 
 /// A read-only open holds a store to its version by looking: it stamps nothing and creates no
-/// keyspace for a version. An absent store it does create, empty, with its notes keyspace. The
-/// writer that opens the store stamps it.
+/// keyspace for a version. The writer that opens the store stamps it.
 #[test]
 fn a_reader_never_stamps_the_store_and_the_writer_that_joins_it_does() {
     let tmp = tempfile::tempdir().unwrap();
     let memory_dir = tmp.path().join("repos/g/memory.fjall");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+    drop(Database::builder(&memory_dir).open().expect("an unversioned store"));
 
     drop(open_shared(&memory_dir, Version::Check).expect("reader"));
     {
@@ -397,7 +409,6 @@ fn a_reader_never_stamps_the_store_and_the_writer_that_joins_it_does() {
             !db.keyspace_exists(STORE_META),
             "a reader made no keyspace for a version"
         );
-        assert!(db.keyspace_exists(MEMORY_BY_KEY), "the empty notes keyspace is there");
     }
     assert_eq!(stored_version(&memory_dir), None, "a reader wrote no version");
 
@@ -453,4 +464,72 @@ fn dir_names(dir: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// Files under `dir` whose name ends in `suffix`, recursively.
+fn count_suffixed(dir: &Path, suffix: &str) -> usize {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            let own = usize::from(path.to_string_lossy().ends_with(suffix));
+            if path.is_dir() {
+                own + count_suffixed(&path, suffix)
+            } else {
+                own
+            }
+        })
+        .sum()
+}
+
+/// An open, writer or reader, of a group that never saved a note creates no store: no directory and
+/// no preallocated journal. A read of it answers empty.
+#[test]
+fn opening_a_group_without_notes_creates_no_memory_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("repos/g/memory.fjall");
+    let view = tmp.path().join("ws/views/working");
+
+    let writer = IndexDb::open_with_memory(&view, &memory_dir).unwrap();
+    let reader = open_shared(&memory_dir, Version::Check).unwrap();
+    assert!(
+        reader.notes().unwrap().is_none(),
+        "a read of an absent store answers empty"
+    );
+    assert!(writer.memory().unwrap().notes().unwrap().is_none());
+    drop((writer, reader));
+
+    assert!(!memory_dir.exists(), "no store before the first write");
+    assert!(!tmp.path().join("repos").exists(), "not even its group directory");
+    assert_eq!(
+        count_suffixed(tmp.path(), ".jnl"),
+        1,
+        "only the view's own index journal"
+    );
+}
+
+/// The first write creates exactly the group store, stamped with its version, and every handle of
+/// the group sees it, including one made before the store existed.
+#[test]
+fn the_first_write_creates_the_memory_store_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memory_dir = tmp.path().join("repos/g/memory.fjall");
+    let early = open_shared(&memory_dir, Version::Check).unwrap();
+    let writer = open_shared(&memory_dir, Version::Stamp).unwrap();
+
+    writer
+        .notes_for_write()
+        .unwrap()
+        .insert(b"k".to_vec(), row("first", 1))
+        .unwrap();
+    writer.sync_for_test();
+
+    assert_eq!(count_suffixed(tmp.path(), ".fjall"), 1, "exactly the memory store");
+    assert_eq!(count_suffixed(tmp.path(), ".jnl"), 1, "with one journal");
+    let seen = early.notes().unwrap().expect("store exists now").get(b"k").unwrap();
+    assert_eq!(value_of(&seen.expect("row")), "first");
+    drop((early, writer));
+    assert_eq!(stored_version(&memory_dir), Some(MEMORY_STORE_VER));
 }

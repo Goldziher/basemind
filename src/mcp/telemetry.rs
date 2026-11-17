@@ -69,8 +69,15 @@ impl TelemetryRow {
 /// MCP tool calls serialize on the underlying file handle.
 pub struct Telemetry {
     path: PathBuf,
-    writer: Mutex<Option<BufWriter<File>>>,
+    writer: Mutex<Option<(BufWriter<File>, u64)>>,
+    /// Size at which the log is rotated ([`TELEMETRY_ROTATE_BYTES`]).
+    rotate_at: u64,
 }
+
+/// Size at which `telemetry.jsonl` is renamed to `telemetry.jsonl.1`, replacing the previous
+/// generation. The log was append-only and on by default, and only the eviction of a cold workspace
+/// removed it, so the workspace in use grew it without bound; summaries read only its tail.
+pub const TELEMETRY_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
 
 impl Telemetry {
     /// Construct a telemetry handle. The file isn't opened until the first record — lets
@@ -79,6 +86,7 @@ impl Telemetry {
         Self {
             path: basemind_dir.join(TELEMETRY_FILENAME),
             writer: Mutex::new(None),
+            rotate_at: TELEMETRY_ROTATE_BYTES,
         }
     }
 
@@ -113,12 +121,20 @@ impl Telemetry {
                 std::fs::create_dir_all(parent)?;
             }
             let file = OpenOptions::new().create(true).append(true).open(&self.path)?;
-            *guard = Some(BufWriter::new(file));
+            let size = file.metadata()?.len();
+            *guard = Some((BufWriter::new(file), size));
         }
-        let w = guard.as_mut().expect("writer just initialized");
+        let (w, size) = guard.as_mut().expect("writer just initialized");
         w.write_all(&line)?;
         w.write_all(b"\n")?;
         w.flush()?;
+        *size += line.len() as u64 + 1;
+        if *size >= self.rotate_at {
+            *guard = None;
+            let mut rotated = self.path.clone().into_os_string();
+            rotated.push(".1");
+            std::fs::rename(&self.path, rotated)?;
+        }
         Ok(())
     }
 }
@@ -297,6 +313,33 @@ mod tests {
 
     fn row_count(path: &Path) -> usize {
         std::fs::read_to_string(path).map(|s| s.lines().count()).unwrap_or(0)
+    }
+
+    /// One generation is kept beside the live log, and neither outgrows the cap by more than a row.
+    #[test]
+    fn the_log_is_rotated_at_its_cap_keeping_one_generation() {
+        let dir = tempdir().unwrap();
+        let mut tel = Telemetry::new(dir.path());
+        tel.rotate_at = 1024;
+        let savings = SavingsRow {
+            baseline_tokens: 1,
+            actual_tokens: 1,
+            est_tokens_saved: 0,
+            baseline: "full_file_read",
+        };
+        for i in 0..200 {
+            tel.record("outline", &json!({ "path": format!("{i}.rs") }), 1, 1, &savings);
+        }
+        let live = dir.path().join(TELEMETRY_FILENAME);
+        let previous = dir.path().join(format!("{TELEMETRY_FILENAME}.1"));
+        let row = 300;
+        for path in [&live, &previous] {
+            let len = std::fs::metadata(path).map_or(0, |meta| meta.len());
+            assert!(len < tel.rotate_at + row, "{} is {len} bytes", path.display());
+        }
+        assert!(row_count(&previous) > 0, "the log was rotated");
+        let generations = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(generations, 2, "one generation is kept");
     }
 
     #[test]

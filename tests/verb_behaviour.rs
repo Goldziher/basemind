@@ -148,9 +148,30 @@ async fn started() -> (TempDir, Client) {
 
 async fn started_with(extra: &[(&str, &str)]) -> (TempDir, Client) {
     let dir = fixture_with(extra);
+    serve_synced(dir).await
+}
+
+async fn serve_synced(dir: TempDir) -> (TempDir, Client) {
     scan(dir.path());
     let client = serve(dir.path()).await;
+    history_synced(&client).await;
     (dir, client)
+}
+
+/// Wait out the server's boot-time git-history sync. A git walk is served live until the index is
+/// up and from the index after, which order commits differently, so a cursor issued across the
+/// switch is refused: tests that page through history start once `index_status` stops reporting
+/// the sync. The ceiling only stops a hang.
+async fn history_synced(client: &Client) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while call(client, "index_status", json!({}))
+        .await
+        .get("history_syncing")
+        .is_some_and(|syncing| syncing == true)
+    {
+        assert!(std::time::Instant::now() < deadline, "the git-history sync never ended");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 fn text_of(result: &CallToolResult) -> String {
@@ -197,6 +218,23 @@ async fn call_err(client: &Client, tool: &'static str, arguments: Value) -> Stri
     text
 }
 
+/// The rows of a list `code_grep` and `code_refs` group by file (`{"<path>": [row, ...]}`), each
+/// with its `path` put back, in the order listed.
+fn rows(grouped: &Value) -> Vec<Value> {
+    grouped
+        .as_object()
+        .unwrap_or_else(|| panic!("hits are grouped by file: {grouped}"))
+        .iter()
+        .flat_map(|(path, rows)| {
+            rows.as_array().expect("a file's rows").iter().map(move |row| {
+                let mut row = row.clone();
+                row["path"] = json!(path);
+                row
+            })
+        })
+        .collect()
+}
+
 fn names(rows: &Value) -> Vec<String> {
     rows.as_array()
         .expect("array")
@@ -228,13 +266,6 @@ async fn code_symbols_ranks_exact_then_prefix_then_substring() {
         ["rank_target", "rank_target_more", "pre_rank_target_post"],
         "{body}"
     );
-    let matches: Vec<&str> = body["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| row["match"].as_str().unwrap_or_default())
-        .collect();
-    assert_eq!(matches, ["exact", "prefix", "substring"], "{body}");
     let paths: Vec<&str> = body["results"]
         .as_array()
         .unwrap()
@@ -249,10 +280,16 @@ async fn code_symbols_ranks_exact_then_prefix_then_substring() {
     assert_eq!(body["total"], 3, "{body}");
 
     let exact = &body["results"][0];
-    assert_eq!(exact["line"], 3, "rows carry a 1-based `line`: {exact}");
-    assert!(
-        exact.get("start_row").is_none(),
-        "the 0-based row must be gone: {exact}"
+    assert_eq!(
+        exact,
+        &json!({
+            "path": "src/c_exact.rs",
+            "line": 3,
+            "kind": "function",
+            "name": "rank_target",
+            "signature": "pub fn rank_target()",
+        }),
+        "a row is where the definition is and what it is, with a 1-based `line`: {exact}"
     );
 
     let first_page = call(&client, "code_symbols", json!({ "name": "rank_target", "limit": 1 })).await;
@@ -282,21 +319,18 @@ async fn code_symbols_fuzzy_adds_subsequence_matches_below_the_substring_ones() 
     let fuzzy = call(&client, "code_symbols", json!({ "name": "fileoutl2", "fuzzy": true })).await;
     let found = names(&fuzzy["results"]);
     assert_eq!(found.first().map(String::as_str), Some("file_outline_l2"), "{fuzzy}");
-    assert_eq!(fuzzy["results"][0]["match"], "fuzzy", "{fuzzy}");
 
     let ranked = call(&client, "code_symbols", json!({ "name": "render", "fuzzy": true })).await;
-    let kinds: Vec<&str> = ranked["results"]
-        .as_array()
-        .unwrap()
+    let found = names(&ranked["results"]);
+    let first_fuzzy = found
         .iter()
-        .map(|row| row["match"].as_str().unwrap_or_default())
-        .collect();
-    let first_fuzzy = kinds.iter().position(|kind| *kind == "fuzzy").unwrap_or(kinds.len());
+        .position(|name| !name.contains("render"))
+        .unwrap_or(found.len());
     assert!(
-        kinds[first_fuzzy..].iter().all(|kind| *kind == "fuzzy"),
+        found[first_fuzzy..].iter().all(|name| !name.contains("render")),
         "fuzzy matches rank below every literal match: {ranked}"
     );
-    assert_eq!(names(&ranked["results"])[0], "render", "{ranked}");
+    assert_eq!(found[0], "render", "{ranked}");
 }
 
 /// A hit is the whole matching line plus the symbol it sits in, so the agent does not have to open
@@ -306,25 +340,24 @@ async fn code_grep_hits_carry_the_full_line_and_the_enclosing_symbol() {
     let (_dir, client) = started().await;
 
     let body = call(&client, "code_grep", json!({ "pattern": "file_outline() +" })).await;
-    assert_eq!(body["total_matches"], 1, "{body}");
-    let hit = &body["hits"][0];
-    assert_eq!(hit["path"], "src/outline.rs");
-    assert_eq!(hit["line"], 19, "1-based line: {hit}");
-    assert_eq!(hit["column"], 9, "1-based column of the match: {hit}");
     assert_eq!(
-        hit["text"], "        file_outline() + file_outline_l2()",
-        "the full line, not the matched substring: {hit}"
-    );
-    assert_eq!(hit["symbol"]["name"], "render", "the innermost enclosing symbol: {hit}");
-    assert_eq!(hit["symbol"]["kind"], "function", "{hit}");
-    assert!(
-        hit.get("matched_text").is_none() && hit.get("line_num").is_none(),
-        "{hit}"
+        body,
+        json!({
+            "total": 1,
+            "hits": {
+                "src/outline.rs": [{
+                    "line": 19,
+                    "text": "        file_outline() + file_outline_l2()",
+                    "symbol": "render",
+                }],
+            },
+        }),
+        "a hit is its 1-based line, the full line and the innermost enclosing symbol, under its file"
     );
 
     let outside = call(&client, "code_grep", json!({ "pattern": "outline helpers" })).await;
     assert!(
-        outside["hits"][0].get("symbol").is_none(),
+        rows(&outside["hits"])[0].get("symbol").is_none(),
         "a hit outside every symbol names none: {outside}"
     );
 
@@ -335,7 +368,8 @@ async fn code_grep_hits_carry_the_full_line_and_the_enclosing_symbol() {
     )
     .await;
     assert_eq!(
-        with_context["hits"][0]["context_before"], "    pub fn render(&self) -> u32 {",
+        rows(&with_context["hits"])[0]["context_before"],
+        "    pub fn render(&self) -> u32 {",
         "{with_context}"
     );
 }
@@ -347,23 +381,19 @@ async fn code_refs_matches_the_callee_name_exactly() {
     let (_dir, client) = started().await;
 
     let exact = call(&client, "code_refs", json!({ "name": "file_outline" })).await;
-    let callees: Vec<&str> = exact["hits"]
-        .as_array()
-        .expect("hits")
-        .iter()
-        .map(|hit| hit["callee"].as_str().unwrap_or_default())
-        .collect();
     assert_eq!(exact["total"], 2, "one call in each file: {exact}");
+    let hits = rows(&exact["hits"]);
     assert!(
-        callees.iter().all(|callee| !callee.contains("file_outline_l2")),
-        "a longer name is a different function: {exact}"
+        hits.iter().all(|hit| hit.get("callee").is_none()),
+        "a callee that is the name asked for is not repeated, and a longer name is a different \
+         function: {exact}"
     );
-    assert_eq!(exact["match"], "exact", "{exact}");
-    let first = &exact["hits"][0];
     assert!(
-        first["line"].as_u64().is_some_and(|line| line >= 1) && first["column"].as_u64().is_some_and(|col| col >= 1),
-        "positions are 1-based: {first}"
+        hits.iter()
+            .all(|hit| hit["line"].as_u64().is_some_and(|line| line >= 1) && hit.get("column").is_none()),
+        "a call site is its 1-based line: {exact}"
     );
+    assert!(exact.get("match").is_none() && exact.get("name").is_none(), "{exact}");
 
     let longer = call(&client, "code_refs", json!({ "name": "file_outline_l2" })).await;
     assert_eq!(longer["total"], 3, "{longer}");
@@ -375,7 +405,14 @@ async fn code_refs_matches_the_callee_name_exactly() {
     )
     .await;
     assert_eq!(substring["total"], 5, "the opt-in keeps the old behaviour: {substring}");
-    assert_eq!(substring["match"], "substring");
+    let longer_callees = rows(&substring["hits"])
+        .iter()
+        .filter(|hit| hit["callee"] == "file_outline_l2")
+        .count();
+    assert_eq!(
+        longer_callees, 3,
+        "a callee other than the name asked for is named: {substring}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -420,9 +457,7 @@ async fn code_refs_says_why_no_hit_is_marked_resolved() {
             "a count that was never computed must not be reported as 0: {body}"
         );
         assert!(
-            body["hits"]
-                .as_array()
-                .is_some_and(|hits| hits.iter().all(|hit| hit.get("resolved").is_none())),
+            rows(&body["hits"]).iter().all(|hit| hit.get("resolved").is_none()),
             "{body}"
         );
     }
@@ -562,7 +597,14 @@ async fn git_diff_without_revisions_describes_the_working_tree() {
 
     let added = call(&client, "git_diff", json!({ "path": "new.rs" })).await;
     assert_eq!(added["present_at_from"], false, "{added}");
-    assert_eq!(added["present_at_to"], true, "{added}");
+    assert!(
+        added.get("present_at_to").is_none(),
+        "a side the file exists at is not said: {added}"
+    );
+    assert!(
+        hunks[0].get("kind").is_none() && diff.get("present_at_from").is_none(),
+        "{diff}"
+    );
 
     let since = call(&client, "git_diff", json!({ "path": "src/outline.rs", "from": "HEAD" })).await;
     assert_eq!(
@@ -630,10 +672,9 @@ fn find_files_returns_a_markdown_file() {
     runtime.block_on(async {
         let client = serve(root).await;
         let found = call(&client, "find_files", json!({ "query": "ATTRIBUTIONS" })).await;
-        assert_eq!(found["files"][0]["path"], "ATTRIBUTIONS.md", "{found}");
-        assert_eq!(found["files"][0]["language"], "markdown", "{found}");
+        assert_eq!(found["files"][0], "ATTRIBUTIONS.md", "{found}");
         let listed = call(&client, "find_files", json!({ "language": "markdown" })).await;
-        assert_eq!(listed["files"][0]["path"], "ATTRIBUTIONS.md", "{listed}");
+        assert_eq!(listed["files"][0], "ATTRIBUTIONS.md", "{listed}");
         let _ = client.cancel().await;
     });
 }

@@ -587,6 +587,7 @@ mod code {
         CodeChunkBlob {
             config_digest: String::new(),
             schema_ver: crate::extract::SCHEMA_VER,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: dim,
             embedding_model: if dim > 0 { PRESET.to_string() } else { String::new() },
             chunks: (0..chunks)
@@ -669,6 +670,36 @@ mod code {
         assert_eq!(code_rows(&mut store), ["src/good.rs"]);
         assert!(store.pending_vectors.is_empty(), "{:?}", store.pending_vectors);
         assert!(!store.view_dir.join(PENDING_FILE).exists());
+    }
+
+    /// A chunk sidecar torn by a power loss still exists, so every later pass skipped its file as
+    /// unchanged; settling the debt then left the file without rows for good. The debt stays, and the
+    /// file map, on disk, sends the file to be extracted again.
+    #[test]
+    fn a_debt_whose_sidecar_is_torn_stays_owed_and_its_file_is_extracted_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = open_store(tmp.path());
+        let config = code_config();
+        owe_code(&mut store, "src/torn.rs", Some(&sidecar(2, DIM)));
+        let sidecar_path = store.blob_path_chunk_hex(&store.lookup("src/torn.rs").unwrap().hash_hex);
+        let whole = std::fs::read(&sidecar_path).unwrap();
+        std::fs::write(&sidecar_path, &whole[..whole.len() / 2]).unwrap();
+        store.flush().unwrap();
+
+        lanes(&mut store, &config, usize::MAX);
+
+        let owed: Vec<String> = PendingVectors::load(&store.view_dir)
+            .code()
+            .iter()
+            .map(|rel| rel.to_str_lossy().into_owned())
+            .collect();
+        assert_eq!(owed, ["src/torn.rs"], "the debt is kept");
+        let on_disk = crate::store::read_index(&store.view_dir).unwrap().unwrap();
+        let entry = on_disk
+            .files
+            .get(bstr::BStr::new(b"src/torn.rs"))
+            .expect("still listed");
+        assert_eq!(entry.extract_epoch, 0, "the next pass extracts it again");
     }
 
     /// The batch a scan hands over for a file whose sidecar is gone, or holds vectors of another

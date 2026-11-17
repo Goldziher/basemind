@@ -44,6 +44,9 @@ pub struct Emit {
     /// A long-running `basemind serve` (and therefore every MCP call) pays this **once** at boot,
     /// not per query. It is a CLI-only cost.
     pub startup_us: u64,
+    /// When the tool call began: the query time the footer reports for a tool whose response
+    /// carries no `elapsed_us` of its own (the locating tools leave it out).
+    pub called: std::time::Instant,
 }
 
 /// Wire encoding of a tool response, for the `--format` flag on commands whose MCP tool takes one.
@@ -104,10 +107,11 @@ pub fn emit_to(
         return render_json(&value, out);
     }
 
-    let elapsed_us = match &mut value {
+    let reported = match &mut value {
         Value::Object(map) => map.remove("elapsed_us").and_then(|v| v.as_u64()),
         _ => None,
     };
+    let elapsed_us = reported.or_else(|| u64::try_from(opts.called.elapsed().as_micros()).ok());
     let mut cut = Truncated::default();
     if toon {
         writeln!(out, "{}", crate::mcp::toon::encode(&value))?;
@@ -215,6 +219,14 @@ pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Res
 }
 
 fn render_human_counting(tool_name: &str, value: &Value, out: &mut impl Write, cut: &mut Truncated) -> Result<()> {
+    let flat;
+    let value = match ungrouped(value) {
+        Some(rows) => {
+            flat = rows;
+            &flat
+        }
+        None => value,
+    };
     match value {
         Value::Object(map) => {
             let object_arrays: Vec<(&str, &Vec<Value>)> = map
@@ -230,6 +242,12 @@ fn render_human_counting(tool_name: &str, value: &Value, out: &mut impl Write, c
                     continue;
                 }
                 match v {
+                    Value::Array(items) if !items.is_empty() && matches!(key.as_str(), "files" | "paths") => {
+                        writeln!(out, "{key}:")?;
+                        for item in items {
+                            writeln!(out, "  {}", scalar_to_string(item))?;
+                        }
+                    }
                     Value::Array(items) if !items.is_empty() => {
                         let joined: Vec<String> = items.iter().map(scalar_to_string).collect();
                         writeln!(out, "{key}: {}", joined.join(", "))?;
@@ -264,6 +282,47 @@ fn render_human_counting(tool_name: &str, value: &Value, out: &mut impl Write, c
     Ok(())
 }
 
+/// `value` with every list grouped by file (`{"<path>": [row, ...]}`, as `code_grep` and
+/// `code_refs` list their hits) turned back into one row per hit carrying its `path`, so it renders
+/// as a table; `None` when there is no such list.
+fn ungrouped(value: &Value) -> Option<Value> {
+    let map = value.as_object()?;
+    let grouped = |v: &Value| {
+        v.as_object().is_some_and(|files| {
+            !files.is_empty()
+                && files
+                    .values()
+                    .all(|rows| rows.as_array().is_some_and(|rows| rows.iter().all(Value::is_object)))
+        })
+    };
+    if !map.values().any(grouped) {
+        return None;
+    }
+    let mut out = serde_json::Map::new();
+    for (key, v) in map {
+        let Some(files) = v.as_object().filter(|_| grouped(v)) else {
+            out.insert(key.clone(), v.clone());
+            continue;
+        };
+        let mut rows = Vec::new();
+        for (path, hits) in files {
+            for hit in hits.as_array().into_iter().flatten() {
+                let mut row = serde_json::Map::new();
+                row.insert("path".to_string(), Value::String(path.clone()));
+                row.extend(
+                    hit.as_object()
+                        .into_iter()
+                        .flatten()
+                        .map(|(k, v)| (k.clone(), v.clone())),
+                );
+                rows.push(Value::Object(row));
+            }
+        }
+        out.insert(key.clone(), Value::Array(rows));
+    }
+    Some(Value::Object(out))
+}
+
 /// Write `text` verbatim, ensuring it ends with exactly one newline.
 fn write_raw(out: &mut impl Write, text: &str) -> Result<()> {
     out.write_all(text.as_bytes())?;
@@ -284,7 +343,7 @@ fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>,
         return Ok(());
     }
     let shown = map.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
-    let total = map.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
+    let total = map.get("total").and_then(Value::as_u64).unwrap_or(0);
     if map.get("truncated").and_then(Value::as_bool) == Some(true) {
         writeln!(
             out,
@@ -403,11 +462,10 @@ fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &
                     return Ok(None);
                 };
                 let num = |k: &str| obj.get(k).and_then(Value::as_u64).unwrap_or(0);
-                let kind = obj.get("kind").and_then(Value::as_str).unwrap_or("");
                 let text = obj.get("text").and_then(Value::as_str).unwrap_or("");
                 writeln!(
                     out,
-                    "  @@ -{},{} +{},{} @@ {kind}",
+                    "  @@ -{},{} +{},{} @@",
                     num("old_line_start"),
                     num("old_line_count"),
                     num("new_line_start"),
@@ -424,9 +482,12 @@ fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &
                 };
                 let path = obj.get("path").and_then(Value::as_str).unwrap_or("");
                 let line = obj.get("line").and_then(Value::as_u64).unwrap_or(0);
-                let col = obj.get("column").and_then(Value::as_u64).unwrap_or(0);
-                let callee = obj.get("callee").and_then(Value::as_str).unwrap_or("");
-                writeln!(out, "  {path}:{line}:{col} {callee}")?;
+                let what = ["callee", "impl_type", "trait_name"]
+                    .iter()
+                    .filter_map(|key| obj.get(*key).and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                writeln!(out, "  {path}:{line} {what}")?;
             }
             if items.len() > MAX_HUMAN_ITEMS {
                 writeln!(out, "  … and {} more", items.len() - MAX_HUMAN_ITEMS)?;
@@ -457,24 +518,26 @@ mod tests {
     #[test]
     fn warns_in_prose_when_a_grep_page_is_not_every_match() {
         let out = render_grep(&json!({
-            "pattern": "OptimizationStatus",
-            "total_matches": 101,
+            "total": 101,
             "next_cursor": "b3BhcXVl",
-            "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
+            "hits": {"a.rs": [{"line": 1, "text": "OptimizationStatus"}]},
         }));
         assert!(
             out.contains("MORE MATCHES — showing 1 of 101"),
             "must name the withheld count: {out}"
         );
+        assert!(
+            out.contains("a.rs") && out.contains("OptimizationStatus"),
+            "a hit listed under its file renders as a row with its path: {out}"
+        );
         assert!(!out.contains("TRUNCATED"), "a `limit` cut is paging: {out}");
 
         let unread = render_grep(&json!({
-            "pattern": "OptimizationStatus",
-            "total_matches": 1,
+            "total": 1,
             "truncated": true,
             "truncated_reason": "byte_budget",
             "next_cursor": "b3BhcXVl",
-            "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
+            "hits": {"a.rs": [{"line": 1, "text": "OptimizationStatus"}]},
         }));
         assert!(unread.contains("TRUNCATED"), "unread files must be shouted: {unread}");
     }
@@ -482,9 +545,8 @@ mod tests {
     #[test]
     fn a_complete_grep_result_carries_no_warning() {
         let out = render_grep(&json!({
-            "pattern": "OptimizationStatus",
-            "total_matches": 1,
-            "hits": [{"path": "a.rs", "line": 1, "column": 1, "text": "OptimizationStatus"}],
+            "total": 1,
+            "hits": {"a.rs": [{"line": 1, "text": "OptimizationStatus"}]},
         }));
         assert!(
             !out.contains("TRUNCATED") && !out.contains("MORE MATCHES"),
@@ -496,6 +558,7 @@ mod tests {
         let opts = super::Emit {
             json,
             startup_us: 1_500,
+            called: std::time::Instant::now(),
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         super::emit_to(tool, result, &opts, &mut out, &mut err).expect("emit");
@@ -533,13 +596,13 @@ mod tests {
     fn git_diff_hunks_print_raw_under_a_unified_header() {
         let mut buf = Vec::new();
         let value = json!({"hunks": [{
-            "kind": "modified", "old_line_start": 2, "old_line_count": 1,
+            "old_line_start": 2, "old_line_count": 1,
             "new_line_start": 2, "new_line_count": 1,
             "text": format!("-old\n+{}\n", "x".repeat(400)),
         }]});
         render_human("git_diff", &value, &mut buf).expect("render");
         let out = String::from_utf8(buf).expect("utf8");
-        assert!(out.contains("@@ -2,1 +2,1 @@ modified\n-old\n+"), "{out}");
+        assert!(out.contains("@@ -2,1 +2,1 @@\n-old\n+"), "{out}");
         assert!(out.contains(&"x".repeat(400)), "{out}");
     }
 
@@ -575,6 +638,14 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json_out).expect("--json stays JSON with toon");
         assert_eq!(parsed["results"][0]["name"], "alpha");
         assert_eq!(parsed["startup_us"], 1_500);
+    }
+
+    #[test]
+    fn a_response_without_its_own_timing_is_timed_by_the_cli() {
+        let result = rmcp::model::CallToolResult::structured(json!({"total": 1, "files": ["a.rs", "b/c.md"]}));
+        let (out, err) = emit_capture("find_files", &result, false);
+        assert!(out.contains("files:\n  a.rs\n  b/c.md\n"), "one path per line: {out}");
+        assert!(err.contains("query") && err.contains("1.5 ms startup"), "{err}");
     }
 
     #[test]

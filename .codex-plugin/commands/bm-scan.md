@@ -7,8 +7,8 @@ name: bm-scan
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:f41c52efc4a466e6fc1e999e9bacc8d1a13043bca05993e37d0ae2ef12d67a6c
-Source-Hash: blake3:4790ee5e237c434ff57929ff0428e9c5da0c4446ea6a6c82b509bbf114d292a7
+Content-Hash: blake3:20f7195b9b4ed9e2e3be8053661a622d24b7f00ddb5f1d81eb9848b5a0a751cc
+Source-Hash: blake3:801b6b31efa46f8e01bd204c51dc2cf3583e7c0789332eeac9cefacc7a7a54f5
 Schema-Version: v1
 -->
 
@@ -38,8 +38,8 @@ basemind scan ${ARGUMENTS:-}
 
 - Report files scanned / updated / skipped and elapsed time. Non-extractable files are
   **skipped**, not failures.
-- If a `basemind serve` MCP server already holds the store lock for this repo, `scan` errors on
-  the lock — use `basemind rescan [path…]` (forwards to the running daemon) or `index_rescan {}` over MCP instead (lock errors exit 3).
+- If the basemind daemon is running, `scan` is forwarded to it and reports `scan via daemon`. Another
+  process holding the store lock (`basemind watch`, another scan) makes `scan` exit 3 and name it.
 
 ## See also
 

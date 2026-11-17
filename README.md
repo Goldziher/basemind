@@ -493,7 +493,8 @@ Search and memory are powered by a vector store ([LanceDB]).
 The daemon answers the MCP handshake immediately and warms the code map into memory in the
 background, so a client never blocks waiting for a large repo to load. The `status` tool reports
 `warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
-`indexing` / `index_build_ms`.
+`indexing` / `index_build_ms`, and the boot-time git-history sync `history_syncing` (a `git_log` or
+`git_blame` cursor issued before it ends may be refused as stale).
 
 While the server isn't fully ready, `status` and every code-map read tool may carry a `notice`
 object — `{ state, message, retry }` — instead of (or alongside) their normal result:
@@ -755,8 +756,11 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 <details>
 <summary><strong>Measuring query latency (<code>elapsed_us</code>)</strong></summary>
 
-Every latency-relevant tool — the code, git, document and memory lookups and `index_status` —
-reports its own latency as **`elapsed_us`** on its response.
+`code_outline`, `code_search`, `docs_search`, `git_blame`, the memory tools and `index_status`
+report their own latency as **`elapsed_us`** on their response. The locating tools (`code_symbols`, `code_grep`, `code_refs`,
+`find_files`, `git_log`, `git_diff`) leave it out: their answer is a short list, and a timing field
+on it would cost as much as a row. Telemetry records every call's latency, and the CLI times the
+call itself when the response has no `elapsed_us`.
 Don't wrap the CLI in `time`; ask basemind.
 
 Resolution is **microseconds** on purpose: an indexed `git_log` with `path` is ~37 µs, so
@@ -782,7 +786,7 @@ part of a `time basemind …` measurement that was never the query — and a lon
 it once at boot, not per call:
 
 ```console
-$ basemind code symbols run_workspace_grep --limit 1 --json
+$ basemind code outline src/store.rs --json
 {
   ...
   "elapsed_us": 90,        # the query
@@ -1116,12 +1120,12 @@ arguments are 1-based.
 | `0` | Success. |
 | `1` | Runtime error. |
 | `2` | Usage error: bad flag or argument (including an invalid `rescan` path, or a destructive command without `--yes`). |
-| `3` | Busy: another process holds the workspace writer lock. Retry later, or use `basemind rescan`, which the daemon serves. |
+| `3` | Busy: another process holds the workspace writer lock, or the daemon a scan was forwarded to is stopping. Retry later. |
 | `4` | A required daemon is unreachable. |
 | `130` | Interrupted by Ctrl-C; completed work is committed and the index stays consistent. |
 
 With a comms daemon running, the one-shot CLI forwards memory operations, reference/caller reads,
-the grep prefilter and rescans to it (the daemon is the sole index writer) instead of failing or
+the grep prefilter, scans and rescans to it (the daemon is the sole index writer) instead of failing or
 degrading to a truncated in-memory view.
 
 **Code (`basemind code`)**
@@ -1218,7 +1222,7 @@ after handling it so each thread's inbox cursor advances independently.
 
 | Command | Purpose |
 |---|---|
-| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. |
+| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. With a daemon running, a working-tree scan is forwarded to it; a flag it cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a `--documents-*` / `--llm-*` override) is refused with exit 2, and `--staged` / `--rev` exit 3 while the daemon holds the workspace. A scan starts no daemon. |
 | `rescan [<path>…] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or with none the whole tree. Routed through the daemon when one runs. |
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |
