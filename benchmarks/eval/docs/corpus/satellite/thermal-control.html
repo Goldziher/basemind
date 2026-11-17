@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mirelle-1 thermal control</title>
+</head>
+<body>
+        <h1>Mirelle-1 thermal control</h1>
+        <p>The thermal design keeps every unit of the spacecraft within its limits through a mix of
+        surface finishes, insulation and a small number of heaters. It is deliberately simple:
+        there are no louvres, heat pipes or pumped loops on board.</p>
+        <h2>Passive control</h2>
+        <p>Radiator faces carry white silicone paint &amp; the remaining structure is black
+        anodised to spread heat evenly. A multi-layer insulation (MLI) blanket of fifteen layers
+        wraps the battery pack and the barrel of the imager optics, isolating them from the rapid
+        swings of the outer panels as the spacecraft enters and leaves eclipse.</p>
+        <h2>Heaters</h2>
+        <p>Two Kapton film heaters are fitted. THERM-HTR-01 sits on the battery and is driven by the
+        power system&#39;s own thermostat. THERM-HTR-02 sits on the imager focal plane and is
+        switched by the flight software: on when the detector reads &lt; -10&nbsp;&deg;C and off again
+        once it reaches -5&nbsp;&deg;C. Each heater draws 1.2&nbsp;W.</p>
+        <h2>Temperature limits</h2>
+        <table>
+<thead>
+<tr><th>Component</th><th>Operating min (C)</th><th>Operating max (C)</th><th>Survival min (C)</th><th>Survival max (C)</th></tr>
+</thead>
+<tbody>
+<tr><td>Battery pack</td><td>5</td><td>35</td><td>-10</td><td>45</td></tr>
+<tr><td>On-board computer</td><td>-20</td><td>70</td><td>-40</td><td>85</td></tr>
+<tr><td>Imager detector</td><td>-10</td><td>30</td><td>-25</td><td>50</td></tr>
+<tr><td>S-band transmitter</td><td>-20</td><td>55</td><td>-30</td><td>70</td></tr>
+<tr><td>Reaction wheels</td><td>-10</td><td>50</td><td>-20</td><td>60</td></tr>
+<tr><td>Solar panels</td><td>-80</td><td>100</td><td>-100</td><td>120</td></tr>
+</tbody>
+</table>
+
+        <h2>Analysis cases</h2>
+        <p>The hot case assumes a beta angle of 70&nbsp;degrees, end-of-life surface properties and
+        continuous downlink. The cold case assumes the longest eclipse, beginning-of-life surfaces
+        and safe mode. In both cases every unit stays within its operating range with a margin
+        &gt; 5&nbsp;&deg;C.</p>
+</body>
+</html>
