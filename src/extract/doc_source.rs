@@ -44,14 +44,11 @@ pub(crate) fn shape(mime: &str) -> Option<Shape> {
     }
 }
 
-/// The text of the file at `path`, invalid UTF-8 replaced (no line break is added or lost). `None`
-/// when it cannot be read or holds only whitespace.
+/// The text of the file at `path`. `None` when it cannot be read, is not UTF-8 (UTF-16, Latin-1:
+/// xberg's decoded text is chunked instead, where a lossy decode would interleave NULs and
+/// replacement characters into every chunk), or holds only whitespace.
 pub(crate) fn read(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
-    };
+    let text = String::from_utf8(std::fs::read(path).ok()?).ok()?;
     (!text.trim().is_empty()).then_some(text)
 }
 
