@@ -106,7 +106,7 @@ pub(super) async fn route(root: &std::path::Path) -> Route {
             return Route::Direct;
         }
     };
-    let holds_lock = match basemind::store::probe_writer_lock(&basemind::store::workspace_cache_dir(root)) {
+    let holds_lock = match identify_writer(&basemind::store::workspace_cache_dir(root)).await {
         basemind::store::WriterProbe::Free => false,
         basemind::store::WriterProbe::Held { holder: Some(meta) } if meta.pid == pid => true,
         basemind::store::WriterProbe::Held { .. } => return Route::Direct,
@@ -115,6 +115,28 @@ pub(super) async fn route(root: &std::path::Path) -> Route {
         client: Box::new(client),
         pid,
         holds_lock,
+    }
+}
+
+/// How long [`identify_writer`] waits for a lock holder to name itself.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+const HOLDER_META_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Probe the writer lock of `basemind_dir`, waiting up to [`HOLDER_META_WAIT`] for a holder that
+/// has not named itself yet. A writer wins the lock first and then writes the `.lock.meta` sidecar,
+/// so a probe in between finds the lock held by nobody in particular; on a loaded machine that
+/// window is long enough to mistake the daemon starting a rescan for a foreign writer.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+async fn identify_writer(basemind_dir: &std::path::Path) -> basemind::store::WriterProbe {
+    let deadline = tokio::time::Instant::now() + HOLDER_META_WAIT;
+    loop {
+        let probe = basemind::store::probe_writer_lock(basemind_dir);
+        if !matches!(probe, basemind::store::WriterProbe::Held { holder: None })
+            || tokio::time::Instant::now() >= deadline
+        {
+            return probe;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
 }
 
@@ -266,5 +288,62 @@ mod tests {
         assert!(message.contains("pid 7"), "{message}");
         assert!(message.contains("--rebuild-git-history"), "{message}");
         assert!(message.contains("basemind comms stop"), "{message}");
+    }
+
+    /// Hold the writer lock of `dir` the way a writer does, before it names itself.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    fn hold_writer_lock(dir: &std::path::Path) -> std::fs::File {
+        use fs2::FileExt;
+
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(basemind::store::LOCK_FILE))
+            .expect("lock file");
+        lock.try_lock_exclusive().expect("lock");
+        lock
+    }
+
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(future)
+    }
+
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    #[test]
+    fn a_holder_that_names_itself_after_winning_the_lock_is_identified() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _lock = hold_writer_lock(dir.path());
+        let meta = dir.path().join(basemind::store::LOCK_META_FILE);
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::fs::write(meta, br#"{"command":"basemind rescan","pid":4242,"acquired_unix":0}"#).expect("meta");
+        });
+        let probe = block_on(identify_writer(dir.path()));
+        writer.join().expect("writer");
+        assert!(
+            matches!(&probe, basemind::store::WriterProbe::Held { holder: Some(meta) } if meta.pid == 4242),
+            "{probe:?}"
+        );
+    }
+
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    #[test]
+    fn a_holder_that_never_names_itself_stays_unidentified() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _lock = hold_writer_lock(dir.path());
+        let started = std::time::Instant::now();
+        let probe = block_on(identify_writer(dir.path()));
+        assert!(
+            matches!(probe, basemind::store::WriterProbe::Held { holder: None }),
+            "{probe:?}"
+        );
+        assert!(started.elapsed() >= HOLDER_META_WAIT);
     }
 }
