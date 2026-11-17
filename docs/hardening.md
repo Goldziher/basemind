@@ -8,7 +8,7 @@ They need Python 3.10+ and nothing outside the standard library.
 |---|---|---|
 | `soak.py` + `analyze.py` | no growth in memory / fds / threads under load, quiet idle, clean shutdown, bounded data dir | load + idle + ~1 min (15 min for a short run, 1 h+ for a release) |
 | `functional_sweep.py` | every verb tool and its CLI command answers with the expected structure; RAG finds planted facts, with filters | 1-3 min (`comms` build); 5-15 min first time on a `full` build (model downloads) |
-| `leak_check.py` | no definite leaks in one-shot `basemind scan` (macOS `leaks`) | 1-2 min for the fixture; longer with `--repo` |
+| `leak_check.py` | no definite leaks in one-shot `basemind scan` (macOS `leaks`, Linux valgrind) | 1-2 min for the fixture (`leaks`); several under valgrind; longer with `--repo` |
 | `selftest_analyze.py` | `analyze.py`'s rules fire on known-bad input and pass known-good input | seconds |
 
 Build first, outside the repository's `target/` if you like:
@@ -76,7 +76,13 @@ Every `--sample-every` seconds (default 5) a sampler thread records, for each pr
 (daemon, serve, CLI one-shots, any child): RSS, physical footprint (macOS), virtual size, thread
 count, open fd count, cumulative CPU time and its delta, and idle wakeups (macOS); plus the data
 dir and comms dir sizes and a census of live processes. macOS reads `proc_pid_rusage` /
-`proc_pidinfo` through `ctypes`; Linux reads `/proc`.
+`proc_pidinfo` through `ctypes`; Linux reads `/proc`; Windows (`winproc.py`) reads kernel32 / ntdll
+through `ctypes`: working set as RSS, private bytes as the footprint R2 gates on, handles as fds.
+
+Windows exposes neither another process's cwd nor its open files, so there each script copies the
+binary under test into the run's temp root and a process belongs to the run when its executable
+lies inside that root (the daemon re-executes the same copy), or when it descends from one.
+`--inject-orphan` therefore proves R7 on macOS and Linux only.
 
 ### Pass rules (`analyze.py`)
 
@@ -142,29 +148,48 @@ the PDF fact and an excluding filter must drop it.
 A case answering that its Cargo feature is not compiled in is a counted skip. The run fails when any
 case fails, when nothing passed, or when the server advertises a verb tool the sweep did not call.
 
-## One-shot leak check (macOS)
+## One-shot leak check (macOS, Linux)
 
 ```bash
 python3 scripts/hardening/leak_check.py --binary "$CARGO_TARGET_DIR/release/basemind" [--repo .]
 ```
 
-Runs `leaks --atExit -- basemind scan` with `MallocStackLogging=1` on the fixture (code and, on a
-`documents` build, the documents) and optionally a clone of `--repo`. `--cmd status` adds more
-one-shots. It fails on any definite leak and on a run `leaks` could not inspect. The full `leaks`
-output, with stacks, is kept per run.
+Runs `basemind scan` on the fixture (code and, on a `documents` build, the documents) and
+optionally a clone of `--repo` under the platform's checker (`--tool` overrides): on macOS
+`leaks --atExit` with `MallocStackLogging=1`, on Linux `valgrind --leak-check=full`, counting
+"definitely lost" blocks. `--cmd status` adds more one-shots. It fails on any definite leak and on
+a run the checker could not inspect. The full checker output, with stacks, is kept per run, beside
+`leaks.report.md` and `leaks.json`.
 
-Linux equivalents (not automated here):
+basemind's global allocator is mimalloc, which maps its memory directly, so valgrind sees only
+allocations made through the C allocator (tree-sitter and the other C/C++ dependencies); the
+mimalloc pages are still scanned for pointers, so a C block a Rust value holds is not reported.
+Rust-side growth is what the soak's R2 rule judges. Windows has no checker wired up.
+
+## CI (`.github/workflows/hardening.yaml`)
+
+The workflow runs the whole pass on `ubuntu-latest`, `macos-26` and `windows-2022` (the image the
+Windows release is built on): selftest, functional sweep, soak plus `analyze.py`, and the leak
+check (`valgrind` on Linux, `leaks` on macOS; on Windows a visible notice says it was skipped).
+It runs nightly, on a pull request that touches `scripts/hardening/**` or the workflow (5-minute
+soak), and on demand:
 
 ```bash
-valgrind --leak-check=full --errors-for-leak-kinds=definite --error-exitcode=1 basemind scan
-heaptrack basemind scan && heaptrack_print heaptrack.basemind.*.zst | grep -A20 'MEMORY LEAKS'
+gh workflow run hardening.yaml -f soak_minutes=60 -f features=full
+gh workflow run hardening.yaml -f inject_orphan=true   # R7 must turn every Unix leg red
 ```
 
-Run either with `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` pointing at fresh temp dirs.
+The binary is `cargo build --release --features <features>`; when that fails on a runner the leg
+retries with `comms` and says so in a warning and in the summary title. A leg fails when any step
+fails: a selftest case, a sweep case, a soak rule, or a leak. Each leg writes a table (rule,
+value, threshold, verdict) to the run's summary page and uploads its report directory as the
+`hardening-<os>` artifact, also on failure: `selftest/`, `sweep/sweep.report.md`,
+`soak/soak.ndjson` with `soak.report.md` and `verdict.json`, and `leaks/` with the raw checker
+output. Read a failure from the summary row first, then the matching report as described above.
 
 ## Not covered
 
-- Linux and Windows: the sampler supports Linux `/proc` but the scripts have only been run on macOS.
-  Windows has no sampler.
+- Windows: no one-shot leak check, no idle-wakeup counter (R6b), and `--inject-orphan` cannot
+  anchor its sleeper to the run.
 - The daemon's own idle reap (10 minutes after the last client) is not waited for; `comms stop` is
   the shutdown exercised.

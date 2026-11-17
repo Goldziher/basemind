@@ -442,6 +442,7 @@ def main() -> int:  # noqa: PLR0915
         iso.cleanup()
 
     install_cleanup(cleanup)
+    binary = iso.stage_binary(binary)
     env = iso.env()
     repo = build_fixture(iso.root / "repo")
     (repo / "src" / "settings.py").write_text((repo / "src" / "settings.py").read_text() + "\nsweep_marker = 1\n")
@@ -506,6 +507,19 @@ def main() -> int:  # noqa: PLR0915
         )
     report = "\n".join(lines) + "\n"
     (out / "sweep.report.md").write_text(report)
+    (out / "sweep.json").write_text(
+        json.dumps(
+            {
+                "pass": ok,
+                "checks": len(outcomes),
+                "passed": passed,
+                "failed": [f"{o.surface} {o.case}: {o.detail[:200]}" for o in failed],
+                "skipped": len(skipped),
+                "uncovered": uncovered,
+            },
+            indent=2,
+        )
+    )
     sys.stdout.write(report)
     return 0 if ok else 1
 

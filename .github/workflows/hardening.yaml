@@ -1,0 +1,208 @@
+name: hardening
+
+# The pre-release hardening pass (docs/hardening.md) on Linux, macOS and Windows: the analyze.py
+# selftest, the functional sweep, a soak judged by analyze.py's pass rules, and a one-shot leak
+# check. Nightly and on demand; on a pull request only when the scripts or this workflow change,
+# with a short soak, so the workflow verifies itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: Soak load phase in minutes (warm-up included)
+        type: number
+        default: 20
+      features:
+        description: Cargo features of the binary under test
+        type: string
+        default: full
+      inject_orphan:
+        description: Leak a process before the survivor sweep (proves rule R7 turns the job red)
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 5 * * *"
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/hardening/**
+      - .github/workflows/hardening.yaml
+
+concurrency:
+  group: hardening-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  PYTHONUTF8: "1"
+  PYTHONUNBUFFERED: "1"
+  FEATURES: ${{ inputs.features || 'full' }}
+  SOAK_MINUTES: ${{ inputs.soak_minutes || (github.event_name == 'pull_request' && 5 || 20) }}
+  INJECT_ORPHAN: ${{ inputs.inject_orphan && '1' || '' }}
+
+jobs:
+  harden:
+    name: hardening / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            leak_tool: valgrind
+          - os: macos-26
+            leak_tool: leaks
+          # ~keep windows-2022, not windows-latest: the release builds `full` there (publish.yaml) because
+          # ~keep the newer MSVC on windows-latest cannot compile xberg-libwpd, so this hardens what ships.
+          - os: windows-2022
+            leak_tool: ""
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # ~keep The soak indexes a clone of this checkout; real history exercises the git tools.
+          fetch-depth: 0
+
+      # ~keep Same purge as ci.yaml's `full` legs: the release target dir and models exhaust the disk.
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo rm -rf /usr/local/.ghcup /usr/share/swift /usr/lib/jvm \
+            /usr/local/share/powershell /usr/share/miniconda /opt/az || true
+          sudo apt-get clean || true
+          sudo docker image prune --all --force || true
+          df -h /
+      - name: Free disk space (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
+          df -h /
+      # ~keep C: has ~500 MB free on the Windows image, under the scan's pre-flight space check.
+      - name: Move temp to the work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: hardening-${{ matrix.os }}-${{ env.FEATURES }}
+
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: python
+
+      - name: Isolate basemind state
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "BASEMIND_DATA_HOME=$RUNNER_TEMP/bm-data"
+            echo "BASEMIND_COMMS_DIR=$RUNNER_TEMP/bm-comms"
+            echo "HARDENING_REPORTS=$RUNNER_TEMP/hardening-reports"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/hardening-reports"
+
+      - name: Selftest (analyze.py rules fire on known-bad input)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/hardening/selftest_analyze.py --out "$HARDENING_REPORTS/selftest" 2>&1 |
+            tee "$HARDENING_REPORTS/selftest.log"
+
+      - name: Build the binary under test
+        id: build
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          built="$FEATURES"
+          if ! cargo build --locked --release --bin basemind --features "$FEATURES"; then
+            echo "::warning title=Feature fallback::cargo build --features '$FEATURES' failed on $RUNNER_OS; retrying with 'comms'"
+            built=comms
+            cargo build --locked --release --bin basemind --features comms || exit 1
+          fi
+          exe="target/release/basemind"
+          [ "$RUNNER_OS" = Windows ] && exe="$exe.exe"
+          echo "built=$built" >> "$GITHUB_OUTPUT"
+          echo "BASEMIND_BIN=$GITHUB_WORKSPACE/$exe" >> "$GITHUB_ENV"
+          echo "Binary under test on $RUNNER_OS: features '$built' (requested '$FEATURES')"
+          "$exe" --version
+
+      - name: Functional sweep (every MCP tool and its CLI command)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 45
+        shell: bash
+        run: python scripts/hardening/functional_sweep.py --binary "$BASEMIND_BIN" --out "$HARDENING_REPORTS/sweep"
+
+      - name: Soak
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ~keep analyze.py needs >= 20 post-warm-up samples (5 s apart) and a 60 s idle window after a
+          # ~keep 30 s settle, so the short PR soak keeps a 1 min warm-up and a 2 min idle.
+          if [ "$SOAK_MINUTES" -ge 10 ]; then warmup=120 idle=180; else warmup=60 idle=120; fi
+          extra=()
+          [ -n "$INJECT_ORPHAN" ] && extra+=(--inject-orphan)
+          python scripts/hardening/soak.py --binary "$BASEMIND_BIN" --out "$HARDENING_REPORTS/soak" \
+            --duration "$((SOAK_MINUTES * 60))" --warmup "$warmup" --idle "$idle" ${extra[@]+"${extra[@]}"}
+
+      - name: Judge the soak (analyze.py pass rules)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          python scripts/hardening/analyze.py "$HARDENING_REPORTS/soak/soak.ndjson" \
+            --json "$HARDENING_REPORTS/soak/verdict.json"
+
+      # ~keep valgrind is a system package with no mise backend; the runner image does not ship it.
+      - name: Install valgrind (Linux)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.leak_tool == 'valgrind' }}
+        run: command -v valgrind || { sudo apt-get update && sudo apt-get install -y valgrind; }
+
+      - name: One-shot leak check (${{ matrix.leak_tool }})
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.leak_tool != '' }}
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          python scripts/hardening/leak_check.py --binary "$BASEMIND_BIN" --tool "${{ matrix.leak_tool }}" \
+            --out "$HARDENING_REPORTS/leaks"
+
+      - name: One-shot leak check skipped (Windows)
+        if: ${{ matrix.leak_tool == '' }}
+        shell: bash
+        run: |
+          echo "::notice title=Leak check skipped::No leak checker on $RUNNER_OS (macOS uses leaks, Linux valgrind); the soak's memory rules still ran."
+
+      - name: Job summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          skip=()
+          [ -z "${{ matrix.leak_tool }}" ] && skip=(--leaks-skipped "no leak checker on $RUNNER_OS")
+          python scripts/hardening/ci_summary.py --title "${{ matrix.os }} / ${{ steps.build.outputs.built || env.FEATURES }}" \
+            --reports "$HARDENING_REPORTS" ${skip[@]+"${skip[@]}"}
+
+      - name: Upload reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: hardening-${{ matrix.os }}
+          path: ${{ runner.temp }}/hardening-reports
+          if-no-files-found: warn
+          retention-days: 14
