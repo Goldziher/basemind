@@ -113,6 +113,128 @@ fn an_archive_is_skipped_even_when_extract_archives_is_set() {
     assert!(store.lookup_doc("small.svg").is_some());
 }
 
+/// One file per document format a tree-sitter grammar also claims, by its own extension.
+const MARKUP: &[(&str, &str)] = &[
+    (
+        "page.html",
+        "<html><body><h1>Pumps</h1><p>The quick brown fox.</p></body></html>",
+    ),
+    ("old.htm", "<html><body><p>The quick brown fox.</p></body></html>"),
+    (
+        "paper.tex",
+        "\\documentclass{article}\n\\begin{document}\nThe quick brown fox.\n\\end{document}\n",
+    ),
+    ("notes.org", "* Pumps\nThe quick brown fox.\n"),
+    ("report.typ", "= Pumps\nThe quick brown fox.\n"),
+    ("guide.dj", "# Pumps\n\nThe quick brown fox.\n"),
+    ("letter.rtf", "{\\rtf1\\ansi The quick brown fox.\\par}"),
+];
+
+#[test]
+fn markup_a_grammar_also_claims_is_indexed_as_a_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg = offline_config();
+    for (name, body) in MARKUP {
+        fs::write(dir.path().join(name), body).unwrap();
+    }
+
+    let (report, _) = scan_collecting(dir.path(), &cfg);
+
+    let store = Store::open(dir.path(), basemind::store::VIEW_WORKING).unwrap();
+    for (name, _) in MARKUP {
+        assert!(
+            store.lookup_doc(name).is_some(),
+            "{name} is a document (stats: {:?})",
+            report.stats
+        );
+        assert!(store.lookup(name).is_none(), "{name} must leave the code map");
+    }
+}
+
+#[test]
+fn markup_stays_in_the_code_map_without_the_document_tier_or_under_an_override() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("page.html"), MARKUP[0].1).unwrap();
+    fs::write(dir.path().join("show.erb"), MARKUP[0].1).unwrap();
+    let mut cfg = offline_config();
+    cfg.languages.insert(
+        "html".to_string(),
+        toml::from_str(r#"extensions = [".erb"]"#).expect("language override"),
+    );
+
+    scan_collecting(dir.path(), &cfg);
+    let store = Store::open(dir.path(), basemind::store::VIEW_WORKING).unwrap();
+    assert!(
+        store.lookup("show.erb").is_some(),
+        "an override's extension keeps its grammar"
+    );
+    assert!(store.lookup_doc("page.html").is_some());
+    drop(store);
+
+    cfg.documents.enabled = false;
+    scan_collecting(dir.path(), &cfg);
+    let store = Store::open(dir.path(), basemind::store::VIEW_WORKING).unwrap();
+    assert_eq!(store.lookup("page.html").map(|e| e.language.as_str()), Some("html"));
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// A staged or rev view cannot read a document's own content through xberg (it extracts from a
+/// file), so such a view indexes no document at all rather than the working tree's version.
+#[test]
+fn staged_and_rev_views_index_no_documents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let cfg = offline_config();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    fs::write(root.join("guide.md"), "# Guide\n\ncommitted text\n").unwrap();
+    fs::write(root.join("page.html"), MARKUP[0].1).unwrap();
+    fs::write(root.join("a.rs"), "pub fn committed() {}\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "init"]);
+    fs::write(root.join("guide.md"), "# Guide\n\nworking-tree text\n").unwrap();
+    let repo = basemind::git::Repo::discover(root).expect("repo");
+    let head = repo.resolve_rev("HEAD").expect("head");
+
+    let views = [
+        (basemind::store::VIEW_STAGED.to_string(), ScanSource::Staged(&repo)),
+        (
+            basemind::store::view_name_for_rev(&head[..7]),
+            ScanSource::Rev {
+                repo: &repo,
+                sha: head.clone(),
+            },
+        ),
+    ];
+    for (view, source) in views {
+        let mut store = Store::open(root, &view).expect("open view");
+        let report = basemind::scanner::scan(root, &mut store, &cfg, source, EmbedMode::Inline).expect("scan");
+        assert_eq!(report.stats.docs_indexed, 0, "{view}: {:?}", report.stats);
+        assert!(store.lookup("a.rs").is_some(), "{view} indexes code");
+        assert!(
+            store.lookup_doc("guide.md").is_none(),
+            "{view} must not index documents"
+        );
+        assert!(
+            store.lookup_doc("page.html").is_none(),
+            "{view} must not index documents"
+        );
+        assert!(store.lookup("page.html").is_none(), "{view}: markup is not code either");
+    }
+}
+
 #[test]
 fn svg_text_is_extracted_through_the_xml_path() {
     let dir = tempfile::tempdir().expect("tempdir");

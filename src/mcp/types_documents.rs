@@ -1,107 +1,15 @@
-//! Documents-tier parameter + response shapes for `search_documents` and friends.
-//!
-//! Extracted from `src/mcp/types.rs` so the parent module stays under the per-file line
-//! cap as more documents-tier types are added in later iters. Re-exported wholesale via
-//! `pub use types_documents::*;` in `types.rs`.
+//! The response of `docs_search`: a page of the document search engine
+//! ([`crate::lance::docs_page`]) plus the MCP paging and timing fields.
 
 #[cfg(feature = "documents")]
-use rmcp::schemars;
-#[cfg(feature = "documents")]
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 #[cfg(feature = "documents")]
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct SearchDocumentsParams {
-    pub query: String,
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Optional token budget bounding the returned `hits` list (not the whole envelope).
-    /// Hits are kept best-first until the budget is hit; the rest are dropped and the
-    /// response carries `budgeted: true`.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `hits` list — far fewer tokens than JSON for large hit sets.
-    /// Overrides the `[documents.output] format` config knob for this call.
-    #[serde(default)]
-    pub format: Option<String>,
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    /// Which ingestion scope to search. Defaults to this repo's scope — the one the
-    /// scanner's document lane writes under. Rows an older version ingested from the web
-    /// sit under a **different** scope (`web:<host>`) and are no longer refreshed; reaching
-    /// them requires naming it here.
-    #[serde(default)]
-    pub scope: Option<String>,
-    /// Optional case-insensitive substring match against `DocEntity.category`.
-    /// When set, only hits whose parent document carries at least one entity
-    /// in that category are returned. Combined with `keywords_contains` via
-    /// AND semantics (both must match when both are set). Errors on a build without the
-    /// `documents-ner` feature, where no document carries entities.
-    #[serde(default)]
-    pub entity_category: Option<String>,
-    /// Optional case-insensitive substring match against `DocKeyword.text`.
-    /// When set, only hits whose parent document carries at least one keyword
-    /// containing the substring are returned.
-    #[serde(default)]
-    pub keywords_contains: Option<String>,
-}
-
-#[cfg(feature = "documents")]
-pub(crate) use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
-
-#[cfg(feature = "documents")]
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub(crate) struct DocumentSearchHit {
-    pub path: String,
-    pub chunk_idx: u32,
-    pub text: String,
-    pub mime_type: String,
-    pub byte_start: u32,
-    pub byte_end: u32,
-    pub distance: f32,
-    /// Cross-encoder relevance score in `[0, 1]`. Present only when the reranker is
-    /// enabled on the call; absent (`null` / omitted) when reranker is off.
+#[derive(Debug, Serialize)]
+pub(crate) struct DocsSearchResponse {
+    #[serde(flatten)]
+    pub page: crate::lance::docs_types::DocsPage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rerank_score: Option<f32>,
-    /// Keywords from the parent document, when keyword extraction was enabled
-    /// at scan time. Empty otherwise.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub keywords: Vec<DocKeyword>,
-    /// Named entities from the parent document, when NER was enabled at scan time.
-    /// Empty otherwise.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub entities: Vec<DocEntity>,
-    /// Document-level summary from the parent doc blob, when summarisation was
-    /// enabled at scan time. `None` otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<DocSummary>,
-}
-
-#[cfg(feature = "documents")]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-pub(crate) struct SearchDocumentsResponse {
-    pub query: String,
-    /// True when a `max_tokens` budget dropped trailing `hits`. `search_documents` has no
-    /// cursor; raise `max_tokens` (or omit it) to retrieve more hits.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    /// True when the ranking was cut by a hard bound, so better-matching hits may exist than the
-    /// ones that can be paged to. Narrow the query or the filters.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
-    /// What cut it: `depth` (the ranking goes on past the 100 hits that can be paged),
-    /// `rerank_top_k` (the reranker kept its `top_k` best) or
-    /// `filter_depth` (a `keywords` / `entity` filter saw only the 400 best-ranked chunks, and all
-    /// 400 were retrieved, so matching documents ranked below them were never looked at).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub truncated_reason: Option<String>,
-    pub hits: Vec<DocumentSearchHit>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
-    /// search + response construction), excluding MCP transport, argument
-    /// deserialization, and response serialization. A first call against a cold server also
-    /// includes index warm-up; such responses carry a `notice`. See
-    /// [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
+    pub next_cursor: Option<super::cursor::Cursor>,
     pub elapsed_us: u64,
 }

@@ -9,4 +9,6 @@ pub mod bm25;
 #[cfg(feature = "code-search")]
 pub mod exact;
 #[cfg(feature = "code-search")]
+pub mod hydrate;
+#[cfg(any(feature = "code-search", feature = "documents"))]
 pub mod rrf;

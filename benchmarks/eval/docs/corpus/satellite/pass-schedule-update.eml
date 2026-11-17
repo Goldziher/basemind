@@ -1,0 +1,31 @@
+From: Anneli Sorvari <asorvari@example.org>
+To: Mirelle Operations <mirelle-ops@example.org>
+Subject: Mirelle-1 passes moved to Saltmarsh Point from 12 May
+Date: Wed, 07 May 2025 14:05:00 +0000
+Message-ID: <20250507140500.passes@example.org>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Hi team,
+
+The antenna rotator gearbox at Hollin Ridge is being replaced from 12 to
+16 May, so the dish will be parked and unusable for the whole week. All
+Mirelle-1 passes in that period move to the backup station at Saltmarsh
+Point.
+
+The shared university dish at Saltmarsh is only available to us for two
+passes a day, so expect roughly a third of the usual image volume. The
+imaging planners have already cut the lagoon list to match.
+
+The same rules apply at the backup site: we only schedule passes that
+peak more than 10 degrees above the horizon, and command uploads still
+need a pass above 25 degrees with two people on console.
+
+One gap remains. Pass HR-0412 on Tuesday morning has no equivalent from
+Saltmarsh, so the command plan for Wednesday has to go up on Monday
+evening instead.
+
+Thanks,
+Anneli
+Ground segment lead

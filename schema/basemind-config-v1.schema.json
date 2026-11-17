@@ -113,7 +113,7 @@
         "reranker": {
           "enabled": false,
           "preset": "bge-reranker-base",
-          "top_k": 10
+          "top_k": 50
         },
         "keywords": {
           "enabled": false,
@@ -178,7 +178,7 @@
         "reranker": {
           "enabled": false,
           "preset": "bge-reranker-base",
-          "top_k": 10
+          "top_k": 50
         }
       }
     },
@@ -602,7 +602,7 @@
           "default": {
             "enabled": false,
             "preset": "bge-reranker-base",
-            "top_k": 10
+            "top_k": 50
           }
         },
         "keywords": {
@@ -714,11 +714,11 @@
           "default": "bge-reranker-base"
         },
         "top_k": {
-          "description": "How many hits to rerank. The vector search returns `top_k` candidates\nwhich the cross-encoder then reorders.",
+          "description": "How many of the best fused hits the cross-encoder reorders, at most 50. The hits after\nthem follow in fused order: nothing is dropped.",
           "type": "integer",
           "format": "uint",
           "minimum": 1,
-          "default": 10
+          "default": 50
         }
       },
       "additionalProperties": false
@@ -1105,7 +1105,7 @@
           "default": {
             "enabled": false,
             "preset": "bge-reranker-base",
-            "top_k": 10
+            "top_k": 50
           }
         }
       },

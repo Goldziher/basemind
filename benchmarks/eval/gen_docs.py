@@ -3,7 +3,12 @@
 Sentences that name a backticked path or symbol (`pkg/widget.py`, `make_widget`) are documentation
 about that code. The query is the sentence with the backticks removed and gold is the markdown
 file holding it; scoring is `ranked` (hit@1/@5, MRR, nDCG). Sentences that occur in more than one
-file are dropped (ambiguous gold). `docs` needs a basemind built with the `documents` feature and a
+file are dropped (ambiguous gold).
+
+The query is the gold file's own sentence, so this set measures finding a passage by its words: a
+lexical lane wins it. Retrieval by meaning is measured by `docs/` (paraphrased questions over an
+original corpus). The baseline is the keyword grep alone, scored on the files it names; it is never
+told the gold file. `docs` needs a basemind built with the `documents` feature and a
 scan that indexed the markdown files.
 """
 
@@ -66,11 +71,11 @@ def main() -> None:
             "k": a.k,
         }
         if word:
-            # Without semantic search an agent greps a keyword, then opens the document the hit
-            # points at: grep alone returns bare lines, not the passage the question needs.
+            # Without semantic search an agent greps a keyword; which file it opens next depends on
+            # the hits, so the baseline is the grep, scored on the files it names.
             task["baseline"] = {
                 "grep": "git grep -n -i -w " + c.shell_quote(word) + " -- '*.md'",
-                "read": [path],
+                "items": "grep_lines",
             }
         tasks.append(task)
     c.emit(tasks, a.out)

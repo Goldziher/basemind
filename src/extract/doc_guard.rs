@@ -119,9 +119,37 @@ pub fn linear_chunk_spans(text: &str, max_chars: usize, overlap: usize) -> Vec<(
             .rev()
             .nth(overlap.saturating_sub(1))
             .map_or(end, |(i, _)| start + i);
-        start = if overlap == 0 || next <= start { end } else { next };
+        start = if overlap == 0 || next <= start {
+            end
+        } else {
+            boundary_at_or_after(text, next, end)
+        };
     }
     spans
+}
+
+/// The first line start, else the first word start, in `text[at..limit]`; `limit` when there is
+/// neither. An overlap window that began inside a word would start the next chunk mid-word.
+fn boundary_at_or_after(text: &str, at: usize, limit: usize) -> usize {
+    if at == 0 || text.as_bytes().get(at - 1) == Some(&b'\n') {
+        return at;
+    }
+    let window = &text[at..limit];
+    if let Some(newline) = window.find('\n') {
+        return at + newline + 1;
+    }
+    let before = text[..at].chars().next_back();
+    if !before.is_some_and(char::is_alphanumeric) {
+        return at;
+    }
+    window
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(i, c)| {
+            let after = at + i + c.len_utf8();
+            after + text[after..limit].len() - text[after..limit].trim_start().len()
+        })
+        .unwrap_or(limit)
 }
 
 /// Why [`run_with_deadline`] returned no value.
@@ -348,6 +376,24 @@ mod tests {
         assert_valid(&text, &spans, 100);
         assert_eq!(spans.last().unwrap().1, text.len());
         assert!(spans.iter().all(|&(_, e)| text.as_bytes()[e - 1] == b'\n'));
+    }
+
+    #[test]
+    fn linear_chunks_never_start_inside_a_word() {
+        let prose: String = (0..400).map(|i| format!("word{i} ")).collect();
+        let lines: String = (0..200).map(|i| format!("alpha beta {i}\n")).collect();
+        for text in [prose, lines] {
+            let spans = linear_chunk_spans(&text, 90, 30);
+            assert_valid(&text, &spans, 90);
+            for &(s, _) in &spans[1..] {
+                let before = text[..s].chars().next_back().unwrap();
+                assert!(
+                    !before.is_alphanumeric(),
+                    "chunk at {s} starts mid-word: {:?}",
+                    &text[s..s + 10]
+                );
+            }
+        }
     }
 
     #[test]

@@ -16,10 +16,17 @@ pub(super) fn resolve_agent_id(config: &crate::config::Config, store: &Store) ->
     resolve_identity(config, store).into_id().into_string()
 }
 
-/// The full identity, including any cross-workspace claim collision. [`identity::resolve`] emits
-/// the collision as a `tracing::warn!`, so `serve` surfaces it through its normal log sink.
-fn resolve_identity(config: &crate::config::Config, store: &Store) -> AgentIdentity {
-    identity::resolve_session(&IdentityRequest {
+/// The owner of this workspace's `individual` memory notes: an explicit environment or config
+/// identity, else the workspace's persisted agent id, the one the CLI uses. Never the per-session
+/// routing id of [`resolve_agent_id`], which changes at every server start and would leave the
+/// notes saved under it unreachable after a restart (review M5).
+#[cfg(feature = "memory")]
+pub(super) fn resolve_memory_owner(config: &crate::config::Config, store: &Store) -> String {
+    identity::resolve(&request(config, store)).into_id().into_string()
+}
+
+fn request<'a>(config: &'a crate::config::Config, store: &'a Store) -> IdentityRequest<'a> {
+    IdentityRequest {
         root: &store.root,
         paths: IdentityPaths {
             workspace_cache_dir: store.basemind_dir.clone(),
@@ -27,5 +34,11 @@ fn resolve_identity(config: &crate::config::Config, store: &Store) -> AgentIdent
         },
         env_agent_id: std::env::var(identity::AGENT_ID_ENV).ok(),
         config_agent_id: config.comms.agent_id.clone(),
-    })
+    }
+}
+
+/// The full identity, including any cross-workspace claim collision. [`identity::resolve`] emits
+/// the collision as a `tracing::warn!`, so `serve` surfaces it through its normal log sink.
+fn resolve_identity(config: &crate::config::Config, store: &Store) -> AgentIdentity {
+    identity::resolve_session(&request(config, store))
 }

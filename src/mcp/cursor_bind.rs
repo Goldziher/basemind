@@ -308,7 +308,8 @@ mod tests {
             json!({ "query": "harbour", "keywords": "pilots" }),
             json!({ "query": "harbour", "entity": "PERSON" }),
             json!({ "query": "harbour", "mime_type": "application/pdf" }),
-            json!({ "query": "harbour", "scope": "web:example.org" }),
+            json!({ "query": "harbour", "kind": "pdf" }),
+            json!({ "query": "harbour", "path": "docs/**" }),
             json!({ "query": "tides" }),
         ] {
             assert_ne!(plain, id(filtered.clone()), "{filtered}");

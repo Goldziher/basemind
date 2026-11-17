@@ -86,8 +86,10 @@ pub(super) fn text_documents(
         .doc_paths
         .iter()
         .filter_map(|path| {
-            let language = crate::lang::detect(std::path::Path::new(path.as_str()?))?;
-            if !crate::lang::is_non_code(language) || !selected(path, language) {
+            let as_path = std::path::Path::new(path.as_str()?);
+            let language = crate::lang::detect(as_path)?;
+            let text = crate::lang::is_non_code(language) || crate::lang::is_document_markup(language, as_path);
+            if !text || !selected(path, language) {
                 return None;
             }
             let file = crate::path::lexical_file(root, path).ok()?;

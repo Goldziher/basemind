@@ -8,14 +8,12 @@
 use std::path::Path;
 
 use crate::config::{Config, DocumentsConfig};
-use crate::extract::doc::DocBlobs;
 use crate::hashing;
 use crate::scan_retrieval::{DocumentSink, PendingDocBatch};
 use crate::scanner::{EmbedMode, FileResult, FileStatus};
 use crate::scanner_docs::{
-    delete_stale_documents, doc_embed_requested, doc_entry_settled, doc_has_vectors_of, doc_scope_for,
-    extract_and_persist_doc, flush_document_batches, pending_from_doc, purge_unembedded_documents,
-    should_extract_document,
+    delete_stale_documents, doc_embed_requested, doc_entry_settled, extract_and_persist_doc, flush_document_batches,
+    purge_unembedded_documents, should_extract_document,
 };
 use crate::scanner_file::read_working_tree;
 use crate::scanner_filter::Filters;
@@ -36,10 +34,21 @@ impl DocumentSink for DocumentLane {
         filters: &Filters,
         store: &Store,
         config: &Config,
-        scope: &str,
+        _scope: &str,
         embed: EmbedMode,
     ) -> FileResult {
-        process_doc(root, rel, filters, store, config, scope, embed)
+        process_doc(root, rel, filters, store, config, embed)
+    }
+
+    fn embedder_ready(&self, config: &Config) -> bool {
+        crate::extract::doc::text::document_embedder_ready(
+            &config.documents.embedding_preset,
+            config
+                .resources
+                .effective_embed_threads(config.documents.embed_max_threads),
+            config.resources.embed_batch_size,
+            config.resources.onnx_provider,
+        )
     }
 
     fn abandoned_extractions(&self) -> usize {
@@ -51,24 +60,56 @@ impl DocumentSink for DocumentLane {
         store: &mut Store,
         config: &Config,
         filters: &Filters,
-        scope: &str,
+        _scope: &str,
         batches: &mut Vec<PendingDocBatch>,
         budget: &mut usize,
     ) {
-        requeue_pending_docs(store, config, filters, scope, batches, budget);
+        // The flush asks the store which documents it lacks and writes them, within the budget it
+        // is handed, so nothing is queued here (ADR-0029 rule 11).
+        let _ = (store, config, filters, batches, budget);
     }
 
-    fn flush(&self, store: &mut Store, batches: Vec<PendingDocBatch>, model: &str) -> usize {
-        flush_document_batches(store, batches, model)
+    fn flush(
+        &self,
+        store: &mut Store,
+        config: &Config,
+        filters: &Filters,
+        batches: Vec<PendingDocBatch>,
+        budget: usize,
+    ) -> usize {
+        flush_document_batches(store, config, filters, batches, budget)
     }
 
-    fn remove(&self, store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
-        delete_stale_documents(store, config, scope, stale);
+    fn remove(&self, store: &mut Store, config: &Config, filters: &Filters, stale: &[String]) {
+        delete_stale_documents(store, config, filters, stale);
     }
 
-    fn purge_unembedded(&self, store: &mut Store, config: &Config, filters: &Filters, scope: &str) -> bool {
-        purge_unembedded_documents(store, config, filters, scope)
+    fn purge_unembedded(&self, store: &mut Store, config: &Config, filters: &Filters, _scope: &str) -> bool {
+        purge_unembedded_documents(store, config, filters)
     }
+}
+
+/// A document whose embedding failed owes its vectors: it is settled except for them. It is
+/// re-extracted to pay them only once the embedder works (probed once per scan), so an offline
+/// machine does not re-extract it on every scan.
+fn owes_vectors_to_an_unavailable_embedder(
+    existing: &crate::store::DocEntry,
+    hash_hex: &str,
+    embed_requested: bool,
+    filters: &Filters,
+    config: &Config,
+) -> bool {
+    embed_requested
+        && !filters.reflush_embeds
+        && doc_entry_settled(
+            existing,
+            hash_hex,
+            &config.documents.embedding_preset,
+            false,
+            &filters.doc_digest,
+            false,
+        )
+        && !filters.doc_embedder_ready(config)
 }
 
 /// Document-tier branch: file had no tree-sitter language; check `[documents]` config and
@@ -80,12 +121,9 @@ fn process_doc(
     filters: &Filters,
     store: &Store,
     config: &Config,
-    scope: &str,
     embed: EmbedMode,
 ) -> FileResult {
     let abs = root.join(rel);
-    let effective_scope = doc_scope_for(rel, scope, config);
-    let scope = effective_scope.as_ref();
     if !filters.doc_allowed(rel) {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     }
@@ -101,15 +139,16 @@ fn process_doc(
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
+    let embed_requested = doc_embed_requested(rel, &config.documents, embed, filters);
     if let Some(existing) = store.lookup_doc(rel)
-        && doc_entry_settled(
+        && (doc_entry_settled(
             existing,
             hash_hex,
             &config.documents.embedding_preset,
-            doc_embed_requested(rel, &config.documents, embed, filters),
+            embed_requested,
             &filters.doc_digest,
             filters.reflush_embeds,
-        )
+        ) || owes_vectors_to_an_unavailable_embedder(existing, hash_hex, embed_requested, filters, config))
         && if filters.verify_blobs {
             store.doc_blob_is_intact(hash_hex)
         } else {
@@ -167,7 +206,6 @@ fn process_doc(
         &config.documents,
         &config.resources,
         filters,
-        scope,
         embed,
     ) {
         Ok(Some(batch)) => {
@@ -240,75 +278,6 @@ fn process_doc(
 /// genuine extraction failure on a real document. Such files are skipped, not failed.
 fn is_unsupported_format_error(msg: &str) -> bool {
     msg.to_ascii_lowercase().contains("unsupported format")
-}
-
-/// Queue a batch for documents an earlier scan left owing rows and this scan did not process, at
-/// most `budget` of them. The rows are rebuilt from the cached blob, so a path owes nothing, and
-/// leaves the set, when no rows can come of it: it is no longer indexed, the embed policy or the
-/// chunk cap now excludes it, its entry or its blob was embedded under another preset, or the blob
-/// is gone. A blob that could not be read from disk stays owed. One that does not decode (torn by a
-/// power loss) stays owed too, and its entry is dropped so the next full pass extracts the file
-/// again: an entry over a torn blob is skipped as unchanged for good.
-fn requeue_pending_docs(
-    store: &mut Store,
-    config: &Config,
-    filters: &Filters,
-    scope: &str,
-    batches: &mut Vec<PendingDocBatch>,
-    budget: &mut usize,
-) {
-    use crate::store::StoreError;
-
-    if store.pending_vectors.docs().is_empty() {
-        return;
-    }
-    let cfg = &config.documents;
-    let preset = &cfg.embedding_preset;
-    let queued: ahash::AHashSet<&str> = batches.iter().map(|batch| batch.rel_path.as_str()).collect();
-    let mut requeued = Vec::new();
-    let mut settled = Vec::new();
-    let mut damaged = Vec::new();
-    for rel in store.pending_vectors.docs() {
-        let rel_path = rel.to_str_lossy();
-        if queued.contains(rel_path.as_ref()) {
-            continue;
-        }
-        if *budget == 0 {
-            break;
-        }
-        let wanted = cfg.enabled && cfg.embed && filters.doc_embed_allowed(&rel_path);
-        let entry = store
-            .lookup_doc(rel)
-            .filter(|entry| wanted && entry.embedding_preset == *preset);
-        let Some(entry) = entry else {
-            settled.push(rel_path.into_owned());
-            continue;
-        };
-        match store.read_doc_by_hex(&entry.hash_hex) {
-            Ok(Some(doc)) if doc_has_vectors_of(&doc, preset) => {
-                let doc_scope = doc_scope_for(&rel_path, scope, config);
-                let batch = pending_from_doc(&doc, &rel_path, &entry.hash_hex, &doc_scope, cfg, true, true);
-                if batch.emit_rows {
-                    *budget -= 1;
-                    requeued.push(batch);
-                } else {
-                    settled.push(rel_path.into_owned());
-                }
-            }
-            Err(StoreError::Io { source, .. }) => {
-                tracing::warn!(rel = %rel_path, error = %source, "doc blob unreadable; its vector rows stay owed");
-            }
-            Err(error) => {
-                tracing::warn!(rel = %rel_path, %error, "doc blob damaged; the file is extracted again and its rows stay owed");
-                damaged.push(rel_path.into_owned());
-            }
-            Ok(_) => settled.push(rel_path.into_owned()),
-        }
-    }
-    drop(queued);
-    store.pending_vectors.settle_docs(&settled);
-    batches.extend(requeued);
-    crate::scanner_flush::extract_again(store, &damaged, |store, rel| store.remove_doc(rel));
 }
 
 #[cfg(test)]

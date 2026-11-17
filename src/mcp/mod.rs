@@ -23,6 +23,8 @@ mod helpers;
 pub(crate) use helpers::BUSY_DATA;
 #[cfg(test)]
 pub(crate) use helpers::rescan_error;
+#[cfg(feature = "documents")]
+mod docs_pipeline;
 mod helpers_admin;
 mod helpers_calls;
 #[cfg(test)]
@@ -33,7 +35,7 @@ mod helpers_code;
 mod helpers_code_search;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_comms;
-#[cfg(feature = "documents")]
+#[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
 mod helpers_expand;
 mod helpers_files;
@@ -69,7 +71,7 @@ mod index_route_tests;
 #[cfg(test)]
 mod index_view_tests;
 mod l1_cache;
-#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+#[cfg(any(feature = "memory", feature = "code-search"))]
 mod lance_cell;
 mod lean;
 #[cfg(all(feature = "comms", any(unix, windows)))]

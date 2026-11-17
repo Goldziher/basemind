@@ -7,6 +7,7 @@
 //! pass reorders the result. `run_get_chunk` is the offline fetch half — it reads the file's
 //! content-addressed `.chunk` sidecar and returns one chunk's body, no LanceDB round-trip.
 
+use ahash::AHashSet;
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
@@ -18,6 +19,7 @@ use super::types_code::{
 };
 use crate::search::bm25::bm25_search;
 use crate::search::exact::exact_lane_chunk_ids;
+use crate::search::hydrate::ChunkHydrator;
 use crate::search::rrf::{
     DEFAULT_RRF_K, FusionLane, LANE_EXACT, LANE_KEYWORD, LANE_VECTOR, WEIGHT_EXACT, WEIGHT_KEYWORD, WEIGHT_VECTOR,
     rrf_fuse_detailed,
@@ -62,7 +64,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
 
     let mode = params.mode.as_deref().map(str::trim).unwrap_or("hybrid");
-    let (hits, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
+    let (seeds, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
         hybrid_hits(state, &params.query, fetch_n).await?
     } else if mode.eq_ignore_ascii_case("semantic") {
         (
@@ -81,15 +83,29 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
         ));
     };
 
-    // The reranker returns its `top_k` best and drops the rest: a hard cut the paging depth never
-    // sees, so it is named here.
-    let candidates = hits.len();
-    let hits = if rerank_enabled {
-        rerank_hits(state, &params.query, hits, &rerank_preset, rerank_top_k).await?
+    let keep_text = if rerank_enabled {
+        rerank_top_k.clamp(1, RERANK_CANDIDATES)
     } else {
-        hits
+        0
     };
-    let truncated_reason = super::helpers_page::retrieval_cut(false, hits.len() < candidates).map(str::to_string);
+    let hydrated = {
+        let store = state.shared.store.read().await;
+        hydrate_hits(&store, seeds, fetch_n, keep_text)
+    };
+
+    // The reranker reorders the head of the ranking and drops nothing; a reranker that cannot run
+    // leaves the fused order and says why, as a lane that did not run.
+    let mut report = report;
+    let hits = if rerank_enabled {
+        let (hits, failure) = rerank_hits(state, &params.query, hydrated.hits, hydrated.texts, &rerank_preset).await;
+        if let Some(reason) = failure {
+            report.unavailable.push(LaneUnavailable { lane: "rerank", reason });
+        }
+        hits
+    } else {
+        hydrated.hits
+    };
+    let truncated_reason = (hydrated.omitted > 0).then(|| "stale_chunks".to_string());
 
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_code_response(
@@ -98,6 +114,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
             budgeted: budget.budgeted,
             truncated: truncated_reason.is_some(),
             truncated_reason,
+            omitted: hydrated.omitted,
             hits: budget.items,
             lanes_ran: report.ran,
             lanes_unavailable: report.unavailable,
@@ -170,7 +187,6 @@ async fn hybrid_hits(
     let keyword_ids: Vec<String> = lanes.keyword.iter().map(|(id, _)| id.clone()).collect();
     let exact_ids = lanes.exact;
 
-    let store = state.shared.store.read().await;
     let fused = rrf_fuse_detailed(
         &[
             FusionLane::new(LANE_EXACT, &exact_ids, WEIGHT_EXACT),
@@ -180,21 +196,22 @@ async fn hybrid_hits(
         DEFAULT_RRF_K,
     );
 
-    let mut hits = Vec::with_capacity(fused.len().min(limit));
-    for fh in fused.into_iter().take(limit) {
-        if let Some((mut hit, _text)) = hydrate_one(&store, &fh.chunk_id) {
-            hit.score = Some(fh.score);
-            hit.matched_lanes = fh.lane_ranks.iter().map(|(name, _)| name.to_string()).collect();
-            for (name, rank) in &fh.lane_ranks {
-                match *name {
-                    LANE_EXACT => hit.exact_rank = Some(*rank),
-                    LANE_VECTOR => hit.vector_rank = Some(*rank),
-                    LANE_KEYWORD => hit.keyword_rank = Some(*rank),
-                    _ => {}
-                }
+    // Every fused id is kept, not `limit` of them: hydration drops ids no file holds any more and
+    // fills the page from the ones after them.
+    let mut hits = Vec::with_capacity(fused.len());
+    for fh in fused {
+        let mut hit = seed(fh.chunk_id);
+        hit.score = Some(fh.score);
+        hit.matched_lanes = fh.lane_ranks.iter().map(|(name, _)| name.to_string()).collect();
+        for (name, rank) in &fh.lane_ranks {
+            match *name {
+                LANE_EXACT => hit.exact_rank = Some(*rank),
+                LANE_VECTOR => hit.vector_rank = Some(*rank),
+                LANE_KEYWORD => hit.keyword_rank = Some(*rank),
+                _ => {}
             }
-            hits.push(hit);
         }
+        hits.push(hit);
     }
     Ok((hits, report))
 }
@@ -385,25 +402,14 @@ async fn semantic_hits(
         .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
         .map_err(|e| McpError::internal_error(format!("search_code_chunks: {e}"), None))?;
 
+    // A row's own path and metadata are not used: the chunk and its live paths are resolved by
+    // `hydrate_hits`, like every other lane's.
     Ok(hits_raw
         .into_iter()
-        .map(|h| CodeSearchHit {
-            path: h.path,
-            chunk_id: h.chunk_id,
-            symbol: h.symbol,
-            kind: h.kind,
-            lang: h.lang,
-            line_start: h.line_start,
-            line_end: h.line_end,
-            byte_start: h.byte_start,
-            byte_end: h.byte_end,
-            distance: Some(h.distance),
-            score: None,
-            rerank_score: None,
-            matched_lanes: Vec::new(),
-            keyword_rank: None,
-            vector_rank: None,
-            exact_rank: None,
+        .map(|h| {
+            let mut hit = seed(h.chunk_id);
+            hit.distance = Some(h.distance);
+            hit
         })
         .collect())
 }
@@ -424,41 +430,32 @@ async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Result<
             None,
         ));
     }
-    let store = state.shared.store.read().await;
     let mut hits = Vec::with_capacity(lanes.keyword.len());
     for (rank, (chunk_id, score)) in lanes.keyword.into_iter().enumerate() {
-        if let Some((mut ch, _text)) = hydrate_one(&store, &chunk_id) {
-            ch.score = Some(score);
-            // Provenance has to be set here too. `hydrate_one` leaves it empty and only the hybrid
-            // path filled it in from the RRF lane ranks, so a keyword-only hit came back claiming no
-            // lane matched it — the same "the response does not say what actually happened" problem
-            // as the silent empty, one level down. ~keep
-            ch.matched_lanes = vec![LANE_KEYWORD.to_string()];
-            ch.keyword_rank = u32::try_from(rank + 1).ok();
-            hits.push(ch);
-        }
+        let mut ch = seed(chunk_id);
+        ch.score = Some(score);
+        // Provenance has to be set here too, or a keyword-only hit comes back claiming no lane
+        // matched it. ~keep
+        ch.matched_lanes = vec![LANE_KEYWORD.to_string()];
+        ch.keyword_rank = u32::try_from(rank + 1).ok();
+        hits.push(ch);
     }
     Ok(hits)
 }
 
-/// Hydrate a ranked `chunk_id` (`<hash>:<ordinal>`) into a base `CodeSearchHit` (all score fields
-/// `None`) plus the chunk's body text (for the optional rerank pass), via the content-addressed
-/// sidecar. `None` when the sidecar is missing or the ordinal is out of range — the caller skips it.
-fn hydrate_one(store: &Store, chunk_id: &str) -> Option<(CodeSearchHit, String)> {
-    let (hash_hex, ordinal) = chunk_id.rsplit_once(':')?;
-    let ordinal: usize = ordinal.parse().ok()?;
-    let blob = store.read_chunks_by_hex(hash_hex).ok()??;
-    let chunk = blob.chunks.get(ordinal)?;
-    let hit = CodeSearchHit {
-        path: chunk.path.clone(),
-        chunk_id: chunk_id.to_string(),
-        symbol: chunk.symbol.clone().unwrap_or_default(),
-        kind: chunk.kind.clone().unwrap_or_default(),
-        lang: chunk.lang.clone(),
-        line_start: chunk.line_start,
-        line_end: chunk.line_end,
-        byte_start: chunk.byte_start,
-        byte_end: chunk.byte_end,
+/// A ranked chunk id with nothing resolved yet; [`hydrate_hits`] fills in the rest.
+fn seed(chunk_id: String) -> CodeSearchHit {
+    CodeSearchHit {
+        path: String::new(),
+        also_at: Vec::new(),
+        chunk_id,
+        symbol: String::new(),
+        kind: String::new(),
+        lang: String::new(),
+        line_start: 0,
+        line_end: 0,
+        byte_start: 0,
+        byte_end: 0,
         distance: None,
         score: None,
         rerank_score: None,
@@ -466,82 +463,107 @@ fn hydrate_one(store: &Store, chunk_id: &str) -> Option<(CodeSearchHit, String)>
         keyword_rank: None,
         vector_rank: None,
         exact_rank: None,
-    };
-    Some((hit, chunk.text.clone()))
+    }
 }
 
-/// Optional cross-encoder rerank of `hits`, reusing the same xberg reranker as the documents tier.
-/// Reads each hit's chunk body as the candidate text, scores against `query`, and returns the hits
-/// reordered best-first (truncated to `top_k`) with `rerank_score` set. Off-path when `hits` is
-/// empty. Errors on an unknown preset (before any model download) or an out-of-range rerank index.
+/// The first `limit` resolvable hits of a ranking, the bodies of the first `keep_text` of them for
+/// the reranker, and how many ranked chunks were dropped.
+struct Hydrated {
+    hits: Vec<CodeSearchHit>,
+    texts: Vec<String>,
+    omitted: usize,
+}
+
+/// Resolve ranked seeds into hits, in rank order: the chunk's metadata comes from its sidecar
+/// (decoded once per content hash), `path` and `also_at` from the view's file map now. A chunk no
+/// indexed file holds is dropped and counted; an id ranked twice (one vector row per copy of a
+/// file) keeps its first rank.
+fn hydrate_hits(store: &Store, seeds: Vec<CodeSearchHit>, limit: usize, keep_text: usize) -> Hydrated {
+    let mut hydrator = ChunkHydrator::new(store);
+    hydrator.resolve_paths(seeds.iter().map(|s| s.chunk_id.as_str()));
+    let mut seen: AHashSet<String> = AHashSet::with_capacity(seeds.len());
+    let mut out = Hydrated {
+        hits: Vec::with_capacity(seeds.len().min(limit)),
+        texts: Vec::new(),
+        omitted: 0,
+    };
+    for mut hit in seeds {
+        if out.hits.len() >= limit {
+            break;
+        }
+        if seen.contains(hit.chunk_id.as_str()) {
+            continue;
+        }
+        let Some((path, also_at)) = hydrator.paths(&hit.chunk_id).split_first() else {
+            out.omitted += 1;
+            continue;
+        };
+        let (path, also_at) = (path.clone(), also_at.to_vec());
+        let Some(chunk) = hydrator.chunk(&hit.chunk_id) else {
+            out.omitted += 1;
+            continue;
+        };
+        hit.path = path;
+        hit.also_at = also_at;
+        hit.symbol = chunk.symbol.clone().unwrap_or_default();
+        hit.kind = chunk.kind.clone().unwrap_or_default();
+        hit.lang.clone_from(&chunk.lang);
+        hit.line_start = chunk.line_start;
+        hit.line_end = chunk.line_end;
+        hit.byte_start = chunk.byte_start;
+        hit.byte_end = chunk.byte_end;
+        if out.hits.len() < keep_text {
+            out.texts.push(chunk.text.clone());
+        }
+        seen.insert(hit.chunk_id.clone());
+        out.hits.push(hit);
+    }
+    out
+}
+
+/// Most fused hits the reranker scores; the rest keep their fused order after them.
+const RERANK_CANDIDATES: usize = 50;
+
+/// Reorder the first hits, one per body in `texts` (at most [`RERANK_CANDIDATES`]), by the
+/// cross-encoder, the rest following in fused order. Nothing is dropped. A failure returns the hits
+/// as they came, with the reason.
 async fn rerank_hits(
     state: &ServerState,
     query: &str,
-    hits: Vec<CodeSearchHit>,
+    mut hits: Vec<CodeSearchHit>,
+    texts: Vec<String>,
     preset: &str,
-    top_k: usize,
-) -> Result<Vec<CodeSearchHit>, McpError> {
-    if hits.is_empty() {
-        return Ok(hits);
+) -> (Vec<CodeSearchHit>, Option<String>) {
+    if hits.is_empty() || texts.is_empty() {
+        return (hits, None);
     }
     if xberg::get_reranker_preset(preset).is_none() {
-        return Err(McpError::invalid_params(
-            format!("unknown reranker preset: {preset:?}"),
-            None,
-        ));
+        return (hits, Some(format!("unknown reranker preset {preset:?}")));
     }
-    let texts: Vec<String> = {
-        let store = state.shared.store.read().await;
-        hits.iter()
-            .map(|h| {
-                hydrate_one(&store, &h.chunk_id)
-                    .map(|(_, text)| text)
-                    .unwrap_or_default()
-            })
-            .collect()
-    };
-    let krz_config = xberg::core::config::RerankerConfig {
+    let candidates = texts.len().min(hits.len());
+    let config = xberg::core::config::RerankerConfig {
         model: xberg::core::config::RerankerModelType::Preset {
             name: preset.to_string(),
         },
-        top_k: Some(top_k),
+        top_k: Some(candidates),
         acceleration: crate::embeddings::acceleration(state.shared.config.resources.onnx_provider),
         ..Default::default()
     };
-    let reranked = xberg::rerank_async(query.to_string(), texts, &krz_config)
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            let kind = if msg.contains("download") || msg.contains("HuggingFace") || msg.contains("model") {
-                "rerank model load"
-            } else {
-                "rerank inference"
-            };
-            McpError::internal_error(format!("{kind}: {msg}"), None)
-        })?;
-    let original = hits;
-    reranked
-        .into_iter()
-        .map(|r| {
-            original
-                .get(r.index)
-                .cloned()
-                .map(|mut hit| {
-                    hit.rerank_score = Some(r.score);
-                    hit
-                })
-                .ok_or_else(|| {
-                    McpError::internal_error(
-                        format!(
-                            "reranker returned out-of-range index {} (got {} hits)",
-                            r.index,
-                            original.len()
-                        ),
-                        None,
-                    )
-                })
-        })
-        .collect()
+    let scored = match xberg::rerank_async(query.to_string(), texts, &config).await {
+        Ok(scored) => scored,
+        Err(error) => return (hits, Some(format!("the reranker failed: {error}"))),
+    };
+    let mut head: Vec<Option<CodeSearchHit>> = hits.drain(..candidates).map(Some).collect();
+    let mut reordered = Vec::with_capacity(candidates);
+    for result in &scored {
+        if let Some(mut hit) = head.get_mut(result.index).and_then(Option::take) {
+            hit.rerank_score = Some(result.score);
+            reordered.push(hit);
+        }
+    }
+    reordered.extend(head.into_iter().flatten());
+    reordered.append(&mut hits);
+    (reordered, None)
 }
 
 pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {
@@ -603,8 +625,9 @@ pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -
         ));
     };
 
+    // The sidecar is shared by every copy of this content and names the path chunked first.
     json_result(&GetChunkResponse {
-        path: chunk.path.clone(),
+        path: params.path.to_string(),
         chunk_id: chunk.chunk_id.clone(),
         symbol: chunk.symbol.clone(),
         kind: chunk.kind.clone(),
@@ -619,3 +642,7 @@ pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -
         elapsed_us: elapsed_us(__body),
     })
 }
+
+#[cfg(test)]
+#[path = "helpers_code_search_tests.rs"]
+mod tests;

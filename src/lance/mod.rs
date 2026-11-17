@@ -12,6 +12,16 @@
 //! runtime context.
 
 mod batch;
+#[cfg(feature = "documents")]
+pub mod docs;
+#[cfg(feature = "documents")]
+pub mod docs_page;
+#[cfg(feature = "documents")]
+pub mod docs_rank;
+#[cfg(feature = "documents")]
+pub mod docs_schema;
+#[cfg(feature = "documents")]
+pub mod docs_types;
 pub mod live;
 mod memory;
 pub mod schema;
@@ -42,7 +52,7 @@ struct LanceMeta {
     dim: u16,
     embedding_model: String,
     /// Arrow schema version of the `memory` / `documents` tables (see
-    /// [`MEMORY_SCHEMA_VER`]). `#[serde(default)]` makes a pre-0.5 `meta.json` (which
+    /// [`VECTOR_STORE_VER`]). `#[serde(default)]` makes a pre-0.5 `meta.json` (which
     /// lacks this field) deserialize as `0`, forcing a wipe on upgrade rather than a
     /// parse error — the table column set changed, and a stale-arity table would fault
     /// at batch-build time, not at open.
@@ -117,11 +127,16 @@ fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::stor
     }
 }
 
-/// Schema version of the lance Arrow tables, bound to the release minor exactly like
-/// `INDEX_SCHEMA_VER` and the blob `SCHEMA_VER`. Bump `RELEASE_MINOR` whenever the
-/// `memory` or `documents` table column set changes; the resulting `LanceMeta` mismatch
-/// wipes and rebuilds the lance dir.
-pub const MEMORY_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32;
+/// Table-layout version of every LanceDB store (the memory vectors, the workspace vector store and
+/// the document retrieval store), recorded in `meta.json` beside the model and dimension.
+///
+/// Independent of the release minor (ADR-0037): a minor that changes no table leaves the stores,
+/// and the memory vectors in them, in place. Stale rows are kept out by the keys, not by a wipe: a
+/// store directory is named by its model and dimension, a document's `doc_key` hashes the blob
+/// schema, and a memory row is checked against its note's `updated_at`. Bump it when a table's
+/// columns change; an older store is then wiped and rebuilt, a newer one refused. It starts at
+/// 1000 so every store a minor-numbered binary wrote (`schema_ver` = the minor) reads as older.
+pub const VECTOR_STORE_VER: u32 = 1000;
 
 /// One row in the `documents` table.
 #[derive(Debug, Clone)]
@@ -258,12 +273,40 @@ impl LanceStore {
 
     /// [`Self::open`] waiting at most `wait` for another open of the store.
     fn open_waiting(dir: &Path, dim: u16, embedding_model: &str, wait: std::time::Duration) -> Result<Self> {
+        let tables = [
+            (DOCUMENTS_TABLE, documents_schema(dim)),
+            (MEMORY_TABLE, memory_schema(dim)),
+            #[cfg(feature = "code-search")]
+            (schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)),
+        ];
+        Self::open_with(dir, dim, embedding_model, wait, &tables)
+    }
+
+    /// Open the store at `dir` holding exactly `tables`, under the same version, wipe and lock
+    /// rules as [`Self::open`].
+    #[cfg(feature = "documents")]
+    pub(crate) fn open_tables(
+        dir: &Path,
+        dim: u16,
+        embedding_model: &str,
+        tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
+    ) -> Result<Self> {
+        Self::open_with(dir, dim, embedding_model, OPEN_LOCK_WAIT, tables)
+    }
+
+    fn open_with(
+        dir: &Path,
+        dim: u16,
+        embedding_model: &str,
+        wait: std::time::Duration,
+        tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
+    ) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let meta_path = dir.join(META_FILE);
         let expected = LanceMeta {
             dim,
-            embedding_model: embedding_model.to_string(),
-            schema_ver: MEMORY_SCHEMA_VER,
+            embedding_model: crate::embeddings::model_key(embedding_model).into_owned(),
+            schema_ver: VECTOR_STORE_VER,
         };
         // Released when this function returns, tables created.
         let _opening = lock_open(dir, wait)?;
@@ -275,7 +318,7 @@ impl LanceStore {
             write_meta(&meta_path, &expected)?;
         }
         ensure_store_id(dir)?;
-        Self::connect(dir, dim, embedding_model, true)
+        Self::connect(dir, dim, &expected.embedding_model, tables)
     }
 
     /// Open the store at `dir` for reading only, for a caller that does not hold the workspace
@@ -295,21 +338,21 @@ impl LanceStore {
         let _opening = lock_open(dir, OPEN_LOCK_WAIT)?;
         let bytes = std::fs::read(&meta_path).with_context(|| format!("read {}", meta_path.display()))?;
         if let Ok(MetaVersion { schema_ver }) = serde_json::from_slice(&bytes)
-            && schema_ver > MEMORY_SCHEMA_VER
+            && schema_ver > VECTOR_STORE_VER
         {
             return Err(anyhow!(
                 "the vector store at {} was written by a newer basemind (schema {schema_ver}); this binary \
-                 understands {MEMORY_SCHEMA_VER}: upgrade basemind",
+                 understands {VECTOR_STORE_VER}: upgrade basemind",
                 dir.display()
             ));
         }
         let actual: LanceMeta = serde_json::from_slice(&bytes)
             .with_context(|| format!("unreadable {}; `basemind scan` rebuilds it", meta_path.display()))?;
-        if (actual.dim, actual.embedding_model.as_str(), actual.schema_ver) != (dim, embedding_model, MEMORY_SCHEMA_VER)
-        {
+        let model = crate::embeddings::model_key(embedding_model);
+        if (actual.dim, actual.embedding_model.as_str(), actual.schema_ver) != (dim, model.as_ref(), VECTOR_STORE_VER) {
             return Err(anyhow!(
                 "the vector store at {} was built for {} ({} dimensions, schema {}), and this session \
-                 embeds with {embedding_model} ({dim} dimensions, schema {MEMORY_SCHEMA_VER}): search with \
+                 embeds with {model} ({dim} dimensions, schema {VECTOR_STORE_VER}): search with \
                  the preset the scan used, or run `basemind scan` with this one",
                 dir.display(),
                 actual.embedding_model,
@@ -317,11 +360,16 @@ impl LanceStore {
                 actual.schema_ver
             ));
         }
-        Self::connect(dir, dim, embedding_model, false)
+        Self::connect(dir, dim, &model, &[])
     }
 
-    /// Connect to the store at `dir`, creating its missing tables when `create_tables`.
-    fn connect(dir: &Path, dim: u16, embedding_model: &str, create_tables: bool) -> Result<Self> {
+    /// Connect to the store at `dir` of model `model_key`, creating those of `tables` it lacks.
+    fn connect(
+        dir: &Path,
+        dim: u16,
+        model_key: &str,
+        tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
+    ) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -332,13 +380,9 @@ impl LanceStore {
             .with_context(|| format!("open lancedb at {uri}"))?;
 
         runtime.block_on(async {
-            if !create_tables {
-                return anyhow::Ok(());
+            for (name, schema) in tables {
+                ensure_table(&connection, name, schema.clone()).await?;
             }
-            ensure_table(&connection, DOCUMENTS_TABLE, documents_schema(dim)).await?;
-            ensure_table(&connection, MEMORY_TABLE, memory_schema(dim)).await?;
-            #[cfg(feature = "code-search")]
-            ensure_table(&connection, schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)).await?;
             anyhow::Ok(())
         })?;
 
@@ -347,7 +391,7 @@ impl LanceStore {
                 runtime: Some(runtime),
                 connection,
                 dim,
-                embedding_model: embedding_model.to_string(),
+                embedding_model: model_key.to_string(),
                 dir: dir.to_path_buf(),
                 commits: std::sync::Mutex::new(std::collections::HashMap::new()),
             }),

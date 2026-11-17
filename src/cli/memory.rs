@@ -80,15 +80,18 @@ pub enum MemoryCmd {
         /// Exact MIME filter, e.g. `application/pdf`.
         #[arg(long)]
         mime_type: Option<String>,
-        /// Keep chunks whose keywords contain this.
+        /// Format family: pdf, office, html, markdown, email, notebook, text, other.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Glob over document paths, e.g. `docs/**/*.md`.
+        #[arg(long)]
+        path: Option<String>,
+        /// Keep documents with any of these whole keywords (comma-separated).
         #[arg(long)]
         keywords: Option<String>,
         /// Keep chunks naming an entity of this category.
         #[arg(long)]
         entity: Option<String>,
-        /// Document scope (default: this repository).
-        #[arg(long)]
-        scope: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -177,9 +180,10 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
         MemoryCmd::Documents {
             query,
             mime_type,
+            kind,
+            path,
             keywords,
             entity,
-            scope,
             limit,
             cursor,
             max_tokens,
@@ -187,9 +191,10 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
             let p = DocsSearchParams {
                 query,
                 mime_type,
+                kind,
+                path,
                 keywords,
                 entity,
-                scope,
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,

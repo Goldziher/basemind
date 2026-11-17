@@ -143,6 +143,11 @@ fn code_grep_searches_the_text_documents_the_document_tier_indexed() {
         "# Guide\n\nNotes about the harbour and how the harbour is run, long enough to index.\n",
     )
     .unwrap();
+    std::fs::write(
+        root.join("docs/page.html"),
+        "<html><body>\n<p>The quay gate opens at dawn.</p>\n</body></html>\n",
+    )
+    .unwrap();
     let mut cfg = basemind::config::default_for_root(root);
     cfg.documents.enabled = true;
     cfg.documents.embed = false;
@@ -180,6 +185,9 @@ fn code_grep_searches_the_text_documents_the_document_tier_indexed() {
                 (Some("docs/guide.md"), Some(3))
             );
         }
+        // HTML is a document now, not code; it stays greppable as a text document.
+        let found = call(&client, "code_grep", json!({ "pattern": "quay gate opens" })).await;
+        assert_eq!(found["total"], 1, "{found}");
         let _ = client.cancel().await;
     });
 }
