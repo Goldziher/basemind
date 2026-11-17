@@ -230,7 +230,10 @@ fn process_file(
     // When the documents tier is compiled out there is nowhere else for them to go, so they keep
     // their grammar.
     #[cfg(feature = "documents")]
-    let detected = filters.detect_lang(rel).lang().filter(|l| !crate::lang::is_non_code(l));
+    let detected = filters.detect_lang(rel).lang().filter(|l| {
+        !crate::lang::is_non_code(l)
+            && !(config.documents.enabled && crate::lang::is_document_markup(l, Path::new(rel)))
+    });
     #[cfg(not(feature = "documents"))]
     let detected = filters.detect_lang(rel).lang();
     let lang = match detected {

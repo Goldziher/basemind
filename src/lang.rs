@@ -254,6 +254,15 @@ pub fn is_non_code(lang: &str) -> bool {
     )
 }
 
+/// Grammars a document format also claims: HTML, LaTeX, Org, Typst, Djot and RTF are documents to
+/// the document tier (ADR-0029 rule 1), and their grammars yield no symbols. They go to that tier
+/// when it is enabled and the path reached the grammar by its own extension; a workspace without the
+/// tier, or a `[languages]` override mapping another extension (`.erb` to `html`), keeps them in the
+/// code map so `code_grep` still reaches them.
+pub fn is_document_markup(lang: &str, path: &Path) -> bool {
+    matches!(lang, "html" | "latex" | "org" | "typst" | "djot" | "rtf") && detect(path) == Some(lang)
+}
+
 /// Fetch the underlying tree-sitter Language for a given `LangId`.
 pub fn language(lang: LangId) -> Result<Language, LangError> {
     tree_sitter_language_pack::get_language(lang).map_err(|e| LangError::Pack(format!("{e}")))
