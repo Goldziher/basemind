@@ -43,8 +43,6 @@ mod helpers_calls_scan;
 mod helpers_code;
 #[cfg(feature = "code-search")]
 mod helpers_code_search;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod helpers_daemon;
 #[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
 mod helpers_grep;
@@ -122,8 +120,6 @@ pub(crate) use crate::engine::Workspace;
 pub use agent_context::AgentContext;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) use host::HostBackend;
-#[cfg(all(feature = "test-support", feature = "comms", any(unix, windows)))]
-pub use in_memory::serve_in_memory_daemon_writer;
 #[cfg(feature = "test-support")]
 pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
 pub(crate) use state::{ServedWorkspace, ServerState};
@@ -226,11 +222,6 @@ pub struct ServerOptions {
     /// scanning. The passive view watcher still runs, so the in-RAM map tracks
     /// the lock-holding writer's `index.msgpack` updates.
     pub read_only: bool,
-    /// When true, this serve forwards every write (auto-scan, watcher rescan, `rescan` tool) to
-    /// the machine daemon (the sole fjall writer) rather than writing locally, and rebuilds its
-    /// in-RAM map from the daemon-written `index.msgpack`. Set only by the real `serve` binary on
-    /// a `comms` build; always false for the in-process one-shot and non-comms builds.
-    pub daemon_writer: bool,
     /// When true, defer [`MapCache::build`] to the first tool that actually reads the map, instead
     /// of running it at construction. Set only for the one-shot CLI — see
     /// [`ServerState::lazy_cache`].
@@ -242,7 +233,7 @@ impl From<ServerOptions> for crate::engine::workspace::OpenOptions {
         Self {
             background: options.background,
             read_only: options.read_only,
-            forwards_writes: options.daemon_writer,
+            forwards_writes: false,
             lazy_cache: options.lazy_cache,
             history_sync: Some(history_sync::request),
         }
@@ -255,7 +246,6 @@ impl Default for ServerOptions {
             background: true,
             watch: true,
             read_only: false,
-            daemon_writer: false,
             lazy_cache: false,
         }
     }
@@ -298,7 +288,6 @@ impl BasemindServer {
                 background: false,
                 watch: false,
                 read_only: false,
-                daemon_writer: false,
                 lazy_cache: true,
             },
         )
@@ -323,8 +312,8 @@ impl BasemindServer {
             repo.is_some(),
             &agent_id,
             &options,
-            // ~keep In-process serve / CLI: no daemon hosting us, so history reads use the socket-forward
-            // ~keep path (or a local handle) — never the in-process seam.
+            // ~keep In-process serve / CLI: no daemon hosting us, so history reads use a local handle,
+            // ~keep or none while the daemon holds the database.
             #[cfg(all(feature = "comms", any(unix, windows)))]
             None,
         );
@@ -340,14 +329,7 @@ impl BasemindServer {
             git_history,
             options.into(),
         ));
-        // ~keep In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
-        // ~keep (not the host seam) handles writes when a daemon is up.
-        #[allow(unused_mut)] // ~keep only a `comms` build records the daemon topology
-        let mut served = ServedWorkspace::new(shared, &basemind_dir);
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        {
-            served.daemon_writer = options.daemon_writer;
-        }
+        let served = ServedWorkspace::new(shared, &basemind_dir);
         let state = Arc::new(ServerState::for_connection(served, agent_id));
         let mut watcher = None;
         if options.background {
@@ -357,7 +339,7 @@ impl BasemindServer {
                     Err(_) => false,
                 }
             };
-            let watcher_guard = if options.watch && (options.daemon_writer || !options.read_only) && view_is_working {
+            let watcher_guard = if options.watch && !options.read_only && view_is_working {
                 background::spawn_serve_watcher(Arc::clone(&state))
             } else {
                 background::spawn_view_watcher(Arc::clone(&state))
@@ -471,7 +453,7 @@ impl BasemindServer {
     /// the N-watchers-per-workspace → one-watcher-per-workspace consolidation: per-connection
     /// servers ([`from_shared`](Self::from_shared)) spawn nothing.
     ///
-    /// The warden uses the same topology as today's thin `serve` (`read_only` + `daemon_writer`), so
+    /// The warden is `read_only` and hosted (its writes go to the pool through `host`), so
     /// its scans forward to the daemon's sole-writer pool over the existing path — no new scan/write
     /// machinery. The store is [`open_read_only_no_index`](crate::store::Store::open_read_only_no_index)
     /// (no fjall lock), so the shared `MapCache` still builds its in-RAM call/impl indexes exactly as
@@ -504,7 +486,6 @@ impl BasemindServer {
             background: true,
             watch: true,
             read_only: true,
-            daemon_writer: true,
             lazy_cache: false,
         };
         let agent_id = identity::resolve_agent_id(&store.root);
@@ -517,7 +498,12 @@ impl BasemindServer {
             &options,
             Some(git_history_host),
         );
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
+        // ~keep The pool writes the index, so an empty one still asks for an initial scan.
+        let open = crate::engine::workspace::OpenOptions {
+            forwards_writes: true,
+            ..options.into()
+        };
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &open);
         let telemetry_dir = store.basemind_dir.clone();
         let workspace = Arc::new(Workspace::new(
             store,
@@ -526,10 +512,9 @@ impl BasemindServer {
             repo,
             git_cache,
             git_history,
-            options.into(),
+            open,
         ));
         let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);
-        shared.daemon_writer = options.daemon_writer;
         // ~keep The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
         // ~keep the pool instead of looping back over the daemon's own socket.
         shared.host = Some(host);
@@ -579,13 +564,14 @@ impl BasemindServer {
             return None;
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if options.daemon_writer || crate::git_history::remote::daemon_is_up() {
-            if let Some(host) = git_history_host {
-                return Some(Arc::new(crate::git_history::remote::hosted_index(
-                    root.to_path_buf(),
-                    host,
-                )));
-            }
+        if let Some(host) = git_history_host {
+            return Some(Arc::new(crate::git_history::remote::hosted_index(
+                root.to_path_buf(),
+                host,
+            )));
+        }
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if crate::git_history::remote::daemon_is_up() {
             // ~keep The daemon holds the database and fjall's lock is exclusive even to a reader
             // ~keep (fjall `locked_file.rs` `try_lock`), so a session it does not host live-walks.
             return None;

@@ -1,10 +1,9 @@
-//! Serve-side write forwarding for a `daemon_writer` session.
+//! Scans for a daemon-hosted workspace.
 //!
-//! On a `comms` build the real `serve` binary opens its store read-only and delegates every scan to
-//! the machine daemon (the sole fjall writer). This module is that seam: [`forward_rescan_and_refresh`]
-//! sends the scan over the socket, then rebuilds the read-only in-RAM [`MapCache`] from the
-//! daemon-written `index.msgpack` so the caller sees fresh results without waiting on the passive
-//! view watcher.
+//! The daemon's pool is the workspace's sole fjall writer and the hosted store is opened read-only,
+//! so a hosted scan runs through the pool ([`writer_rescan_and_refresh`]), then rebuilds the
+//! read-only in-RAM [`MapCache`] from the `index.msgpack` the pool wrote, so the caller sees fresh
+//! results without waiting on the passive view watcher.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -13,80 +12,50 @@ use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
 
-use super::helpers_daemon::{comms_err, connect_ephemeral_client};
 use super::{MapCache, ServerState};
 use crate::comms::client::RescanReport;
 use crate::store::Store;
 
-/// Forward a scan to the daemon (the sole fjall writer) and rebuild the read-only map from the
-/// index it writes.
+/// Run a hosted workspace's scan through the daemon's pool (`host`), in process on a blocking
+/// thread, then refresh the in-RAM map from the index it wrote.
 ///
 /// `paths` (with `full == false`) drives an incremental rescan of just those files; `None`/empty or
-/// `full` scans the whole working tree. `embed` asks the daemon (the sole writer) to run an
-/// [`EmbedMode::Inline`](crate::scanner::EmbedMode::Inline) vector-fill pass so documents + code
-/// chunks land in LanceDB; `false` is the fast code-map-only pass. Returns the daemon's scan counts.
-/// Errors — no daemon reachable, a scan failure, or a store reopen failure — surface as an
-/// [`McpError`] the caller maps to its own response.
-pub(super) async fn forward_rescan_and_refresh(
-    state: &Arc<ServerState>,
-    paths: Option<Vec<PathBuf>>,
-    full: bool,
-    embed: bool,
-    verify: bool,
-) -> Result<RescanReport, McpError> {
-    let mut client = connect_ephemeral_client(state).await?;
-    let report = client
-        .rescan_as(state.shared.root.clone(), paths, full, embed, verify)
-        .await
-        .map_err(comms_err)?;
-    refresh_cache_after_scan(state).await?;
-    Ok(report)
-}
-
-/// Route a read-only serve's scan to the machine's sole fjall writer, then refresh the in-RAM map.
-///
-/// On the DAEMON-HOSTED path ([`state.host`](ServerState) is `Some`) the writer pool is
-/// in-process, so the scan runs directly through it on a blocking thread — no socket loopback, which
-/// on the daemon would mean the daemon dialing itself. Every other `daemon_writer` serve has no host
-/// and [`forward_rescan_and_refresh`] ships the scan over the socket. Both then rebuild the read-only
-/// map from the index the writer just wrote via the shared [`refresh_cache_after_scan`] tail — so the
-/// refresh half is written once.
-///
-/// `verify` says the paths were named by a person or an agent (`index_rescan paths`), not seen
-/// changing by the watcher: the writer validates the blob of a named file it would skip.
+/// `full` scans the whole working tree. `embed` asks for an
+/// [`EmbedMode::Inline`](crate::scanner::EmbedMode::Inline) vector-fill pass so documents and code
+/// chunks land in LanceDB; `false` is the fast code-map-only pass. `verify` says the paths were named
+/// by a person or an agent (`index_rescan paths`), not seen changing by the watcher: the writer
+/// validates the blob of a named file it would skip.
 pub(super) async fn writer_rescan_and_refresh(
     state: &Arc<ServerState>,
+    host: &Arc<dyn super::HostBackend>,
     paths: Option<Vec<PathBuf>>,
     full: bool,
     embed: bool,
     verify: bool,
 ) -> Result<RescanReport, McpError> {
-    if let Some(host) = &state.host {
-        let host = Arc::clone(host);
-        let root = state.shared.root.clone();
-        let stats = tokio::task::spawn_blocking(move || match paths {
-            Some(paths) if verify && !full && !paths.is_empty() => host.host_rescan_named(&root, paths, embed),
-            paths => host.host_rescan(&root, paths, full, embed),
-        })
-        .await
-        .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
-        .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
-        refresh_cache_after_scan(state).await?;
-        return Ok(RescanReport {
-            scanned: stats.scanned,
-            updated: stats.updated,
-            docs_indexed: stats.docs_indexed,
-            docs_degraded: stats.docs_degraded,
-            docs_text_fallback: stats.docs_text_fallback,
-            doc_timeouts: stats.doc_timeouts,
-            removed: stats.removed,
-            elapsed_ms: 0,
-        });
-    }
-    forward_rescan_and_refresh(state, paths, full, embed, verify).await
+    let host = Arc::clone(host);
+    let root = state.shared.root.clone();
+    let stats = tokio::task::spawn_blocking(move || match paths {
+        Some(paths) if verify && !full && !paths.is_empty() => host.host_rescan_named(&root, paths, embed),
+        paths => host.host_rescan(&root, paths, full, embed),
+    })
+    .await
+    .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
+    .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
+    refresh_cache_after_scan(state).await?;
+    Ok(RescanReport {
+        scanned: stats.scanned,
+        updated: stats.updated,
+        docs_indexed: stats.docs_indexed,
+        docs_degraded: stats.docs_degraded,
+        docs_text_fallback: stats.docs_text_fallback,
+        doc_timeouts: stats.doc_timeouts,
+        removed: stats.removed,
+        elapsed_ms: 0,
+    })
 }
 
-/// Refresh serve's read-only view from the current (daemon-written) `index.msgpack`: reopen the
+/// Refresh the hosted read-only view from the current (pool-written) `index.msgpack`: reopen the
 /// store and derive the in-RAM [`MapCache`] from the current one ([`MapCache::refreshed`]: only
 /// the paths the scan changed are re-projected, and unchanged outlines stay decoded). Runs on a
 /// blocking thread so the reactor is never stalled.
@@ -95,7 +64,7 @@ pub(super) async fn writer_rescan_and_refresh(
 /// [`crate::store::Index`] is stale. Cache-reading tools (`search_symbols`, `outline`) pick up the
 /// new cache, but store-reading tools (`status`'s `file_count`, corpus bytes) read `store.index`
 /// directly — without replacing the store they would report the pre-scan (often empty) index
-/// forever. This is the forward-path counterpart to a local scan mutating the store in place.
+/// forever. This is the hosted counterpart to a local scan mutating the store in place.
 async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpError> {
     let view = state.store_read().await.view.clone();
     let root = state.shared.root.clone();
