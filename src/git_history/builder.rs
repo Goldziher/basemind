@@ -554,4 +554,64 @@ mod tests {
         );
         assert_eq!(index.failed_build_at(&head20), None, "a stamped head clears the record");
     }
+
+    /// An append cut off after a batch commit left a new path's id rows durable while the next free
+    /// id was never advanced. A retry that reused the id gave it to another path, whose history then
+    /// served the first path's commits. The cut-off index is rebuilt instead, so no id names two
+    /// paths and each path's history is its own.
+    #[test]
+    fn a_retry_after_a_cut_off_append_never_gives_one_path_id_to_two_paths() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("first build");
+
+        commit(root, "b.rs", "1", "adds b");
+        let repo = Repo::discover(root).expect("rediscover");
+        let last = index.last_indexed_head_hex().expect("an indexed head");
+        let new_shas = repo.new_commit_shas(&last).expect("new commits");
+        let chrono: Vec<&String> = new_shas.iter().rev().collect();
+        {
+            let mut writer = index.writer().expect("writer");
+            writer.begin().expect("mark the append");
+            let mut interner = PathInterner::new(&index, index.next_path_id());
+            let (mut postings, mut term_postings) = (AHashMap::new(), AHashMap::new());
+            fold_chunked(
+                &index,
+                &repo,
+                &chrono,
+                index.next_ord(),
+                true,
+                &mut interner,
+                &mut postings,
+                &mut term_postings,
+                &mut writer,
+            )
+            .expect("fold");
+            writer.flush().expect("commit the batch: b.rs's id rows are durable");
+        }
+        commit(root, "c.rs", "1", "adds c");
+        commit(root, "b.rs", "2", "edits b");
+        let repo = Repo::discover(root).expect("rediscover");
+
+        sync(&index, &repo, cache.path()).expect("retry");
+
+        let local = index.local().expect("local");
+        let paths: Vec<RelPath> = (0..index.next_path_id())
+            .map(|id| local.path_for_id(id).expect("every id names a path"))
+            .collect();
+        let distinct: ahash::AHashSet<&RelPath> = paths.iter().collect();
+        assert_eq!(distinct.len(), paths.len(), "no id names two paths: {paths:?}");
+        for path in ["a.rs", "b.rs", "c.rs"] {
+            let expected: Vec<String> = git(root, &["log", "--full-history", "--format=%H", "--", path])
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(touching(&index, path), expected, "{path}'s history is its own");
+        }
+    }
 }
