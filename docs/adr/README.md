@@ -111,12 +111,13 @@ them.
 | [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted (amended by ADR-0028, ADR-0030, ADR-0033) |
 | [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Superseded by ADR-0027 |
 | [0027](0027-single-breaking-release.md) | Release and branch policy — trunk-based, one breaking release | Accepted (amended by ADR-0035) |
-| [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Accepted |
+| [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Accepted (amended by ADR-0036) |
 | [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Accepted |
-| [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted (amended by ADR-0033, ADR-0036) |
+| [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted (amended by ADR-0033, ADR-0037) |
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted |
 | [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted |
 | [0033](0033-store-evidence-collection-and-recovery-rules.md) | Store rules after the sixth storage review — evidence, collection, recovery | Proposed |
 | [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Proposed |
 | [0035](0035-unreleased-plugin-surface-marker.md) | A dated marker for plugin content ahead of its release | Proposed |
-| [0036](0036-comms-cutover-as-built.md) | Comms v2 cutover as built — agent tool replay and the closed open items | Proposed |
+| [0036](0036-group-index-as-built.md) | Group index as built — no rollout switch, the group lock, read-only opens | Proposed |
+| [0037](0037-comms-cutover-as-built.md) | Comms v2 cutover as built — agent tool replay and the closed open items | Proposed |

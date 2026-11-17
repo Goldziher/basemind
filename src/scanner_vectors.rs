@@ -49,14 +49,6 @@ impl VectorStore for LanceVectors {
         }
     }
 
-    fn publish_snapshot(&self, store: &Store, config: &Config, scope: &str) -> Result<(), RetrievalError> {
-        if !crate::lance::shared_snapshot::enabled() {
-            return Ok(());
-        }
-        crate::lance::shared_snapshot::publish_scan(store, config, scope)
-            .map_err(|error| RetrievalError(format!("{error:#}")))
-    }
-
     #[cfg(feature = "code-search")]
     fn write_code_rows(&self, store: &mut Store, scope: &str, batches: Vec<PendingCodeBatch>, model: &str) -> usize {
         flush_code_batches(store, scope, batches, model)

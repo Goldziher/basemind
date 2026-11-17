@@ -270,13 +270,12 @@ mod tests {
             "basemind",
             "scan",
             "--rebuild-git-history",
-            "--verify-shared-base",
             "--documents-enabled",
             "false",
         ]);
         assert_eq!(
             unforwardable(&given).flags,
-            ["--verify-shared-base", "--rebuild-git-history", "--documents-enabled"]
+            ["--rebuild-git-history", "--documents-enabled"]
         );
     }
 

@@ -10,13 +10,14 @@ use crate::index::{IndexDb, IndexError};
 use crate::lance::LanceStore;
 use crate::path::RelPath;
 use crate::store_hash_refs::HashRefs;
-#[path = "store_base_open.rs"]
-mod base_open;
 #[path = "store_durability.rs"]
 mod durability;
 #[path = "store_file_map.rs"]
 mod file_map;
 pub use durability::RESCAN_OWED;
+pub(crate) use durability::open_index_for_writer;
+#[path = "store_group.rs"]
+mod group;
 use file_map::migrate_legacy_index_into_views;
 pub(crate) use file_map::{check_schema, read_index, wipe_view, written_by_newer};
 
@@ -86,8 +87,6 @@ pub enum StoreError {
     /// writer open sets it aside and rebuilds; nothing deletes it.
     #[error("file map {path} is unreadable; `basemind scan` sets it aside and rebuilds the view")]
     UnreadableFileMap { path: PathBuf },
-    #[error("working view migration recovery failed: {0}")]
-    Migration(#[source] anyhow::Error),
     #[error("inverted index error: {0}")]
     Index(#[from] IndexError),
     #[error(
@@ -165,6 +164,13 @@ pub struct Index {
     /// schema it carries, so its files are not called unchanged over blobs that are elsewhere.
     #[serde(default)]
     pub blob_layout: u8,
+    /// The incarnation of the group index this map was written against (ADR-0028); `0` for a view
+    /// with an index database of its own. A map naming another incarnation is emptied on open.
+    #[serde(default)]
+    pub group_incarnation: u64,
+    /// The id the group index gave this view; `0` for a view with a database of its own.
+    #[serde(default)]
+    pub view_id: u32,
 }
 
 impl Index {
@@ -179,6 +185,8 @@ impl Index {
             rebuild_pending: false,
             rebuild_pins: Vec::new(),
             blob_layout: crate::store_layout::BLOB_LAYOUT,
+            group_incarnation: 0,
+            view_id: 0,
         }
     }
 }
@@ -251,8 +259,6 @@ pub struct Store {
     /// exactly once. Per-workspace state (views, LanceDB, lock) lives under [`Store::basemind_dir`].
     /// See [`global_blobs_dir`].
     pub blobs_dir: PathBuf,
-    pub(crate) fallback_blobs_dir: Option<PathBuf>,
-    pub(crate) layered_read: Option<std::sync::Arc<dyn crate::index::view::IndexView>>,
     /// Always `true` since the blob store went global: a standalone Store references only ONE
     /// workspace's index, so it can never enumerate the full live blob set across all workspaces.
     /// Auto-GC (boot + background) is therefore disabled here — reference-counted GC that spans
@@ -266,10 +272,10 @@ pub struct Store {
     /// so "does any file still hold this content" is a lookup, not a pass over the manifest. Mutate
     /// `index.files` through those two methods only.
     hash_refs: HashRefs,
-    /// Fjall-backed inverted index over symbols / calls / imports. Lives under
-    /// `view_dir/index.fjall/`. Reads + writes from any caller go through `IndexDb`,
-    /// which is cheap to clone (internally Arc'd). `None` in read-only mode when the
-    /// directory doesn't exist yet — callers must handle the absence.
+    /// This view's handle on the group index (`cache/groups/<group>/index.fjall/`, ADR-0028). Every
+    /// read and write goes through `IndexDb`, which is cheap to clone (internally Arc'd).
+    /// `None` for a read-only open in a process that holds no handle on the group (ADR-0036):
+    /// callers must handle the absence.
     pub index_db: Option<IndexDb>,
     /// LanceDB-backed vector store. Lazy-opened on first document insert so a
     /// vanilla code-only scan doesn't pay the LanceDB startup cost.
@@ -297,163 +303,11 @@ pub struct Store {
 }
 
 impl Store {
-    pub(crate) fn install_layered_manifest(
-        &mut self,
-        index: Index,
-        blobs: PathBuf,
-        fallback: PathBuf,
-        view: std::sync::Arc<dyn crate::index::view::IndexView>,
-    ) {
-        self.hash_refs = HashRefs::of(&index.files);
-        // The generation vouches for this store's own index, not the shared manifest's. ~keep
-        let generation = self.index.generation;
-        self.index = index;
-        self.index.generation = generation;
-        self.blobs_dir = blobs;
-        self.fallback_blobs_dir = Some(fallback);
-        self.layered_read = Some(view);
-    }
-
     /// Own the effective read snapshot so indexed queries can release the store lock.
     pub(crate) fn read_index_view(&self) -> Option<std::sync::Arc<dyn crate::index::view::IndexView>> {
-        self.layered_read.clone().or_else(|| {
-            self.index_db
-                .as_ref()
-                .map(|db| std::sync::Arc::new(crate::index::view::StandaloneView(db.clone())) as _)
-        })
-    }
-
-    /// Reconstruct a reclaimed working view under the normal writer lock.
-    #[cfg(unix)]
-    pub fn rebuild_migrated_working_view(
-        root: &Path,
-        config: &crate::config::Config,
-        cancel: &crate::scanner::ScanCancel,
-    ) -> anyhow::Result<bool> {
-        let workspace = workspace_cache_dir(root);
-        let views = workspace.join(VIEWS_DIR);
-        if !views.join("working.migration").try_exists()? {
-            return Ok(false);
-        }
-        let _writer = acquire_lock_as(&workspace, LockHolder::Scan)?;
-        let migration = crate::store_migration::Migration::lock(&views)?;
-        migration.rebuild(|stage| {
-            anyhow::ensure!(
-                !config.documents.enabled
-                    && !config.documents.embed
-                    && !config.code_search.enabled
-                    && !config.code_search.embed,
-                "standalone migration rebuild requires documents and code search disabled"
-            );
-            let mut store = Self::open_base_scratch(root, stage)?;
-            store.blobs_dir = global_blobs_dir();
-            ensure_dir(&store.blobs_dir)?;
-            store.blobs_shared = true;
-            let report = crate::scanner::scan_with_cancel(
-                root,
-                &mut store,
-                config,
-                crate::scanner::ScanSource::WorkingTree,
-                crate::scanner::EmbedMode::Deferred,
-                cancel,
-            )?;
-            anyhow::ensure!(
-                !report.cancelled
-                    && report.stats.read_failed == 0
-                    && report.stats.extract_failed == 0
-                    && store.index_db.as_ref().is_some_and(|db| !db.is_poisoned()),
-                "incomplete standalone migration rebuild"
-            );
-            store.flush()?;
-            Ok(())
-        })
-    }
-
-    /// Retire the standalone working view after comparing it to a leased clean generation.
-    #[cfg(unix)]
-    pub fn retire_verified_working_view(
-        &mut self,
-        config: &crate::config::Config,
-        reclaim: bool,
-    ) -> anyhow::Result<bool> {
-        if self.view != VIEW_WORKING || self._lock.is_none() {
-            return Ok(false);
-        }
-        let root = self.root.clone();
-        let open_candidate = || -> anyhow::Result<_> {
-            let mut candidate = Self::open_read_only_no_index(&root, VIEW_WORKING)?;
-            candidate.index = Index::empty();
-            crate::store_base::hydrate_cold_store(&mut candidate, config)?;
-            Ok(candidate)
-        };
-        let candidate_store = open_candidate()?;
-        let Some(layered) = candidate_store.layered_read.as_ref() else {
-            return Ok(false);
-        };
-        let dirty = candidate_store.fallback_blobs_dir.as_ref() != Some(&candidate_store.blobs_dir);
-        if dirty && reclaim {
-            return Ok(false);
-        }
-        let Some(standalone) = self.index_view() else {
-            return Ok(false);
-        };
-        crate::index::verify_shared_base(layered.as_ref(), &standalone)?;
-        let directory = candidate_store
-            .fallback_blobs_dir
+        self.index_db
             .as_ref()
-            .and_then(|path| path.parent())
-            .ok_or_else(|| anyhow::anyhow!("missing generation directory"))?;
-        let candidate = &candidate_store.index;
-        if self.index.files.len() != candidate.files.len()
-            || self.index.files.iter().any(|(path, entry)| {
-                candidate.files.get(path).is_none_or(|other| {
-                    other.hash_hex != entry.hash_hex
-                        || other.language != entry.language
-                        || other.extract_epoch != entry.extract_epoch
-                })
-            })
-            || !self.index.doc_files.is_empty()
-        {
-            return Ok(false);
-        }
-        let generation: u64 = directory
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix("gen-"))
-            .ok_or_else(|| anyhow::anyhow!("invalid generation path"))?
-            .parse()?;
-        if dirty {
-            let pin = repo_group_dir(&root)
-                .join("overlay-pins")
-                .join(format!("{}-{generation}", crate::store_layout::workspace_key(&root)));
-            anyhow::ensure!(
-                std::fs::read(pin)? == generation.to_be_bytes(),
-                "invalid overlay generation pin"
-            );
-        }
-        let views = self.basemind_dir.join(VIEWS_DIR);
-        let migration = crate::store_migration::Migration::lock(&views)?;
-        drop(self.index_db.take());
-        let result = migration.retire(generation, || Ok(())).and_then(|()| {
-            migration.commit(generation, || {
-                let current = open_candidate()?;
-                anyhow::ensure!(
-                    current.layered_read.is_some()
-                        && current.blobs_dir == candidate_store.blobs_dir
-                        && current.fallback_blobs_dir == candidate_store.fallback_blobs_dir,
-                    "worktree no longer matches the verified generation and overlay"
-                );
-                Ok(())
-            })
-        });
-        if let Err(error) = result {
-            migration.recover(|_| false)?;
-            return Err(error);
-        }
-        if reclaim {
-            migration.reclaim()?;
-        }
-        Ok(true)
+            .map(|db| std::sync::Arc::new(crate::index::view::StandaloneView(db.clone())) as _)
     }
 
     /// A read view over the fjall index, or `None` when this session holds none. Every index read
@@ -488,13 +342,6 @@ impl Store {
         migrate_legacy_index_into_views(&basemind_dir)?;
 
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
-        // A fresh linked worktree clones its working view from a sibling checkout (COW, atomic
-        // rename) BEFORE fjall opens, so the first scan skips content-identical files. ~keep
-        if view == VIEW_WORKING {
-            crate::store_migration::Migration::recover_for_writer(&basemind_dir.join(VIEWS_DIR))
-                .map_err(StoreError::Migration)?;
-            crate::store_seed::seed_working_view(root, &basemind_dir, &view_dir);
-        }
         ensure_dir(&view_dir)?;
         ensure_workspace_marker(&basemind_dir, root);
         let mut reset_stale_schema = false;
@@ -526,15 +373,13 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let (index_db, index_rebuild_needed) = durability::open_index_for_writer(root, view, &view_dir, &mut index)?;
+        let (index_db, index_rebuild_needed) = open_index_for_writer(root, view, &view_dir, &mut index, holder)?;
         let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);
         let mut store = Self {
             root: root.to_path_buf(),
             basemind_dir,
             blobs_dir,
             blobs_shared,
-            fallback_blobs_dir: None,
-            layered_read: None,
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
@@ -627,26 +472,10 @@ impl Store {
         // A stale layout leaves an index of the current schema over a map that is gone: the scan
         // that takes the lock replaces both ([`Store::open_index_owed_to_scan`]). ~keep
         let mut index_rebuild_needed = stale_layout;
-        // ~keep A read creates no index: a view a scan never wrote has none to open.
-        let index_db = if allow_index_db
-            && schema_ok
-            && view_dir.join(crate::index::INDEX_DIR).is_dir()
-            && !writer_lock_is_held(&basemind_dir)
-        {
-            match IndexDb::open_tolerating_held_memory(&view_dir, &memory_store_dir(root)) {
-                Ok(db) => Some(db),
-                Err(IndexError::Fjall(fjall::Error::Locked)) => None,
-                Err(error @ IndexError::NewerSchema { .. }) => return Err(error.into()),
-                Err(error @ IndexError::NeedsRescan { .. }) => {
-                    tracing::warn!(%error, "serving from blobs until a scan rebuilds the index");
-                    index_rebuild_needed = true;
-                    None
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "read-only index open failed; degrading to blob-only reads");
-                    None
-                }
-            }
+        let index_db = if allow_index_db && schema_ok && !writer_lock_is_held(&basemind_dir) {
+            let (db, rebuild) = group::open_index_read_only(root, view, &index)?;
+            index_rebuild_needed |= rebuild;
+            db
         } else {
             None
         };
@@ -662,8 +491,6 @@ impl Store {
             basemind_dir,
             blobs_dir,
             blobs_shared,
-            fallback_blobs_dir: None,
-            layered_read: None,
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
@@ -831,7 +658,7 @@ impl Store {
     /// store.
     pub fn reopen_index_db(&mut self) -> Result<(), IndexError> {
         if self.index_db.take().is_some() {
-            self.index_db = Some(open_index_with_retry(&self.root, &self.view_dir)?);
+            self.index_db = Some(group::reopen_view(&self.root, &self.view)?);
         }
         Ok(())
     }
@@ -876,34 +703,11 @@ pub(crate) fn wipe_blobs_in(blobs_dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Retries a rightful writer performs when opening the Fjall index hits a *transient* fjall
-/// `Locked`. The caller already holds the `.basemind/.lock` advisory lock, so it is the sole
-/// legitimate writer — any fjall contention here is a short-lived reader open (a CLI `query` /
-/// `outline`, or another serve's read-only fallback briefly probing the index) that releases
-/// within sub-ms to low-ms. Retrying lets the rightful writer win instead of misfiring the
-/// read-only downgrade — the multi-session writer-downgrade race. ~10 × 50 ms tracks the fs2
-/// `.lock` retry budget (`acquire_lock_as`).
+/// Retries a writer performs when opening the group index hits a *transient* fjall `Locked`: it
+/// already holds the group lock, so fjall's directory lock can only be held by a handle shutting
+/// down. ~10 × 50 ms tracks the fs2 `.lock` retry budget (`acquire_lock_as`).
 const INDEX_OPEN_RETRIES: u32 = 10;
 const INDEX_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
-
-/// Open the Fjall [`IndexDb`], retrying a transient fjall `Locked` (see [`INDEX_OPEN_RETRIES`]).
-/// ONLY correct for a caller that already holds `.basemind/.lock`; such a caller is the sole
-/// rightful writer, so any `Locked` is transient and clears. Every other [`IndexError`] — and a
-/// lock that never clears within the budget — propagates.
-pub(crate) fn open_index_with_retry(root: &Path, view_dir: &Path) -> Result<IndexDb, IndexError> {
-    let memory_dir = memory_store_dir(root);
-    let mut attempt = 0;
-    loop {
-        match IndexDb::open_with_memory(view_dir, &memory_dir) {
-            Ok(db) => return Ok(db),
-            Err(IndexError::Fjall(fjall::Error::Locked)) if attempt < INDEX_OPEN_RETRIES => {
-                attempt += 1;
-                std::thread::sleep(INDEX_OPEN_BACKOFF);
-            }
-            Err(other) => return Err(other),
-        }
-    }
-}
 
 #[cfg(test)]
 #[path = "store_tests.rs"]

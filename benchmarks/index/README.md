@@ -110,9 +110,10 @@ BASEMIND_HARDEN_FEATURES="" BASEMIND_HARDEN_SKIP_SUITE=1 BASEMIND_HARDEN_WORKTRE
   ./scripts/harden.sh ripgrep
 ```
 
-`BASEMIND_HARDEN_WORKTREE_STEP` sets the commits between worktrees (default 50), and
-`BASEMIND_NO_SEED=1` measures a cold first scan instead of one seeded from a sibling's index. The
-table is appended to `<harden root>/worktrees.md`, the rows to `worktrees.ndjson`.
+`BASEMIND_HARDEN_WORKTREE_STEP` sets the commits between worktrees (default 50). Every worktree
+writes into its group index, so journal and keyspace bytes are what the group index grew by across
+that worktree's scan. The table is appended to `<harden root>/worktrees.md`, the rows to
+`worktrees.ndjson`.
 
 ripgrep, 2026-11-16, default features, sibling seeding on, same machine and load as above
 (`harden-worktrees-2026-11-16.md`): an added worktree costs 9.0 MB, of which 8.8 MB is journal,

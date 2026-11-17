@@ -109,9 +109,11 @@ impl IndexDb {
         // The batch takes one sequence number, so any other write leaves the two unequal. ~keep
         let synced_seqno = self.db.seqno() + 1;
         let mut batch = self.db.batch().durability(Some(PersistMode::SyncAll));
-        batch.insert(&self.meta, META_SCAN_GENERATION, generation.to_be_bytes());
+        self.meta
+            .stage_insert(&mut batch, META_SCAN_GENERATION, generation.to_be_bytes().into());
         if ends_rows_pass {
-            batch.insert(&self.meta, META_ROWS_UNLISTED, ROWS_PASS_ENDED);
+            self.meta
+                .stage_insert(&mut batch, META_ROWS_UNLISTED, ROWS_PASS_ENDED.into());
         }
         let sealed = batch.commit().map_err(IndexError::from);
         if let Err(error) = &sealed {
@@ -171,8 +173,11 @@ impl IndexDb {
             &self.code_bm25_by_path,
         ] {
             let mut from = Vec::new();
-            while let Some(guard) = keyspace.range(from.as_slice()..).next() {
-                let key = guard.key()?;
+            while let Some(row) = keyspace
+                .range(std::ops::Bound::Included(from.as_slice()), std::ops::Bound::Unbounded)
+                .next()
+            {
+                let (key, _) = row?;
                 let mut cursor = 0;
                 // A key that does not parse is stepped over, not taken for the end of the partition. ~keep
                 let next = match super::keys::read_len_prefixed_ref(&key, &mut cursor) {
@@ -236,7 +241,7 @@ impl IndexDb {
         }
         let keyspaces = Part::ALL
             .into_iter()
-            .map(|part| self.keyspace(part))
+            .map(|part| self.keyspace(part).raw())
             .chain(std::iter::once(&self.embeddings));
         rotate_memtables(keyspaces)
             .inspect_err(|error| tracing::warn!(%error, "index journal reclaim failed; the journal stays on disk"))
@@ -268,13 +273,23 @@ impl IndexDb {
     /// keyspace's empty version durably at once but journals the clear itself buffered, and recovery
     /// replays a keyspace's journaled writes over an empty version. Unsynced, a power loss could bring
     /// back a sealed generation that vouches for rows whose clear did reach the disk.
+    ///
+    /// In a group index only this view's rows go: the rows the group shares by content, and the
+    /// group's schema stamp, belong to every view.
     pub(crate) fn clear_for_rebuild(&self) -> Result<(), IndexError> {
-        self.meta.clear()?;
+        let shared = self.group.is_some();
+        self.meta.clear(&self.db)?;
         self.db.persist(PersistMode::SyncAll)?;
         for part in Part::ALL.into_iter().filter(|part| *part != Part::Meta) {
-            self.keyspace(part).clear()?;
+            let keyspace = self.keyspace(part);
+            if shared && !keyspace.is_view_scoped() {
+                continue;
+            }
+            keyspace.clear(&self.db)?;
         }
-        self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
+        if !shared {
+            self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
+        }
         Ok(())
     }
 }
@@ -312,7 +327,7 @@ pub(super) fn discard_dir(dir: &Path) -> Result<(), IndexError> {
         source,
     })?;
     if let Some(parent) = dir.parent()
-        && let Err(error) = crate::store_base::sync_directory(parent)
+        && let Err(error) = crate::store_layout::sync_directory(parent)
     {
         tracing::warn!(%error, "could not fsync the view directory after setting the index aside");
     }
@@ -394,7 +409,9 @@ mod tests {
     fn clear_for_rebuild_empties_the_index_and_its_generation_but_keeps_the_schema() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = IndexDb::open(dir.path()).expect("open");
-        db.keyspace(Part::SymbolsByPath).insert("row", "value").expect("insert");
+        db.keyspace(Part::SymbolsByPath)
+            .insert(b"row", "value")
+            .expect("insert");
         db.seal_scan(0).expect("seal");
 
         db.clear_for_rebuild().expect("clear");
@@ -414,9 +431,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = IndexDb::open(dir.path()).expect("open");
         let rows = db.keyspace(Part::SymbolsByPath);
-        rows.insert([0u8], "a key too short for its length prefix")
+        rows.insert(&[0u8], "a key too short for its length prefix")
             .expect("insert");
-        rows.insert([0u8, 4, b'a', b'.', b'r', b's', 0, 0], "row")
+        rows.insert(&[0u8, 4, b'a', b'.', b'r', b's', 0, 0], "row")
             .expect("insert");
 
         let paths = db.indexed_paths().expect("paths");
@@ -494,7 +511,7 @@ mod tests {
     /// unflushed: the straggler that keeps a sealed journal alive. Returns once the journal is
     /// sealed.
     fn seal_a_journal_with_a_straggler(db: &IndexDb) {
-        let rows = db.keyspace(Part::SymbolsByPath);
+        let rows = db.keyspace(Part::SymbolsByPath).raw();
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
         for row in 0..70u32 {
             // Incompressible, or the journal's LZ4 shrinks 70 MB of writes below the seal threshold.

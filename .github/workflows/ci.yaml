@@ -519,8 +519,8 @@ jobs:
         run: cargo test --features "comms documents memory" --test upgrade_from_release -- --test-threads=1
 
   # ~keep `#[ignore]`d tests no other job runs: the daemon stress and takeover watchdog, the NER
-  # ~keep scan, the non-UTF-8 path test (does Linux keep the bytes?), the git parity checks against
-  # ~keep this checkout, and the layered-index search.
+  # ~keep scan, the non-UTF-8 path test (does Linux keep the bytes?) and the git parity checks
+  # ~keep against this checkout.
   ignored-tests:
     name: ignored tests (nightly)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -548,7 +548,6 @@ jobs:
       - name: cargo test --ignored
         env:
           BASEMIND_GIT_PARITY_REPO: ${{ github.workspace }}
-          BASEMIND_INDEX_LAYERED: "1"
         run: >-
           cargo test --features full --no-fail-fast
           --test daemon_integration --test scan_smoke --test mcp_smoke --test git_parity --test git_history_smoke
