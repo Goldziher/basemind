@@ -35,6 +35,22 @@ impl Peer {
         socket_peer(socket).map(|id| Self { id })
     }
 
+    /// Whether [`Self::of_socket`] pins a peer to the process that connected on this host: on
+    /// macOS always, on Linux when the kernel gives a pidfd for a socket's peer (6.5 and
+    /// later). Where it does not, a pid freed and reused between the connect and
+    /// [`Self::of_socket`] would be taken for the peer; an engine can refuse callers then.
+    #[must_use]
+    pub fn pins_connections() -> bool {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            linux::supported()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            cfg!(target_os = "macos")
+        }
+    }
+
     /// This process, for an embedding that calls the supervisor from its own code (its own user
     /// interface), never on behalf of a connection.
     ///
@@ -124,7 +140,7 @@ fn socket_peer(socket: std::os::fd::BorrowedFd<'_>) -> std::io::Result<ProcId> {
 
 /// Reads the socket option `name` into `value`, which it must fill exactly.
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-fn getsockopt<T>(fd: i32, level: i32, name: i32, value: &mut T) -> std::io::Result<()> {
+fn getsockopt<T: Copy>(fd: i32, level: i32, name: i32, value: &mut T) -> std::io::Result<()> {
     let size = std::mem::size_of::<T>();
     let mut len = libc::socklen_t::try_from(size).map_err(|_| unsupported())?;
     // SAFETY: getsockopt writes at most `len` bytes into `value`, a plain value of that size.
@@ -205,17 +221,16 @@ mod linux {
     /// the kernel gives one: while that process lives no other can hold its pid, so the start
     /// time read before the pidfd is checked belongs to it.
     pub fn pinned(fd: i32, pid: i32) -> std::io::Result<ProcId> {
-        let Some(option) = SO_PEERPIDFD else {
+        let Some(option) = SO_PEERPIDFD.filter(|_| supported()) else {
+            // A kernel before 6.5: only the pid is known.
             return Ok(live(pid)?.id());
         };
         let mut pidfd: libc::c_int = -1;
         match super::getsockopt(fd, libc::SOL_SOCKET, option, &mut pidfd) {
             Ok(()) => {}
-            // A kernel before 6.5: only the pid is known.
-            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOPROTOOPT | libc::EINVAL)) => {
-                return Ok(live(pid)?.id());
-            }
-            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Err(gone()),
+            // The kernel pins peers, so a peer it cannot give a pidfd for has exited (some
+            // kernels report that as EINVAL): it is never taken by its pid alone.
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::EINVAL)) => return Err(gone()),
             Err(error) => return Err(error),
         }
         // SAFETY: the kernel just returned this descriptor, owned here from now on.
@@ -239,6 +254,28 @@ mod linux {
             return Err(gone());
         }
         Ok(peer.id())
+    }
+
+    /// Whether this kernel gives a pidfd for a socket's peer, probed once on a socket pair whose
+    /// peer is this process.
+    pub fn supported() -> bool {
+        static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *SUPPORTED.get_or_init(|| {
+            let Some(option) = SO_PEERPIDFD else {
+                return false;
+            };
+            let Ok((ours, _theirs)) = std::os::unix::net::UnixStream::pair() else {
+                return false;
+            };
+            let mut pidfd: libc::c_int = -1;
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&ours);
+            if super::getsockopt(fd, libc::SOL_SOCKET, option, &mut pidfd).is_err() || pidfd < 0 {
+                return false;
+            }
+            // SAFETY: the kernel just returned this descriptor; it is closed here.
+            drop(unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(pidfd) });
+            true
+        })
     }
 
     /// The pid a pidfd refers to, from `/proc/self/fdinfo`; `None` once it has exited.
@@ -289,6 +326,58 @@ mod tests {
         assert_ne!(version, 0);
         assert_eq!(i32::from_ne_bytes(token[7].to_ne_bytes()), version);
         drop(theirs);
+    }
+
+    #[test]
+    fn a_peer_that_exited_before_it_was_read_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // Connects and exits at once, before the connection is accepted.
+        let status = std::process::Command::new("perl")
+            .arg("-MIO::Socket::UNIX")
+            .arg("-e")
+            .arg(format!("IO::Socket::UNIX->new(Peer => q{{{}}}) or die", path.display()))
+            .status()
+            .expect("perl runs the connecting client");
+        assert!(status.success());
+        let (connection, _) = listener.accept().unwrap();
+        // NotFound where the kernel still describes the connection (Linux), NotConnected where it
+        // forgets the peer once it closed its end (macOS): refused either way.
+        let read = Peer::of_socket(connection.as_fd());
+        assert!(
+            matches!(
+                read.as_ref().map_err(std::io::Error::kind),
+                Err(std::io::ErrorKind::NotFound | std::io::ErrorKind::NotConnected)
+            ),
+            "an exited peer was taken by its pid: {read:?}"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_kernel_from_6_5_pins_peers_with_a_pidfd() {
+        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+        let mut parts = release
+            .trim()
+            .split(['.', '-'])
+            .map(|part| part.parse::<u32>().unwrap_or(0));
+        let version = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+        let generic = cfg!(any(
+            target_arch = "x86_64",
+            target_arch = "x86",
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "riscv64"
+        ));
+        if version >= (6, 5) && generic {
+            assert!(
+                Peer::pins_connections(),
+                "kernel {release} gave no pidfd for a socket's peer"
+            );
+        } else {
+            eprintln!("kernel {release}: SO_PEERPIDFD not expected");
+        }
     }
 
     #[test]
