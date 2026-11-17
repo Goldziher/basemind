@@ -269,6 +269,44 @@ jobs:
         with:
           command: check
 
+  # ~keep The test legs compile four feature sets; a feature built alone or in another documented
+  # ~keep combination can carry dead code or a missing import that none of them sees (`comms memory`
+  # ~keep did). Clippy, not `cargo check`: on dependencies it costs the same, and the lints are what
+  # ~keep breaks such a set. `--no-dev-deps` keeps each single feature to lib and bins; the
+  # ~keep documented combinations also build their tests. Every set builds its own copy of the
+  # ~keep feature-dependent crates, more than the root disk holds, so target/ goes on /mnt and only
+  # ~keep the registry is cached.
+  features:
+    name: every feature compiles warning-free
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo mkdir -p /mnt/target
+          sudo chown "$USER" /mnt/target
+          echo "CARGO_TARGET_DIR=/mnt/target" >> "$GITHUB_ENV"
+          df -h / /mnt
+      - uses: ./.github/actions/setup-rust
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: github:taiki-e/cargo-hack
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: features
+          cache-targets: false
+      - run: mise run check:features
+      - name: Disk usage
+        if: always()
+        run: df -h / /mnt
+
   # ~keep The plugin launcher and the session-start hook are shell scripts no cargo test reaches.
   # ~keep macOS runs them too: the launcher reads the process list and file ages with the BSD `ps`
   # ~keep and `find` there, which the Linux run never touches.

@@ -12,6 +12,7 @@ python = "3.15.2"
 uv = "0.13.6"
 node = "26.13.0"
 pnpm = "12.16.1"
+"github:taiki-e/cargo-hack" = "0.6.46"
 
 [tasks.setup]
 description = "Install all dependencies and initialize project. Idempotent."
@@ -28,6 +29,15 @@ run = ["cargo test --workspace --no-fail-fast", { task = "hermes:test" }]
 [tasks."test:verbose"]
 description = "Run tests with verbose output"
 run = "cargo test --workspace --no-fail-fast -- --nocapture"
+
+[tasks."check:features"]
+description = "Clippy every feature alone (lib and bins) and the documented combinations (all targets)"
+run = [
+  "cargo hack clippy --each-feature --no-dev-deps --keep-going -- -D warnings",
+  'cargo clippy --all-targets --features "comms memory" -- -D warnings',
+  'cargo clippy --all-targets --features "comms documents memory" -- -D warnings',
+  'cargo clippy --all-targets --features "documents documents-ocr documents-ner" -- -D warnings',
+]
 
 [tasks.check]
 description = "Run all checks (lint + test)"
