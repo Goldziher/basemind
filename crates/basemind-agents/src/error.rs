@@ -122,6 +122,16 @@ pub enum LaunchError {
         /// The directory it collides with.
         dir: PathBuf,
     },
+    /// The repository's git configuration sets a key through which git runs a command on a
+    /// read such as `git status` or `git diff` (a filter or diff driver, an external diff, an
+    /// include whose content is not checked), which a harness may run outside its sandbox.
+    #[error("the repository's git configuration sets {key}, which makes git run a command")]
+    GitConfig {
+        /// The key, with any subsection as `*`.
+        key: String,
+        /// The configuration file that sets it.
+        path: PathBuf,
+    },
     /// A limit is zero or too long to schedule.
     #[error("invalid limits: {0}")]
     InvalidLimits(&'static str),

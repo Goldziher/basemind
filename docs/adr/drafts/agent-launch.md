@@ -125,6 +125,13 @@ id that fails the grammar stops the launch.
      `.env*` file there either: `GOOGLE_GEMINI_BASE_URL` or `HTTPS_PROXY` in it would send their
      credentials elsewhere. Claude Code 2.1.326, Codex 0.169 and OpenCode 2.3.0 were seen not to
      read one, nor a `bunfig.toml`; Gemini's lookup is from its documentation and not run.
+   - **The repository's git configuration.** A harness runs git on the repository by itself,
+     outside the sandbox it gives the agent: Codex 0.169 ran `git status` when a turn started, and
+     a clean filter in `.git/config` ran with it. Every child gets `core.fsmonitor=false` through
+     `GIT_CONFIG_COUNT` (Claude Code, Codex and OpenCode already pass it on their own calls), and a
+     repository whose `config` or `config.worktree` sets a filter, a diff driver, an external diff
+     or an include is refused, Git LFS's local `filter.lfs` included. User and system git
+     configuration are the user's own and are not read.
    - **Executables.** The harness executable and the MCP server's command are resolved to absolute
      paths at the plan, against the absolute entries of the launcher's `PATH`, and refused when
      they lie inside the root, directly, at the end of their links or through any link on the

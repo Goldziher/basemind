@@ -87,6 +87,7 @@ mod codex;
 mod error;
 mod event;
 mod frames;
+mod gitconfig;
 mod guard;
 mod harness;
 mod identity;

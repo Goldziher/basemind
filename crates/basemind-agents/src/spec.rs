@@ -390,6 +390,7 @@ impl LaunchSpec {
         let (root, cwd) = confine(&self.root, self.working_dir.as_deref())?;
         check_root(&root, &|name| std::env::var_os(name))?;
         check_project_config(kind, &cwd, std::env::var_os("HOME").as_deref().map(Path::new))?;
+        crate::gitconfig::check_repository(&cwd)?;
         let search = std::env::var_os("PATH");
         let program = resolve_executable(&self.harness.executable, search.as_deref(), &root)?;
         let mcp_command = match &self.mcp_server {
