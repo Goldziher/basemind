@@ -16,6 +16,17 @@ use crate::stdio_relay::{self, StopPacing};
 /// daemon that cannot be reached when the session starts is answered for on the host's own pipe
 /// instead of ending the process before `initialize` is read.
 pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
+    serve(root, view, false)
+}
+
+/// [`try_serve_relay`] for `serve --lead` (ADR-0040): the lead's two tools are answered in this
+/// process by [`crate::serve_lead`], everything else is relayed as for a plain `serve`.
+#[cfg(unix)]
+pub(crate) fn try_serve_lead(root: &Path, view: &str) -> Result<()> {
+    serve(root, view, true)
+}
+
+fn serve(root: &Path, view: &str, lead: bool) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -26,9 +37,7 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
             basemind::comms::v2::identity::resolve_for_root(root).context("resolve this session's agent identity")?;
         let agent = Identity {
             principal: identity.principal.clone(),
-            host: std::env::var(basemind::comms::v2::identity::HOST_ENV)
-                .ok()
-                .filter(|host| !host.is_empty()),
+            host: host_of_session(),
             notices: identity.notices(),
         };
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -40,16 +49,33 @@ pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
             root = %canonical_root.display(),
             "basemind serve: persistent relay starting"
         );
-        stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), move || {
-            open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), Arc::clone(&pacing))
-        })
-        .await
-        .context("run persistent daemon relay")
+        let connect =
+            move || open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), Arc::clone(&pacing));
+        #[cfg(unix)]
+        if lead {
+            let mode = crate::serve_lead::mode(root, identity.principal.clone(), host_of_session());
+            return crate::serve_lead::run(tokio::io::stdin(), tokio::io::stdout(), mode, |input, output| {
+                stdio_relay::run(input, output, connect)
+            })
+            .await
+            .context("run persistent daemon relay");
+        }
+        let _ = lead;
+        stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), connect)
+            .await
+            .context("run persistent daemon relay")
     });
     // The stdin reader is a blocking read on a thread of its own that cannot be cancelled. A relay
     // that ends while the host still holds its pipe open must not wait for that read to return.
     runtime.shutdown_background();
     served
+}
+
+/// The harness this session runs in (`BASEMIND_HOST`), when it names one.
+fn host_of_session() -> Option<String> {
+    std::env::var(basemind::comms::v2::identity::HOST_ENV)
+        .ok()
+        .filter(|host| !host.is_empty())
 }
 
 /// Who this session is, sent in every relay hello (ADR-0021).

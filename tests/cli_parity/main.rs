@@ -155,6 +155,40 @@ fn every_mcp_tool_is_covered() {
     assert!(failures.is_empty(), "MCP coverage gaps:\n  {}", failures.join("\n  "));
 }
 
+/// The lead tools are the one exception to "every MCP tool has a CLI command": the exception list
+/// is exactly them, with reasons, the server advertises neither, and no CLI command is named after
+/// either (`agent launch`, `agent stop`).
+#[test]
+fn the_lead_tools_are_neither_advertised_nor_reachable_from_the_cli() {
+    let listed: BTreeSet<&str> = capabilities::NOT_FORWARDED.iter().map(|(tool, _)| *tool).collect();
+    let lead: BTreeSet<&str> = basemind::mcp::lead_tools::LEAD_TOOLS.iter().copied().collect();
+    assert_eq!(listed, lead, "NOT_FORWARDED must list exactly the lead tools");
+    assert!(
+        capabilities::NOT_FORWARDED
+            .iter()
+            .all(|(_, why)| !why.trim().is_empty())
+    );
+
+    let live = live_mcp_ops(&mcp_surface::domains());
+    let rows = capabilities::table();
+    for tool in &lead {
+        assert!(
+            !live.iter().any(|op| op.tool == *tool),
+            "the server advertises `{tool}`"
+        );
+        assert!(
+            !rows.iter().filter_map(Row::mcp).any(|op| op.tool == *tool),
+            "`{tool}` has a capability row"
+        );
+        let command = tool.replace('_', " ");
+        let tree = cli_tree::load();
+        assert!(
+            !tree.leaves().any(|leaf| leaf.path == command),
+            "`basemind {command}` would forward a lead tool"
+        );
+    }
+}
+
 /// Layer 1, CLI side: every leaf command has a row, every row names a real leaf command.
 #[test]
 fn every_cli_command_is_covered() {
