@@ -65,8 +65,9 @@ impl MapCache {
     /// An empty map cache: the placeholder a `serve` boots with while the real [`build`](Self::build)
     /// runs in the background (see [`crate::mcp::background::spawn_cache_warm`]). Deferring the index
     /// projection off the startup path is what lets the MCP `initialize`/`tools/list` handshake
-    /// answer immediately. Cache-reading tools await [`ServerState::await_cache_ready`](crate::mcp::ServerState::await_cache_ready) before
-    /// reading, so they observe the built map, never this placeholder.
+    /// answer immediately. Cache-reading tools await
+    /// [`ServerState::await_cache_ready`](crate::mcp::ServerState::await_cache_ready) before reading,
+    /// so they observe the built map, never this placeholder.
     pub(crate) fn empty() -> Self {
         Self {
             files: l1_cache::FileIndexView::default(),

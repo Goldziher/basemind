@@ -127,9 +127,10 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
 /// `serve` boots with an EMPTY [`MapCache`] placeholder so it can answer the MCP `initialize` /
 /// `tools/list` handshake immediately, then this task does the heavy `MapCache::build` (a rayon
 /// `par_iter` over every L1/L2 blob) on a blocking thread, publishes the full map via `ArcSwap`, and
-/// opens the warm gate every tool waits on in [`ServerState::await_cache_ready`]. Without this, that build ran synchronously
-/// before `.serve(transport)` and — under rayon-pool contention from other sessions' scans — could take
-/// minutes, blowing the client's startup window so the tools never registered.
+/// opens the warm gate every tool waits on in [`ServerState::await_cache_ready`]. Without this, that
+/// build ran synchronously before `.serve(transport)` and — under rayon-pool contention from other
+/// sessions' scans — could take minutes, blowing the client's startup window so the tools never
+/// registered.
 pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
     tracing::info!("warming in-RAM code map in background (handshake already served)");
     tokio::spawn(async move {
