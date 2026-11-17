@@ -216,7 +216,9 @@ class Workload:
     def discover_targets(self, sess: McpSession) -> None:
         """Pick a code file, a function in it, a trait and an imported module from the index."""
         res = self.call(sess, "find_files", {"limit": 400})
-        files = [f.get("path") for f in (res.body or {}).get("files", [])] if res and res.body else []
+        listed = (res.body or {}).get("files", []) if res and res.body else []
+        # find_files lists bare paths (ADR-0034); older builds listed objects.
+        files = [f if isinstance(f, str) else f.get("path") for f in listed]
         code_exts = (".rs", ".py", ".ts", ".go", ".js")
         candidates = [f for f in files if f and f.endswith(code_exts) and "hardening_soak" not in f]
         self.rng.shuffle(candidates)

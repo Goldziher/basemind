@@ -694,11 +694,12 @@ fn skip_without_embedder(what: &str) {
     eprintln!("SKIP (BASEMIND_TEST_ALLOW_NO_EMBEDDER): {what}");
 }
 
-/// With `documents.embed = false` no scan writes a vector store, so `docs_search` says that, and
-/// where exact text is found instead, rather than asking for a rescan that would never build one.
+/// With `documents.embed = false` no scan writes vectors, and `docs_search` answers on the lexical
+/// lane and names the setting as why the vector lane did not run (ADR-0029: "a search works without
+/// the embedder, on the lexical lane, and says so").
 #[cfg(feature = "documents")]
 #[test]
-fn docs_search_names_documents_embed_when_embedding_is_off() {
+fn docs_search_answers_lexically_and_names_documents_embed_when_embedding_is_off() {
     let dir = fixture_with(&[]);
     let root = dir.path();
     std::fs::write(
@@ -733,10 +734,22 @@ fn docs_search_names_documents_embed_when_embedding_is_off() {
         .expect("runtime");
     runtime.block_on(async {
         let client = serve(root).await;
-        let refused = call_err(&client, "docs_search", json!({ "query": "harbour" })).await;
+        let answer = call(&client, "docs_search", json!({ "query": "harbour" })).await;
         assert!(
-            refused.contains("`documents.embed` is false") && refused.contains("`code_grep`"),
-            "{refused}"
+            answer["hits"]
+                .as_array()
+                .is_some_and(|hits| hits.iter().any(|hit| hit["path"] == "guide.md")),
+            "the lexical lane finds the document: {answer}"
+        );
+        assert_eq!(answer["lanes_ran"], json!(["lexical"]), "{answer}");
+        let unavailable = answer["lanes_unavailable"].as_array().cloned().unwrap_or_default();
+        assert_eq!(unavailable.len(), 1, "{answer}");
+        assert_eq!(unavailable[0]["lane"], "vector", "{answer}");
+        assert!(
+            unavailable[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("embed = false")),
+            "the vector lane names the setting that turned it off: {answer}"
         );
         let _ = client.cancel().await;
     });

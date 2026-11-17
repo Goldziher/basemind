@@ -59,8 +59,25 @@ fn git(root: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
-/// The most threads alive at once, beyond those alive before, while `work` runs.
-fn peak_extra_threads(work: impl FnOnce()) -> usize {
+/// Wait until no more than `baseline` threads are alive. On Linux a thread that `join` returned for
+/// still counts in `/proc/self/status` until the kernel has released it, a moment after its exit
+/// woke the joiner; a call started inside that moment would count its predecessor's threads as its
+/// own. A thread that never goes is a leak, not a straggler.
+fn settle_to(baseline: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while live_threads() > baseline {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} threads still alive 5 s after a status, {baseline} before it: a status leaves threads behind",
+            live_threads()
+        );
+        std::thread::yield_now();
+    }
+}
+
+/// The most threads alive at once, beyond those alive before, while any one of `calls` runs. Each
+/// call starts once the previous one's threads are gone, so only the threads a call creates count.
+fn peak_extra_threads(calls: usize, mut work: impl FnMut()) -> usize {
     let done = Arc::new(AtomicBool::new(false));
     let peak = Arc::new(AtomicUsize::new(0));
     let sampler = {
@@ -76,7 +93,10 @@ fn peak_extra_threads(work: impl FnOnce()) -> usize {
         std::hint::spin_loop();
     }
     let baseline = live_threads();
-    work();
+    for _ in 0..calls {
+        settle_to(baseline);
+        work();
+    }
     done.store(true, Ordering::Relaxed);
     sampler.join().expect("sampler");
     peak.load(Ordering::Relaxed).saturating_sub(baseline)
@@ -101,10 +121,8 @@ fn a_working_tree_status_runs_on_a_bounded_set_of_threads() {
     let repo = basemind::git::Repo::discover(root).expect("discover");
 
     let mut modified = 0;
-    let peak = peak_extra_threads(|| {
-        for _ in 0..20 {
-            modified = repo.status_porcelain().expect("status").modified.len();
-        }
+    let peak = peak_extra_threads(20, || {
+        modified = repo.status_porcelain().expect("status").modified.len();
     });
     assert_eq!(modified, 600_usize.div_ceil(7), "the status is still complete");
     assert!(
