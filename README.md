@@ -467,8 +467,10 @@ The code map is **code only**. Prose, data and config files — Markdown, reStru
 vimdoc, CSV, JSON, YAML, TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes`
 and Fluent — go to the document tier instead: they are chunked and searched as text with
 `docs_search` (gated by `[documents] include` / `exclude`), and no longer show up in `code_outline`
-and `code_symbols`. `code_grep` still searches them as text, and `find_files` still covers them,
-labelled by grammar name or extension. An existing index migrates on its next scan. A build
+and `code_symbols`. Plain text, logs, CSV, TSV, NDJSON, JSON, YAML and TOML are chunked from the
+file itself (paragraphs, records, top-level entries), so every hit cites its lines. `code_grep`
+still searches them as text, and `find_files` still covers them, labelled by grammar name or
+extension. An existing index migrates on its next scan. A build
 without the `documents` feature keeps the old behaviour, where those files are outlined as code.
 
 ```mermaid
@@ -1166,7 +1168,7 @@ degrading to a truncated in-memory view.
 | `put <key> <value> [--tag]... [--individual]` | Store a note (`memory_save`). |
 | `get <key>` / `list [--prefix --tag]` / `search <query> [--tag]` | Read one note, list by key prefix, or search by meaning (`memory_search`). |
 | `delete <key>` | Remove a note (CLI only). |
-| `documents <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks by meaning and by words, with citations (`docs_search`). |
+| `documents <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks / Markdown / text, config and data files by meaning and by words, with citations (`docs_search`). |
 **Admin (`basemind admin`)**
 
 | Command | Purpose |
