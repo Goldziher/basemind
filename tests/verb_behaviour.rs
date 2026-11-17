@@ -694,6 +694,54 @@ fn skip_without_embedder(what: &str) {
     eprintln!("SKIP (BASEMIND_TEST_ALLOW_NO_EMBEDDER): {what}");
 }
 
+/// With `documents.embed = false` no scan writes a vector store, so `docs_search` says that, and
+/// where exact text is found instead, rather than asking for a rescan that would never build one.
+#[cfg(feature = "documents")]
+#[test]
+fn docs_search_names_documents_embed_when_embedding_is_off() {
+    let dir = fixture_with(&[]);
+    let root = dir.path();
+    std::fs::write(
+        root.join("guide.md"),
+        "# Guide\n\nHow the harbour is run, long enough to index as a document.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n\n[documents]\nenabled = true\nembed = false\n",
+    )
+    .unwrap();
+    let mut cfg = basemind::config::default_for_root(root);
+    cfg.documents.enabled = true;
+    cfg.documents.embed = false;
+    let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
+    {
+        let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+        basemind::scanner::scan(
+            root,
+            &mut store,
+            &cfg,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .expect("scan");
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let client = serve(root).await;
+        let refused = call_err(&client, "docs_search", json!({ "query": "harbour" })).await;
+        assert!(
+            refused.contains("`documents.embed` is false") && refused.contains("`code_grep`"),
+            "{refused}"
+        );
+        let _ = client.cancel().await;
+    });
+}
+
 /// `[documents.output] format = "toon"` does not apply to `docs_search`: TOON has no structured
 /// form to cut a page from, so a page in it would come back whole, unbudgeted and with no
 /// `next_cursor`. The verb tools answer in JSON whatever that setting says.

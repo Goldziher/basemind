@@ -144,6 +144,15 @@ fn feature_for(tool: &str) -> Option<(&'static str, bool)> {
     }
 }
 
+/// The refusal a tool answers with because of how [`fixture`] configures the repository: its
+/// `basemind.toml` turns document embedding off, so `docs_search` has no vectors to search.
+fn fixture_refusal(tool: &str) -> Option<&'static str> {
+    match tool {
+        "docs_search" if cfg!(feature = "documents") => Some("`documents.embed` is false"),
+        _ => None,
+    }
+}
+
 // --- extraction ---------------------------------------------------------------------------------
 
 /// Where each referenced name appears: name -> files naming it.
@@ -619,6 +628,7 @@ impl Fixture {
     /// Every child process gets a throwaway data home, comms dir, home and cache, so no run can
     /// reach a daemon, index or configuration that belongs to a real session.
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let program = Path::new(program.as_ref());
         let home = self.tmp.path().join("home");
         let mut cmd = Command::new(program);
         cmd.env("BASEMIND_DATA_HOME", &self.data)
@@ -627,8 +637,20 @@ impl Fixture {
             .env("USERPROFILE", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("XDG_CACHE_HOME", self.tmp.path().join("xdg-cache"))
+            // ~keep Windows resolves the platform cache dir under %USERPROFILE%, the throwaway home,
+            // ~keep where it does not exist, so the grammar pack would find no cache dir at all.
+            .env(
+                "TREE_SITTER_LANGUAGE_PACK_CACHE_DIR",
+                self.tmp.path().join("xdg-cache").join("tree-sitter-language-pack"),
+            )
             .env("NO_COLOR", "1")
             .env_remove("BASEMIND_NO_AUTOSPAWN");
+        // ~keep A Linux release loads its bundled lib/ through RUNPATH, which LD_LIBRARY_PATH
+        // ~keep outranks: under CI's /usr/local/lib libheif the loader mixes the two sets and the
+        // ~keep release cannot start. The build under test, which may need the variable, keeps it.
+        if program != Path::new(BIN) && self.daemon_bins.iter().any(|bin| bin == program) {
+            cmd.env_remove("LD_LIBRARY_PATH");
+        }
         cmd
     }
 }
@@ -847,6 +869,10 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
                     Some((feature, false)) => failures.push(format!(
                         "{name}: built without `{feature}`, but the error does not name the feature: {text}"
                     )),
+                    _ if fixture_refusal(name).is_some_and(|reason| text.contains(reason)) => {
+                        answered += 1;
+                        let _ = writeln!(out, "plugin-skew: {name} refused as the fixture configures it: {text}");
+                    }
                     _ => failures.push(format!("{name}: isError result: {text}")),
                 }
             }

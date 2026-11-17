@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use super::exit::CliExit;
-use crate::path::{RelPath, normalize_query_path};
+use crate::path::{RelPath, is_external_key, normalize_query_path};
 
 /// Normalize and validate `raw` rescan targets against `root`, returning absolute paths.
 ///
@@ -36,7 +36,7 @@ pub fn resolve_paths(root: &Path, raw: &[String]) -> Result<Vec<PathBuf>> {
         let abs = root.join(&rel);
         // ~keep An absolute path outside the repo is only ever a `scan.extra_roots` file, which lives
         // ~keep in the index under its absolute key; anything else outside the root is not a target.
-        let external = rel.starts_with('/');
+        let external = is_external_key(rel.as_bytes());
         if (external || !abs.exists()) && !is_indexed(root, &mut indexed, &rel) {
             problems.push(if external {
                 format!("{spelling:?} is outside the repository and not an indexed extra root")
@@ -149,6 +149,18 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// An existing file in another directory: its key is `/…` on POSIX and `D:/…` on Windows, and
+    /// either form must be refused rather than joined onto the root and rescanned as found.
+    #[test]
+    fn should_reject_an_existing_absolute_path_outside_the_repository() {
+        let dir = tree();
+        let outside = tempfile::tempdir().expect("tempdir");
+        let file = outside.path().join("elsewhere.rs");
+        std::fs::write(&file, "fn x() {}\n").expect("write");
+        let error = resolve_paths(dir.path(), &[file.display().to_string()]).expect_err("outside");
+        assert!(error.to_string().contains("outside the repository"), "{error}");
     }
 
     #[test]

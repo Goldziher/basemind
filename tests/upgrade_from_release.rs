@@ -428,10 +428,14 @@ fn upgrade_from(old: &Path) -> (bool, u32) {
         !signature.contains("def run"),
         "signature must stop at the class header, not embed the body: {signature:?}"
     );
+    // `code_grep` searches the document tier's text files too: the migrated README is found once,
+    // from there, and not a second time from a code-map entry the old release left behind.
+    let usage = env.json(new, &["code", "grep", "Usage"]);
+    assert_eq!(usage["total"], 1, "README is grepped once: {usage}");
     assert_eq!(
-        env.json(new, &["code", "grep", "Usage"])["total"],
-        0,
-        "README is not in the code grep"
+        usage["hits"]["README.md"].as_array().map(Vec::len),
+        Some(1),
+        "the hit is the README: {usage}"
     );
     assert_eq!(
         env.json(new, &["code", "symbols", "Project"])["total"],
