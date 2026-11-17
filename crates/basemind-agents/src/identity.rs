@@ -66,7 +66,7 @@ impl LaunchToken {
         ours.len() == theirs.len() && ours.iter().zip(theirs).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn value(&self) -> &str {
         &self.0
     }
@@ -238,6 +238,14 @@ mod tests {
         );
     }
 
+    #[cfg(not(unix))]
+    #[test]
+    fn no_launch_token_is_made_off_unix() {
+        let refused = LaunchToken::generate().map(|_| ()).map_err(|error| error.kind());
+        assert_eq!(refused, Err(std::io::ErrorKind::Unsupported));
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_launched_identity_exports_its_depth_and_token_and_hides_the_token_in_debug() {
         let token = LaunchToken::generate().unwrap();
