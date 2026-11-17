@@ -349,6 +349,94 @@ fn an_epoch_refresh_re_chunks_a_file_whose_outline_changed() {
     assert!(has_inside(&refreshed), "the stale sidecar was reused");
 }
 
+/// A refresh scan run with code-search off rewrites the outline but leaves the chunk sidecar cut from
+/// the old one. Once code-search is on, that sidecar's own epoch marks it stale: it is re-chunked when
+/// the outline chunks differently, and re-stamped (not re-embedded) when it chunks the same.
+#[cfg(feature = "code-search")]
+#[test]
+fn a_chunk_sidecar_from_an_older_epoch_is_re_chunked_under_a_current_outline() {
+    use basemind::chunk::{ChunkOptions, CodeChunkBlob, chunk_file};
+    use basemind::extract::EXTRACT_EPOCH;
+    use basemind::scanner::{EmbedMode, ScanSource, scan};
+    use basemind::store::{Store, VIEW_WORKING};
+
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let src = "// epoch-stamped-chunks-rust\ncfg_rt! {\n    pub fn stamped_inside() -> u32 { 1 }\n}\npub fn top() {}\n";
+    std::fs::write(root.join("lib.rs"), src).unwrap();
+    let mut cfg = basemind::config::ConfigV1::with_defaults();
+    cfg.code_search.enabled = true;
+    cfg.code_search.embed = false;
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    let entry = store.lookup("lib.rs").expect("lib.rs indexed").clone();
+    assert_eq!(entry.extract_epoch, EXTRACT_EPOCH, "premise: the outline is current");
+    let has_inside = |blob: &CodeChunkBlob| {
+        blob.chunks
+            .iter()
+            .any(|c| c.symbol.as_deref() == Some("stamped_inside"))
+    };
+    let current = store
+        .read_chunks_by_hex(&entry.hash_hex)
+        .unwrap()
+        .expect("chunk sidecar");
+    assert_eq!(current.extract_epoch, EXTRACT_EPOCH, "a new sidecar is stamped");
+    assert!(
+        has_inside(&current),
+        "premise: the current outline chunks the macro-body fn"
+    );
+
+    let (mut old_l1, old_l2) = basemind::extract::extract_l1_l2("rust", src.as_bytes(), true).expect("extract");
+    old_l1.symbols.retain(|s| s.name != "stamped_inside");
+    let opts = ChunkOptions {
+        max_characters: cfg.code_search.max_characters,
+        overlap: cfg.code_search.overlap,
+    };
+    let old_chunks = chunk_file(
+        "lib.rs",
+        &entry.hash_hex,
+        &old_l1,
+        old_l2.as_ref(),
+        src.as_bytes(),
+        opts,
+    );
+    let stale = CodeChunkBlob {
+        chunks: old_chunks,
+        extract_epoch: 0,
+        ..current.clone()
+    };
+    assert!(
+        !has_inside(&stale),
+        "premise: the stale sidecar lacks the macro-body fn"
+    );
+    store.write_chunks_hex(&entry.hash_hex, &stale).unwrap();
+
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    let rechunked = store
+        .read_chunks_by_hex(&entry.hash_hex)
+        .unwrap()
+        .expect("chunk sidecar");
+    assert!(has_inside(&rechunked), "the pre-epoch sidecar was trusted");
+    assert_eq!(rechunked.extract_epoch, EXTRACT_EPOCH);
+
+    let unstamped = CodeChunkBlob {
+        extract_epoch: 0,
+        ..rechunked.clone()
+    };
+    store.write_chunks_hex(&entry.hash_hex, &unstamped).unwrap();
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    let restamped = store
+        .read_chunks_by_hex(&entry.hash_hex)
+        .unwrap()
+        .expect("chunk sidecar");
+    assert_eq!(restamped.chunks, rechunked.chunks, "same chunks are kept");
+    assert_eq!(
+        restamped.extract_epoch, EXTRACT_EPOCH,
+        "a sidecar that re-chunks the same is stamped, so the next scan skips it"
+    );
+}
+
 fn count(calls: &[String], name: &str) -> usize {
     calls.iter().filter(|c| *c == name).count()
 }

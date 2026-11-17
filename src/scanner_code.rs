@@ -121,19 +121,30 @@ fn chunk_blob_is_current(blob: &CodeChunkBlob, digest: &str, lang: &str) -> bool
         && blob.chunks.first().is_none_or(|c| c.lang == lang)
 }
 
-/// Adopt a legacy (digest-less) sidecar under the current settings by writing it back stamped, so a
-/// later config change is detected against it. Costs one sidecar write per legacy file, no re-embed.
-fn stamp_legacy_digest(
+/// True when a cached chunk sidecar was cut from an outline of an older extract epoch (or predates
+/// the field), so its symbol ranges may no longer match the current outline.
+fn chunk_blob_predates_epoch(blob: &CodeChunkBlob) -> bool {
+    blob.extract_epoch < crate::extract::EXTRACT_EPOCH
+}
+
+/// Adopt a sidecar that is missing its digest (legacy) or carries an older extract epoch whose chunks
+/// re-chunk identically, by writing it back stamped, so a later config or epoch change is detected
+/// against it and the next scan does not re-check it. Costs one sidecar write per such file, no
+/// re-embed.
+fn stamp_legacy_fields(
     store: &Store,
     rel: &str,
     hash_hex: &str,
     mut blob: CodeChunkBlob,
     digest: &str,
 ) -> CodeChunkBlob {
-    if blob.config_digest.is_empty() {
-        blob.config_digest = digest.to_string();
+    if blob.config_digest.is_empty() || chunk_blob_predates_epoch(&blob) {
+        if blob.config_digest.is_empty() {
+            blob.config_digest = digest.to_string();
+        }
+        blob.extract_epoch = blob.extract_epoch.max(crate::extract::EXTRACT_EPOCH);
         if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
-            tracing::warn!(rel, ?error, "stamp code-chunk sidecar with config digest failed");
+            tracing::warn!(rel, ?error, "stamp code-chunk sidecar failed");
         }
     }
     blob
@@ -143,7 +154,8 @@ fn stamp_legacy_digest(
 /// already exists (the embedding cache); otherwise chunks, embeds in bulk, and writes the blob.
 /// Returns `Ok(None)` when the file yields no chunks. Never opens LanceDB — the write is deferred.
 /// `refresh` marks outlines re-extracted for a newer `EXTRACT_EPOCH`: a sidecar chunked from the old
-/// outline is reused only when re-chunking gives the same chunks.
+/// outline, or one whose own stamp predates the epoch, is reused only when re-chunking gives the same
+/// chunks.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn chunk_and_embed(
     store: &Store,
@@ -169,8 +181,11 @@ pub(crate) fn chunk_and_embed(
         .ok()
         .flatten()
         .filter(|blob| chunk_blob_is_current(blob, digest, &l1.language))
-        .filter(|blob| !refresh || blob.chunks == chunk_file(rel, hash_hex, l1, l2, bytes, opts))
-        .map(|blob| stamp_legacy_digest(store, rel, hash_hex, blob, digest));
+        .filter(|blob| {
+            !(refresh || chunk_blob_predates_epoch(blob))
+                || blob.chunks == chunk_file(rel, hash_hex, l1, l2, bytes, opts)
+        })
+        .map(|blob| stamp_legacy_fields(store, rel, hash_hex, blob, digest));
 
     if !embed {
         let chunks = match cached {
@@ -180,6 +195,7 @@ pub(crate) fn chunk_and_embed(
                 let blob = CodeChunkBlob {
                     config_digest: digest.to_string(),
                     schema_ver: SCHEMA_VER,
+                    extract_epoch: crate::extract::EXTRACT_EPOCH,
                     embedding_dim: 0,
                     embedding_model: String::new(),
                     chunks: chunks.clone(),
@@ -249,6 +265,7 @@ pub(crate) fn chunk_and_embed(
         let blob = CodeChunkBlob {
             config_digest: digest.to_string(),
             schema_ver: SCHEMA_VER,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: 0,
             embedding_model: String::new(),
             chunks: Vec::new(),
@@ -263,6 +280,7 @@ pub(crate) fn chunk_and_embed(
         let blob = CodeChunkBlob {
             config_digest: digest.to_string(),
             schema_ver: SCHEMA_VER,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: 0,
             embedding_model: String::new(),
             chunks,
@@ -300,6 +318,7 @@ pub(crate) fn chunk_and_embed(
     let blob = CodeChunkBlob {
         config_digest: digest.to_string(),
         schema_ver: SCHEMA_VER,
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
         embedding_dim: dim,
         embedding_model: config.documents.embedding_preset.clone(),
         chunks,
@@ -446,6 +465,7 @@ mod tests {
         CodeChunkBlob {
             config_digest: String::new(),
             schema_ver: 0,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: dim,
             embedding_model: model.to_string(),
             chunks: vec![chunk("h:0", "alpha")],
@@ -474,6 +494,7 @@ mod tests {
         let chunk_only = CodeChunkBlob {
             config_digest: String::new(),
             schema_ver: 0,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: 768,
             embedding_model: "balanced".to_string(),
             chunks: vec![chunk("h:0", "alpha")],

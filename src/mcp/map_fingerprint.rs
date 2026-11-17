@@ -13,6 +13,10 @@
 //! in the document tier alike, the L1/L2 blobs
 //! behind the map are byte-identical, so any map built from the new store would be identical to the
 //! one already in hand. Reusing it is not an approximation — it is the same map.
+//!
+//! An extract-epoch refresh is the exception to "same hash, same blob": it rewrites the blob of
+//! unchanged content in place. Each code entry's epoch is therefore folded in with its hash, so a
+//! refresh rebuilds the map instead of keeping outlines decoded from the blobs it replaced.
 
 use crate::store::Store;
 
@@ -33,7 +37,8 @@ const HASHER_SEEDS: [u64; 4] = [
 /// Domain separator for document-tier entries in the fold.
 const DOC_TIER_SALT: u64 = 0x646f_635f_7469_6572;
 
-/// Fingerprint the indexed file set: a hash over every `(path, content-hash)` pair.
+/// Fingerprint the indexed file set: a hash over every `(path, content-hash, extract-epoch)` code
+/// entry and every `(path, content-hash)` document entry.
 ///
 /// Two stores with the same fingerprint index byte-identical content under byte-identical paths.
 /// The blob store is content-addressed, so their L1/L2 blobs — and therefore any `MapCache` built
@@ -55,6 +60,7 @@ pub(crate) fn index_fingerprint(store: &Store) -> u64 {
             let mut hasher = state.build_hasher();
             path.hash(&mut hasher);
             entry.hash_hex.hash(&mut hasher);
+            entry.extract_epoch.hash(&mut hasher);
             hasher.finish()
         })
         .fold(FINGERPRINT_SEED, |acc, entry_hash| acc ^ entry_hash);
@@ -137,6 +143,26 @@ mod tests {
             embedded: false,
             embed_attempted: false,
         }
+    }
+
+    /// An extract-epoch refresh rewrites a blob under the same content hash. A fingerprint over
+    /// `(path, hash)` alone called the map unchanged, so a server kept the outlines it had decoded
+    /// from the replaced blobs.
+    #[test]
+    fn fingerprint_changes_when_only_the_extract_epoch_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
+        let mut store = scan(root);
+        let refreshed = index_fingerprint(&store);
+
+        let rel = crate::path::RelPath::from("a.rs");
+        store.index.files.get_mut(&rel).unwrap().extract_epoch = crate::extract::EXTRACT_EPOCH - 1;
+        assert_ne!(
+            refreshed,
+            index_fingerprint(&store),
+            "an entry refreshed for a newer epoch must invalidate the map"
+        );
     }
 
     /// The map carries the document tier's paths (`doc_paths`, what `find_files` lists), and a scan

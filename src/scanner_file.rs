@@ -146,7 +146,9 @@ fn extraction_sidecars_present(store: &Store, config: &Config, filters: &Filters
 ///
 /// This is distinct from [`extraction_sidecars_present`] (blob *presence*, which governs l1/l2/chunk
 /// reuse). The sidecar must have been chunked under the current `[code_search]` settings (its
-/// `config_digest`; a legacy digest-less sidecar is re-checked once so it can be stamped). Then, a
+/// `config_digest`; a legacy digest-less sidecar is re-checked once so it can be stamped) and from an
+/// outline of the current extract epoch (a refresh scan run with code-search off rewrites the outline
+/// but leaves the sidecar cut from the old one). Then, a
 /// `Deferred` pass never embeds, so any such sidecar satisfies it; an `Inline` pass over an
 /// embed-eligible file requires embeddings for the current preset to already exist, else the file
 /// must be re-processed to fill them, and a changed embed policy re-processes it so its vector rows
@@ -168,7 +170,7 @@ fn embed_state_satisfied(
     let Ok(Some(peek)) = store.peek_chunk_state(hash_hex) else {
         return false;
     };
-    if peek.config_digest != filters.code_digest {
+    if peek.config_digest != filters.code_digest || peek.extract_epoch < extract::EXTRACT_EPOCH {
         return false;
     }
     // A changed embed policy may have purged this file's keyword postings along with its vectors
