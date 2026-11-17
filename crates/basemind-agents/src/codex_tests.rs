@@ -339,6 +339,56 @@ fn an_approval_shows_the_grant_and_labels_the_agents_reason() {
 }
 
 #[test]
+fn a_command_that_asks_for_more_access_is_a_permissions_request_that_shows_it() {
+    let (sink, events) = EventSink::for_test(always(ApprovalVerdict::Ask), 1);
+    let mut protocol = in_turn(&sink);
+    let mut out = Vec::new();
+    // Field names from the schema `codex app-server generate-json-schema --experimental` 0.169.0.
+    let transcript = [
+        json!({"id": 1, "method": "item/commandExecution/requestApproval", "params": {
+            "itemId": "c1", "command": "npm install", "cwd": "/work/repo",
+            "additionalPermissions": {"fileSystem": {"write": ["/"]}, "network": {"enabled": true}},
+        }}),
+        json!({"id": 2, "method": "item/commandExecution/requestApproval", "params": {
+            "itemId": "c2", "command": "curl https://example.org",
+            "networkApprovalContext": {"host": "example.org", "protocol": "https"},
+        }}),
+        json!({"id": 3, "method": "item/commandExecution/requestApproval", "params": {
+            "itemId": "c3", "kind": "writeStdin", "command": "yes\n",
+        }}),
+    ];
+    for frame in transcript {
+        protocol.frame(frame, &mut out, &sink).unwrap();
+    }
+    let asked = asked(&events);
+    let [escalated, network, stdin] = asked.as_slice() else {
+        panic!("unexpected requests {asked:?}");
+    };
+    assert_eq!(escalated.kind, ApprovalKind::Permissions);
+    assert!(
+        escalated.detail.starts_with("npm install\nIn: /work/repo"),
+        "{}",
+        escalated.detail
+    );
+    assert!(
+        escalated.detail.contains("Also requests: {\n  \"fileSystem\""),
+        "{}",
+        escalated.detail
+    );
+    assert!(escalated.detail.contains("\"enabled\": true"), "{}", escalated.detail);
+    assert_eq!(network.kind, ApprovalKind::Permissions);
+    assert!(
+        network
+            .detail
+            .contains("Also requests network access to example.org (https)"),
+        "{}",
+        network.detail
+    );
+    assert_eq!(stdin.kind, ApprovalKind::Command);
+    assert_eq!(stdin.title, "Allow input to a running command?");
+}
+
+#[test]
 fn every_other_server_request_is_answered_at_once() {
     let (sink, _events) = EventSink::for_test(None, 1);
     let mut protocol = in_turn(&sink);

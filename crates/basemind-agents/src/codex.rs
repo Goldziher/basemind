@@ -8,7 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::error::LaunchError;
-use crate::event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState, Tools, approval_detail};
+use crate::event::{
+    ApprovalKind, ApprovalRequest, ApprovalSource, Event, ToolCall, ToolState, Tools, approval_detail, one_line,
+};
 use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
@@ -336,7 +338,18 @@ impl CodexProtocol {
                 (_, Some(tool)) => tool.input.clone(),
                 (_, None) => "The harness did not say which command.".to_owned(),
             };
-            (ApprovalKind::Command, "Allow this command?", command)
+            // An accept also grants what the command asks beyond the sandbox, so that is the
+            // grant shown, and the request is one for permissions.
+            let escalated = !params["additionalPermissions"].is_null() || !params["networkApprovalContext"].is_null();
+            match params["kind"].as_str() {
+                Some("writeStdin") => (ApprovalKind::Command, "Allow input to a running command?", command),
+                _ if escalated => (
+                    ApprovalKind::Permissions,
+                    "Allow this command with more access?",
+                    command,
+                ),
+                _ => (ApprovalKind::Command, "Allow this command?", command),
+            }
         } else {
             (ApprovalKind::Tool, "Allow this request?", pretty(&params))
         };
@@ -345,6 +358,20 @@ impl CodexProtocol {
         }
         if let Some(root) = params["grantRoot"].as_str() {
             grant.push_str(&format!("\nAlso requests write access under: {root}"));
+        }
+        if !params["additionalPermissions"].is_null() {
+            grant.push_str(&format!(
+                "\nAlso requests: {}",
+                pretty(&params["additionalPermissions"])
+            ));
+        }
+        let network = &params["networkApprovalContext"];
+        if !network.is_null() {
+            grant.push_str(&format!(
+                "\nAlso requests network access to {} ({})",
+                one_line(network["host"].as_str().unwrap_or("?")),
+                one_line(network["protocol"].as_str().unwrap_or("?"))
+            ));
         }
         let request = ApprovalRequest {
             id,

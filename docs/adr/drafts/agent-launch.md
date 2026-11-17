@@ -72,7 +72,9 @@ id that fails the grammar stops the launch.
      file change carries the item's full changes; one whose changes were not announced or are over
      1 MiB is denied without asking. A Codex MCP tool call, which Codex 0.169 asks for as an
      `mcpServer/elicitation/request` of kind `mcp_tool_call`, goes to the policy; an allow
-     accepts that one call. An ACP allow selects `allow_once` only. At most 16 requests wait for
+     accepts that one call. A Codex command that asks for more than its sandbox
+     (`additionalPermissions`, `networkApprovalContext` in Codex 0.169's generated schema) is a
+     permissions request, and its detail shows that access: an accept grants it with the command. An ACP allow selects `allow_once` only. At most 16 requests wait for
      the caller. Approval ids are the crate's own, so a late answer cannot reach a newer request
      that reuses a wire id, and two pending requests sharing a wire id are both denied. A Codex or
      ACP request still pending when its turn ends, and any request pending when the session

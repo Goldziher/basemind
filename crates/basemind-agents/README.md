@@ -50,7 +50,9 @@ config is trusted.
   `ApprovalKind` and the raw wire params; an agent's reason is only appended. A Codex file change
   carries the item's full changes, or is denied unasked when they are unknown or over 1 MiB. A
   Codex MCP tool call (an `mcpServer/elicitation/request` of kind `mcp_tool_call`) goes to the
-  policy like any other request. An ACP allow takes `allow_once` only. At most 16 requests wait
+  policy like any other request. A Codex command that asks for access beyond its sandbox
+  (`additionalPermissions`, `networkApprovalContext`) is an `ApprovalKind::Permissions` request
+  whose detail shows that access. An ACP allow takes `allow_once` only. At most 16 requests wait
   for the caller, under ids the crate assigns; two requests sharing a wire id are both denied.
 - A permission-bypass mode is never produced unless the config carries a `BypassOptIn` naming that
   harness and its mode.
@@ -127,7 +129,9 @@ protocol captures. Recorded frames, redacted, are the fixtures in `tests/fixture
   `item/fileChange/requestApproval` carries `itemId` and no changes; the `fileChange` item
   announced before it carries them. `applyPatchApproval` requires `fileChanges` (generated schema).
   MCP tool calls ask through `mcpServer/elicitation/request`; `accept` with no `persist` ran the
-  tool once. Under approval policy `never` an MCP call failed instead of running. A project
+  tool once. The command approval's escalation fields (`additionalPermissions`,
+  `networkApprovalContext`, `kind: writeStdin`) are from the schema `codex app-server
+  generate-json-schema --experimental` printed; no live request carried them. Under approval policy `never` an MCP call failed instead of running. A project
   `.codex/config.toml` was not loaded in an untrusted project (skills still load); it is in a
   trusted one, so the check stays.
 - **OpenCode 2.3.0** (`opencode acp`) speaks ACP on stdio. `session/new` returns no `modes`; its
