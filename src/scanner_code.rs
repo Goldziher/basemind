@@ -178,19 +178,18 @@ pub(crate) fn chunk_and_embed(
         let chunks = match cached {
             Some(blob) => blob.chunks,
             None => {
-                let chunks = chunk_file(rel, hash_hex, l1, l2, bytes, opts);
                 let blob = CodeChunkBlob {
                     config_digest: digest.to_string(),
                     schema_ver: SCHEMA_VER,
                     embedding_dim: 0,
                     embedding_model: String::new(),
-                    chunks: chunks.clone(),
+                    chunks: chunk_file(rel, hash_hex, l1, l2, bytes, opts),
                     embeddings: Vec::new(),
                 };
                 if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
                     tracing::warn!(rel, ?error, "write code-chunk sidecar (chunk-only) failed");
                 }
-                chunks
+                blob.chunks
             }
         };
         if chunks.is_empty() {
