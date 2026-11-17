@@ -231,6 +231,36 @@ fn an_external_root_document_is_written_and_allowed_like_any_other() {
 
     let live = crate::lance::docs_rank::LiveDocs::of_store(&store, None);
     let doc_key = crate::lance::docs::doc_key(&key, "digest");
-    assert_eq!(live.by_key.get(&doc_key), Some(&vec!["/data/specs/retry.md".to_string()]));
-    assert_eq!(doc_store(&store, &config).keys().unwrap().len(), 1, "its rows are written");
+    assert_eq!(
+        live.by_key.get(&doc_key),
+        Some(&vec!["/data/specs/retry.md".to_string()])
+    );
+    assert_eq!(
+        doc_store(&store, &config).keys().unwrap().len(),
+        1,
+        "its rows are written"
+    );
+}
+
+/// A blob torn by a power loss still exists, so its document would be skipped as unchanged for
+/// good and its rows never written. Its entry is dropped (the next pass extracts the file again)
+/// and its rows stay owed.
+#[test]
+fn a_torn_blob_sends_its_document_to_be_extracted_again() {
+    let (_tmp, mut store, config, filters) = setup();
+    let hex = track(&mut store, &blob("torn blob", true), &["torn.md"]);
+    let path = store.blob_path_doc_hex(&hex);
+    let whole = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &whole[..whole.len() / 2]).unwrap();
+
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
+
+    assert!(store.lookup_doc("torn.md").is_none(), "the entry is dropped");
+    let owed: Vec<String> = store
+        .pending_vectors
+        .docs()
+        .iter()
+        .map(|rel| rel.to_str_lossy().into_owned())
+        .collect();
+    assert_eq!(owed, ["torn.md"], "its rows stay owed");
 }

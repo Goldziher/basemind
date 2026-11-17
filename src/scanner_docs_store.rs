@@ -189,6 +189,7 @@ pub(crate) fn sync_document_rows(
         .collect();
     drop(queued);
     let mut blobless: Vec<String> = Vec::new();
+    let mut damaged: Vec<String> = Vec::new();
     let mut pending: Vec<DocRows> = Vec::new();
     let mut pending_paths: Vec<String> = Vec::new();
     let mut rows = 0usize;
@@ -235,7 +236,15 @@ pub(crate) fn sync_document_rows(
                 );
                 blobless.extend(doc.paths.iter().cloned());
             }
-            Err(error) => tracing::warn!(key, ?error, "reading a document blob failed; its rows stay owed"),
+            Err(crate::store::StoreError::Io { source, .. }) => {
+                tracing::warn!(key, error = %source, "reading a document blob failed; its rows stay owed");
+            }
+            // A blob that does not decode (torn by a power loss) would be skipped as unchanged for
+            // good: its entry is dropped so the next pass extracts the file again.
+            Err(error) => {
+                tracing::warn!(key, %error, "document blob damaged; the file is extracted again");
+                damaged.extend(doc.paths.iter().cloned());
+            }
         }
     }
     flush(&mut pending, &mut pending_paths, &mut rows);
@@ -256,6 +265,10 @@ pub(crate) fn sync_document_rows(
     );
     drop(tracked);
     store.pending_vectors.settle_docs(&settled);
+    for path in &damaged {
+        store.pending_vectors.owe_doc(path);
+    }
+    crate::scanner_flush::extract_again(store, &damaged, |store, rel| store.remove_doc(rel));
     // The view's store holds this view's rows only, so a key the view does not name is dead. When
     // the store moves to the repository group (ADR-0028) this call moves to the group sweep, which
     // passes the live keys of every view.
