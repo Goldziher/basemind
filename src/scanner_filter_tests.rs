@@ -488,3 +488,30 @@ fn user_document_excludes_replace_the_defaults_so_they_can_reinclude() {
         "unlisted defaults are replaced, not merged"
     );
 }
+
+/// The Linux watcher re-arms a watch on each directory created after start. One created under a
+/// gitignored tree, an excluded tree or `.basemind` must not get one: a `cargo build` would add a
+/// watch per directory under `target/`, none ever removed.
+#[test]
+fn only_a_directory_the_scan_would_descend_into_is_watchable() {
+    let (filter, root, _tmp) = filter_for(|root| {
+        fs::write(root.join(".gitignore"), b"target/\n").unwrap();
+        fs::create_dir_all(root.join("target/debug/deps")).unwrap();
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::create_dir_all(root.join(".basemind/cache")).unwrap();
+        fs::write(root.join("src/lib.rs"), b"fn a() {}\n").unwrap();
+    });
+    assert!(filter.is_watchable_dir(&root.join("src")));
+    assert!(filter.is_watchable_dir(&root.join("src/nested")));
+    assert!(!filter.is_watchable_dir(&root.join("target")), "gitignored");
+    assert!(
+        !filter.is_watchable_dir(&root.join("target/debug/deps")),
+        "under a gitignored dir"
+    );
+    assert!(!filter.is_watchable_dir(&root.join(".basemind/cache")));
+    assert!(
+        !filter.is_watchable_dir(&root.join("src/lib.rs")),
+        "a file is not a directory"
+    );
+    assert!(!filter.is_watchable_dir(&root.join("gone")), "a vanished directory");
+}

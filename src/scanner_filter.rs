@@ -633,6 +633,26 @@ impl IndexFilter {
         self.gitignore_allows(abs)
     }
 
+    /// Whether the Linux watcher should watch the directory `abs`: the directory a full scan would
+    /// descend into, by the same exclude globs, submodule roots and (when respected) `.gitignore`
+    /// rules. A directory created under `target/` or `node_modules/` is not; watching every one
+    /// cost an inotify watch and a debouncer root per directory ever created, none ever removed.
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn is_watchable_dir(&self, abs: &Path) -> bool {
+        let Some(rel) = self.rel_of(abs) else {
+            return false;
+        };
+        if rel.split('/').any(|part| part == crate::config::BASEMIND_DIR) || !self.filters.allows_dir(&rel) {
+            return false;
+        }
+        let is_dir = if self.follow_links {
+            std::fs::metadata(abs).is_ok_and(|meta| meta.is_dir())
+        } else {
+            std::fs::symlink_metadata(abs).is_ok_and(|meta| meta.is_dir())
+        };
+        is_dir && (!self.respect_gitignore || self.gitignore_allows(abs))
+    }
+
     /// The full scan only yields regular files (`dent.file_type().is_file()`), and never follows a
     /// link unless `follow_symlinks` is set. Mirror both: without it, no path component below the
     /// root may be a symlink (a tracked `notes.md -> ~/.ssh/id_rsa`, a `link -> /etc` directory, or
