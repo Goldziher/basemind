@@ -22,7 +22,9 @@ use basemind_agents::{
 
 # fn main() -> Result<(), basemind_agents::LaunchError> {
 let mut config = LaunchConfig::new(
-    Harness::new(HarnessKind::Codex),
+    // A supervised launch takes absolute executables only: a PATH lookup could find one a launched
+    // agent planted.
+    Harness::new(HarnessKind::Codex).with_executable("/usr/local/bin/codex"),
     "/work/repo",
     AgentIdentity::new("codex-reviewer")?,
 );
@@ -47,8 +49,6 @@ An engine launches through a `Supervisor`, never the `Registry` directly. The `S
 `LaunchPolicy`, one `LaunchConfig` per allowed flavor, the registry and an `AuditSink`:
 
 ```rust,no_run
-use std::os::fd::AsFd;
-use std::os::unix::net::UnixListener;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -80,17 +80,6 @@ supervisor.register_launcher_in_process("lead")?;
 let lead = Caller::principal("lead", Peer::embedding()?)?;
 let launched = supervisor.launch(&lead, HarnessKind::Codex, &LaunchRequest::new("Review the diff."))?;
 println!("{} runs as {}", launched.id, launched.agent);
-// A launched agent's call, on the socket this process listens on for its own launched agents:
-// the kernel names the process on the other end, which the supervisor places in its session;
-// the token has to be that session's.
-// One socket per `serve`, in a directory of mode 0700 made for it: a fixed path would collide
-// between two leads.
-let listener = UnixListener::bind(format!("/run/user/1000/basemind/agents-{}/agents.sock", std::process::id()))?;
-let (connection, _) = listener.accept()?;
-let token = "the token the agent read from BASEMIND_LAUNCH_TOKEN";
-let agent = Caller::launched(token, Peer::of_socket(connection.as_fd())?);
-let refused = supervisor.launch(&agent, HarnessKind::Codex, &LaunchRequest::new("Fan out."));
-assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
 # Ok(())
 # }
 ```
@@ -103,11 +92,14 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   flavor's rule grants: the same permission mode, bypass and unverified-mode opt-ins, an
   `ApprovalPolicy` only where the rule consents to one (one that allows everything is a bypass),
   pre-approved MCP tools only from the rule's `allow_tools`, and a stop grace of at most 60 s.
-- **Topology.** One is supported: the supervisor lives in the lead's own process (its `basemind
-  serve`, or an in-process embedding), never in the daemon. Launched agents are children of that
+- **Topology.** One is supported: the supervisor lives in the lead's own process (`basemind serve
+  --lead`, or an in-process embedding), never in the daemon. Launched agents are children of that
   process, and when it exits its sessions end. The lead's tool calls reach the supervisor in that
-  process, as `Caller::principal(.., Peer::embedding()?)`; a launched agent's injected `basemind
-  serve` reaches it over a socket that process listens on. A process inside a launched session
+  process, on its stdio, as `Caller::principal(.., Peer::embedding()?)`. basemind opens no socket
+  to it (ADR-0040): at `max_depth = 1` a launched agent never needs one. An embedding that adds one
+  builds each caller with `Peer::of_socket` at accept and refuses callers when
+  `!Peer::pins_connections()`. The host calls `seal_host()` before it reads anything: on Linux it
+  names the process `basemind-lead` (`HOST_MARKER`) and makes it non-dumpable. A process inside a launched session
   never hosts one: `Supervisor::new` refuses a launching policy (`NestedHost`), and every
   registration refuses (`nested_host`), in a process that carries `BASEMIND_LAUNCH_TOKEN` or
   `BASEMIND_AGENT_DEPTH`, that has an ancestor running the same program (by command name or
@@ -274,7 +266,8 @@ config is trusted.
   end the session's turn nor escape the turn count.
 - The harness executable and the MCP server's command resolve to absolute paths outside the root,
   with no link on the way inside it; the child's `PATH` keeps only absolute entries outside the
-  root.
+  root. A `Supervisor` refuses a config that names either by anything but an absolute path
+  (`RelativeExecutable`).
 - The working directory is relative and has to resolve inside the config's root, and is checked
   again in the child. The agent is not sandboxed to the root.
 - Git run by the harness itself, outside any sandbox it gives the agent, is kept from running

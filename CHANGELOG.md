@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind serve --lead` (Unix, `comms` builds): the lead's own `serve` hosts the
+  `basemind-agents` supervisor and answers `agent_launch` / `agent_stop` on its stdio; the daemon,
+  the HTTP front-end, a plain `serve` and the CLI never do. Off until the operator's user-level
+  `agents.toml` enables it; a repository's `basemind.toml` `[agents]` table is ignored with a
+  warning. Launched agents run at depth 1 in a worktree of their own, with every approval denied,
+  and are audited per lead (ADR-0040).
 - `stale` on `code_read` (a symbol found by parsing a file edited since it was indexed), on `code_outline`
   (outlined from the file as it is) and on a `code_grep` hit in such a file (which then carries no
   `symbol`).

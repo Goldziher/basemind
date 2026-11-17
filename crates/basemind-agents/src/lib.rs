@@ -79,7 +79,7 @@
 //!   pre-approved, and only Claude Code can pre-approve.
 //! - **Executables.** The harness executable and the MCP server's command are resolved to
 //!   absolute paths outside the root, with no link on the way inside it; the child's `PATH`
-//!   keeps only absolute entries outside the root.
+//!   keeps only absolute entries outside the root. A [`Supervisor`] takes absolute paths only.
 //! - **Working directory.** It is relative, has to resolve inside [`LaunchConfig::root`], and
 //!   is checked again in the child after it changes into it. The agent is not sandboxed to
 //!   the root.
