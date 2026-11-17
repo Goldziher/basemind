@@ -24,6 +24,9 @@ fn scan(root: &Path, store: &mut Store) {
     .expect("scan");
 }
 
+/// One symbol of a file's term index: its name and kind.
+type TermSymbol = (Vec<u8>, crate::extract::SymbolKind);
+
 fn names(l1: &FileMapL1) -> Vec<String> {
     l1.symbols.iter().map(|s| s.name.clone()).collect()
 }
@@ -41,7 +44,7 @@ fn assert_same(refreshed: &MapCache, built: &MapCache, step: &str) {
             "{step}: outline of {path}"
         );
     }
-    let terms = |cache: &MapCache| -> Vec<(RelPath, Vec<(Vec<u8>, crate::extract::SymbolKind)>)> {
+    let terms = |cache: &MapCache| -> Vec<(RelPath, Vec<TermSymbol>)> {
         cache
             .terms()
             .iter()
