@@ -102,12 +102,7 @@ async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpErr
     let current = state.shared.cache.load_full();
     let config = Arc::clone(&state.shared.config);
     let (store, cache) = tokio::task::spawn_blocking(move || {
-        let mut store = Store::open_read_only_no_index(&root, &view)?;
-        if std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1")
-            && let Err(error) = crate::store_base::hydrate_cold_store(&mut store, &config)
-        {
-            tracing::debug!(%error, "refresh shared worktree manifest failed");
-        }
+        let store = Store::open_read_only_no_index(&root, &view)?;
         let cache = current.refreshed(&store, super::l1_cache::budget_bytes_from(&config.resources));
         Ok::<(Store, Option<MapCache>), crate::store::StoreError>((store, cache))
     })

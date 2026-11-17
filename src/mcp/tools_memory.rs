@@ -23,9 +23,8 @@ impl BasemindServer {
         title = "Search documents",
         description = "Use to find where a topic is discussed in the repository's documents \
         (markdown, PDFs, Office, HTML, email, notebooks) instead of opening them. Ranks passages by \
-        meaning and by words, filters before ranking, and cites each hit (path, pages, section, \
-        lines) with its neighbouring text; `lanes_unavailable` names a lane that could not run. \
-        Code is searched with `code_grep`/`code_search`. \
+        meaning and words, filters first, and cites each hit (path, pages, section, lines). Code: \
+        `code_grep`/`code_search`. \
         Example: {\"query\":\"how releases are versioned\"}",
         annotations(
             read_only_hint = true,

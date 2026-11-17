@@ -397,22 +397,10 @@ async fn semantic_hits(
         .await
         .map_err(|unavailable| unavailable.refusal("code_search", meanwhile))?;
     let scope = state.shared.scope.clone();
-    let routing = super::memory::shared_lance_route(state, crate::lance::shared_store::SharedLane::Code).await;
-    let hits_raw = tokio::task::spawn_blocking(move || {
-        let lane = crate::lance::shared_store::SharedLane::Code;
-        let requested_shared = crate::lance::shared_snapshot::enabled();
-        let shared = routing.and_then(|(group, generation)| {
-            crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
-                shared.search_code_chunks(&scope, embedding.clone(), paths, limit)
-            })
-        });
-        super::memory::observe_semantic_route("code", requested_shared, shared, || {
-            lance.search_code_chunks(&scope, embedding, limit)
-        })
-    })
-    .await
-    .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("search_code_chunks: {e}"), None))?;
+    let hits_raw = tokio::task::spawn_blocking(move || lance.search_code_chunks(&scope, embedding, limit))
+        .await
+        .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
+        .map_err(|e| McpError::internal_error(format!("search_code_chunks: {e}"), None))?;
 
     // A row's own path and metadata are not used: the chunk and its live paths are resolved by
     // `hydrate_hits`, like every other lane's.

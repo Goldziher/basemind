@@ -31,9 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `code_search` and `docs_search` keep the ranked list of a query for up to two minutes (16 queries,
   4 MiB), so a later page or a repeated call does not run retrieval and the reranker again. A rescan
   drops the lists.
+- One index per repository group (ADR-0028): every worktree and view of a repository shares one Fjall database at
+  `cache/groups/<group>/index.fjall`, held by one process under the group's `.lock`, in place of one database (and
+  one 64 MiB journal) per view. A view keeps its path-keyed rows under its own id; the grep bloom is shared by
+  content, and its sweeps keep any content another view's file map still names. A file map records the group
+  index incarnation and its view id; one that does not match is emptied and its view rebuilt, leaving every other
+  view in place. A process that does not hold the group's index answers from the blob store. Every workspace
+  rebuilds its index on the first scan, and its per-view `index.fjall` is deleted.
 
 ### Changed
 
+- A CLI or hook resolving its agent id no longer creates a workspace cache directory that holds only that id: the
+  id is derived from the workspace's cache path. A workspace whose id an older basemind persisted keeps it.
 - **BREAKING: the MCP tools are one per job.** The mode-dispatched `code`, `git`, `memory` and `admin`
   tools are replaced by 15 tools with exact schemas (ADR-0018, superseding ADR-0011): `code_outline`,
   `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,
@@ -230,6 +239,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: the shared worktree index of ADR-0016** (`BASEMIND_INDEX_LAYERED=1`), its sibling seeding of a new
+  worktree's view (`BASEMIND_NO_SEED`) and `scan --verify-shared-base`. The group index replaces them.
 - **BREAKING: `index_rescan`'s `full` argument and `basemind rescan --full`.** `{}` and `{"full": true}`
   ran the same walk; the flag's only effect was to discard `paths` when both were passed. `index_rescan {}`
   (`basemind rescan` with no path) is the whole workspace, and a call that still passes `full` is refused

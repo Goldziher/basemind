@@ -405,35 +405,8 @@ impl WorkspacePool {
         let rebuild_pending = entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire);
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
-        let refreshed = if store.layered_read.is_some() && !cancel.is_cancelled() {
-            crate::store_base::refresh_worktree(&entry.root, &config)
-        } else {
-            Ok(false)
-        };
-        // An edit landing mid-delta is not a reason to leave layering: falling through here opens a
-        // standalone index and records the workspace as promoted for good. The watcher sees the edit.
-        if refreshed
-            .as_ref()
-            .is_err_and(|error| error.downcast_ref::<crate::store_base::WorktreeChanged>().is_some())
-        {
-            return Err(WorkspacePoolError::Busy {
-                root: entry.root.clone(),
-            });
-        }
-        if refreshed.unwrap_or(false) {
-            let mut next = Store::open_read_only_no_index(&entry.root, VIEW_WORKING)?;
-            if crate::store_base::hydrate_cold_store(&mut next, &config).is_ok() && next.layered_read.is_some() {
-                let stats = crate::store_base::layered_scan_stats(&store, &next);
-                *store = next;
-                return Ok((stats, false));
-            }
-        }
-        let from_layered = store.layered_read.is_some();
-        let full = full || rebuild_pending || from_layered || store.needs_full_scan();
+        let full = full || rebuild_pending || store.needs_full_scan();
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
-        if store.layered_read.is_some() {
-            *store = Store::open_with_holder(&entry.root, VIEW_WORKING, LockHolder::Daemon)?;
-        }
         if !incremental {
             let last = entry.last_full.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some((generation, last_mode, stats)) = *last
@@ -465,14 +438,6 @@ impl WorkspacePool {
         // of the daemon, so it has to be replaced whether or not this pass got to report it.
         self.recover_poisoned_index(&entry, &mut store);
         let report = scanned?;
-        if from_layered
-            && !report.cancelled
-            && report.stats.read_failed == 0
-            && report.stats.extract_failed == 0
-            && let Err(error) = crate::store_base::record_promotion(&entry.root, &config)
-        {
-            tracing::debug!(%error, "shared index promotion marker failed");
-        }
         if report.stats.displaced_artifacts() || std::mem::take(&mut store.reset_stale_schema) {
             self.cleanup_signal.notify_one();
         }
@@ -824,17 +789,7 @@ impl WorkspacePool {
         };
         let config_stamp = config::daemon::ConfigStamp::of(&resolved);
         let config = config::daemon::load_daemon(&resolved)?;
-        let mut cold = None;
-        if std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1") {
-            let mut store = Store::open_read_only_no_index(&resolved, VIEW_WORKING)?;
-            if crate::store_base::hydrate_cold_store(&mut store, &config).is_ok() && store.layered_read.is_some() {
-                cold = Some(store);
-            }
-        }
-        let store = match cold {
-            Some(store) => store,
-            None => Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Daemon)?,
-        };
+        let store = Store::open_with_holder(&resolved, VIEW_WORKING, LockHolder::Daemon)?;
         let rebuild_pending = store.index_rebuild_needed;
         if rebuild_pending {
             tracing::warn!(root = %resolved.display(), "index is empty over a populated file map; scheduling a full rebuild");

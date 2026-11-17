@@ -111,11 +111,11 @@ fn the_sweep_drops_only_hashes_no_live_file_references() {
         put(&db, hash, hash);
     }
     let live: ahash::AHashSet<&str> = ["h1", "h3"].into_iter().collect();
-    assert_eq!(db.sweep_grep_bloom(&live).expect("sweep"), 1);
+    assert_eq!(db.sweep_grep_bloom(|hash| live.contains(hash)).expect("sweep"), 1);
     assert!(db.grep_bloom_current("h1") && db.grep_bloom_current("h3"));
     assert!(!db.grep_bloom_current("h2"));
     assert_eq!(
-        db.sweep_grep_bloom(&live).expect("sweep"),
+        db.sweep_grep_bloom(|hash| live.contains(hash)).expect("sweep"),
         0,
         "a second sweep is a no-op"
     );
@@ -189,7 +189,7 @@ fn the_first_sweep_drops_older_layout_rows_and_records_it_in_meta() {
     let live: ahash::AHashSet<&str> = ["h1", "h2"].into_iter().collect();
     assert!(db.meta.get(META_ROW_SWEPT_VER).expect("meta").is_none());
     assert_eq!(
-        db.sweep_grep_bloom(&live).expect("sweep"),
+        db.sweep_grep_bloom(|hash| live.contains(hash)).expect("sweep"),
         1,
         "a live hash with an unreadable row goes"
     );
@@ -204,12 +204,15 @@ fn the_first_sweep_drops_older_layout_rows_and_records_it_in_meta() {
 fn later_sweeps_read_keys_only_and_still_remove_dead_keys() {
     let (_dir, db) = open_db();
     let live: ahash::AHashSet<&str> = ["h1", "h2"].into_iter().collect();
-    db.sweep_grep_bloom(&live).expect("first sweep");
+    db.sweep_grep_bloom(|hash| live.contains(hash)).expect("first sweep");
 
     put(&db, "h1", "current");
     put_stale_layout(&db, "h2");
     put(&db, "dead", "no file holds this");
-    assert_eq!(db.sweep_grep_bloom(&live).expect("steady sweep"), 1);
+    assert_eq!(
+        db.sweep_grep_bloom(|hash| live.contains(hash)).expect("steady sweep"),
+        1
+    );
     assert!(
         db.view().grep_bloom_row("dead").is_none(),
         "a dead key is removed without reading it"
@@ -224,15 +227,18 @@ fn later_sweeps_read_keys_only_and_still_remove_dead_keys() {
 fn without_the_marker_the_version_sweep_reads_values_again() {
     let (_dir, db) = open_db();
     let live: ahash::AHashSet<&str> = ["h1"].into_iter().collect();
-    db.sweep_grep_bloom(&live).expect("first sweep");
+    db.sweep_grep_bloom(|hash| live.contains(hash)).expect("first sweep");
     put_stale_layout(&db, "h1");
     assert_eq!(
-        db.sweep_grep_bloom(&live).expect("steady sweep"),
+        db.sweep_grep_bloom(|hash| live.contains(hash)).expect("steady sweep"),
         0,
         "marker present: values unread"
     );
     db.meta.remove(META_ROW_SWEPT_VER).expect("forget the marker");
-    assert_eq!(db.sweep_grep_bloom(&live).expect("version sweep"), 1);
+    assert_eq!(
+        db.sweep_grep_bloom(|hash| live.contains(hash)).expect("version sweep"),
+        1
+    );
 }
 
 #[test]

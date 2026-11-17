@@ -238,13 +238,13 @@ pub struct DocsSearchParams {
     /// Exact MIME filter, e.g. `application/pdf`.
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// Format family: pdf, office, html, markdown, email, notebook, text, other.
+    /// Format: pdf, office, html, markdown, email, notebook, text or other.
     #[serde(default)]
     pub kind: Option<String>,
-    /// Glob over document paths, e.g. `docs/**/*.md`.
+    /// Glob over document paths (`docs/**/*.md`).
     #[serde(default)]
     pub path: Option<String>,
-    /// Keep documents with any of these whole keywords (comma-separated).
+    /// Whole keywords, comma-separated; any one matches.
     #[serde(default)]
     pub keywords: Option<String>,
     /// Keep chunks naming an entity of this category, e.g. `PERSON`.

@@ -29,29 +29,6 @@ pub(super) fn cmd_rescan(
     if let Some(notice) = writer_collision_notice(root) {
         return Err(basemind::cli::exit::CliExit::busy(notice));
     }
-    let shared_index = std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1");
-    if shared_index && !full && !cancel.is_cancelled() {
-        match basemind::store_base::refresh_local_worktree(root, &config, LockHolder::Rescan) {
-            Ok(true) if !cancel.is_cancelled() => {
-                eprintln!("Shared worktree index ready.");
-                sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
-                return Ok(());
-            }
-            Err(error) if error.downcast_ref::<basemind::store_base::WorktreeChanged>().is_some() => {
-                return Err(basemind::cli::exit::CliExit::busy(error.to_string()));
-            }
-            Err(error)
-                if error
-                    .downcast_ref::<basemind::store::StoreError>()
-                    .is_some_and(basemind::store::StoreError::is_lock_contention) =>
-            {
-                return Err(basemind::cli::exit::CliExit::busy(
-                    basemind::store::LOCK_CONTENTION_HELP,
-                ));
-            }
-            _ => {}
-        }
-    }
     let standalone_absent = !basemind::store::workspace_cache_dir(root)
         .join(basemind::store::VIEWS_DIR)
         .join(basemind::store::VIEW_WORKING)

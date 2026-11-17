@@ -42,7 +42,7 @@ pub(super) fn write_file_map(view_dir: &Path, index: &Index) -> Result<(), Store
     })?;
     // The rename is durable only once the directory entry is. Not fatal: the new file map is
     // already in place, and some filesystems refuse to fsync a directory.
-    if let Err(error) = crate::store_base::sync_directory(view_dir) {
+    if let Err(error) = crate::store_layout::sync_directory(view_dir) {
         tracing::warn!(%error, "could not fsync the view directory after writing the file map");
     }
     Ok(())

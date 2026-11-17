@@ -416,10 +416,17 @@ pub(crate) fn bm25_posting_candidates<'a>(
 
 #[cfg(feature = "code-search")]
 pub(crate) fn retire_bm25_postings(store: &Store, candidates: ahash::AHashSet<Vec<u8>>) {
-    if !candidates.is_empty()
-        && let Some(db) = store.index_db.as_ref()
-        && let Err(error) = db.retire_bm25_postings(candidates, |hash| store.hash_is_held(hash))
-    {
+    let Some(db) = store.index_db.as_ref().filter(|_| !candidates.is_empty()) else {
+        return;
+    };
+    let liveness = match store.content_liveness() {
+        Ok(liveness) => liveness,
+        Err(error) => {
+            tracing::warn!(%error, "retire BM25 postings skipped; retry on full scan");
+            return;
+        }
+    };
+    if let Err(error) = db.retire_bm25_postings(candidates, |hash| liveness.holds(hash)) {
         tracing::warn!(%error, "retire BM25 postings failed; retry on full scan");
     }
 }

@@ -23,17 +23,13 @@ mod helpers;
 pub(crate) use helpers::BUSY_DATA;
 #[cfg(test)]
 pub(crate) use helpers::rescan_error;
+#[cfg(feature = "documents")]
+mod docs_pipeline;
 mod helpers_admin;
 mod helpers_calls;
 #[cfg(test)]
 mod helpers_calls_resolved_tests;
 mod helpers_calls_scan;
-#[cfg(test)]
-pub(crate) use helpers_calls_scan::scan_calls_by_name;
-#[cfg(test)]
-pub(crate) use helpers_refs_match::Matching;
-#[cfg(feature = "documents")]
-mod docs_pipeline;
 mod helpers_code;
 #[cfg(feature = "code-search")]
 mod helpers_code_search;
@@ -506,8 +502,7 @@ impl BasemindServer {
         use anyhow::Context as _;
 
         let view = crate::store::VIEW_WORKING;
-        let mut store =
-            crate::store::Store::open_read_only_no_index(root, view).context("open hosted read stack store")?;
+        let store = crate::store::Store::open_read_only_no_index(root, view).context("open hosted read stack store")?;
         debug_assert!(
             store.index_db.is_none(),
             "hosted read stack must be index-less so MapCache builds in-RAM call/impl indexes"
@@ -517,11 +512,6 @@ impl BasemindServer {
             crate::config::daemon::load_daemon(root)
                 .map_err(|error| anyhow::Error::new(error).context("load hosted workspace config"))?,
         );
-        if std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1")
-            && let Err(error) = crate::store_base::hydrate_cold_store(&mut store, &config)
-        {
-            tracing::debug!(%error, "hosted shared worktree manifest unavailable");
-        }
         let repo = crate::git::Repo::discover(root).ok().map(Arc::new);
         let git_cache = Arc::new(
             crate::git_cache::GitCache::open(&basemind_dir, HOSTED_GIT_CACHE_MEM, true)

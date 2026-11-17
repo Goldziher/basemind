@@ -521,12 +521,11 @@ workspace, never inside your repo. The
 content-addressed blob store is machine-wide too: identical file content scanned from different repos
 or worktrees is extracted and stored once.
 
-A new linked worktree's working view is seeded from a sibling checkout's index with a copy-on-write
-clone, so its first scan only touches files that differ. Only the view is cloned: the vector store is
-not, so the seeded worktree's first scan rebuilds its vector rows from the cached blobs without
-re-embedding. A sibling whose workspace lock is held (a daemon or another scan is writing it) is not a
-seed source, and neither is one too large to copy on a filesystem without reflinks; the new worktree
-then scans from scratch. Set `BASEMIND_NO_SEED=1` (any non-empty value other than `0`) to opt out.
+Every worktree of a repository shares one code index, under `cache/groups/<group>/` (ADR-0028). A view
+of a worktree keeps its rows under its own id and its file map under the workspace, so a new linked
+worktree costs its file map and the rows of its files, and its first scan re-extracts nothing whose
+content is already in the blob store. Only one process at a time holds a group's index; another
+process in a worktree of the same group answers from the blob store.
 
 Linked worktrees share one git-history index per clone. A worktree whose HEAD descends from the
 indexed head appends the new commits; one that diverges leaves the index alone and answers history
@@ -1054,7 +1053,6 @@ A cap variable must be a positive integer; anything else falls back to the defau
 | `BASEMIND_WARM_READ_STACKS` | Daemon-hosted read stacks kept warm at once; default 3. |
 | `BASEMIND_NO_AUTOSPAWN=1` | Connect to a running daemon but never start one. |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on live daemons per machine before a spawn is refused; default 8. |
-| `BASEMIND_NO_SEED=1` | Do not seed a new worktree's index from a sibling checkout. |
 | `BASEMIND_BIN`, `BASEMIND_FORCE_VERSION` | Plugin launcher: run a local build / pin a release (see [Installation](#1-as-a-plugin-recommended)). |
 
 **Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes

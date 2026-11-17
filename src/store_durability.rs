@@ -8,56 +8,20 @@
 
 use std::path::Path;
 
-use super::{HashRefs, Index, Store, StoreError, open_index_with_retry};
+use super::{HashRefs, Index, LockHolder, Store, StoreError};
 use crate::index::IndexDb;
-use crate::index::view::IndexView;
 
-/// Open the Fjall index for a writer, discarding one that is behind `index` (the file map just read).
-/// Returns the handle and whether the index must be rebuilt by a full scan, in which case `index`
-/// lists no files any more.
-pub(super) fn open_index_for_writer(
+/// Open the group index of `view` for a writer, reconciling the file map `index` with it (see
+/// [`super::group`]). Returns the handle and whether a full scan must rebuild the view, in which
+/// case `index` lists no files any more.
+pub(crate) fn open_index_for_writer(
     root: &Path,
     view: &str,
     view_dir: &Path,
     index: &mut Index,
+    holder: LockHolder,
 ) -> Result<(IndexDb, bool), StoreError> {
-    let mut index_db = match open_index_with_retry(root, view_dir) {
-        // A damaged database is rebuildable cache, and left in place it fails every open until
-        // someone clears the cache by hand. Only this open, which holds the writer lock, may
-        // replace it; the checks below then find an unsealed index and order the rebuild. ~keep
-        Err(crate::index::IndexError::Corrupt(error)) => {
-            tracing::warn!(view, %error, "code index is damaged; discarding it for a rebuild");
-            crate::index::durability::discard_index(view_dir)?;
-            open_index_with_retry(root, view_dir)?
-        }
-        opened => opened?,
-    };
-    // The file map is fsynced only after the index sealed the same generation, so an index
-    // stamped below it lost the tail of its journal. Which rows went is unknowable, so the whole
-    // index is discarded and the empty-index rebuild below takes over. ~keep
-    if !index_db.wiped_on_open() && index.generation > index_db.scan_generation()? {
-        tracing::warn!(
-            view,
-            "code index is older than its file map (unclean shutdown); rebuilding it"
-        );
-        drop(index_db);
-        crate::index::durability::discard_index(view_dir)?;
-        index_db = open_index_with_retry(root, view_dir)?;
-    }
-    // A replaced index starts unsealed, and its emptied file map vouches for nothing. ~keep
-    let sealed = index_db.scan_generation()?;
-    index.generation = index.generation.min(sealed);
-    // An index some scan sealed holds what the file map says, whatever it holds: a repository whose
-    // files yield no symbols has no symbol rows to lose. Only an index nothing ever sealed (a
-    // replaced one, or one from before generations) is judged by looking empty. ~keep
-    let never_sealed = sealed == 0 && index.generation == 0;
-    let index_rebuild_needed = !index.files.is_empty()
-        && (index_db.wiped_on_open() || (never_sealed && index_db.view().symbols_index_is_empty()));
-    if index_rebuild_needed {
-        index.empty_for_rebuild();
-    }
-    // An earlier process emptied the file map and died before its rebuild scan finished. ~keep
-    Ok((index_db, index_rebuild_needed || index.rebuild_pending))
+    super::group::open_index_for_writer(root, view, view_dir, index, holder)
 }
 
 /// Remove the file map of a view written for an earlier blob store layout, or one of this version
@@ -134,7 +98,7 @@ impl Store {
         self.index_rebuild_needed
             || self.index.rebuild_pending
             || (self.index.files.is_empty() && self.index.doc_files.is_empty())
-            || (self.layered_read.is_none() && crate::scan_evidence::blobs_need_verifying(&self.basemind_dir))
+            || crate::scan_evidence::blobs_need_verifying(&self.basemind_dir)
     }
 
     /// Take the workspace lock for a scan into a store opened without it, and keep it. Refused with
@@ -150,17 +114,17 @@ impl Store {
         Ok(true)
     }
 
-    /// Open, for the scan about to write into this store, the index a read-only open did not: one of
-    /// an older schema, one another writer held, or one beside a file map of another schema or blob
-    /// layout. The file map is read again under the lock, since the one loaded at open may be an
-    /// earlier writer's, and gets the recovery a writer open gives it, written at once. A no-op for
-    /// a store that has an index handle or reads a layered base.
+    /// Open, for the scan about to write into this store, the group index a read-only open did not
+    /// hold (ADR-0036 rule 3), or one beside a file map of another schema or blob layout. The file
+    /// map is read again under the lock, since the one loaded at open may be an earlier writer's,
+    /// and gets the reconciliation a writer open gives it, written at once. A no-op for a store that
+    /// has an index handle.
     ///
-    /// The recovery wipes and rewrites, so it runs under the workspace lock a writer open holds.
-    /// A store opened read-only has none: it is taken here and kept, and the scan is refused with
+    /// The open may wipe and rewrite, so it runs under the workspace lock a writer open holds. A
+    /// store opened read-only has none: it is taken here and kept, and the scan is refused with
     /// [`StoreError::Locked`] while another process holds it.
     pub(crate) fn open_index_owed_to_scan(&mut self) -> Result<(), StoreError> {
-        if self.index_db.is_some() || self.layered_read.is_some() {
+        if self.index_db.is_some() {
             return Ok(());
         }
         self.take_writer_lock()?;
@@ -184,7 +148,13 @@ impl Store {
             }
             Err(error) => return Err(error),
         };
-        let (index_db, rebuild_needed) = open_index_for_writer(&self.root, &self.view, &self.view_dir, &mut index)?;
+        let (index_db, rebuild_needed) = open_index_for_writer(
+            &self.root,
+            &self.view,
+            &self.view_dir,
+            &mut index,
+            super::LockHolder::Rescan,
+        )?;
         self.index = index;
         self.index_rebuild_needed |= rebuild_needed;
         self.hash_refs = HashRefs::of(&self.index.files);

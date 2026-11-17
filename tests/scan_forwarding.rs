@@ -222,11 +222,7 @@ fn a_flag_the_daemon_cannot_apply_is_refused_with_its_name() {
     let rescan = env.run(&["rescan"]);
     assert_eq!(code(&rescan), 0, "{}", text(&rescan));
 
-    for flags in [
-        &["--rebuild-git-history"][..],
-        &["--verify-shared-base"][..],
-        &["--documents-enabled", "false"][..],
-    ] {
+    for flags in [&["--rebuild-git-history"][..], &["--documents-enabled", "false"][..]] {
         let out = env.run(&[&["scan"][..], flags].concat());
         assert_eq!(code(&out), 2, "`scan {flags:?}`: {}", text(&out));
         assert!(

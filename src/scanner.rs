@@ -636,12 +636,6 @@ pub fn scan_with_observer(
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store, &filters)
     });
-    #[cfg(any(feature = "documents", feature = "code-search"))]
-    if matches!(source, ScanSource::WorkingTree)
-        && let Err(error) = filters.retrieval.vectors.publish_snapshot(store, config, &scope)
-    {
-        tracing::debug!(%error, "shared Lance snapshot publication failed");
-    }
     crate::scanner_integrity::finish_index_writes(store);
     // A whole working-tree pass has now validated every blob it kept. ~keep
     if filters.verify_blobs && matches!(source, ScanSource::WorkingTree) {

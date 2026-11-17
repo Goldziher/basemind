@@ -78,18 +78,19 @@ pub fn dir_bytes(dir: &Path) -> u64 {
         .sum()
 }
 
-/// Refuse when the volume holding `view_dir` lacks room for the index. An unreadable free-space
-/// figure passes: a platform quirk must not block scans that would have worked.
-pub fn ensure_free_space(view_dir: &Path) -> Result<(), InsufficientSpace> {
-    let Ok(free) = fs2::available_space(nearest_existing(view_dir)) else {
+/// Refuse when the volume holding the group index under `group_dir` lacks room for it. An
+/// unreadable free-space figure passes: a platform quirk must not block scans that would have
+/// worked.
+pub fn ensure_free_space(group_dir: &Path) -> Result<(), InsufficientSpace> {
+    let Ok(free) = fs2::available_space(nearest_existing(group_dir)) else {
         return Ok(());
     };
-    let index_bytes = dir_bytes(&view_dir.join(crate::index::INDEX_DIR));
+    let index_bytes = dir_bytes(&group_dir.join(crate::index::INDEX_DIR));
     let headroom = headroom_bytes(std::env::var(MIN_FREE_ENV).ok().as_deref());
-    evaluate(view_dir, index_bytes, headroom, free)
+    evaluate(group_dir, index_bytes, headroom, free)
 }
 
-/// `path` or its closest existing ancestor, since the view dir may not be created yet.
+/// `path` or its closest existing ancestor, since the group dir may not be created yet.
 fn nearest_existing(path: &Path) -> &Path {
     path.ancestors().find(|p| p.exists()).unwrap_or(path)
 }

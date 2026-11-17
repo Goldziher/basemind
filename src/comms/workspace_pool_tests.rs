@@ -931,13 +931,10 @@ async fn gated_build_times_out_instead_of_waiting_forever() {
     assert!(error.to_string().contains("timed out"), "{error}");
 }
 
-/// Drop `root`'s fjall index directory, leaving `index.msgpack` intact: the state a partition
-/// revision bump leaves behind (an empty, recreated index over a populated file map).
+/// Drop the group index of `root`, leaving `index.msgpack` intact: the state a partition revision
+/// bump leaves behind (an empty, recreated index over a populated file map).
 fn wipe_fjall(root: &Path) {
-    let dir = store::workspace_cache_dir(root)
-        .join(store::VIEWS_DIR)
-        .join(VIEW_WORKING)
-        .join(crate::index::INDEX_DIR);
+    let dir = crate::store_layout::group_index_dir(root).join(crate::index::INDEX_DIR);
     std::fs::remove_dir_all(dir).expect("remove fjall dir");
 }
 
