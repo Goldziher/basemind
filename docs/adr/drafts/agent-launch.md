@@ -107,10 +107,15 @@ id that fails the grammar stops the launch.
      workflows, other worktrees), and its init frame may offer none of them; Claude Code 2.1.326
      dropped all of them under the flag.
    - **No project configuration.** Claude Code is asked for no setting sources, hooks disabled and
-     only the injected MCP server, and the session fails unless its `system/init` frame reports the
+     only the injected MCP server. The brief is held until its `initialize` answer reports the
+     requested permission mode, only built-in commands and no agent a `.claude/` directory of the
+     working directory, its ancestors or `HOME` defines. `system/init` arrives only after the
+     brief, so its check ends a session that may already have begun work: it has to report the
      requested permission mode, exactly the injected MCP server as loaded from `--mcp-config`
-     (`source: "dynamic"`) and only built-in plugins; every later init frame is checked
-     again, so a mode changed mid-session fails it. Verified on Claude Code 2.1.325: under these
+     (`source: "dynamic"`), only built-in plugins and no plugin or `.claude/`-defined skill or
+     agent; every later init frame is checked again, so a mode changed mid-session fails it. A
+     project's `.claude/` and `.mcp.json` do not refuse the launch: they were verified not to load
+     under these flags (2.1.325, 2.1.326), and refusing them would refuse most repositories. Verified on Claude Code 2.1.325: under these
      flags a project `CLAUDE.md`, `.claude/` hooks, permission rules, agents, commands and skills,
      `.mcp.json`, user plugins and claude.ai connectors were not loaded. Codex, Gemini, Cursor and
      OpenCode are not launched over a project file of theirs in the working directory or above it

@@ -72,9 +72,15 @@ config is trusted.
 - Claude Code is launched with `--disallowedTools` for its tools that start or schedule work
   outside the session (`RemoteTrigger`, `CronCreate`, `ScheduleWakeup`, `SendToProject`,
   `PushNotification`, `Workflow`, `EnterWorktree`, ...), and its init frame may offer none of them.
-- Claude Code is asked for no setting sources, hooks disabled and only the config's MCP server, and
-  the session fails unless Claude Code's init frame reports the requested permission mode, exactly
-  that server as loaded from `--mcp-config` (`source: "dynamic"`) and only built-in plugins.
+- Claude Code is asked for no setting sources, hooks disabled and only the config's MCP server.
+  The brief goes out only once its answer to `initialize` reports the requested permission mode,
+  only built-in commands and no agent defined in a `.claude/` of the working directory, its
+  ancestors or `HOME`. Its `system/init` frame comes after the brief, so it cannot stop the brief:
+  the session is ended, with the harness possibly having started on it, unless that frame
+  reports the requested permission mode, exactly that server as loaded from `--mcp-config`
+  (`source: "dynamic"`), only built-in plugins, and no plugin (`name:skill`) or `.claude/`-defined
+  skill or agent. A project's `.claude/` and `.mcp.json` are not refused: Claude Code 2.1.325 and
+  2.1.326 did not load them under these flags, and the checks above catch one that is.
   Codex, Gemini, Cursor and OpenCode are not launched over one of their project files in the
   working directory or above it. Only the MCP tools the config names are pre-approved (Claude
   Code only). Claude Code's init frame is checked again every turn. A Codex turn notification

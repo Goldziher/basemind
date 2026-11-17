@@ -847,3 +847,6 @@ fn the_bypass_guard_does_not_read_the_mcp_servers_own_path_and_arguments() {
         Err(LaunchError::BypassArgument(_))
     ));
 }
+
+#[path = "claude_init_tests.rs"]
+mod init;

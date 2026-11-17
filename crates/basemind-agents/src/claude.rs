@@ -118,7 +118,9 @@ impl ClaudeCodeAdapter {
     fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
         let plan = self.plan_spec(spec)?;
         let servers = spec.mcp_server.iter().map(|server| server.name.clone()).collect();
-        let protocol = ClaudeProtocol::new(spec.brief.clone(), permission_mode(spec.permission_mode), servers);
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let protocol = ClaudeProtocol::new(spec.brief.clone(), permission_mode(spec.permission_mode), servers)
+            .defining(defined_names(&plan.cwd, home.as_deref()));
         let (driver, control) = LineDriver::boxed(protocol);
         session::start(&plan, spec, driver, control)
     }
@@ -141,7 +143,7 @@ fn permission_mode(mode: PermissionMode) -> &'static str {
 /// seen to report exactly that under the adapter's flags, and project, plugin and claude.ai
 /// servers and user plugins without them; a version that stops honouring the flags, or whose
 /// frame no longer carries the mode and the servers, fails the session here.
-fn check_init(frame: &Value, mode: &str, servers: &[String]) -> Result<(), LaunchError> {
+fn check_init(frame: &Value, mode: &str, servers: &[String], defined: &[String]) -> Result<(), LaunchError> {
     let reported_mode = frame["permissionMode"].as_str();
     if reported_mode != Some(mode) {
         return Err(LaunchError::Protocol(format!(
@@ -180,6 +182,10 @@ fn check_init(frame: &Value, mode: &str, servers: &[String]) -> Result<(), Launc
             "Claude Code offers {tool}, which starts work outside the session"
         )));
     }
+    for kind in ["agent", "skill"] {
+        let listed = frame[format!("{kind}s")].as_array().into_iter().flatten();
+        check_names(kind, listed.filter_map(Value::as_str), defined)?;
+    }
     let mut plugins = frame["plugins"].as_array().into_iter().flatten();
     if let Some(plugin) = plugins.find(|plugin| plugin["path"] != "builtin") {
         return Err(LaunchError::Protocol(format!(
@@ -188,6 +194,75 @@ fn check_init(frame: &Value, mode: &str, servers: &[String]) -> Result<(), Launc
         )));
     }
     Ok(())
+}
+
+/// Checks Claude Code's answer to `initialize`, before the brief goes out: when it reports
+/// them, the permission mode has to be the requested one, every command built in and no agent
+/// one the project or the user defines. Claude Code 2.1.326 reported `current_permission_mode`
+/// and only `builtin` commands under the adapter's flags, and user and project skills as
+/// commands without the flag when the setting sources were not emptied.
+fn check_initialize(answer: &Value, mode: &str, defined: &[String]) -> Result<(), LaunchError> {
+    if let Some(reported) = answer["current_permission_mode"]
+        .as_str()
+        .filter(|reported| *reported != mode)
+    {
+        return Err(LaunchError::Protocol(format!(
+            "Claude Code started in permission mode {reported:?}, not the requested {mode:?}"
+        )));
+    }
+    let commands = answer["commands"].as_array().into_iter().flatten();
+    if let Some(command) = commands.into_iter().find(|command| command["builtin"] != true) {
+        return Err(LaunchError::Protocol(format!(
+            "Claude Code loaded command {} that is not built in",
+            command["name"]
+        )));
+    }
+    let agents = answer["agents"].as_array().into_iter().flatten();
+    let names = agents.filter_map(|agent| agent["name"].as_str());
+    check_names("agent", names, defined)
+}
+
+/// Refuses a skill or agent `kind` named in `names` that a plugin (`plugin:name`), the project
+/// or the user defines.
+fn check_names<'a>(
+    kind: &str,
+    mut names: impl Iterator<Item = &'a str>,
+    defined: &[String],
+) -> Result<(), LaunchError> {
+    match names.find(|name| name.contains(':') || defined.iter().any(|known| known == name)) {
+        Some(name) => Err(LaunchError::Protocol(format!(
+            "Claude Code loaded {kind} {name:?}, which the adapter's flags should have left out"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// The agents, skills and commands defined in `.claude/` of `cwd` and each ancestor, and of
+/// `home`: what Claude Code would list if it read the project's or the user's settings.
+pub(crate) fn defined_names(cwd: &std::path::Path, home: Option<&std::path::Path>) -> Vec<String> {
+    let mut names = Vec::new();
+    for dir in cwd.ancestors().chain(home) {
+        for kind in ["agents", "skills", "commands"] {
+            let Ok(entries) = std::fs::read_dir(dir.join(".claude").join(kind)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = if kind == "skills" {
+                    path.file_name()
+                } else {
+                    path.file_stem()
+                };
+                if let Some(name) = name
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !names.iter().any(|n: &String| n == name))
+                {
+                    names.push(name.to_owned());
+                }
+            }
+        }
+    }
+    names
 }
 
 /// On resume, Claude Code replays a background-task notification from the earlier session and
@@ -229,6 +304,9 @@ pub(crate) struct ClaudeProtocol {
     mode: &'static str,
     /// The MCP servers `system/init` has to report, and no others.
     servers: Vec<String>,
+    /// The agents and skills the project or the user defines, which neither the `initialize`
+    /// answer nor `system/init` may list.
+    defined: Vec<String>,
     /// Whether a `system/init` frame was checked.
     verified: bool,
     turn_active: bool,
@@ -254,6 +332,7 @@ impl ClaudeProtocol {
             brief: Some(brief),
             mode,
             servers,
+            defined: Vec::new(),
             verified: false,
             turn_active: false,
             session_id: None,
@@ -265,6 +344,12 @@ impl ClaudeProtocol {
             approvals: HashMap::new(),
             approval_sequence: 0,
         }
+    }
+
+    /// The same protocol, refusing the agents and skills in `defined`.
+    pub fn defining(mut self, defined: Vec<String>) -> Self {
+        self.defined = defined;
+        self
     }
 
     fn send_brief(&mut self, out: &mut dyn Write, sink: &EventSink) -> Result<(), LaunchError> {
@@ -469,7 +554,7 @@ impl Protocol for ClaudeProtocol {
             return Ok(Step::Continue);
         }
         if kind == "system" && frame["subtype"] == "init" {
-            check_init(&frame, self.mode, &self.servers)?;
+            check_init(&frame, self.mode, &self.servers, &self.defined)?;
             self.verified = true;
         }
         if !self.verified
@@ -481,6 +566,9 @@ impl Protocol for ClaudeProtocol {
             return Err(LaunchError::Protocol(format!(
                 "Claude Code sent a {kind} frame before reporting its permission mode"
             )));
+        }
+        if kind == "control_response" && frame["response"]["request_id"] == INIT_REQUEST {
+            check_initialize(&frame["response"]["response"], self.mode, &self.defined)?;
         }
         let initialized = kind == "system" && matches!(frame["subtype"].as_str(), Some("init" | "initialized"));
         if kind == "control_response" || initialized {
