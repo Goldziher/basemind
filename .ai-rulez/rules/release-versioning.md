@@ -75,6 +75,6 @@ publishes only what is missing. Every archive is built and run on a clean runner
 The plugin manifests pin the last release, and the marketplaces serve `./plugin` from the default
 branch, so plugin content on `main` runs against the pinned binary. When `main` names tools that
 binary lacks, `.github/unreleased-surface.toml` must say so, with `pinned_version`, `since`,
-`review_by` and `reason` (ADR-0034). `tests/plugin_tool_skew.rs` then reports every unserved name
+`review_by` and `reason` (ADR-0033). `tests/plugin_tool_skew.rs` then reports every unserved name
 instead of failing, fails once `review_by` has passed, and fails when the marker is stale. The
 release commit removes the marker; `publish.yaml` refuses to release while it exists.

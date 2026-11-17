@@ -4,7 +4,7 @@ date: 2026-11-17
 amends: ["0027"]
 ---
 
-# ADR-0034: A dated marker for plugin content ahead of its release
+# ADR-0033: A dated marker for plugin content ahead of its release
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0027 (rule 4 and rule 5); ADR-0018, ADR-0026
