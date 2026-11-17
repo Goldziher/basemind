@@ -583,8 +583,14 @@ fn a_scan_into_a_store_opened_beside_a_writer_is_refused_until_it_can_take_the_l
     std::fs::write(root.join("alpha.rs"), b"pub fn gamma() -> u32 { 3 }\n").expect("edit");
 
     let config = ConfigV1::with_defaults();
-    let refused = scan(root, &mut in_place, &config, ScanSource::WorkingTree, EmbedMode::Deferred)
-        .expect_err("a full scan beside a writer");
+    let refused = scan(
+        root,
+        &mut in_place,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .expect_err("a full scan beside a writer");
     assert!(matches!(&refused, ScanError::Store(error) if error.is_lock_contention()), "{refused}");
     let named = [root.join("alpha.rs")];
     let refused = crate::scanner::scan_paths(root, &mut in_place, &config, &named, EmbedMode::Deferred)
@@ -592,7 +598,9 @@ fn a_scan_into_a_store_opened_beside_a_writer_is_refused_until_it_can_take_the_l
     assert!(matches!(&refused, ScanError::Store(error) if error.is_lock_contention()), "{refused}");
     assert!(!in_place.holds_writer_lock());
     assert!(
-        crate::store::read_index(&in_place.view_dir).expect("read").is_none_or(|map| map.files.is_empty()),
+        crate::store::read_index(&in_place.view_dir)
+            .expect("read")
+            .is_none_or(|map| map.files.is_empty()),
         "the refused scans wrote no file map"
     );
 
