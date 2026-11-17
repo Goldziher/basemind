@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.4'
 scope = 'all'
-tree = 'sha256:8834cd5106b0c9ba746cf2b186f5e0174a8653110d02528a1fbba62389ac2c13'
+tree = 'sha256:e85cee1c5ed14a551137794c26a878c9b001bc025a6be72b4010c4c2fa8e1291'
 
 [[served]]
 name = 'adr-workflow'
@@ -286,7 +286,7 @@ digest = 'sha256:de5f1b738a9101ac064e363c8a60db9a35cf2b1e2275fd77e4fb94f609a9578
 kind = 'rule'
 id = 'release-versioning'
 path = 'rules/release-versioning.md'
-digest = 'sha256:96eca079872a6471bf1544074311004946435bfb055a3cb12aecc3d08457483f'
+digest = 'sha256:a44f1fb37b65a6286ea455666e87dc9d3192d4f5fb0a8077d27cfb9b503bbcb0'
 
 [[item]]
 kind = 'rule'
