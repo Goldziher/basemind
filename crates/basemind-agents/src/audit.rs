@@ -492,8 +492,9 @@ fn blocking(file: &std::fs::File) -> std::io::Result<()> {
     Ok(())
 }
 
-/// An audit sink that keeps its records in memory, for tests and for an engine that forwards
-/// them elsewhere.
+/// An audit sink that keeps its records in memory, for tests. It is unbounded and has no
+/// reserve, so a supervisor over it never fails closed: an engine writes to a
+/// [`FileAuditSink`].
 #[derive(Debug, Default)]
 pub struct MemoryAuditSink {
     records: Mutex<Vec<AuditRecord>>,

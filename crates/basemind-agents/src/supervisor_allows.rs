@@ -56,7 +56,9 @@ fn take(count: &AtomicU32, cap: u32) -> bool {
 }
 
 /// A session's approval policy, with every allow spent from its [`Allowance`]: an allow that
-/// finds none left is a denial.
+/// finds none left is a denial. An allow is spent when the policy gives it, before the session
+/// knows whether the harness can take it: an ACP agent that offers no single-use allow gets a
+/// denial, and the allow stays spent.
 pub(crate) struct Metered {
     pub policy: Arc<dyn ApprovalPolicy>,
     pub allowance: Allowance,
