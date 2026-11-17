@@ -54,8 +54,10 @@ impl Supervisor {
             }
         };
         // An id the session did not issue is the caller's own text: it is neither recorded nor
-        // delivered.
-        let Some(kind) = entry.approvals.get(approval).copied() else {
+        // delivered. One already answered is refused the same way, so a request is allowed,
+        // spent and recorded once; it is opened again only when its answer did not reach the
+        // harness.
+        let Some(pending) = entry.approvals.get_mut(approval).filter(|pending| !pending.answered) else {
             let flavor = entry.flavor.id();
             drop(table);
             let mut record = AuditRecord {
@@ -66,11 +68,23 @@ impl Supervisor {
             asker.stamp(&mut record);
             return Err(refuse(inner, record, &asker.key, SupervisorError::UnknownApproval));
         };
+        pending.answered = true;
+        let kind = pending.kind;
         let recorded_id = approval.to_owned();
         let handle = entry.handle.clone();
         let flavor = entry.flavor.id();
         let allowance = entry.allowance.clone();
         drop(table);
+        let reopen = || {
+            if let Some(pending) = inner
+                .table()
+                .sessions
+                .get_mut(&id.0)
+                .and_then(|entry| entry.approvals.get_mut(approval))
+            {
+                pending.answered = false;
+            }
+        };
         let record = |outcome, allowed| {
             let mut record = AuditRecord {
                 session: Some(id.0),
@@ -93,16 +107,23 @@ impl Supervisor {
             // An allow past the session's or the supervisor's allowance is refused, not
             // delivered: the request stays pending for a denial.
             if !allowance.take() {
+                reopen();
                 let error = SupervisorError::AllowsExhausted;
                 inner.refuse(record(error.code(), false), &asker.key);
                 return Err(error);
             }
-            inner.audit(&record("allowed", true)).map_err(SupervisorError::Audit)?;
+            if let Err(error) = inner.audit(&record("allowed", true)) {
+                reopen();
+                return Err(SupervisorError::Audit(error));
+            }
         }
         let answered = handle
             .ok_or(LaunchError::SessionClosed)
             .and_then(|handle| handle.answer(approval, allow))
             .map_err(SupervisorError::Launch);
+        if answered.is_err() {
+            reopen();
+        }
         // A denial or a failed answer could be looped on: coalesced like a refusal.
         match (&answered, allow) {
             (Err(error), _) => inner.refuse(record(error.code(), false), &asker.key),

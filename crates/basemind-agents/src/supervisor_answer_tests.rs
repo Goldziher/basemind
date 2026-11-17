@@ -98,3 +98,65 @@ fn a_flavor_that_lets_launchers_allow_takes_the_launchers_allow() {
     assert_eq!(replies(&scratch), (1, 0));
     assert_eq!(answers(&audit), ["allowed"]);
 }
+
+/// Records the approval requests it sees, and holds the session's thread on each settlement
+/// until it is opened: a settled request stays pending in the supervisor meanwhile.
+#[derive(Default)]
+struct Gate {
+    seen: Recorder,
+    open: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+
+impl SessionObserver for Gate {
+    fn event(&self, session: SessionId, event: &crate::event::Event) {
+        self.seen.event(session, event);
+        if matches!(event, crate::event::Event::ApprovalResolved { .. }) {
+            let open = self.open.lock().unwrap();
+            let _ = self
+                .opened
+                .wait_timeout_while(open, Duration::from_secs(20), |open| !*open)
+                .unwrap();
+        }
+    }
+}
+
+impl Gate {
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+}
+
+#[test]
+fn a_pending_request_is_allowed_spent_and_recorded_once() {
+    let scratch = Scratch::new();
+    let mut config = scratch.config(HarnessKind::ClaudeCode, &approvals_body(&scratch, 2));
+    config.approval_policy = crate::test_support::always(ApprovalVerdict::Ask);
+    let spec = PolicySpec {
+        budget: crate::policy::Budget {
+            max_allows: 2,
+            ..consenting().budget
+        },
+        ..consenting()
+    };
+    let (supervisor, audit) = start(spec, vec![config]);
+    let gate = Arc::new(Gate::default());
+    let supervisor = supervisor.with_observer(gate.clone());
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let operator = supervisor.operator().unwrap();
+    let first = pending(&gate.seen, 1);
+    supervisor.answer(&operator, launched.id, &first, true).unwrap();
+    // The session settled it, and its thread is held before the supervisor hears so: the
+    // request is still pending there, already answered.
+    let again = supervisor.answer(&operator, launched.id, &first, true);
+    assert_eq!(again.err().map(|error| error.code()), Some("unknown_approval"));
+    gate.open();
+    // The repeated allow spent nothing: the budget's second allow is still there.
+    supervisor
+        .answer(&operator, launched.id, &pending(&gate.seen, 2), true)
+        .unwrap();
+    await_replies(&scratch, 2);
+    assert_eq!(replies(&scratch), (2, 0), "(allowed, denied) as the harness read them");
+    assert_eq!(answers(&audit), ["allowed", "unknown_approval", "allowed"]);
+}

@@ -67,10 +67,20 @@ pub(crate) struct Entry {
     root: PathBuf,
     pub(crate) handle: Option<SessionHandle>,
     pub(crate) detached: Arc<Detached>,
-    pub(crate) approvals: HashMap<String, &'static str>,
+    /// The approval requests the session has pending, by id, until it reports them settled.
+    pub(crate) approvals: HashMap<String, Pending>,
     /// What the session may still be allowed.
     pub(crate) allowance: Allowance,
     pump: Option<JoinHandle<()>>,
+}
+
+/// An approval request a session has pending.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Pending {
+    pub(crate) kind: &'static str,
+    /// A caller's answer to it is on its way: another is refused, so one request cannot spend
+    /// the allowance, or be recorded as allowed, more than once.
+    pub(crate) answered: bool,
 }
 
 impl Entry {
