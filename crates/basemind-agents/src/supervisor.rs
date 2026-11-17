@@ -544,6 +544,9 @@ impl Supervisor {
         entry.leader = procinfo::info(i32::try_from(handle.pid()).unwrap_or(-1)).map(|leader| leader.id());
         if let Some(leader) = entry.leader {
             entry.detached.follow(leader);
+        } else if crate::policy::caveats(flavor).contains(&crate::policy::Caveat::DetachedServer) {
+            // Its detached processes could not be followed: the session does not run unwatched.
+            entry.stop_requested = true;
         }
         let detached = entry.detached.clone();
         let pump = std::thread::Builder::new()
