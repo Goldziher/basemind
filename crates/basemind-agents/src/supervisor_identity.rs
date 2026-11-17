@@ -7,14 +7,17 @@
 //! is therefore attributed to a session by its session id, by its ancestry, or by the detached
 //! processes the supervisor recorded for the session, never by its process group.
 //!
-//! A configured launcher and the operator are each bound by the engine to one process
-//! ([`Supervisor::register_launcher`](crate::Supervisor::register_launcher),
-//! [`Supervisor::register_operator`](crate::Supervisor::register_operator)). A caller is that
-//! principal only when its peer is that process or a descendant of it, read link by link with
-//! each parent no younger than its child, and the walk failing closed. A peer in no live
+//! A configured launcher and the operator are each bound by the engine to one process, write-once
+//! while it runs: a child the embedding spawned
+//! ([`Supervisor::register_launcher_child`](crate::Supervisor::register_launcher_child)), the
+//! supervisor's own process, or a peer that is not an ancestor of the supervisor. A caller is
+//! that principal only when its peer is that process or a descendant of it, read link by link
+//! with each parent no younger than its child, and the walk failing closed. A peer in no live
 //! session and under no registered process is refused, whatever it claims: a launched agent's
 //! process that escaped its session (orphaned, double-forked, or started for it by tmux,
-//! launchd or ssh) descends from init or from that spawner, never from the registered process.
+//! launchd or ssh) descends from init, a subreaper or that spawner, and since no ancestor of the
+//! supervisor can be registered, from a registered process only if that process is itself what
+//! started it.
 
 use crate::peer::Peer;
 use crate::procinfo::{self, ProcId, ProcInfo};

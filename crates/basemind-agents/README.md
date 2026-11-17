@@ -72,11 +72,11 @@ let config = LaunchConfig::new(
 );
 let audit = Arc::new(FileAuditSink::open("/var/lib/basemind/agent-launch.jsonl")?);
 let supervisor = Supervisor::new(LaunchPolicy::new(spec)?, vec![config], Registry::with_defaults(), audit)?;
-// At start-up, before any agent runs: the embedding's own process speaks for "lead". A
-// launcher is registered only over a channel the launched agents never reach.
-let me = Peer::this_process()?;
-supervisor.register_launcher("lead", me)?;
-let lead = Caller::principal("lead", me)?;
+// At start-up, before any agent runs: the embedding's own process speaks for "lead" (an engine
+// that starts the lead itself registers that child with `register_launcher_child`). Never
+// register a process because it connected to a socket: an escaped agent can connect too.
+supervisor.register_launcher_in_process("lead")?;
+let lead = Caller::principal("lead", Peer::this_process()?)?;
 let launched = supervisor.launch(&lead, HarnessKind::Codex, &LaunchRequest::new("Review the diff."))?;
 println!("{} runs as {}", launched.id, launched.agent);
 // A launched agent's call: the kernel names the process on the other end of the connection,
@@ -101,21 +101,27 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   pre-approved MCP tools only from the rule's `allow_tools`, and a stop grace of at most 60 s.
 - **Who launches.** Nothing is trusted by default. Every caller carries a `Peer`: the process the
   kernel reports for its connection (`Peer::of_socket`), pinned to the process that connected (by
-  its audit token's pid version on macOS, a pidfd on Linux 6.5+). The supervisor places that
-  process, not the claim:
+  its audit token's pid version on macOS, a pidfd on Linux 6.5+; `Peer::pins_connections` says
+  whether this host pins). The supervisor places that process, not the claim:
   - each harness leads a POSIX session of its own, so a process inside one is that session (by
     session id, by ancestry, or as a detached process the supervisor recorded for it) whatever it
     claims, and its token has to be that session's;
-  - the engine binds each configured launcher, and the operator, to one process
-    (`register_launcher`, `register_operator`); a caller is that principal only when its process
-    is the registered one or descends from it, and `Supervisor::operator(peer)` mints the operator
-    only for such a peer, checked again on every call;
+  - the engine binds each configured launcher, and the operator, to one process: a child it
+    spawned itself (`register_launcher_child`, `register_operator_child`), its own process
+    (`*_in_process`, which admits that process only, not what descends from it), or a peer outside
+    every session and the supervisor's tree whose ancestry is read up to init and which is not an
+    ancestor of the supervisor (`register_launcher`, `register_operator`). A binding is
+    write-once while its process runs (`role_bound`). A caller is that principal only when its
+    process is the registered one or descends from it, and `Supervisor::operator(peer)` mints the
+    operator only for such a peer, checked again on every call;
   - any other process is refused: `peer_unverified` when it is under no registered process or its
     ancestry stops at a process that cannot be read, `caller_not_admitted` below the supervisor.
 
   A process that escaped its session (orphaned past its end, double-forked into a session of its
-  own, or started for it by tmux, launchd or ssh) descends from init or that spawner, never from
-  a registered process, and is refused. A caller without a peer cannot be built. The operator
+  own, or started for it by tmux, launchd or ssh) descends from init, a subreaper, or that
+  spawner. None of those is a registered process unless the engine registered one: an ancestor
+  of the supervisor (where a Linux subreaper would adopt the orphan) cannot be registered, but a
+  registered process that is itself a spawner (a shell, a tmux server) admits what it starts. A caller without a peer cannot be built. The operator
   stops and answers any session and launches none. A session that is stopping launches nothing.
 - **Depth and fan-out.** A launched agent gets its own principal (`launched-<flavor>-<id>-<hex>`),
   `BASEMIND_AGENT_DEPTH` and a fresh 256-bit token; its depth comes from the supervisor's record,
@@ -132,12 +138,16 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   command or detail, environment value, token or harness error text. Records are written outside
   the supervisor's lock. What a caller can loop on is coalesced, keyed by the verified caller or,
   for an unverified one, by where its process sits (8 a minute per key and outcome, the rest
-  counted in `suppressed`): refusals, a repeated stop, a denial, a failed answer. A request the
+  counted in `suppressed`): refusals, a repeated stop, a denial or withdrawal (the approval
+  policy's keyed by session), a failed answer. A request the
   adapter refuses is checked before a slot is reserved, so it is one refusal, never an accepted
   launch. A launch whose record cannot be written is refused, an allow answered through the
   supervisor whose record cannot be written is not delivered, and an allow the approval policy
-  settled whose record cannot be written stops the session; every other failed record is counted
-  (`audit_failures`). `FileAuditSink` appends one JSON object per line to a file it creates with
+  settled whose record cannot be written stops the session, and so does a session's 1024th
+  recorded policy allow, so one session cannot spend the reserve below; every other failed
+  record is counted (`audit_failures`). Once the reserve is spent too, every launch is refused
+  and every policy allow stops its session: the log fails closed, and rotating it is the
+  operator's job. `FileAuditSink` appends one JSON object per line to a file it creates with
   mode 0600; it refuses a symbolic link, a file with another hard link, a non-regular file (a FIFO
   without blocking), another user's file or one others can read or write. It is capped (64 MiB by
   default); the last quarter is kept for launches, exits, registrations and allows, so a flood of
@@ -255,18 +265,20 @@ Limits:
 - `BASEMIND_AGENT_ID` is self-asserted: a launched agent with a shell can post as anyone over
   comms. The supervisor does not take it, nor a principal or token, on its word; it places the
   peer process and admits a principal only from its registered process. What remains:
-  - registration is only as good as the channel it comes over: the engine must register a
-    launcher or the operator from its own start-up or a channel the launched agents are not
-    handed (not a tool of the injected MCP server, not the socket their environment names), and
-    for the process that speaks for the principal; registering a broader ancestor (a login shell)
-    admits everything else below it;
-  - a process of the same user can still act through the registered process, by tracing it
-    (`ptrace`, a debugger) or injecting code into it, where the system allows that; containing
-    that needs a separate user or sandbox;
+  - registration is only as good as its source: a principal cannot be registered over a socket
+    the launched agents can reach, since any process of the user, an escaped agent's included,
+    can connect to it, read the lead's secrets and claim any name. Register the embedding's own
+    process or a child it spawned, at start-up; everything the registered process starts acts as
+    the principal, so it must not start processes on another agent's request;
+  - a process of the same user can still act through the registered process: by tracing it
+    (`ptrace`, a debugger) or injecting code into it, or by typing into it (`tmux send-keys`,
+    `osascript` keystrokes, `TIOCSTI` on Linux before 6.2 or with `legacy_tiocsti`), where the
+    system allows that; containing that needs a separate user or sandbox;
   - an ancestry walk that stops at a process of another user (macOS does not describe root's
     processes) admits nothing past it, so a registered process must be reachable without one;
   - on Linux before 6.5 only the pid of a connection's peer is known, so a pid freed and reused
-    between the connect and `Peer::of_socket` would be taken for the peer;
+    between the connect and `Peer::of_socket` would be taken for the peer
+    (`Peer::pins_connections` is then false, and an engine can refuse callers);
   - on a platform whose kernel does not report the peer process, or whose process table the crate
     cannot read (other than Linux and macOS), no caller can be built at all.
 

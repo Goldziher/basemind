@@ -188,8 +188,15 @@ id that fails the grammar stops the launch.
      A peer in a live session (by session id, by ancestry read from `/proc` or `proc_pidinfo`,
      or as a detached process recorded for it) is that session whatever principal it claims, at
      the depth the supervisor recorded, and a token it presents has to be that session's own.
-     The engine binds each configured launcher, and the operator, to one process
-     (`register_launcher`, `register_operator`; a session's process cannot be registered). A
+     The engine binds each configured launcher, and the operator, to one process, write-once
+     while that process runs (`role_bound`; the role can be bound again once it is gone): a
+     child the engine spawned itself (`register_launcher_child`, `register_operator_child`), the
+     supervisor's own process (`*_in_process`, admitting that process only), or a peer outside
+     every session and the supervisor's tree whose ancestry is read up to init and which is not
+     an ancestor of the supervisor (`register_launcher`, `register_operator`). No process of a
+     session, starting ones included, and no ancestor of the supervisor can be registered: on
+     Linux an orphan is reparented to the nearest subreaper among its dead parent's ancestors,
+     so a registered ancestor could adopt a session's escaped process. A
      peer is that principal only when it is the registered process or a descendant of it, read
      link by link with each parent no younger than its child; `Supervisor::operator(peer)`, the
      only constructor, mints the operator only for such a peer, and the peer is placed again on
@@ -197,8 +204,11 @@ id that fails the grammar stops the launch.
      that stops at a process that cannot be read, it is `peer_unverified`; below the supervisor
      in no live session it is `caller_not_admitted`. A launched agent's process that escaped
      its session (orphaned past the session's end, double-forked into a session of its own, or
-     started for it by tmux, launchd or ssh) descends from init or that spawner, never from a
-     registered process, and so is nobody. The operator stops and answers any session and
+     started for it by tmux, launchd or ssh) descends from init, a subreaper or that spawner;
+     since no ancestor of the supervisor can be registered, it descends from a registered
+     process only when that process is itself the spawner (a shell, a tmux server), which is
+     why a registered process must not start processes on another agent's request. Otherwise
+     it is nobody. The operator stops and answers any session and
      launches none. The env identity is self-asserted (ADR-0021 rule 4) and is never consulted.
    - **Identity of a launched agent.** A principal of its own, `launched-<flavor>-<id>-<8 hex>`,
      exported in `BASEMIND_AGENT_ID` with the config's host, its depth in
@@ -225,7 +235,8 @@ id that fails the grammar stops the launch.
      approval's command or detail, an environment value, a token or harness text. Records are
      written after the supervisor's lock is released, so a slow disk does not stall the
      sessions. Everything a caller can loop on is coalesced: refusals, a repeated stop, a
-     denial, an answer that failed, keyed by the verified caller or, for an unverified one, by
+     denial or a withdrawal (a caller's or the approval policy's, the latter keyed by session),
+     an answer that failed, keyed by the verified caller or, for an unverified one, by
      where its process sits (a session, a registered process, below the supervisor, or
      unverified), never by what it claims. 8 a minute per key and outcome are written, the rest
      counted into the next one (`suppressed`) or a final record when the supervisor is dropped.
@@ -235,7 +246,10 @@ id that fails the grammar stops the launch.
      answered through the supervisor whose record cannot be written is not delivered (the
      request stays pending and is denied when its turn or the session ends); an allow the
      approval policy settled whose record cannot be written stops the session (the harness
-     already has it); every other record's failure is counted. The engine picks the file;
+     already has it), and so does a session's 1024th recorded policy allow, so one session
+     cannot spend the reserve; every other record's failure is counted. Once the reserve is
+     spent too, every launch is refused and every policy allow stops its session: the log
+     fails closed until the operator rotates it. The engine picks the file;
      `FileAuditSink` appends one JSON object per line to a file it creates with mode 0600, and
      refuses a symbolic link, a file with another hard link, a non-regular file (opened
      non-blocking, so a FIFO cannot hang it), another user's file or one others can read or
@@ -279,14 +293,23 @@ id that fails the grammar stops the launch.
      sends), the principal from `Hello` (ADR-0021 rule 3), and the launch token the injected
      `basemind serve` read from `BASEMIND_LAUNCH_TOKEN`. Carrying the token is the protocol bump
      ADR-0021 anticipated. A transport without peer credentials cannot reach the supervisor.
-   - **Registration.** The daemon registers each configured launcher and the operator to a
-     process (`register_launcher`, `register_operator`) on a channel the launched agents never
-     reach: its own start-up, or a connection it authenticated otherwise. That is not a tool of
-     the injected server, and not the socket whose path their environment names, which every
-     process of the user can connect to. It registers the process that speaks for the principal
-     (the lead's own `basemind serve`, the `basemind agent` client), not a broad ancestor such
-     as a login shell, which would admit everything below it. Until a principal is registered
-     no caller is it.
+   - **Registration topology.** A principal is never registered over the shared per-user
+     socket: every process of the user, an escaped agent's included, can connect to it, read
+     the lead's secrets (`/proc/<pid>/environ`, its files) and send any `Hello`, and an orphan
+     left by an earlier daemon run is already alive when the daemon starts. So no process
+     registers itself. One of two topologies, both before the first launch:
+     - **In-process.** The supervisor lives in the lead's own process (the process that speaks
+       for the launcher, such as its `basemind serve`), which registers itself with
+       `register_launcher_in_process`; only that process is the launcher, never what descends
+       from it.
+     - **Daemon-spawned.** The daemon starts the registered process itself (the lead agent, or
+       the `basemind agent` operator client) and registers that child with
+       `register_launcher_child` / `register_operator_child`. Everything that child starts acts
+       as the principal, so it must not start processes on another agent's request (a shell
+       tool, hooks, message-driven commands).
+
+     Until a principal is registered no caller is it, and a binding is never replaced while
+     its process runs.
    - **The operator channel.** `basemind agent approve` / `deny` / `stop` reach the supervisor as
      `Supervisor::operator(peer)` from the registered operator process or a descendant of it.
      The crate refuses every other peer; a socket's file mode does not, since every process of
@@ -364,14 +387,16 @@ approve` / `deny` as the operator, over the operator channel above.
   records and on the peer process the kernel reports, and a principal or the operator is
   admitted only from the process the engine registered for it. What remains, all of it
   same-user:
-  - a registration is only as trustworthy as the channel it came over, and binds everything
-    descending from the registered process;
-  - a process of the user that can trace the registered process (`ptrace`, a debugger) or
-    inject code into it acts as it, where the system allows that;
+  - a registration is only as trustworthy as the topology above, and binds everything
+    descending from the registered process: a registered spawner admits what it starts;
+  - a process of the user that can trace the registered process (`ptrace`, a debugger), inject
+    code into it, or type into it (`tmux send-keys`, `osascript` keystrokes, `TIOCSTI` on Linux
+    before 6.2 or with `legacy_tiocsti`) acts as it, where the system allows that;
   - an ancestry walk that stops at a process of another user (macOS does not describe root's
     processes) admits nothing past it, so a registered process has to be reachable without one;
   - on Linux before 6.5 a reported peer pid names the connecting process only while it lives:
-    one reused before `Peer::of_socket` reads its start time would be taken for it;
+    one reused before `Peer::of_socket` reads its start time would be taken for it
+    (`Peer::pins_connections` reports whether the host pins, so the engine can refuse callers);
   - the token is readable by any process of the user (`/proc/<pid>/environ` on Linux); it is
     honoured only from its own session's processes;
   - the reaper counts a session id only while its leader is listed, but a pid recorded for the
@@ -446,9 +471,11 @@ should do next.
    with launching off by default, each bound to the process the engine registered for it. A
    launched agent may launch only while `max_depth` allows, identified by its peer process (its
    session) and its launch token; the recommended default is `max_depth = 1`, which refuses
-   every launch by a launched agent's processes, those that escaped its session included, since
-   those are refused as unverified. It does not stop a process of the same user that traces or
-   injects into a registered launcher, nor one the engine wrongly registered.
+   every launch by a launched agent's processes, those that escaped its session included: they
+   descend from no registered process, given the registration topology above (no ancestor of the
+   supervisor, no socket registration, a registered process that starts nothing on another
+   agent's request). It does not stop a process of the same user that traces, injects into or
+   types into a registered launcher.
 2. **Is the launched agent a sub-identity or a principal?** Recommended and implemented: a
    principal of its own, `launched-<flavor>-<id>-<hex>`, with its launcher recorded in the
    supervisor and the audit log, never taken from what the agent reports. The grammar's `.`
