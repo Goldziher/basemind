@@ -109,13 +109,19 @@ impl FlavorPolicy {
     }
 }
 
-/// A budget on what a supervisor spends over its lifetime and per session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A budget on what a supervisor spends over its lifetime and per session. Required by every
+/// policy that allows a launch: it bounds what the audit log has to hold for the supervisor's
+/// life (see [`Supervisor::new`](crate::Supervisor::new)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Budget {
     /// How many launches the supervisor accepts in all; a further one is refused.
     pub max_launches: u32,
     /// The most turns any one session may run; a config's cap above it is lowered to it.
     pub max_turns: u32,
+    /// How many approval requests may be allowed, by the approval policy or by a caller,
+    /// across every session of the supervisor's life; past it every allow is a denial. 0
+    /// allows none.
+    pub max_allows: u32,
 }
 
 /// The unvalidated form of a [`LaunchPolicy`], as the operator's configuration states it.
@@ -135,8 +141,8 @@ pub struct PolicySpec {
     pub max_children: u32,
     /// The longest any session may run; a config's cap above it is lowered to it.
     pub wall_time: Duration,
-    /// An optional lifetime and per-session budget.
-    pub budget: Option<Budget>,
+    /// The lifetime and per-session budget; every limit but `max_allows` above zero.
+    pub budget: Budget,
 }
 
 /// Why a [`PolicySpec`], or a launch config paired with it, was refused.
@@ -183,6 +189,13 @@ pub enum PolicyError {
     /// Two launch configs were given for one flavor.
     #[error("two launch configs are given for harness {0}")]
     DuplicateConfig(&'static str),
+    /// The audit sink cannot set aside what the supervisor may write into its reserve over its
+    /// life: lower the budget, or give the log more room.
+    #[error("the audit log cannot reserve the {needed} bytes the budget may need")]
+    AuditReserve {
+        /// The bytes the supervisor's budget may write into the reserve.
+        needed: u64,
+    },
     /// A launch config disagrees with the policy for its flavor.
     #[error("the launch config for harness {harness} disagrees with the policy on {field}")]
     ConfigMismatch {
@@ -206,7 +219,8 @@ impl LaunchPolicy {
     /// is named once, a bypass mode carries an opt-in naming its flavor and mode and any other
     /// mode carries none, every launcher matches the principal grammar and does not start with
     /// [`LAUNCHED_PREFIX`], and every limit is above zero and at most its ceiling, with
-    /// `max_children` at most `max_concurrent`.
+    /// `max_children` at most `max_concurrent`; the budget is required, its `max_launches` and
+    /// `max_turns` above zero.
     ///
     /// # Errors
     ///
@@ -248,10 +262,8 @@ impl LaunchPolicy {
                 ceiling: MAX_WALL_TIME_CEILING.as_secs(),
             });
         }
-        if let Some(budget) = spec.budget {
-            check_count("budget.max_launches", budget.max_launches, u32::MAX)?;
-            check_count("budget.max_turns", budget.max_turns, u32::MAX)?;
-        }
+        check_count("budget.max_launches", spec.budget.max_launches, u32::MAX)?;
+        check_count("budget.max_turns", spec.budget.max_turns, u32::MAX)?;
         Ok(Self { spec })
     }
 
@@ -274,7 +286,8 @@ impl LaunchPolicy {
     }
 
     /// The principals that may launch at the top of a tree, once each is registered to a
-    /// process ([`Supervisor::register_launcher`](crate::Supervisor::register_launcher)).
+    /// process
+    /// ([`Supervisor::register_launcher_in_process`](crate::Supervisor::register_launcher_in_process)).
     #[must_use]
     pub fn launchers(&self) -> &[String] {
         &self.spec.launchers
@@ -310,9 +323,9 @@ impl LaunchPolicy {
         self.spec.wall_time
     }
 
-    /// The budget, if any.
+    /// The budget: all zero for the disabled policy.
     #[must_use]
-    pub fn budget(&self) -> Option<Budget> {
+    pub fn budget(&self) -> Budget {
         self.spec.budget
     }
 }

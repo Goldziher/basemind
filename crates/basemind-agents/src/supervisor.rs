@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
@@ -23,11 +23,11 @@ use crate::registry::Registry;
 use crate::session::SessionHandle;
 use crate::spec::{LaunchConfig, LaunchRequest};
 use crate::supervisor_admit::{Admitted, Asker, admit, launched_config, owned, refuse};
+use crate::supervisor_allows::Allowance;
 use crate::supervisor_pump::{Reservation, supervise};
 
-use crate::peer::Peer;
 pub use crate::supervisor_codes::launch_error_code;
-use crate::supervisor_identity::{Role, Source, coalescing_key, mint_operator, register, resolve};
+use crate::supervisor_identity::{Role, resolve};
 pub use crate::supervisor_types::{
     Caller, Launched, SessionId, SessionObserver, SessionState, SessionStatus, SupervisorError,
 };
@@ -69,6 +69,8 @@ pub(crate) struct Entry {
     pub(crate) handle: Option<SessionHandle>,
     pub(crate) detached: Arc<Detached>,
     pub(crate) approvals: HashMap<String, &'static str>,
+    /// What the session may still be allowed.
+    allowance: Allowance,
     pump: Option<JoinHandle<()>>,
 }
 
@@ -112,8 +114,17 @@ pub(crate) struct Inner {
     pub(crate) observer: std::sync::OnceLock<Arc<dyn SessionObserver>>,
     table: Mutex<Table>,
     pub(crate) changed: Condvar,
-    audit_failures: AtomicU64,
+    pub(crate) audit_failures: AtomicU64,
+    /// The registrations and releases recorded, against
+    /// [`MAX_REGISTRATIONS`](crate::supervisor_reserve::MAX_REGISTRATIONS).
+    pub(crate) registrations: AtomicU32,
+    /// The allows given over the supervisor's life, against the budget's `max_allows`.
+    allows: Arc<AtomicU32>,
+    /// Set once a record the reserve holds room for could not be written.
+    pub(crate) exhausted: Arc<AtomicBool>,
     refusals: Refusals,
+    /// Serializes registrations, each with its record.
+    pub(crate) registering: Mutex<()>,
 }
 
 impl Inner {
@@ -141,11 +152,19 @@ impl Inner {
         })
     }
 
-    /// Appends `record`, counting a failure.
+    /// Appends `record`, counting a failure. A record the reserve was claimed for that still
+    /// cannot be written exhausts the log: from then on the supervisor launches and allows
+    /// nothing, and tells the observer once.
     pub(crate) fn audit(&self, record: &AuditRecord) -> std::io::Result<()> {
         let written = self.audit.record(record);
         if written.is_err() {
             self.audit_failures.fetch_add(1, Ordering::SeqCst);
+            if crate::audit::kept_for(record)
+                && !self.exhausted.swap(true, Ordering::SeqCst)
+                && let Some(observer) = self.observer.get()
+            {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer.audit_exhausted()));
+            }
         }
         written
     }
@@ -154,7 +173,7 @@ impl Inner {
     /// one sits) has had a burst of the same refusal written in this window (see
     /// [`crate::refusals`]). Never called with the table locked.
     pub(crate) fn refuse(&self, mut record: AuditRecord, key: &str) {
-        if let Some(suppressed) = self.refusals.admit(key, record.outcome) {
+        if let Some(suppressed) = self.refusals.admit(key, record.event, record.outcome) {
             record.suppressed = Some(suppressed);
             let _ = self.audit(&record);
         }
@@ -175,8 +194,51 @@ impl Inner {
 ///
 /// Dropping the supervisor stops every live session, waits for them within their stop grace,
 /// kills what is left, and returns.
+///
+/// # Registration
+///
+/// A configured launcher is bound to the supervisor's own process or to a child the embedding
+/// spawned and still holds; the operator only to the supervisor's own process. Nothing is ever
+/// bound to the peer of a connection, and the operator is never minted for one:
+///
+/// ```no_run
+/// # fn f(supervisor: &basemind_agents::Supervisor, child: &mut std::process::Child)
+/// # -> Result<(), basemind_agents::SupervisorError> {
+/// supervisor.register_launcher_in_process("lead")?;
+/// supervisor.register_launcher_child("second", child)?;
+/// supervisor.register_operator_in_process()?;
+/// let operator = supervisor.operator()?;
+/// # let _ = operator;
+/// supervisor.unregister_launcher("second");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// # fn f(supervisor: &basemind_agents::Supervisor, peer: basemind_agents::Peer) {
+/// let _ = supervisor.register_launcher("lead", peer);
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// # fn f(supervisor: &basemind_agents::Supervisor, peer: basemind_agents::Peer) {
+/// let _ = supervisor.register_operator(peer);
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// # fn f(supervisor: &basemind_agents::Supervisor, peer: basemind_agents::Peer) {
+/// let _ = supervisor.operator(peer);
+/// # }
+/// ```
+///
+/// ```compile_fail
+/// # fn f(supervisor: &basemind_agents::Supervisor, child: &std::process::Child) {
+/// let _ = supervisor.register_operator_child(child);
+/// # }
+/// ```
 pub struct Supervisor {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
 }
 
 impl std::fmt::Debug for Supervisor {
@@ -199,7 +261,10 @@ impl Supervisor {
     /// flavor, and [`PolicyError::ConfigMismatch`] for a config that widens what the policy's
     /// rule for its flavor grants: another permission mode, bypass or unverified-mode opt-in, an
     /// approval policy the rule does not consent to, a pre-approved tool the rule does not
-    /// name, or a stop grace over [`MAX_STOP_GRACE_CEILING`](crate::MAX_STOP_GRACE_CEILING).
+    /// name, or a stop grace over [`MAX_STOP_GRACE_CEILING`](crate::MAX_STOP_GRACE_CEILING);
+    /// and [`PolicyError::AuditReserve`] when `audit` cannot set aside, for the supervisor's
+    /// life, the most its budget may write into the log's reserve (launches, exits, the stop of
+    /// each session, allows and registrations; see [`AuditSink::reserve`]).
     pub fn new(
         policy: LaunchPolicy,
         configs: Vec<LaunchConfig>,
@@ -216,6 +281,10 @@ impl Supervisor {
             }
             crate::policy::check_config(rule, config)?;
         }
+        let needed = crate::supervisor_reserve::demand(&policy, &configs);
+        audit
+            .reserve(needed)
+            .map_err(|_| PolicyError::AuditReserve { needed })?;
         Ok(Self {
             inner: Arc::new(Inner {
                 policy,
@@ -226,7 +295,11 @@ impl Supervisor {
                 table: Mutex::default(),
                 changed: Condvar::new(),
                 audit_failures: AtomicU64::new(0),
+                registrations: AtomicU32::new(0),
+                allows: Arc::default(),
+                exhausted: Arc::default(),
                 refusals: Refusals::default(),
+                registering: Mutex::new(()),
             }),
         })
     }
@@ -237,6 +310,17 @@ impl Supervisor {
     pub fn with_observer(self, observer: Arc<dyn SessionObserver>) -> Self {
         let _ = self.inner.observer.set(observer);
         self
+    }
+
+    /// Whether the audit log is exhausted: a record the supervisor's reserve was claimed for
+    /// could not be written (a write error, or another writer filled the file). From then on
+    /// every launch is refused with [`SupervisorError::AuditExhausted`] and no allow is given;
+    /// sessions already running go on, and their stops and exits are attempted. The observer
+    /// hears it once ([`SessionObserver::audit_exhausted`]); the embedding should surface it and
+    /// have the operator rotate the log before building a new supervisor.
+    #[must_use]
+    pub fn audit_exhausted(&self) -> bool {
+        self.inner.exhausted.load(Ordering::SeqCst)
     }
 
     /// The policy in force.
@@ -252,154 +336,6 @@ impl Supervisor {
     #[must_use]
     pub fn audit_failures(&self) -> u64 {
         self.inner.audit_failures.load(Ordering::SeqCst)
-    }
-
-    /// Binds the configured launcher `principal` to a child process the embedding spawned
-    /// itself (its parent is this process), such as the lead agent it starts. From then on a
-    /// caller is `principal` only when its peer is that process or descends from it; until a
-    /// principal is registered, no caller is it. This is the documented way to register.
-    ///
-    /// A binding is write-once while its process runs: the role can be bound again only once
-    /// that process is gone. Everything the registered process starts acts as the principal, so
-    /// it must not start processes on another agent's request.
-    ///
-    /// # Errors
-    ///
-    /// [`SupervisorError::CallerNotAdmitted`] for a principal the policy does not name, or a
-    /// process that is not this process's child or is a session's harness;
-    /// [`SupervisorError::PeerUnverified`] for one that is gone;
-    /// [`SupervisorError::RoleBound`] while the principal is bound to a running process;
-    /// [`SupervisorError::Audit`] when the registration could not be recorded (it is then
-    /// undone). Each is audited.
-    pub fn register_launcher_child(&self, principal: &str, child: &std::process::Child) -> Result<(), SupervisorError> {
-        self.bind(Role::Launcher(principal.to_owned()), Source::Child(child.id()))
-    }
-
-    /// Binds the configured launcher `principal` to this process, for an embedding whose own
-    /// code (its user interface) launches. Only this process is the principal then, never what
-    /// descends from it.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::register_launcher_child`].
-    pub fn register_launcher_in_process(&self, principal: &str) -> Result<(), SupervisorError> {
-        self.bind(Role::Launcher(principal.to_owned()), Source::InProcess)
-    }
-
-    /// Binds the configured launcher `principal` to `peer`'s process. Accepted only for a
-    /// process outside every session and outside this process's tree, whose ancestry is read up
-    /// to init, and which is not an ancestor of this process; on a host where this process's
-    /// own ancestry cannot be read up to init, never. A principal must not be registered from a
-    /// connection to a socket the launched agents can reach: any process of the user, an
-    /// escaped agent's included, can connect to it. Prefer [`Self::register_launcher_child`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::register_launcher_child`], and [`SupervisorError::PeerUnverified`] for a peer
-    /// whose ancestry, or this process's, cannot be read up to init.
-    pub fn register_launcher(&self, principal: &str, peer: Peer) -> Result<(), SupervisorError> {
-        self.bind(Role::Launcher(principal.to_owned()), Source::Peer(peer))
-    }
-
-    /// Binds the operator to a child process the embedding spawned, as
-    /// [`Self::register_launcher_child`] binds a launcher. [`Self::operator`] then mints the
-    /// operator only for that process or a descendant of it.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::register_launcher_child`], but for the principal.
-    pub fn register_operator_child(&self, child: &std::process::Child) -> Result<(), SupervisorError> {
-        self.bind(Role::Operator, Source::Child(child.id()))
-    }
-
-    /// Binds the operator to this process, as [`Self::register_launcher_in_process`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::register_launcher_child`], but for the principal.
-    pub fn register_operator_in_process(&self) -> Result<(), SupervisorError> {
-        self.bind(Role::Operator, Source::InProcess)
-    }
-
-    /// Binds the operator to `peer`'s process, under the conditions of
-    /// [`Self::register_launcher`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::register_launcher`], but for the principal.
-    pub fn register_operator(&self, peer: Peer) -> Result<(), SupervisorError> {
-        self.bind(Role::Operator, Source::Peer(peer))
-    }
-
-    fn bind(&self, role: Role, source: Source) -> Result<(), SupervisorError> {
-        let inner = &self.inner;
-        let caller = match &role {
-            Role::Launcher(principal) => principal.clone(),
-            Role::Operator => "operator".to_owned(),
-        };
-        let key = format!("register-{caller}");
-        let mut table = inner.table();
-        let bound = register(&inner.policy, &mut table, role.clone(), source);
-        drop(table);
-        let mut record = AuditRecord {
-            caller: Some(caller),
-            ..AuditRecord::new(AuditEvent::Registration, "registered")
-        };
-        let (id, previous) = match bound {
-            Ok(bound) => bound,
-            Err(error) => {
-                record.peer = match source {
-                    Source::Peer(peer) => Some(peer.pid()),
-                    Source::Child(pid) => Some(pid),
-                    Source::InProcess => Some(std::process::id()),
-                };
-                return Err(refuse(inner, record, &key, error));
-            }
-        };
-        record.peer = Some(id.pid.unsigned_abs());
-        if previous.is_some() {
-            record.outcome = "replaced";
-        }
-        if let Err(error) = inner.audit(&record) {
-            let mut table = inner.table();
-            table.registered.retain(|entry| *entry != (role.clone(), id));
-            if let Some(previous) = previous {
-                table.registered.push((role, previous));
-            }
-            return Err(SupervisorError::Audit(error));
-        }
-        Ok(())
-    }
-
-    /// The human operator, on the connection of `peer`: may stop and answer any session and
-    /// launches nothing.
-    ///
-    /// `peer` has to be the process registered with [`Self::register_operator`] or a descendant
-    /// of it. It is checked again on every call the operator makes. The engine must build
-    /// `peer` with [`Peer::of_socket`] on the accepted connection, never from a pid a client
-    /// sent, and must not hand an operator caller made for one connection to another.
-    ///
-    /// # Errors
-    ///
-    /// [`SupervisorError::PeerUnverified`] for a peer under no registered process, or one that
-    /// is gone or cannot be placed; [`SupervisorError::CallerNotAdmitted`] for one inside a
-    /// session, below the supervisor, or registered for something else. Each refusal is audited.
-    pub fn operator(&self, peer: Peer) -> Result<Caller, SupervisorError> {
-        let table = self.inner.table();
-        let minted = mint_operator(&table, peer);
-        let key = minted.is_err().then(|| coalescing_key(&table, &peer));
-        drop(table);
-        if let (Err(error), Some(key)) = (&minted, key) {
-            self.inner.refuse(
-                AuditRecord {
-                    claimed: Some("operator".to_owned()),
-                    peer: Some(peer.pid()),
-                    ..AuditRecord::new(AuditEvent::Refusal, error.code())
-                },
-                &key,
-            );
-        }
-        minted
     }
 
     /// Launches `request` in a harness of `flavor` for `caller`.
@@ -462,12 +398,17 @@ impl Supervisor {
             }
         };
         let id = table.next;
+        let allowance = Allowance::new(
+            inner.allows.clone(),
+            inner.policy.budget().max_allows,
+            inner.exhausted.clone(),
+        );
         let prepared = LaunchToken::generate()
             .and_then(|token| Ok((token, crate::identity::random_bytes::<4>()?)))
             .map_err(SupervisorError::Token)
             .and_then(|(token, bytes)| {
                 let agent = format!("{LAUNCHED_PREFIX}{}-{id}-{}", flavor.id(), crate::identity::hex(&bytes));
-                let config = launched_config(inner, config, &agent, depth, token.clone())?;
+                let config = launched_config(inner, config, &agent, depth, token.clone(), &allowance)?;
                 Ok((token, agent, config))
             });
         let (token, agent, config) = match prepared {
@@ -513,6 +454,7 @@ impl Supervisor {
                 handle: None,
                 detached: Arc::default(),
                 approvals: HashMap::new(),
+                allowance,
                 pump: None,
             },
         );
@@ -647,17 +589,20 @@ impl Supervisor {
         };
         record.flavor = Some(entry.flavor.id());
         record.agent = Some(entry.agent.clone());
-        match entry.state {
-            SessionState::Finished(_) => record.outcome = "already_finished",
-            SessionState::Stopping => record.outcome = "already_stopping",
-            SessionState::Starting | SessionState::Running => request_stop(entry),
+        // Each session is asked to stop once, so a stop that is written in full (and may use
+        // the log's reserve) is written at most once per session.
+        if !entry.state.live() {
+            record.outcome = "already_finished";
+        } else if !stoppable(entry) {
+            record.outcome = "already_stopping";
+        } else {
+            request_stop(entry);
         }
         // Every session below this one stops with it: once it is gone its token stops
         // resolving, and nothing but the operator could stop them.
         let mut cascaded = Vec::new();
         for (below, entry) in &mut table.sessions {
-            let stoppable = matches!(entry.state, SessionState::Starting | SessionState::Running);
-            if stoppable && !entry.stop_requested && entry.lineage.contains(&id.0) {
+            if stoppable(entry) && entry.lineage.contains(&id.0) {
                 request_stop(entry);
                 cascaded.push(AuditRecord {
                     caller: record.caller.clone(),
@@ -688,7 +633,7 @@ impl Supervisor {
         let mut stopped = Vec::new();
         let mut table = inner.table();
         for (id, entry) in &mut table.sessions {
-            if entry.state.live() {
+            if stoppable(entry) {
                 request_stop(entry);
                 stopped.push((*id, entry.flavor, entry.agent.clone()));
             }
@@ -747,6 +692,7 @@ impl Supervisor {
         let recorded_id = approval.to_owned();
         let handle = entry.handle.clone();
         let flavor = entry.flavor.id();
+        let allowance = entry.allowance.clone();
         drop(table);
         let record = |outcome, allowed| {
             let mut record = AuditRecord {
@@ -767,6 +713,13 @@ impl Supervisor {
         // request stays pending and is denied when its turn or the session ends. A denial
         // goes through whatever the log says.
         if allow {
+            // An allow past the session's or the supervisor's allowance is refused, not
+            // delivered: the request stays pending for a denial.
+            if !allowance.take() {
+                let error = SupervisorError::AllowsExhausted;
+                inner.refuse(record(error.code(), false), &asker.key);
+                return Err(error);
+            }
             inner.audit(&record("allowed", true)).map_err(SupervisorError::Audit)?;
         }
         let answered = handle
@@ -812,11 +765,11 @@ impl Drop for Supervisor {
     /// grace, then kills the ones still running and waits briefly once more.
     fn drop(&mut self) {
         self.stop_all();
-        for (caller, outcome, suppressed) in self.inner.refusals.drain() {
+        for pending in self.inner.refusals.drain() {
             let _ = self.inner.audit(&AuditRecord {
-                caller: Some(caller),
-                suppressed: Some(suppressed),
-                ..AuditRecord::new(AuditEvent::Refusal, outcome)
+                caller: Some(pending.caller),
+                suppressed: Some(pending.suppressed),
+                ..AuditRecord::new(pending.event, pending.outcome)
             });
         }
         let grace = self
@@ -866,6 +819,11 @@ impl Supervisor {
     }
 }
 
+/// Whether `entry` runs and has not been asked to stop yet.
+fn stoppable(entry: &Entry) -> bool {
+    matches!(entry.state, SessionState::Starting | SessionState::Running) && !entry.stop_requested
+}
+
 pub(crate) fn request_stop(entry: &mut Entry) {
     match &entry.handle {
         Some(handle) => {
@@ -888,3 +846,7 @@ mod attack_tests;
 #[cfg(all(test, unix))]
 #[path = "supervisor_identity_tests.rs"]
 mod identity_tests;
+
+#[cfg(all(test, unix))]
+#[path = "supervisor_audit_tests.rs"]
+mod audit_tests;

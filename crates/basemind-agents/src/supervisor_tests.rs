@@ -122,7 +122,11 @@ pub(super) fn policy(flavors: &[HarnessKind]) -> PolicySpec {
         max_concurrent: 4,
         max_children: 4,
         wall_time: Duration::from_secs(30),
-        budget: None,
+        budget: Budget {
+            max_launches: 64,
+            max_turns: 100,
+            max_allows: 4096,
+        },
     }
 }
 
@@ -151,12 +155,21 @@ pub(super) fn registered(supervisor: Supervisor) -> Supervisor {
 
 /// This process, the one [`registered`] binds every role to.
 pub(super) fn own() -> Peer {
-    Peer::this_process().unwrap()
+    Peer::embedding().unwrap()
 }
 
 /// The harness process of session `id`, standing in for a process of that session.
 pub(super) fn inside(supervisor: &Supervisor, id: SessionId) -> Peer {
     Peer::of_pid(supervisor.status(id).unwrap().pid.unwrap())
+}
+
+/// A caller of the operator's kind on `peer`, which no public constructor makes: what a forged
+/// or misdirected operator caller would be.
+pub(super) fn forged_operator(peer: Peer) -> Caller {
+    Caller {
+        kind: crate::supervisor_types::CallerKind::Operator,
+        peer,
+    }
 }
 
 pub(super) fn lead() -> Caller {
@@ -320,7 +333,7 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
             claude,
             "caller_not_admitted",
         ),
-        (supervisor.operator(own()).unwrap(), claude, "caller_not_admitted"),
+        (supervisor.operator().unwrap(), claude, "caller_not_admitted"),
         // A principal with the launched prefix is never a configured launcher.
         (
             Caller::principal("launched-claude-0-00000000", own()).unwrap(),
@@ -491,10 +504,11 @@ fn the_budget_caps_launches_and_turns_and_an_adapter_refusal_spends_none() {
     config.limits.max_turns = 5;
     let (supervisor, audit) = start(
         PolicySpec {
-            budget: Some(Budget {
+            budget: Budget {
                 max_launches: 1,
                 max_turns: 1,
-            }),
+                max_allows: 0,
+            },
             ..policy(&[HarnessKind::ClaudeCode])
         },
         vec![config],
@@ -573,9 +587,7 @@ fn only_the_launcher_or_the_operator_stops_a_session_and_reaping_forgets_it() {
         "unknown_session"
     );
     assert_eq!(supervisor.status(launched.id).unwrap().state, SessionState::Running);
-    supervisor
-        .stop(&supervisor.operator(own()).unwrap(), launched.id)
-        .unwrap();
+    supervisor.stop(&supervisor.operator().unwrap(), launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
     supervisor.stop(&lead(), launched.id).unwrap();
     assert_eq!(
@@ -634,6 +646,18 @@ impl SessionObserver for Recorder {
 }
 
 impl Recorder {
+    /// The ids of the approval requests seen so far, in order.
+    pub(super) fn approvals(&self) -> Vec<String> {
+        let events = self.0.lock().unwrap();
+        events
+            .iter()
+            .filter_map(|(_, event)| match event {
+                Event::ApprovalRequest(request) => Some(request.id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn approval(&self) -> Option<String> {
         self.0.lock().unwrap().iter().find_map(|(_, event)| match event {
             Event::ApprovalRequest(request) => Some(request.id.clone()),

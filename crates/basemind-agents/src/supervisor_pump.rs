@@ -14,15 +14,12 @@ use crate::session::Session;
 use crate::supervisor::{Inner, SessionId, SessionState};
 use crate::supervisor_codes::{approval_kind, approval_source, finish_code};
 
-/// The most allows the approval policy may settle for one session, each of which is recorded;
-/// past it the session is stopped, so one session cannot spend the audit log's reserve.
-pub(crate) const MAX_RECORDED_ALLOWS: usize = 1024;
 /// The most approval requests whose kind a session remembers until they are settled.
 const MAX_REMEMBERED_APPROVALS: usize = 256;
 
 /// A session's slot in the table, taken at admission and not yet handed to its pump. Dropped
 /// before [`Reservation::disarm`] (an adapter error, a failed thread spawn, a panic in the
-/// adapter), it gives the slot and the launch back and records the refusal.
+/// adapter), it gives the slot back and records the refusal; the launch stays spent.
 pub(crate) struct Reservation<'a> {
     inner: &'a Inner,
     id: u64,
@@ -54,11 +51,8 @@ impl Drop for Reservation<'_> {
         if !self.armed {
             return;
         }
-        let mut table = self.inner.table();
-        if table.sessions.remove(&self.id).is_some() {
-            table.launches = table.launches.saturating_sub(1);
-        }
-        drop(table);
+        // The launch stays spent: its record, written to the reserve, is not taken back.
+        self.inner.table().sessions.remove(&self.id);
         self.inner.changed.notify_all();
         let key = self.refusal.caller.clone().unwrap_or_default();
         self.inner.refuse(
@@ -137,7 +131,6 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
         session.stop();
     }
     let mut observer = inner.observer.get();
-    let mut allows = 0_usize;
     let mut status = FinishStatus::Failed;
     for event in session.events() {
         if let Some(watching) = observer {
@@ -179,12 +172,10 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
                     ..AuditRecord::new(AuditEvent::Approval, if *allowed { "allowed" } else { "denied" })
                 };
                 if *allowed {
-                    allows += 1;
-                    // The harness already has the allow; an allow that is not on the record
-                    // ends the session rather than let it act on it unrecorded, and so does
-                    // reaching the session's share of the log's reserve.
-                    let recorded = allows <= MAX_RECORDED_ALLOWS && inner.audit(&record).is_ok();
-                    if !recorded || allows >= MAX_RECORDED_ALLOWS {
+                    // The harness already has the allow (spent from the session's allowance,
+                    // so it is within what the log was sized for); one that is not on the
+                    // record ends the session rather than let it act on it unrecorded.
+                    if inner.audit(&record).is_err() {
                         session.stop();
                     }
                 } else {

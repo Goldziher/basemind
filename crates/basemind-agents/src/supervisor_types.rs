@@ -42,14 +42,14 @@ impl std::fmt::Display for SessionId {
 /// was given in [`ENV_LAUNCH_TOKEN`](crate::ENV_LAUNCH_TOKEN). Either way the caller carries the
 /// [`Peer`] the kernel reported for its connection, and the supervisor decides by that process,
 /// not by the claim: a process inside a live session, or below one, is that session whatever it
-/// claims; a process is a configured launcher only when it is, or descends from, the process the
-/// engine registered for that principal
-/// ([`Supervisor::register_launcher`](crate::Supervisor::register_launcher)); any other process
-/// is nobody. `Debug` never shows a token.
+/// claims; a process is a configured launcher only when it is the process the embedding
+/// registered for that principal
+/// ([`Supervisor::register_launcher_in_process`](crate::Supervisor::register_launcher_in_process)),
+/// or is or descends from the child it registered; any other process is nobody. `Debug` never shows a token.
 ///
 /// There is no public constructor for the operator: only
-/// [`Supervisor::operator`](crate::Supervisor::operator) makes one, for the registered operator
-/// process or a descendant of it.
+/// [`Supervisor::operator`](crate::Supervisor::operator) makes one, in the supervisor's own process,
+/// never for a connection.
 ///
 /// ```compile_fail
 /// let operator = basemind_agents::Caller::operator();
@@ -172,6 +172,11 @@ pub struct Launched {
 pub trait SessionObserver: Send + Sync {
     /// `event` happened in `session`.
     fn event(&self, session: SessionId, event: &Event);
+
+    /// The audit log became exhausted ([`Supervisor::audit_exhausted`](crate::Supervisor::audit_exhausted)):
+    /// called once, on the thread whose record failed. Every launch is refused from then on;
+    /// the embedding should tell the operator, outside the log. Does nothing by default.
+    fn audit_exhausted(&self) {}
 }
 
 /// Why the supervisor refused a request. Every variant has a stable [`code`](Self::code), the
@@ -251,6 +256,19 @@ pub enum SupervisorError {
     /// The session has no pending approval request of that id.
     #[error("no pending approval request of that id")]
     UnknownApproval,
+    /// The session, or the supervisor over its life (the budget's `max_allows`), was given all
+    /// the allows it may be, so this one was not delivered.
+    #[error("no allow is left in the session's or the supervisor's allowance")]
+    AllowsExhausted,
+    /// The supervisor recorded its most registrations and releases
+    /// (64 over its life), which its share of the audit log's reserve was sized for.
+    #[error("the supervisor's registrations are spent")]
+    RegistrationLimit,
+    /// A record the supervisor's share of the audit log's reserve was claimed for could not be
+    /// written, so it launches nothing more
+    /// ([`Supervisor::audit_exhausted`](crate::Supervisor::audit_exhausted)).
+    #[error("the audit log is exhausted; launching stays off until it is rotated")]
+    AuditExhausted,
 }
 
 impl SupervisorError {
@@ -276,6 +294,9 @@ impl SupervisorError {
             Self::NotOwner(_) => "not_owner",
             Self::UnknownApproval => "unknown_approval",
             Self::RoleBound => "role_bound",
+            Self::AllowsExhausted => "allows_exhausted",
+            Self::RegistrationLimit => "registration_limit",
+            Self::AuditExhausted => "audit_exhausted",
         }
     }
 }

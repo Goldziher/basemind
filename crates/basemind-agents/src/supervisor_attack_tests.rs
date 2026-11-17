@@ -144,7 +144,9 @@ fn a_child_that_leaves_for_a_session_of_its_own_is_still_its_session() {
         return;
     };
     assert_eq!(attack_outcome(&attack.scratch), "left");
-    let refused = attack.supervisor.operator(Peer::of_pid(attack.attacker));
+    let refused = attack
+        .supervisor
+        .stop(&forged_operator(Peer::of_pid(attack.attacker)), attack.a.id);
     assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
     let claim = Caller::principal("lead", Peer::of_pid(attack.attacker)).unwrap();
     // As the configured launcher it would launch at depth 1 and own A; as C it sits at depth 2.
@@ -184,28 +186,37 @@ fn a_process_below_the_supervisor_in_no_session_is_no_launcher() {
 }
 
 #[test]
-fn only_a_peer_outside_the_supervisors_tree_is_made_the_operator() {
+fn the_operator_is_this_process_alone_and_ends_with_its_binding() {
     let scratch = Scratch::new();
     let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
     let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
     // A launched agent running `basemind agent approve` from its shell: a process of the session.
-    let refused = supervisor.operator(inside(&supervisor, launched.id));
+    let refused = supervisor.stop(&forged_operator(inside(&supervisor, launched.id)), launched.id);
     assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
     // A process this process started outside any session.
-    let mut stray = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
-    let refused = supervisor.operator(Peer::of_pid(stray.id()));
-    let _ = stray.kill();
-    let _ = stray.wait();
+    let stray = Stand::new();
+    let refused = supervisor.stop(&forged_operator(stray.peer()), launched.id);
     assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
     assert_eq!(
-        outcomes(&audit, AuditEvent::Refusal),
+        outcomes(&audit, AuditEvent::Stop),
         ["caller_not_admitted", "caller_not_admitted"]
     );
-    // The operator's own process, outside the tree.
-    let operator = supervisor.operator(own()).unwrap();
+    // Minted in this process, it stops any session; released, it is refused from then on.
+    let operator = supervisor.operator().unwrap();
+    let second = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
     supervisor.stop(&operator, launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
+    assert!(supervisor.unregister_operator());
+    assert_eq!(
+        supervisor.stop(&operator, second.id).map_err(|error| error.code()),
+        Err("caller_not_admitted"),
+        "an operator outlived its binding"
+    );
+    assert_eq!(
+        supervisor.operator().map(|_| ()).map_err(|error| error.code()),
+        Err("caller_not_admitted")
+    );
 }
 
 /// An OpenCode session whose stand-in starts `perl <attack>` in the background, then completes
@@ -316,7 +327,7 @@ fn a_detached_process_cannot_join_the_launchers_group_and_is_still_reaped() {
 }
 
 /// An adapter whose launch panics, as a bug in an adapter would.
-struct Panics(HarnessKind);
+pub(super) struct Panics(pub(super) HarnessKind);
 
 impl Adapter for Panics {
     fn supports(&self, kind: HarnessKind) -> bool {
@@ -695,21 +706,49 @@ cat > /dev/null
     );
 }
 
-/// A Claude Code stand-in that asks for `count` tool approvals one after the other, reading
-/// each answer, touches `done` in the scratch directory, then keeps running.
-fn approvals_body(scratch: &Scratch, count: usize) -> String {
+/// A Claude Code stand-in that asks for `count` tool approvals one after the other, appending
+/// each answer it reads to `replies` in the scratch directory, touches `done` there, then keeps
+/// running.
+pub(super) fn approvals_body(scratch: &Scratch, count: usize) -> String {
     format!(
         r#"{HANDSHAKE}i=0
 while [ "$i" -lt {count} ]; do
   i=$((i + 1))
   printf '%s\n' '{{"type":"control_request","request_id":"req-'"$i"'","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"true"}}}}}}'
   read -r reply
+  printf '%s\n' "$reply" >> '{replies}'
 done
 touch '{done}'
 cat > /dev/null
 "#,
+        replies = scratch.path.join("replies").display(),
         done = scratch.path.join("done").display()
     )
+}
+
+/// The answers the stand-in of [`approvals_body`] read so far: (allowed, denied).
+pub(super) fn replies(scratch: &Scratch) -> (usize, usize) {
+    let text = std::fs::read_to_string(scratch.path.join("replies")).unwrap_or_default();
+    let allowed = text
+        .lines()
+        .filter(|line| line.contains(r#""behavior":"allow""#))
+        .count();
+    let denied = text
+        .lines()
+        .filter(|line| line.contains(r#""behavior":"deny""#))
+        .count();
+    (allowed, denied)
+}
+
+/// A policy spec whose Claude Code rule consents to an approval policy.
+pub(super) fn consenting() -> PolicySpec {
+    PolicySpec {
+        flavors: vec![FlavorPolicy {
+            approval_policy: true,
+            ..FlavorPolicy::supervised(HarnessKind::ClaudeCode)
+        }],
+        ..policy(&[])
+    }
 }
 
 /// A supervisor whose Claude Code config settles every approval with `verdict`.
@@ -720,14 +759,7 @@ fn settling(
 ) -> (Supervisor, Arc<MemoryAuditSink>) {
     let mut config = scratch.config(HarnessKind::ClaudeCode, &approvals_body(scratch, count));
     config.approval_policy = crate::test_support::always(verdict);
-    let spec = PolicySpec {
-        flavors: vec![FlavorPolicy {
-            approval_policy: true,
-            ..FlavorPolicy::supervised(HarnessKind::ClaudeCode)
-        }],
-        ..policy(&[])
-    };
-    start(spec, vec![config])
+    start(consenting(), vec![config])
 }
 
 #[test]
@@ -742,30 +774,48 @@ fn a_flood_of_policy_denials_is_coalesced() {
     }
     supervisor.stop(&lead(), launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
-    let written = outcomes(&audit, AuditEvent::Approval).len();
-    assert!(
-        written <= crate::refusals::BURST as usize,
-        "{written} denial records for one session"
+    // A burst is written, every denial in it, and the rest are counted.
+    let written = outcomes(&audit, AuditEvent::Approval);
+    assert_eq!(
+        written,
+        ["denied"; crate::refusals::BURST as usize],
+        "denial records for one session"
+    );
+    drop(supervisor);
+    let counted: u64 = audit
+        .records()
+        .iter()
+        .filter(|record| record.outcome == "denied")
+        .filter_map(|record| record.suppressed)
+        .sum();
+    assert_eq!(
+        counted,
+        200 - u64::from(crate::refusals::BURST),
+        "the suppressed denials were not counted"
     );
 }
 
 #[test]
-fn a_session_past_its_recorded_allows_is_stopped() {
+fn a_session_past_its_recorded_allows_is_denied_them() {
     let scratch = Scratch::new();
-    let count = crate::supervisor_pump::MAX_RECORDED_ALLOWS + 20;
-    let (supervisor, audit) = settling(&scratch, crate::spec::ApprovalVerdict::Allow, count);
+    let cap = crate::supervisor_allows::MAX_SESSION_ALLOWS as usize;
+    let (supervisor, audit) = settling(&scratch, crate::spec::ApprovalVerdict::Allow, cap + 20);
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
-    let state = supervisor.wait(launched.id, Duration::from_secs(60));
-    assert!(
-        matches!(state, Some(SessionState::Finished(_))),
-        "a session ran on past its recorded allows: {state:?}"
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !scratch.path.join("done").exists() {
+        assert!(Instant::now() < deadline, "the stand-in never had its answers");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Every allow the harness got is on the record; the rest were denied, not allowed unseen.
+    assert_eq!(
+        replies(&scratch),
+        (cap, 20),
+        "(allowed, denied) as the harness read them"
     );
     let allows = outcomes(&audit, AuditEvent::Approval)
         .iter()
         .filter(|outcome| **outcome == "allowed")
         .count();
-    assert!(
-        allows <= crate::supervisor_pump::MAX_RECORDED_ALLOWS,
-        "{allows} allows recorded"
-    );
+    assert_eq!(allows, cap, "allows recorded");
+    assert_eq!(supervisor.status(launched.id).unwrap().state, SessionState::Running);
 }

@@ -2,12 +2,15 @@
 //! admitted and as whom, the config the launched agent runs under, and whether a caller may
 //! control a session.
 
+use std::sync::Arc;
+
 use crate::audit::AuditRecord;
 use crate::error::LaunchError;
 use crate::harness::HarnessKind;
 use crate::identity::{AgentIdentity, LaunchToken};
 use crate::spec::LaunchConfig;
 use crate::supervisor::{Entry, Inner, Launcher, Resolved, SessionId, SessionState, SupervisorError, Table};
+use crate::supervisor_allows::{Allowance, Metered};
 use crate::supervisor_identity::{coalescing_key, resolve};
 use crate::supervisor_types::{Caller, CallerKind};
 
@@ -77,6 +80,9 @@ pub(crate) fn admit<'a>(
     if !policy.enabled() {
         return Err(SupervisorError::Disabled);
     }
+    if inner.exhausted.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(SupervisorError::AuditExhausted);
+    }
     // Until the caller resolves, a refusal names nobody and reports what was claimed.
     Asker::new(table, caller, None).stamp(refusal);
     let resolved = resolve(policy, table, caller)?;
@@ -109,10 +115,9 @@ pub(crate) fn admit<'a>(
             max_depth: policy.max_depth(),
         });
     }
-    if let Some(budget) = policy.budget().filter(|budget| table.launches >= budget.max_launches) {
-        return Err(SupervisorError::BudgetExhausted {
-            max_launches: budget.max_launches,
-        });
+    let max_launches = policy.budget().max_launches;
+    if table.launches >= max_launches {
+        return Err(SupervisorError::BudgetExhausted { max_launches });
     }
     let live = table.live().count();
     if live >= usize::try_from(policy.max_concurrent()).unwrap_or(usize::MAX) {
@@ -145,13 +150,15 @@ pub(crate) struct Admitted<'a> {
 }
 
 /// The flavor's config as the launched agent runs it: its own principal (keeping the config's
-/// host), its depth and token, and limits lowered to the policy's wall time and budget.
+/// host), its depth and token, limits lowered to the policy's wall time and budget, and its
+/// approval policy's allows spent from `allowance`.
 pub(crate) fn launched_config(
     inner: &Inner,
     template: &LaunchConfig,
     agent: &str,
     depth: u32,
     token: LaunchToken,
+    allowance: &Allowance,
 ) -> Result<LaunchConfig, LaunchError> {
     let mut identity = AgentIdentity::new(agent)?;
     if let Some(host) = template.identity.host() {
@@ -160,9 +167,14 @@ pub(crate) fn launched_config(
     let mut config = template.clone();
     config.identity = identity.with_lineage(depth, token);
     config.limits.wall_time = config.limits.wall_time.min(inner.policy.wall_time());
-    if let Some(budget) = inner.policy.budget() {
-        config.limits.max_turns = config.limits.max_turns.min(budget.max_turns);
-    }
+    config.limits.max_turns = config.limits.max_turns.min(inner.policy.budget().max_turns);
+    // Every allow the policy decides is spent from the session's allowance.
+    config.approval_policy = config.approval_policy.take().map(|policy| {
+        Arc::new(Metered {
+            policy,
+            allowance: allowance.clone(),
+        }) as Arc<dyn crate::spec::ApprovalPolicy>
+    });
     Ok(config)
 }
 

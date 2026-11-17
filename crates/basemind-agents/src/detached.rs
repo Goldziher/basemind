@@ -13,10 +13,10 @@
 //! what is left: the processes recorded, and members of a recorded session whose leader is
 //! still listed. A process group is signalled only when every process in it is the session's;
 //! otherwise each of the session's processes in it is signalled alone, and each only after its
-//! pid and start time were checked again (through a pidfd on Linux, which closes the gap
-//! between that check and the signal). Nothing is killed without a listing of the process
-//! table. A descendant that left before the first listing, or started and left between two,
-//! is not seen.
+//! pid and start time were checked again (through a pidfd on Linux 5.3 and later, which closes
+//! the gap between that check and the signal; before 5.3, and on macOS, the gap remains).
+//! Nothing is killed without a listing of the process table. A descendant that left before
+//! the first listing, or started and left between two, is not seen.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
