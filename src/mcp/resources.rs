@@ -184,7 +184,8 @@ impl BasemindServer {
         let result = match parsed {
             ResourceUri::Status => super::helpers_admin::index_status(state).await?,
             ResourceUri::Outline(path) => {
-                super::helpers_code::code_outline(state, from_args(json!({ "path": path }))?).await?
+                let params: super::types_tools::CodeOutlineParams = from_args(json!({ "path": path }))?;
+                super::adapter::run(&state.shared, params, crate::engine::Workspace::code_outline).await?
             }
             ResourceUri::Memory(key) => {
                 let result = super::helpers_memory::memory_search(state, from_args(json!({ "key": key }))?).await?;

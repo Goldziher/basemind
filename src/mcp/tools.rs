@@ -17,6 +17,7 @@ use rmcp::model::CallToolResult;
 use rmcp::tool;
 
 use super::BasemindServer;
+use super::adapter::{self, Op};
 use super::cursor_bind::bound;
 use super::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
 use super::strict::Strict;
@@ -25,6 +26,7 @@ use super::types_tools::{
     FindFilesToolParams,
 };
 use super::{helpers_code, helpers_expand};
+use crate::engine::Workspace;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
 impl BasemindServer {
@@ -187,14 +189,19 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
+    /// Run the engine operation `op` as a verb-tool call: the body both a `#[tool]` shim and the
+    /// matching `basemind` command run ([`adapter::call`]).
+    pub(crate) async fn op<P, R>(&self, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+    where
+        P: super::cursor_bind::Paged + Send + 'static,
+        R: serde::Serialize + 'static,
+    {
+        adapter::call(&self.state, p, op).await
+    }
+
     /// Body of `code_outline`, shared with `basemind code outline`.
     pub(crate) async fn code_outline_call(&self, p: CodeOutlineParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_outline",
-            p,
-            bound(p, |p| helpers_code::code_outline(&self.state, p)).await
-        )
+        self.op(p, Workspace::code_outline).await
     }
 
     /// Body of `code_symbols`, shared with `basemind code symbols`.

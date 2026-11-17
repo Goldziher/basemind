@@ -11,6 +11,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Subcommand;
 
+use crate::engine::Workspace;
 use crate::mcp::BasemindServer;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
@@ -257,12 +258,15 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         } => (
             "code_outline",
             server
-                .code_outline_call(CodeOutlineParams {
-                    path: resolve_path(server, &path),
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+                .op(
+                    CodeOutlineParams {
+                        path: resolve_path(server, &path),
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    Workspace::code_outline,
+                )
                 .await,
         ),
         CodeCmd::Symbols {
