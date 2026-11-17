@@ -418,6 +418,29 @@ pub(crate) fn build_chunks(
     (chunks, dense)
 }
 
+/// Give `chunks` the vectors `embed` returns for `inputs` (one per chunk) and return their
+/// dimension. On any failure no chunk keeps a vector and the reason is returned: the caller indexes
+/// the document without them.
+pub(crate) fn embed_chunks(
+    inputs: &[String],
+    chunks: &mut [super::DocChunk],
+    embed: impl FnOnce(&[&str]) -> Result<(u16, Vec<Vec<f32>>), String>,
+) -> Result<u16, String> {
+    let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+    let (dim, vectors) = embed(&refs)?;
+    if vectors.len() != chunks.len() || vectors.iter().any(|v| v.len() != usize::from(dim)) {
+        return Err(format!(
+            "the embedder returned {} vectors for {} chunks",
+            vectors.len(),
+            chunks.len()
+        ));
+    }
+    for (chunk, vector) in chunks.iter_mut().zip(vectors) {
+        chunk.embedding = vector;
+    }
+    Ok(dim)
+}
+
 /// The text of `path` when it is a text source small enough to look lines up in.
 pub(crate) fn read_text_source(path: &std::path::Path, mime: &str) -> Option<String> {
     let group = crate::lance::docs::mime_group(mime);

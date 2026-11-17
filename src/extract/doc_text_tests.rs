@@ -108,3 +108,25 @@ fn chunks_cite_the_source_lines_they_came_from() {
     assert_eq!(lines, vec![Some((1, 4)), Some((6, 8))]);
     assert_eq!(source_lines(source, ["not in the source"]), vec![None]);
 }
+
+#[test]
+fn an_embedder_that_fails_leaves_the_chunks_without_vectors() {
+    let inputs = vec!["a".to_string(), "b".to_string()];
+    let mut chunks = vec![super::super::DocChunk::default(), super::super::DocChunk::default()];
+    let failed = embed_chunks(&inputs, &mut chunks, |_| {
+        Err("loading dense embedder: offline".to_string())
+    });
+    assert_eq!(failed, Err("loading dense embedder: offline".to_string()));
+    assert!(chunks.iter().all(|c| c.embedding.is_empty()));
+    let short = embed_chunks(&inputs, &mut chunks, |_| Ok((2, vec![vec![1.0, 0.0]])));
+    assert!(short.is_err());
+    assert!(
+        chunks.iter().all(|c| c.embedding.is_empty()),
+        "a short answer sets no vector"
+    );
+    assert_eq!(
+        embed_chunks(&inputs, &mut chunks, |_| Ok((2, vec![vec![1.0, 0.0]; 2]))),
+        Ok(2)
+    );
+    assert!(chunks.iter().all(|c| c.embedding.len() == 2));
+}

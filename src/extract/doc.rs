@@ -634,32 +634,30 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         );
         dense_inputs.clear();
     }
-    let mut embedding_dim = 0;
-    if embed_requested && !dense_inputs.is_empty() {
+    // An embedder that cannot load or run leaves the document indexed without vectors: it is still
+    // found by the lexical lane, and the vector lane says it has none (review M1).
+    let embedding_dim = if embed_requested && !dense_inputs.is_empty() {
         let preset = config.embedding_preset.as_deref().unwrap_or("balanced");
-        let embedder = crate::embeddings::SharedEmbedder::load_with_provider(
-            preset,
-            config.embed_max_threads,
-            config.embed_batch_size,
-            config.onnx_provider,
-        )
-        .map_err(|error| ExtractError::Document(format!("loading dense embedder: {error}")))?;
-        let input_refs: Vec<&str> = dense_inputs.iter().map(String::as_str).collect();
-        let vectors = embedder
-            .embed_batch(&input_refs)
-            .map_err(|error| ExtractError::Document(format!("embedding document chunks: {error}")))?;
-        if vectors.len() != chunks.len() {
-            return Err(ExtractError::Document(format!(
-                "dense embedder returned {} vectors for {} chunks",
-                vectors.len(),
-                chunks.len()
-            )));
-        }
-        embedding_dim = embedder.dim();
-        for (chunk, vector) in chunks.iter_mut().zip(vectors) {
-            chunk.embedding = vector;
-        }
-    }
+        let embedded = text::embed_chunks(&dense_inputs, &mut chunks, |inputs| {
+            let embedder = crate::embeddings::SharedEmbedder::load_with_provider(
+                preset,
+                config.embed_max_threads,
+                config.embed_batch_size,
+                config.onnx_provider,
+            )
+            .map_err(|error| format!("loading dense embedder: {error:#}"))?;
+            let vectors = embedder
+                .embed_batch(inputs)
+                .map_err(|error| format!("embedding document chunks: {error:#}"))?;
+            Ok((embedder.dim(), vectors))
+        });
+        embedded.unwrap_or_else(|reason| {
+            tracing::warn!(path = %path.display(), %reason, "document indexed without vectors");
+            0
+        })
+    } else {
+        0
+    };
 
     let embedding_model = if embedding_dim > 0 {
         config.embedding_preset.clone().unwrap_or_else(|| "default".to_string())
