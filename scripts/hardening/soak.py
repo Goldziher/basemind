@@ -16,6 +16,7 @@ import contextlib
 import json
 import os
 import random
+import shutil
 import signal
 import subprocess
 import sys
@@ -462,9 +463,11 @@ def shutdown_checks(wl: Workload, sampler: Sampler, sink: Ndjson, iso: Isolation
 
     if args.inject_orphan:
         # Proof that the sweep fires: a detached process anchored in the run root, as a leaked child would be.
-        subprocess.Popen(["sleep", "600"], cwd=iso.root, env=wl.env, start_new_session=True)  # noqa: S603,S607
+        subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(600)"], cwd=iso.root, env=wl.env, start_new_session=True
+        )
         sink.write(
-            {"kind": "note", "text": "injected a detached `sleep 600` whose cwd is the run root (--inject-orphan)"}
+            {"kind": "note", "text": "injected a detached 600 s sleeper whose cwd is the run root (--inject-orphan)"}
         )
 
     time.sleep(2)
@@ -529,6 +532,7 @@ def main() -> int:  # noqa: PLR0915
             iso.cleanup()
 
     install_cleanup(cleanup)
+    args.binary = iso.stage_binary(args.binary)
 
     repo = iso.root / "repo"
     src = (args.repo or repo_root()).resolve()
@@ -536,7 +540,7 @@ def main() -> int:  # noqa: PLR0915
     if (src / ".git").exists():
         clone_repo(src, repo)
     else:
-        subprocess.run(["cp", "-R", str(src), str(repo)], check=True)  # noqa: S607
+        shutil.copytree(src, repo, symlinks=True)
     sink.write(
         {
             "kind": "meta",
@@ -614,5 +618,6 @@ def main() -> int:  # noqa: PLR0915
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     sys.exit(main())
