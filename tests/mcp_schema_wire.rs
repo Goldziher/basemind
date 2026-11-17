@@ -117,6 +117,41 @@ fn verb_tools(tools: &[rmcp::model::Tool]) -> Vec<&rmcp::model::Tool> {
         .collect()
 }
 
+/// The committed `tools/list` snapshot of the verb tools, sorted by name.
+const TOOLS_LIST_SNAPSHOT: &str = "tests/fixtures/tools_list.json";
+
+/// The verb tools as `tools/list` serializes them, sorted by name, one JSON document.
+fn verb_tools_snapshot(tools: &[rmcp::model::Tool]) -> String {
+    let mut verbs = verb_tools(tools);
+    verbs.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut text = serde_json::to_string_pretty(&verbs).expect("serialize tools");
+    text.push('\n');
+    text
+}
+
+/// Moving a params type, a doc comment or a schema attribute must not change a byte an agent
+/// reads: the descriptions and schemas are the contract, and ADR-0018 caps their size.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tools_list_matches_the_committed_snapshot() {
+    let (_dir, tools, _) = list_tools().await;
+    let served = verb_tools_snapshot(&tools);
+    let committed = std::fs::read_to_string(TOOLS_LIST_SNAPSHOT).expect("read the tools/list snapshot");
+    assert!(
+        served == committed,
+        "tools/list differs from {TOOLS_LIST_SNAPSHOT}. If the change is intended, run `cargo test --test \
+         mcp_schema_wire -- --ignored regenerate_tools_list` and review the diff.\nserved:\n{served}"
+    );
+}
+
+/// Rewrite the committed snapshot. Ignored so the snapshot only changes when asked to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn regenerate_tools_list() {
+    let (_dir, tools, _) = list_tools().await;
+    std::fs::write(TOOLS_LIST_SNAPSHOT, verb_tools_snapshot(&tools)).expect("write the tools/list snapshot");
+    eprintln!("wrote {TOOLS_LIST_SNAPSHOT}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn instructions_stay_under_the_client_ceiling() {
     let (_dir, _tools, instructions) = list_tools().await;

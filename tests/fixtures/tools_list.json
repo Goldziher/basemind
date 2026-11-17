@@ -1,0 +1,772 @@
+[
+  {
+    "name": "code_grep",
+    "title": "Search code and text files",
+    "description": "Use instead of `rg`/`grep` to find exact text (a string, identifier or comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is literal unless `regex` is true. `hits` maps each file to its hits: `line`, `text` and the `symbol` it sits in; a hit in a file edited since it was indexed has `stale` and no symbol. `skipped_files` counts files that could not be searched. A `path` or `language` no indexed file has is an error. Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
+    "inputSchema": {
+      "properties": {
+        "pattern": {
+          "description": "Text to find, not empty; a literal unless `regex` is true.",
+          "type": "string"
+        },
+        "regex": {
+          "description": "Treat `pattern` as a Rust regex; `^` and `$` match at every line.",
+          "type": "boolean",
+          "default": null
+        },
+        "path": {
+          "description": "Literal substring of the repo-relative path, e.g. `src/mcp/`; not a glob.",
+          "type": "string",
+          "default": null
+        },
+        "language": {
+          "description": "Language filter, e.g. `rust`.",
+          "type": "string",
+          "default": null
+        },
+        "context": {
+          "description": "Add one line before and after each hit.",
+          "type": "boolean",
+          "default": null
+        },
+        "limit": {
+          "description": "Max hits (default 100).",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000).",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "code_outline",
+    "title": "Outline a file",
+    "description": "Use to see what a file contains before, or instead of, reading it: every symbol with its kind, signature and 1-based `line`/`end_line`, plus the file's imports. Feed a span to `code_read`. Code files only. `stale` means the file changed since it was indexed and is outlined as it is now. Example: {\"path\":\"src/store.rs\"}",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "Repo-relative file path.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max symbols (default 500).",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000).",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "code_read",
+    "title": "Read a symbol or line span",
+    "description": "Use to read the source of one function or type, or an exact line span, instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a `line`..`end_line` span. A body over 128 KiB is cut after a whole line and flagged `truncated`: read on from `end_line` + 1. `stale` means the file changed since it was indexed and the symbol was found by parsing it as it is now. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "Repo-relative file path.",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Symbol whose body to return (exact name).",
+          "type": "string",
+          "default": null
+        },
+        "kind": {
+          "description": "With `symbol`: its kind, when several share the name.",
+          "type": "string",
+          "default": null
+        },
+        "line": {
+          "description": "First line of a span, 1-based. With `symbol`: a line inside the definition meant.",
+          "type": "integer",
+          "default": null
+        },
+        "end_line": {
+          "description": "Last line of a span, inclusive (default: `line`). Not with `symbol`.",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "code_refs",
+    "title": "Find call sites, implementations and importers",
+    "description": "Use for \"what calls X\", \"what implements X\", \"what imports X\", \"which definition does this bind to\" (`relation`). Callers are call sites only, not type uses or `use` lines (`code_grep`). `match` `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since the scan. Without `path` hits match by name only; `path` pins the definition there and sets `resolved` true (proven), false (not proven) or absent (`resolution` says why). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "Name called, implemented or defined; for `importers`, whole segments of the import path.",
+          "type": "string"
+        },
+        "relation": {
+          "description": "What to list (default `callers`).",
+          "type": "string",
+          "default": null,
+          "enum": [
+            "callers",
+            "implementations",
+            "importers",
+            "definition"
+          ]
+        },
+        "path": {
+          "description": "`callers`: file defining `name`, pinning that definition. `definition`: file holding the\nreference (required). Not with `implementations` or `importers`.",
+          "type": "string",
+          "default": null
+        },
+        "line": {
+          "description": "Needs `path`. `callers`: 1-based line inside the definition meant, when several share the\nname. `definition`: line of the reference (required).",
+          "type": "integer",
+          "default": null
+        },
+        "column": {
+          "description": "`definition` only: 1-based column (default: where `name` occurs on the line).",
+          "type": "integer",
+          "default": null
+        },
+        "match": {
+          "description": "Name matching (default `exact`). Not with `importers` or `definition`.",
+          "type": "string",
+          "default": null,
+          "enum": [
+            "exact",
+            "substring"
+          ]
+        },
+        "limit": {
+          "description": "Max hits (default 100). Not with `definition`.",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page. Not with `definition`.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000). Not with `definition`.",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "code_search",
+    "title": "Search code by meaning",
+    "description": "Use when you know what the code does but not a name or string in it: searches code chunks by meaning and returns pointers (path, `line`/`end_line`, symbol), not bodies; copies of a file share one hit (`also_at`). `lanes_unavailable` names lanes that did not run. Read a hit with `code_read`. Example: {\"query\":\"retry a failed upload with backoff\"}",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "description": "What the code does, in plain words.",
+          "type": "string"
+        },
+        "lane": {
+          "description": "Retrieval lane (default `hybrid`).",
+          "type": "string",
+          "default": null,
+          "enum": [
+            "hybrid",
+            "semantic",
+            "keyword"
+          ]
+        },
+        "limit": {
+          "description": "Max hits (default 10).",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000).",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "code_symbols",
+    "title": "Find a definition",
+    "description": "Use for \"where is X defined\" when you know (part of) the name: finds functions, types, constants and other symbols by name across the repository; a row is `path`, `line`, `kind`, `name`, `signature`. Ranked: the exact name first, then prefix, then substring, then (with `fuzzy`) fuzzy matches; `stale`: file edited since the scan, `line` is current. Definitions only: for any text use `code_grep`. Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "Symbol name or fragment (case-sensitive).",
+          "type": "string"
+        },
+        "kind": {
+          "description": "function, method, struct, enum, class, interface, trait, type, const, module, macro.",
+          "type": "string",
+          "default": null
+        },
+        "fuzzy": {
+          "description": "Also match the name as a fuzzy subsequence, ranked last.",
+          "type": "boolean",
+          "default": null
+        },
+        "limit": {
+          "description": "Max hits (default 100).",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000).",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "docs_search",
+    "title": "Search documents",
+    "description": "Use to find where a topic is discussed in the repository's documents (markdown, PDFs, Office, HTML, email, notebooks) instead of opening them. Ranks passages by meaning and words, filters first, and cites each hit (path, pages, section, lines). Code: `code_grep`/`code_search`. Example: {\"query\":\"how releases are versioned\"}",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "description": "What to look for, in plain words.",
+          "type": "string"
+        },
+        "mime_type": {
+          "description": "Exact MIME filter, e.g. `application/pdf`.",
+          "type": "string",
+          "default": null
+        },
+        "kind": {
+          "description": "Format: pdf, office, html, markdown, email, notebook, text or other.",
+          "type": "string",
+          "default": null
+        },
+        "path": {
+          "description": "Glob over document paths (`docs/**/*.md`).",
+          "type": "string",
+          "default": null
+        },
+        "keywords": {
+          "description": "Whole keywords, comma-separated; any one matches.",
+          "type": "string",
+          "default": null
+        },
+        "entity": {
+          "description": "Keep chunks naming an entity of this category, e.g. `PERSON`.",
+          "type": "string",
+          "default": null
+        },
+        "limit": {
+          "description": "Max hits (default 10).",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000).",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "find_files",
+    "title": "Find files",
+    "description": "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of its name or path, or to list files when `query` is omitted; `files` holds paths. Covers code, documents and every other file git tracks; a query with one typo still finds its file. A `path_prefix` or `language` no listed file has is an error. Example: {\"query\":\"readme\"}",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "description": "Fuzzy fragment of a file name or path; omit to list.",
+          "type": "string",
+          "default": null
+        },
+        "path_prefix": {
+          "description": "Only paths starting with this, e.g. `src/mcp/`.",
+          "type": "string",
+          "default": null
+        },
+        "language": {
+          "description": "Language filter, e.g. `rust`, `markdown`.",
+          "type": "string",
+          "default": null
+        },
+        "limit": {
+          "description": "Max files (default 200).",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000).",
+          "type": "integer",
+          "default": null
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "git_blame",
+    "title": "Blame",
+    "description": "Use instead of `git blame` for \"who last changed this\": per-line authorship of a file, of a 1-based `line`..`end_line` span, or of one `symbol`, located in the file as it is at `rev`. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "Repo-relative file path.",
+          "type": "string"
+        },
+        "line": {
+          "description": "First line of a span, 1-based, as numbered at `rev`. With `symbol`: a line inside the\ndefinition meant.",
+          "type": "integer",
+          "default": null
+        },
+        "end_line": {
+          "description": "Last line of a span, inclusive (default: `line`). Needs `line`; not with `symbol`.",
+          "type": "integer",
+          "default": null
+        },
+        "symbol": {
+          "description": "Blame this symbol's lines, as they are at `rev`, instead of a span.",
+          "type": "string",
+          "default": null
+        },
+        "rev": {
+          "description": "Revision to blame at (default HEAD).",
+          "type": "string",
+          "default": null
+        },
+        "limit": {
+          "description": "Max hunks (default 100).",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000).",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "git_diff",
+    "title": "Diff and status",
+    "description": "Use instead of `git status`/`git diff`. No arguments returns the working-tree status (staged, modified, untracked; 200 paths per list, a `path` ending in `/` narrows it to that directory); a file `path` alone diffs its working tree against HEAD; `from`/`to` pick revisions; `structural` lists the symbols added and removed, and counts the `common` ones, instead of text hunks. A diff over 200 hunks or 128 KiB is cut and flagged `truncated`. Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "File to diff, or a directory ending in `/` to narrow the status; omit every argument for\nthe whole working-tree status.",
+          "type": "string",
+          "default": null
+        },
+        "from": {
+          "description": "Old revision (default HEAD). Needs `path`.",
+          "type": "string",
+          "default": null
+        },
+        "to": {
+          "description": "New revision (default: the working tree). Needs `path`; not with `structural`.",
+          "type": "string",
+          "default": null
+        },
+        "structural": {
+          "description": "Symbol-level diff of `from` against the indexed working tree, instead of text hunks.",
+          "type": "boolean",
+          "default": null
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "git_log",
+    "title": "Commit history",
+    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file\", \"which commit mentions X\" or \"when did this function change\". No arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row is a 12-digit `sha`, `summary`, `author` and time; `rev` shows one commit in full. A symbol's or a directory's history is read one window of commits per page: follow `next_cursor`, even from an empty page (`truncated_reason` `window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Only commits touching this file; a trailing `/` means a directory (200 commits inspected per\npage; follow `next_cursor`). Not with `query` or `author`.",
+          "type": "string",
+          "default": null
+        },
+        "query": {
+          "description": "Words the commit message must all contain. Combines with `author` only.",
+          "type": "string",
+          "default": null
+        },
+        "author": {
+          "description": "Words the author name or email must all contain. Combines with `query` only.",
+          "type": "string",
+          "default": null
+        },
+        "symbol": {
+          "description": "History of this symbol's body, one window of commits per page; needs `path`, combines\nwith nothing else but `line`.",
+          "type": "string",
+          "default": null
+        },
+        "line": {
+          "description": "With `symbol`: 1-based line inside the definition meant, when several share the name.",
+          "type": "integer",
+          "default": null
+        },
+        "rev": {
+          "description": "Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.",
+          "type": "string",
+          "default": null
+        },
+        "limit": {
+          "description": "Max commits (default 20).",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous page.",
+          "type": "string",
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Token budget for the list (default 6000).",
+          "type": "integer",
+          "default": null
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "index_rescan",
+    "title": "Re-index",
+    "description": "Use after editing files, or when the index is empty or stale: re-indexes the given `paths`, or with no arguments the whole workspace, skipping unchanged files. Writes only basemind's cache, never the repository. Example: {\"paths\":[\"src/store.rs\"]}",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "description": "Repo-relative files or directories to re-index (default: the whole workspace, skipping\nunchanged files).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "index_status",
+    "title": "Index status",
+    "description": "Use when a result is unexpectedly empty or says \"not indexed\": reports how many files are indexed per language, whether a scan is running or the index is degraded, the cache directory, and the repository's branch and HEAD. Example: {}",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "memory_save",
+    "title": "Save a note",
+    "description": "Use to remember a decision, convention or finding for later sessions and other agents working in this repository. Saving an existing `key` replaces it. Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
+    "inputSchema": {
+      "properties": {
+        "key": {
+          "description": "Stable identifier, e.g. `decision/auth-tokens`.",
+          "type": "string"
+        },
+        "value": {
+          "description": "The note.",
+          "type": "string"
+        },
+        "tags": {
+          "description": "Labels to filter on later.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "visibility": {
+          "description": "Memory tier: `group` (default) is shared across agents; `individual` scopes the entry to the calling agent.",
+          "type": "string",
+          "enum": [
+            "group",
+            "individual"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  },
+  {
+    "name": "memory_search",
+    "title": "Recall notes",
+    "description": "Use to recall what was saved with `memory_save`: `query` searches notes by meaning, `key` reads one, `prefix` lists by key prefix, and no arguments lists everything. Lists show 200 characters of a value; `key` reads it whole. Example: {\"query\":\"token rotation\"}",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "description": "Search notes by meaning. At most one of `query`, `key`, `prefix`; none lists every note.",
+          "type": "string",
+          "default": null
+        },
+        "key": {
+          "description": "Read one note by exact key.",
+          "type": "string",
+          "default": null
+        },
+        "prefix": {
+          "description": "List notes whose key starts with this.",
+          "type": "string",
+          "default": null
+        },
+        "tag": {
+          "description": "Only notes carrying this tag. Not with `key`.",
+          "type": "string",
+          "default": null
+        },
+        "visibility": {
+          "description": "Memory tier: `group` (default) is shared across agents; `individual` scopes the entry to the calling agent.",
+          "type": "string",
+          "enum": [
+            "group",
+            "individual"
+          ],
+          "default": null
+        },
+        "limit": {
+          "description": "Max notes (default 10 for `query`, 100 for a listing). Not with `key`.",
+          "type": "integer",
+          "default": null
+        },
+        "cursor": {
+          "description": "`next_cursor` of the previous listing page. Not with `query` or `key`.",
+          "type": "string",
+          "default": null
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "anthropic/alwaysLoad": true
+    }
+  }
+]
