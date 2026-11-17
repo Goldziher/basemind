@@ -130,7 +130,7 @@ fn preflight_persists_the_emptied_file_map_of_an_index_it_rebuilds_in_place() {
 
     let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
     assert_eq!(in_place.index.files.len(), 1);
-    preflight(&mut in_place).expect("preflight");
+    let _owed = preflight(&mut in_place).expect("preflight");
 
     let on_disk = crate::store::read_index(&view_dir).expect("read").expect("a file map");
     assert!(on_disk.files.is_empty(), "no file map vouches for the emptied index");
@@ -633,10 +633,9 @@ fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass()
     let view_dir = store.view_dir.clone();
     let db = store.index_db.clone().expect("index");
     assert_eq!(db.view().symbols_by_name_lookup("ghost", 4).len(), 1);
-    // What the killed pass leaves: its start recorded at the seal it began from, the rows of a file
-    // it had just indexed, and a file map that never listed that file.
-    db.mark_rows_unlisted(db.scan_generation().expect("read"))
-        .expect("record the pass");
+    // What the killed pass leaves: its open pass recorded, the rows of a file it had just indexed,
+    // and a file map that never listed that file.
+    db.open_rows_pass().expect("record the pass");
     store.remove("ghost.rs");
     let unlisted = store.index.clone();
     drop(db);
@@ -692,4 +691,116 @@ fn a_blob_reused_for_a_new_path_is_kept_young_for_the_sweep() {
         mtime > aged + Duration::from_secs(3600),
         "the reused blob is young again"
     );
+}
+
+/// Stands in for a process killed mid-drive: unwinds out of the pass once its first chunk's rows
+/// are committed, before any file map lists them.
+struct KilledAfterFirstChunk;
+
+impl crate::scanner::ScanObserver for KilledAfterFirstChunk {
+    fn on_file(&mut self, _result: crate::scanner::FileResult) {}
+
+    fn on_batch(&mut self, _live_results: usize) {
+        std::panic::panic_any("killed after committing the chunk's rows");
+    }
+}
+
+fn killed_full_pass(root: &std::path::Path, store: &mut Store) {
+    let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::scanner::scan_with_observer(
+            root,
+            store,
+            &ConfigV1::with_defaults(),
+            ScanSource::WorkingTree,
+            EmbedMode::Deferred,
+            &crate::scanner::ScanCancel::new(),
+            &mut KilledAfterFirstChunk,
+        )
+    }));
+    assert!(pass.is_err(), "the pass was killed");
+}
+
+/// The issue #62 shape. A rebuild pass is killed after committing rows and before any file map lists
+/// them; the file is then deleted. The next writer open seals the index again while it rewrites the
+/// emptied file map, which wrote no rows: that seal must not pass for the end of the killed pass, or
+/// the deleted file's rows are served for good.
+#[test]
+fn rows_of_a_killed_rebuild_pass_outlive_no_seal_that_wrote_no_rows() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let ghost = root.join("ghost.rs");
+    std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+    let view_dir = {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        full_scan(root, &mut store);
+        store.view_dir.clone()
+    };
+    // An index behind its file map: the writer open discards it and empties the map for a rebuild. ~keep
+    let mut ahead = crate::store::read_index(&view_dir).expect("read").expect("a file map");
+    ahead.generation += 1;
+    let manifest = view_dir.join(crate::store::INDEX_FILE);
+    std::fs::write(&manifest, rmp_serde::to_vec_named(&ahead).expect("encode")).expect("forge the file map");
+
+    {
+        let mut store = Store::open(root, VIEW_WORKING).expect("the rebuilding open");
+        assert!(store.index.rebuild_pending && store.index.files.is_empty());
+        killed_full_pass(root, &mut store);
+        let db = store.index_db.as_ref().expect("index");
+        assert_eq!(
+            db.view().symbols_by_name_lookup("ghost", 4).len(),
+            1,
+            "the killed pass committed the file's rows, or this test proves nothing"
+        );
+    }
+    std::fs::remove_file(&ghost).expect("delete");
+
+    let mut store = Store::open(root, VIEW_WORKING).expect("the next writer open seals again");
+    assert!(store.index.rebuild_pending, "the rebuild is still owed");
+    full_scan(root, &mut store);
+
+    let view = store.index_view().expect("index");
+    assert!(
+        view.symbols_by_name_lookup("ghost", 4).is_empty(),
+        "the deleted file's rows are gone"
+    );
+    assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
+}
+
+/// The same through a store opened without the lock: the scan that claims it seals the index while
+/// it opens the index under the lock, which must not hide the killed pass either.
+#[test]
+fn rows_of_a_killed_pass_outlive_no_seal_of_a_store_claimed_in_place() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let ghost = root.join("ghost.rs");
+    {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        full_scan(root, &mut store);
+        std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+        killed_full_pass(root, &mut store);
+        let db = store.index_db.as_ref().expect("index");
+        assert_eq!(db.view().symbols_by_name_lookup("ghost", 4).len(), 1);
+    }
+    std::fs::remove_file(&ghost).expect("delete");
+    let writer = Store::open(root, VIEW_WORKING).expect("another writer");
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(in_place.index_db.is_none(), "the writer holds the index");
+    drop(writer);
+
+    let alpha = root.join("alpha.rs");
+    std::fs::write(&alpha, b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+    crate::scanner::scan_paths(
+        root,
+        &mut in_place,
+        &ConfigV1::with_defaults(),
+        &[alpha],
+        EmbedMode::Deferred,
+    )
+    .expect("incremental scan");
+
+    let view = in_place.index_view().expect("index");
+    assert!(view.symbols_by_name_lookup("ghost", 4).is_empty());
+    assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
 }

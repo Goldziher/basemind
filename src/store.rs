@@ -757,9 +757,23 @@ impl Store {
     /// with no index handle writes no rows, so its file map keeps the generation it carries. The
     /// paths owed vector rows are written first: the map must not claim a file whose debt is lost.
     pub fn flush(&mut self) -> Result<(), StoreError> {
+        self.flush_sealing(false)
+    }
+
+    /// [`Self::flush`] for the flush that ends a pass which wrote rows and was not cancelled: its
+    /// seal records the pass ended ([`IndexDb::seal_scan_ending_rows_pass`]).
+    pub(crate) fn flush_ending_rows_pass(&mut self) -> Result<(), StoreError> {
+        self.flush_sealing(true)
+    }
+
+    fn flush_sealing(&mut self, ends_rows_pass: bool) -> Result<(), StoreError> {
         self.pending_vectors.persist(&self.view_dir)?;
         if let Some(db) = self.index_db.as_ref() {
-            self.index.generation = db.seal_scan(self.index.generation)?;
+            self.index.generation = if ends_rows_pass {
+                db.seal_scan_ending_rows_pass(self.index.generation)?
+            } else {
+                db.seal_scan(self.index.generation)?
+            };
         }
         file_map::write_file_map(&self.view_dir, &self.index)
     }

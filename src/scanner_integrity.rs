@@ -13,8 +13,8 @@ use crate::store::{ScanHealth, Store, StoreError};
 /// Run before a full scan touches the index: take the writer's place ([`claim_writer`]), forget a
 /// full-disk latch from an earlier pass (the space check below decides whether it is cured), refuse
 /// a poisoned handle outright, empty an index that is behind its file map so the pass rebuilds it,
-/// and refuse a volume without room for the index.
-pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
+/// refuse a volume without room for the index, and open the pass's rows ([`open_full_pass`]).
+pub(crate) fn preflight(store: &mut Store) -> Result<UnlistedRows, ScanError> {
     crate::scan_evidence::settle_dead_hosts();
     store.retry_vector_store();
     claim_writer(store)?;
@@ -26,33 +26,58 @@ pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
     }
     store.rebuild_index_if_behind()?;
     ensure_space(store)?;
-    begin_rows(store)
+    open_full_pass(store)
 }
 
-/// Run before a pass commits its first index row: remove the rows an earlier pass may have left of
-/// paths no file map lists, then record this pass's start ([`IndexDb::mark_rows_unlisted`]). A pass
-/// killed between committing rows and writing the file map that lists them leaves rows that no scan
-/// ever revisits, since none looks at a path the map does not list; served by references, symbols
-/// and search for files that may no longer exist. The earlier pass finished when the index has
-/// sealed past its record and the file map carries that seal.
+/// Whether an earlier pass may have left rows of paths no file map lists, for a full pass to remove
+/// once its drive has listed every path it saw ([`UnlistedRows::purge`]).
+#[must_use = "a full pass must purge what an interrupted pass left"]
+pub(crate) struct UnlistedRows(bool);
+
+impl UnlistedRows {
+    /// Remove, after the drive and the stale purge, the rows of every path the file map does not
+    /// list: the drive put every path it saw in the map, so what is left is what no pass will look
+    /// at again.
+    pub(crate) fn purge(self, store: &Store) -> Result<(), ScanError> {
+        match (self.0, store.index_db.as_ref()) {
+            (true, Some(db)) => purge_unlisted_rows(store, db),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Run before an incremental pass commits its first index row: remove the rows an earlier pass may
+/// have left of paths no file map lists, then record that a pass is open
+/// ([`crate::index::IndexDb::open_rows_pass`]). A pass killed between committing rows and writing
+/// the file map that lists them leaves rows that no scan ever revisits, since none looks at a path
+/// the map does not list; served by references, symbols and search for files that may no longer
+/// exist. Only the flush that ends a pass clears the record ([`flush_code_map`] with `ends_pass`,
+/// [`Store::flush_ending_rows_pass`]); a seal that wrote no rows leaves it.
 pub(crate) fn begin_rows(store: &mut Store) -> Result<(), ScanError> {
     let Some(db) = store.index_db.clone() else {
         return Ok(());
     };
-    let sealed = db.scan_generation().map_err(StoreError::from)?;
-    let since = db.rows_unlisted_since().map_err(StoreError::from)?;
-    if !since.is_none_or(|since| sealed > since && store.index.generation == sealed) {
+    if db.rows_may_be_unlisted().map_err(StoreError::from)? {
         purge_unlisted_rows(store, &db)?;
     }
-    if since != Some(sealed) {
-        db.mark_rows_unlisted(sealed).map_err(StoreError::from)?;
-    }
+    db.open_rows_pass().map_err(StoreError::from)?;
     Ok(())
+}
+
+/// [`begin_rows`] for a full pass, whose purge waits for its drive: before it, the file map of a
+/// pending rebuild lists nothing, and every path would be purged only to be indexed again.
+fn open_full_pass(store: &mut Store) -> Result<UnlistedRows, ScanError> {
+    let Some(db) = store.index_db.as_ref() else {
+        return Ok(UnlistedRows(false));
+    };
+    let owed = db.rows_may_be_unlisted().map_err(StoreError::from)?;
+    db.open_rows_pass().map_err(StoreError::from)?;
+    Ok(UnlistedRows(owed))
 }
 
 /// Remove the index rows of every path the file map does not list.
 fn purge_unlisted_rows(store: &Store, db: &IndexDb) -> Result<(), ScanError> {
-    let mut unlisted = db.indexed_paths().map_err(StoreError::from)?;
+    let mut unlisted: Vec<_> = db.indexed_paths().map_err(StoreError::from)?.into_iter().collect();
     unlisted.retain(|rel| store.lookup(rel).is_none());
     if !unlisted.is_empty() {
         tracing::info!(
@@ -60,9 +85,7 @@ fn purge_unlisted_rows(store: &Store, db: &IndexDb) -> Result<(), ScanError> {
             "removing index rows an interrupted scan left of files no file map lists"
         );
     }
-    for rel in &unlisted {
-        purge_rows(db, rel)?;
-    }
+    db.purge_paths(&unlisted).map_err(StoreError::from)?;
     Ok(())
 }
 
@@ -119,13 +142,7 @@ fn purge_file(store: &mut Store, rel: &str) -> Result<(), ScanError> {
 
 /// Remove every index row of `path`, in one commit.
 fn purge_rows(db: &IndexDb, path: &crate::path::RelPath) -> Result<(), StoreError> {
-    let mut writer = db.writer();
-    let staged = writer
-        .remove_file(path)
-        .and_then(|()| writer.remove_resolved_file(path));
-    #[cfg(feature = "code-search")]
-    let staged = staged.and_then(|()| writer.remove_bm25_file(path));
-    staged.and_then(|()| writer.commit()).map_err(StoreError::from)
+    db.purge_paths(std::slice::from_ref(path)).map_err(StoreError::from)
 }
 
 /// The free-space check alone, for the resolve pass: the file map is already durable by then, so a
@@ -177,10 +194,16 @@ pub(crate) fn finish_resolve(store: &Store, resolved: bool) -> Result<(), ScanEr
 ///
 /// `health` is what the sidecar says about the scan at this barrier: [`ScanHealth::resolving`] for a
 /// finished walk whose resolve pass is still to come, [`ScanHealth::partial`] for a cancelled one.
+/// `ends_pass` when the map now lists every row the pass wrote (see [`begin_rows`]): never for a
+/// cancelled pass or one whose purge failed, which the next pass then checks.
 ///
 /// A lane that mutates `store.index` must flush again after itself (only the doc-removal lane does).
-pub(crate) fn flush_code_map(store: &mut Store, health: &ScanHealth) -> Result<(), ScanError> {
-    store.flush()?;
+pub(crate) fn flush_code_map(store: &mut Store, health: &ScanHealth, ends_pass: bool) -> Result<(), ScanError> {
+    if ends_pass {
+        store.flush_ending_rows_pass()?;
+    } else {
+        store.flush()?;
+    }
     // Refresh the cheap statusline sidecar the moment the code map is durable, so a shell
     // statusline sees fresh counts without ever opening the Fjall index. Best-effort by design.
     store.write_status_sidecar_with(health);
