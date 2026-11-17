@@ -2,7 +2,7 @@
 
 use super::TermIndex;
 use crate::extract::{FileMapL1, Import, Symbol, SymbolKind};
-use crate::mcp::MapCache;
+use crate::engine::MapCache;
 use crate::path::RelPath;
 
 const KINDS: [SymbolKind; 4] = [
