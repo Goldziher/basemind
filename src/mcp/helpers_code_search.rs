@@ -317,7 +317,7 @@ async fn forward_fjall_lanes(
     // A DAEMON-HOSTED stack reaches the pool's read-write index directly through the host seam. It
     // must never take the socket path below: that is the daemon dialling itself. Same branch order
     // as the resolved-refs site, for the same reason. ~keep
-    if let Some(host) = state.shared.host.as_ref() {
+    if let Some(host) = state.host.as_ref() {
         let host = std::sync::Arc::clone(host);
         let hosted = tokio::task::spawn_blocking(move || host.host_code_search_lanes(&root, request))
             .await

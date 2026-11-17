@@ -302,14 +302,14 @@ async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<C
     let store = state.store_read().await;
     let cache = state.shared.cache.load_full();
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let refs = if let Some(host) = &state.shared.host {
+    let refs = if let Some(host) = &state.host {
         // ~keep Daemon-hosted: resolve in-process through the pool's read-write index (fixes the
         // ~keep Seam-B degradation) instead of dialing the daemon over its own socket.
         RefsSource::Host {
             host: std::sync::Arc::clone(host),
             root: state.shared.root.clone(),
         }
-    } else if state.shared.daemon_writer {
+    } else if state.daemon_writer {
         let client = super::helpers_daemon::daemon_client(state).await?;
         RefsSource::Daemon {
             client,

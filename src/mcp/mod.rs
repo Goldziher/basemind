@@ -130,20 +130,20 @@ pub(crate) use host::HostBackend;
 pub use in_memory::serve_in_memory_daemon_writer;
 #[cfg(feature = "test-support")]
 pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
-pub(crate) use state::ServerState;
+pub(crate) use state::{ServedWorkspace, ServerState};
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 /// A daemon-owned read stack and the watcher lifetime that keeps it fresh.
 pub(crate) struct HostedReadStack {
     _watcher: background::WatcherGuard,
-    shared: Arc<Workspace>,
+    shared: ServedWorkspace,
 }
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 impl HostedReadStack {
     /// Clone the read stack shared by every connection to this hosted workspace.
-    pub(crate) fn shared(&self) -> Arc<Workspace> {
-        Arc::clone(&self.shared)
+    pub(crate) fn shared(&self) -> ServedWorkspace {
+        self.shared.clone()
     }
 }
 
@@ -241,6 +241,17 @@ pub struct ServerOptions {
     pub lazy_cache: bool,
 }
 
+impl From<ServerOptions> for crate::engine::workspace::OpenOptions {
+    fn from(options: ServerOptions) -> Self {
+        Self {
+            background: options.background,
+            read_only: options.read_only,
+            forwards_writes: options.daemon_writer,
+            lazy_cache: options.lazy_cache,
+        }
+    }
+}
+
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
@@ -321,7 +332,8 @@ impl BasemindServer {
             None,
         );
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options);
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
+        let basemind_dir = store.basemind_dir.clone();
         let shared = Arc::new(Workspace::new(
             store,
             root,
@@ -329,22 +341,17 @@ impl BasemindServer {
             repo,
             git_cache,
             git_history,
-            options,
-            // ~keep In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
-            // ~keep (not this seam) handles writes when a daemon is up.
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            None,
+            options.into(),
         ));
-        let state = Arc::new(ServerState {
-            shared,
-            agent_id,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_client: tokio::sync::OnceCell::new(),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            agents: None,
-            lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
-            task_threshold_ms: std::sync::atomic::AtomicU64::new(tasks::TASK_THRESHOLD.as_millis() as u64),
-        });
+        // ~keep In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
+        // ~keep (not the host seam) handles writes when a daemon is up.
+        #[allow(unused_mut)] // ~keep only a `comms` build records the daemon topology
+        let mut served = ServedWorkspace::new(shared, &basemind_dir);
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        {
+            served.daemon_writer = options.daemon_writer;
+        }
+        let state = Arc::new(ServerState::for_connection(served, agent_id));
         let mut watcher = None;
         if options.background {
             let view_is_working = {
@@ -423,7 +430,7 @@ impl BasemindServer {
     /// advertises nor serves them.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn from_shared(
-        shared: Arc<Workspace>,
+        shared: ServedWorkspace,
         agent_id: String,
         heavy_admission: Arc<admission::HeavyAdmission>,
         agents: Option<Arc<AgentContext>>,
@@ -501,21 +508,24 @@ impl BasemindServer {
             &options,
             Some(git_history_host),
         );
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options);
-        let shared = Arc::new(Workspace::new(
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
+        let telemetry_dir = store.basemind_dir.clone();
+        let workspace = Arc::new(Workspace::new(
             store,
             root.to_path_buf(),
             config,
             repo,
             git_cache,
             git_history,
-            options,
-            // ~keep The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
-            // ~keep the pool instead of looping back over the daemon's own socket.
-            Some(host),
+            options.into(),
         ));
+        let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);
+        shared.daemon_writer = options.daemon_writer;
+        // ~keep The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
+        // ~keep the pool instead of looping back over the daemon's own socket.
+        shared.host = Some(host);
         // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
-        let warden = Arc::new(ServerState::for_connection(Arc::clone(&shared), agent_id));
+        let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
         history_sync::request(&warden);
         if needs_initial_scan {

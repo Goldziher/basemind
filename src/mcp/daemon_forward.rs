@@ -45,7 +45,7 @@ pub(super) async fn forward_rescan_and_refresh(
 
 /// Route a read-only serve's scan to the machine's sole fjall writer, then refresh the in-RAM map.
 ///
-/// On the DAEMON-HOSTED path ([`state.shared.host`](ServerState) is `Some`) the writer pool is
+/// On the DAEMON-HOSTED path ([`state.host`](ServerState) is `Some`) the writer pool is
 /// in-process, so the scan runs directly through it on a blocking thread — no socket loopback, which
 /// on the daemon would mean the daemon dialing itself. Every other `daemon_writer` serve has no host
 /// and [`forward_rescan_and_refresh`] ships the scan over the socket. Both then rebuild the read-only
@@ -61,7 +61,7 @@ pub(super) async fn writer_rescan_and_refresh(
     embed: bool,
     verify: bool,
 ) -> Result<RescanReport, McpError> {
-    if let Some(host) = &state.shared.host {
+    if let Some(host) = &state.host {
         let host = Arc::clone(host);
         let root = state.shared.root.clone();
         let stats = tokio::task::spawn_blocking(move || match paths {

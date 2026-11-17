@@ -2,7 +2,7 @@
 //!
 //! Everything here is scoped to a `(root, view)` and is safe to share — via an [`Arc`] — across
 //! many client connections at once. That is the pivot for a single-daemon architecture: one heavy
-//! read stack (store, in-RAM code map, git indexes, config, telemetry) built once and pointed at by
+//! read stack (store, in-RAM code map, git indexes, config) built once and pointed at by
 //! every per-connection [`ServerState`](crate::mcp::ServerState), which keeps only its own identity.
 //!
 //! Split out of `state.rs` so the per-connection type and the shared type each stay well under the
@@ -17,7 +17,6 @@ use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::engine::{MapCache, outline_cache::OutlineCache};
 use crate::index::view::IndexView;
-use crate::mcp::{ServerOptions, telemetry};
 use crate::store::Store;
 
 /// Heavy, workspace-level read state shared across every connection to one `(root, view)`.
@@ -62,10 +61,6 @@ pub(crate) struct Workspace {
     /// Held on the server so the `rescan` MCP tool can re-run a scan in-process
     /// without re-reading `basemind.toml`.
     pub(crate) config: Arc<crate::config::Config>,
-    /// Per-tool-call telemetry writer; appends to `.basemind/telemetry.jsonl`.
-    /// Always present (best-effort writes); the dashboard surfaces / statusline
-    /// read from the same file.
-    pub(crate) telemetry: Arc<telemetry::Telemetry>,
     /// Sum of `size_bytes` across every indexed file. Captured at boot and
     /// after each `rescan`. Feeds the corpus-baseline cost in
     /// [`crate::mcp::savings::estimate_from_text`].
@@ -161,25 +156,6 @@ pub(crate) struct Workspace {
     pub(crate) history_syncing: Arc<AtomicBool>,
     /// The git index's file list as `find_files` last read it ([`crate::mcp::helpers_files`]).
     pub(crate) tracked: std::sync::Mutex<crate::mcp::helpers_files::TrackedCache>,
-    /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
-    /// instead of writing locally. The store is opened read-only, but — unlike a plain
-    /// [`read_only`](Self::read_only) fallback — the empty-index auto-scan, the filesystem
-    /// watcher, and the `rescan` tool FORWARD their scans to the daemon over the socket and then
-    /// rebuild the in-RAM map from the daemon-written `index.msgpack`. Only ever true on a
-    /// `comms`-enabled build; always false otherwise, so the local-writer paths are unchanged.
-    ///
-    /// Only exists on a `comms` build: every read of this field lives behind the same `cfg`, so on
-    /// a non-`comms` build there is no daemon to forward to and the field would be dead.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) daemon_writer: bool,
-    /// In-process host seam for a DAEMON-HOSTED read stack: the daemon's own workspace pool (the
-    /// machine's sole fjall writer). When `Some`, the writer / resolved-refs branch sites route
-    /// directly through it instead of forwarding to the daemon over a socket — closing the
-    /// daemon-dials-itself loopback and, crucially, serving resolved-refs from the pool's read-write
-    /// fjall index (which a `daemon_writer` serve's index-less store cannot see). `None` on every
-    /// non-hosted stack (in-process serve / CLI), where the `daemon_writer` FORWARD path stays live.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) host: Option<std::sync::Arc<dyn crate::mcp::HostBackend>>,
 }
 
 /// Whether the workspace's `status.json` records a partial or unresolved last scan. A missing or
@@ -188,20 +164,36 @@ fn last_scan_degraded(store: &Store) -> bool {
     crate::store::read_status_sidecar(&store.basemind_dir).is_some_and(|status| status.is_degraded())
 }
 
-/// Boot decisions derived purely from the opened store + [`ServerOptions`]: whether an initial scan
+/// How a [`Workspace`] is opened: which background facilities its host runs and how the index is
+/// written. The MCP adapter converts its `ServerOptions` into this.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OpenOptions {
+    /// The host keeps the workspace fresh in the background: a deferred map warm, the git-history
+    /// catch-up.
+    pub(crate) background: bool,
+    /// The store was opened without the write lock; this process must not scan into it.
+    pub(crate) read_only: bool,
+    /// Another process (the machine daemon) writes the index for this one, so an empty index still
+    /// asks for an initial scan although the store is read-only.
+    pub(crate) forwards_writes: bool,
+    /// Build the in-RAM map on the first call that reads it instead of at construction.
+    pub(crate) lazy_cache: bool,
+}
+
+/// Boot decisions derived purely from the opened store + [`OpenOptions`]: whether an initial scan
 /// is needed (an empty index, or one whose last full scan was cancelled / aborted before covering the
 /// workspace or finishing its resolve pass: issues #79, #84), and whether the in-RAM cache preload is deferred to the background.
 ///
 /// Factored out so [`Workspace::new`] (which sets the `cache_warming` atomic + eager/deferred
 /// cache) and `BasemindServer::new_with_options` (which spawns the matching background tasks) agree
 /// by construction rather than by duplicated expressions.
-pub(crate) fn boot_plan(store: &Store, options: &ServerOptions) -> (bool, bool) {
+pub(crate) fn boot_plan(store: &Store, options: &OpenOptions) -> (bool, bool) {
     let view_is_working = store.view == crate::store::VIEW_WORKING;
     let fjall_index_empty = store
         .index_view()
         .map(|view| view.symbols_index_is_empty())
         .unwrap_or(false);
-    let needs_initial_scan = (options.daemon_writer || !options.read_only)
+    let needs_initial_scan = (options.forwards_writes || !options.read_only)
         && view_is_working
         && (store.index.files.is_empty() || fjall_index_empty || last_scan_degraded(store));
     let defer_warm = options.background && !needs_initial_scan;
@@ -211,15 +203,11 @@ pub(crate) fn boot_plan(store: &Store, options: &ServerOptions) -> (bool, bool) 
 impl Workspace {
     /// Build the heavy read stack for one `(root, view)`. Owns the opened `store` and the already
     /// resolved `git_history` handle; computes the scope key, corpus size, and the initial in-RAM
-    /// code map (eager, deferred-warm placeholder, or lazy) per [`boot_plan`] + [`ServerOptions`].
+    /// code map (eager, deferred-warm placeholder, or lazy) per [`boot_plan`] + [`OpenOptions`].
     ///
     /// The single sanctioned constructor for the shared stack — `BasemindServer::new_with_options`
     /// calls it, and a future daemon-hosted path can reuse it to build one stack shared across many
     /// [`ServerState`](crate::mcp::ServerState) connections.
-    // ~keep Each argument is a distinct pre-resolved dependency of the read stack (store, git handles,
-    // ~keep config, options, host seam); bundling them into a params struct would only relocate the same
-    // ~keep fields with no clarity gain, so the eighth (cfg-gated `host`) argument is accepted here.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         store: Store,
         root: PathBuf,
@@ -227,8 +215,7 @@ impl Workspace {
         repo: Option<Arc<crate::git::Repo>>,
         git_cache: Arc<crate::git_cache::GitCache>,
         git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
-        options: ServerOptions,
-        #[cfg(all(feature = "comms", any(unix, windows)))] host: Option<std::sync::Arc<dyn crate::mcp::HostBackend>>,
+        options: OpenOptions,
     ) -> Self {
         let scope = repo
             .as_ref()
@@ -256,7 +243,6 @@ impl Workspace {
         #[cfg(feature = "memory")]
         let memory_owner = crate::mcp::identity::resolve_agent_id(&store.root);
         let outline_cache: Arc<OutlineCache> = Arc::new(OutlineCache::default());
-        let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
         Self {
             #[cfg(feature = "memory")]
             memory_owner,
@@ -269,7 +255,6 @@ impl Workspace {
             outline_cache,
             lang_rules: std::sync::OnceLock::new(),
             config,
-            telemetry: telemetry_handle,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
             index_generation: AtomicU32::new(1),
@@ -295,25 +280,11 @@ impl Workspace {
             history_catch_up: options.background,
             history_syncing: Arc::new(AtomicBool::new(false)),
             tracked: std::sync::Mutex::default(),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_writer: options.daemon_writer,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            host,
         }
     }
 }
 
 impl Workspace {
-    /// Whether a memory request crosses the daemon's socket, whose frame bounds its size, rather
-    /// than being answered in this process.
-    #[cfg(feature = "memory")]
-    pub(crate) fn memory_is_framed(&self) -> bool {
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        return self.daemon_writer && self.host.is_none();
-        #[cfg(not(all(feature = "comms", any(unix, windows))))]
-        false
-    }
-
     /// The compiled `[languages]` overrides. A table that does not compile was already reported
     /// when the config was loaded; detection then falls back to the built-in rules.
     pub(crate) fn lang_rules(&self) -> &crate::lang_rules::LangRules {

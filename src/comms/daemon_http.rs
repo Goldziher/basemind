@@ -54,7 +54,7 @@ impl Broker {
     pub(crate) async fn host_read_stack(
         self: &Arc<Self>,
         root: &std::path::Path,
-    ) -> anyhow::Result<(Arc<crate::mcp::Workspace>, super::workspace_pool::ServeConnGuard)> {
+    ) -> anyhow::Result<(crate::mcp::ServedWorkspace, super::workspace_pool::ServeConnGuard)> {
         let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
         let git_history_host = Arc::clone(self) as Arc<dyn crate::git_history::remote::HistoryHost>;
         self.workspaces.serve_conn(root, host, git_history_host).await

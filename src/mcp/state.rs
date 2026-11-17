@@ -18,6 +18,38 @@ pub(crate) type StoreReadGuard = parking_lot::ArcRwLockReadGuard<parking_lot::Ra
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) type StoreWriteGuard = parking_lot::ArcRwLockWriteGuard<parking_lot::RawRwLock, Store>;
 
+/// A [`Workspace`] together with what every connection served from it shares: the telemetry writer
+/// and how the workspace's writes reach the index. The engine knows none of these; they belong to
+/// the process serving it. Cloned into each connection's [`ServerState`].
+#[derive(Clone)]
+pub(crate) struct ServedWorkspace {
+    /// The workspace-level read stack.
+    pub(crate) workspace: Arc<Workspace>,
+    /// Per-tool-call telemetry writer; appends to the workspace's `telemetry.jsonl`. One writer per
+    /// served workspace, so connections sharing it share its rotation.
+    pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
+    /// Writes go to the machine daemon (see [`ServerState::daemon_writer`]).
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) daemon_writer: bool,
+    /// The daemon's own workspace pool, for a daemon-hosted workspace (see [`ServerState::host`]).
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) host: Option<Arc<dyn super::HostBackend>>,
+}
+
+impl ServedWorkspace {
+    /// Serve `workspace` from this process, with its own telemetry writer under `basemind_dir`.
+    pub(crate) fn new(workspace: Arc<Workspace>, basemind_dir: &std::path::Path) -> Self {
+        Self {
+            workspace,
+            telemetry: Arc::new(super::telemetry::Telemetry::new(basemind_dir)),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            daemon_writer: false,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            host: None,
+        }
+    }
+}
+
 /// Per-connection MCP server state.
 ///
 /// Holds one [`Arc<Workspace>`](super::Workspace) (the heavy read state, shared across
@@ -27,6 +59,28 @@ pub(crate) type StoreWriteGuard = parking_lot::ArcRwLockWriteGuard<parking_lot::
 pub(crate) struct ServerState {
     /// The workspace-level read stack shared across every connection to this `(root, view)`.
     pub(crate) shared: Arc<Workspace>,
+    /// Per-tool-call telemetry writer, shared by every connection to this workspace. Always present
+    /// (best-effort writes); the dashboard surfaces / statusline read from the same file.
+    pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
+    /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
+    /// instead of writing locally. The store is opened read-only, but — unlike a plain
+    /// [`read_only`](Workspace::read_only) fallback — the empty-index auto-scan, the filesystem
+    /// watcher, and the `rescan` tool FORWARD their scans to the daemon over the socket and then
+    /// rebuild the in-RAM map from the daemon-written `index.msgpack`. Only ever true on a
+    /// `comms`-enabled build; always false otherwise, so the local-writer paths are unchanged.
+    ///
+    /// Only exists on a `comms` build: every read of this field lives behind the same `cfg`, so on
+    /// a non-`comms` build there is no daemon to forward to and the field would be dead.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) daemon_writer: bool,
+    /// In-process host seam for a DAEMON-HOSTED read stack: the daemon's own workspace pool (the
+    /// machine's sole fjall writer). When `Some`, the writer / resolved-refs branch sites route
+    /// directly through it instead of forwarding to the daemon over a socket — closing the
+    /// daemon-dials-itself loopback and, crucially, serving resolved-refs from the pool's read-write
+    /// fjall index (which a `daemon_writer` serve's index-less store cannot see). `None` on every
+    /// non-hosted stack (in-process serve / CLI), where the `daemon_writer` FORWARD path stays live.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) host: Option<Arc<dyn super::HostBackend>>,
     /// Owner segment for the individual-memory tier: the session's principal, resolved by the one
     /// identity resolver of agent comms (ADR-0021). Group-tier writes ignore it.
     #[allow(dead_code)]
@@ -52,15 +106,19 @@ pub(crate) struct ServerState {
 }
 
 impl ServerState {
-    /// Build a fresh per-connection state that shares the given [`Workspace`].
+    /// Build a fresh per-connection state that shares the given served [`Workspace`].
     ///
     /// Each connection gets its own identity: no daemon link yet, no agent context, and the default
     /// log verbosity. The daemon-hosted transports use it to hand every accepted connection the one
     /// shared read stack.
-    #[allow(dead_code)]
-    pub(crate) fn for_connection(shared: Arc<Workspace>, agent_id: String) -> Self {
+    pub(crate) fn for_connection(served: ServedWorkspace, agent_id: String) -> Self {
         Self {
-            shared,
+            shared: served.workspace,
+            telemetry: served.telemetry,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            daemon_writer: served.daemon_writer,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            host: served.host,
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             daemon_client: tokio::sync::OnceCell::new(),
@@ -73,6 +131,16 @@ impl ServerState {
 }
 
 impl ServerState {
+    /// Whether a memory request crosses the daemon's socket, whose frame bounds its size, rather
+    /// than being answered in this process.
+    #[cfg(feature = "memory")]
+    pub(crate) fn memory_is_framed(&self) -> bool {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        return self.daemon_writer && self.host.is_none();
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        false
+    }
+
     /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
     pub(crate) fn lifecycle(&self) -> Lifecycle {
         use std::sync::atomic::Ordering::Relaxed;

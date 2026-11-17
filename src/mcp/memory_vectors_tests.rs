@@ -69,6 +69,7 @@ fn server(root: &Path, model: &str) -> ServerState {
             Err(error) => panic!("open the store: {error}"),
         }
     };
+    let telemetry_dir = store.basemind_dir.clone();
     let shared = crate::mcp::Workspace::new(
         store,
         root.to_path_buf(),
@@ -76,16 +77,17 @@ fn server(root: &Path, model: &str) -> ServerState {
         None,
         Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
         None,
-        crate::mcp::ServerOptions::default(),
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        None,
+        crate::mcp::ServerOptions::default().into(),
     );
     shared
         .embedder
         .set(Arc::new(SharedEmbedder::fake(model, DIM, fake_embed)))
         .ok()
         .unwrap();
-    ServerState::for_connection(Arc::new(shared), "test".into())
+    ServerState::for_connection(
+        crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
+        "test".into(),
+    )
 }
 
 /// Save a note in the Fjall truth only: a note with no vector row, as after a wipe.

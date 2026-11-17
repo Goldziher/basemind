@@ -345,7 +345,7 @@ async fn idle_eviction_stops_hosted_watcher_and_releases_read_stack() {
         .get_or_build_serve_state(workspace.path(), host, history_host)
         .await
         .expect("build hosted read stack");
-    let weak = std::sync::Arc::downgrade(&shared);
+    let weak = std::sync::Arc::downgrade(&shared.workspace);
     drop(shared);
 
     assert_eq!(
@@ -559,10 +559,7 @@ fn a_path_that_resolves_to_the_filesystem_root_is_refused() {
 
 /// Build (or rebuild) `root`'s hosted read stack through `pool`, with the throwaway history host
 /// every plain-workspace fixture uses.
-async fn hosted_stack(
-    pool: &std::sync::Arc<WorkspacePool>,
-    root: &std::path::Path,
-) -> std::sync::Arc<crate::mcp::Workspace> {
+async fn hosted_stack(pool: &std::sync::Arc<WorkspacePool>, root: &std::path::Path) -> crate::mcp::ServedWorkspace {
     let host: std::sync::Arc<dyn crate::mcp::HostBackend> = pool.clone();
     let history: std::sync::Arc<dyn crate::git_history::remote::HistoryHost> = std::sync::Arc::new(UnusedHistoryHost);
     pool.get_or_build_serve_state(root, host, history)
@@ -595,10 +592,10 @@ enum CodeQuery {
 /// Answer one code-tool call against a hosted stack, returning the response body with timings scrubbed.
 /// Goes through a real per-connection [`crate::mcp::BasemindServer`], so what is compared is the
 /// bytes a client would receive, not an internal projection of them.
-async fn code_response(shared: &std::sync::Arc<crate::mcp::Workspace>, query: CodeQuery) -> String {
+async fn code_response(shared: &crate::mcp::ServedWorkspace, query: CodeQuery) -> String {
     use rmcp::model::ContentBlock;
     let server = crate::mcp::BasemindServer::from_shared(
-        std::sync::Arc::clone(shared),
+        shared.clone(),
         "read-stack-tester".to_string(),
         std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
         None,

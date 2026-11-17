@@ -47,7 +47,7 @@ pub(super) async fn run_background_gc(state: Arc<ServerState>) {
 pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     tracing::info!("empty index on startup; running initial scan in background");
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             state.shared.initial_scan_active.store(true, Ordering::Relaxed);
@@ -192,7 +192,7 @@ fn refresh_batch(
     paths: Vec<std::path::PathBuf>,
 ) -> Result<(usize, usize, usize), String> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         let report = handle
             .block_on(super::daemon_forward::writer_rescan_and_refresh(
                 state,
@@ -301,7 +301,7 @@ fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync:
 /// daemon (the sole writer); every other serve opens the index normally.
 fn reopen_read_only(state: &ServerState, view: &str) -> Result<crate::store::Store, crate::store::StoreError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         return crate::store::Store::open_read_only_no_index(state.shared.root.as_path(), view);
     }
     crate::store::Store::open_read_only(state.shared.root.as_path(), view)

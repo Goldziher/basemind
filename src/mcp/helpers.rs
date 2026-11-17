@@ -666,7 +666,7 @@ pub(super) async fn run_telemetry_summary(
     state: &ServerState,
     params: super::types::TelemetrySummaryParams,
 ) -> Result<CallToolResult, McpError> {
-    let response = super::telemetry::summarize(state.shared.telemetry.path(), params).await?;
+    let response = super::telemetry::summarize(state.telemetry.path(), params).await?;
     json_result(&response)
 }
 

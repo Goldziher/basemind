@@ -58,7 +58,7 @@ async fn shedding_releases_every_stack_and_its_watcher() {
         .serve_conn(workspace.path(), host, history)
         .await
         .expect("build hosted read stack");
-    let weak = Arc::downgrade(&shared);
+    let weak = Arc::downgrade(&shared.workspace);
     drop(shared);
 
     assert_eq!(pool.shed_read_stacks().await, 1);

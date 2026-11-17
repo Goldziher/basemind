@@ -216,7 +216,7 @@ async fn resolve_definition(
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let _ = state;
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.shared.host {
+    if let Some(host) = &state.host {
         // ~keep Daemon-hosted: resolve the cross-file binding in-process through the pool's read-write index
         // ~keep rather than dialing the daemon over its own socket. A host error degrades to `None`, exactly
         // ~keep like the daemon-forward arm, so goto reports no binding rather than erroring.
@@ -241,7 +241,7 @@ async fn resolve_definition(
         };
     }
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.shared.daemon_writer {
+    if state.daemon_writer {
         use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
         let client = match super::helpers_daemon::daemon_client(state).await {
             Ok(client) => client,

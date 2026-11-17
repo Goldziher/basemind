@@ -27,7 +27,7 @@ pub(super) fn comms_err(error: impl std::fmt::Display) -> McpError {
 /// Connect to the daemon without probing it from a request it hosts: a daemon-hosted session's
 /// daemon is running by definition, and asking it to ensure itself would dial itself.
 async fn connect(state: &ServerState) -> Result<CommsClient, McpError> {
-    if state.shared.host.is_some() {
+    if state.host.is_some() {
         let paths = crate::comms::singleton::resolve_paths().map_err(comms_err)?;
         return CommsClient::connect(&paths, ClientHello::anonymous())
             .await
@@ -75,7 +75,7 @@ pub(super) async fn dispatch_memory_op(
     state: &ServerState,
     op: crate::comms::memory_proto::MemoryOp,
 ) -> Result<crate::comms::memory_proto::MemoryOutcome, McpError> {
-    if let Some(host) = &state.shared.host {
+    if let Some(host) = &state.host {
         let host = Arc::clone(host);
         let root = state.shared.root.clone();
         let scope = state.shared.scope.clone();

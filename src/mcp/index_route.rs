@@ -63,13 +63,13 @@ impl IndexRoute {
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         {
-            if let Some(host) = &state.shared.host {
+            if let Some(host) = &state.host {
                 return Self::Host {
                     host: Arc::clone(host),
                     root: state.shared.root.clone(),
                 };
             }
-            if state.shared.daemon_writer {
+            if state.daemon_writer {
                 match super::helpers_daemon::daemon_client(state).await {
                     Ok(client) => {
                         return Self::Daemon {
