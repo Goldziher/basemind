@@ -1,5 +1,4 @@
 use super::*;
-use crate::mcp::types_documents::RerankReport;
 
 fn hit(doc: &str, ord: u32) -> DocChunkHit {
     DocChunkHit {
@@ -18,8 +17,14 @@ fn hit(doc: &str, ord: u32) -> DocChunkHit {
     }
 }
 
-fn params(arguments: serde_json::Value) -> DocsSearchParams {
-    serde_json::from_value(arguments).expect("arguments")
+fn request(query: &str, kind: Option<&str>, keywords: Option<&str>, path: Option<&str>) -> DocsRequest {
+    DocsRequest {
+        query: query.to_string(),
+        kind: kind.map(str::to_string),
+        keywords: keywords.map(str::to_string),
+        path: path.map(str::to_string),
+        ..DocsRequest::default()
+    }
 }
 
 #[test]
@@ -62,13 +67,26 @@ fn a_projection_widens_until_enough_live_hits_and_says_when_it_gave_up() {
 
 #[test]
 fn filters_are_checked_before_anything_runs() {
-    let unknown_kind = Filters::of(&params(serde_json::json!({"query": "q", "kind": "slides"})));
-    assert!(unknown_kind.err().unwrap().message.contains("markdown"));
-    let bad_glob = Filters::of(&params(serde_json::json!({"query": "q", "path": "docs/[x"})));
-    assert!(bad_glob.err().unwrap().message.contains("glob"));
-    let ok = Filters::of(&params(serde_json::json!({
-        "query": "q", "kind": "PDF", "keywords": "Flood, Barrier ,", "path": "docs/**/*.pdf"
-    })))
+    let unknown_kind = Filters::parse(&request("q", Some("slides"), None, None), None);
+    assert!(matches!(unknown_kind, Err(DocsSearchError::InvalidArgument(text)) if text.contains("markdown")));
+    let bad_glob = Filters::parse(&request("q", None, None, Some("docs/[x")), None);
+    assert!(matches!(bad_glob, Err(DocsSearchError::InvalidArgument(text)) if text.contains("glob")));
+    let entity = DocsRequest {
+        entity: Some("person".to_string()),
+        ..request("q", None, None, None)
+    };
+    assert!(matches!(
+        Filters::parse(&entity, Some("no NER".to_string())),
+        Err(DocsSearchError::Unsupported(_))
+    ));
+    assert!(matches!(
+        Filters::parse(&request(" ", None, None, None), None),
+        Err(DocsSearchError::InvalidArgument(_))
+    ));
+    let ok = Filters::parse(
+        &request("q", Some("PDF"), Some("Flood, Barrier ,"), Some("docs/**/*.pdf")),
+        None,
+    )
     .unwrap();
     assert_eq!(ok.kind.as_deref(), Some("pdf"));
     assert_eq!(ok.keywords, vec!["flood".to_string(), "barrier".to_string()]);
@@ -124,6 +142,52 @@ fn a_degraded_ranking_is_not_kept() {
         candidates: None,
         reason: Some("model".to_string()),
     };
-    assert!(rerank_failed(&ranking.rerank));
     assert!(!is_cacheable(&ranking));
+}
+
+fn ranked_chunk(doc: &str, ord: u32, text: &str) -> RankedChunk {
+    RankedChunk {
+        doc: doc.to_string(),
+        ord,
+        paths: vec![format!("{doc}.md"), format!("copy/{doc}.md")],
+        mime_type: "text/markdown".to_string(),
+        kind: "unknown".to_string(),
+        cite: DocCite {
+            page_start: None,
+            page_end: None,
+            section: Some(vec!["Guide".to_string(), format!("Part {ord}")]),
+            line_start: Some(ord * 10 + 1),
+            line_end: Some(ord * 10 + 9),
+            byte_start: ord * 100,
+            byte_end: ord * 100 + 120,
+        },
+        text: text.to_string(),
+        score: 1.0 / f32::from(u16::try_from(ord).unwrap() + 1),
+        lanes: LaneRanks::default(),
+        rerank_score: None,
+    }
+}
+
+fn scored(index: usize, score: f32) -> xberg::RerankedDocument {
+    xberg::RerankedDocument {
+        index,
+        score,
+        document: String::new(),
+    }
+}
+
+#[test]
+fn the_reranker_reorders_its_candidates_and_drops_nothing() {
+    let mut hits: Vec<RankedChunk> = (0..5).map(|i| ranked_chunk("d", i, &i.to_string())).collect();
+    let answer = vec![scored(2, 0.9), scored(0, 0.5)];
+    reorder(&mut hits, 3, &answer).unwrap();
+    let order: Vec<u32> = hits.iter().map(|h| h.ord).collect();
+    assert_eq!(order, vec![2, 0, 1, 3, 4]);
+    assert_eq!(hits[0].rerank_score, Some(0.9));
+    assert_eq!(hits[2].rerank_score, None);
+
+    let mut hits: Vec<RankedChunk> = (0..3).map(|i| ranked_chunk("d", i, "x")).collect();
+    let bad = vec![scored(7, 0.1)];
+    assert!(reorder(&mut hits, 2, &bad).is_err());
+    assert_eq!(hits.len(), 3, "a bad answer keeps every hit");
 }

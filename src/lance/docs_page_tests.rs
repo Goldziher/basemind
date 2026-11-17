@@ -1,13 +1,5 @@
 use super::*;
-use crate::mcp::types_documents::LaneRanks;
-
-fn scored(index: usize, score: f32) -> xberg::RerankedDocument {
-    xberg::RerankedDocument {
-        index,
-        score,
-        document: String::new(),
-    }
-}
+use crate::lance::docs_types::LaneRanks;
 
 fn ranked(doc: &str, ord: u32, text: &str) -> RankedChunk {
     RankedChunk {
@@ -61,22 +53,6 @@ fn stitching_drops_the_overlap_between_consecutive_chunks() {
     assert_eq!(stitch("the", "end"), "the\nend", "a one-letter match is not an overlap");
     assert_eq!(stitch("one\n", "two"), "one\ntwo");
     assert_eq!(stitch("one", "two"), "one\ntwo");
-}
-
-#[test]
-fn the_reranker_reorders_its_candidates_and_drops_nothing() {
-    let mut hits: Vec<RankedChunk> = (0..5).map(|i| ranked("d", i, &i.to_string())).collect();
-    let answer = vec![scored(2, 0.9), scored(0, 0.5)];
-    reorder(&mut hits, 3, &answer).unwrap();
-    let order: Vec<u32> = hits.iter().map(|h| h.ord).collect();
-    assert_eq!(order, vec![2, 0, 1, 3, 4]);
-    assert_eq!(hits[0].rerank_score, Some(0.9));
-    assert_eq!(hits[2].rerank_score, None);
-
-    let mut hits: Vec<RankedChunk> = (0..3).map(|i| ranked("d", i, "x")).collect();
-    let bad = vec![scored(7, 0.1)];
-    assert!(reorder(&mut hits, 2, &bad).is_err());
-    assert_eq!(hits.len(), 3, "a bad answer keeps every hit");
 }
 
 #[test]

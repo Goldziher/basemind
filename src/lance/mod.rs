@@ -15,7 +15,13 @@ mod batch;
 #[cfg(feature = "documents")]
 pub mod docs;
 #[cfg(feature = "documents")]
+pub mod docs_page;
+#[cfg(feature = "documents")]
+pub mod docs_rank;
+#[cfg(feature = "documents")]
 pub mod docs_schema;
+#[cfg(feature = "documents")]
+pub mod docs_types;
 mod memory;
 pub mod schema;
 #[doc(hidden)]

@@ -37,8 +37,8 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::{elapsed_us, json_result};
 use super::memory::{
-    embed_query, lance_visibility, memory_get_many_wire, memory_list_page, memory_namespace, memory_stamps_wire,
-    shared_embedder,
+    embed_passage, embed_query, lance_visibility, memory_get_many_wire, memory_list_page, memory_namespace,
+    memory_stamps_wire, shared_embedder,
 };
 use super::memory_ops::{MEMORY_PREVIEW_CHARS, WireMemoryEntry};
 use super::types_memory::{MemoryPutParams, MemorySearchHit, MemorySearchParams, MemorySearchResponse, Visibility};
@@ -304,7 +304,7 @@ pub(super) async fn embed_note(
     created_at: i64,
     updated_at: i64,
 ) -> Result<(), String> {
-    let embedding = embed_query(state, &params.value)
+    let embedding = embed_passage(state, &params.value)
         .await
         .map_err(|error| error.message.into_owned())?;
     let lance = memory_lance_store(state).await.map_err(|error| error.to_string())?;
@@ -626,7 +626,7 @@ async fn embed_notes(state: &ServerState, notes: Vec<WireMemoryEntry>) -> Vec<(W
         _ => {
             let mut embedded = Vec::with_capacity(notes.len());
             for note in notes {
-                match embed_query(state, &note.value).await {
+                match embed_passage(state, &note.value).await {
                     Ok(embedding) => embedded.push((note, embedding)),
                     Err(error) => {
                         tracing::warn!(key = %note.key, error = %error.message, "memory note could not be embedded");

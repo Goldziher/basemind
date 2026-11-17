@@ -1,92 +1,23 @@
-//! A page of a `docs_search` ranking (ADR-0029 rules 7 and 8): rerank the head of the ranking,
-//! then cut the page, merge adjacent chunks of one document, add a neighbouring chunk on either
-//! side while the token budget allows, and cite every hit.
+//! A page of a document-search ranking (ADR-0029 rule 8): cut the page, merge adjacent chunks of
+//! one document that are rank neighbours, add a neighbouring chunk on either side while the token
+//! budget allows, and cite every hit.
 
 use ahash::AHashMap;
-use rmcp::ErrorData as McpError;
 
-use super::ServerState;
-use super::cursor::Cursor;
-use super::types_documents::{
-    DocChunkRef, DocCite, DocContext, DocHit, DocsRanking, DocsSearchResponse, RankedChunk, RerankReport,
-};
-use crate::lance::docs_schema::DocChunkHit;
+use super::docs::DocStore;
+use super::docs_schema::DocChunkHit;
+use super::docs_types::{DocChunkRef, DocCite, DocContext, DocHit, DocsPage, DocsRanking, RankedChunk};
 
-/// Fused hits the reranker scores; the rest follow in fused order (ADR-0029 rule 7).
-pub(super) const RERANK_CANDIDATES: usize = 50;
+/// Hits of a ranking that can be paged through.
+pub const RANKED_DEPTH: usize = super::docs_rank::RANKED_FETCH - 1;
 /// The longest overlap between consecutive chunks that stitching looks for, in bytes.
 const STITCH_MAX_OVERLAP: usize = 512;
 /// The shortest shared text taken for an overlap: a shorter match is a coincidence ("the" + "end").
 const STITCH_MIN_OVERLAP: usize = 12;
 
-/// Reorder the first [`RERANK_CANDIDATES`] hits by the cross-encoder when the reranker is on.
-/// Nothing is dropped, and a failure leaves the fused order with the reason on the report.
-pub(super) async fn rerank(state: &ServerState, query: &str, ranking: &mut DocsRanking) {
-    let config = &state.shared.config.documents.reranker;
-    if !config.enabled || ranking.hits.is_empty() {
-        return;
-    }
-    let candidates = ranking.hits.len().min(RERANK_CANDIDATES).min(config.top_k.max(1));
-    let fail = |reason: String| RerankReport {
-        ran: false,
-        candidates: None,
-        reason: Some(reason),
-    };
-    if xberg::get_reranker_preset(&config.preset).is_none() {
-        ranking.rerank = fail(format!("unknown reranker preset {:?}", config.preset));
-        return;
-    }
-    let documents: Vec<String> = ranking.hits[..candidates]
-        .iter()
-        .map(|hit| match &hit.cite.section {
-            Some(section) if !section.is_empty() => format!("{}\n{}", section.join(" > "), hit.text),
-            _ => hit.text.clone(),
-        })
-        .collect();
-    let settings = xberg::core::config::RerankerConfig {
-        model: xberg::core::config::RerankerModelType::Preset {
-            name: config.preset.clone(),
-        },
-        top_k: Some(candidates),
-        acceleration: crate::embeddings::acceleration(state.shared.config.resources.onnx_provider),
-        ..Default::default()
-    };
-    match xberg::rerank_async(query.to_string(), documents, &settings).await {
-        Ok(scored) => match reorder(&mut ranking.hits, candidates, &scored) {
-            Ok(()) => {
-                ranking.rerank = RerankReport {
-                    ran: true,
-                    candidates: u32::try_from(candidates).ok(),
-                    reason: None,
-                }
-            }
-            Err(reason) => ranking.rerank = fail(reason),
-        },
-        Err(error) => ranking.rerank = fail(format!("the reranker failed: {error}")),
-    }
-}
-
-/// Put the first `candidates` hits in the order of `scored` (index into them, score), each scored
-/// hit carrying its score. A hit the reranker left out keeps its fused place after the scored ones.
-fn reorder(hits: &mut Vec<RankedChunk>, candidates: usize, scored: &[xberg::RerankedDocument]) -> Result<(), String> {
-    let mut head: Vec<Option<RankedChunk>> = hits.drain(..candidates).map(Some).collect();
-    let mut reordered = Vec::with_capacity(candidates);
-    for result in scored {
-        let Some(slot) = head.get_mut(result.index) else {
-            hits.splice(0..0, head.into_iter().flatten().chain(reordered));
-            return Err(format!(
-                "the reranker returned index {} of {candidates} candidates",
-                result.index
-            ));
-        };
-        if let Some(mut hit) = slot.take() {
-            hit.rerank_score = Some(result.score);
-            reordered.push(hit);
-        }
-    }
-    reordered.extend(head.into_iter().flatten());
-    hits.splice(0..0, reordered);
-    Ok(())
+/// Estimated tokens of `bytes` of response, the estimate the MCP token budget uses.
+fn bytes_to_tokens(bytes: u64) -> u64 {
+    bytes / 4
 }
 
 /// One hit of a page before its context is added: a run of adjacent chunks of one document.
@@ -171,7 +102,7 @@ fn min_opt(a: Option<u32>, b: Option<u32>) -> Option<u32> {
 }
 
 fn tokens_of<T: serde::Serialize>(value: &T) -> u64 {
-    serde_json::to_vec(value).map_or(0, |bytes| super::savings::bytes_to_tokens(bytes.len() as u64))
+    serde_json::to_vec(value).map_or(0, |bytes| bytes_to_tokens(bytes.len() as u64))
 }
 
 fn hit_of(group: &Merged, title: Option<String>, of: Option<u32>) -> DocHit {
@@ -203,17 +134,15 @@ fn hit_of(group: &Merged, title: Option<String>, of: Option<u32>) -> DocHit {
     }
 }
 
-/// Cut the page `[offset, offset + limit)` out of `ranking` and build its hits.
-pub(super) async fn page(
-    state: &ServerState,
+/// Cut the page `[offset, offset + limit)` out of `ranking` and build its hits, reading titles and
+/// neighbouring chunks from `store`. `max_tokens` bounds the hits; the first is always kept.
+pub fn page(
+    store: Option<&DocStore>,
     ranking: DocsRanking,
     offset: u32,
     limit: u32,
     max_tokens: Option<u32>,
-    generation: u32,
-) -> Result<DocsSearchResponse, McpError> {
-    use super::helpers_page::RANKED_DEPTH;
-
+) -> DocsPage {
     let DocsRanking {
         query,
         mut hits,
@@ -225,21 +154,16 @@ pub(super) async fn page(
         notice,
         truncated_reason,
     } = ranking;
-    let goes_on = hits.len() > RANKED_DEPTH as usize;
-    hits.truncate(RANKED_DEPTH as usize);
+    let goes_on = hits.len() > RANKED_DEPTH;
+    hits.truncate(RANKED_DEPTH);
     let fetched = hits.len() as u32;
     let page: Vec<RankedChunk> = hits.into_iter().skip(offset as usize).take(limit as usize).collect();
     let consumed = page.len() as u32;
     let groups = merge(page);
 
-    let store = if groups.is_empty() {
-        None
-    } else {
-        super::docs_pipeline::docs_store(state).await?
-    };
-    let (metas, neighbours) = match &store {
-        Some(store) => context_of(store, &groups).await,
-        None => (AHashMap::new(), AHashMap::new()),
+    let (metas, neighbours) = match store {
+        Some(store) if !groups.is_empty() => context_of(store, &groups),
+        _ => (AHashMap::new(), AHashMap::new()),
     };
 
     let mut out: Vec<DocHit> = groups
@@ -270,7 +194,7 @@ pub(super) async fn page(
             .and_then(|o| neighbours.get(&(group.first.doc.clone(), o)));
         let after = neighbours.get(&(group.first.doc.clone(), ord_end + 1));
         if let Some(chunk) = before {
-            let cost = super::savings::bytes_to_tokens(chunk.text.len() as u64);
+            let cost = bytes_to_tokens(chunk.text.len() as u64);
             if budget.is_none_or(|budget| used + cost <= budget) {
                 used += cost;
                 hit.text = stitch(&chunk.text, &hit.text);
@@ -278,7 +202,7 @@ pub(super) async fn page(
             }
         }
         if let Some(chunk) = after {
-            let cost = super::savings::bytes_to_tokens(chunk.text.len() as u64);
+            let cost = bytes_to_tokens(chunk.text.len() as u64);
             if budget.is_none_or(|budget| used + cost <= budget) {
                 used += cost;
                 hit.text = stitch(&hit.text, &chunk.text);
@@ -292,7 +216,7 @@ pub(super) async fn page(
     let next = offset + if budgeted { kept_members } else { consumed };
     let more = !out.is_empty() && next < fetched;
     let truncated_reason = truncated_reason.or_else(|| goes_on.then(|| "depth".to_string()));
-    Ok(DocsSearchResponse {
+    DocsPage {
         query,
         hits: out,
         lanes_ran,
@@ -304,9 +228,8 @@ pub(super) async fn page(
         truncated: truncated_reason.is_some(),
         truncated_reason,
         budgeted,
-        next_cursor: more.then(|| Cursor::encode_in_memory(u64::from(next), generation)),
-        elapsed_us: 0,
-    })
+        next_offset: more.then_some(next),
+    }
 }
 
 type Metas = AHashMap<String, (Option<String>, u32)>;
@@ -314,7 +237,7 @@ type Neighbours = AHashMap<(String, u32), DocChunkHit>;
 
 /// Titles and chunk counts of the page's documents, and the chunks on either side of each group.
 /// A store error leaves the page without context rather than failing it.
-async fn context_of(store: &crate::lance::docs::DocStore, groups: &[Merged]) -> (Metas, Neighbours) {
+fn context_of(store: &DocStore, groups: &[Merged]) -> (Metas, Neighbours) {
     let mut keys: Vec<String> = groups.iter().map(|g| g.first.doc.clone()).collect();
     keys.sort_unstable();
     keys.dedup();
@@ -328,15 +251,11 @@ async fn context_of(store: &crate::lance::docs::DocStore, groups: &[Merged]) -> 
         ords.push(ord_end + 1);
     }
     let wanted: Vec<(String, Vec<u32>)> = wanted.into_iter().collect();
-    let store = store.clone();
-    let fetched = tokio::task::spawn_blocking(move || {
-        let metas = store.documents(&keys)?;
-        let chunks = store.chunks(&wanted)?;
-        anyhow::Ok((metas, chunks))
-    })
-    .await;
+    let fetched = store
+        .documents(&keys)
+        .and_then(|metas| store.chunks(&wanted).map(|chunks| (metas, chunks)));
     match fetched {
-        Ok(Ok((metas, chunks))) => (
+        Ok((metas, chunks)) => (
             metas
                 .into_iter()
                 .map(|meta| (meta.doc_key, (meta.title, meta.n_chunks)))
@@ -346,12 +265,8 @@ async fn context_of(store: &crate::lance::docs::DocStore, groups: &[Merged]) -> 
                 .map(|chunk| ((chunk.doc_key.clone(), chunk.chunk_ord), chunk))
                 .collect(),
         ),
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "docs_search: reading context chunks failed; the page carries none");
-            (AHashMap::new(), AHashMap::new())
-        }
         Err(error) => {
-            tracing::warn!(%error, "docs_search: context lookup did not finish");
+            tracing::warn!(%error, "docs_search: reading context chunks failed; the page carries none");
             (AHashMap::new(), AHashMap::new())
         }
     }

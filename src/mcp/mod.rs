@@ -29,8 +29,6 @@ pub(crate) use helpers_calls_scan::scan_calls_by_name;
 #[cfg(test)]
 pub(crate) use helpers_refs_match::Matching;
 #[cfg(feature = "documents")]
-mod docs_page;
-#[cfg(feature = "documents")]
 mod docs_pipeline;
 mod helpers_code;
 #[cfg(feature = "code-search")]

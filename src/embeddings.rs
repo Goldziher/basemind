@@ -255,14 +255,30 @@ impl SharedEmbedder {
         if let Some(fake) = self.fake {
             return fake(text);
         }
+        load_failure::recent(&self.model_name)?;
         let (config, model, text) = (self.config.clone(), self.model_name.clone(), text.to_string());
-        self.run_on_embed_pool(move || {
-            let mut results = xberg::embeddings::embed_texts(&[text.as_str()], &config)
-                .with_context(|| format!("embed_texts(preset={model})"))?;
-            results
-                .pop()
-                .ok_or_else(|| anyhow!("embed_texts returned empty result"))
-        })?
+        load_failure::remember(
+            &self.model_name,
+            self.run_on_embed_pool(move || {
+                let mut results = xberg::embeddings::embed_texts(&[text.as_str()], &config)
+                    .with_context(|| format!("embed_texts(preset={model})"))?;
+                results
+                    .pop()
+                    .ok_or_else(|| anyhow!("embed_texts returned empty result"))
+            })?,
+        )
+    }
+
+    /// Embed a search query: [`Self::embed`] with the preset's query prefix in front, which
+    /// asymmetric models need to put a query and the passages it should find in one space (for
+    /// example `arctic-embed-m-v2.0` wants `query: `). Passages are embedded without it.
+    pub fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
+        self.embed(&with_query_prefix(self.query_prefix().as_deref(), query))
+    }
+
+    /// The preset's query prefix, if it has one.
+    pub fn query_prefix(&self) -> Option<String> {
+        xberg::embeddings::embedding_query_prefix(&self.config).filter(|prefix| !prefix.is_empty())
     }
 
     /// Embed a batch of texts in one call. Returns one `Vec<f32>` of length `self.dim()` per
@@ -281,13 +297,17 @@ impl SharedEmbedder {
         if let Some(fake) = self.fake {
             return texts.iter().map(|text| fake(text)).collect();
         }
+        load_failure::recent(&self.model_name)?;
         let (config, model) = (self.config.clone(), self.model_name.clone());
         let owned: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();
-        self.run_on_embed_pool(move || {
-            let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
-            xberg::embeddings::embed_texts(&refs, &config)
-                .with_context(|| format!("embed_texts(preset={model}, batch={})", refs.len()))
-        })?
+        load_failure::remember(
+            &self.model_name,
+            self.run_on_embed_pool(move || {
+                let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+                xberg::embeddings::embed_texts(&refs, &config)
+                    .with_context(|| format!("embed_texts(preset={model}, batch={})", refs.len()))
+            })?,
+        )
     }
 
     /// Run `work` on the bounded [`embed_pool`] and block the caller until it finishes.
@@ -318,6 +338,70 @@ impl SharedEmbedder {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(_)) | Err(_) => Err(anyhow!("embedding worker panicked")),
         }
+    }
+}
+
+/// `query` with `prefix` in front, when there is one and the query does not already carry it.
+pub fn with_query_prefix(prefix: Option<&str>, query: &str) -> String {
+    match prefix {
+        Some(prefix) if !query.starts_with(prefix) => format!("{prefix}{query}"),
+        _ => query.to_string(),
+    }
+}
+
+/// A model that could not be loaded (offline, a failed download, no ONNX runtime) is not tried
+/// again by every call for a while: each attempt can take as long as the download timeout.
+mod load_failure {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use anyhow::{Result, anyhow};
+
+    /// How long a load failure is answered from memory before the model is tried again.
+    pub(super) const RETRY_AFTER: Duration = Duration::from_secs(60);
+
+    static FAILED: Mutex<Option<(String, Instant, String)>> = Mutex::new(None);
+
+    /// The remembered failure of `model`, while it is recent.
+    pub(super) fn recent(model: &str) -> Result<()> {
+        let failed = FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match failed.as_ref() {
+            Some((name, at, reason)) if name == model && at.elapsed() < RETRY_AFTER => Err(anyhow!(
+                "{reason} (a load failure less than {} s ago; not retried yet)",
+                RETRY_AFTER.as_secs()
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Pass `result` through, remembering it when it failed to load `model`, forgetting any earlier
+    /// failure when it succeeded.
+    pub(super) fn remember<T>(model: &str, result: Result<T>) -> Result<T> {
+        let mut failed = FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &result {
+            Ok(_) => *failed = None,
+            Err(error) if is_load_failure(&format!("{error:#}")) => {
+                *failed = Some((model.to_string(), Instant::now(), format!("{error:#}")));
+            }
+            Err(_) => {}
+        }
+        result
+    }
+
+    /// Whether an embedding error is the model failing to load rather than one input failing.
+    pub(super) fn is_load_failure(message: &str) -> bool {
+        let message = message.to_ascii_lowercase();
+        [
+            "download",
+            "huggingface",
+            "onnx",
+            "missing dependency",
+            "no such file",
+            "network",
+            "connect",
+        ]
+        .iter()
+        .any(|marker| message.contains(marker))
     }
 }
 
@@ -437,5 +521,34 @@ mod tests {
             "resolve_embed_threads(0) should yield max(2, cores/4) = {expected}"
         );
         assert!(got >= 2, "auto embed cap must be >= 2, got {got}");
+    }
+
+    #[test]
+    fn a_load_failure_is_remembered_for_a_while_and_cleared_by_a_success() {
+        let model = "load-failure-test-model";
+        assert!(super::load_failure::recent(model).is_ok());
+        let failed: Result<()> = Err(anyhow!("download of model weights failed: offline"));
+        assert!(super::load_failure::remember(model, failed).is_err());
+        let recent = super::load_failure::recent(model).unwrap_err().to_string();
+        assert!(recent.contains("offline") && recent.contains("not retried"), "{recent}");
+        assert!(super::load_failure::recent("another-model").is_ok());
+        let one_input: Result<()> = Err(anyhow!("embed: input text must not be empty"));
+        let _ = super::load_failure::remember("other", one_input);
+        assert!(
+            super::load_failure::recent("other").is_ok(),
+            "one input failing is not a load failure"
+        );
+        assert!(super::load_failure::remember(model, Ok(())).is_ok());
+        assert!(super::load_failure::recent(model).is_ok());
+    }
+
+    #[test]
+    fn a_query_prefix_is_added_once() {
+        assert_eq!(super::with_query_prefix(Some("query: "), "rivers"), "query: rivers");
+        assert_eq!(
+            super::with_query_prefix(Some("query: "), "query: rivers"),
+            "query: rivers"
+        );
+        assert_eq!(super::with_query_prefix(None, "rivers"), "rivers");
     }
 }

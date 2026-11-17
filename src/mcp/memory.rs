@@ -50,16 +50,34 @@ pub(super) async fn shared_embedder(state: &ServerState) -> Result<Arc<crate::em
         .cloned()
 }
 
-#[cfg(feature = "intelligence")]
+/// Embed a search query, with the preset's query prefix (see `SharedEmbedder::embed_query`).
+#[cfg(any(feature = "memory", feature = "code-search"))]
 pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
+    embed_with(state, text, true).await
+}
+
+/// Embed a passage to be found later (a memory note): no query prefix.
+#[cfg(feature = "memory")]
+pub(super) async fn embed_passage(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
+    embed_with(state, text, false).await
+}
+
+#[cfg(any(feature = "memory", feature = "code-search"))]
+async fn embed_with(state: &ServerState, text: &str, query: bool) -> Result<Vec<f32>, McpError> {
     let embedder = shared_embedder(state)
         .await
         .map_err(|e| McpError::internal_error(e, None))?;
     let text = text.to_string();
-    tokio::task::spawn_blocking(move || embedder.embed(&text))
-        .await
-        .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-        .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
+    tokio::task::spawn_blocking(move || {
+        if query {
+            embedder.embed_query(&text)
+        } else {
+            embedder.embed(&text)
+        }
+    })
+    .await
+    .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
+    .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
 }
 
 /// Open the vector store at `dir` for `embedder`'s dimension and model, off the async runtime.
