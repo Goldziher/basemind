@@ -1,6 +1,6 @@
 //! Daemon-forwarding half of [`CommsClient`](super::client::CommsClient): the write/read RPCs a
 //! `daemon_writer` serve ships to the daemon (the machine's sole fjall writer) rather than running
-//! in-process — rescan, CORE memory, and git-history.
+//! in-process — rescan and git-history.
 //!
 //! Split out of `client.rs` to keep it under the 1000-line `rust-max-lines` cap. These are a second
 //! `impl CommsClient` block; the request/response correlation core stays in `client.rs`.
@@ -69,23 +69,6 @@ impl CommsClient {
                 elapsed_ms,
             }),
             other => Err(self.shape_err(other, "rescan")),
-        }
-    }
-
-    /// Forward a CORE memory operation to the daemon (the sole fjall writer). A `daemon_writer`
-    /// serve resolves the namespace + scope and ships the op here; the vector (LanceDB) half stays
-    /// serve-side. Idempotent for get/list/delete; `put` is a preserving RMW, so a replayed retry is
-    /// safe.
-    #[cfg(feature = "memory")]
-    pub async fn memory_op(
-        &mut self,
-        root: PathBuf,
-        scope: String,
-        op: crate::comms::memory_proto::MemoryOp,
-    ) -> Result<crate::comms::memory_proto::MemoryOutcome, CommsClientError> {
-        match self.request(CommsRequest::Memory { root, scope, op }).await? {
-            CommsResponse::Memory(outcome) => Ok(outcome),
-            other => Err(self.shape_err(other, "memory_op")),
         }
     }
 

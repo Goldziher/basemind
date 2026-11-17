@@ -63,10 +63,6 @@ pub(crate) const KEY_MAX_BYTES: usize = 1024;
 /// frame whole, in the save and in every read of it.
 pub(crate) const NOTE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
-/// The most bytes of keys one request may carry, well inside the daemon's 16 MiB frame. Keys saved
-/// before [`KEY_MAX_BYTES`] can be longer, so a batch is cut by bytes as well as by count.
-pub(crate) const REQUEST_KEY_MAX_BYTES: usize = 4 * 1024 * 1024;
-
 /// Refuse a note too long to save: its key past [`KEY_MAX_BYTES`], or its text and tags past
 /// [`NOTE_MAX_BYTES`].
 pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), MemoryOpError> {
@@ -86,29 +82,6 @@ pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), 
         });
     }
     Ok(())
-}
-
-/// The leading keys of `keys` one request may carry: at most `most` of them and, when the request
-/// crosses the daemon's socket (`framed`), [`REQUEST_KEY_MAX_BYTES`] of them, and always the first,
-/// unless it alone is longer than that. A request answered in this process has no frame to fit.
-pub(crate) fn request_chunk(keys: &[String], most: usize, framed: bool) -> Result<&[String], MemoryOpError> {
-    let mut bytes = 0_usize;
-    let mut taken = 0;
-    for key in keys.iter().take(most) {
-        bytes = bytes.saturating_add(key.len());
-        if framed && bytes > REQUEST_KEY_MAX_BYTES {
-            break;
-        }
-        taken += 1;
-    }
-    match keys.first() {
-        Some(first) if taken == 0 => Err(MemoryOpError::TooLong {
-            what: "key",
-            bytes: first.len(),
-            most: REQUEST_KEY_MAX_BYTES,
-        }),
-        _ => Ok(&keys[..taken]),
-    }
 }
 
 /// A fjall-side memory operation failed. Kept small and stringly so it maps cleanly to both an
@@ -856,22 +829,6 @@ mod tests {
         );
     }
 
-    /// Keys are cut into requests by bytes as well as by count, so long keys saved before the key
-    /// limit cannot make a request larger than a frame.
-    #[test]
-    fn a_request_carries_keys_up_to_its_byte_budget() {
-        let long = "k".repeat(REQUEST_KEY_MAX_BYTES / 3);
-        let keys = vec![long.clone(), long.clone(), long.clone(), long.clone()];
-        assert_eq!(request_chunk(&keys, STAMPS_MAX_KEYS, true).unwrap().len(), 3);
-        assert_eq!(request_chunk(&keys, 2, true).unwrap().len(), 2, "and by count");
-        assert!(request_chunk(&[], 2, true).unwrap().is_empty());
-        let too_long = vec!["k".repeat(REQUEST_KEY_MAX_BYTES + 1)];
-        assert!(matches!(
-            request_chunk(&too_long, 2, true),
-            Err(MemoryOpError::TooLong { what: "key", .. })
-        ));
-    }
-
     /// A note saved before the cap and too long for a frame is refused by name when read by key,
     /// and left out of a batched read, which still answers the notes beside it; one that fits is
     /// sent.
@@ -898,13 +855,5 @@ mod tests {
         );
         let one = MemoryOutcome::Got(Some(fits));
         assert_eq!(fit_for_a_frame(one.clone()), Ok(one));
-    }
-
-    /// A request answered in this process has no frame: a key saved before the key limit is read
-    /// there whatever its length, and the keys are cut by count alone.
-    #[test]
-    fn a_request_answered_here_is_cut_by_count_alone() {
-        let too_long = vec!["k".repeat(REQUEST_KEY_MAX_BYTES + 1); 3];
-        assert_eq!(request_chunk(&too_long, 2, false).unwrap().len(), 2);
     }
 }
