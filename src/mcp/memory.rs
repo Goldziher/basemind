@@ -68,18 +68,27 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
         .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
 }
 
-/// Open the vector store at `dir` for `embedder`'s dimension and model, off the async runtime.
+/// Open the vector store at `dir` for `embedder`'s dimension and model, off the async runtime. Only
+/// a `writer` (a process holding the workspace lock) may create or rebuild it; any other open reads
+/// a store that matches, or reports why it cannot ([`crate::lance::LanceStore::open_existing`]).
 #[cfg(feature = "intelligence")]
 async fn open_lance(
     dir: std::path::PathBuf,
     embedder: &crate::embeddings::SharedEmbedder,
+    writer: bool,
 ) -> Result<Arc<crate::lance::LanceStore>, String> {
     let (dim, model) = (embedder.dim(), embedder.model().to_string());
-    tokio::task::spawn_blocking(move || crate::lance::LanceStore::open(&dir, dim, &model))
-        .await
-        .map_err(|e| format!("lance open join: {e}"))?
-        .map(Arc::new)
-        .map_err(|e| format!("open LanceStore: {e}"))
+    tokio::task::spawn_blocking(move || {
+        if writer {
+            crate::lance::LanceStore::open(&dir, dim, &model)
+        } else {
+            crate::lance::LanceStore::open_existing(&dir, dim, &model)
+        }
+    })
+    .await
+    .map_err(|e| format!("lance open join: {e}"))?
+    .map(Arc::new)
+    .map_err(|e| format!("open LanceStore: {e}"))
 }
 
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
@@ -93,14 +102,14 @@ pub(super) async fn lance_store(
             let embedder = shared_embedder(state)
                 .await
                 .map_err(|e| format!("embedder init: {e}"))?;
-            let lance_dir = state
-                .shared
-                .store
-                .read()
-                .await
-                .basemind_dir
-                .join(crate::store::LANCE_DIR);
-            open_lance(lance_dir, &embedder).await
+            let (lance_dir, writer) = {
+                let store = state.shared.store.read().await;
+                (
+                    store.basemind_dir.join(crate::store::LANCE_DIR),
+                    store.holds_writer_lock(),
+                )
+            };
+            open_lance(lance_dir, &embedder, writer).await
         })
         .await
 }

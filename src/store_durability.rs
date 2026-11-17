@@ -117,8 +117,9 @@ impl Store {
         Ok(())
     }
 
-    /// Whether this store was opened holding the workspace lock, or has taken it since.
-    #[cfg(test)]
+    /// Whether this store was opened holding the workspace lock, or has taken it since: only then
+    /// may this process create or rebuild the workspace's vector store.
+    #[cfg(any(test, feature = "intelligence"))]
     pub(crate) fn holds_writer_lock(&self) -> bool {
         self._lock.is_some()
     }
