@@ -197,7 +197,7 @@ fn requeue_pending_code(
 ) {
     use crate::store::StoreError;
 
-    if store.pending_vectors.code().is_empty() {
+    if store.pending_vectors.code().is_empty() || !writes_code_vectors(store) {
         return;
     }
     let cfg = &config.code_search;
@@ -303,7 +303,7 @@ fn flush_code_batches_if_any(
     scope: &str,
     batches: Vec<PendingCodeBatchOpt>,
 ) {
-    if batches.is_empty() {
+    if batches.is_empty() || !writes_code_vectors(store) {
         return;
     }
     let _ = filters
@@ -332,7 +332,18 @@ pub(crate) fn flush_code_removals_if_any(
     scope: &str,
     stale: &[String],
 ) {
+    if !writes_code_vectors(store) {
+        return;
+    }
     crate::scanner_code::delete_stale_code_chunks(store, config, filters.retrieval.vectors, scope, stale);
+}
+
+/// Whether this view's scan may write or delete `code_chunks` rows. The rows live in one store per
+/// workspace keyed by path, so a staged or revision view writing them would replace the working
+/// view's rows with other content (review M3); only the working view does.
+#[cfg(feature = "code-search")]
+fn writes_code_vectors(store: &Store) -> bool {
+    store.view == crate::store::VIEW_WORKING
 }
 
 #[cfg(not(feature = "code-search"))]

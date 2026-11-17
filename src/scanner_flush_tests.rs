@@ -650,6 +650,27 @@ mod code {
         assert!(!store.view_dir.join(PENDING_FILE).exists());
     }
 
+    /// A staged or revision view shares the working view's `code_chunks` store, keyed by path, so
+    /// its scan must not write there: it would replace the working rows with other content.
+    #[test]
+    fn a_staged_view_writes_no_code_vectors() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::store::init_isolated_cache();
+        let mut store = Store::open(tmp.path(), crate::store::VIEW_STAGED).unwrap();
+        let config = code_config();
+        owe_code(&mut store, "src/good.rs", Some(&sidecar(2, DIM)));
+        store.flush().unwrap();
+
+        lanes(&mut store, &config, usize::MAX);
+
+        assert!(code_rows(&mut store).is_empty());
+        assert_eq!(
+            store.pending_vectors.code().len(),
+            1,
+            "owed, not written, until the working view"
+        );
+    }
+
     /// The batch a scan hands over for a file whose sidecar is gone, or holds vectors of another
     /// dimension, is settled by the lane instead of written: the write would fail every file
     /// batched with it, and nothing can come of the file until it is chunked again.
