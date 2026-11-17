@@ -17,6 +17,7 @@ mod base_open;
 #[path = "store_durability.rs"]
 mod durability;
 pub use durability::RESCAN_OWED;
+pub(crate) use durability::{open_index_for_writer, open_index_with_retry};
 #[path = "store_group.rs"]
 mod group;
 pub use group::{INDEX_GROUP_ENV, group_layout};
@@ -966,50 +967,6 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
 /// `.lock` retry budget (`acquire_lock_as`).
 const INDEX_OPEN_RETRIES: u32 = 10;
 const INDEX_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
-
-/// Open the index of `view` for a writer in the layout this process uses (see [`group_layout`]),
-/// reconciling the file map `index` with it. Returns the handle and whether a full scan must rebuild
-/// the view, in which case `index` lists no files any more.
-pub(crate) fn open_index_for_writer(
-    root: &Path,
-    view: &str,
-    view_dir: &Path,
-    index: &mut Index,
-    holder: LockHolder,
-) -> Result<(IndexDb, bool), StoreError> {
-    if group_layout() {
-        return group::open_index_for_writer(root, view, view_dir, index, holder);
-    }
-    // A map written against a group index vouches for none of this view's own rows. ~keep
-    if index.group_incarnation != 0 {
-        if view_dir.join(crate::index::INDEX_DIR).exists() {
-            crate::index::durability::discard_index(view_dir)?;
-        }
-        index.generation = 0;
-        index.group_incarnation = 0;
-        index.view_id = 0;
-    }
-    durability::open_index_for_writer(root, view, view_dir, index)
-}
-
-/// Open the Fjall [`IndexDb`], retrying a transient fjall `Locked` (see [`INDEX_OPEN_RETRIES`]).
-/// ONLY correct for a caller that already holds `.basemind/.lock`; such a caller is the sole
-/// rightful writer, so any `Locked` is transient and clears. Every other [`IndexError`] — and a
-/// lock that never clears within the budget — propagates.
-pub(crate) fn open_index_with_retry(root: &Path, view_dir: &Path) -> Result<IndexDb, IndexError> {
-    let memory_dir = memory_store_dir(root);
-    let mut attempt = 0;
-    loop {
-        match IndexDb::open_with_memory(view_dir, &memory_dir) {
-            Ok(db) => return Ok(db),
-            Err(IndexError::Fjall(fjall::Error::Locked)) if attempt < INDEX_OPEN_RETRIES => {
-                attempt += 1;
-                std::thread::sleep(INDEX_OPEN_BACKOFF);
-            }
-            Err(other) => return Err(other),
-        }
-    }
-}
 
 /// Guard every blob / index read against a foreign on-disk schema: an older one is a rebuildable
 /// [`StoreError::SchemaMismatch`], a newer one a [`StoreError::NewerSchema`] no caller may wipe.

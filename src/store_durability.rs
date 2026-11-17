@@ -8,14 +8,14 @@
 
 use std::path::Path;
 
-use super::{HashRefs, Index, Store, StoreError, open_index_with_retry};
-use crate::index::IndexDb;
+use super::{HashRefs, Index, LockHolder, Store, StoreError, memory_store_dir};
 use crate::index::view::IndexView;
+use crate::index::{IndexDb, IndexError};
 
 /// Open the Fjall index for a writer, discarding one that is behind `index` (the file map just read).
 /// Returns the handle and whether the index must be rebuilt by a full scan, in which case `index`
 /// lists no files any more.
-pub(super) fn open_index_for_writer(
+fn open_view_index_for_writer(
     root: &Path,
     view: &str,
     view_dir: &Path,
@@ -58,6 +58,50 @@ pub(super) fn open_index_for_writer(
     }
     // An earlier process emptied the file map and died before its rebuild scan finished. ~keep
     Ok((index_db, index_rebuild_needed || index.rebuild_pending))
+}
+
+/// Open the index of `view` for a writer in the layout this process uses (see [`group_layout`]),
+/// reconciling the file map `index` with it. Returns the handle and whether a full scan must rebuild
+/// the view, in which case `index` lists no files any more.
+pub(crate) fn open_index_for_writer(
+    root: &Path,
+    view: &str,
+    view_dir: &Path,
+    index: &mut Index,
+    holder: LockHolder,
+) -> Result<(IndexDb, bool), StoreError> {
+    if super::group_layout() {
+        return super::group::open_index_for_writer(root, view, view_dir, index, holder);
+    }
+    // A map written against a group index vouches for none of this view's own rows. ~keep
+    if index.group_incarnation != 0 {
+        if view_dir.join(crate::index::INDEX_DIR).exists() {
+            crate::index::durability::discard_index(view_dir)?;
+        }
+        index.generation = 0;
+        index.group_incarnation = 0;
+        index.view_id = 0;
+    }
+    open_view_index_for_writer(root, view, view_dir, index)
+}
+
+/// Open the Fjall [`IndexDb`], retrying a transient fjall `Locked` (see [`super::INDEX_OPEN_RETRIES`]).
+/// ONLY correct for a caller that already holds `.basemind/.lock`; such a caller is the sole
+/// rightful writer, so any `Locked` is transient and clears. Every other [`IndexError`] — and a
+/// lock that never clears within the budget — propagates.
+pub(crate) fn open_index_with_retry(root: &Path, view_dir: &Path) -> Result<IndexDb, IndexError> {
+    let memory_dir = memory_store_dir(root);
+    let mut attempt = 0;
+    loop {
+        match IndexDb::open_with_memory(view_dir, &memory_dir) {
+            Ok(db) => return Ok(db),
+            Err(IndexError::Fjall(fjall::Error::Locked)) if attempt < super::INDEX_OPEN_RETRIES => {
+                attempt += 1;
+                std::thread::sleep(super::INDEX_OPEN_BACKOFF);
+            }
+            Err(other) => return Err(other),
+        }
+    }
 }
 
 /// Remove the file map of a view written for an earlier blob store layout, and the index built
