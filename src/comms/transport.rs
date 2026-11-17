@@ -27,6 +27,29 @@ use super::protocol::{CommsOut, CommsRequest};
 /// message body while bounding worst-case memory.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
+/// How long one reply may take to write before the link is dropped.
+pub const LINK_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether `buf` holds one whole length-delimited frame (`u32` big-endian length, then the body).
+/// A declared length past [`MAX_FRAME_BYTES`] is an error.
+///
+/// A link hands its buffer to `LengthDelimitedCodec` only once this is true, because the codec
+/// reserves the declared length as soon as it reads the prefix: a peer could otherwise make the
+/// daemon allocate 16 MiB per link before sending a byte of body.
+pub(crate) fn holds_whole_frame(buf: &[u8]) -> std::io::Result<bool> {
+    let Some(&[a, b, c, d]) = buf.get(..4) else {
+        return Ok(false);
+    };
+    let len = u32::from_be_bytes([a, b, c, d]) as usize;
+    if len > MAX_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("frame length {len} exceeds {MAX_FRAME_BYTES}"),
+        ));
+    }
+    Ok(buf.len() - 4 >= len)
+}
+
 /// Requests a link reads ahead while one runs. Past it, or past [`MAX_READ_AHEAD_BYTES`], the link
 /// is not read until the queue drains, so a client that pipelines more than this and then hangs up
 /// is noticed only when it is reached.
@@ -160,7 +183,12 @@ pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, g
                 }
             }
         };
-        if link.send(out).await.is_err() {
+        // A client that stopped reading would park this task, its link guard and the drain on a
+        // full socket buffer for good. ~keep
+        if !matches!(
+            tokio::time::timeout(LINK_WRITE_TIMEOUT, link.send(out)).await,
+            Ok(Ok(()))
+        ) {
             break;
         }
     }
@@ -179,6 +207,70 @@ mod tests {
                 body: "x".repeat(body_bytes),
             },
         }
+    }
+
+    /// A link whose client stopped reading must end once a reply cannot be written in time,
+    /// releasing its guard so the daemon can idle out and drain.
+    #[tokio::test(start_paused = true)]
+    async fn a_reply_that_cannot_be_written_ends_the_link() {
+        struct Stuck(Option<CommsRequest>);
+        impl CommsLink for Stuck {
+            async fn recv(&mut self) -> std::io::Result<Option<CommsRequest>> {
+                match self.0.take() {
+                    Some(req) => Ok(Some(req)),
+                    None => std::future::pending().await,
+                }
+            }
+            async fn send(&mut self, _out: CommsOut) -> std::io::Result<()> {
+                std::future::pending().await
+            }
+            fn peer_cred(&self) -> PeerCred {
+                PeerCred::default()
+            }
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let guard = broker.register_link();
+        tokio::time::timeout(
+            LINK_WRITE_TIMEOUT * 2,
+            serve_link(Arc::clone(&broker), Stuck(Some(CommsRequest::Ping)), guard),
+        )
+        .await
+        .expect("the link ends when its reply cannot be written");
+    }
+
+    #[test]
+    fn a_frame_is_whole_only_once_its_body_has_arrived() {
+        let mut buf = 5u32.to_be_bytes().to_vec();
+        assert!(!holds_whole_frame(&buf[..2]).expect("short prefix"));
+        assert!(!holds_whole_frame(&buf).expect("no body yet"));
+        buf.extend_from_slice(b"hello");
+        assert!(holds_whole_frame(&buf).expect("whole"));
+        let huge = u32::try_from(MAX_FRAME_BYTES + 1).expect("fits").to_be_bytes();
+        assert!(
+            holds_whole_frame(&huge).is_err(),
+            "an over-long length is refused at once"
+        );
+    }
+
+    /// The link must not let the codec reserve a declared length before the body arrives.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_declared_length_is_not_allocated_before_its_body_arrives() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut client, server) = tokio::net::UnixStream::pair().expect("pair");
+        let mut link = crate::comms::frontend_uds::UdsLink::for_test(server);
+        let declared = u32::try_from(MAX_FRAME_BYTES).expect("fits");
+        client.write_all(&declared.to_be_bytes()).await.expect("prefix");
+        client.write_all(&[0u8; 16]).await.expect("a little body");
+        let pending = tokio::time::timeout(std::time::Duration::from_millis(200), link.recv()).await;
+        assert!(pending.is_err(), "the frame is not whole yet");
+        assert!(
+            link.buffered_capacity() < 1024 * 1024,
+            "{} bytes reserved for a frame whose body has not arrived",
+            link.buffered_capacity()
+        );
     }
 
     #[test]

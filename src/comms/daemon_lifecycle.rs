@@ -29,7 +29,8 @@ impl Broker {
         HandshakeGuard { broker: self.clone() }
     }
 
-    /// Pin an accepted HTTP connection unless shutdown has already started.
+    /// Stamp HTTP activity for an accepted connection unless shutdown has already started. The
+    /// caller drops the guard at once: a connection does not pin the daemon, a request does.
     pub async fn try_begin_http_connection(self: &Arc<Self>) -> Option<HttpActivityGuard> {
         let registry = self.registry.lock().await;
         if matches!(registry.state, LifecycleState::Draining | LifecycleState::Stopped) {
@@ -80,6 +81,16 @@ impl Broker {
         self.agents.shut_down();
         if let Some(shutdown) = self.shutdown.get() {
             let _ = shutdown.send(true);
+        }
+    }
+
+    /// Drop every hosted read stack once the front-end has stopped. Each stack holds the broker and
+    /// the workspace pool as its hosts, a cycle that otherwise kept the comms store and every open
+    /// workspace store alive until the process exited, past the release of the daemon lock.
+    pub async fn shed_hosted_stacks(&self) {
+        let shed = self.workspaces.shed_read_stacks().await;
+        if shed > 0 {
+            tracing::info!(shed, "comms: released hosted read stacks for shutdown");
         }
     }
 

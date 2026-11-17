@@ -55,7 +55,7 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::Service;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -63,6 +63,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use super::accept_gate;
 use super::daemon::Broker;
 use super::http_auth::{self, HttpToken};
 use super::ids::AgentId;
@@ -402,19 +403,11 @@ impl HttpRouter {
             Err((status, message)) => return refuse(&mut request, text_response(status, &message)).await,
         };
 
-        let shared = match self.broker.host_read_stack(&root).await {
-            Ok(shared) => shared,
+        // `_conn` keeps the workspace pinned against eviction for the request's lifetime.
+        let (shared, _conn) = match self.broker.host_read_stack(&root).await {
+            Ok(served) => served,
             Err(error) => {
                 tracing::warn!(%error, root = %root.display(), "http: hosting read stack failed");
-                let not_found = text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
-                return refuse(&mut request, not_found).await;
-            }
-        };
-        // Keep the workspace pinned against eviction for the request's lifetime.
-        let _conn = match self.broker.begin_workspace_conn(&root) {
-            Ok(guard) => guard,
-            Err(error) => {
-                tracing::warn!(%error, root = %root.display(), "http: workspace connection accounting failed");
                 let not_found = text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
                 return refuse(&mut request, not_found).await;
             }
@@ -478,6 +471,10 @@ impl Service<Request<Incoming>> for HyperSvc {
     }
 }
 
+/// How long an HTTP/1 connection may wait between requests, and for a request's headers, before
+/// hyper closes it.
+const HTTP1_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Serve the streamable-HTTP MCP transport until `shutdown` flips true (or its sender drops).
 ///
 /// Returns `Ok(())` immediately, binding nothing, unless the operator granted the front-end via
@@ -537,53 +534,85 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
         token,
     });
 
-    loop {
-        tokio::select! {
-            changed = shutdown.changed() => {
-                // A drain sends `true`; a dropped sender ends the daemon too. Either stops accepts.
-                if changed.is_err() || *shutdown.borrow() {
-                    break;
-                }
-            }
-            accepted = listener.accept() => {
-                let (stream, _peer) = match accepted {
-                    Ok(pair) => pair,
-                    Err(error) => {
-                        tracing::warn!(%error, "http: accept failed");
-                        continue;
-                    }
-                };
-                let io = TokioIo::new(stream);
-                let service = HyperSvc(router.clone());
-                let conn_cancel = cancel.clone();
-                // Pin the daemon for the connection's whole lifetime, incremented HERE — before the
-                // task is spawned — so there is no accept→handler gap the idle reaper can slip
-                // through and tear down the process on the first request after idle (the exact
-                // wake-from-idle case the pin exists to protect). `handle` also pins per request to
-                // refresh HTTP recency; nested counting on the atomic is fine.
-                let Some(conn_activity) = router.broker.try_begin_http_connection().await else {
-                    continue;
-                };
-                tokio::spawn(async move {
-                    let _conn_activity = conn_activity;
-                    let builder = auto::Builder::new(TokioExecutor::new());
-                    tokio::select! {
-                        result = builder.serve_connection(io, service) => {
-                            if let Err(error) = result {
-                                tracing::debug!(error = %error, "http: connection ended with error");
-                            }
-                        }
-                        _ = conn_cancel.cancelled() => {}
-                    }
-                });
-            }
-        }
-    }
+    accept_loop(&listener, &router, &mut shutdown).await;
 
     cancel.cancel();
     http_auth::remove_portfile(&comms_dir);
     tracing::info!("comms: streamable-HTTP MCP transport stopped");
     Ok(())
+}
+
+/// Accept and serve HTTP connections until `shutdown` reads `true` or its sender is gone.
+///
+/// A connection does not pin the daemon: only a request does (`handle` takes
+/// [`Broker::begin_http_request`]). Pinning the whole connection let one idle keep-alive, or any
+/// local process holding a socket open without sending, keep the daemon from ever idling out and
+/// refuse every `Stop` and takeover as `daemon_busy`. The accept stamps HTTP activity instead, so
+/// the idle reaper cannot fire between the accept and the first request. A connection that sends
+/// nothing within [`accept_gate::FIRST_BYTE_TIMEOUT`] is closed, and an HTTP/1 connection idle for
+/// [`HTTP1_IDLE_TIMEOUT`] between requests is closed by hyper.
+async fn accept_loop(listener: &TcpListener, router: &Arc<HttpRouter>, shutdown: &mut watch::Receiver<bool>) {
+    let slots = accept_gate::connection_slots();
+    let mut backoff = accept_gate::AcceptBackoff::new("http");
+    loop {
+        let slot = tokio::select! {
+            changed = shutdown.changed() => {
+                // A drain sends `true`; a dropped sender ends the daemon too. Either stops accepts.
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            slot = accept_gate::next_slot(&slots) => slot,
+        };
+        let accepted = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            accepted = listener.accept() => accepted,
+        };
+        let stream = match accepted {
+            Ok((stream, _peer)) => {
+                backoff.succeeded();
+                stream
+            }
+            Err(error) => {
+                drop(slot);
+                backoff.failed(&error).await;
+                continue;
+            }
+        };
+        // Refused once a drain has started; the guard drops at once and stamps HTTP activity.
+        if router.broker.try_begin_http_connection().await.is_none() {
+            continue;
+        }
+        let service = HyperSvc(router.clone());
+        let conn_cancel = router.cancel.clone();
+        tokio::spawn(async move {
+            let _slot = slot;
+            let mut first = [0u8; 1];
+            match tokio::time::timeout(accept_gate::FIRST_BYTE_TIMEOUT, stream.peek(&mut first)).await {
+                Ok(Ok(n)) if n > 0 => {}
+                _ => return,
+            }
+            let mut builder = auto::Builder::new(TokioExecutor::new());
+            builder
+                .http1()
+                .timer(TokioTimer::new())
+                .header_read_timeout(HTTP1_IDLE_TIMEOUT);
+            tokio::select! {
+                result = builder.serve_connection(TokioIo::new(stream), service) => {
+                    if let Err(error) = result {
+                        tracing::debug!(error = %error, "http: connection ended with error");
+                    }
+                }
+                _ = conn_cancel.cancelled() => {}
+            }
+        });
+    }
 }
 
 /// Poll until the transport answers a TCP connect (or `timeout` elapses), returning the bound
@@ -687,6 +716,43 @@ mod tests {
         .await
         .expect_err("a configured address is bound as given or not at all");
         assert_eq!(refused.kind(), std::io::ErrorKind::AddrInUse);
+    }
+
+    /// A connection that sends nothing, like an idle keep-alive, must not count as work: counted,
+    /// it kept the daemon from idling out and every `Stop` was refused as `daemon_busy`.
+    #[tokio::test]
+    async fn a_silent_connection_does_not_pin_the_daemon() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let router = Arc::new(HttpRouter {
+            broker: Arc::clone(&broker),
+            session_manager: Arc::new(NeverSessionManager::default()),
+            cancel: CancellationToken::new(),
+            loopback: true,
+            token: HttpToken::generate().expect("token"),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (stop, mut shutdown) = watch::channel(false);
+        let serving = tokio::spawn(async move { accept_loop(&listener, &router, &mut shutdown).await });
+
+        let silent = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            broker.http_inflight.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an open connection with no request in flight is idle"
+        );
+        assert!(
+            matches!(broker.on_stop().await, crate::comms::protocol::CommsResponse::Ok),
+            "Stop is accepted while a client merely holds a connection"
+        );
+        drop(silent);
+        let _ = stop.send(true);
+        tokio::time::timeout(Duration::from_secs(5), serving)
+            .await
+            .expect("the loop ends on shutdown")
+            .expect("join");
     }
 
     #[test]

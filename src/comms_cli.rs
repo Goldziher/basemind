@@ -247,9 +247,14 @@ fn cmd_daemon_ensure(json: bool) -> Result<()> {
 
     let comms_dir = paths.comms_dir.clone();
     let addr = runtime.block_on(async move {
-        singleton::ensure_daemon(&paths)
-            .await
-            .map_err(|e| anyhow::anyhow!("ensure comms daemon: {e}"))?;
+        // The HTTP grant in this environment is an operator asking for the transport, so it is
+        // passed to a daemon this call starts; without it this is an implicit caller like any hook.
+        let ensured = if http_frontend::http_enabled() {
+            singleton::ensure_daemon_explicit(&paths).await
+        } else {
+            singleton::ensure_daemon(&paths).await
+        };
+        ensured.map_err(|e| anyhow::anyhow!("ensure comms daemon: {e}"))?;
         // The daemon is up either way; only the HTTP front-end is conditional. It is opt-in, so
         // "no transport" is the ordinary outcome and must not read as a failure to callers (the
         // session hooks call this on every start) — hence `Ok(None)` rather than an error.

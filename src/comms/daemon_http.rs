@@ -48,24 +48,15 @@ impl Broker {
     /// building it on first touch. This is the HTTP front-end's per-request seam: it mirrors exactly
     /// what [`serve_relay_connection`](Broker::serve_relay_connection) does for a UDS relay client —
     /// same host backend (the workspace pool) and git-history host (this broker) — so an HTTP request
-    /// and a relay connection to the same workspace share one resident read stack.
+    /// and a relay connection to the same workspace share one resident read stack. The returned
+    /// guard registers the request against the workspace, so the eviction sweep keeps the stack
+    /// while the request runs; it is taken before the stack is handed out.
     pub(crate) async fn host_read_stack(
         self: &Arc<Self>,
         root: &std::path::Path,
-    ) -> anyhow::Result<Arc<crate::mcp::SharedReadStack>> {
+    ) -> anyhow::Result<(Arc<crate::mcp::SharedReadStack>, super::workspace_pool::ServeConnGuard)> {
         let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
         let git_history_host = Arc::clone(self) as Arc<dyn crate::git_history::remote::HistoryHost>;
-        self.workspaces
-            .get_or_build_serve_state(root, host, git_history_host)
-            .await
-    }
-
-    /// Register one HTTP request against a hosted workspace, returning a guard that keeps the
-    /// eviction sweep from dropping the workspace's shared read stack while the request runs.
-    pub(crate) fn begin_workspace_conn(
-        &self,
-        root: &std::path::Path,
-    ) -> Result<super::workspace_pool::ServeConnGuard, String> {
-        self.workspaces.begin_conn(root).map_err(|error| error.to_string())
+        self.workspaces.serve_conn(root, host, git_history_host).await
     }
 }

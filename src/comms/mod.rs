@@ -5,6 +5,16 @@
 pub mod identity;
 pub mod ids;
 
+/// The back-off, connection cap and first-byte deadline every accept loop shares.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod accept_gate;
+/// The daemon's file-descriptor budget and the `RLIMIT_NOFILE` raise at start.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod fd_budget;
+/// Opening the daemon's named pipe only when this user's process serves it.
+#[cfg(all(feature = "comms", windows))]
+pub mod pipe_owner;
+
 /// The daemon's agent store, wait and session count (ADR-0021).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod agents_hub;

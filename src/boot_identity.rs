@@ -211,8 +211,11 @@ impl PidState {
 
 /// What runs as `pid`. Unix: `kill(pid, 0)`, where `0` (signalable) and `EPERM` (exists, not ours)
 /// are [`PidState::Live`] and `ESRCH` is [`PidState::Gone`]; Unix gives every process's start time
-/// to anyone, so a stranger given a recorded pid is told apart by its start instead. Windows: see
-/// `win::state`. A pid no process can have (see [`valid_pid`]) is gone.
+/// to anyone, so a stranger given a recorded pid is told apart by its start instead. A zombie (an
+/// exited process its parent has not waited on) answers `kill` but runs nothing, so it is
+/// [`PidState::Gone`] on Linux and macOS, where its state can be read. Windows: see `win::state`;
+/// it has no zombies, an exited process reads its exit code. A pid no process can have (see
+/// [`valid_pid`]) is gone.
 #[cfg(any(unix, windows))]
 pub fn pid_state(pid: u32) -> PidState {
     let Some(pid) = valid_pid(pid) else {
@@ -223,7 +226,8 @@ pub fn pid_state(pid: u32) -> PidState {
         // SAFETY: `kill` with signal 0 performs only an existence/permission check and sends no
         // signal; `pid` is positive, so it names one process, never a group.
         let rc = unsafe { libc::kill(pid, 0) };
-        if rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
+        let exists = rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if exists && !is_zombie(pid) {
             PidState::Live
         } else {
             PidState::Gone
@@ -262,8 +266,36 @@ pub(crate) fn windows_state(opened: Result<Option<u32>, Option<i32>>) -> PidStat
     }
 }
 
+/// Whether `pid` is a zombie. `false` where its state cannot be read, which keeps the `kill`
+/// answer.
+#[cfg(unix)]
+fn is_zombie(pid: i32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .is_some_and(|stat| linux::is_zombie_in(&stat))
+    }
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        mac::is_zombie(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
+    /// Whether a `stat` line's state, field 3 (the first after the command), is `Z`.
+    pub(super) fn is_zombie_in(stat: &str) -> bool {
+        stat.rsplit_once(')')
+            .and_then(|(_, after_command)| after_command.split_ascii_whitespace().next())
+            == Some("Z")
+    }
+
     /// Field 22 of `/proc/<pid>/stat`, `starttime`: clock ticks from the boot to the start.
     pub(super) fn start_ticks(pid: i32) -> Option<i64> {
         start_ticks_in(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
@@ -284,11 +316,24 @@ mod linux {
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod mac {
-    /// The start of the process `pid`: unix seconds and the microseconds past them.
-    pub(super) fn start(pid: i32) -> Option<(u64, u64)> {
+    /// Whether `pid`, which `kill` found, is a zombie. `proc_pidinfo` refuses a zombie with
+    /// `ESRCH` (measured on macOS 26), while it refuses a live process of another user with
+    /// `EPERM`; an answer with `pbi_status` `SZOMB` is taken as one too.
+    pub(super) fn is_zombie(pid: i32) -> bool {
+        match bsd_info_or_errno(pid) {
+            Ok(info) => info.pbi_status == libc::SZOMB,
+            Err(errno) => errno == Some(libc::ESRCH),
+        }
+    }
+
+    fn bsd_info(pid: i32) -> Option<libc::proc_bsdinfo> {
+        bsd_info_or_errno(pid).ok()
+    }
+
+    fn bsd_info_or_errno(pid: i32) -> Result<libc::proc_bsdinfo, Option<i32>> {
         // SAFETY: `proc_bsdinfo` is plain old data, so all zeroes is a valid value.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).map_err(|_| None)?;
         // SAFETY: `info` is a live `proc_bsdinfo` and `size` its size, which is all
         // `PROC_PIDTBSDINFO` writes into it.
         let written = unsafe {
@@ -300,7 +345,16 @@ mod mac {
                 size,
             )
         };
-        (written == size).then_some((info.pbi_start_tvsec, info.pbi_start_tvusec))
+        if written == size {
+            Ok(info)
+        } else {
+            Err(std::io::Error::last_os_error().raw_os_error())
+        }
+    }
+
+    /// The start of the process `pid`: unix seconds and the microseconds past them.
+    pub(super) fn start(pid: i32) -> Option<(u64, u64)> {
+        bsd_info(pid).map(|info| (info.pbi_start_tvsec, info.pbi_start_tvusec))
     }
 }
 
@@ -533,6 +587,34 @@ mod tests {
         assert!(!pid_is_live(u32::MAX), "-1 is every process");
         assert!(!pid_is_live(u32::MAX - 11), "a negative pid is a process group");
         assert!(!pid_is_live(0x8000_0000), "past i32::MAX");
+    }
+
+    /// A child that exited and was never waited on is a zombie: `kill(pid, 0)` still succeeds on
+    /// it, but nothing runs. Reading it as live made a takeover wait out its whole exit window and
+    /// `force_terminate` report a daemon that had exited as surviving.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_zombie_child_is_gone() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn");
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while pid_state(pid) == PidState::Live && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let state = pid_state(pid);
+        let _ = child.wait();
+        assert_eq!(state, PidState::Gone, "an exited, unreaped child runs nothing");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stat_line_in_state_z_is_a_zombie() {
+        assert!(linux::is_zombie_in("42 (a (b) c) Z 1 42 42 0 -1"));
+        assert!(
+            !linux::is_zombie_in("42 (Z) S 1 42 42 0 -1"),
+            "the command is not the state"
+        );
+        assert!(!linux::is_zombie_in("garbage"));
     }
 
     /// Windows tells a pid's state by whether `OpenProcess` opens it and, once open, by its exit

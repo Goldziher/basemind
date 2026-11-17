@@ -300,8 +300,6 @@ impl CommsClient {
     /// [`daemon_unreachable_error`].
     #[cfg(windows)]
     async fn connect_stream(socket_path: &Path) -> Result<PlatformStream, CommsClientError> {
-        use tokio::net::windows::named_pipe::ClientOptions;
-
         /// `ERROR_PIPE_BUSY`: all pipe instances are busy; the server has not yet minted the next.
         const ERROR_PIPE_BUSY: i32 = 231;
         /// Poll cadence while a busy pipe spins up its next instance.
@@ -309,7 +307,7 @@ impl CommsClient {
 
         let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
         loop {
-            match ClientOptions::new().open(socket_path) {
+            match super::pipe_owner::open_verified(socket_path) {
                 Ok(client) => return Ok(client),
                 Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                     if std::time::Instant::now() >= deadline {

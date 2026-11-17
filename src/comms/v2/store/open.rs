@@ -105,6 +105,7 @@ impl FjallAgents {
             .worker_threads(1)
             .cache_size(CACHE_BYTES)
             .max_journaling_size(JOURNAL_BYTES)
+            .max_cached_files(Some(crate::comms::fd_budget::COMMS_STORE_CACHED_FILES))
             .open()
             .map_err(|error| match error {
                 fjall::Error::Locked => CommsError::Backend {

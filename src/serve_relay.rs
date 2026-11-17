@@ -122,15 +122,13 @@ async fn relay_connect_stream(socket_path: &Path) -> std::io::Result<tokio::net:
 /// Dial the daemon's relay endpoint: a named pipe on Windows, retrying while the pipe is busy.
 #[cfg(windows)]
 async fn relay_connect_stream(socket_path: &Path) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-
     const ERROR_PIPE_BUSY: i32 = 231;
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
     const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
     let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
     loop {
-        match ClientOptions::new().open(socket_path) {
+        match basemind::comms::pipe_owner::open_verified(socket_path) {
             Ok(client) => return Ok(client),
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                 if std::time::Instant::now() >= deadline {

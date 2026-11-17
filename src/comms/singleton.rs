@@ -665,7 +665,13 @@ async fn ensure_daemon_as(
         paths,
         policy,
         |socket| off_worker(|| probe_liveness(socket)),
-        spawn_detached_daemon,
+        |paths: &CommsPaths| {
+            let grants = match policy {
+                SpawnPolicy::Auto => spawn::Grants::Withheld,
+                SpawnPolicy::Explicit => spawn::Grants::Passed,
+            };
+            spawn::spawn_detached_daemon_with(paths, grants)
+        },
     )
     .await
 }
@@ -828,7 +834,7 @@ pub fn probe_liveness(socket_path: &Path) -> Liveness {
 /// an executable that is not `basemind` is refused outright rather than merely discouraged.
 #[path = "singleton_spawn.rs"]
 mod spawn;
-pub use spawn::{DAEMON_BINARY_ENV, daemon_log_path, spawn_detached_daemon, trim_daemon_log};
+pub use spawn::{DAEMON_BINARY_ENV, Grants, daemon_log_path, spawn_detached_daemon, trim_daemon_log};
 
 #[cfg(test)]
 #[path = "singleton_tests.rs"]

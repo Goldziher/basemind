@@ -350,24 +350,11 @@ impl Broker {
         // ~keep as a decline it can act on rather than "accepted" against a stack we cannot serve.
         let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
         let git_history_host = Arc::clone(&self) as Arc<dyn crate::git_history::remote::HistoryHost>;
-        let shared = match self
-            .workspaces
-            .get_or_build_serve_state(&hello.root, host, git_history_host)
-            .await
-        {
-            Ok(shared) => shared,
+        let (shared, _conn) = match self.workspaces.serve_conn(&hello.root, host, git_history_host).await {
+            Ok(served) => served,
             Err(error) => {
                 tracing::warn!(%error, root = %hello.root.display(), "relay: hosting read stack failed");
                 let (code, detail) = super::relay_decline::of_build_failure(&error);
-                let _ = relay::write_welcome(&mut stream, &decline(code, detail)).await;
-                return;
-            }
-        };
-        let _conn = match self.workspaces.begin_conn_async(&hello.root).await {
-            Ok(guard) => guard,
-            Err(error) => {
-                tracing::warn!(%error, "relay: connection accounting failed");
-                let (code, detail) = super::relay_decline::of_build_failure(&anyhow::Error::new(error));
                 let _ = relay::write_welcome(&mut stream, &decline(code, detail)).await;
                 return;
             }

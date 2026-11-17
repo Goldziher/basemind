@@ -85,6 +85,29 @@ const INHERITED_IDENTITY_VARS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PAREN
 /// with.
 const INHERITED_CWD_VARS: [&str; 2] = ["PWD", "OLDPWD"];
 
+/// Grants that widen what the daemon does for every session on the machine: admit any root or extra
+/// roots, follow symlinks, index credential files, open the HTTP transport and where it binds. A
+/// daemon serves every session of the generation, so one that inherited them from whichever shell
+/// happened to start it applied that shell's grants to all of them. They reach the daemon only from
+/// an operator's explicit start (`comms start`, or `daemon ensure` with the HTTP grant set).
+const INHERITED_GRANT_VARS: [&str; 6] = [
+    crate::config::root_guard::ALLOW_ANY_ROOT_ENV,
+    crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV,
+    crate::config::trust::ALLOW_FOLLOW_SYMLINKS_ENV,
+    crate::scanner_filter::ALLOW_REPO_CREDENTIALS_ENV,
+    crate::comms::http_auth::ALLOW_HTTP_ENV,
+    crate::comms::http_frontend::HTTP_ADDR_ENV,
+];
+
+/// Whether a spawn passes the spawner's [`INHERITED_GRANT_VARS`] on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grants {
+    /// An implicit spawn (a session, a CLI call): the grants are removed.
+    Withheld,
+    /// An operator's explicit start: the grants in its environment are the ones meant.
+    Passed,
+}
+
 /// File name of the detached daemon's combined stdout/stderr log, inside the comms dir.
 pub const DAEMON_LOG_FILE: &str = "daemon.log";
 /// Size past which the log is rotated at spawn and trimmed while the daemon runs.
@@ -134,7 +157,7 @@ pub fn trim_daemon_log(comms_dir: &Path) {
 /// launching a process — the properties that matter here are all visible on the [`Command`] itself.
 ///
 /// [`Command`]: std::process::Command
-fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
+fn daemon_command(exe: &Path, paths: &CommsPaths, grants: Grants) -> std::process::Command {
     let mut command = std::process::Command::new(exe);
     command
         .arg("comms")
@@ -156,6 +179,11 @@ fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
     for key in INHERITED_IDENTITY_VARS.iter().chain(INHERITED_CWD_VARS.iter()) {
         command.env_remove(key);
     }
+    if grants == Grants::Withheld {
+        for key in INHERITED_GRANT_VARS {
+            command.env_remove(key);
+        }
+    }
     command
 }
 
@@ -169,35 +197,66 @@ fn daemon_command(exe: &Path, paths: &CommsPaths) -> std::process::Command {
 /// of `/` and a scan of the entire filesystem. Nothing in the daemon reads its own cwd, so this
 /// costs nothing and removes the whole class.
 pub fn spawn_detached_daemon(paths: &CommsPaths) -> std::io::Result<()> {
+    spawn_detached_daemon_with(paths, Grants::Withheld)
+}
+
+/// [`spawn_detached_daemon`] choosing whether the spawner's grants reach the daemon.
+pub fn spawn_detached_daemon_with(paths: &CommsPaths, grants: Grants) -> std::io::Result<()> {
     let exe = absolute_daemon_binary(resolve_daemon_binary()?)?;
     // `resolve_paths` already made it; recreate defensively because `current_dir` on a missing
     // directory fails the spawn outright, and losing the daemon to a tidied cache dir is worse
     // than the cwd hygiene is good.
     let _ = std::fs::create_dir_all(&paths.comms_dir);
-    let mut command = daemon_command(&exe, paths);
+    spawn_detached(daemon_command(&exe, paths, grants))
+}
+
+/// Spawn `command` so that it outlives this process and is never this process's child once it runs.
+///
+/// Unix: the forked child starts a new session, forks again and exits; the grandchild execs.
+/// `spawn` returns once the grandchild has exec'd (or reports its exec error), and the
+/// intermediate is waited on at once, so it leaves no zombie. The daemon is then a child of init
+/// (or the nearest subreaper), which reaps it. Before this, `serve` dropped the `Child` and never
+/// waited, so every daemon it spawned stayed a zombie of `serve` for its whole life once it
+/// exited, and `kill(pid, 0)` read that zombie as a live daemon.
+///
+/// Windows has no zombies: dropping the `Child` closes its handle and the exited process goes.
+fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // SAFETY: `setsid` takes no arguments and only detaches the child into a new session.
+        // SAFETY: the closure runs in the forked child before exec and calls only `setsid`,
+        // `fork` and `_exit`, all async-signal-safe.
         unsafe {
             command.pre_exec(|| {
                 let _ = detach_session();
-                Ok(())
+                match libc::fork() {
+                    -1 => Err(std::io::Error::last_os_error()),
+                    0 => Ok(()),
+                    _ => libc::_exit(0),
+                }
             });
         }
+        let mut intermediate = command.spawn()?;
+        intermediate.wait()?;
+        Ok(())
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        /// `CreateProcess` flag: the child has no controlling console.
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        /// `CreateProcess` flag: the child starts a new process group (Ctrl-C/Break isolation).
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        /// `CreateProcess` flag: do not allocate a console window for the child.
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-        clear_std_handle_inheritance();
+        spawn_windows(command)
     }
+}
+
+#[cfg(windows)]
+fn spawn_windows(mut command: std::process::Command) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    /// `CreateProcess` flag: the child has no controlling console.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    /// `CreateProcess` flag: the child starts a new process group (Ctrl-C/Break isolation).
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    /// `CreateProcess` flag: do not allocate a console window for the child.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    clear_std_handle_inheritance();
     command.spawn()?;
     Ok(())
 }
@@ -337,7 +396,11 @@ mod tests {
     #[test]
     fn the_daemon_runs_in_the_comms_dir_not_the_spawner_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let command = daemon_command(std::path::Path::new("/usr/local/bin/basemind"), &paths_at(dir.path()));
+        let command = daemon_command(
+            std::path::Path::new("/usr/local/bin/basemind"),
+            &paths_at(dir.path()),
+            Grants::Withheld,
+        );
 
         assert_eq!(
             command.get_current_dir(),
@@ -351,7 +414,11 @@ mod tests {
     #[test]
     fn the_child_environment_drops_identity_and_cwd_vars_and_keeps_everything_else() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let command = daemon_command(std::path::Path::new("/usr/local/bin/basemind"), &paths_at(dir.path()));
+        let command = daemon_command(
+            std::path::Path::new("/usr/local/bin/basemind"),
+            &paths_at(dir.path()),
+            Grants::Withheld,
+        );
 
         let removed: Vec<&std::ffi::OsStr> = command
             .get_envs()
@@ -370,8 +437,38 @@ mod tests {
         );
         assert_eq!(
             removed.len(),
-            INHERITED_IDENTITY_VARS.len() + INHERITED_CWD_VARS.len(),
+            INHERITED_IDENTITY_VARS.len() + INHERITED_CWD_VARS.len() + INHERITED_GRANT_VARS.len(),
             "nothing the daemon needs (PATH, HOME, XDG, proxy, model vars) may be swept up: {removed:?}"
+        );
+    }
+
+    /// One shell with `BASEMIND_ALLOW_ANY_ROOT=1` or `BASEMIND_ALLOW_HTTP=1` that happened to start
+    /// the daemon lifted the root guard, or opened TCP, for every session on the machine.
+    #[test]
+    fn an_implicit_spawn_withholds_the_grants_and_an_explicit_one_passes_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = std::path::Path::new("/usr/local/bin/basemind");
+        let removed = |grants| {
+            daemon_command(exe, &paths_at(dir.path()), grants)
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(key, _)| key.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let implicit = removed(Grants::Withheld);
+        for key in [
+            "BASEMIND_ALLOW_ANY_ROOT",
+            "BASEMIND_ALLOW_HTTP",
+            "BASEMIND_ALLOW_EXTRA_ROOTS",
+        ] {
+            assert!(implicit.iter().any(|removed| removed == key), "{key}: {implicit:?}");
+        }
+        let explicit = removed(Grants::Passed);
+        assert!(
+            INHERITED_GRANT_VARS
+                .iter()
+                .all(|key| !explicit.iter().any(|removed| removed == key)),
+            "{explicit:?}"
         );
     }
 
@@ -395,6 +492,53 @@ mod tests {
         // A bare name is a PATH lookup, which the working directory does not affect.
         let bare = PathBuf::from("basemind");
         assert_eq!(absolute_daemon_binary(bare.clone()).expect("unchanged"), bare);
+    }
+
+    /// A spawned daemon must never be this process's child: a `serve` that lives for hours would
+    /// keep one zombie per daemon it ever spawned, each read as a live daemon. Spawn, kill, and
+    /// observe that the process is not ours to reap and is gone, not defunct.
+    #[cfg(unix)]
+    #[test]
+    fn a_detached_spawn_leaves_no_child_to_reap_and_no_zombie() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pidfile = dir.path().join("pid");
+        let mut command = std::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("echo $$ > '{}'; exec sleep 30", pidfile.display()))
+            .stdin(std::process::Stdio::null());
+        spawn_detached(command).expect("spawn");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+            {
+                break pid;
+            }
+            assert!(std::time::Instant::now() < deadline, "the child never wrote its pid");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(
+            crate::boot_identity::pid_state(pid as u32),
+            crate::boot_identity::PidState::Live
+        );
+
+        // SAFETY: `pid` names the process just spawned, which runs `sleep`.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        // SAFETY: `WNOHANG` returns at once; a null status pointer is allowed.
+        let reaped = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        assert_eq!(
+            (reaped, errno),
+            (-1, Some(libc::ECHILD)),
+            "the daemon must not be a child of the spawner"
+        );
+        while crate::boot_identity::pid_state(pid as u32) != crate::boot_identity::PidState::Gone {
+            assert!(std::time::Instant::now() < deadline, "the killed process lingers");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// The escape hatch for an embedding host whose executable is neither `basemind` nor sitting

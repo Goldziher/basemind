@@ -547,19 +547,45 @@ impl WorkspacePool {
     /// Building one stack is what enforces the warm-stack cap: the trim runs here, AFTER the slot
     /// lock is released, so admitting a new stack is the moment the least-recently-used ones are
     /// shed.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
+    #[cfg(all(test, feature = "comms", any(unix, windows)))]
     pub(crate) async fn get_or_build_serve_state(
         self: &std::sync::Arc<Self>,
         root: &Path,
         host: std::sync::Arc<dyn crate::mcp::HostBackend>,
         git_history_host: std::sync::Arc<dyn crate::git_history::remote::HistoryHost>,
     ) -> anyhow::Result<std::sync::Arc<crate::mcp::SharedReadStack>> {
-        let entry = self.get_or_open_async(root).await.map_err(anyhow::Error::new)?;
-        entry.touch();
-        let (shared, built) = {
+        let (shared, _conn) = self.serve_conn(root, host, git_history_host).await?;
+        Ok(shared)
+    }
+
+    /// [`Self::get_or_build_serve_state`] for a connection that will be served from the stack: the
+    /// connection is registered on the entry before the slot lock is released, so no eviction or
+    /// trim can drop the stack between handing it out and the session pinning it. With the two as
+    /// separate steps, a trim in that gap left the session on an orphaned stack whose watcher had
+    /// stopped, and the next session built a second one.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) async fn serve_conn(
+        self: &std::sync::Arc<Self>,
+        root: &Path,
+        host: std::sync::Arc<dyn crate::mcp::HostBackend>,
+        git_history_host: std::sync::Arc<dyn crate::git_history::remote::HistoryHost>,
+    ) -> anyhow::Result<(std::sync::Arc<crate::mcp::SharedReadStack>, ServeConnGuard)> {
+        let (entry, conn) = loop {
+            let entry = self.get_or_open_async(root).await.map_err(anyhow::Error::new)?;
+            let conn = Self::register_conn(std::sync::Arc::clone(&entry));
+            // Evicted between the open and the pin: open it again rather than serve a detached entry.
+            if self
+                .lock_map()
+                .get(&entry.key)
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &entry))
+            {
+                break (entry, conn);
+            }
+        };
+        let (shared, built, conn) = {
             let mut slot = entry.serve_state.lock().await;
             match slot.as_ref() {
-                Some(hosted) => (hosted.shared(), false),
+                Some(hosted) => (hosted.shared(), false, conn),
                 None => {
                     let root_buf = root.to_path_buf();
                     // One build at a time machine-wide: a reconnect storm after a daemon restart would
@@ -573,7 +599,7 @@ impl WorkspacePool {
                     .await??;
                     let shared = hosted.shared();
                     *slot = Some(hosted);
-                    (shared, true)
+                    (shared, true, conn)
                 }
             }
         };
@@ -583,7 +609,7 @@ impl WorkspacePool {
         if built {
             self.trim_warm_read_stacks(&entry.key);
         }
-        Ok(shared)
+        Ok((shared, conn))
     }
 
     /// Drop least-recently-used hosted read stacks until at most [`warm_read_stack_cap`] stay warm,
@@ -661,6 +687,25 @@ impl WorkspacePool {
         dropped
     }
 
+    /// Drop every hosted read stack, live sessions or not, and return the count dropped. For the
+    /// drain: a stack holds this pool and the broker as its hosts, so one left in its slot keeps
+    /// both, and every store they hold, alive past the daemon's exit from its serve loop.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) async fn shed_read_stacks(&self) -> usize {
+        let entries: Vec<std::sync::Arc<WorkspaceEntry>> = self.lock_map().values().cloned().collect();
+        let mut dropped = 0;
+        for entry in entries {
+            // A slot held this long is mid-build; the runtime teardown cancels that build. ~keep
+            let Ok(mut slot) = tokio::time::timeout(Duration::from_secs(1), entry.serve_state.lock()).await else {
+                continue;
+            };
+            if slot.take().is_some() {
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
     /// Number of workspaces currently holding a warm hosted read stack. Exposed for tests: it is the
     /// quantity the cap bounds, and it is deliberately NOT [`Self::len`] — the two diverge on
     /// purpose.
@@ -676,19 +721,10 @@ impl WorkspacePool {
     /// Register one relay connection against `root`, returning a guard that decrements the live-count
     /// on drop. While any guard is held, eviction (LRU + idle sweep) skips this workspace, so its
     /// shared read stack is never dropped from under an in-flight rmcp session.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
+    /// A connection served from a stack registers through [`Self::serve_conn`] instead.
+    #[cfg(all(test, feature = "comms", any(unix, windows)))]
     pub(crate) fn begin_conn(&self, root: &Path) -> Result<ServeConnGuard, WorkspacePoolError> {
         Ok(Self::register_conn(self.get_or_open(root)?))
-    }
-
-    /// [`Self::begin_conn`] for async callers: a cold open (journal replay, seed clone) runs on a
-    /// blocking thread instead of parking a runtime worker.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) async fn begin_conn_async(
-        self: &std::sync::Arc<Self>,
-        root: &Path,
-    ) -> Result<ServeConnGuard, WorkspacePoolError> {
-        Ok(Self::register_conn(self.get_or_open_async(root).await?))
     }
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
