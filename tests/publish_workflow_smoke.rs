@@ -231,3 +231,19 @@ fn publish_is_never_cancelled_mid_flight() {
         "publish concurrency must set cancel-in-progress: false",
     );
 }
+
+/// basemind.ai documents what users can install: a push to main builds the site, only a release
+/// tag deploys it.
+#[test]
+fn the_website_deploys_only_from_a_release_tag() {
+    let docs = read_workflow("docs.yaml");
+    let deploy = job_block(&docs, "deploy");
+    assert!(
+        deploy.contains("if: startsWith(github.ref, 'refs/tags/v')"),
+        "the docs deploy job must run only for a release tag:\n{deploy}"
+    );
+    assert!(
+        deploy.contains("pages: write") && !docs[..docs.find("\njobs:\n").unwrap()].contains("pages: write"),
+        "only the deploy job may write to Pages"
+    );
+}
