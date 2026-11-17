@@ -1,0 +1,79 @@
+---
+status: proposed
+date: 2026-11-17
+amends: ["0029", "0025"]
+---
+
+# ADR-0035: Retrieval store amendments — liveness list, store version, interim location
+
+- **Deciders:** the repository owner
+- **Related:** amends ADR-0029 (rules 3, 5, 7, 11) and ADR-0025 (the vector stores' version);
+  ADR-0028
+
+## Context
+
+ADR-0029 was implemented on `feat/retrieval-pipeline`. Four of its clauses do not survive contact
+with the code and the benchmark:
+
+- **Rule 3** sends the live keys to the store as `doc_key IN (...)` while the list holds at most
+  20,000 keys. The benchmark (`benchmarks/retrieval/PROBES.md`, `results/table.md`) measured a
+  20,000-key list adding about 65 ms to the vector lane's p95 and 18 to 23 ms to the lexical lane's,
+  at both tiers, against a budget of 10 ms (50,000 chunks) and 25 ms (250,000). A 2,000-key list
+  adds under 5 ms. The `InList` expression form is 25 to 55% cheaper than SQL text with the BTree.
+- **Rule 11** ties the store's version to the release minor, as ADR-0025 does for every derived
+  store. For document rows that costs little, because blobs are re-extracted at each minor anyway.
+  For the vector rows of memory notes it re-embeds every note at every minor, although nothing in
+  their layout changed. The request on this branch was to decouple both stores from the minor,
+  provided a model or layout change can never serve a stale vector.
+- **Rule 2** puts the store under the repository group (ADR-0028). The group directory, lock and
+  live-key map are being built on another branch and do not exist here.
+- **Rules 5 and 7** name `kind`, `path` and `keywords` filters and a reranker that scores 50 hits,
+  without saying what values they take or which setting holds the 50.
+
+## Decision
+
+1. **Liveness list (amends rule 3).** The allowed keys go into the predicate, as a DataFusion
+   `InList` on `doc_key`, while they number at most **2,000**
+   (`docs_pipeline::LIVE_KEYS_PREFILTER`). Above that each lane fetches `max(3k, k + 64)`, keeps
+   the live hits and doubles up to 4,096; a lane that reaches 4,096 with fewer than `k` live hits
+   makes the response say `truncated_reason: "liveness_depth"`.
+2. **Store version (amends rule 11 and ADR-0025's vector rows).** The LanceDB stores, the
+   document store and the memory vectors, carry their own table-layout version, independent of
+   the release minor (`lance::VECTOR_STORE_VER`, starting at 1000 so that every store a
+   minor-numbered binary wrote reads as older). Older is wiped, newer refused, as before.
+   Staleness is prevented by the keys, not by the wipe:
+   - the store directory is named by the model and dimension, so another preset opens another
+     directory and its rows are written there;
+   - `doc_key` hashes the blob schema version with the content hash and the extraction digest, so
+     rows of an older extractor have another key, are dead for every view, and are deleted;
+   - memory vector rows are found by note key and checked against the note's `updated_at`
+     (ADR-0025 (c)), and a missing row is rebuilt from the note.
+   The version is bumped when a table's columns change.
+3. **Interim location (amends rule 2 until ADR-0028 lands).** The store is
+   `.basemind/retrieval/<model-slug>-<dim>-<hash8>/` in the workspace, chosen in one function,
+   `lance::docs::store_dir(parent, model, dim)`; rows carry no path or workspace. The scan deletes
+   the rows no document of its view names. When the group directory exists, `store_dir` is called
+   with it and that deletion moves to the group sweep, which passes every view's live keys.
+4. **Filter values (amends rule 5).** `kind` is one of `pdf`, `office`, `html`, `markdown`,
+   `email`, `notebook`, `text`, `other`; `path` is a glob over the view's document paths;
+   `keywords` is a comma-separated list, a document passing when it has any of them as a whole
+   keyword, case-insensitive; `entity` is a whole entity category, case-insensitive.
+5. **Rerank depth (amends rule 7).** `[documents.reranker] top_k` is the number of fused hits the
+   cross-encoder reorders, default 50 and at most 50; the hits after them keep their fused order.
+
+## Consequences
+
+- Upgrading wipes each vector store once (its old version is the minor, below 1000); after that a
+  release minor no longer wipes the memory vectors.
+- A worktree still holds its own copy of the document rows until ADR-0028's group directory exists.
+- A view whose allowed set exceeds 2,000 documents pays the widening on every query and may see
+  `liveness_depth`.
+- ADR-0029's `lang` column and its Bitmap index are not built: no filter reads them.
+
+## Alternatives considered
+
+- **Keep 20,000 keys** — rejected: the benchmark measured the rule's own budget exceeded.
+- **Keep the minor as the version** — rejected: every minor re-embeds every memory note for no
+  layout change, and the model-named directory and versioned `doc_key` already keep stale rows
+  from being served.
+- **Build the group directory here** — rejected: it is ADR-0028's work, in progress elsewhere.
