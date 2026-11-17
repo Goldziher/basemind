@@ -86,9 +86,10 @@ changed, checked against `main` at `3d627ba5`. A clause not named here stands.
    minutes after its last session closes.
 10. **ADR-0013's relay replay list becomes:** replay safety is decided per tool in
     `src/mcp/replay.rs`, every advertised tool in exactly one list, enforced by a test: read-only
-    verb tools are re-sent (`REPLAY_SAFE_TOOLS`), `memory_save` and `index_rescan` never
-    (`NEVER_REPLAY_TOOLS`), and `agent_post`, `agent_inbox` and `agent_threads` are re-sent with the
-    relay's replay key (`KEYED_REPLAY_TOOLS`). The decision is made when a tool is added.
+    verb tools are re-sent, `memory_save` and `index_rescan` never, `agents` by mode (decided in
+    `src/stdio_relay.rs`): its reads, `ack` and `wait` are re-sent, `post` too, with a
+    relay-generated `idempotency_key` when the caller gave none so the replay cannot store a second
+    copy, and `inbox` only when it does not mark read. The decision is made when a tool is added.
 11. **ADR-0013's "everything else gets a retryable `-32001`", and ADR-0024's consequence that the
     second daemon "serves no index", become:** frames sent with no backend are held 10 s (90 s
     while a connection attempt runs) and forwarded in order if one connects. Past that the relay
@@ -206,7 +207,9 @@ Open, as built:
   daemon's pid is not ruled out. A reused pid in a stale record of any generation counts toward
   the ceiling while it runs: this generation's records are pruned only when their pid is dead,
   and another generation's never by this binary.
-- The `memory_search` listing sets `truncated` with no `truncated_reason`, outside rule 15.
+- `agents` (8,000 bytes) stands in place of ADR-0022's three agent tools until comms v2 lands.
+- The `memory_search` listing sets `truncated` with no `truncated_reason`, outside rule 15. A
+  `code_refs` definition answered by the daemon is not one snapshot with the session's store.
 - Only a daemon writes a hosting marker (rule 25): a scan outside it that finished before a power
   loss leaves no evidence, and its blobs are trusted for existing.
 - Blob verification skips code-chunk sidecars and `rref` blobs. Owed vector rows settle only while
