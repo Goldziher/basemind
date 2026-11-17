@@ -522,6 +522,10 @@ pub(super) struct StatusResponse {
     /// warming or when the preload wasn't deferred this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm_ms: Option<u64>,
+    /// `true` while this serve's boot-time git-history sync runs. A `git_log` / `git_blame` cursor
+    /// issued before it ends may be refused as stale. Absent once the sync is done.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_syncing: bool,
     /// Current lifecycle notice (warming / building / rescanning) with an actionable message, or absent
     /// when the server is fully ready. Mirrors the `notice` on every read-tool response.
     #[serde(default, skip_serializing_if = "Option::is_none")]

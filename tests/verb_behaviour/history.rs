@@ -2,11 +2,10 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{Client, call, call_err, started, started_with};
+use super::{Client, call, call_err, started, started_after, started_with};
 
 /// Commit everything as `name <email>`.
 fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
@@ -49,51 +48,43 @@ async fn assert_author_scoping(client: &Client) {
     assert_eq!(summaries(&author_only), ["fix the parser"], "{author_only}");
 }
 
-/// A commit by bob whose message names alice is not a commit by alice. Checked on the live walk the
-/// search starts with and again once the git-history index answers it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn git_log_matches_author_terms_against_the_author_only() {
-    let (dir, client) = started().await;
-    let root = dir.path();
+/// Alice's and bob's commits, bob's naming alice in its message.
+fn commit_alice_and_bob(root: &Path) {
     let outline = std::fs::read_to_string(root.join("src/outline.rs")).unwrap();
     std::fs::write(root.join("src/outline.rs"), outline.replace("    1\n", "    11\n")).unwrap();
     commit_as(root, "alice", "alice@e.x", "fix the parser");
     std::fs::write(root.join("src/outline.rs"), outline.replace("    1\n", "    12\n")).unwrap();
     commit_as(root, "bob", "bob@e.x", "thanks alice for the review");
+}
+
+/// A commit by bob whose message names alice is not a commit by alice, on the live walk: the
+/// commits land after the server's git-history sync, so the index is behind HEAD and the search
+/// is a bounded walk over subjects and authors, a cut the caller did not ask for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_matches_author_terms_against_the_author_only() {
+    let (dir, client) = started().await;
+    commit_alice_and_bob(dir.path());
 
     assert_author_scoping(&client).await;
-    // Before the git-history index has caught up the search is a bounded walk over subjects and
-    // authors, which is a cut the caller did not ask for; once it has, the answer is whole. Which of
-    // the two this call meets is a race, so each is held to its own contract.
     let first = call(&client, "git_log", json!({ "query": "parser" })).await;
     assert_eq!(summaries(&first), ["fix the parser"], "{first}");
-    match first.get("truncated") {
-        Some(truncated) => {
-            assert_eq!(truncated, true, "{first}");
-            assert_eq!(first["truncated_reason"], "live_walk", "{first}");
-        }
-        None => assert!(
-            first.get("truncated_reason").is_none(),
-            "an index answer is whole: {first}"
-        ),
-    }
+    assert_eq!(first["truncated"], true, "{first}");
+    assert_eq!(first["truncated_reason"], "live_walk", "{first}");
+}
 
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut indexed = false;
-    while Instant::now() < deadline {
-        let probe = call(&client, "git_log", json!({ "query": "parser" })).await;
-        assert!(probe.get("partial").is_none(), "{probe}");
-        if probe.get("truncated").and_then(Value::as_bool) != Some(true) {
-            indexed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    if indexed {
-        assert_author_scoping(&client).await;
-    } else {
-        eprintln!("NOTE: the git-history index did not catch up; only the live walk was exercised");
-    }
+/// The same scoping once the git-history index answers: the commits are in place before the
+/// server starts, so its boot sync indexes them, and the answer is whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_log_matches_author_terms_against_the_author_only_from_the_index() {
+    let (_dir, client) = started_after(commit_alice_and_bob).await;
+
+    let first = call(&client, "git_log", json!({ "query": "parser" })).await;
+    assert_eq!(summaries(&first), ["fix the parser"], "{first}");
+    assert!(
+        first.get("truncated").is_none() && first.get("truncated_reason").is_none() && first.get("partial").is_none(),
+        "an index answer is whole: {first}"
+    );
+    assert_author_scoping(&client).await;
 }
 
 const STEADY_RS: &str = "pub fn stable() -> u32 {\n    7\n}\n\npub fn churn() -> u32 {\n    0\n}\n";

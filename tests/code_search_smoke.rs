@@ -69,9 +69,12 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
         .output()
         .expect("spawn search-code");
     if !out.status.success() {
-        eprintln!(
-            "SKIP: search-code errored (embedder unavailable / offline): {}",
-            String::from_utf8_lossy(&out.stderr)
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            &format!(
+                "search-code errored (embedder unavailable?): {}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
         );
         return;
     }
@@ -79,17 +82,26 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
     let value: serde_json::Value = match serde_json::from_str(&stdout) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("SKIP: search-code produced non-JSON output ({e}): {stdout}");
+            basemind::testing::unavailable(
+                "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+                &format!("search-code produced non-JSON output ({e}): {stdout}"),
+            );
             return;
         }
     };
     let hits = value.get("hits").and_then(|h| h.as_array());
     let Some(hits) = hits else {
-        eprintln!("SKIP: search-code response has no `hits` array: {value}");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            &format!("search-code response has no `hits` array: {value}"),
+        );
         return;
     };
     if hits.is_empty() {
-        eprintln!("SKIP: zero hits (grammar cold or embedder offline) — code-search path exercised without a corpus");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            "search-code found nothing (grammar cold or embedder offline?)",
+        );
         return;
     }
 
@@ -158,9 +170,9 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
 
     let sidecar = find_chunk_sidecar(&stem);
     let Some(sidecar) = sidecar else {
-        eprintln!(
-            "SKIP: no .chunk.msgpack sidecar found after first scan \
-             (chunker may be disabled or model unavailable)"
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            "no .chunk.msgpack sidecar after the first scan (chunker disabled or model unavailable?)",
         );
         return;
     };

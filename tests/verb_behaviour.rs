@@ -148,9 +148,38 @@ async fn started() -> (TempDir, Client) {
 
 async fn started_with(extra: &[(&str, &str)]) -> (TempDir, Client) {
     let dir = fixture_with(extra);
+    serve_synced(dir).await
+}
+
+/// The base fixture changed by `prepare` (more commits, say) before it is scanned and served, so
+/// the server's boot-time git-history sync covers what `prepare` did.
+async fn started_after(prepare: impl FnOnce(&Path)) -> (TempDir, Client) {
+    let dir = fixture_with(&[]);
+    prepare(dir.path());
+    serve_synced(dir).await
+}
+
+async fn serve_synced(dir: TempDir) -> (TempDir, Client) {
     scan(dir.path());
     let client = serve(dir.path()).await;
+    history_synced(&client).await;
     (dir, client)
+}
+
+/// Wait out the server's boot-time git-history sync. A git walk is served live until the index is
+/// up and from the index after, which order commits differently, so a cursor issued across the
+/// switch is refused: tests that page through history start once `index_status` stops reporting
+/// the sync. The ceiling only stops a hang.
+async fn history_synced(client: &Client) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while call(client, "index_status", json!({}))
+        .await
+        .get("history_syncing")
+        .is_some_and(|syncing| syncing == true)
+    {
+        assert!(std::time::Instant::now() < deadline, "the git-history sync never ended");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 fn text_of(result: &CallToolResult) -> String {

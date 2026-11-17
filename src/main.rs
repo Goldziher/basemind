@@ -543,6 +543,17 @@ fn sync_git_history_after_scan(
     std::mem::forget(index);
 }
 
+/// Whether the layered index was refreshed. A worktree that changed during the delta is a busy
+/// exit, not a fall-through to a standalone scan, which would leave layering for good.
+fn refreshed_or_changed(refreshed: anyhow::Result<bool>) -> Result<bool> {
+    match refreshed {
+        Err(error) if error.downcast_ref::<basemind::store_base::WorktreeChanged>().is_some() => {
+            Err(basemind::cli::exit::CliExit::busy(error.to_string()))
+        }
+        other => Ok(other.unwrap_or(false)),
+    }
+}
+
 /// Run a full scan, printing each file's line as the scan absorbs it.
 ///
 /// The observer owns its own stdout stream, so it never collides with the caller's `out` and the
@@ -657,7 +668,11 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
     if shared_index
         && !args.verify_shared_base
         && (basemind::store_base::has_published_dirty_worktree(root, &config).unwrap_or(false)
-            || basemind::store_base::refresh_local_worktree(root, &config, LockHolder::Scan).unwrap_or(false))
+            || refreshed_or_changed(basemind::store_base::refresh_local_worktree(
+                root,
+                &config,
+                LockHolder::Scan,
+            ))?)
     {
         eprintln!("Shared worktree index ready.");
         sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);

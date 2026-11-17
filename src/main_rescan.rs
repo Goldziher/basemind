@@ -56,6 +56,9 @@ pub(super) fn cmd_rescan(
                 sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
                 return Ok(());
             }
+            Err(error) if error.downcast_ref::<basemind::store_base::WorktreeChanged>().is_some() => {
+                return Err(basemind::cli::exit::CliExit::busy(error.to_string()));
+            }
             Err(error)
                 if error
                     .downcast_ref::<basemind::store::StoreError>()

@@ -493,7 +493,8 @@ Search and memory are powered by a vector store ([LanceDB]).
 The daemon answers the MCP handshake immediately and warms the code map into memory in the
 background, so a client never blocks waiting for a large repo to load. The `status` tool reports
 `warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
-`indexing` / `index_build_ms`.
+`indexing` / `index_build_ms`, and the boot-time git-history sync `history_syncing` (a `git_log` or
+`git_blame` cursor issued before it ends may be refused as stale).
 
 While the server isn't fully ready, `status` and every code-map read tool may carry a `notice`
 object — `{ state, message, retry }` — instead of (or alongside) their normal result:
