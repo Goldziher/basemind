@@ -96,14 +96,9 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
 
 ## Layout
 
-- `src/mcp/types_tools.rs` — one params struct per tool, plus the `tool_args!` table that binds
-  each struct to its tool name and builds `VERB_TOOLS`.
-- `src/mcp/tools.rs` (code tools, `find_files`), `tools_git.rs`, `tools_memory.rs`, `tools_admin.rs` —
-  one thin `#[tool]` shim per tool, beside the `<tool>_call` method the shim and the CLI both run.
-- `src/mcp/helpers_*.rs` — the bodies.
-- `src/cli/` — every MCP tool has a CLI command that calls the same `<tool>_call`
-  (`tests/cli_parity/` enforces it; the CLI may keep shorthands and CLI-only administrative commands,
-  each a row in `tests/cli_parity/capabilities.rs`).
+Params structs and `VERB_TOOLS`: `src/mcp/types_tools.rs`. Shims and `<tool>_call`:
+`src/mcp/tools*.rs`. Bodies: `src/mcp/helpers_*.rs`. The CLI (`src/cli/`) calls the same
+`<tool>_call` (`tests/cli_parity/`).
 
 ## Agent tools (`--features comms`)
 
@@ -125,4 +120,4 @@ post|inbox|threads|status|cleanup`.
 ### Machine registry (CLI only)
 
 `basemind workspace workspaces` / `worktrees` / `branches` list the daemon's machine-wide
-registry. There is no `workspace` MCP tool and there are no worktree claims.
+registry; there is no `workspace` MCP tool.
