@@ -27,6 +27,8 @@ workspace="${out}/workspace"
 rm -rf "${workspace}"
 cp -R "${here}/corpus" "${workspace}"
 cat >"${workspace}/basemind.toml" <<'EOF'
+"$schema" = "v1"
+
 [documents]
 enabled = true
 embed = true
