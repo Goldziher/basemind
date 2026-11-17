@@ -712,15 +712,16 @@ fn confine(root: &Path, working_dir: Option<&Path>) -> Result<(PathBuf, PathBuf)
     };
     let root = resolve(root)?;
     let dir = match working_dir {
-        Some(dir) if dir.is_absolute() => resolve(dir)?,
-        // The error names the relative path the request gave, not the root it was joined to.
-        Some(dir) => root.join(dir).canonicalize().map_err(|source| LaunchError::Path {
-            path: dir.to_owned(),
-            source,
-        })?,
+        Some(dir) => {
+            let joined = root.join(dir);
+            match joined.canonicalize() {
+                Ok(dir) => dir,
+                Err(_) => return Err(LaunchError::WorkingDirOutsideRoot { dir: joined, root }),
+            }
+        }
         None => root.clone(),
     };
-    if !dir.starts_with(&root) {
+    if !dir.starts_with(&root) || !dir.is_dir() {
         return Err(LaunchError::WorkingDirOutsideRoot { dir, root });
     }
     Ok((root, dir))

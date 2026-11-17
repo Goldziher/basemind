@@ -64,7 +64,8 @@ config is trusted.
 - Of a request, only the model and the effort reach the command line, as the harness's own flags
   after a grammar check; its wall time and turns are clamped to the config's caps, and its brief is
   at most 1 MiB and may not start with `/` (a harness runs that as its own slash command). Errors
-  about a request's fields do not repeat the root or a whole value.
+  about a request's fields do not repeat the root, a path or a whole value, and a working directory
+  that does not exist reads the same as one outside the root.
 - A failed session reports `Event::Diagnostics`, the full error and the last 8 KiB of the
   harness's stderr, for the launcher's logs only, then `Event::Error`: one line of at most 512
   bytes with control characters replaced and no stderr, which is what a model may be shown.

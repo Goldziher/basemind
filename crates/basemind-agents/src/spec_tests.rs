@@ -115,7 +115,7 @@ fn the_working_directory_must_resolve_inside_the_root() {
     }
 
     spec.working_dir = Some("missing".into());
-    assert!(matches!(spec.prepare(), Err(LaunchError::Path { .. })));
+    assert!(matches!(spec.prepare(), Err(LaunchError::WorkingDirOutsideRoot { .. })));
 }
 
 #[cfg(unix)]
@@ -484,10 +484,33 @@ fn request_facing_errors_do_not_echo_the_root_or_a_whole_value() {
     assert!(matches!(error, LaunchError::WorkingDirOutsideRoot { .. }));
     assert!(!error.to_string().contains(&root_text), "{error}");
 
-    spec.working_dir = Some(PathBuf::from("missing"));
+    // Whether a path outside the root exists, or a path inside it is a directory, is not
+    // told apart: the errors read the same.
+    let outside = error.to_string();
+    std::fs::write(root.join("file"), "").unwrap();
+    for dir in ["missing", "../no-such-sibling", "file"] {
+        spec.working_dir = Some(PathBuf::from(dir));
+        let error = spec.prepare().unwrap_err();
+        assert!(
+            matches!(error, LaunchError::WorkingDirOutsideRoot { .. }),
+            "{dir}: {error}"
+        );
+        assert_eq!(error.to_string(), outside, "{dir}");
+    }
+
+    let config = config(HarnessKind::Codex, &root);
+    let mut request = LaunchRequest::new("brief");
+    request.working_dir = Some(root.join("a".repeat(200)));
+    let error = LaunchSpec::new(&config, &request).err().unwrap();
+    assert!(matches!(error, LaunchError::WorkingDirNotRelative(_)), "{error}");
+    assert!(!error.to_string().contains("aaaa"), "{error}");
+
+    std::fs::create_dir(root.join(".codex")).unwrap();
+    spec.working_dir = None;
     let error = spec.prepare().unwrap_err();
-    assert!(matches!(&error, LaunchError::Path { path, .. } if path == Path::new("missing")));
+    assert!(matches!(error, LaunchError::ProjectConfig { .. }), "{error}");
     assert!(!error.to_string().contains(&root_text), "{error}");
+    std::fs::remove_dir(root.join(".codex")).unwrap();
 
     spec.working_dir = None;
     spec.model = Some(format!("{}\"", "m".repeat(1000)));

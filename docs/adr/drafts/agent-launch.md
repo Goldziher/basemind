@@ -95,7 +95,9 @@ id that fails the grammar stops the launch.
    - **Only a model and an effort reach the command line from a request,** as the harness's own
      flags after a grammar check; a harness that takes neither at launch refuses them. A brief or
      follow-up may not start with `/`: Claude Code 2.1.325 ran a prompt of `/context` as its own
-     slash command. Errors about a request's fields repeat neither the root nor a whole value.
+     slash command. Errors about a request's fields repeat neither the root, a path nor a whole
+     value, and a working directory that does not exist reads the same as one outside the root,
+     so an error does not tell a model whether a path outside the root exists.
      A failed session's error is split: `Event::Diagnostics` carries the full text and the
      harness's stderr tail for the launcher's logs, `Event::Error` one sanitised line of at most
      512 bytes without the stderr, which is all the engine relays to a model.

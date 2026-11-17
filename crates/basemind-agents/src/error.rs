@@ -15,18 +15,20 @@ pub enum LaunchError {
     /// The host does not satisfy `[a-z0-9]{1,16}`, the form the comms resolver reduces to.
     #[error("host {0:?} does not match [a-z0-9]{{1,16}}")]
     InvalidHost(String),
-    /// The working directory resolves to a path outside the confinement root. The message
-    /// leaves out both paths, which a model choosing the working directory should not learn;
-    /// the fields carry them for the launcher.
-    #[error("the working directory is outside the root")]
+    /// The working directory is not an existing directory inside the confinement root: it
+    /// resolves outside it, does not exist, or is not a directory. One message covers all
+    /// three, so a model choosing the working directory learns neither the paths nor whether
+    /// something exists outside the root; the fields carry the paths for the launcher.
+    #[error("the working directory is not a directory inside the root")]
     WorkingDirOutsideRoot {
-        /// The canonical working directory that was requested.
+        /// The working directory that was requested, canonical when it resolved.
         dir: PathBuf,
         /// The canonical root it had to stay inside.
         root: PathBuf,
     },
-    /// The request's working directory is absolute; it has to be relative to the root.
-    #[error("working directory {0} is not relative to the root")]
+    /// The request's working directory is absolute; it has to be relative to the root. The
+    /// message leaves the path out.
+    #[error("the working directory is not relative to the root")]
     WorkingDirNotRelative(PathBuf),
     /// A path the harness has to receive in its protocol is not valid UTF-8.
     #[error("path {0:?} is not valid UTF-8")]
@@ -44,8 +46,7 @@ pub enum LaunchError {
         /// Why it was refused.
         reason: &'static str,
     },
-    /// A path of the launch could not be resolved. For the request's working directory, the
-    /// path is the relative one the request gave.
+    /// A path of the config (the root, an executable) could not be resolved.
     #[error("cannot resolve {path}: {source}")]
     Path {
         /// The path as given.
@@ -102,8 +103,9 @@ pub enum LaunchError {
     #[error("environment variable {0:?} may not be set by a launch config")]
     EnvNotAllowed(String),
     /// The working directory or an ancestor of it holds a project file through which the
-    /// harness would load permissions, hooks or MCP servers the launch does not control.
-    #[error("{harness} would load the project configuration at {path}")]
+    /// harness would load permissions, hooks or MCP servers the launch does not control. The
+    /// message leaves the path out, which may lie above the root.
+    #[error("{harness} would load a project configuration file in the working directory or above it")]
     ProjectConfig {
         /// The harness the launch targets.
         harness: &'static str,
