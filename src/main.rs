@@ -274,7 +274,9 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 
 // The daemon's scans and cache warms allocate and free many short-lived multi-MB buffers across
 // dozens of threads; the macOS system allocator keeps that high-water mark resident (a 5 GB
-// peak settling at 1.6 GB of live data). mimalloc returns freed pages to the OS.
+// peak settling at 1.6 GB of live data). mimalloc returns freed pages to the OS. The leak-check
+// build (`system-allocator`) keeps the system allocator so `leaks` can scan the whole heap.
+#[cfg(not(feature = "system-allocator"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
