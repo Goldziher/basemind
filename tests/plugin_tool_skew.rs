@@ -43,7 +43,8 @@ const CONTENT_ROOTS: &[&str] = &[
     ".cursor-plugin",
     "opencode-plugin",
     "plugin",
-    ".pi",
+    // Only the extension ships; the rest of .pi/ is local, untracked agent governance.
+    ".pi/extensions",
     "gemini-extension.json",
     "kimi.plugin.json",
     "settings.json",
@@ -503,7 +504,10 @@ fn cli_mismatches(fx: &Fixture, bin: &Path, content: &Content) -> Vec<String> {
         });
         let ok = match (children, sub) {
             (None, _) => false,
-            (Some(children), Some(sub)) if !children.is_empty() => children.contains(sub),
+            // A hidden alias (`code references` for `code refs`) is not listed but runs: ask clap.
+            (Some(children), Some(sub)) if !children.is_empty() => {
+                children.contains(sub) || help_of(fx, bin, &[group, sub]).is_some()
+            }
             _ => true,
         };
         if !ok {
@@ -1158,7 +1162,7 @@ fn content_tree(files: &[(&str, &str)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     for root in CONTENT_ROOTS {
         let path = dir.path().join(root);
-        if Path::new(root).extension().is_some() || root.contains('/') || root.ends_with(".json") {
+        if Path::new(root).extension().is_some() {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, "{}\n").unwrap();
         } else {
@@ -1189,16 +1193,19 @@ fn extracting_no_names_is_an_error_not_a_pass() {
 #[test]
 fn a_missing_or_empty_content_root_is_an_error() {
     let tree = content_tree(&[("skills/a.md", "call code_outline\n")]);
-    fs::remove_dir_all(tree.path().join(".pi")).unwrap();
+    fs::remove_dir_all(tree.path().join(".pi/extensions")).unwrap();
     let err = extract_references(tree.path(), CONTENT_ROOTS, &no_top_level())
         .err()
         .unwrap();
-    assert!(err.contains("content root .pi is missing"), "{err}");
-    fs::create_dir_all(tree.path().join(".pi")).unwrap();
+    assert!(err.contains("content root .pi/extensions is missing"), "{err}");
+    fs::create_dir_all(tree.path().join(".pi/extensions")).unwrap();
     let err = extract_references(tree.path(), CONTENT_ROOTS, &no_top_level())
         .err()
         .unwrap();
-    assert!(err.contains("content root .pi holds no readable text file"), "{err}");
+    assert!(
+        err.contains("content root .pi/extensions holds no readable text file"),
+        "{err}"
+    );
 }
 
 #[test]
