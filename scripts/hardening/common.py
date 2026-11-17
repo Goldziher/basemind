@@ -45,6 +45,8 @@ IS_WINDOWS = sys.platform == "win32"
 BINARY_NAMES = ("basemind", "basemind.exe")
 MIB = 1024 * 1024
 MAX_SOCKET_PATH = 100
+# The MCP per-call log and its one rotated generation (src/mcp/telemetry.rs).
+TELEMETRY_FILES = ("telemetry.jsonl", "telemetry.jsonl.1")
 
 
 def log(msg: str) -> None:
@@ -525,6 +527,65 @@ def _sample_windows(pid: int) -> ProcSample | None:
     )
 
 
+# <sys/proc_info.h>: PROC_PIDLISTTHREADS lists uint64 thread handles; PROC_PIDTHREADINFO fills a
+# 112-byte proc_threadinfo whose last 64 bytes are the thread name.
+_PROC_PIDTHREADINFO = 5
+_PROC_PIDLISTTHREADS = 6
+_THREADINFO_SIZE = 112
+_THREADINFO_NAME = 48
+
+
+def _thread_names_mac(pid: int) -> list[str] | None:
+    sample = _sample_mac(pid)
+    if sample is None:
+        return None
+    # PROC_PIDLISTTHREADS reports no size for a NULL buffer; the task's thread count bounds it.
+    handles = (ctypes.c_uint64 * (sample.threads + 64))()
+    got = _libproc.proc_pidinfo(pid, _PROC_PIDLISTTHREADS, 0, handles, ctypes.sizeof(handles))
+    if got <= 0:
+        return None
+    info = ctypes.create_string_buffer(_THREADINFO_SIZE)
+    return [
+        _cstr(info.raw[_THREADINFO_NAME:])
+        for handle in handles[: got // 8]
+        if _libproc.proc_pidinfo(pid, _PROC_PIDTHREADINFO, ctypes.c_uint64(handle), info, _THREADINFO_SIZE) > 0
+    ]
+
+
+def _thread_names_linux(pid: int) -> list[str] | None:
+    try:
+        tasks = list(Path(f"/proc/{pid}/task").iterdir())
+    except OSError:
+        return None
+    names = []
+    for task in tasks:
+        with contextlib.suppress(OSError):
+            names.append((task / "comm").read_text().strip())
+    return names
+
+
+def thread_census(pid: int) -> dict[str, int] | None:
+    """Live threads of `pid` counted by name, a pool's numbered members folded into one `name-#`.
+
+    None where the platform exposes no thread names (Windows) or the process is gone. Linux
+    truncates names to 15 bytes (`tokio-runtime-w`); an unnamed macOS thread is `""`.
+    """
+    if IS_MAC:
+        names = _thread_names_mac(pid)
+    elif IS_LINUX:
+        names = _thread_names_linux(pid)
+    else:
+        return None
+    if names is None:
+        return None
+    census: dict[str, int] = {}
+    for name in names:
+        key = name.rstrip("0123456789")
+        key = key + "#" if key != name else name
+        census[key] = census.get(key, 0) + 1
+    return dict(sorted(census.items()))
+
+
 def sample_pid(pid: int) -> ProcSample | None:
     """Resource sample of one process, or None when it is gone."""
     if IS_MAC:
@@ -536,18 +597,44 @@ def sample_pid(pid: int) -> ProcSample | None:
     return None
 
 
-def dir_bytes(path: Path) -> tuple[int, int]:
-    """(apparent bytes, allocated bytes) of a directory tree."""
-    apparent = allocated = 0
+@dataclass
+class DirUsage:
+    """Sizes under one directory tree, apparent bytes unless named otherwise."""
+
+    apparent: int = 0
+    allocated: int = 0
+    parts: dict[str, int] = field(default_factory=dict)
+    journals: dict[str, int] = field(default_factory=dict)
+    telemetry: int = 0
+
+
+def dir_usage(path: Path, depth: int) -> DirUsage:
+    """Walk a directory tree once.
+
+    `parts` charges each file to its directory cut to the first `depth` components below `path`
+    (`.` for `path` itself), which tells which store is the one growing. `journals` sums the Fjall
+    write-ahead journals (`*.jnl`) per database directory and `telemetry` the per-call log with its
+    rotated generation: both are size-bounded by configuration, not by content, and R8 judges them
+    against those bounds rather than by slope.
+    """
+    out = DirUsage()
     for dirpath, _dirs, files in os.walk(path):
+        rel = os.path.relpath(dirpath, path).replace(os.sep, "/")
+        key = "/".join(rel.split("/")[:depth]) if rel != "." else "."
         for name in files:
             try:
                 st = os.lstat(os.path.join(dirpath, name))  # noqa: PTH116,PTH118 - os.walk hot loop
             except OSError:
                 continue
-            apparent += st.st_size
-            allocated += getattr(st, "st_blocks", 0) * 512
-    return apparent, allocated
+            out.apparent += st.st_size
+            out.allocated += getattr(st, "st_blocks", 0) * 512
+            if depth:
+                out.parts[key] = out.parts.get(key, 0) + st.st_size
+            if name.endswith(".jnl"):
+                out.journals[rel] = out.journals.get(rel, 0) + st.st_size
+            elif name in TELEMETRY_FILES:
+                out.telemetry += st.st_size
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------

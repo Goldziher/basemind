@@ -27,7 +27,7 @@ from common import MIB, default_out_root  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 EVERY = 5.0
-WARMUP, LOAD, IDLE = 120.0, 600.0, 180.0
+WARMUP, QUIESCE, LOAD, IDLE = 120.0, 45.0, 600.0, 180.0
 DAEMON, MAIN = 4242, 4343
 
 
@@ -50,12 +50,13 @@ def healthy(rng: random.Random, load: float = LOAD) -> list[dict[str, Any]]:
     cpu = {DAEMON: 0.0, MAIN: 0.0}
     short_pid = 9000
     while t < load + IDLE:
-        phase = "warmup" if t < WARMUP else "load" if t < load else "idle"
+        phase = "warmup" if t < WARMUP else "baseline" if t < WARMUP + QUIESCE else "load" if t < load else "idle"
         for pid, role, base in ((DAEMON, "daemon", 400), (MAIN, "serve", 20)):
             ramp = min(t, WARMUP) / WARMUP
             mem = (base * (0.5 + 0.5 * ramp) + rng.gauss(0, base * 0.03)) * MIB
             busy = 0.4 if phase != "idle" else 0.0005
             delta = busy * EVERY * rng.uniform(0.5, 1.5)
+            threads = 30 + rng.choice((0, 0, 1, 2))
             cpu[pid] += delta
             recs.append(
                 {
@@ -67,7 +68,8 @@ def healthy(rng: random.Random, load: float = LOAD) -> list[dict[str, Any]]:
                     "rss": int(mem * 1.1),
                     "footprint": int(mem),
                     "vsz": 4 << 30,
-                    "threads": 30 + rng.choice((0, 0, 1, 2)),
+                    "threads": threads,
+                    "thread_names": {"bm-scan-#": 4, "tokio-runtime-w": threads - 4},
                     "fds": 60 + rng.choice((0, 1, 2, 3)),
                     "cpu_s": cpu[pid],
                     "cpu_delta_s": delta,
@@ -82,6 +84,9 @@ def healthy(rng: random.Random, load: float = LOAD) -> list[dict[str, Any]]:
                 "phase": phase,
                 "data_bytes": int((50 + rng.gauss(0, 0.5)) * MIB),
                 "data_alloc_bytes": 0,
+                "data_journals": {"cache/groups/g/index.fjall": 2 * MIB},
+                "data_telemetry_bytes": MIB,
+                "data_parts": {"cache/groups/g/index.fjall": 3 * MIB},
                 "comms_bytes": 0,
             }
         )
@@ -94,7 +99,7 @@ def healthy(rng: random.Random, load: float = LOAD) -> list[dict[str, Any]]:
                 "total": 2 + rng.choice((0, 1)),
             }
         )
-        if phase != "idle" and int(t) % 20 == 2:
+        if phase not in ("idle", "baseline") and int(t) % 20 == 2:
             recs.append({"kind": "session", "event": "open", "name": f"short-{short_pid}", "pid": short_pid, "t": t})
             recs.append(
                 {
@@ -122,6 +127,8 @@ def healthy(rng: random.Random, load: float = LOAD) -> list[dict[str, Any]]:
                 "ms": 3.0,
             }
         )
+        if abs(t - WARMUP) < EVERY / 2:
+            recs.append({"kind": "phase", "t": t, "name": "baseline_start"})
         if abs(t - load) < EVERY / 2:
             recs.append({"kind": "phase", "t": t, "name": "idle_start"})
         t += EVERY
@@ -191,6 +198,63 @@ def slow_leak(rng: random.Random) -> list[dict[str, Any]]:
     return recs
 
 
+def _add_threads(r: dict[str, Any], n: int, name: str) -> None:
+    r["threads"] += n
+    r["thread_names"][name] = r["thread_names"].get(name, 0) + n
+
+
+def pool_step(rng: random.Random) -> list[dict[str, Any]]:
+    """A blocking pool grows by six threads at a concurrency peak mid-load and reaps them once idle:
+    bounded, so it passes (a slope fitted through the step reads +1 thread/min)."""
+    recs = healthy(rng)
+    for r in recs:
+        if r.get("kind") == "proc" and r["phase"] == "load" and r["t"] >= LOAD / 2:
+            _add_threads(r, 6, "tokio-runtime-w")
+    return recs
+
+
+def thread_leak(rng: random.Random) -> list[dict[str, Any]]:
+    """One thread per minute of load is started and never exits."""
+    recs = healthy(rng)
+    for r in recs:
+        if r.get("kind") == "proc" and r["pid"] == DAEMON and r["t"] > WARMUP + QUIESCE:
+            _add_threads(r, int(min(r["t"], LOAD) - WARMUP - QUIESCE) // 60, "bm-watch")
+    return recs
+
+
+def _grow_dir(recs: list[dict[str, Any]], mib_per_min: float, journal: bool, telemetry: bool) -> None:
+    for r in recs:
+        if r.get("kind") == "dir":
+            extra = int(mib_per_min * MIB * r["t"] / 60)
+            r["data_bytes"] += extra
+            if journal:
+                r["data_journals"]["cache/groups/g/index.fjall"] += extra if not telemetry else extra // 2
+            if telemetry:
+                r["data_telemetry_bytes"] += extra if not journal else extra - extra // 2
+
+
+def journal_fill(rng: random.Random) -> list[dict[str, Any]]:
+    """The index journal and the telemetry log grow 2 MiB/min together, under their size bounds:
+    a write-ahead log and a rotated log filling toward their configured caps, so it passes."""
+    recs = healthy(rng)
+    _grow_dir(recs, 2.0, journal=True, telemetry=True)
+    return recs
+
+
+def journal_overflow(rng: random.Random) -> list[dict[str, Any]]:
+    """A Fjall journal climbs 30 MiB/min past its 192 MiB bound: nothing ever truncates it."""
+    recs = healthy(rng)
+    _grow_dir(recs, 30.0, journal=True, telemetry=False)
+    return recs
+
+
+def store_climb(rng: random.Random) -> list[dict[str, Any]]:
+    """A store outside the journals and the telemetry log grows 2 MiB/min: unbounded."""
+    recs = healthy(rng)
+    _grow_dir(recs, 2.0, journal=False, telemetry=False)
+    return recs
+
+
 def idle_busy(rng: random.Random) -> list[dict[str, Any]]:
     """A thread spins at 15% of a core while nothing is asked of the daemon."""
     recs = healthy(rng)
@@ -230,6 +294,11 @@ CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set
     ("long-plateau", long_plateau, 0, set()),
     ("slow-leak", slow_leak, 1, {"R2f"}),
     ("rss-climb", rss_climb, 1, {"R2"}),
+    ("pool-step", pool_step, 0, set()),
+    ("thread-leak", thread_leak, 1, {"R4"}),
+    ("journal-fill", journal_fill, 0, set()),
+    ("journal-overflow", journal_overflow, 1, {"R8"}),
+    ("store-climb", store_climb, 1, {"R8"}),
     ("idle-busy", idle_busy, 1, {"R6"}),
     ("fd-leak", fd_leak, 1, {"R3"}),
     ("leaked-child", leaked_child, 1, {"R7"}),
