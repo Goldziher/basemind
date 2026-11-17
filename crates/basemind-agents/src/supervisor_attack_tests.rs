@@ -11,7 +11,7 @@ use crate::audit::MemoryAuditSink;
 use crate::claude::ClaudeCodeAdapter;
 use crate::event::{Event, FinishStatus};
 use crate::peer::Peer;
-use crate::policy::PolicySpec;
+use crate::policy::{FlavorPolicy, PolicySpec};
 use crate::registry::Adapter;
 use crate::session::{CommandPlan, Session};
 
@@ -410,4 +410,118 @@ fn a_stopping_session_cannot_launch_and_a_stop_reaches_its_descendants() {
         "the child outlived its parent's stop"
     );
     assert_eq!(finished(&supervisor, parent.id), FinishStatus::Stopped);
+}
+
+/// An audit sink as slow as a disk under load, that fails the event kinds it is told to.
+#[derive(Default)]
+struct SlowSink {
+    delay: Duration,
+    failing: Vec<AuditEvent>,
+    records: Mutex<Vec<AuditRecord>>,
+}
+
+impl AuditSink for SlowSink {
+    fn record(&self, record: &AuditRecord) -> std::io::Result<()> {
+        std::thread::sleep(self.delay);
+        if self.failing.contains(&record.event) {
+            return Err(std::io::Error::other("the disk is full"));
+        }
+        self.records.lock().unwrap().push(record.clone());
+        Ok(())
+    }
+}
+
+#[test]
+fn a_slow_audit_write_does_not_hold_the_session_table() {
+    let scratch = Scratch::new();
+    let sink = Arc::new(SlowSink {
+        delay: Duration::from_millis(600),
+        ..SlowSink::default()
+    });
+    let supervisor = Arc::new(
+        Supervisor::new(
+            LaunchPolicy::new(policy(&[HarnessKind::ClaudeCode])).unwrap(),
+            vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())],
+            registry(),
+            sink,
+        )
+        .unwrap(),
+    );
+    let flooding = std::thread::spawn({
+        let supervisor = supervisor.clone();
+        move || {
+            let stranger = Caller::principal("stranger", outside()).unwrap();
+            let _ = supervisor.launch(&stranger, HarnessKind::ClaudeCode, &request());
+        }
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let started = Instant::now();
+    let _ = supervisor.list();
+    let waited = started.elapsed();
+    flooding.join().unwrap();
+    assert!(
+        waited < Duration::from_millis(300),
+        "listing waited {waited:?} for an audit write"
+    );
+}
+
+#[test]
+fn a_flood_of_refusals_is_coalesced() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    let stranger = Caller::principal("stranger", outside()).unwrap();
+    for _ in 0..200 {
+        let refused = supervisor.launch(&stranger, HarnessKind::ClaudeCode, &request());
+        assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
+    }
+    let written = outcomes(&audit, AuditEvent::Refusal).len();
+    assert!(written <= 20, "{written} refusal records for one caller's flood");
+}
+
+#[test]
+fn an_allow_whose_record_cannot_be_written_is_not_delivered() {
+    let scratch = Scratch::new();
+    let body = format!(
+        r#"{HANDSHAKE}printf '%s\n' '{{"type":"control_request","request_id":"req-1","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"true"}}}}}}'
+cat > /dev/null
+"#
+    );
+    let mut config = scratch.config(HarnessKind::ClaudeCode, &body);
+    config.approval_policy = crate::test_support::always(crate::spec::ApprovalVerdict::Ask);
+    let sink = Arc::new(SlowSink {
+        failing: vec![AuditEvent::ApprovalAnswer],
+        ..SlowSink::default()
+    });
+    let spec = PolicySpec {
+        flavors: vec![FlavorPolicy {
+            approval_policy: true,
+            ..FlavorPolicy::supervised(HarnessKind::ClaudeCode)
+        }],
+        ..policy(&[])
+    };
+    let recorder = Arc::new(Recorder::default());
+    let supervisor = Supervisor::new(LaunchPolicy::new(spec).unwrap(), vec![config], registry(), sink.clone())
+        .unwrap()
+        .with_observer(recorder.clone());
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let approval = loop {
+        if let Some(approval) = recorder.approval() {
+            break approval;
+        }
+        assert!(Instant::now() < deadline, "the observer saw no approval request");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let answered = supervisor.answer(&lead(), launched.id, &approval, true);
+    supervisor.stop(&lead(), launched.id).unwrap();
+    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
+    let allowed = sink
+        .records
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|record| record.approval.as_ref().is_some_and(|approval| approval.allowed));
+    assert!(!allowed, "an allow was delivered without its audit record");
+    assert_eq!(answered.err().map(|error| error.code()), Some("audit_failed"));
 }

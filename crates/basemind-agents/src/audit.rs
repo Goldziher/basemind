@@ -103,6 +103,9 @@ pub struct AuditRecord {
     pub approval: Option<AuditApproval>,
     /// What came of it: a fixed code such as `accepted`, `depth_exceeded` or `wall_time_exceeded`.
     pub outcome: &'static str,
+    /// How many refusals like this one, of the same caller, were not written since the last
+    /// one that was.
+    pub suppressed: Option<u64>,
 }
 
 impl AuditRecord {
@@ -123,6 +126,7 @@ impl AuditRecord {
             caveats: Vec::new(),
             approval: None,
             outcome,
+            suppressed: None,
         }
     }
 
@@ -170,6 +174,9 @@ impl AuditRecord {
             }),
         );
         object.insert("outcome".to_owned(), json!(self.outcome));
+        if let Some(suppressed) = self.suppressed.filter(|suppressed| *suppressed > 0) {
+            object.insert("suppressed".to_owned(), json!(suppressed));
+        }
         Value::Object(object).to_string()
     }
 }

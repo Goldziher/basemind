@@ -18,6 +18,7 @@ use crate::harness::HarnessKind;
 use crate::identity::{AgentIdentity, LaunchToken};
 use crate::policy::{LAUNCHED_PREFIX, LaunchPolicy, PolicyError};
 use crate::procinfo::{self, ProcId};
+use crate::refusals::Refusals;
 use crate::registry::Registry;
 use crate::session::SessionHandle;
 use crate::spec::{LaunchConfig, LaunchRequest};
@@ -110,6 +111,7 @@ pub(crate) struct Inner {
     table: Mutex<Table>,
     pub(crate) changed: Condvar,
     audit_failures: AtomicU64,
+    refusals: Refusals,
 }
 
 impl Inner {
@@ -124,6 +126,16 @@ impl Inner {
             self.audit_failures.fetch_add(1, Ordering::SeqCst);
         }
         written
+    }
+
+    /// Appends the refusal `record`, unless its caller has had a burst of the same refusal
+    /// written in this window (see [`crate::refusals`]). Never called with the table locked.
+    pub(crate) fn refuse(&self, mut record: AuditRecord) {
+        let caller = record.caller.as_deref().unwrap_or("-");
+        if let Some(suppressed) = self.refusals.admit(caller, record.outcome) {
+            record.suppressed = Some(suppressed);
+            let _ = self.audit(&record);
+        }
     }
 
     fn limits(&self, config: &LaunchConfig) -> AuditLimits {
@@ -192,6 +204,7 @@ impl Supervisor {
                 table: Mutex::default(),
                 changed: Condvar::new(),
                 audit_failures: AtomicU64::new(0),
+                refusals: Refusals::default(),
             }),
         })
     }
@@ -210,8 +223,10 @@ impl Supervisor {
         &self.inner.policy
     }
 
-    /// How many audit records could not be written. A failed launch record refuses the launch;
-    /// the others (stop, exit, approval) are counted here.
+    /// How many audit records could not be written. A failed launch record refuses the launch
+    /// and a failed record of an allow keeps the allow from the harness; the others (refusals,
+    /// stops, exits, denials, approvals the policy settled) are counted here, and the sessions
+    /// they are about run on.
     #[must_use]
     pub fn audit_failures(&self) -> u64 {
         self.inner.audit_failures.load(Ordering::SeqCst)
@@ -249,7 +264,7 @@ impl Supervisor {
     pub fn operator(&self, peer: Peer) -> Result<Caller, SupervisorError> {
         let minted = mint_operator(&self.inner.table(), peer);
         if let Err(error) = &minted {
-            let _ = self.inner.audit(&AuditRecord {
+            self.inner.refuse(AuditRecord {
                 caller: Some("operator".to_owned()),
                 ..AuditRecord::new(AuditEvent::Refusal, error.code())
             });
@@ -284,6 +299,8 @@ impl Supervisor {
             flavor: Some(flavor.id()),
             ..AuditRecord::new(AuditEvent::Refusal, "")
         };
+        // The table is locked from admission to the slot's reservation, so concurrent launches
+        // cannot overshoot a limit; no audit record is written while it is held.
         let mut table = inner.table();
         let admitted = admit(inner, &table, caller, flavor, &mut refusal);
         let Admitted {
@@ -295,23 +312,25 @@ impl Supervisor {
         } = match admitted {
             Ok(admitted) => admitted,
             Err(error) => {
-                refusal.outcome = error.code();
-                let _ = inner.audit(&refusal);
-                return Err(error);
+                drop(table);
+                return Err(refuse(inner, refusal, error));
             }
         };
-        let token = match LaunchToken::generate() {
-            Ok(token) => token,
-            Err(error) => return Err(refuse(inner, refusal, SupervisorError::Token(error))),
-        };
         let id = table.next;
-        let agent = match crate::identity::random_bytes::<4>() {
-            Ok(bytes) => format!("{LAUNCHED_PREFIX}{}-{id}-{}", flavor.id(), crate::identity::hex(&bytes)),
-            Err(error) => return Err(refuse(inner, refusal, SupervisorError::Token(error))),
-        };
-        let config = match launched_config(inner, config, &agent, depth, token.clone()) {
-            Ok(config) => config,
-            Err(error) => return Err(refuse(inner, refusal, error.into())),
+        let prepared = LaunchToken::generate()
+            .and_then(|token| Ok((token, crate::identity::random_bytes::<4>()?)))
+            .map_err(SupervisorError::Token)
+            .and_then(|(token, bytes)| {
+                let agent = format!("{LAUNCHED_PREFIX}{}-{id}-{}", flavor.id(), crate::identity::hex(&bytes));
+                let config = launched_config(inner, config, &agent, depth, token.clone())?;
+                Ok((token, agent, config))
+            });
+        let (token, agent, config) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                drop(table);
+                return Err(refuse(inner, refusal, error));
+            }
         };
         let caveats = crate::policy::caveats(flavor);
         let record = AuditRecord {
@@ -327,11 +346,8 @@ impl Supervisor {
                 ..refusal.clone()
             }
         };
-        if let Err(error) = inner.audit(&record) {
-            return Err(refuse(inner, refusal, SupervisorError::Audit(error)));
-        }
         table.next += 1;
-        table.launches += 1;
+        table.launches = table.launches.saturating_add(1);
         let root = config.root.clone();
         table.sessions.insert(
             id,
@@ -356,9 +372,15 @@ impl Supervisor {
         );
         drop(table);
 
-        // From here the slot is given back unless the pump takes the session: on an adapter
-        // error, a failed thread spawn, or a panic in the adapter.
+        // From here the slot is given back unless the pump takes the session: on a launch
+        // record that cannot be written, an adapter error, a failed thread spawn, or a panic
+        // in the adapter.
         let mut reservation = Reservation::new(inner, id, refusal);
+        if let Err(error) = inner.audit(&record) {
+            let error = SupervisorError::Audit(error);
+            reservation.outcome = error.code();
+            return Err(error);
+        }
         let session = match inner.registry.launch(&config, request) {
             Ok(session) => session,
             Err(error) => {
@@ -471,7 +493,7 @@ impl Supervisor {
             Err(error) => {
                 record.outcome = error.code();
                 drop(table);
-                let _ = inner.audit(&record);
+                inner.refuse(record);
                 return Err(error);
             }
         };
@@ -533,8 +555,9 @@ impl Supervisor {
     /// # Errors
     ///
     /// [`SupervisorError::UnknownSession`], [`SupervisorError::NotOwner`] unless `caller` is
-    /// the operator or launched the session, and the session's own errors (a finished session,
-    /// a full control queue) as [`SupervisorError::Launch`].
+    /// the operator or launched the session, [`SupervisorError::Audit`] for an allow whose
+    /// record could not be written (it is then not delivered), and the session's own errors (a
+    /// finished session, a full control queue) as [`SupervisorError::Launch`].
     pub fn answer(&self, caller: &Caller, id: SessionId, approval: &str, allow: bool) -> Result<(), SupervisorError> {
         let inner = &self.inner;
         let mut table = inner.table();
@@ -544,7 +567,7 @@ impl Supervisor {
             Ok(entry) => entry,
             Err(error) => {
                 drop(table);
-                let _ = inner.audit(&AuditRecord {
+                inner.refuse(AuditRecord {
                     caller: caller_name,
                     session: Some(id.0),
                     ..AuditRecord::new(AuditEvent::ApprovalAnswer, error.code())
@@ -560,27 +583,37 @@ impl Supervisor {
         let handle = entry.handle.clone();
         let flavor = entry.flavor.id();
         drop(table);
+        let record = |outcome, allowed| AuditRecord {
+            caller: caller_name.clone(),
+            session: Some(id.0),
+            flavor: Some(flavor),
+            approval: Some(AuditApproval {
+                id: recorded_id.clone(),
+                kind,
+                allowed,
+                source: "caller",
+            }),
+            ..AuditRecord::new(AuditEvent::ApprovalAnswer, outcome)
+        };
+        // An allow is on the record before it reaches the harness, or it does not reach it: the
+        // request stays pending and is denied when its turn or the session ends. A denial
+        // goes through whatever the log says.
+        if allow {
+            inner.audit(&record("allowed", true)).map_err(SupervisorError::Audit)?;
+        }
         let answered = handle
             .ok_or(LaunchError::SessionClosed)
             .and_then(|handle| handle.answer(approval, allow))
             .map_err(SupervisorError::Launch);
-        let outcome = match (&answered, allow) {
-            (Err(error), _) => error.code(),
-            (Ok(()), true) => "allowed",
-            (Ok(()), false) => "denied",
-        };
-        let _ = inner.audit(&AuditRecord {
-            caller: caller_name,
-            session: Some(id.0),
-            flavor: Some(flavor),
-            approval: Some(AuditApproval {
-                id: recorded_id,
-                kind,
-                allowed: allow && answered.is_ok(),
-                source: "caller",
-            }),
-            ..AuditRecord::new(AuditEvent::ApprovalAnswer, outcome)
-        });
+        match (&answered, allow) {
+            (Err(error), _) => {
+                let _ = inner.audit(&record(error.code(), false));
+            }
+            (Ok(()), false) => {
+                let _ = inner.audit(&record("denied", false));
+            }
+            (Ok(()), true) => {}
+        }
         answered
     }
 
@@ -614,6 +647,13 @@ impl Drop for Supervisor {
     /// grace, then kills the ones still running and waits briefly once more.
     fn drop(&mut self) {
         self.stop_all();
+        for (caller, outcome, suppressed) in self.inner.refusals.drain() {
+            let _ = self.inner.audit(&AuditRecord {
+                caller: Some(caller),
+                suppressed: Some(suppressed),
+                ..AuditRecord::new(AuditEvent::Refusal, outcome)
+            });
+        }
         let grace = self
             .inner
             .configs
@@ -667,10 +707,10 @@ impl Supervisor {
     }
 }
 
-/// Records `error` as the refusal's outcome, writes it, and returns the error.
+/// Records `error` as the refusal's outcome, writes it (coalesced), and returns the error.
 fn refuse(inner: &Inner, mut refusal: AuditRecord, error: SupervisorError) -> SupervisorError {
     refusal.outcome = error.code();
-    let _ = inner.audit(&refusal);
+    inner.refuse(refusal);
     error
 }
 

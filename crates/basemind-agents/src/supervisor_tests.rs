@@ -619,7 +619,7 @@ impl SessionObserver for Recorder {
 }
 
 impl Recorder {
-    fn approval(&self) -> Option<String> {
+    pub(super) fn approval(&self) -> Option<String> {
         self.0.lock().unwrap().iter().find_map(|(_, event)| match event {
             Event::ApprovalRequest(request) => Some(request.id.clone()),
             _ => None,
