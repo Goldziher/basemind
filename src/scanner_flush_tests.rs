@@ -47,7 +47,11 @@ fn doc(chunks: usize, dim: u16) -> FileMapDoc {
                 ..DocChunk::default()
             })
             .collect(),
-        embedding_model: if dim > 0 { crate::embeddings::model_key(PRESET).into_owned() } else { String::new() },
+        embedding_model: if dim > 0 {
+            crate::embeddings::model_key(PRESET).into_owned()
+        } else {
+            String::new()
+        },
         embedding_dim: dim,
         keywords: Vec::new(),
         entities: Vec::new(),
@@ -568,7 +572,11 @@ mod code {
             config_digest: String::new(),
             schema_ver: crate::extract::SCHEMA_VER,
             embedding_dim: dim,
-            embedding_model: if dim > 0 { crate::embeddings::model_key(PRESET).into_owned() } else { String::new() },
+            embedding_model: if dim > 0 {
+                crate::embeddings::model_key(PRESET).into_owned()
+            } else {
+                String::new()
+            },
             chunks: (0..chunks)
                 .map(|i| CodeChunk {
                     chunk_id: format!("h:{i}"),
