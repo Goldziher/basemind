@@ -497,6 +497,10 @@ impl LaunchSpec {
         for (name, value) in self.identity.env(self.harness.kind.id()) {
             env.insert(name.to_owned(), value.into());
         }
+        // Without it, a bare program name a Windows harness runs (`node`, `git`, `rg`) is looked
+        // up in the agent's working directory before `PATH`.
+        #[cfg(windows)]
+        env.insert("NoDefaultCurrentDirectoryInExePath".to_owned(), "1".into());
         env
     }
 }
@@ -635,7 +639,21 @@ pub(crate) fn resolve_executable(
     if canonical.starts_with(root) || link_through(&found, root) {
         return Err(invalid("it lies inside the root, where the agent can write"));
     }
+    if cfg!(windows) && is_batch(&found) {
+        return Err(invalid(
+            "a batch file runs through cmd.exe, which looks for the programs it calls in the working \
+             directory first; name the program it starts instead",
+        ));
+    }
     Ok(found)
+}
+
+/// Whether `path` is a Windows batch file (`.cmd`, `.bat`), such as the shim an npm install
+/// puts on `PATH`.
+fn is_batch(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat"))
 }
 
 /// The file names a bare command is looked up as in each search directory: the name itself, or

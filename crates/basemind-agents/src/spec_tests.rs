@@ -357,6 +357,16 @@ fn an_executable_is_found_on_absolute_path_entries_and_never_inside_the_root() {
 }
 
 #[test]
+fn batch_files_are_told_apart_by_their_extension() {
+    for name in ["claude.cmd", "CODEX.BAT", "x.Cmd"] {
+        assert!(is_batch(Path::new(name)), "{name}");
+    }
+    for name in ["claude.exe", "claude", "cmd", "x.cmdx"] {
+        assert!(!is_batch(Path::new(name)), "{name}");
+    }
+}
+
+#[test]
 fn a_bare_name_is_looked_up_with_each_pathext_extension_unless_it_ends_in_one() {
     let names = |name: &str, pathext: Option<&str>| with_pathext(Path::new(name), pathext.map(std::ffi::OsStr::new));
     assert_eq!(
@@ -370,7 +380,7 @@ fn a_bare_name_is_looked_up_with_each_pathext_extension_unless_it_ends_in_one() 
 
 #[cfg(windows)]
 #[test]
-fn a_bare_name_resolves_to_its_cmd_shim_and_not_the_script_beside_it() {
+fn a_bare_name_that_finds_a_cmd_shim_is_refused() {
     let outer = tempfile::tempdir().unwrap();
     let outer = outer.path().canonicalize().unwrap();
     let root = outer.join("root");
@@ -380,12 +390,22 @@ fn a_bare_name_resolves_to_its_cmd_shim_and_not_the_script_beside_it() {
     std::fs::write(bin.join("harness"), "#!/bin/sh\n").unwrap();
     std::fs::write(bin.join("harness.cmd"), "@echo off\r\n").unwrap();
     let search = std::env::join_paths([&bin]).unwrap();
-    let found = resolve_executable(Path::new("harness"), Some(&search), &root).unwrap();
+    // The shim is what the lookup finds, and a batch file is refused: cmd.exe searches the
+    // working directory first for the `node` it calls.
+    let error = resolve_executable(Path::new("harness"), Some(&search), &root).unwrap_err();
     assert!(
-        found.file_name().unwrap().eq_ignore_ascii_case("harness.cmd"),
-        "{}",
-        found.display()
+        matches!(&error, LaunchError::InvalidExecutable { reason, .. } if reason.contains("cmd.exe")),
+        "{error}"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_windows_child_does_not_search_its_working_directory_for_programs() {
+    let root = tempfile::tempdir().unwrap();
+    let spec = spec(HarnessKind::Codex, root.path());
+    let env = spec.child_env(Vec::new());
+    assert_eq!(env["NoDefaultCurrentDirectoryInExePath"], "1");
 }
 
 #[test]

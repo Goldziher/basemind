@@ -135,7 +135,9 @@ Limits:
   under it; it exits once its input closes, not when the group is killed.
 - A project file written during a session is only seen by the next launch.
 - The launcher must not ignore SIGCHLD or reap children it did not start, and must ignore SIGPIPE.
-- Nothing is launched off Unix.
+- Nothing is launched off Unix. On Windows a plan already refuses a batch file (an npm `.cmd`
+  shim, which runs through `cmd.exe` and finds `node` in the working directory first) and gives
+  the child `NoDefaultCurrentDirectoryInExePath=1`; configure the program the shim starts.
 
 ## Verified against live harnesses
 

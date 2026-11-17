@@ -249,7 +249,10 @@ call that started it.
   left alone. SIGPIPE must be ignored, as Rust binaries do by default, or a write to an exited
   harness kills the launcher.
 - Launching is Unix-only: the crate refuses to start a harness on Windows until its process tree
-  is contained by a Job Object, which is not implemented.
+  is contained by a Job Object, which is not implemented. A Windows plan still refuses a batch file (`claude.cmd`, run
+  through `cmd.exe`, which looks for `node` in the working directory first) and sets
+  `NoDefaultCurrentDirectoryInExePath=1`, so a bare name the harness runs (`git`, `rg`) is not
+  taken from the agent's working directory; neither was run on Windows.
 - A descendant that leaves the process group (a helper that daemonizes) survives the session. The
   session still ends on time and stops reading its pipes; containing such a process needs a cgroup
   or a job object. `opencode acp` 2.3.0 does this by design: it runs its server (`opencode serve
