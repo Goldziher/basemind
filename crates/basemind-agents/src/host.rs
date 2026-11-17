@@ -13,7 +13,9 @@
 //! lead's tool calls). On Linux any process of the same user may open `/proc/<pid>/fd/0` of a
 //! dumpable process (`PTRACE_MODE_READ`, which Yama does not restrict) and write whole requests
 //! into it, so such a process is made non-dumpable first ([`seal`]): its `/proc` entries become
-//! root's, and `ptrace` needs `CAP_SYS_PTRACE`.
+//! root's, and `ptrace` needs `CAP_SYS_PTRACE`. An embedding seals itself as the first thing it
+//! does ([`seal_host`]), so no request can be written into its stdio between its start and its
+//! registration.
 
 use crate::identity::{ENV_AGENT_DEPTH, ENV_LAUNCH_TOKEN};
 use crate::procinfo;
@@ -33,6 +35,11 @@ pub(crate) enum Nested {
     /// Its ancestry, or what it runs, could not be read.
     Unknown,
 }
+
+/// The command name a sealed host gives itself on Linux ([`seal_host`]). Its executable cannot be
+/// read once it is non-dumpable, so a `serve` started below it by a launched agent's harness
+/// recognises it by this name, whatever name the lead's own binary was started under.
+pub const HOST_MARKER: &str = "basemind-lead";
 
 /// Why this process may not host a supervisor, `None` when it may.
 pub(crate) fn nested() -> Option<Nested> {
@@ -69,11 +76,34 @@ fn same_program_above(pid: i32) -> Option<Nested> {
         if procinfo::info(proc.pid).is_none_or(|now| now.start != proc.start) {
             return Some(Nested::Unknown);
         }
-        if theirs.same_program(&mine) {
+        if theirs.same_program(&mine) || theirs.comm.as_deref() == Some(HOST_MARKER.as_bytes()) {
             return Some(Nested::Ancestor(proc.pid));
         }
     }
     None
+}
+
+/// Seals this process as the host of a supervisor, before it reads anything: on Linux it is made
+/// non-dumpable ([`seal`]) and renamed to [`HOST_MARKER`], so a `basemind serve` started below it
+/// is refused as nested even though this process's executable can no longer be read. Returns
+/// whether the process is non-dumpable now (always `true` off Linux, where there is no `/proc` to
+/// open another process's descriptors through).
+///
+/// An embedding that hosts a supervisor calls this as its first statement: the registration
+/// seals too, but only after configuration was read, and a process of the same user that was
+/// already waiting could open `/proc/<pid>/fd/0` for writing in between. A short window from
+/// `exec` to this call remains.
+#[must_use]
+pub fn seal_host() -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let name = std::ffi::CString::new(HOST_MARKER).expect("the marker holds no NUL");
+        // SAFETY: PR_SET_NAME reads a NUL-terminated string of at most 16 bytes, which `name` is.
+        unsafe {
+            libc::prctl(libc::PR_SET_NAME, name.as_ptr(), 0, 0, 0);
+        }
+    }
+    seal()
 }
 
 /// Makes this process non-dumpable where that guards its descriptors (Linux): returns whether

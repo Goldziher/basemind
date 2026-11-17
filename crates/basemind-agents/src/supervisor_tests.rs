@@ -274,8 +274,29 @@ fn a_config_has_to_match_the_policy_for_its_flavor() {
         })
     );
     let config = scratch.config(HarnessKind::ClaudeCode, "");
-    let refused = Supervisor::new(policy(), vec![config.clone(), config], registry(), audit);
+    let refused = Supervisor::new(policy(), vec![config.clone(), config], registry(), audit.clone());
     assert_eq!(refused.err(), Some(PolicyError::DuplicateConfig("claude")));
+    // A bare name would be looked up on PATH, where a launched agent may have planted one.
+    let mut bare = scratch.config(HarnessKind::ClaudeCode, "");
+    bare.harness.executable = PathBuf::from("claude");
+    let refused = Supervisor::new(policy(), vec![bare], registry(), audit.clone());
+    assert_eq!(
+        refused.err(),
+        Some(PolicyError::RelativeExecutable {
+            harness: "claude",
+            field: "executable"
+        })
+    );
+    let mut server = scratch.config(HarnessKind::ClaudeCode, "");
+    server.mcp_server = Some(crate::spec::McpServerSpec::basemind_serve("basemind"));
+    let refused = Supervisor::new(policy(), vec![server], registry(), audit);
+    assert_eq!(
+        refused.err(),
+        Some(PolicyError::RelativeExecutable {
+            harness: "claude",
+            field: "mcp_server.command"
+        })
+    );
 }
 
 #[test]

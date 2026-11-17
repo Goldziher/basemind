@@ -166,6 +166,7 @@ pub use codex::CodexAdapter;
 pub use error::LaunchError;
 pub use event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, FinishStatus, ToolCall, ToolState};
 pub use harness::{AcpFlavor, Harness, HarnessKind};
+pub use host::{HOST_MARKER, seal_host};
 pub use identity::{AgentIdentity, ENV_AGENT_DEPTH, ENV_AGENT_ID, ENV_HOST, ENV_LAUNCH_TOKEN};
 pub use peer::Peer;
 pub use policy::{
