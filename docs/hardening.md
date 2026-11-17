@@ -67,6 +67,9 @@ What it does:
    and by SIGKILL; and CLI one-shots (`status`, `code symbols`, `git log`, `code grep`). Edit contents
    repeat every `--content-period` cycles, so the set of distinct contents is fixed and a correct
    store stops growing once it has seen them all.
+   After the first `--warmup` seconds of the loop it pauses for `--quiesce` seconds (default 45,
+   not counted in `--duration`) with the `main` session connected and no calls: the quiescent
+   thread baseline R4 compares the idle phase against.
 4. Idle for `--idle` seconds: the `main` session stays connected, no calls.
 5. Shutdown: close `main` by stdin EOF; start a throwaway MCP host process that runs `serve`, then
    SIGKILL the host (serve must exit on EOF); start a session and SIGKILL `serve` itself (the
@@ -75,8 +78,12 @@ What it does:
 
 Every `--sample-every` seconds (default 5) a sampler thread records, for each process of the run
 (daemon, serve, CLI one-shots, any child): RSS, physical footprint (macOS), virtual size, thread
-count, open fd count, cumulative CPU time and its delta, and idle wakeups (macOS); plus the data
-dir and comms dir sizes and a census of live processes. macOS reads `proc_pid_rusage` /
+count, open fd count, cumulative CPU time and its delta, and idle wakeups (macOS); for the daemon
+and every `serve`, live threads counted by name (Linux `/proc/<pid>/task/*/comm`, macOS
+`PROC_PIDTHREADINFO`; a pool's numbered members fold into one `name-#`); plus the data dir and
+comms dir sizes, each also split by subdirectory six levels deep (`data_parts` / `comms_parts`,
+apparent bytes), the data dir's Fjall journals per database (`data_journals`) and telemetry log
+(`data_telemetry_bytes`), and a census of live processes. macOS reads `proc_pid_rusage` /
 `proc_pidinfo` through `ctypes`; Linux reads `/proc`; Windows (`winproc.py`) reads kernel32 / ntdll
 through `ctypes`: working set as RSS, private bytes as the footprint R2 gates on, handles as fds.
 
@@ -97,13 +104,14 @@ phase only (the first `--warmup` seconds of load are excluded), in units per min
 | R2 memory | slope > 1 MiB/min **and** slope − 2·SE > 0 **and not** (second-half slope + 2·SE < 1 MiB/min) | `--mem-tol 1.0` | 1 MiB/min is 1.4 GiB/day for an always-on daemon: the smallest growth that would matter in practice and still clears sampling noise over a 10-minute window. The significance and plateau clauses let a cache that fills after warm-up and then levels off pass, while a noisy but steady climb still fails. On macOS the gate is the physical footprint (what Activity Monitor and jetsam count); RSS is judged too |
 | R2f memory floor (daemon) | on a load phase of at least `--floor-min-minutes` (30): the 10th-percentile footprint of the last of four equal windows exceeds the second's, the floors rise monotonically, and the rise is over `--floor-tol` per minute between the window centres | `--floor-tol 0.25` MiB/min | a leak under 1 MiB/min is a few MiB over ten minutes, inside the sampling noise, so R2 cannot see it; a percentile floor ignores memtable sawtooth and scan peaks, and leaving out the first window lets a cache that fills and stops pass. 0.25 MiB/min is 360 MiB/day. Measured: a 45-minute soak of the daemon at c121971a had floors 235 / 252 / 275 / 282 MiB (+1.5 MiB/min) |
 | R3 fds | same shape | `--fd-tol 0.2` fds/min | one descriptor lost per five minutes; a per-call or per-session leak under this workload is several per minute |
-| R4 threads | same shape | `--thread-tol 0.2` threads/min | as fds: a thread per session or per rescan shows as several per minute |
+| R4 threads | the minimum thread count over the idle phase (after the 30 s settle) exceeds the minimum over the quiescent baseline (after the same settle) | `--thread-slack 0` | a leaked thread never exits, while a pool thread (tokio's blocking pool, a reaped worker) exits after its keep-alive once nothing is asked of it; both windows have the same sessions connected and every pool already created, so any thread left over is one load started and never ended. The load slope is reported, not judged: a demand-sized pool steps up at a concurrency peak, and a line fitted through a step reads as growth however bounded the pool is (soak run 44164201786: the daemon stepped 56 -> 61 once at minute 2.3 of load and fell to 38 within 10 s of idle) |
 | R5 | max live processes of the run in the second half of load > max in the first half | 0 extra | sessions and one-shots are sequential, so the census is flat unless something accumulates |
 | R5b | a closed session's `serve` did not exit, or is still sampled more than 15 s after it was closed | `--exit-grace 15` | |
 | R6 | mean CPU of all the run's processes over the idle window (after a 30 s settle) | `--idle-cpu 0.01` (1 % of one core) | an event-driven daemon with connected but silent clients should be ~0; a busy-wait or a tight poll loop is several percent to 100 % |
 | R6b (macOS) | idle wakeups/s summed over the run's processes | `--idle-wakeups 100` | 100/s is a 10 ms timer: catches a poll loop too cheap to show as CPU |
 | R7 | any shutdown step whose process did not exit within the grace; the daemon holding more than 2 fds above its pre-session count after its serve was SIGKILLed; any process of the run alive after the final step | 10 s grace, `--fd-slack 2` | |
-| R8 | data dir slope over load, same shape as R2 | `--dir-tol 1.0` MiB/min | contents repeat, so after one period everything is already stored; anything still climbing is unbounded growth (logs, unreclaimed blobs, LSM garbage) |
+| R8 | data dir slope over load, same shape as R2, with the Fjall journals (`*.jnl`) and `telemetry.jsonl` / `.1` left out | `--dir-tol 1.0` MiB/min | contents repeat, so after one period everything is already stored; anything still climbing is unbounded growth (unreclaimed blobs, LSM tables, vector versions, untrimmed logs). The journals and the telemetry log grow with every write whatever the content and are capped by size, not content, so they are judged by R8b instead: soak run 44164201786 failed R8 at +1.6 MiB/min, and a default-feature macOS repro of it grew only those (index journal +1.9 MiB/min, telemetry +1.0 MiB/min, every other subtree flat) |
+| R8b | the largest Fjall journal set of one database exceeds `--journal-mib`, or the telemetry log with its rotated generation exceeds `--telemetry-mib`, in any sample | `--journal-mib 192`, `--telemetry-mib 16` | telemetry rotates at `TELEMETRY_ROTATE_BYTES` (8 MiB) keeping one generation. Fjall 3.1 rotates the active journal at a memtable flush once it passes 64 MB and preallocates the next to 64 MiB; sealed journals are deleted once their memtables are flushed, and the index and memory stores force that flush at a `max_journaling_size` of 64 MiB (`FJALL_MAX_JOURNAL_BYTES`): one preallocated active journal, sealed ones up to that cap and the 64 MB overshoot before rotation |
 | R9 | any transport error (no answer, dead server), any `isError` on a call expected to succeed, an edit not visible after `index_rescan`, a CLI one-shot exiting non-zero | 0 | the workload must have done what it claims |
 
 Every threshold is a flag on `analyze.py`; a rerun with a different value must say so.
@@ -114,10 +122,14 @@ The report (`soak.report.md` beside the NDJSON) lists each rule with the measure
 then per-process start/max/end tables for warm-up, load and idle, and per-tool call counts and
 latencies.
 
-- **R2/R3/R4 fail:** the detail shows the slope, its 2·SE band and the second-half slope. Plot the
+- **R4 fails:** the detail names the thread names whose count rose from the baseline floor to
+  the idle floor.
+- **R2/R3 fail:** the detail shows the slope, its 2·SE band and the second-half slope. Plot the
   series to see whether it is linear (leak) or a late step (a cache filling: rerun with a longer
   `--warmup`; if it still fails, the cache is unbounded). For fds on macOS, `lsof -p <pid>` on a
   kept run (`--keep-temp`) shows what accumulates.
+- **R8 fails:** the R8b detail names the data-dir subtrees that grew most over load; `data_parts`
+  in each `dir` record has the series.
 - **R6 fails:** the detail names the busiest process. `sample <pid> 5` (macOS) or
   `perf top -p <pid>` (Linux) during the idle phase shows the spinning stack.
 - **R7 fails:** the detail lists survivor pids and argv. A `child:` role is a process basemind
@@ -126,8 +138,8 @@ latencies.
   records with `ok: false` in the NDJSON.
 
 `selftest_analyze.py` writes synthetic NDJSON for a healthy run, a cache that levels off after
-warm-up, an hour-long run whose cache fills and holds, an hour-long 0.5 MiB/min climb (fails R2f only), a 3 MiB/min climb, a busy idle, an fd leak, a leaked child and an empty run, and checks
-that `analyze.py` passes the first two and fails each of the others on exactly the rule it targets.
+warm-up, an hour-long run whose cache fills and holds, an hour-long 0.5 MiB/min climb (fails R2f only), a 3 MiB/min climb, a thread pool that steps up mid-load and is reaped at idle (passes), a thread leaked per minute (fails R4), a journal and telemetry log filling under their bounds (passes), a journal past its bound and a store climbing outside them (each fails R8), a busy idle, an fd leak, a leaked child and an empty run, and checks
+that `analyze.py` passes the healthy and bounded ones and fails each of the others on exactly the rule it targets.
 `soak.py --inject-orphan` leaks a detached `sleep` (cwd: the run's temp root) before the survivor sweep, so a
 real run proves R7 fires.
 

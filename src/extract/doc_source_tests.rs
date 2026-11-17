@@ -16,8 +16,27 @@ fn assert_cited(text: &str, spans: &[(usize, usize)]) {
 #[test]
 fn shapes_follow_the_mime_type() {
     assert_eq!(shape("text/plain; charset=utf-8"), Some(Shape::Prose));
-    assert_eq!(shape("text/csv"), Some(Shape::Records { header: true }));
-    assert_eq!(shape("application/x-ndjson"), Some(Shape::Records { header: false }));
+    assert_eq!(
+        shape("text/csv"),
+        Some(Shape::Records {
+            header: true,
+            quoted: true
+        })
+    );
+    assert_eq!(
+        shape("text/tab-separated-values"),
+        Some(Shape::Records {
+            header: true,
+            quoted: false
+        })
+    );
+    assert_eq!(
+        shape("application/x-ndjson"),
+        Some(Shape::Records {
+            header: false,
+            quoted: false
+        })
+    );
     for tree in [
         "application/json",
         "application/yaml",
@@ -66,7 +85,7 @@ fn records_do_not_overlap_and_repeat_the_header_only_for_embedding() {
     let csv: String = std::iter::once("id,name,amount\n".to_string())
         .chain((0..200).map(|i| format!("{i},item number {i},{}\n", i * 7)))
         .collect();
-    let (chunks, dense) = chunks(&csv, Shape::Records { header: true }, 500, 200, true);
+    let (chunks, dense) = chunks(&csv, shape("text/csv").unwrap(), 500, 200, true);
     assert!(chunks.len() > 5);
     assert!(
         chunks.windows(2).all(|w| w[0].byte_end == w[1].byte_start),
@@ -78,7 +97,7 @@ fn records_do_not_overlap_and_repeat_the_header_only_for_embedding() {
         assert!(dense.starts_with("id,name,amount\n"), "{dense:?}");
     }
     assert_eq!(dense[0], chunks[0].text, "the first chunk holds the header already");
-    let (_, none) = super::chunks(&csv, Shape::Records { header: true }, 500, 0, false);
+    let (_, none) = super::chunks(&csv, shape("text/csv").unwrap(), 500, 0, false);
     assert!(none.is_empty());
 }
 
@@ -218,4 +237,28 @@ fn placing_entities_searches_a_bounded_number_of_bytes() {
         source.len()
     );
     assert!(entities.iter().all(|e| e.start == u32::MAX), "none is in the source");
+}
+
+/// A quoted CSV field may hold a line break; a record ends only at a line end outside quotes, so
+/// no chunk splits a record.
+#[test]
+fn a_csv_record_with_a_quoted_line_break_is_never_split() {
+    let csv: String = std::iter::once("id,note\n".to_string())
+        .chain((0..200).map(|i| format!("{i},\"first part of note {i}\nsecond \"\"quoted\"\" part {i}\"\n")))
+        .collect();
+    let csv_shape = shape("text/csv").unwrap();
+    let spans = spans(&csv, csv_shape, 300, 0);
+    assert!(spans.len() > 10);
+    for &(start, end) in &spans[1..] {
+        let chunk = &csv[start..end];
+        assert!(
+            chunk.starts_with(|c: char| c.is_ascii_digit()),
+            "a chunk starts at a record: {chunk:?}"
+        );
+        assert_eq!(
+            chunk.matches('"').count() % 2,
+            0,
+            "a chunk ends outside quotes: {chunk:?}"
+        );
+    }
 }

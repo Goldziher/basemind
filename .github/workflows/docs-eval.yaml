@@ -37,12 +37,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
+      - uses: ./.github/actions/setup-rust
 
       - name: Install system dependencies
         uses: ./.github/actions/install-system-deps
+
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: python
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs-eval
 
       - name: Build
         env:
