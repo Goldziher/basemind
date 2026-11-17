@@ -47,7 +47,8 @@ python3 scripts/hardening/analyze.py reports/hardening/soak-<ts>/soak.ndjson
 ```
 
 `--repo PATH` soaks a copy of another repository (default: `git clone --local` of this checkout's
-HEAD into the temp dir; the original is never written). For a release, run at least
+HEAD into the temp dir; the original is never written); `--fixture` soaks the functional sweep's
+generated fixture instead. For a release, run at least
 `--duration 3600 --idle 600`.
 
 What it does:
@@ -171,13 +172,17 @@ Rust-side growth is what the soak's R2 rule judges. Windows has no checker wired
 The workflow runs the whole pass on `ubuntu-latest`, `macos-26` and `windows-2022` (the image the
 Windows release is built on): selftest, functional sweep, soak plus `analyze.py`, and the leak
 check (`valgrind` on Linux, `leaks` on macOS; on Windows a visible notice says it was skipped).
-It runs nightly, on a pull request that touches `scripts/hardening/**` or the workflow (5-minute
-soak), and on demand:
+It runs nightly, on a pull request or a push to main that touches `scripts/hardening/**` or the
+workflow (5-minute soak), and on demand:
 
 ```bash
-gh workflow run hardening.yaml -f soak_minutes=60 -f features=full
-gh workflow run hardening.yaml -f inject_orphan=true   # R7 must turn every Unix leg red
+gh workflow run hardening.yaml --ref main -f soak_minutes=60 -f features=full
+gh workflow run hardening.yaml --ref main -f inject_orphan=true   # R7 must turn every Unix leg red
+gh workflow run hardening.yaml --ref main -f soak_self=true       # soak a clone of this repository
 ```
+
+CI soaks the generated fixture (`--fixture`): a `full` scan of this repository did not finish in
+30 minutes on the Linux and Windows runners.
 
 The binary is `cargo build --release --features <features>`; when that fails on a runner the leg
 retries with `comms` and says so in a warning and in the summary title. A leg fails when any step

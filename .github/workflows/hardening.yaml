@@ -2,8 +2,8 @@ name: hardening
 
 # The pre-release hardening pass (docs/hardening.md) on Linux, macOS and Windows: the analyze.py
 # selftest, the functional sweep, a soak judged by analyze.py's pass rules, and a one-shot leak
-# check. Nightly and on demand; on a pull request only when the scripts or this workflow change,
-# with a short soak, so the workflow verifies itself.
+# check. Nightly and on demand; on a pull request or a push to main only when the scripts or this
+# workflow change, with a short soak, so the workflow verifies itself.
 
 on:
   workflow_dispatch:
@@ -20,9 +20,18 @@ on:
         description: Leak a process before the survivor sweep (proves rule R7 turns the job red)
         type: boolean
         default: false
+      soak_self:
+        description: Soak a clone of this repository instead of the generated fixture
+        type: boolean
+        default: false
   schedule:
     - cron: "0 5 * * *"
   pull_request:
+    branches: [main]
+    paths:
+      - scripts/hardening/**
+      - .github/workflows/hardening.yaml
+  push:
     branches: [main]
     paths:
       - scripts/hardening/**
@@ -41,8 +50,9 @@ env:
   PYTHONUTF8: "1"
   PYTHONUNBUFFERED: "1"
   FEATURES: ${{ inputs.features || 'full' }}
-  SOAK_MINUTES: ${{ inputs.soak_minutes || (github.event_name == 'pull_request' && 5 || 20) }}
+  SOAK_MINUTES: ${{ inputs.soak_minutes || ((github.event_name == 'pull_request' || github.event_name == 'push') && 5 || 20) }}
   INJECT_ORPHAN: ${{ inputs.inject_orphan && '1' || '' }}
+  SOAK_SELF: ${{ inputs.soak_self && '1' || '' }}
 
 jobs:
   harden:
@@ -160,6 +170,9 @@ jobs:
           if [ "$SOAK_MINUTES" -ge 10 ]; then warmup=120 idle=180; else warmup=60 idle=120; fi
           extra=()
           [ -n "$INJECT_ORPHAN" ] && extra+=(--inject-orphan)
+          # ~keep A `full` scan of this repository did not finish in 30 min on the 4-vCPU Linux and
+          # ~keep Windows runners, so CI soaks the generated fixture unless asked for this repository.
+          [ -z "$SOAK_SELF" ] && extra+=(--fixture)
           python scripts/hardening/soak.py --binary "$BASEMIND_BIN" --out "$HARDENING_REPORTS/soak" \
             --duration "$((SOAK_MINUTES * 60))" --warmup "$warmup" --idle "$idle" ${extra[@]+"${extra[@]}"}
 
