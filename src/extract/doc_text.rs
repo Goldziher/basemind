@@ -268,28 +268,62 @@ pub(crate) fn snap_start<'a>(
 /// line in `source`, searching forward from the previous chunk's match. `None` where a chunk's
 /// line cannot be found (the extractor rewrote it).
 pub(crate) fn source_lines<'a>(source: &str, chunks: impl IntoIterator<Item = &'a str>) -> Vec<Option<(u32, u32)>> {
+    source_lines_counted(source, chunks).0
+}
+
+/// Bytes of source a lookup may search past its window, as a multiple of the source's length.
+const SOURCE_LINES_SPILL_FACTOR: usize = 4;
+
+/// [`source_lines`], plus the bytes of source searched. A chunk's line is looked for in a window
+/// after the previous match sized by the chunk; past the window only while a whole-run budget of
+/// [`SOURCE_LINES_SPILL_FACTOR`] times the source lasts. Without the bound a chunk whose line is
+/// absent searched to the end of the source, once per chunk: an extractor that reflows a
+/// multi-megabyte log into one line made the lookup quadratic and the scan minutes long.
+pub(crate) fn source_lines_counted<'a>(
+    source: &str,
+    chunks: impl IntoIterator<Item = &'a str>,
+) -> (Vec<Option<(u32, u32)>>, usize) {
     let line_starts: Vec<usize> = std::iter::once(0)
-        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .chain(memchr::memchr_iter(b'\n', source.as_bytes()).map(|i| i + 1))
         .collect();
     let line_of = |offset: usize| -> u32 {
         let index = line_starts.partition_point(|&start| start <= offset);
         u32::try_from(index).unwrap_or(u32::MAX)
     };
+    let bytes = source.as_bytes();
+    let mut spill_left = source.len().saturating_mul(SOURCE_LINES_SPILL_FACTOR);
+    let mut searched = 0usize;
+    let mut find = |from: usize, needle: &str, window: usize, spill: bool| -> Option<usize> {
+        let near_end = from.saturating_add(window).min(bytes.len());
+        searched += near_end - from;
+        if let Some(i) = memchr::memmem::find(&bytes[from..near_end], needle.as_bytes()) {
+            return Some(from + i);
+        }
+        let rest = bytes.len() - near_end;
+        if !spill || near_end == bytes.len() || rest > spill_left {
+            return None;
+        }
+        spill_left -= rest;
+        searched += rest;
+        // Back up so a match straddling the window's end is found.
+        let resume = near_end.saturating_sub(needle.len()).max(from);
+        memchr::memmem::find(&bytes[resume..], needle.as_bytes()).map(|i| resume + i)
+    };
     let mut cursor = 0;
-    chunks
+    let lines = chunks
         .into_iter()
         .map(|chunk| {
+            let window = chunk.len().saturating_mul(8).saturating_add(4096);
             let mut lines = chunk.lines().map(str::trim).filter(|line| is_distinctive(line));
             let first = lines.next()?;
             let last = lines.next_back().unwrap_or(first);
-            let start = source[cursor..].find(first).map(|i| i + cursor)?;
-            let end = source[start..]
-                .find(last)
-                .map_or(start + first.len(), |i| start + i + last.len());
+            let start = find(cursor, first, window, true)?;
+            let end = find(start, last, window, false).map_or(start + first.len(), |i| i + last.len());
             cursor = start;
             Some((line_of(start), line_of(end.saturating_sub(1).max(start))))
         })
-        .collect()
+        .collect();
+    (lines, searched)
 }
 
 /// Whether `line` can locate a chunk in its source: long enough, and not a fence or a rule, which
