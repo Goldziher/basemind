@@ -564,7 +564,9 @@ keyspace of a release before 0.30 has its notes moved to the group store by a wr
 workspace lock (judged by the index, not by the file map's version). The group is the one
 `workspace.json` records (`group`, written by the first open of a current version), so the notes of a
 deleted linked worktree reach its clone's group; a workspace whose notes cannot be moved is kept and
-reported (`legacy_memory`, `kept_unverifiable`). The per-repository group directories (`repos/`) are
+reported (`legacy_memory`, `kept_unverifiable`). The reaper takes a root for deleted only on a
+definite "not found": a root it may not stat, or a stale mount, is kept. `telemetry.jsonl` is
+rotated to `telemetry.jsonl.1` at 8 MiB, keeping one generation. The per-repository group directories (`repos/`) are
 never collected; `cache stats` reports their size and how many no workspace marker names.
 
 Two installed versions share the cache, and the older one must leave the newer one's data alone. A
@@ -619,7 +621,11 @@ the view also records which store its rows went to (`vector-store-id`; the store
 rows again, and so does the pass that verifies blobs.
 
 An open that does not hold the workspace lock writes nothing: it stamps no version in the index or
-in the notes store, flushes no journal and creates no placeholder. A scan into such a store takes the
+in the notes store, flushes no journal and creates no placeholder. The vector store too: a search in
+a process without the lock opens `lance/` read-only and reports the lane unavailable, naming why,
+when the store is absent, built for another embedding model or dimension, or a newer basemind's;
+only the lock holder creates, wipes or rebuilds it. A vector debt whose cached blob exists but does
+not decode stays owed, and its file is sent to be extracted again. A scan into such a store takes the
 lock first and keeps it, or is refused while another process holds it (an `isError` result naming the
 holder; exit `3` from the CLI), and then opens the code index as a writer would.
 
