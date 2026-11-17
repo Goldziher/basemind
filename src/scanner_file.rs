@@ -521,7 +521,8 @@ fn process_file(
 
     #[cfg(feature = "code-search")]
     let code_batch = code_batch.map(|mut batch| {
-        index_batch.stage_bm25(&rel_path, &batch.bm25);
+        let content = crate::index::keys::bm25_content_key(hash_hex_str, &l1.language, &filters.code_digest);
+        index_batch.stage_bm25(&rel_path, &content, &batch.bm25);
         batch.bm25 = Vec::new();
         batch
     });

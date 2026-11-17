@@ -36,6 +36,8 @@ fn group() -> (tempfile::TempDir, PathBuf, PathBuf) {
     git(&["config", "user.email", "t@example.com"], &main);
     git(&["config", "user.name", "Test"], &main);
     git(&["config", "core.autocrlf", "false"], &main);
+    // The fixture must not depend on the user's signing setup. ~keep
+    git(&["config", "commit.gpgsign", "false"], &main);
     fs::write(main.join("shared.rs"), "pub fn group_shared_fn() { group_callee(); }\n").expect("write");
     git(&["add", "."], &main);
     git(&["commit", "-qm", "init"], &main);

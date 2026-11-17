@@ -578,7 +578,11 @@ mod tests {
         let db = store.index_db.as_ref().expect("index db open");
         let mut writer = db.writer();
         writer
-            .upsert_bm25_file(&rel, &build_chunk_postings(&[chunk("h:0", "alpha beta")]))
+            .upsert_bm25_file(
+                &rel,
+                &crate::index::keys::bm25_content_key("h", "rust", "digest"),
+                &build_chunk_postings(&[chunk("h:0", "alpha beta")]),
+            )
             .unwrap();
         writer.commit().unwrap();
         db.recompute_bm25_stats().unwrap();

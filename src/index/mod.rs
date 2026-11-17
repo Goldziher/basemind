@@ -17,11 +17,13 @@
 //! msgpack blobs. This is fast (no parsing — just decode each L1, push to secondary
 //! indexes) and keeps the on-disk format free to evolve.
 
+pub mod bm25_live;
 pub(crate) mod durability;
 pub mod fault;
 pub mod grep_bloom;
 pub(crate) mod group;
 pub mod keys;
+pub mod keys_bm25;
 pub mod keys_memory;
 pub mod keys_probe;
 pub(crate) mod memory_store;
@@ -416,9 +418,13 @@ pub struct IndexDb {
     /// `code_bm25_postings`: term → chunks (with inlined tf + doclen) for the code-search BM25
     /// keyword lane. Always created for DB stability; written only under the `code-search` feature.
     pub(in crate::index) code_bm25_postings: scoped::Scoped,
-    /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(chunk_id, doclen,
-    /// terms)`, so a re-scan deletes the previous postings in O(prefix). Always created.
+    /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(key, ordinal)`, with the
+    /// doclen and content hash as value: the view's live BM25 chunks and its totals. Always created.
     pub(in crate::index) code_bm25_by_path: scoped::Scoped,
+    /// The live keys of `code_bm25_by_path`, cached for the scorer; shared by every handle on the view.
+    pub(in crate::index) bm25_live: std::sync::Arc<bm25_live::Bm25LiveCache>,
+    /// Held shared by commits that write postings and exclusively by the posting sweep; one per group.
+    pub(in crate::index) bm25_gate: bm25_live::Bm25Gate,
     /// `grep_bloom`: hex content hash -> trigram bloom filter of that content (see [`grep_bloom`]),
     /// shared by every path holding the bytes. A candidate PREFILTER for `code grep` only; a missing
     /// row (including an older-version or path-keyed one) means "candidate", which is why the layout
@@ -736,6 +742,8 @@ impl IndexDb {
             importers_by_probe: whole(importers_by_probe),
             code_bm25_postings: whole(code_bm25_postings),
             code_bm25_by_path: whole(code_bm25_by_path),
+            bm25_live: std::sync::Arc::default(),
+            bm25_gate: bm25_live::Bm25Gate::default(),
             grep_bloom: whole(grep_bloom),
             embeddings,
             group: None,
@@ -825,71 +833,6 @@ impl IndexDb {
             }
         }
         Ok(rows)
-    }
-
-    #[cfg(feature = "code-search")]
-    pub(crate) fn bm25_posting_candidates<'a>(
-        &self,
-        paths: impl IntoIterator<Item = &'a String>,
-    ) -> Result<ahash::AHashSet<Vec<u8>>, IndexError> {
-        let mut candidates = ahash::AHashSet::new();
-        for path in paths {
-            let rel = crate::path::RelPath::from(path.as_str());
-            for row in self.code_bm25_by_path.prefix(&keys::code_bm25_by_path_prefix(&rel)) {
-                let (key, value) = row?;
-                if let (Some((_, chunk)), Some(terms)) = (keys::parse_code_bm25_by_path(&key), value.get(4..)) {
-                    for term in rmp_serde::from_slice::<Vec<String>>(terms)? {
-                        candidates.extend(keys::code_bm25_posting(&term, &chunk));
-                    }
-                }
-            }
-        }
-        Ok(candidates)
-    }
-
-    #[cfg(feature = "code-search")]
-    pub(crate) fn retire_bm25_postings(
-        &self,
-        candidates: ahash::AHashSet<Vec<u8>>,
-        is_held: impl Fn(&str) -> bool,
-    ) -> Result<(), IndexError> {
-        let mut writer = self.writer();
-        for key in candidates {
-            let hash = keys::parse_code_bm25_posting_chunk_id(&key)
-                .and_then(|chunk| chunk.rsplit_once(':'))
-                .map(|(hash, _)| hash);
-            if hash.is_some_and(|hash| !is_held(hash)) {
-                writer.remove_bm25_posting(&key);
-                if writer.staged_bytes() >= BM25_PRUNE_BATCH_BYTES {
-                    writer.commit()?;
-                    writer = self.writer();
-                }
-            }
-        }
-        writer.commit()
-    }
-
-    /// Retire postings whose chunk is no longer referenced by any path.
-    #[cfg(feature = "code-search")]
-    pub(crate) fn sweep_bm25_postings(&self) -> Result<(), IndexError> {
-        let mut live = ahash::AHashSet::new();
-        for key in self.code_bm25_by_path.keys() {
-            if let Some((_path, chunk)) = keys::parse_code_bm25_by_path(&key?) {
-                live.insert(chunk);
-            }
-        }
-        let mut writer = self.writer();
-        for key in self.code_bm25_postings.keys() {
-            let key = key?;
-            if !keys::parse_code_bm25_posting_chunk_id(&key).is_some_and(|chunk| live.contains(chunk)) {
-                writer.remove_bm25_posting(&key);
-                if writer.staged_bytes() >= BM25_PRUNE_BATCH_BYTES {
-                    writer.commit()?;
-                    writer = self.writer();
-                }
-            }
-        }
-        writer.commit()
     }
 
     /// Recompute the corpus-global BM25 stats by sweeping the `code_bm25_by_path` forward keyspace
