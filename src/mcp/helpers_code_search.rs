@@ -81,15 +81,19 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
         ));
     };
 
-    // The reranker returns its `top_k` best and drops the rest: a hard cut the paging depth never
-    // sees, so it is named here.
-    let candidates = hits.len();
+    // The reranker reorders the head of the ranking and drops nothing; a reranker that cannot run
+    // leaves the fused order and says why, as a lane that did not run.
+    let mut report = report;
     let hits = if rerank_enabled {
-        rerank_hits(state, &params.query, hits, &rerank_preset, rerank_top_k).await?
+        let (hits, failure) = rerank_hits(state, &params.query, hits, &rerank_preset, rerank_top_k).await;
+        if let Some(reason) = failure {
+            report.unavailable.push(LaneUnavailable { lane: "rerank", reason });
+        }
+        hits
     } else {
         hits
     };
-    let truncated_reason = super::helpers_page::retrieval_cut(false, hits.len() < candidates).map(str::to_string);
+    let truncated_reason: Option<String> = None;
 
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_code_response(
@@ -482,29 +486,30 @@ fn hydrate_one(store: &Store, chunk_id: &str) -> Option<(CodeSearchHit, String)>
     Some((hit, chunk.text.clone()))
 }
 
-/// Optional cross-encoder rerank of `hits`, reusing the same xberg reranker as the documents tier.
-/// Reads each hit's chunk body as the candidate text, scores against `query`, and returns the hits
-/// reordered best-first (truncated to `top_k`) with `rerank_score` set. Off-path when `hits` is
-/// empty. Errors on an unknown preset (before any model download) or an out-of-range rerank index.
+/// Most fused hits the reranker scores; the rest keep their fused order after them.
+const RERANK_CANDIDATES: usize = 50;
+
+/// Reorder the first `top_k` hits (at most [`RERANK_CANDIDATES`]) by the cross-encoder, the rest
+/// following in fused order. Nothing is dropped. A failure returns the hits as they came, with the
+/// reason.
 async fn rerank_hits(
     state: &ServerState,
     query: &str,
-    hits: Vec<CodeSearchHit>,
+    mut hits: Vec<CodeSearchHit>,
     preset: &str,
     top_k: usize,
-) -> Result<Vec<CodeSearchHit>, McpError> {
+) -> (Vec<CodeSearchHit>, Option<String>) {
     if hits.is_empty() {
-        return Ok(hits);
+        return (hits, None);
     }
     if xberg::get_reranker_preset(preset).is_none() {
-        return Err(McpError::invalid_params(
-            format!("unknown reranker preset: {preset:?}"),
-            None,
-        ));
+        return (hits, Some(format!("unknown reranker preset {preset:?}")));
     }
+    let candidates = hits.len().min(top_k.max(1)).min(RERANK_CANDIDATES);
     let texts: Vec<String> = {
         let store = state.shared.store.read().await;
-        hits.iter()
+        hits[..candidates]
+            .iter()
             .map(|h| {
                 hydrate_one(&store, &h.chunk_id)
                     .map(|(_, text)| text)
@@ -512,48 +517,29 @@ async fn rerank_hits(
             })
             .collect()
     };
-    let krz_config = xberg::core::config::RerankerConfig {
+    let config = xberg::core::config::RerankerConfig {
         model: xberg::core::config::RerankerModelType::Preset {
             name: preset.to_string(),
         },
-        top_k: Some(top_k),
+        top_k: Some(candidates),
         acceleration: crate::embeddings::acceleration(state.shared.config.resources.onnx_provider),
         ..Default::default()
     };
-    let reranked = xberg::rerank_async(query.to_string(), texts, &krz_config)
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            let kind = if msg.contains("download") || msg.contains("HuggingFace") || msg.contains("model") {
-                "rerank model load"
-            } else {
-                "rerank inference"
-            };
-            McpError::internal_error(format!("{kind}: {msg}"), None)
-        })?;
-    let original = hits;
-    reranked
-        .into_iter()
-        .map(|r| {
-            original
-                .get(r.index)
-                .cloned()
-                .map(|mut hit| {
-                    hit.rerank_score = Some(r.score);
-                    hit
-                })
-                .ok_or_else(|| {
-                    McpError::internal_error(
-                        format!(
-                            "reranker returned out-of-range index {} (got {} hits)",
-                            r.index,
-                            original.len()
-                        ),
-                        None,
-                    )
-                })
-        })
-        .collect()
+    let scored = match xberg::rerank_async(query.to_string(), texts, &config).await {
+        Ok(scored) => scored,
+        Err(error) => return (hits, Some(format!("the reranker failed: {error}"))),
+    };
+    let mut head: Vec<Option<CodeSearchHit>> = hits.drain(..candidates).map(Some).collect();
+    let mut reordered = Vec::with_capacity(candidates);
+    for result in &scored {
+        if let Some(mut hit) = head.get_mut(result.index).and_then(Option::take) {
+            hit.rerank_score = Some(result.score);
+            reordered.push(hit);
+        }
+    }
+    reordered.extend(head.into_iter().flatten());
+    reordered.append(&mut hits);
+    (reordered, None)
 }
 
 pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {

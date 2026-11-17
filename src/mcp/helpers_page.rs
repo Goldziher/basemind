@@ -42,24 +42,6 @@ pub(super) const RANKED_FETCH: u32 = RANKED_DEPTH + 1;
 /// `truncated_reason` of a ranking that goes on past [`RANKED_DEPTH`].
 const REASON_DEPTH: &str = "depth";
 
-/// The cut a retrieval names on its own response, before [`page_ranked`] adds `depth` to one that
-/// names none. One reason is reported, the one that hides the most: `filter_depth` (documents the
-/// filter never saw, which no cursor reaches), then `rerank_top_k` (candidates the reranker
-/// dropped), then `depth` (the ranking goes on past what can be paged).
-#[cfg_attr(
-    not(feature = "code-search"),
-    allow(dead_code, reason = "compiled for its tests when `code_search` is not in the build")
-)]
-pub(super) fn retrieval_cut(past_filter_depth: bool, reranker_dropped: bool) -> Option<&'static str> {
-    if past_filter_depth {
-        Some("filter_depth")
-    } else if reranker_dropped {
-        Some("rerank_top_k")
-    } else {
-        None
-    }
-}
-
 /// The ranked retrieval of `tool` for `arguments`: the list kept for it at `generation`, or what
 /// `retrieve` returns, kept for the pages and repeats that follow. A degraded or empty answer is
 /// not kept: it is the one most likely to be different a moment later.
@@ -233,26 +215,6 @@ mod tests {
         );
         assert_eq!(body(&last)["truncated"], json!(true));
         assert_eq!(body(&last)["truncated_reason"], json!("depth"));
-    }
-
-    #[test]
-    fn one_cut_is_named_and_it_is_the_one_that_hides_the_most() {
-        let named = |past_filter_depth, reranker_dropped, hits: usize| {
-            let mut response = json!({ "hits": (0..hits).map(|rank| json!({ "rank": rank })).collect::<Vec<_>>() });
-            if let Some(reason) = retrieval_cut(past_filter_depth, reranker_dropped) {
-                response["truncated"] = json!(true);
-                response["truncated_reason"] = json!(reason);
-            }
-            let paged = page(CallToolResult::structured(response), 0, 10, None);
-            body(&paged).get("truncated_reason").cloned()
-        };
-        let past_depth = RANKED_FETCH as usize;
-        assert_eq!(named(false, false, 5), None);
-        assert_eq!(named(false, false, past_depth), Some(json!("depth")));
-        assert_eq!(named(false, true, 5), Some(json!("rerank_top_k")));
-        assert_eq!(named(false, true, past_depth), Some(json!("rerank_top_k")));
-        assert_eq!(named(true, false, 5), Some(json!("filter_depth")));
-        assert_eq!(named(true, true, past_depth), Some(json!("filter_depth")));
     }
 
     #[tokio::test]

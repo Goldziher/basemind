@@ -221,7 +221,7 @@ bare `truncated` on a listing.
 | `code_symbols` | `truncated` on a `limit` cut, `total_is_partial` | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when a fuzzy sweep stopped at its cap |
 | `code_refs` | `total_is_partial` | `truncated`, `truncated_reason: "scan_cap"` (`total` is a lower bound; `next_cursor` resumes the scan) |
 | `find_files` | `truncated` | removed: `next_cursor` says a listing goes on |
-| `code_search` | none | `truncated`, `truncated_reason` (`depth`, `rerank_top_k`) |
+| `code_search` | none | `truncated`, `truncated_reason` (`depth`); a reranker that could not run is a `rerank` entry of `lanes_unavailable` |
 | `docs_search` | `chunk_idx`, `distance`, `byte_start` / `byte_end`, per-hit `keywords` / `entities` / `summary` | `chunk`, `cite` (pages, section, lines, bytes), `context`, `also_at`, `title`, `lanes`, `score`; on the response `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`, `vector_mode`, `rerank`; `truncated_reason` (`depth`, `liveness_depth`). `scope` is gone; `kind` and `path` filter before ranking (ADR-0029, ADR-0035) |
 | `git_diff {}` | none | `truncated`, `truncated_reason: "path_cap"`, `omitted` (paths), `path` |
 | `git_diff {path}` | `truncated`, `total_hunks` | `truncated`, `truncated_reason` (`hunk_cap`, `byte_cap`), `omitted` (hunks) |
