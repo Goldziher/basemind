@@ -4,10 +4,10 @@ date: 2026-11-17
 amends: ["0029", "0025"]
 ---
 
-# ADR-0035: Retrieval store amendments — liveness list, store version, interim location
+# ADR-0035: Retrieval store amendments — liveness list, store version, interim location, model identity
 
 - **Deciders:** the repository owner
-- **Related:** amends ADR-0029 (rules 3, 5, 7, 11) and ADR-0025 (the vector stores' version);
+- **Related:** amends ADR-0029 (rules 1, 2, 3, 5, 7, 11) and ADR-0025 (the vector stores' version);
   ADR-0028
 
 ## Context
@@ -29,6 +29,12 @@ with the code and the benchmark:
   live-key map are being built on another branch and do not exist here.
 - **Rules 5 and 7** name `kind`, `path` and `keywords` filters and a reranker that scores 50 hits,
   without saying what values they take or which setting holds the 50.
+- **Rule 1** names HTML a document type, but the scan sent every file a tree-sitter grammar claims to
+  the code map, so no HTML file reached the document store (15 of 86 eval tasks scored zero).
+- **Rule 2** names the store by "model", and the code used the preset name. A preset name is
+  xberg's: a release that points it at another model would mix two models' vectors in one store.
+- **Rule 11** says nothing of a document whose embedding failed. Indexed without vectors and marked
+  attempted, it never got them, even once the embedder worked again.
 
 ## Decision
 
@@ -62,6 +68,27 @@ with the code and the benchmark:
    keyword, case-insensitive; `entity` is a whole entity category, case-insensitive.
 5. **Rerank depth (amends rule 7).** `[documents.reranker] top_k` is the number of fused hits the
    cross-encoder reorders, default 50 and at most 50; the hits after them keep their fused order.
+6. **Markup a grammar also claims (amends rule 1).** HTML, LaTeX, Org, Typst, Djot and RTF go to the
+   document tier when it is enabled and the path reached the grammar by its own extension
+   (`lang::is_document_markup`). A workspace with documents off, or a `[languages]` override mapping
+   another extension to one of these grammars (`.erb` to `html`), keeps the file in the code map, so
+   `code_grep` still reaches it. Staged and rev views index no documents: xberg extracts from a
+   file, and the working tree's file is not the view's content.
+7. **Model identity (amends rule 2).** Every stored vector, and the name of every vector store
+   directory, carries `embeddings::model_key(preset)`: the preset name and a digest of what xberg
+   loads for it (repository, model file, sibling files, pooling, dimension, backend, query prefix).
+   A blob or store stamped with another key is re-embedded or opened anew. xberg's pinned model
+   revision is not public, so a new upload under the same file name is caught only by the xberg
+   upgrade that pins it.
+8. **Vectors owed after a failed embed (amends rule 11).** A document whose embedder failed is
+   indexed without vectors and marked as owing them (`FileMapDoc::embed_failed`, an entry neither
+   embedded nor attempted). Each scan probes the embedder once, on the first document that owes
+   vectors; while the probe fails the document stays settled, and once it passes the document is
+   re-extracted and embedded without having changed.
+9. **Compaction of short-lived writers.** Each table is compacted when it holds 32 small fragments
+   and pruned every 32 versions, read from the table itself, besides the per-process commit
+   counter: a `basemind memory save` process commits twice and exits, and never reached the
+   counter's period.
 
 ## Consequences
 
@@ -72,6 +99,10 @@ with the code and the benchmark:
 - A view whose allowed set exceeds 2,000 documents pays the widening on every query and may see
   `liveness_depth`.
 - ADR-0029's `lang` column and its Bitmap index are not built: no filter reads them.
+- HTML and the other markup leave `code_grep` in a workspace with documents on, as Markdown did.
+- The first scan of this version re-embeds every vector once: blobs stamped with a bare preset name
+  do not match the model key.
+- An offline machine pays one embedder probe per scan while documents owe vectors.
 
 ## Alternatives considered
 
