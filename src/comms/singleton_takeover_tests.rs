@@ -684,12 +684,13 @@ const QUICK: ReclaimRules = ReclaimRules {
 /// A pid no process has.
 const DEAD_PID: u32 = 0x7FFF_FFFE;
 
-/// Hold `dir`'s daemon lock, as a running daemon does.
-fn hold_lock(dir: &Path) -> std::fs::File {
+/// Hold `dir`'s daemon lock, as a running daemon does. Dropping the guard unlocks: closing alone
+/// leaves the lock held while a child another test thread forked still has the descriptor.
+fn hold_lock(dir: &Path) -> crate::store_lock::LockGuard {
     use fs2::FileExt as _;
     let lock = std::fs::File::create(dir.join("daemon.lock")).expect("create daemon.lock");
     lock.try_lock_exclusive().expect("hold the daemon lock");
-    lock
+    crate::store_lock::LockGuard::held(lock)
 }
 
 /// `comms stop` has no pid from the daemon itself. Whether a daemon is still there is then read
