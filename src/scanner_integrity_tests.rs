@@ -591,11 +591,17 @@ fn a_scan_into_a_store_opened_beside_a_writer_is_refused_until_it_can_take_the_l
         EmbedMode::Deferred,
     )
     .expect_err("a full scan beside a writer");
-    assert!(matches!(&refused, ScanError::Store(error) if error.is_lock_contention()), "{refused}");
+    assert!(
+        matches!(&refused, ScanError::Store(error) if error.is_lock_contention()),
+        "{refused}"
+    );
     let named = [root.join("alpha.rs")];
     let refused = crate::scanner::scan_paths(root, &mut in_place, &config, &named, EmbedMode::Deferred)
         .expect_err("an incremental scan beside a writer");
-    assert!(matches!(&refused, ScanError::Store(error) if error.is_lock_contention()), "{refused}");
+    assert!(
+        matches!(&refused, ScanError::Store(error) if error.is_lock_contention()),
+        "{refused}"
+    );
     assert!(!in_place.holds_writer_lock());
     assert!(
         crate::store::read_index(&in_place.view_dir)
@@ -629,7 +635,8 @@ fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass()
     assert_eq!(db.view().symbols_by_name_lookup("ghost", 4).len(), 1);
     // What the killed pass leaves: its start recorded at the seal it began from, the rows of a file
     // it had just indexed, and a file map that never listed that file.
-    db.mark_rows_unlisted(db.scan_generation().expect("read")).expect("record the pass");
+    db.mark_rows_unlisted(db.scan_generation().expect("read"))
+        .expect("record the pass");
     store.remove("ghost.rs");
     let unlisted = store.index.clone();
     drop(db);
@@ -646,6 +653,9 @@ fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass()
     scanned.expect("incremental scan");
 
     let view = store.index_view().expect("index");
-    assert!(view.symbols_by_name_lookup("ghost", 4).is_empty(), "the unlisted rows are gone");
+    assert!(
+        view.symbols_by_name_lookup("ghost", 4).is_empty(),
+        "the unlisted rows are gone"
+    );
     assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
 }

@@ -455,7 +455,11 @@ mod tests {
             .expect("fold the new commits");
             writer.flush().expect("commit the batch");
         }
-        assert_eq!(index.last_indexed_head_hex(), None, "a cut-off append is never served as fresh");
+        assert_eq!(
+            index.last_indexed_head_hex(),
+            None,
+            "a cut-off append is never served as fresh"
+        );
 
         let outcome = sync(&index, &repo, cache.path()).expect("resync");
         assert_eq!(
@@ -472,6 +476,10 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(expected.len(), 3);
-        assert_eq!(touching(&index, "a.rs"), expected, "every commit is in the posting list");
+        assert_eq!(
+            touching(&index, "a.rs"),
+            expected,
+            "every commit is in the posting list"
+        );
     }
 }

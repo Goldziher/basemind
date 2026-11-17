@@ -891,7 +891,11 @@ fn global_gc_marks_past_a_locked_workspace_holding_a_stale_view() {
     fs::create_dir_all(&stale_view).expect("mk view");
     let mut stale = Index::empty();
     stale.schema_ver = crate::extract::SCHEMA_VER.saturating_sub(1);
-    fs::write(stale_view.join(INDEX_FILE), rmp_serde::to_vec_named(&stale).expect("encode")).expect("write");
+    fs::write(
+        stale_view.join(INDEX_FILE),
+        rmp_serde::to_vec_named(&stale).expect("encode"),
+    )
+    .expect("write");
     let _held = crate::store::acquire_lock(&held).expect("an older basemind holds the workspace");
 
     let referenced = collect_referenced_hashes_global_in(&workspaces).expect("the mark goes on");

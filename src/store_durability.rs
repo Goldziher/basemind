@@ -112,6 +112,7 @@ impl Store {
     }
 
     /// Whether this store was opened holding the workspace lock, or has taken it since.
+    #[cfg(test)]
     pub(crate) fn holds_writer_lock(&self) -> bool {
         self._lock.is_some()
     }
