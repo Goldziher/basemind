@@ -37,6 +37,12 @@ const LIMIT: usize = 100;
 /// count and every worktree sees every target.
 const COLD_TARGETS: usize = 31;
 const SEED: u64 = 0x5EED_1DE5;
+/// BM25 query whose terms every file holds: `process_widget` is defined in each one.
+#[cfg(feature = "code-search")]
+const BM25_HOT_QUERY: &str = "process widget";
+/// BM25 query whose terms only the files carrying the rare literal hold.
+#[cfg(feature = "code-search")]
+const BM25_RARE_QUERY: &str = "zebra quartz";
 
 struct Mode {
     name: &'static str,
@@ -261,10 +267,22 @@ enum Op {
     SymbolExactCold,
     GrepBloomRare,
     GrepBloomAbsent,
+    #[cfg(feature = "code-search")]
+    Bm25Hot,
+    #[cfg(feature = "code-search")]
+    Bm25Rare,
 }
 
 impl Op {
-    const ALL: [Op; 12] = [
+    /// The operations this build can run: BM25 exists only under the `code-search` feature.
+    fn all() -> Vec<Op> {
+        let mut ops = Self::INDEX.to_vec();
+        #[cfg(feature = "code-search")]
+        ops.extend([Op::Bm25Hot, Op::Bm25Rare]);
+        ops
+    }
+
+    const INDEX: [Op; 12] = [
         Op::ReferencesSubstringHot,
         Op::ReferencesExactHot,
         Op::ReferencesExactWarm,
@@ -293,6 +311,10 @@ impl Op {
             Op::SymbolExactCold => "symbol_exact/cold",
             Op::GrepBloomRare => "grep_bloom/rare",
             Op::GrepBloomAbsent => "grep_bloom/absent",
+            #[cfg(feature = "code-search")]
+            Op::Bm25Hot => "bm25/hot",
+            #[cfg(feature = "code-search")]
+            Op::Bm25Rare => "bm25/rare",
         }
     }
 
@@ -309,6 +331,10 @@ impl Op {
             Op::SymbolExactCold => format!("build_widget_<file> ({COLD_TARGETS} targets)"),
             Op::GrepBloomRare => corpus::RARE_LITERAL.to_string(),
             Op::GrepBloomAbsent => corpus::ABSENT_LITERAL.to_string(),
+            #[cfg(feature = "code-search")]
+            Op::Bm25Hot => BM25_HOT_QUERY.to_string(),
+            #[cfg(feature = "code-search")]
+            Op::Bm25Rare => BM25_RARE_QUERY.to_string(),
         }
     }
 
@@ -331,6 +357,10 @@ impl Op {
             Op::SymbolExactCold => worktree.symbol_exact(&corpus::builder_name(file), LIMIT),
             Op::GrepBloomRare => worktree.grep_candidates(corpus::RARE_LITERAL),
             Op::GrepBloomAbsent => worktree.grep_candidates(corpus::ABSENT_LITERAL),
+            #[cfg(feature = "code-search")]
+            Op::Bm25Hot => worktree.bm25(BM25_HOT_QUERY, LIMIT),
+            #[cfg(feature = "code-search")]
+            Op::Bm25Rare => worktree.bm25(BM25_RARE_QUERY, LIMIT),
         }
     }
 }
@@ -416,6 +446,19 @@ fn verify(group: &Group, params: &Params) {
         }
         let hot = worktree.callers(&group.hot_definitions[at], LIMIT);
         assert_eq!(hot.hits, LIMIT, "{label}: callers of `dispatch_event` fill a page");
+        #[cfg(feature = "code-search")]
+        {
+            assert_eq!(
+                worktree.bm25(BM25_HOT_QUERY, LIMIT).hits,
+                LIMIT,
+                "{label}: BM25 `{BM25_HOT_QUERY}` fills a page"
+            );
+            let rare = worktree.bm25(BM25_RARE_QUERY, LIMIT).hits;
+            assert!(
+                rare >= expected.rare_literal_files.min(LIMIT) && rare < worktree.file_count(),
+                "{label}: BM25 `{BM25_RARE_QUERY}` finds the files holding it, got {rare}"
+            );
+        }
     }
 }
 
@@ -495,7 +538,7 @@ fn measure_group(base: &Path, params: &Params, mode: &Mode, versions: usize) -> 
         "operation", "p50 us", "p95 us", "mean us", "rows/read", "hits/read"
     );
     let mut ops = Vec::new();
-    for op in Op::ALL {
+    for op in Op::all() {
         let timing = time_op(op, &group, params, mode);
         println!(
             "   {:<28} {:>10.1} {:>10.1} {:>10.1} {:>10.1} {:>9.1}",
