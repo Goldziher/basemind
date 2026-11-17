@@ -132,14 +132,10 @@ fn reads_after_a_scan_add_no_store() {
 
     assert!(home.run(repo.path(), &["status"]), "status");
     assert!(home.run(repo.path(), &["git", "log"]), "git log");
-    #[cfg(feature = "memory")]
-    {
-        assert!(home.run(repo.path(), &["memory", "get", "absent"]), "memory get");
-        assert!(
-            home.run(repo.path(), &["memory", "list", "--prefix", "a"]),
-            "memory list"
-        );
-    }
+    // ~keep With no daemon a read-only CLI does not open the group index (ADR-0036 rule 3), so these
+    // ~keep are refused; what counts is that they leave no notes store behind.
+    home.run(repo.path(), &["memory", "get", "absent"]);
+    home.run(repo.path(), &["memory", "list", "--prefix", "a"]);
     home.run(repo.path(), &["agents", "inbox"]);
 
     assert_eq!(home.stores(), (scanned, 2), "a read created a store");
