@@ -121,8 +121,10 @@ with the code and the benchmark:
 - Upgrading wipes each vector store once (its old version is the minor, below 1000); after that a
   release minor no longer wipes the memory vectors.
 - The worktrees of a repository share one copy of the document rows. Two worktrees whose
-  `basemind.toml` embed policies differ for one document share its rows too: the last scan that
-  wrote or stripped its vectors decides whether the shared rows carry them.
+  `basemind.toml` embed policies differ for one document share its rows too: a view whose policy
+  excludes the document strips its vectors only when no other view of the group names it, so a
+  worktree that wants them keeps them. A document that two views name and both exclude keeps its
+  vectors as long as both name it; its lexical rows are the same either way.
 - A view whose allowed set exceeds 2,000 documents pays the widening on every query and may see
   `liveness_depth`.
 - ADR-0029's `lang` column and its Bitmap index are not built: no filter reads them.
