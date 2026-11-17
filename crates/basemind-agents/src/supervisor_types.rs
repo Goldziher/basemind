@@ -42,14 +42,14 @@ impl std::fmt::Display for SessionId {
 /// was given in [`ENV_LAUNCH_TOKEN`](crate::ENV_LAUNCH_TOKEN). Either way the caller carries the
 /// [`Peer`] the kernel reported for its connection, and the supervisor decides by that process,
 /// not by the claim: a process inside a live session, or below one, is that session whatever it
-/// claims; a process is a configured launcher only when it is, or descends from, the process the
-/// engine registered for that principal
-/// ([`Supervisor::register_launcher`](crate::Supervisor::register_launcher)); any other process
-/// is nobody. `Debug` never shows a token.
+/// claims; a process is a configured launcher only when it is the process the embedding
+/// registered for that principal
+/// ([`Supervisor::register_launcher_in_process`](crate::Supervisor::register_launcher_in_process)),
+/// or is or descends from the child it registered; any other process is nobody. `Debug` never shows a token.
 ///
 /// There is no public constructor for the operator: only
-/// [`Supervisor::operator`](crate::Supervisor::operator) makes one, for the registered operator
-/// process or a descendant of it.
+/// [`Supervisor::operator`](crate::Supervisor::operator) makes one, in the supervisor's own process,
+/// never for a connection.
 ///
 /// ```compile_fail
 /// let operator = basemind_agents::Caller::operator();

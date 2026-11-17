@@ -75,11 +75,21 @@ fn escape_from_session(escape: &str, end_session: bool) -> Option<Escaped> {
 
 /// Asserts that `escaped` is neither the configured launcher nor the operator.
 fn assert_escape_refused(escaped: &Escaped) {
-    // Placed outside every session and every registered process, not merely unreadable.
+    // Placed outside every session and every registered process, for where it is, not merely
+    // because a link of its ancestry could not be read: the walk reached init, or on macOS
+    // stopped only at launchd (pid 1, root's, which it does not describe).
     let placed = crate::supervisor_identity::origin(&escaped.supervisor.inner.table(), &escaped.peer);
+    let me = crate::procinfo::info(escaped.peer.id.pid).unwrap();
+    let chain = crate::procinfo::ancestors(&me).unwrap();
+    let top = chain.procs.last().unwrap_or(&me);
+    let expected = crate::supervisor_identity::Origin::Outside {
+        complete: chain.complete,
+    };
+    assert_eq!(placed, expected, "the escaped process was misplaced");
     assert!(
-        matches!(placed, crate::supervisor_identity::Origin::Outside { .. }),
-        "the escaped process was placed as {placed:?}"
+        chain.complete || (cfg!(target_os = "macos") && top.ppid == 1),
+        "the escaped process's ancestry stopped below init, at {}",
+        top.ppid
     );
     let claim = Caller::principal("lead", escaped.peer).unwrap();
     let launched = escaped.supervisor.launch(&claim, HarnessKind::ClaudeCode, &request());
@@ -88,13 +98,16 @@ fn assert_escape_refused(escaped: &Escaped) {
         Err("peer_unverified"),
         "an escaped process launched as the configured launcher"
     );
-    let operator = escaped.supervisor.operator(escaped.peer);
-    assert_eq!(
-        operator.map(|_| ()).map_err(|error| error.code()),
-        Err("peer_unverified"),
-        "an escaped process was made the operator"
-    );
     if let Some(session) = &escaped.launched {
+        // Even a caller that somehow carried the operator kind is refused from that process.
+        assert_eq!(
+            escaped
+                .supervisor
+                .stop(&forged_operator(escaped.peer), session.id)
+                .map_err(|error| error.code()),
+            Err("peer_unverified"),
+            "an escaped process acted as the operator"
+        );
         assert_eq!(
             escaped
                 .supervisor
@@ -162,7 +175,7 @@ fn a_process_an_outside_spawner_started_is_no_launcher_or_operator() {
 }
 
 #[test]
-fn a_principal_is_its_registered_process_and_its_descendants_only() {
+fn a_principal_is_its_registered_child_and_its_descendants_only() {
     let Some(perl) = perl() else {
         return;
     };
@@ -179,23 +192,23 @@ fn a_principal_is_its_registered_process_and_its_descendants_only() {
     let refused = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request());
     assert_eq!(refused.err().map(|error| error.code()), Some("peer_unverified"));
     assert_eq!(
-        supervisor.operator(own()).map(|_| ()).map_err(|error| error.code()),
-        Err("peer_unverified")
+        supervisor.operator().map(|_| ()).map_err(|error| error.code()),
+        Err("caller_not_admitted")
     );
     // A process that is not a launcher the policy names cannot be registered as one.
     assert_eq!(
         supervisor
-            .register_launcher("stranger", own())
+            .register_launcher_in_process("stranger")
             .map_err(|error| error.code()),
         Err("caller_not_admitted")
     );
 
-    // The lead runs as a process of its own, with a child it started, as a tool would be.
+    // A child the embedding spawned, with a child of its own, as a tool it ran would be.
     let parent = std::process::Command::new(&perl)
         .args(["-e", "my $c = fork; if (!$c) { sleep 60; exit } sleep 60"])
         .spawn()
         .unwrap();
-    let parent = Stand(parent);
+    let mut parent = Stand(parent);
     let deadline = Instant::now() + Duration::from_secs(5);
     let child = loop {
         let all = crate::procinfo::all().unwrap();
@@ -205,35 +218,34 @@ fn a_principal_is_its_registered_process_and_its_descendants_only() {
         {
             break Peer::of_pid(u32::try_from(child.pid).unwrap());
         }
-        assert!(Instant::now() < deadline, "the lead's child never started");
+        assert!(Instant::now() < deadline, "the registered child's child never started");
         std::thread::sleep(Duration::from_millis(10));
     };
     let _reclaim_child = Reclaim(child);
-    // By peer, a process below the supervisor is refused; as the child the embedding spawned
-    // it is accepted.
+    supervisor.register_launcher_child("lead", &mut parent.0).unwrap();
+    // A binding is write-once.
+    let mut other = Stand::new();
     assert_eq!(
         supervisor
-            .register_launcher("lead", parent.peer())
-            .map_err(|error| error.code()),
-        Err("caller_not_admitted")
-    );
-    supervisor.register_launcher_child("lead", &parent.0).unwrap();
-    supervisor.register_operator_child(&parent.0).unwrap();
-    // A binding is write-once while its process runs.
-    let other = Stand::new();
-    assert_eq!(
-        supervisor
-            .register_launcher_child("lead", &other.0)
+            .register_launcher_child("lead", &mut other.0)
             .map_err(|error| error.code()),
         Err("role_bound")
     );
-    // Its descendant is the lead, and may be made the operator.
+    // Its descendant is the lead.
     let as_child = Caller::principal("lead", child).unwrap();
     let launched = supervisor
         .launch(&as_child, HarnessKind::ClaudeCode, &request())
         .unwrap();
     assert_eq!(launched.depth, 1);
-    let operator = supervisor.operator(child).unwrap();
+    // A descendant of a registered child is never the operator, whatever its caller says.
+    supervisor.register_operator_in_process().unwrap();
+    assert_eq!(
+        supervisor
+            .stop(&forged_operator(child), launched.id)
+            .map_err(|error| error.code()),
+        Err("caller_not_admitted"),
+        "a registered child's descendant acted as the operator"
+    );
     // A process below the supervisor but not below the lead is nobody.
     let sibling = Stand::new();
     let as_sibling = Caller::principal("lead", sibling.peer()).unwrap();
@@ -241,45 +253,38 @@ fn a_principal_is_its_registered_process_and_its_descendants_only() {
         supervisor.stop(&as_sibling, launched.id).map_err(|error| error.code()),
         Err("caller_not_admitted")
     );
+    // Released, the binding admits nobody: a caller already made is refused.
+    assert!(supervisor.unregister_launcher("lead"));
+    assert!(!supervisor.unregister_launcher("lead"));
     assert_eq!(
-        supervisor
-            .operator(sibling.peer())
-            .map(|_| ())
-            .map_err(|error| error.code()),
-        Err("caller_not_admitted")
+        supervisor.stop(&as_child, launched.id).map_err(|error| error.code()),
+        Err("caller_not_admitted"),
+        "a caller of a released binding was still the principal"
     );
-    // A session's process cannot be registered.
-    assert_eq!(
-        supervisor
-            .register_launcher("second", inside(&supervisor, launched.id))
-            .map_err(|error| error.code()),
-        Err("caller_not_admitted")
-    );
-    // The operator stays bound to the process, not to the caller value: once that process is
-    // gone the minted operator is refused.
-    supervisor.stop(&operator, launched.id).unwrap();
-    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
+    // Gone, the bound process still holds the role: only an unregistration releases it.
+    supervisor.register_launcher_child("lead", &mut parent.0).unwrap();
     drop(parent);
-    let gone = supervisor.stop(&operator, launched.id);
-    assert!(gone.is_err(), "an operator outlived its registered process");
-    // Once the bound process is gone the role can be bound again.
-    supervisor.register_launcher_child("lead", &other.0).unwrap();
-    let registrations: Vec<&str> = audit
-        .records()
-        .iter()
-        .filter(|record| record.event == AuditEvent::Registration)
-        .map(|record| record.outcome)
-        .collect();
     assert_eq!(
-        registrations,
+        supervisor
+            .register_launcher_child("lead", &mut other.0)
+            .map_err(|error| error.code()),
+        Err("role_bound"),
+        "a dead binding was replaced without an unregistration"
+    );
+    assert!(supervisor.unregister_launcher("lead"));
+    supervisor.register_launcher_child("lead", &mut other.0).unwrap();
+    assert_eq!(
+        outcomes(&audit, AuditEvent::Registration),
         [
             "caller_not_admitted",
-            "caller_not_admitted",
-            "registered",
             "registered",
             "role_bound",
-            "caller_not_admitted",
-            "replaced"
+            "registered",
+            "unregistered",
+            "registered",
+            "role_bound",
+            "unregistered",
+            "registered"
         ]
     );
 }
@@ -310,36 +315,40 @@ fn the_peer_of_a_connection_from_another_process_is_that_process() {
 }
 
 #[test]
-fn an_ancestor_of_the_supervisor_or_a_process_below_it_cannot_be_registered_by_peer() {
+fn a_child_that_has_exited_cannot_be_registered() {
     let scratch = Scratch::new();
-    let audit = Arc::new(MemoryAuditSink::default());
     let supervisor = Supervisor::new(
         LaunchPolicy::new(policy(&[HarnessKind::ClaudeCode])).unwrap(),
         vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())],
         registry(),
-        audit,
+        Arc::new(MemoryAuditSink::default()),
     )
     .unwrap();
-    // The test runner's parent: an orphan of a session can be reparented to an ancestor (a
-    // Linux subreaper), and would then descend from the registered process.
-    let ancestor = Peer::of_pid(std::os::unix::process::parent_id());
-    assert_eq!(
-        supervisor
-            .register_launcher("lead", ancestor)
-            .map_err(|error| error.code()),
-        Err("caller_not_admitted"),
-        "an ancestor of the supervisor was registered"
-    );
-    // A process below the supervisor, as a starting session's harness would be.
-    let below = Stand::new();
-    assert_eq!(
-        supervisor.register_operator(below.peer()).map_err(|error| error.code()),
-        Err("caller_not_admitted"),
-        "a process below the supervisor was registered by its peer"
-    );
+    // Reaped already: its pid may name any process now.
+    let mut reaped = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+    reaped.wait().unwrap();
+    // Exited and not reaped: `try_wait` reaps it, and its pid is free from then on.
+    let mut exited = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while crate::procinfo::info(i32::try_from(exited.id()).unwrap()).is_some_and(|now| !now.zombie) {
+        assert!(Instant::now() < deadline, "the child never exited");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for child in [&mut reaped, &mut exited] {
+        assert_eq!(
+            supervisor
+                .register_launcher_child("lead", child)
+                .map_err(|error| error.code()),
+            Err("peer_unverified"),
+            "an exited child was registered"
+        );
+    }
+    // A running child is accepted.
+    let mut running = Stand::new();
+    supervisor.register_launcher_child("lead", &mut running.0).unwrap();
 }
 
-/// Which part of [`a_subreaper_ancestor_cannot_be_registered_and_adopts_no_launcher`] this
+/// Which part of [`a_subreaper_ancestor_adopts_no_escapee_as_launcher`] this
 /// process plays: unset for the test itself, `wrapper` for the subreaper it runs under, `inner`
 /// for the supervisor below it.
 #[cfg(target_os = "linux")]
@@ -354,8 +363,8 @@ const SUBREAPER_MARKER: &str = "BASEMIND_TEST_SUBREAPER_MARKER";
 /// below it: were it registered, the escapee would descend from a registered process.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_subreaper_ancestor_cannot_be_registered_and_adopts_no_launcher() {
-    const NAME: &str = "supervisor::identity_tests::a_subreaper_ancestor_cannot_be_registered_and_adopts_no_launcher";
+fn a_subreaper_ancestor_adopts_no_escapee_as_launcher() {
+    const NAME: &str = "supervisor::identity_tests::a_subreaper_ancestor_adopts_no_escapee_as_launcher";
     // The wrapper's rerun inherits the marker's path from the environment it was given.
     let rerun = |role: &str, marker: Option<&Path>| {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -400,14 +409,6 @@ fn a_subreaper_ancestor_cannot_be_registered_and_adopts_no_launcher() {
             // The escapee was adopted by the subreaper above the supervisor.
             let adopted = crate::procinfo::info(escaped.peer.id.pid).unwrap();
             assert_eq!(adopted.ppid, wrapper.id.pid, "the subreaper did not adopt the escapee");
-            assert_eq!(
-                escaped
-                    .supervisor
-                    .register_launcher("lead", wrapper)
-                    .map_err(|error| error.code()),
-                Err("caller_not_admitted"),
-                "the subreaper above the supervisor was registered"
-            );
             assert_escape_refused(&escaped);
             std::fs::write(std::env::var_os(SUBREAPER_MARKER).unwrap(), "ran").unwrap();
         }

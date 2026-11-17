@@ -144,7 +144,9 @@ fn a_child_that_leaves_for_a_session_of_its_own_is_still_its_session() {
         return;
     };
     assert_eq!(attack_outcome(&attack.scratch), "left");
-    let refused = attack.supervisor.operator(Peer::of_pid(attack.attacker));
+    let refused = attack
+        .supervisor
+        .stop(&forged_operator(Peer::of_pid(attack.attacker)), attack.a.id);
     assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
     let claim = Caller::principal("lead", Peer::of_pid(attack.attacker)).unwrap();
     // As the configured launcher it would launch at depth 1 and own A; as C it sits at depth 2.
@@ -184,28 +186,37 @@ fn a_process_below_the_supervisor_in_no_session_is_no_launcher() {
 }
 
 #[test]
-fn only_a_peer_outside_the_supervisors_tree_is_made_the_operator() {
+fn the_operator_is_this_process_alone_and_ends_with_its_binding() {
     let scratch = Scratch::new();
     let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
     let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
     // A launched agent running `basemind agent approve` from its shell: a process of the session.
-    let refused = supervisor.operator(inside(&supervisor, launched.id));
+    let refused = supervisor.stop(&forged_operator(inside(&supervisor, launched.id)), launched.id);
     assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
     // A process this process started outside any session.
-    let mut stray = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
-    let refused = supervisor.operator(Peer::of_pid(stray.id()));
-    let _ = stray.kill();
-    let _ = stray.wait();
+    let stray = Stand::new();
+    let refused = supervisor.stop(&forged_operator(stray.peer()), launched.id);
     assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
     assert_eq!(
-        outcomes(&audit, AuditEvent::Refusal),
+        outcomes(&audit, AuditEvent::Stop),
         ["caller_not_admitted", "caller_not_admitted"]
     );
-    // The operator's own process, outside the tree.
-    let operator = supervisor.operator(own()).unwrap();
+    // Minted in this process, it stops any session; released, it is refused from then on.
+    let operator = supervisor.operator().unwrap();
+    let second = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
     supervisor.stop(&operator, launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
+    assert!(supervisor.unregister_operator());
+    assert_eq!(
+        supervisor.stop(&operator, second.id).map_err(|error| error.code()),
+        Err("caller_not_admitted"),
+        "an operator outlived its binding"
+    );
+    assert_eq!(
+        supervisor.operator().map(|_| ()).map_err(|error| error.code()),
+        Err("caller_not_admitted")
+    );
 }
 
 /// An OpenCode session whose stand-in starts `perl <attack>` in the background, then completes

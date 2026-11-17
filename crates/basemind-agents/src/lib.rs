@@ -29,11 +29,13 @@
 //! decides by that process rather than by what the caller claims; nothing is trusted by
 //! default. Each harness leads a POSIX session of its own, so a process inside one (by session
 //! id or ancestry) is that session, at the depth the supervisor recorded, and its token has to
-//! be that session's. The engine binds each configured launcher and the operator to one process,
-//! write-once while it runs: a child it spawned ([`Supervisor::register_launcher_child`],
-//! [`Supervisor::register_operator_child`]) or its own process; a caller is that
-//! principal, or the operator ([`Supervisor::operator`]), only from that process or a
-//! descendant of it. Any other process is refused. Every registration, launch, stop, exit and
+//! be that session's. The supervisor lives in the lead's own process, and the embedding binds
+//! each configured launcher, write-once until it releases it, to that process
+//! ([`Supervisor::register_launcher_in_process`]) or to a child it spawned and still holds
+//! ([`Supervisor::register_launcher_child`]); a caller is that principal only from that process
+//! (or the child's descendants). Nothing is registered from a connection. The operator exists
+//! in-process only ([`Supervisor::operator`]), for decisions the human makes through the
+//! embedding's own channel. Any other process is refused. Every registration, launch, stop, exit and
 //! approval decision, and every refusal (coalesced, so a looping caller cannot flood the log),
 //! goes to an [`AuditSink`] ([`FileAuditSink`]: mode 0600, one JSON object per line, capped with
 //! room kept for launches, exits and allows) with fixed outcome codes, the caller as verified,
@@ -141,6 +143,7 @@ mod supervisor_admit;
 mod supervisor_codes;
 mod supervisor_identity;
 mod supervisor_pump;
+mod supervisor_register;
 mod supervisor_types;
 #[cfg(test)]
 mod test_support;

@@ -7,17 +7,18 @@
 //! is therefore attributed to a session by its session id, by its ancestry, or by the detached
 //! processes the supervisor recorded for the session, never by its process group.
 //!
-//! A configured launcher and the operator are each bound by the engine to one process, write-once
-//! while it runs: a child the embedding spawned
-//! ([`Supervisor::register_launcher_child`](crate::Supervisor::register_launcher_child)), the
-//! supervisor's own process, or a peer that is not an ancestor of the supervisor. A caller is
-//! that principal only when its peer is that process or a descendant of it, read link by link
-//! with each parent no younger than its child, and the walk failing closed. A peer in no live
-//! session and under no registered process is refused, whatever it claims: a launched agent's
-//! process that escaped its session (orphaned, double-forked, or started for it by tmux,
-//! launchd or ssh) descends from init, a subreaper or that spawner, and since no ancestor of the
-//! supervisor can be registered, from a registered process only if that process is itself what
-//! started it.
+//! A configured launcher is bound by the embedding to one process, write-once until the
+//! embedding releases it: the supervisor's own process, or a child the embedding spawned and has
+//! not reaped ([`Supervisor::register_launcher_child`](crate::Supervisor::register_launcher_child)).
+//! The operator is bound to the supervisor's own process only. Nothing is bound to the peer of
+//! a connection. A caller is a launcher only when its peer is that process or, for a child, a
+//! descendant of it, read link by link with each parent no younger than its child, and the walk
+//! failing closed; it is the operator only when it is the supervisor's process itself. A peer in
+//! no live session and under no registered process is refused, whatever it claims: a launched
+//! agent's process that escaped its session (orphaned, double-forked, or started for it by tmux,
+//! launchd or ssh) descends from init, a subreaper or that spawner. Neither an ancestor of the
+//! supervisor nor such a spawner can be registered, so it descends from a registered process
+//! only if a registered child is itself what started it.
 
 use crate::peer::Peer;
 use crate::procinfo::{self, ProcId, ProcInfo};
@@ -115,7 +116,8 @@ pub(crate) fn resolve(
             _ => Ok(Resolved::Session(id)),
         },
         Origin::Registered(ids) => match &caller.kind {
-            CallerKind::Operator if table.registered_as(&ids, &Role::Operator) => Ok(Resolved::Operator),
+            // The operator is bound in-process only, and is that process itself, never a descendant.
+            CallerKind::Operator if table.registered_as(&[caller.peer.id], &Role::Operator) => Ok(Resolved::Operator),
             CallerKind::Token(token) => Err(token_refusal(table, token)),
             CallerKind::Principal(principal)
                 if policy.admits(principal) && table.registered_as(&ids, &Role::Launcher(principal.clone())) =>
@@ -149,45 +151,59 @@ fn token_refusal(table: &Table, token: &str) -> SupervisorError {
     }
 }
 
-/// The operator caller for `peer`, when `peer` is, or descends from, the registered operator
-/// process.
+/// The operator caller, for `peer`, the supervisor's own process, when the operator is bound to
+/// it. No other process is ever the operator: not a descendant, not a connection's peer.
 pub(crate) fn mint_operator(table: &Table, peer: Peer) -> Result<Caller, SupervisorError> {
-    match origin(table, &peer) {
-        Origin::Registered(ids) if table.registered_as(&ids, &Role::Operator) => Ok(Caller {
+    if table.registered_as(&[peer.id], &Role::Operator) {
+        Ok(Caller {
             kind: CallerKind::Operator,
             peer,
-        }),
-        Origin::Unknown | Origin::Outside { .. } | Origin::Supervisor => Err(SupervisorError::PeerUnverified),
-        Origin::Registered(_) | Origin::Session(_) | Origin::Below => Err(SupervisorError::CallerNotAdmitted),
+        })
+    } else {
+        Err(SupervisorError::CallerNotAdmitted)
     }
 }
 
-/// The process the engine registers for a role.
+/// The name a role is recorded under.
+pub(crate) fn role_name(role: &Role) -> String {
+    match role {
+        Role::Launcher(principal) => principal.clone(),
+        Role::Operator => "operator".to_owned(),
+    }
+}
+
+/// The process the embedding registers for a role. There is no source for the peer of a
+/// connection: any process of the user, an escaped agent's included, can connect to a socket
+/// the user can, and an orphan of an earlier run can be waiting for the role before the first.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Source {
-    /// The peer of a connection: accepted only outside every session and outside the
-    /// supervisor's tree, with its ancestry read up to init, and never an ancestor of the
-    /// supervisor, since an orphan of a session can be reparented to one (a Linux subreaper).
-    Peer(Peer),
-    /// A child the embedding spawned itself: its parent is the supervisor's process.
+    /// A child the embedding spawned itself and has not reaped: its parent is the supervisor's
+    /// process and its pid is still its own. A launcher only.
     Child(u32),
+    /// A child the embedding spawned that has already exited: refused.
+    Exited(u32),
     /// The supervisor's own process, registered only as itself.
     InProcess,
 }
 
-/// Whether `id` is still the process it was and has not exited.
-fn running(id: ProcId) -> bool {
-    procinfo::info(id.pid).is_some_and(|now| now.start == id.start && !now.zombie)
+impl Source {
+    /// The pid a refusal of this source records.
+    pub(crate) fn pid(self) -> u32 {
+        match self {
+            Self::Child(pid) | Self::Exited(pid) => pid,
+            Self::InProcess => std::process::id(),
+        }
+    }
 }
 
-/// Binds `role` to the process `source` names. A binding is write-once while its process runs;
-/// once that process is gone the role can be bound again. Returns the binding it replaced.
+/// Binds `role` to the process `source` names. A binding is write-once: it is released only by
+/// an explicit unregistration, also once its process is gone.
 pub(crate) fn register(
     policy: &crate::LaunchPolicy,
     table: &mut Table,
     role: Role,
     source: Source,
-) -> Result<(ProcId, Option<ProcId>), SupervisorError> {
+) -> Result<ProcId, SupervisorError> {
     if let Role::Launcher(principal) = &role
         && !policy.admits(principal)
     {
@@ -196,6 +212,9 @@ pub(crate) fn register(
     let supervisor = Peer::this_process().map_err(|_| SupervisorError::PeerUnverified)?;
     let id = match source {
         Source::InProcess => supervisor.id,
+        Source::Exited(_) => return Err(SupervisorError::PeerUnverified),
+        // The operator is in-process only; no public path reaches this.
+        Source::Child(_) if role == Role::Operator => return Err(SupervisorError::CallerNotAdmitted),
         Source::Child(pid) => {
             let child = i32::try_from(pid)
                 .ok()
@@ -212,39 +231,12 @@ pub(crate) fn register(
             }
             child.id()
         }
-        Source::Peer(peer) => {
-            let own = procinfo::info(supervisor.id.pid)
-                .as_ref()
-                .and_then(procinfo::ancestors)
-                .ok_or(SupervisorError::PeerUnverified)?;
-            if own.procs.iter().any(|ancestor| ancestor.id() == peer.id) {
-                return Err(SupervisorError::CallerNotAdmitted);
-            }
-            match origin(table, &peer) {
-                Origin::Outside { complete: true } | Origin::Registered(_) => {}
-                Origin::Session(_) | Origin::Below | Origin::Supervisor => {
-                    return Err(SupervisorError::CallerNotAdmitted);
-                }
-                Origin::Outside { complete: false } | Origin::Unknown => return Err(SupervisorError::PeerUnverified),
-            }
-            // An ancestor past a link that could not be read cannot be ruled out.
-            if !own.complete {
-                return Err(SupervisorError::PeerUnverified);
-            }
-            peer.id
-        }
     };
-    let previous = table
-        .registered
-        .iter()
-        .find(|(bound, _)| *bound == role)
-        .map(|(_, previous)| *previous);
-    if previous.is_some_and(running) {
+    if table.registered.iter().any(|(bound, _)| *bound == role) {
         return Err(SupervisorError::RoleBound);
     }
-    table.registered.retain(|(bound, _)| *bound != role);
     table.registered.push((role, id));
-    Ok((id, previous))
+    Ok(id)
 }
 
 impl Table {

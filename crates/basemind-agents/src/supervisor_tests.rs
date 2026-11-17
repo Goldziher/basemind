@@ -159,6 +159,15 @@ pub(super) fn inside(supervisor: &Supervisor, id: SessionId) -> Peer {
     Peer::of_pid(supervisor.status(id).unwrap().pid.unwrap())
 }
 
+/// A caller of the operator's kind on `peer`, which no public constructor makes: what a forged
+/// or misdirected operator caller would be.
+pub(super) fn forged_operator(peer: Peer) -> Caller {
+    Caller {
+        kind: crate::supervisor_types::CallerKind::Operator,
+        peer,
+    }
+}
+
 pub(super) fn lead() -> Caller {
     Caller::principal("lead", own()).unwrap()
 }
@@ -320,7 +329,7 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
             claude,
             "caller_not_admitted",
         ),
-        (supervisor.operator(own()).unwrap(), claude, "caller_not_admitted"),
+        (supervisor.operator().unwrap(), claude, "caller_not_admitted"),
         // A principal with the launched prefix is never a configured launcher.
         (
             Caller::principal("launched-claude-0-00000000", own()).unwrap(),
@@ -573,9 +582,7 @@ fn only_the_launcher_or_the_operator_stops_a_session_and_reaping_forgets_it() {
         "unknown_session"
     );
     assert_eq!(supervisor.status(launched.id).unwrap().state, SessionState::Running);
-    supervisor
-        .stop(&supervisor.operator(own()).unwrap(), launched.id)
-        .unwrap();
+    supervisor.stop(&supervisor.operator().unwrap(), launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
     supervisor.stop(&lead(), launched.id).unwrap();
     assert_eq!(
