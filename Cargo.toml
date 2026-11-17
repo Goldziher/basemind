@@ -203,12 +203,12 @@ mimalloc = "0.1"
 notify = "8"
 notify-debouncer-full = "0.7"
 nucleo-matcher = "0.3.1"
-oxc_allocator = { version = "0.158.0", optional = true }
-oxc_parser = { version = "0.158.0", optional = true }
+oxc_allocator = { version = "0.159.0", optional = true }
+oxc_parser = { version = "0.159.0", optional = true }
 oxc_resolver = { version = "11.24.3", optional = true }
-oxc_semantic = { version = "0.158.0", optional = true }
-oxc_span = { version = "0.158.0", optional = true }
-oxc_syntax = { version = "0.158.0", optional = true }
+oxc_semantic = { version = "0.159.0", optional = true }
+oxc_span = { version = "0.159.0", optional = true }
+oxc_syntax = { version = "0.159.0", optional = true }
 rayon = "1"
 regex = "1.13.1"
 regex-syntax = "0.8"
@@ -240,7 +240,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.27"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.1", path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.25.0"
+tree-sitter-language-pack = "1.25.2"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.1", path = "crates/tree-sitter-stack-graphs", optional = true }
 xberg = { version = "1.4.0", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 zstd = "0.14.4"
@@ -254,7 +254,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 proc-macro2 = "1"
 proptest = "1"
 rmcp = { version = "3.10", features = ["client", "transport-async-rw", "transport-child-process"] }
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 
 [lints]
