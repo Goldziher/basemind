@@ -97,7 +97,6 @@ class Isolation:
         env["BASEMIND_DATA_HOME"] = str(self.data_home)
         env["BASEMIND_COMMS_DIR"] = str(self.comms_dir)
         env[SESSION_ENV] = self.session
-        env.setdefault("RUST_BACKTRACE", "1")
         if extra:
             env.update(extra)
         check_env(env, self)
