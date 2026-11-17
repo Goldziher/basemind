@@ -175,7 +175,10 @@ pub(super) fn open_index_read_only(
         return Ok((None, !index.files.is_empty()));
     };
     let db = group.open_view(view_id, &memory_store_dir(root), true)?;
-    if !file_map_matches(index, &group, &db, view_id)? {
+    // A view with no file map yet claims nothing, so it is read as it stands, as a view with a
+    // database of its own is. ~keep
+    let claims_nothing = index.group_incarnation == 0 && index.files.is_empty() && index.generation == 0;
+    if !claims_nothing && !file_map_matches(index, &group, &db, view_id)? {
         return Ok((None, !index.files.is_empty()));
     }
     Ok((Some(db), false))
