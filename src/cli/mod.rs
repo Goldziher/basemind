@@ -7,7 +7,8 @@
 //! has shorthands and administrative commands with no MCP tool (ADR-0018).
 //!
 //! Layout:
-//! - `context.rs` — one-shot server construction.
+//! - `context.rs` — one-shot server construction, or the daemon session a call is forwarded over.
+//! - `forward.rs` — the relay session that forwards a call to the daemon when it is up.
 //! - `render.rs` — JSON extraction + generic human renderer.
 //! - `code.rs` / `git.rs` / `memory.rs` / `admin.rs` — subcommand groups.
 
@@ -19,6 +20,8 @@ pub mod code;
 pub mod comms_daemon;
 pub mod context;
 pub mod exit;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod forward;
 pub mod git;
 pub mod hook;
 pub mod init;
@@ -71,8 +74,8 @@ pub enum ToolCmd {
 /// Relative inputs are taken relative to the repository root (not the shell's cwd). Paths that
 /// escape or fall outside the repository can't match an indexed file, so the raw input is kept and
 /// the downstream tool reports "file not indexed" rather than silently mangling it.
-pub(crate) fn resolve_path(server: &crate::mcp::BasemindServer, path: &str) -> crate::path::RelPath {
-    match crate::path::normalize_query_path(path, &server.state.shared.root) {
+pub(crate) fn resolve_path(tools: &context::Tools, path: &str) -> crate::path::RelPath {
+    match crate::path::normalize_query_path(path, tools.root()) {
         Some(rel) => crate::path::RelPath::from(rel),
         None => crate::path::RelPath::from(path),
     }
@@ -137,7 +140,8 @@ pub fn run(
         .context("build tokio runtime")?;
 
     runtime.block_on(async move {
-        let server = context::build_server(root, view, documents)?;
+        let forward = !matches!(&cmd, ToolCmd::Admin(admin) if admin::runs_in_process(admin));
+        let tools = context::build_tools(root, view, documents, forward).await?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
         let opts = Emit {
@@ -146,11 +150,11 @@ pub fn run(
             called: Instant::now(),
         };
         match cmd {
-            ToolCmd::Code(c) => code::run(&server, c, &opts, &mut out).await?,
-            ToolCmd::Git(g) => git::run(&server, g, &opts, &mut out).await?,
-            ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
-            ToolCmd::Admin(a) => admin::run(&server, a, &opts, &mut out).await?,
-            ToolCmd::Status => admin::run_status(&server, &opts, &mut out).await?,
+            ToolCmd::Code(c) => code::run(&tools, c, &opts, &mut out).await?,
+            ToolCmd::Git(g) => git::run(&tools, g, &opts, &mut out).await?,
+            ToolCmd::Memory(m) => memory::run(&tools, m, &opts, &mut out).await?,
+            ToolCmd::Admin(a) => admin::run(&tools, a, &opts, &mut out).await?,
+            ToolCmd::Status => admin::run_status(&tools, &opts, &mut out).await?,
         }
         out.flush().context("flush stdout")?;
         Ok(())

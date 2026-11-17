@@ -320,6 +320,7 @@ impl Broker {
             accepted: false,
             code: Some(code.to_string()),
             detail,
+            cli: false,
         };
         let hello = match relay::accept_hello(&mut stream).await {
             Ok(hello) => hello,
@@ -371,6 +372,7 @@ impl Broker {
             accepted: true,
             code: None,
             detail: None,
+            cli: hello.client == relay::RelayClient::Cli,
         };
         if let Err(error) = relay::write_welcome(&mut stream, &welcome).await {
             tracing::warn!(%error, "relay: sending welcome failed");
@@ -395,12 +397,17 @@ impl Broker {
                 }
             }
         };
-        let server = crate::mcp::BasemindServer::from_shared(
+        let mut server = crate::mcp::BasemindServer::from_shared(
             shared,
             principal.as_str().to_string(),
             Arc::clone(&self.heavy_admission),
             agents,
         );
+        // ~keep The client kind is the peer's own claim, so only this local socket or pipe honours it:
+        // ~keep the HTTP front-end builds its sessions with `from_shared` alone.
+        if hello.client == relay::RelayClient::Cli {
+            server = server.for_cli();
+        }
         let (read_half, write_half) = tokio::io::split(stream);
         match rmcp::ServiceExt::serve(server, (read_half, write_half)).await {
             Ok(running) => {

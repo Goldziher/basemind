@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- With the comms daemon up, a CLI tool command on the working view forwards its whole call to the
+  daemon over one relay session (a `cli` client in the relay hello) instead of opening the store
+  itself; the output and exit codes are unchanged. Against a daemon too old to take the call it exits
+  `4` and names `basemind comms stop` (ADR-0039).
 - A CLI or hook resolving its agent id no longer creates a workspace cache directory that holds only that id: the
   id is derived from the workspace's cache path. A workspace whose id an older basemind persisted keeps it.
 - **BREAKING: the MCP tools are one per job.** The mode-dispatched `code`, `git`, `memory` and `admin`

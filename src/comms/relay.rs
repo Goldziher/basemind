@@ -72,6 +72,24 @@ pub struct RelayHello {
     /// configured id that was refused.
     #[serde(default)]
     pub notices: Vec<String>,
+    /// Which process opens the session. Absent from an older relay's hello, which reads as a
+    /// [`RelayClient::Serve`]; an older daemon ignores it, and its welcome then carries no
+    /// [`RelayWelcome::cli`] acknowledgement.
+    #[serde(default)]
+    pub client: RelayClient,
+}
+
+/// The process behind a relay session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayClient {
+    /// `basemind serve`, relaying an MCP host's stdio session: the agent surface.
+    #[default]
+    Serve,
+    /// A `basemind` CLI command forwarding its one tool call. The session answers a failed call as a
+    /// JSON-RPC error, so the CLI keeps its exit code, and also runs the CLI-only commands that are
+    /// not MCP tools. Only the daemon's local socket or pipe accepts it.
+    Cli,
 }
 
 /// The daemon's reply to a [`RelayHello`].
@@ -95,6 +113,10 @@ pub struct RelayWelcome {
     /// nothing to add.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Set when the daemon accepted a [`RelayClient::Cli`] session as one. A daemon older than the
+    /// client kind leaves it out, which a CLI reads as a daemon it cannot forward to.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cli: bool,
 }
 
 /// The tokens a daemon declines a relay session with ([`RelayWelcome::code`]).
@@ -354,6 +376,7 @@ mod tests {
             principal: Principal::parse("claude-code").expect("principal"),
             host: None,
             notices: Vec::new(),
+            client: RelayClient::Serve,
         };
         let bytes = encode(&hello).expect("encode");
         let back: RelayHello = decode(&bytes).expect("decode");
@@ -368,6 +391,7 @@ mod tests {
             accepted: false,
             code: Some("relay_proto_skew".to_string()),
             detail: None,
+            cli: false,
         };
         let bytes = encode(&welcome).expect("encode");
         let back: RelayWelcome = decode(&bytes).expect("decode");
@@ -402,9 +426,60 @@ mod tests {
             accepted: false,
             code: Some(decline::WORKSPACE_LOCKED.to_string()),
             detail: Some("pid 7".to_string()),
+            cli: false,
         };
         let read: WelcomeWithoutDetail = decode(&encode(&new).expect("encode")).expect("a welcome with detail");
         assert_eq!(read.code.as_deref(), Some(decline::WORKSPACE_LOCKED));
+    }
+
+    /// The hello as a build without the client kind declares it.
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct HelloWithoutClient {
+        relay_proto_ver: u32,
+        root: std::path::PathBuf,
+        view: String,
+        principal: Principal,
+        host: Option<String>,
+        notices: Vec<String>,
+    }
+
+    /// The client kind needs no relay protocol bump: an older relay's hello is a `Serve` session, an
+    /// older daemon reads a CLI's hello and ignores the kind, and its welcome carries no `cli`
+    /// acknowledgement, which is how a CLI tells it apart.
+    #[test]
+    fn the_client_kind_decodes_across_builds_with_and_without_it() {
+        let principal = Principal::parse("claude-code").expect("principal");
+        let old = HelloWithoutClient {
+            relay_proto_ver: RELAY_PROTO_VER,
+            root: "/repo".into(),
+            view: "working".to_string(),
+            principal: principal.clone(),
+            host: None,
+            notices: Vec::new(),
+        };
+        let read = decode_hello(&encode(&old).expect("encode")).expect("an older relay's hello");
+        assert_eq!(read.client, RelayClient::Serve);
+
+        let cli = RelayHello {
+            relay_proto_ver: RELAY_PROTO_VER,
+            root: "/repo".into(),
+            view: "working".to_string(),
+            principal,
+            host: None,
+            notices: Vec::new(),
+            client: RelayClient::Cli,
+        };
+        let read: HelloWithoutClient = decode(&encode(&cli).expect("encode")).expect("an older daemon reads it");
+        assert_eq!(read.view, "working");
+
+        let old_welcome = WelcomeWithoutDetail {
+            relay_proto_ver: RELAY_PROTO_VER,
+            daemon_version: "0.33.0".to_string(),
+            accepted: true,
+            code: None,
+        };
+        let read: RelayWelcome = decode(&encode(&old_welcome).expect("encode")).expect("an older daemon's welcome");
+        assert!(read.accepted && !read.cli);
     }
 
     #[test]
@@ -434,6 +509,7 @@ mod tests {
             principal: Principal::parse("claude-code").expect("principal"),
             host: None,
             notices: Vec::new(),
+            client: RelayClient::Serve,
         };
         let error = client_handshake(&mut client, &hello)
             .await
@@ -469,6 +545,7 @@ mod tests {
             principal: Principal::parse("claude-code").expect("principal"),
             host: None,
             notices: Vec::new(),
+            client: RelayClient::Serve,
         };
         let server_task = tokio::spawn(async move {
             let mut magic = [0u8; RELAY_MAGIC.len()];
@@ -501,6 +578,7 @@ mod tests {
             principal: Principal::parse("claude-code").expect("principal"),
             host: None,
             notices: Vec::new(),
+            client: RelayClient::Serve,
         };
         let welcome = RelayWelcome {
             relay_proto_ver: RELAY_PROTO_VER,
@@ -508,6 +586,7 @@ mod tests {
             accepted: true,
             code: None,
             detail: None,
+            cli: true,
         };
 
         let server_hello = hello.clone();

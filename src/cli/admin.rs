@@ -13,6 +13,8 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::mcp::BasemindServer;
+
+use super::context::Tools;
 use crate::mcp::params::*;
 use crate::store_gc::{self, CacheComponent};
 
@@ -83,12 +85,19 @@ fn read_stdin() -> Result<String> {
 }
 
 /// Dispatch an `admin` subcommand through the in-process server.
-pub async fn run(server: &BasemindServer, cmd: AdminCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &Tools, cmd: AdminCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let (tool, result) = match cmd {
-        AdminCmd::Repo => ("index_status", server.index_status_call(IndexStatusParams {}).await),
+        AdminCmd::Repo => (
+            "index_status",
+            tools
+                .call("index_status", IndexStatusParams {}, async |s, p| {
+                    s.index_status_call(p).await
+                })
+                .await,
+        ),
         AdminCmd::Telemetry { window, tool } => (
             "telemetry",
-            server
+            in_process(tools)?
                 .telemetry_call(TelemetrySummaryParams {
                     window: window.map(|w| w.as_str().to_string()),
                     tool,
@@ -96,7 +105,7 @@ pub async fn run(server: &BasemindServer, cmd: AdminCmd, opts: &Emit, out: &mut 
                 .await,
         ),
         AdminCmd::Tokens { .. } => return run_tokens(out),
-        AdminCmd::Eval(args) => return crate::eval::run(server, &args, out).await,
+        AdminCmd::Eval(args) => return crate::eval::run(in_process(tools)?, &args, out).await,
     };
 
     let r = run_tool(tool, result)?;
@@ -135,9 +144,28 @@ pub enum CacheCmd {
     },
 }
 
+/// The in-process server a command that is not a tool call runs on ([`runs_in_process`]).
+fn in_process(tools: &Tools) -> Result<&BasemindServer> {
+    tools
+        .local()
+        .context("this admin command runs in this process, not in the daemon")
+}
+
+/// Whether `cmd` runs in this process even with the daemon up: it is not a tool call.
+pub(crate) fn runs_in_process(cmd: &AdminCmd) -> bool {
+    !matches!(cmd, AdminCmd::Repo)
+}
+
 /// `basemind status`: index health plus repository identity, the body of the `index_status` tool.
-pub async fn run_status(server: &BasemindServer, opts: &Emit, out: &mut impl Write) -> Result<()> {
-    let r = run_tool("index_status", server.index_status_call(IndexStatusParams {}).await)?;
+pub async fn run_status(tools: &Tools, opts: &Emit, out: &mut impl Write) -> Result<()> {
+    let r = run_tool(
+        "index_status",
+        tools
+            .call("index_status", IndexStatusParams {}, async |s, p| {
+                s.index_status_call(p).await
+            })
+            .await,
+    )?;
     emit("index_status", &r, opts, out)
 }
 

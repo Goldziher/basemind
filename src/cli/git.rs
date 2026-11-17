@@ -10,8 +10,8 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Subcommand;
 
+use super::context::Tools;
 use crate::engine::Workspace;
-use crate::mcp::BasemindServer;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
@@ -206,7 +206,7 @@ fn log() -> GitLogParams {
 }
 
 /// Dispatch a `git` subcommand through the in-process server.
-pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let (tool, result) = match cmd {
         GitCmd::Log {
             path,
@@ -220,7 +220,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             max_tokens,
         } => {
             let p = GitLogParams {
-                path: path.map(|path| resolve_path(server, &path)),
+                path: path.map(|path| resolve_path(tools, &path)),
                 query,
                 author,
                 symbol,
@@ -230,7 +230,12 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 cursor: cursor.map(Cursor),
                 max_tokens,
             };
-            ("git_log", server.op(p, Workspace::git_log).await)
+            (
+                "git_log",
+                tools
+                    .call("git_log", p, async |s, p| s.op(p, Workspace::git_log).await)
+                    .await,
+            )
         }
         GitCmd::Recent {
             limit,
@@ -243,7 +248,12 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 max_tokens,
                 ..log()
             };
-            ("git_log", server.op(p, Workspace::git_log).await)
+            (
+                "git_log",
+                tools
+                    .call("git_log", p, async |s, p| s.op(p, Workspace::git_log).await)
+                    .await,
+            )
         }
         GitCmd::Touching {
             path,
@@ -252,13 +262,18 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             max_tokens,
         } => {
             let p = GitLogParams {
-                path: Some(resolve_path(server, &path)),
+                path: Some(resolve_path(tools, &path)),
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
                 ..log()
             };
-            ("git_log", server.op(p, Workspace::git_log).await)
+            (
+                "git_log",
+                tools
+                    .call("git_log", p, async |s, p| s.op(p, Workspace::git_log).await)
+                    .await,
+            )
         }
         GitCmd::Search {
             query,
@@ -275,14 +290,24 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 max_tokens,
                 ..log()
             };
-            ("git_log", server.op(p, Workspace::git_log).await)
+            (
+                "git_log",
+                tools
+                    .call("git_log", p, async |s, p| s.op(p, Workspace::git_log).await)
+                    .await,
+            )
         }
         GitCmd::Show { rev } => {
             let p = GitLogParams {
                 rev: Some(rev),
                 ..log()
             };
-            ("git_log", server.op(p, Workspace::git_log).await)
+            (
+                "git_log",
+                tools
+                    .call("git_log", p, async |s, p| s.op(p, Workspace::git_log).await)
+                    .await,
+            )
         }
         GitCmd::SymbolHistory {
             path,
@@ -292,14 +317,19 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             cursor,
         } => {
             let p = GitLogParams {
-                path: Some(resolve_path(server, &path)),
+                path: Some(resolve_path(tools, &path)),
                 symbol: Some(name),
                 line,
                 limit,
                 cursor: cursor.map(Cursor),
                 ..log()
             };
-            ("git_log", server.op(p, Workspace::git_log).await)
+            (
+                "git_log",
+                tools
+                    .call("git_log", p, async |s, p| s.op(p, Workspace::git_log).await)
+                    .await,
+            )
         }
         GitCmd::Blame {
             path,
@@ -312,7 +342,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             max_tokens,
         } => {
             let p = GitBlameParams {
-                path: resolve_path(server, &path),
+                path: resolve_path(tools, &path),
                 line,
                 end_line,
                 symbol,
@@ -321,7 +351,12 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 cursor: cursor.map(Cursor),
                 max_tokens,
             };
-            ("git_blame", server.op(p, Workspace::git_blame).await)
+            (
+                "git_blame",
+                tools
+                    .call("git_blame", p, async |s, p| s.op(p, Workspace::git_blame).await)
+                    .await,
+            )
         }
         GitCmd::BlameSymbol {
             path,
@@ -333,7 +368,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             max_tokens,
         } => {
             let p = GitBlameParams {
-                path: resolve_path(server, &path),
+                path: resolve_path(tools, &path),
                 line,
                 end_line: None,
                 symbol: Some(name),
@@ -342,7 +377,12 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 cursor: cursor.map(Cursor),
                 max_tokens,
             };
-            ("git_blame", server.op(p, Workspace::git_blame).await)
+            (
+                "git_blame",
+                tools
+                    .call("git_blame", p, async |s, p| s.op(p, Workspace::git_blame).await)
+                    .await,
+            )
         }
         GitCmd::Diff {
             path,
@@ -351,12 +391,17 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             structural,
         } => {
             let p = GitDiffParams {
-                path: path.map(|path| resolve_path(server, &path)),
+                path: path.map(|path| resolve_path(tools, &path)),
                 from,
                 to,
                 structural: structural.then_some(true),
             };
-            ("git_diff", server.op_unpaged(p, Workspace::git_diff).await)
+            (
+                "git_diff",
+                tools
+                    .call("git_diff", p, async |s, p| s.op_unpaged(p, Workspace::git_diff).await)
+                    .await,
+            )
         }
         GitCmd::Status => {
             let p = GitDiffParams {
@@ -365,21 +410,33 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 to: None,
                 structural: None,
             };
-            ("git_diff", server.op_unpaged(p, Workspace::git_diff).await)
+            (
+                "git_diff",
+                tools
+                    .call("git_diff", p, async |s, p| s.op_unpaged(p, Workspace::git_diff).await)
+                    .await,
+            )
         }
         GitCmd::DiffOutline { path, rev } => {
             let p = GitDiffParams {
-                path: Some(resolve_path(server, &path)),
+                path: Some(resolve_path(tools, &path)),
                 from: rev,
                 to: None,
                 structural: Some(true),
             };
-            ("git_diff", server.op_unpaged(p, Workspace::git_diff).await)
+            (
+                "git_diff",
+                tools
+                    .call("git_diff", p, async |s, p| s.op_unpaged(p, Workspace::git_diff).await)
+                    .await,
+            )
         }
         GitCmd::Churn { window, top_k } => (
             "git_churn",
-            server
-                .cli_op(HotFilesParams { window, top_k }, Workspace::git_churn)
+            tools
+                .call("git_churn", HotFilesParams { window, top_k }, async |s, p| {
+                    s.cli_op(p, Workspace::git_churn).await
+                })
                 .await,
         ),
         GitCmd::ByPath {
@@ -390,8 +447,9 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             max_tokens,
         } => (
             "git_by_path",
-            server
-                .cli_op(
+            tools
+                .call(
+                    "git_by_path",
                     FindCommitsByPathParams {
                         pattern,
                         window,
@@ -399,7 +457,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                         cursor: cursor.map(Cursor),
                         max_tokens,
                     },
-                    Workspace::git_by_path,
+                    async |s, p| s.cli_op(p, Workspace::git_by_path).await,
                 )
                 .await,
         ),

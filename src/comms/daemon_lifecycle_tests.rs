@@ -153,6 +153,7 @@ async fn a_relay_handshake_that_loses_to_a_stop_is_declined_as_draining() {
         principal: crate::comms::v2::Principal::parse("claude-code").expect("principal"),
         host: None,
         notices: Vec::new(),
+        client: crate::comms::relay::RelayClient::Serve,
     };
     let welcome = crate::comms::relay::client_handshake(&mut client, &hello)
         .await
