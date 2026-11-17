@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# basemind MCP launcher — ensures a version-matched basemind binary is available,
-# scripts, not a compiled binary. This launcher installs a version-matched
+# basemind MCP launcher: installs the basemind binary matching this plugin's version (downloaded and
+# checksum-verified on first use), then execs it with the original arguments.
 set -euo pipefail
 
 # Original stdio args, forwarded to whichever binary we exec. Captured here because a ~keep
@@ -385,6 +385,11 @@ cleanup() {
   [ -n "$STAGING" ] && rm -rf "$STAGING" 2>/dev/null || true
 }
 trap cleanup EXIT
+# A signal ends the run through `exit`, which runs the EXIT trap, so a launcher stopped by a hook's ~keep
+# time limit or a closed host leaves no lock: the next start would otherwise wait 120 s on it. ~keep
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Newest PUBLISHED release tag ("vX.Y.Z"), or empty. GitHub exposes only non-draft, non-prerelease ~keep
 # releases at /releases/latest. That makes it the best FIRST candidate but NOT a guarantee of ~keep
