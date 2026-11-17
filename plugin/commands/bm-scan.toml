@@ -26,7 +26,7 @@ basemind scan ${ARGUMENTS:-}
 
 - Report files scanned / updated / skipped and elapsed time. Non-extractable files are
   **skipped**, not failures.
-- If the basemind daemon is running, `scan` is forwarded to it and reports `scan via daemon`. Another
+- If a daemon is running, `scan` is forwarded to it and reports `scan via daemon`. Another
   process holding the store lock (`basemind watch`, another scan) makes `scan` exit 3 and name it.
 
 ## See also

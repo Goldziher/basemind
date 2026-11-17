@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.4'
 scope = 'all'
-tree = 'sha256:93cf66d3f1fdf1606aafa098c99cf5f9f8730c0269e069ab9c66a3cf948f2896'
+tree = 'sha256:bdb437bc5177ae7df99fc24074b4ca6ed822971e6b03b906a07dad00d5499497'
 
 [[item]]
 kind = 'command'
@@ -28,7 +28,7 @@ digest = 'sha256:aed27c998273d6a55cc022347c381242f219695c9cf7f703074f0f7d5126b22
 kind = 'command'
 id = 'bm-scan'
 path = 'commands/bm-scan.md'
-digest = 'sha256:09aac82e590d3c40fad4b20edbb3091efb9684d0e887ddecf09c35c2bf6c0118'
+digest = 'sha256:8e29e03df9c43cb533a9dca986a183fc194df07aff946bfbdae81f0795b79eed'
 
 [[item]]
 kind = 'command'
@@ -94,7 +94,7 @@ digest = 'sha256:317244207c6d3aa8f73ac1be8ee47abafe753287669d4e68d797a27f934879a
 kind = 'skill'
 id = 'basemind-scan'
 path = 'skills/basemind-scan'
-digest = 'sha256:c9a816c3019a8ded2b089f4db4506e46a43fd13ed04651aac5a52073345f82ef'
+digest = 'sha256:25773c5f1c4b80f668cf4c39380bcdb40d114309ff484d5daea7b3ee6aa38ce9'
 
 [[item]]
 kind = 'skill'

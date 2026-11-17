@@ -6,8 +6,8 @@ description: Build or refresh the basemind index by running `basemind scan` via 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:2663e8f6c476489e6b58d094ecb976c62f4845490a84b332e69e93b8f3d9da9a
-Source-Hash: blake3:e04000860518cfe2d5a383a6f5f2c06662ef3bd7e62970921ce8d941b0940e20
+Content-Hash: blake3:e69a233418e2678e1a9d84d48991ca59046bcc3ae1bb9b57c795a0bc684bcf40
+Source-Hash: blake3:4d632858bc9c1e1cc25c6d72da03e532d15f2046b01eeb925a5a669d622811bc
 Schema-Version: v1
 -->
 
@@ -37,7 +37,7 @@ basemind scan ${ARGUMENTS:-}
 
 - Report files scanned / updated / skipped and elapsed time. Non-extractable files are
   **skipped**, not failures.
-- If the basemind daemon is running, `scan` is forwarded to it and reports `scan via daemon`. Another
+- If a daemon is running, `scan` is forwarded to it and reports `scan via daemon`. Another
   process holding the store lock (`basemind watch`, another scan) makes `scan` exit 3 and name it.
 
 ## See also

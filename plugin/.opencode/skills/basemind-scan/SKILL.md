@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:9248067ea3093923c58e32859bbea1a15dc94bdfe4b02742446b3fecd3b0caa5
-Source-Hash: blake3:e04000860518cfe2d5a383a6f5f2c06662ef3bd7e62970921ce8d941b0940e20
+Content-Hash: blake3:769035726f8df4af4a77c5bb9e10c33e2ad8f5396f4e1f7787de0c530ec827e1
+Source-Hash: blake3:4d632858bc9c1e1cc25c6d72da03e532d15f2046b01eeb925a5a669d622811bc
 Schema-Version: v1
 -->
 
@@ -57,7 +57,7 @@ use it first: a bare `basemind` from `PATH` can be a different version over the 
   in `code_symbols`, `code_outline` or `code_grep`; `find_files` lists them). Anything that is neither code nor an
   extractable document is **skipped**, not counted as a failure. Existing indexes migrate on the
   next scan, which also reclaims stale blobs (`cleanup: reclaimed N orphaned blob(s)`).
-- If the basemind daemon is running, `scan` is forwarded to it and prints `scan via daemon`; it never
+- If a daemon is running, `scan` is forwarded to it and prints `scan via daemon`; it never
   starts one. A flag the daemon cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a
   `--documents-*` / `--llm-*` override) exits 2 naming it. Another process holding the store lock
   (`basemind watch`, another scan) makes `scan` exit 3 and name the holder.
