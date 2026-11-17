@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:d40ee294a62f6353280fbb1a93df3d74ef311fbbb12e9b98eb1ab66002990671
-Source-Hash: blake3:4790ee5e237c434ff57929ff0428e9c5da0c4446ea6a6c82b509bbf114d292a7
+Content-Hash: blake3:52e0b20c65ca9fb3b872d21fb715c780759852abe8e53c53c9ba3b0f128e300e
+Source-Hash: blake3:e4ff4daab7f41eaf4e6661886df3e2f56820b2d7aeae1c2115689fc609e3edf4
 Schema-Version: v1
 -->
 
@@ -109,7 +109,7 @@ By default, all commands return **human-readable text**. For machine consumption
 basemind code symbols "parseQuery" --json
 ```
 
-This prints the same JSON the MCP tool returns (`agents` included). Human output
+This prints the same JSON the MCP tool returns (`agent` included). Human output
 never shortens source bodies or diffs; the timing footer is written to stderr. Page long lists with
 `--limit` plus `--cursor <next_cursor>` and bound them with `--max-tokens`.
 
