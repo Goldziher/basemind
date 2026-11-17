@@ -20,7 +20,7 @@ cd basemind
 | Factory Droid | `droid plugin marketplace add https://github.com/Goldziher/basemind`, then `droid plugin install basemind@basemind` |
 | Kimi | Load the generated `plugin/` package with its plugin installer |
 | OpenCode | Add the absolute path to `plugin/.opencode/plugins/basemind.js` to the `plugin` array in `opencode.json` |
-| Hermes | Install the generated wheel below and enable `basemind` |
+| Hermes | Install `basemind-hermes-plugin` at the binary's version (below) and enable `basemind` |
 | Pi | `pi install ./plugin` |
 | Agent Plugins | Load `plugin/plugin.json` and its sibling resources |
 | GitHub Copilot CLI | `copilot plugin marketplace add Goldziher/basemind`, then `copilot plugin install basemind@basemind`; uses the shared Agent Plugins layout |
@@ -30,17 +30,24 @@ local build for launcher-based integrations. Hermes and Pi require `basemind` on
 
 ### Hermes
 
-Use Python 3.11 or newer in the environment that runs Hermes:
+Use Python 3.11 or newer in the environment that runs Hermes, and install the plugin at the version
+of your `basemind` binary, so its skills name the tools that binary serves:
+
+```sh
+python -m pip install "basemind-hermes-plugin==$(basemind --version | awk '{print $2}')"
+hermes plugins enable basemind
+```
+
+For a binary built from a checkout, build the wheel from the same checkout:
 
 ```sh
 uv build --wheel --out-dir dist/hermes plugin/.hermes/package
-python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-0.29.3-py3-none-any.whl
-hermes plugins enable basemind
+python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-*.whl
 ```
 
 Restart Hermes after installation. The plugin registers ten skills, six slash commands, scoped
 session and inbox notifications, and `basemind_call`. The bridge calls the local MCP server's
-domains and returns JSON text. Optional direct MCP configuration in `~/.hermes/config.yaml` is:
+tools and returns JSON text. Optional direct MCP configuration in `~/.hermes/config.yaml` is:
 
 ```yaml
 mcp_servers:
@@ -49,9 +56,7 @@ mcp_servers:
     args: [serve]
 ```
 
-Published PyPI version 0.29.3 predates the current skill-registration fix and MCP bridge. Install
-the source wheel until a newer release includes them. This wheel includes MCP and PyYAML
-dependencies, but no basemind binary.
+The wheel includes MCP and PyYAML dependencies, but no basemind binary.
 
 Missing or invalid required skill resources and required registration errors disable the plugin
 with a named Hermes error. Reinstall a complete wheel before restarting Hermes; optional
@@ -116,8 +121,7 @@ The new npm package requires its first manual bootstrap and a trusted-publisher 
 (`npm trust github @goldziher/basemind-plugin --repo Goldziher/basemind --file publish.yaml
 --allow-publish`; without it the OIDC token exchange returns 404 and the publish fails);
 Hermes publishing requires its PyPI trusted publisher. Configure those account settings before
-requesting a release. Existing version 0.29.3 registry packages do not contain these unreleased
-changes. See the [root README](../README.md).
+requesting a release. See the [root README](../README.md).
 
 ## License
 
