@@ -29,7 +29,8 @@ impl Broker {
         HandshakeGuard { broker: self.clone() }
     }
 
-    /// Pin an accepted HTTP connection unless shutdown has already started.
+    /// Stamp HTTP activity for an accepted connection unless shutdown has already started. The
+    /// caller drops the guard at once: a connection does not pin the daemon, a request does.
     pub async fn try_begin_http_connection(self: &Arc<Self>) -> Option<HttpActivityGuard> {
         let registry = self.registry.lock().await;
         if matches!(registry.state, LifecycleState::Draining | LifecycleState::Stopped) {
