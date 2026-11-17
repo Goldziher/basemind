@@ -7,7 +7,7 @@ description: Show the basemind dashboard — resource footprint (disk + RAM) and
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:5c02df38d8607b32ca9a9f931870d0a1364812f37054747572f97880da0f4292
-Source-Hash: blake3:4790ee5e237c434ff57929ff0428e9c5da0c4446ea6a6c82b509bbf114d292a7
+Source-Hash: blake3:945db984ce4f9055f24fbfa94bfe95043eab7c604501cb85bccf7e8f0d7da804
 Schema-Version: v1
 -->
 

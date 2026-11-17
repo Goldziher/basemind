@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:a6209ed329403ff7bd0799e7b056f3bfbace6340a1fca19231a473658bf748c2
-Source-Hash: blake3:4790ee5e237c434ff57929ff0428e9c5da0c4446ea6a6c82b509bbf114d292a7
+Content-Hash: blake3:2563d86524d4e20a67b3ebc08d48d9575915f917aa7ff07661e7c5f43a845e2c
+Source-Hash: blake3:945db984ce4f9055f24fbfa94bfe95043eab7c604501cb85bccf7e8f0d7da804
 Schema-Version: v1
 -->
 
@@ -93,32 +93,36 @@ code_outline {"path":"src/mcp/tools.rs"}
   `index_rescan`.
 - `code_outline` omits `imports` when the file has none.
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
-  every line. `path` is a substring of the repo-relative path, never a glob; a `path` or
-  `language` that no indexed code file has is an error (it names `docs_search` when only
-  documents match). `skipped_files` counts files that could not be searched. A hit is `path`, `line`, `column`, `text` (the matching line; one
-  over 400 bytes is cut to a window around the match, `…` marking each cut side) and `symbol`
-  (`name`, `kind` of the innermost enclosing symbol; absent, with `stale: true`, for a file edited
-  since it was indexed);
-  `"context":true` adds `context_before` / `context_after`. The response echoes `pattern` and
-  `regex`. It never caps files, so `total_matches` is exact.
+  every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
+  that no indexed code file has is an error (it names `docs_search` when only documents match).
+  `skipped_files` counts files that could not be searched. `hits` lists each file once, as
+  `{"<path>": [hit, ...]}`; a hit is `line` (and `column` when the file has another match on that
+  line or `text` is clipped), `text` (the matching line; one over 400 bytes is cut to a window around the match, `…`
+  marking each cut side) and `symbol` (the name of the innermost enclosing symbol; absent, with
+  `stale: true`, for a file edited since it was indexed); `"context":true` adds `context_before` /
+  `context_after`. It never caps files, so `total` is exact.
+- `find_files` lists each file by its path alone: the code map, the documents, and every other
+  file git tracks (images, fonts, data). A query no path holds as typed may be a typo: a file it
+  names up to one swapped, missing, extra or wrong character comes first.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
-  subsequence matches last. A row is `path`, `name`, `kind`, `line`, `column`, `signature` and
-  `match` (`exact`, `prefix`, `substring` or `fuzzy`); `total` counts the whole corpus.
+  subsequence matches last. A row is `path`, `line`, `kind`, `name` and `signature`; `total`
+  counts the whole corpus.
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
-  and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it, and the
-  response echoes `match`. Add `path` for one specific definition: the response carries that
-  `definition` (`path`, `name`, `kind`, `line`, `column`) and either `resolved_total` with
-  `resolved` on the hits it checked (`true`: proven to bind to the definition; `false`: checked
-  and not proven; absent: not checked), or a `resolution` note with no flags:
-  `unsupported for <language>`, `no resolution facts for this file` when the language is supported
-  but the file bound nothing, or `no resolution facts for this definition`. A pinned file edited
-  since it was indexed is an error naming `index_rescan`.
-  A `path` that is not indexed, or that defines no such symbol, is an error; so is a name several
-  definitions in the file share, which lists each with its lines until you add `line`.
-  `relation:"importers"` matches whole segments of recorded imports (`os` finds `import os.path`,
-  not `import posixpath`) and takes no `match`.
-  `relation:"definition"` needs `path` and `line` and returns the reference's `path`, `line`,
-  `column` plus the `definition` it binds to (or a `resolution` note), all 1-based.
+  and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. `hits` lists
+  each file once, as `{"<path>": [hit, ...]}`; a call site is its `line` (and `column` when another
+  call of the same callee is on that line), plus `callee` when that is not `name` (a qualified call, a
+  substring match), and an implementation is its `line` and `impl_type`. Add `path` for one specific
+  definition: the response carries that `definition` (`path`, `name`, `kind`, `line`, `column`) and
+  either `resolved_total` with `resolved` on the hits it checked (`true`: proven to bind to the
+  definition; `false`: checked and not proven; absent: not checked), or a `resolution` note with no
+  flags: `unsupported for <language>`, `no resolution facts for this file` when the language is
+  supported but the file bound nothing, or `no resolution facts for this definition`. A pinned file
+  edited since it was indexed is an error naming `index_rescan`. A `path` that is not indexed, or
+  that defines no such symbol, is an error; so is a name several definitions in the file share,
+  which lists each with its lines until you add `line`. `relation:"importers"` matches whole
+  segments of recorded imports (`os` finds `import os.path`, not `import posixpath`) and takes no
+  `match`. `relation:"definition"` needs `path` and `line` and returns the reference's `path`,
+  `line`, `column` plus the `definition` it binds to (or a `resolution` note), all 1-based.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies; read a hit with
   `code_read`. `lane` picks `hybrid` (default), `semantic` or `keyword`. The response lists
   `lanes_ran` (`vector`, `keyword`, `exact`) and `lanes_unavailable` (`lane`, `reason`), so a hybrid
