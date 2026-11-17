@@ -315,15 +315,6 @@ impl IndexWriter {
         result
     }
 
-    #[cfg(test)]
-    pub(super) fn commit_overlay(mut self, sequence_key: &[u8], sequence: u64) -> Result<(), IndexError> {
-        self.db
-            .meta
-            .stage_insert(&mut self.batch, sequence_key, sequence.to_be_bytes().into());
-        self.batch = self.batch.durability(Some(fjall::PersistMode::SyncAll));
-        self.commit()
-    }
-
     fn stage_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let path_prefix = keys::symbols_by_path_prefix(rel);

@@ -132,9 +132,6 @@ fn isolate(base: &Path) {
     unsafe {
         std::env::set_var("BASEMIND_DATA_HOME", base.join("data"));
         std::env::set_var("BASEMIND_COMMS_DIR", base.join("comms"));
-        // A sibling's index is never cloned into a new worktree: every index here is built by its
-        // own scan, whatever order the worktrees are opened in.
-        std::env::set_var("BASEMIND_NO_SEED", "1");
     }
 }
 

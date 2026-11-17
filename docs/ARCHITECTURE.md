@@ -102,7 +102,8 @@ src/
 │                             `cache/gc.lock` that serialises sweeps
 ├── store_gc_budget.rs      — cache size budget + `gc-state.json` (last sweep health)
 ├── store_gc_workspace.rs   — orphaned-workspace reaper for the machine-global cache
-├── store_seed.rs           — seed a new linked worktree's view from a sibling checkout (reflink)
+├── store_group.rs          — the group index's lock and the file-map checks of each view
+├── store_group_live.rs     — which contents a group still holds, for content-keyed sweeps
 ├── store_cache_admin.rs    — cache clear / stats admin surface (CLI + MCP)
 ├── index/
 │   ├── mod.rs              — Fjall-backed secondary index; INDEX_SCHEMA_VER; refs_by_def /
@@ -408,10 +409,16 @@ Both are misses, never wrong answers — the name-based scan still finds these c
 
 ## Inverted index
 
-A Fjall LSM database at `<cache>/cache/workspaces/<workspace_key>/views/<view>/index.fjall/`
-(`<cache>` is `BASEMIND_DATA_HOME`, default `~/.local/share/basemind` on Linux). Fjall admits one
-process per directory, so the daemon holds it and sessions reach it through the daemon (see
-[Index reads](#index-reads-and-resident-lookup-structures)). Source: `src/index/{mod,keys,writer}.rs`.
+One Fjall LSM database per repository group (ADR-0028) at `<cache>/cache/groups/<group>/index.fjall/`
+(`<cache>` is `BASEMIND_DATA_HOME`, default `~/.local/share/basemind` on Linux; `<group>` is the
+blake3 of the canonical main worktree root, or the workspace key outside git). Every view of every
+worktree of the group shares it: a view's rows sit under its 4-byte view id (`src/index/scoped.rs`),
+and the group allocates the ids (`src/index/group.rs`). The group's `.lock` admits one process; that
+process keeps one handle shared by every view it serves, and a process without it answers from blobs
+(see [Index reads](#index-reads-and-resident-lookup-structures)). Each view seals its own generation,
+and its file map names the group's incarnation and its view id; a map that does not match is emptied
+and only that view is rebuilt. Source: `src/index/{mod,keys,writer,group,scoped}.rs`,
+`src/store_group.rs`.
 
 | Keyspace | Purpose |
 |---|---|
@@ -460,8 +467,9 @@ grep_bloom          rel (the path bytes)  →  version:u8 ‖ size:u64 ‖ mtime
 ```
 
 Length-prefixed components guarantee prefix-scan isolation: a `Foo` prefix never
-spills into `Foobar`. Schema version is stamped in the `meta` keyspace; mismatch
-on open drops the whole `index.fjall/` directory and the next scan rebuilds it.
+spills into `Foobar`. Every key above is stored under the view's 4-byte id, except `grep_bloom`,
+which the group shares by content. Schema version is stamped in the `meta` keyspace; mismatch on
+open drops the group's whole `index.fjall/` directory, and every view rebuilds on its next scan.
 
 ### Index reads and resident lookup structures
 
@@ -582,9 +590,8 @@ machine stayed up tore nothing (a blob is renamed into place whole) and asks for
 is not trusted, because after a restart another process has the number. The boot is the platform's
 per-boot id (Linux `boot_id`, macOS `kern.bootsessionuuid`, Windows `BootId`), not a boot time a
 clock step moves, and a live pid whose process started when the marker's did, in the same boot, is
-the daemon itself. A workspace created later and seeded from a sibling's file map inherits the
-sibling's request, since it names the same blobs; one that starts empty takes no file as unchanged,
-and the blobs it reuses are decoded.
+the daemon itself. A workspace that starts empty takes no file as unchanged, and the blobs it reuses
+are decoded.
 Apart from that pass, only paths named in `basemind rescan <paths>` or `index_rescan paths` have
 their blobs validated; a watcher batch asks whether the blob exists.
 

@@ -631,12 +631,6 @@ pub fn scan_with_observer(
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store, &filters)
     });
-    #[cfg(any(feature = "documents", feature = "code-search"))]
-    if matches!(source, ScanSource::WorkingTree)
-        && let Err(error) = filters.retrieval.vectors.publish_snapshot(store, config, &scope)
-    {
-        tracing::debug!(%error, "shared Lance snapshot publication failed");
-    }
     crate::scanner_integrity::finish_index_writes(store);
     // A whole working-tree pass has now validated every blob it kept. ~keep
     if filters.verify_blobs && matches!(source, ScanSource::WorkingTree) {
@@ -739,6 +733,8 @@ fn scan_paths_inner(
     verify_named: bool,
 ) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
+    // A read-only store holds no group handle; only the open shows whether the view needs a rebuild.
+    store.open_index_owed_to_scan()?;
     if crate::scanner_integrity::needs_full_rebuild(store)? {
         return scan_with_observer(root, store, config, source, embed, cancel, observer);
     }

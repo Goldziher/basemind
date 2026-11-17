@@ -1,6 +1,7 @@
 # Layered index: design and implementation plan
 
-- **Status:** A2 and A3 implemented; A4 storage prototype evaluated on a proxy corpus; A4–A8 remain
+- **Status:** historical. ADR-0028 superseded ADR-0016 and the code this plan describes is deleted
+  (ADR-0037); kept because the locked ADR-0016 links here.
 - **Date:** 2026-10-18
 - **Decision record:** [ADR-0016](adr/0016-shared-base-index-and-worktree-overlays.md)
 - **Tracking issue:** #87

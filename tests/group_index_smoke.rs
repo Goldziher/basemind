@@ -1,8 +1,5 @@
-//! The group index layout (ADR-0028, `BASEMIND_INDEX_GROUP=1`): every worktree of a repository
-//! shares one index database, keyed by view, and a view's failures stay its own.
-//!
-//! The switch is process-wide, so this binary sets it before any store opens and every test here
-//! runs in that layout.
+//! The group index (ADR-0028): every worktree of a repository shares one index database, keyed by
+//! view, and a view's failures stay its own.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,12 +11,7 @@ use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::{INDEX_FILE, Store, VIEW_WORKING, VIEWS_DIR, workspace_cache_dir};
 
 fn layout() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        // SAFETY: set once, before any store in this binary reads it.
-        unsafe { std::env::set_var(basemind::store::INDEX_GROUP_ENV, "1") };
-        basemind::store::init_isolated_cache();
-    });
+    basemind::store::init_isolated_cache();
 }
 
 fn git(args: &[&str], cwd: &Path) {

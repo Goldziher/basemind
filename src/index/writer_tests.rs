@@ -649,8 +649,8 @@ fn full_scan_restores_missing_legacy_bm25_postings() {
     scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
 
     let db = store.index_db.as_ref().unwrap();
-    let (key, value) = db.code_bm25_postings.iter().next().unwrap().into_inner().unwrap();
-    db.code_bm25_postings.remove(&*key).unwrap();
+    let (key, value) = db.code_bm25_postings.iter().next().unwrap().unwrap();
+    db.code_bm25_postings.remove(&key).unwrap();
     assert!(db.code_bm25_postings.get(&key).unwrap().is_none());
     store.index.embed_policy = "legacy-embed-policy".into();
 

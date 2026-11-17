@@ -31,12 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `code_search` and `docs_search` keep the ranked list of a query for up to two minutes (16 queries,
   4 MiB), so a later page or a repeated call does not run retrieval and the reranker again. A rescan
   drops the lists.
-- Experimental group index behind `BASEMIND_INDEX_GROUP=1` (ADR-0028, stage 3): every worktree and view of a
-  repository group shares one Fjall database at `cache/groups/<group>/index.fjall`, guarded by the group's
-  `.lock`. Rows describing a path stay path-keyed under a 4-byte view id; the grep bloom is shared by content,
-  and its sweeps keep any content another view's file map still names. A file map records the group index
-  incarnation and its view id, and one that does not match is emptied and its view rebuilt, leaving every
-  other view in place. Off by default; no released format.
+- One index per repository group (ADR-0028): every worktree and view of a repository shares one Fjall database at
+  `cache/groups/<group>/index.fjall`, held by one process under the group's `.lock`, in place of one database (and
+  one 64 MiB journal) per view. A view keeps its path-keyed rows under its own id; the grep bloom is shared by
+  content, and its sweeps keep any content another view's file map still names. A file map records the group
+  index incarnation and its view id; one that does not match is emptied and its view rebuilt, leaving every other
+  view in place. A process that does not hold the group's index answers from the blob store. Every workspace
+  rebuilds its index on the first scan, and its per-view `index.fjall` is deleted.
 
 ### Changed
 
@@ -237,6 +238,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: the shared worktree index of ADR-0016** (`BASEMIND_INDEX_LAYERED=1`), its sibling seeding of a new
+  worktree's view (`BASEMIND_NO_SEED`) and `scan --verify-shared-base`. The group index replaces them.
 - **BREAKING: `index_rescan`'s `full` argument and `basemind rescan --full`.** `{}` and `{"full": true}`
   ran the same walk; the flag's only effect was to discard `paths` when both were passed. `index_rescan {}`
   (`basemind rescan` with no path) is the whole workspace, and a call that still passes `full` is refused

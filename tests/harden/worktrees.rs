@@ -71,10 +71,11 @@ fn index_bytes(index: &Path) -> (u64, u64) {
     (journal, dir_size(index).saturating_sub(journal))
 }
 
-/// Journal and keyspace bytes of the group index of `root`, when stores use that layout.
+/// Journal and keyspace bytes of the group index of `root`.
 fn group_index_bytes(root: &Path) -> Option<(u64, u64)> {
-    basemind::store::group_layout()
-        .then(|| index_bytes(&basemind::store_layout::group_index_dir(root).join(INDEX_DB_DIR)))
+    Some(index_bytes(
+        &basemind::store_layout::group_index_dir(root).join(INDEX_DB_DIR),
+    ))
 }
 
 /// What the worktree's cache directory holds. In the group layout its index rows live in the group
@@ -153,7 +154,7 @@ fn watch_phases(cache_dir: PathBuf, stop: Arc<AtomicBool>) -> Vec<(String, Insta
     seen
 }
 
-/// Open, scan and reopen the worktree at `root`, which has no index yet unless a sibling seeded it.
+/// Open, scan and reopen the worktree at `root`, which has no file map yet.
 fn measure_worktree(root: &Path, label: &str, commit: &str, diff_files: usize) -> WorktreeRow {
     let cache_dir = workspace_cache_dir(root);
     let blobs_before = dir_size(&global_blobs_dir());
@@ -246,16 +247,10 @@ fn env_count(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn render(repo_name: &str, rows: &[WorktreeRow], seeding: bool) -> String {
+fn render(repo_name: &str, rows: &[WorktreeRow]) -> String {
     let mut out = format!(
-        "### {repo_name}: {} added worktrees, sibling seeding {}, {} layout\n\n",
+        "### {repo_name}: {} added worktrees, group index (journal and keyspaces: growth of the group index)\n\n",
         rows.len() - 1,
-        if seeding { "on" } else { "off" },
-        if basemind::store::group_layout() {
-            "group index (journal and keyspaces: growth of the group index)"
-        } else {
-            "per-worktree index"
-        },
     );
     out.push_str(
         "| worktree | commit | files | diff vs HEAD | open ms | scan ms | resolve ms | resolve share | reopen ms \
@@ -332,7 +327,6 @@ fn harden_worktrees() {
     });
     let count = env_count("BASEMIND_HARDEN_WORKTREES", DEFAULT_WORKTREES);
     let step = env_count("BASEMIND_HARDEN_WORKTREE_STEP", DEFAULT_COMMIT_STEP);
-    let seeding = std::env::var("BASEMIND_NO_SEED").map_or(true, |value| value.is_empty() || value == "0");
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
 
     let commits = older_commits(&repo, count, step);
@@ -362,15 +356,13 @@ fn harden_worktrees() {
         roots.push(root);
     }
 
-    let table = render(&repo_name, &rows, seeding);
+    let table = render(&repo_name, &rows);
     eprintln!("\n{table}");
     if let Ok(results) = std::env::var("BASEMIND_HARDEN_RESULTS") {
         let results = Path::new(&results);
         append(&results.with_file_name("worktrees.md"), &table);
         if let Ok(line) = serde_json::to_string(&serde_json::json!({
             "repo_name": repo_name,
-            "seeding": seeding,
-            "group_layout": basemind::store::group_layout(),
             "commit_step": step,
             "rows": rows,
         })) {
@@ -408,9 +400,9 @@ fn harden_worktrees() {
         if row.disk.manifest == 0 {
             failures.push(format!("{}: no file map on disk after the scan", row.label));
         }
-        // The group layout's first worktree creates the group index; an added one may only add
-        // rows to pages fjall already allocated, so only the first is held to growing it. ~keep
-        if row.disk.journal + row.disk.keyspaces == 0 && (row.label == "main" || !basemind::store::group_layout()) {
+        // The first worktree creates the group index; an added one may only add rows to pages fjall
+        // already allocated, so only the first is held to growing it. ~keep
+        if row.disk.journal + row.disk.keyspaces == 0 && row.label == "main" {
             failures.push(format!("{}: no index bytes on disk after the scan", row.label));
         }
         if row.scan_ms <= 0.0 {

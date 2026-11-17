@@ -1,8 +1,5 @@
-//! The store side of the group index (ADR-0028): which layout a store opens, the group lock, and
-//! the checks that tie a view's file map to the group database.
-//!
-//! The layout is chosen by `BASEMIND_INDEX_GROUP=1` while the group index is being built; without it
-//! every view keeps a database of its own. Nothing here is a released format.
+//! The store side of the group index (ADR-0028): the group lock, and the checks that tie a view's
+//! file map to the group database.
 //!
 //! A file map names the incarnation of the group database it was written against and the id the
 //! group gave its view. A map naming another incarnation or id, or a seal generation the view never
@@ -17,16 +14,8 @@ use crate::index::group::{GroupDb, GroupLock};
 use crate::index::{IndexDb, IndexError};
 use crate::store_layout::{group_index_dir, workspace_key};
 
-/// The environment switch for the group index layout.
-pub const INDEX_GROUP_ENV: &str = "BASEMIND_INDEX_GROUP";
-
 /// File in the group directory naming the checkout that keyed it, for diagnostics.
 const GROUP_MARKER_FILE: &str = "group.json";
-
-/// Whether stores open the group index layout.
-pub fn group_layout() -> bool {
-    std::env::var_os(INDEX_GROUP_ENV).is_some_and(|value| value == "1")
-}
 
 /// Take the group lock for `holder`, as a guard the group database keeps.
 fn take_lock(dir: &Path, holder: LockHolder) -> Result<GroupLock, StoreError> {
@@ -53,8 +42,8 @@ fn open_locked(dir: &Path, holder: LockHolder) -> Result<Arc<GroupDb>, StoreErro
     }
 }
 
-/// [`open_locked`], retrying a fjall `Locked` the way [`super::open_index_with_retry`] does: with
-/// the group lock held, fjall's own directory lock can only be held by a handle shutting down.
+/// [`open_locked`], retrying a fjall `Locked`: with the group lock held, fjall's own directory lock
+/// can only be held by a handle shutting down.
 fn open_with_retry(dir: &Path, holder: LockHolder) -> Result<Arc<GroupDb>, StoreError> {
     let mut attempt = 0;
     loop {
@@ -148,28 +137,19 @@ pub(super) fn open_index_for_writer(
     Ok((db, rebuild))
 }
 
-/// The read-only open of a view in the group layout. Uses this process's handle when it has one;
-/// otherwise takes the group lock only if it is free. `Ok(None)` serves from blobs: the lock is held
-/// elsewhere, the view was never scanned into the group, or its file map does not match the group.
-/// The second value says whether a scan owes the view a rebuild.
+/// The read-only open of a view. It uses the group index only through a handle this process already
+/// holds: opening the database writes (journal, schema stamp, incarnation), and an open without the
+/// workspace lock writes nothing (ADR-0030 rule 26), so a process without the handle serves from
+/// blobs. `Ok(None)` serves from blobs: no handle here, the view was never scanned into the group,
+/// or its file map does not match the group. The second value says whether a scan owes the view a
+/// rebuild.
 pub(super) fn open_index_read_only(
     root: &Path,
     view: &str,
     index: &Index,
 ) -> Result<(Option<IndexDb>, bool), StoreError> {
-    let dir = group_index_dir(root);
-    let group = match GroupDb::shared(&dir) {
-        Some(group) => group,
-        None if !dir.exists() || crate::store_lock::writer_lock_is_held(&dir) => return Ok((None, false)),
-        None => match open_locked(&dir, LockHolder::Maintenance) {
-            Ok(group) => group,
-            Err(error) if error.is_lock_contention() => return Ok((None, false)),
-            Err(error @ StoreError::Index(IndexError::NewerSchema { .. })) => return Err(error),
-            Err(error) => {
-                tracing::warn!(%error, "read-only group index open failed; degrading to blob-only reads");
-                return Ok((None, false));
-            }
-        },
+    let Some(group) = GroupDb::shared(&group_index_dir(root)) else {
+        return Ok((None, false));
     };
     let Some(view_id) = group.view_id(&workspace_key(root), view)? else {
         return Ok((None, !index.files.is_empty()));

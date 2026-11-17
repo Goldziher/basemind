@@ -12,14 +12,9 @@
 //! runtime context.
 
 mod batch;
+pub mod live;
 mod memory;
 pub mod schema;
-#[doc(hidden)]
-pub mod shared;
-#[cfg(any(feature = "documents", feature = "code-search"))]
-pub(crate) mod shared_snapshot;
-#[doc(hidden)]
-pub mod shared_store;
 
 pub use batch::{BATCH_MAX_DOCS, BATCH_MAX_ROWS, PendingBatch, SCAN_RETENTION};
 pub use memory::MemoryStamps;

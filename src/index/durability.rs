@@ -207,7 +207,7 @@ pub(super) fn discard_dir(dir: &Path) -> Result<(), IndexError> {
         source,
     })?;
     if let Some(parent) = dir.parent()
-        && let Err(error) = crate::store_base::sync_directory(parent)
+        && let Err(error) = crate::store_layout::sync_directory(parent)
     {
         tracing::warn!(%error, "could not fsync the view directory after setting the index aside");
     }

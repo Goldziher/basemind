@@ -8,61 +8,12 @@
 
 use std::path::Path;
 
-use super::{HashRefs, Index, LockHolder, Store, StoreError, memory_store_dir};
-use crate::index::view::IndexView;
-use crate::index::{IndexDb, IndexError};
+use super::{HashRefs, Index, LockHolder, Store, StoreError};
+use crate::index::IndexDb;
 
-/// Open the Fjall index for a writer, discarding one that is behind `index` (the file map just read).
-/// Returns the handle and whether the index must be rebuilt by a full scan, in which case `index`
-/// lists no files any more.
-fn open_view_index_for_writer(
-    root: &Path,
-    view: &str,
-    view_dir: &Path,
-    index: &mut Index,
-) -> Result<(IndexDb, bool), StoreError> {
-    let mut index_db = match open_index_with_retry(root, view_dir) {
-        // A damaged database is rebuildable cache, and left in place it fails every open until
-        // someone clears the cache by hand. Only this open, which holds the writer lock, may
-        // replace it; the checks below then find an unsealed index and order the rebuild. ~keep
-        Err(crate::index::IndexError::Corrupt(error)) => {
-            tracing::warn!(view, %error, "code index is damaged; discarding it for a rebuild");
-            crate::index::durability::discard_index(view_dir)?;
-            open_index_with_retry(root, view_dir)?
-        }
-        opened => opened?,
-    };
-    // The file map is fsynced only after the index sealed the same generation, so an index
-    // stamped below it lost the tail of its journal. Which rows went is unknowable, so the whole
-    // index is discarded and the empty-index rebuild below takes over. ~keep
-    if !index_db.wiped_on_open() && index.generation > index_db.scan_generation()? {
-        tracing::warn!(
-            view,
-            "code index is older than its file map (unclean shutdown); rebuilding it"
-        );
-        drop(index_db);
-        crate::index::durability::discard_index(view_dir)?;
-        index_db = open_index_with_retry(root, view_dir)?;
-    }
-    // A replaced index starts unsealed, and its emptied file map vouches for nothing. ~keep
-    let sealed = index_db.scan_generation()?;
-    index.generation = index.generation.min(sealed);
-    // An index some scan sealed holds what the file map says, whatever it holds: a repository whose
-    // files yield no symbols has no symbol rows to lose. Only an index nothing ever sealed (a
-    // replaced one, or one from before generations) is judged by looking empty. ~keep
-    let never_sealed = sealed == 0 && index.generation == 0;
-    let index_rebuild_needed = !index.files.is_empty()
-        && (index_db.wiped_on_open() || (never_sealed && index_db.view().symbols_index_is_empty()));
-    if index_rebuild_needed {
-        index.empty_for_rebuild();
-    }
-    // An earlier process emptied the file map and died before its rebuild scan finished. ~keep
-    Ok((index_db, index_rebuild_needed || index.rebuild_pending))
-}
-
-/// Open the index of `view` for a writer in the layout this process uses (see [`group_layout`]),
-/// reconciling the file map `index` with it. Returns the handle and whether a full scan must rebuild
-/// the view, in which case `index` lists no files any more.
+/// Open the group index of `view` for a writer, reconciling the file map `index` with it (see
+/// [`super::group`]). Returns the handle and whether a full scan must rebuild the view, in which
+/// case `index` lists no files any more.
 pub(crate) fn open_index_for_writer(
     root: &Path,
     view: &str,
@@ -70,38 +21,7 @@ pub(crate) fn open_index_for_writer(
     index: &mut Index,
     holder: LockHolder,
 ) -> Result<(IndexDb, bool), StoreError> {
-    if super::group_layout() {
-        return super::group::open_index_for_writer(root, view, view_dir, index, holder);
-    }
-    // A map written against a group index vouches for none of this view's own rows. ~keep
-    if index.group_incarnation != 0 {
-        if view_dir.join(crate::index::INDEX_DIR).exists() {
-            crate::index::durability::discard_index(view_dir)?;
-        }
-        index.generation = 0;
-        index.group_incarnation = 0;
-        index.view_id = 0;
-    }
-    open_view_index_for_writer(root, view, view_dir, index)
-}
-
-/// Open the Fjall [`IndexDb`], retrying a transient fjall `Locked` (see [`super::INDEX_OPEN_RETRIES`]).
-/// ONLY correct for a caller that already holds `.basemind/.lock`; such a caller is the sole
-/// rightful writer, so any `Locked` is transient and clears. Every other [`IndexError`] — and a
-/// lock that never clears within the budget — propagates.
-pub(crate) fn open_index_with_retry(root: &Path, view_dir: &Path) -> Result<IndexDb, IndexError> {
-    let memory_dir = memory_store_dir(root);
-    let mut attempt = 0;
-    loop {
-        match IndexDb::open_with_memory(view_dir, &memory_dir) {
-            Ok(db) => return Ok(db),
-            Err(IndexError::Fjall(fjall::Error::Locked)) if attempt < super::INDEX_OPEN_RETRIES => {
-                attempt += 1;
-                std::thread::sleep(super::INDEX_OPEN_BACKOFF);
-            }
-            Err(other) => return Err(other),
-        }
-    }
+    super::group::open_index_for_writer(root, view, view_dir, index, holder)
 }
 
 /// Remove the file map of a view written for an earlier blob store layout, and the index built
@@ -170,18 +90,18 @@ impl Store {
         self.index_rebuild_needed
             || self.index.rebuild_pending
             || (self.index.files.is_empty() && self.index.doc_files.is_empty())
-            || (self.layered_read.is_none() && crate::scan_evidence::blobs_need_verifying(&self.basemind_dir))
+            || crate::scan_evidence::blobs_need_verifying(&self.basemind_dir)
     }
 
-    /// Open, for the scan about to write into this store, the index a read-only open left alone
-    /// for being of an older schema. This is where that index is replaced: the same recovery a
-    /// writer open takes, file map emptied and written at once. A no-op for every other store.
+    /// Open, for the scan about to write into this store, the group index a read-only open did not
+    /// hold (ADR-0037 rule 3), with the same reconciliation a writer open takes: a file map that does
+    /// not match the group is emptied and written at once. A no-op for a store holding its index.
     ///
-    /// The recovery wipes and rewrites, so it runs under the workspace lock a writer open holds.
-    /// A store opened read-only has none: it is taken here and kept, and the scan is refused with
+    /// The open may wipe and rewrite, so it runs under the workspace lock a writer open holds. A
+    /// store opened read-only has none: it is taken here and kept, and the scan is refused with
     /// [`StoreError::Locked`] while another process holds it.
     pub(crate) fn open_index_owed_to_scan(&mut self) -> Result<(), StoreError> {
-        if self.index_db.is_some() || !self.index_rebuild_needed || self.layered_read.is_some() {
+        if self.index_db.is_some() {
             return Ok(());
         }
         if self._lock.is_none() {

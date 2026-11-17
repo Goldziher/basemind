@@ -683,3 +683,15 @@ mod status_sidecar_tests {
         assert_eq!(count_fm_blobs(&dir.path().join("does-not-exist")), 0);
     }
 }
+
+/// Make the entries of directory `path` durable: a rename or create inside it survives a crash
+/// only once the directory itself is synced. A no-op where directories cannot be synced.
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return std::fs::File::open(path)?.sync_all();
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}

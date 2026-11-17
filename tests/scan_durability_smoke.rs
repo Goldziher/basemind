@@ -126,17 +126,22 @@ fn scanned_store(root: &Path) -> Store {
     store
 }
 
-/// Rewrite the index's scan-generation stamp behind basemind's back, as a journal that lost its tail
-/// would leave it. Must run with no `Store` open on the view.
-fn forge_index_generation(view_dir: &Path, generation: u64) {
-    let db = fjall::Database::builder(view_dir.join("index.fjall"))
+/// Rewrite the working view's scan-generation stamp in the group index behind basemind's back, as a
+/// journal that lost its tail would leave it. Must run with no `Store` of the group open.
+fn forge_index_generation(root: &Path, generation: u64) {
+    let view_dir = basemind::store::workspace_cache_dir(root)
+        .join(basemind::store::VIEWS_DIR)
+        .join(VIEW_WORKING);
+    let view_id = file_map_on_disk(&view_dir).view_id;
+    let db = fjall::Database::builder(basemind::store_layout::group_index_dir(root).join("index.fjall"))
         .open()
         .expect("open raw index");
     let meta = db
         .keyspace("meta", fjall::KeyspaceCreateOptions::default)
         .expect("meta keyspace");
-    meta.insert("scan_generation", generation.to_be_bytes())
-        .expect("forge the stamp");
+    let mut key = basemind::index::scoped::view_prefix(view_id).to_vec();
+    key.extend_from_slice(b"scan_generation");
+    meta.insert(key, generation.to_be_bytes()).expect("forge the stamp");
     db.persist(fjall::PersistMode::SyncAll)
         .expect("persist the forged stamp");
 }
@@ -180,10 +185,9 @@ fn an_index_older_than_its_file_map_is_rebuilt_from_blobs() {
         sealed,
         "the index carries the same generation as the file map"
     );
-    let view_dir = store.view_dir.clone();
     drop(store);
 
-    forge_index_generation(&view_dir, sealed - 1);
+    forge_index_generation(root, sealed - 1);
 
     let mut reopened = Store::open(root, VIEW_WORKING).expect("reopen");
     assert!(
@@ -228,7 +232,6 @@ fn lost_rows_are_repaired_when_the_generation_fell_behind_and_only_then() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     let store = scanned_store(root);
-    let view_dir = store.view_dir.clone();
     let drop_beta_rows = |store: &Store| {
         let mut writer = store.index_db.as_ref().unwrap().writer();
         writer.remove_file(&RelPath::from("beta.rs")).expect("stage the loss");
@@ -251,7 +254,7 @@ fn lost_rows_are_repaired_when_the_generation_fell_behind_and_only_then() {
     let sealed = same_generation.index.generation;
     drop(same_generation);
 
-    forge_index_generation(&view_dir, sealed - 1);
+    forge_index_generation(root, sealed - 1);
     let mut behind = Store::open(root, VIEW_WORKING).expect("reopen behind");
     assert!(behind.index_rebuild_needed);
     let report = rescan(root, &mut behind);
@@ -260,16 +263,12 @@ fn lost_rows_are_repaired_when_the_generation_fell_behind_and_only_then() {
     assert_eq!(indexed_symbol_paths(&behind, "alpha"), vec!["alpha.rs".to_string()]);
 }
 
-/// A file map without a generation decodes to generation 0, which claims nothing about the index:
-/// it opens as before, and the next flush starts stamping.
-///
-/// The map carries the current blob layout. A real map from before generations also predates the
-/// blob layout field and is discarded whole for it (`store_tests`), which says nothing about how
-/// generation 0 is read.
+/// A file map from before the group index (no incarnation, no view id, no generation) vouches for
+/// rows the group index never held: the writer open empties it and the next scan rebuilds the view.
 #[test]
-fn a_file_map_without_a_generation_opens_as_before() {
+fn a_file_map_from_before_the_group_index_is_rebuilt() {
     #[derive(serde::Serialize)]
-    struct PreGenerationIndex<'a> {
+    struct PreGroupIndex<'a> {
         schema_ver: u16,
         files: &'a ahash::AHashMap<basemind::path::RelPath, basemind::store::FileEntry>,
         blob_layout: u8,
@@ -280,7 +279,7 @@ fn a_file_map_without_a_generation_opens_as_before() {
     let root = dir.path();
     let store = scanned_store(root);
     let manifest = store.view_dir.join(INDEX_FILE);
-    let old = rmp_serde::to_vec_named(&PreGenerationIndex {
+    let old = rmp_serde::to_vec_named(&PreGroupIndex {
         schema_ver: store.index.schema_ver,
         files: &store.index.files,
         blob_layout: basemind::store_layout::BLOB_LAYOUT,
@@ -290,11 +289,13 @@ fn a_file_map_without_a_generation_opens_as_before() {
     fs::write(&manifest, old).unwrap();
 
     let mut reopened = Store::open(root, VIEW_WORKING).expect("open the older file map");
-    assert_eq!(reopened.index.generation, 0);
-    assert!(!reopened.index_rebuild_needed, "no generation, no claim, no rebuild");
-    assert_eq!(reopened.index.files.len(), 3);
+    assert!(
+        reopened.index_rebuild_needed,
+        "the map names no incarnation of this group index"
+    );
+    assert!(reopened.index.files.is_empty());
     let report = rescan(root, &mut reopened);
-    assert_eq!(report.stats.skipped_unchanged, 3);
+    assert_eq!(report.stats.updated, 3);
     assert_eq!(indexed_symbol_paths(&reopened, "beta"), vec!["beta.rs".to_string()]);
     assert!(reopened.index.generation > 0, "the next flush stamps both sides");
 }
@@ -347,7 +348,7 @@ fn scanned_store_with_an_index_behind(root: &Path) -> (std::path::PathBuf, u64) 
     writer.commit().expect("commit the loss");
     let (view_dir, sealed) = (store.view_dir.clone(), store.index.generation);
     drop(store);
-    forge_index_generation(&view_dir, sealed - 1);
+    forge_index_generation(root, sealed - 1);
     (view_dir, sealed)
 }
 
@@ -362,9 +363,8 @@ fn a_scan_into_a_read_only_opened_store_rebuilds_an_index_behind_its_file_map() 
     let (_, sealed) = scanned_store_with_an_index_behind(root);
 
     let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
-    assert!(in_place.index_db.is_some(), "the read-only open holds the index");
+    assert!(in_place.index_db.is_none(), "the read-only open holds no group handle");
     assert_eq!(in_place.index.files.len(), 3, "and never ran the writer open's check");
-    assert!(indexed_symbol_paths(&in_place, "beta").is_empty());
     in_place.ensure_dirs().unwrap();
 
     let report = rescan(root, &mut in_place);
@@ -419,21 +419,21 @@ fn flush_refuses_to_seal_an_index_behind_its_file_map() {
     basemind::store::init_isolated_cache();
     let dir = TempDir::new().unwrap();
     let root = dir.path();
-    let (view_dir, sealed) = scanned_store_with_an_index_behind(root);
+    let mut store = scanned_store(root);
+    let sealed = store.index.generation;
+    store.index.generation = sealed + 5;
 
-    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
-    let refused = in_place.flush().expect_err("the index is behind the file map");
+    let refused = store.flush().expect_err("the index is behind the file map");
     assert!(
         refused.to_string().contains("behind its file map"),
         "unexpected error: {refused}"
     );
     assert_eq!(
-        in_place.index_db.as_ref().unwrap().scan_generation().unwrap(),
-        sealed - 1,
+        store.index_db.as_ref().unwrap().scan_generation().unwrap(),
+        sealed,
         "nothing was stamped"
     );
-    let on_disk: basemind::store::Index = rmp_serde::from_slice(&fs::read(view_dir.join(INDEX_FILE)).unwrap()).unwrap();
-    assert_eq!(on_disk.generation, sealed, "the file map on disk still exposes the gap");
+    assert_eq!(file_map_on_disk(&store.view_dir).generation, sealed, "nor written");
 }
 
 /// A crash between setting the index aside and deleting it leaves no `index.fjall` at all. The next
@@ -443,11 +443,10 @@ fn a_half_discarded_index_opens_and_rebuilds() {
     basemind::store::init_isolated_cache();
     let dir = TempDir::new().unwrap();
     let root = dir.path();
-    let store = scanned_store(root);
-    let view_dir = store.view_dir.clone();
-    drop(store);
-    let aside = view_dir.join("index.fjall.discard-4242-0");
-    fs::rename(view_dir.join("index.fjall"), &aside).unwrap();
+    drop(scanned_store(root));
+    let group_dir = basemind::store_layout::group_index_dir(root);
+    let aside = group_dir.join("index.fjall.discard-4242-0");
+    fs::rename(group_dir.join("index.fjall"), &aside).unwrap();
 
     let mut reopened = Store::open(root, VIEW_WORKING).expect("open over a half-finished discard");
     assert!(reopened.index_rebuild_needed);

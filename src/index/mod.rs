@@ -20,23 +20,13 @@
 pub(crate) mod durability;
 pub mod fault;
 pub mod grep_bloom;
+pub(crate) mod group;
 pub mod keys;
 pub mod keys_memory;
 pub mod keys_probe;
-pub(crate) mod layered_merge;
-#[cfg(test)]
-mod layered_persist;
-pub(crate) mod layered_shadow;
-mod layered_verify;
-pub use layered_verify::verify_rows as verify_shared_base;
-pub(crate) mod group;
-pub(crate) mod layered_view;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
 pub mod scoped;
-pub mod sorted_run;
-#[cfg(test)]
-mod sorted_run_prototype;
 pub mod view;
 #[cfg(test)]
 mod view_tests;

@@ -1,14 +1,12 @@
 //! Read-only view over the fjall index.
 //!
-//! Every read of the index goes through [`IndexView`] so a later phase can answer from a shared base
-//! index plus a per-worktree overlay without touching a call site (ADR-0016, phase A3). Writers keep
-//! using [`IndexWriter`](super::writer::IndexWriter) on the concrete [`IndexDb`].
+//! Every read of the index goes through [`IndexView`], which answers for one view of the group index
+//! (ADR-0028). Writers keep using [`IndexWriter`](super::writer::IndexWriter) on the concrete
+//! [`IndexDb`].
 //!
-//! The trait has two layers. The generic layer (`get` / `prefix` / `range` / `iter`, addressed by
-//! [`Part`]) is what a merging implementation has to provide; the named accessors are the lookups the
-//! read path performs, written once as default methods over that layer so a layered view inherits them
-//! (ADR-0016 A5 "Merge contract"). No fjall type appears in a signature: values come back as
-//! [`IndexBytes`], which a later mapped base can serve without a copy.
+//! The trait has two layers: the generic layer (`get` / `prefix` / `range` / `iter`, addressed by
+//! [`Part`]) and the named accessors the read path performs, written once as default methods over
+//! it. No fjall type appears in a signature: values come back as [`IndexBytes`].
 
 use std::borrow::Borrow;
 use std::ops::{Bound, Deref};
@@ -26,9 +24,8 @@ use crate::path::RelPath;
 
 /// Bytes read from the index: a key or a value.
 ///
-/// A refcounted handle, not a copy: today it wraps the fjall block slice the read already produced, and
-/// a mapped immutable base will add a variant borrowing the mapping, so a merging view hands either
-/// out per row without allocating. The enum is private so no backend type is nameable from a signature.
+/// A refcounted handle, not a copy: it wraps the fjall slice the read already produced. The enum is
+/// private so no backend type is nameable from a signature.
 #[derive(Clone)]
 pub struct IndexBytes(Repr);
 
@@ -36,17 +33,9 @@ pub struct IndexBytes(Repr);
 enum Repr {
     /// A fjall slice read from `offset` on: a view of a group index strips its key prefix this way.
     Fjall(fjall::Slice, usize),
-    Mapped(std::sync::Arc<super::sorted_run::Mapping>, std::ops::Range<usize>),
 }
 
 impl IndexBytes {
-    pub(super) fn from_mapping(
-        mapping: std::sync::Arc<super::sorted_run::Mapping>,
-        bounds: std::ops::Range<usize>,
-    ) -> Self {
-        Self(Repr::Mapped(mapping, bounds))
-    }
-
     pub(super) fn from_fjall(slice: fjall::Slice) -> Self {
         Self(Repr::Fjall(slice, 0))
     }
@@ -64,7 +53,6 @@ impl Deref for IndexBytes {
     fn deref(&self) -> &[u8] {
         match &self.0 {
             Repr::Fjall(slice, offset) => &slice[*offset..],
-            Repr::Mapped(mapping, bounds) => &mapping.mmap[bounds.clone()],
         }
     }
 }
@@ -95,8 +83,8 @@ pub type KvResult = Result<(IndexBytes, IndexBytes), IndexError>;
 /// Boxed row iterator. One virtual call per row; the boxing itself happens once per scan.
 pub type KvIter<'a> = Box<dyn Iterator<Item = KvResult> + 'a>;
 
-/// The keyspaces a layered index merges. The memory, proposal and embedding keyspaces are not here:
-/// they are per-repo-group or per-worktree state and never layered.
+/// The keyspaces a view reads. The memory and embedding keyspaces are not here: they are never read
+/// through a view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Part {
     Meta,
@@ -118,7 +106,7 @@ pub enum Part {
 }
 
 impl Part {
-    /// Every layered keyspace, in declaration order. Checked against [`KEYSPACE_MEMTABLE_BYTES`] in
+    /// Every keyspace a view reads, in declaration order. Checked against [`KEYSPACE_MEMTABLE_BYTES`] in
     /// `view_tests`, so a keyspace added to either list alone fails there.
     pub(super) const ALL: [Part; 16] = [
         Part::Meta,
@@ -210,11 +198,6 @@ impl IndexDb {
     pub fn view(&self) -> StandaloneView<&IndexDb> {
         StandaloneView(self)
     }
-}
-
-pub(super) fn kv(guard: fjall::Guard) -> KvResult {
-    let (key, value) = guard.into_inner().map_err(IndexError::from)?;
-    Ok((IndexBytes::from_fjall(key), IndexBytes::from_fjall(value)))
 }
 
 /// Read access to the index. See the module docs.
@@ -390,7 +373,7 @@ pub trait IndexView: Send + Sync {
     }
 }
 
-/// The unlayered view: one [`IndexDb`], read as is. `T` is `&IndexDb` to borrow it or `IndexDb` to
+/// The view of one [`IndexDb`] handle, read as is. `T` is `&IndexDb` to borrow it or `IndexDb` to
 /// own a handle (clones share the same keyspaces).
 pub struct StandaloneView<T = IndexDb>(pub(crate) T);
 
@@ -444,34 +427,11 @@ impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
     }
 }
 
-pub(crate) struct SharedView(pub std::sync::Arc<dyn IndexView>);
-
-impl IndexView for SharedView {
-    fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
-        self.0.get(part, key)
-    }
-    fn prefix(&self, part: Part, prefix: &[u8]) -> KvIter<'_> {
-        self.0.prefix(part, prefix)
-    }
-    fn range(&self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'_> {
-        self.0.range(part, lower, upper)
-    }
-    fn iter(&self, part: Part) -> KvIter<'_> {
-        self.0.iter(part)
-    }
-    fn callee_keys_matching(&self, needle: &str, cursor: Option<&[u8]>, lower: Bound<Vec<u8>>) -> KvIter<'_> {
-        self.0.callee_keys_matching(needle, cursor, lower)
-    }
-    fn trait_keys_matching(&self, needle: &str, cursor: Option<&[u8]>, lower: Bound<Vec<u8>>) -> KvIter<'_> {
-        self.0.trait_keys_matching(needle, cursor, lower)
-    }
-}
-
 #[cfg(test)]
 pub(crate) use recording::{ReadLog, RecordingView};
 
 /// A view that records which reads reach it, so a test can prove a code path is routed through
-/// [`IndexView`] and a later layered implementation has nothing to bypass.
+/// [`IndexView`].
 #[cfg(test)]
 mod recording {
     use std::sync::{Arc, Mutex};
