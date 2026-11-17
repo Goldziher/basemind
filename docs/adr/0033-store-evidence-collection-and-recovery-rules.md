@@ -4,7 +4,7 @@ date: 2026-11-17
 amends: ["0025", "0030"]
 ---
 
-# ADR-0036: Store rules after the sixth storage review — evidence, collection, recovery
+# ADR-0033: Store rules after the sixth storage review — evidence, collection, recovery
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0025 and ADR-0030; ADR-0024, ADR-0028
