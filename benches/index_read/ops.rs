@@ -1,9 +1,8 @@
-//! The measured operations, against the index layout as it is today: one store, and one Fjall
-//! index, per worktree.
+//! The measured operations, against the group index (ADR-0028): one store per worktree, each a view
+//! of the Fjall index its repository group shares.
 //!
-//! This file is the only part of the benchmark that knows the layout. When worktrees of a group
-//! come to share one index, [`Worktree`] changes to hold a view of that index; the corpus, the
-//! queries and the reporting stay as they are, so the numbers remain comparable.
+//! This file is the only part of the benchmark that knows the layout; the corpus, the queries and
+//! the reporting are those the per-worktree baseline ran, so the numbers remain comparable.
 //!
 //! The scan loops the MCP tools run (`scan_calls_by_name` in `src/mcp/helpers_calls_scan.rs`,
 //! `scan_impls_fjall` in `src/mcp/helpers_impls.rs`, `resolved_callers` in
