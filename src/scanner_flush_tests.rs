@@ -331,6 +331,8 @@ fn nothing_is_requeued_while_the_vector_store_cannot_be_opened() {
     );
 
     std::fs::remove_file(&blocker).unwrap();
+    // A failed open is remembered for the rest of the pass; the next pass's preflight retries it.
+    store.retry_vector_store();
     lanes(&mut store, &config, usize::MAX);
     assert!(store.pending_vectors.is_empty());
 }
@@ -774,6 +776,7 @@ mod code {
         );
 
         std::fs::remove_file(&blocker).unwrap();
+        store.retry_vector_store();
         lanes(&mut store, &config, usize::MAX);
         assert_eq!(code_rows(&mut store), ["src/good.rs"]);
         assert!(store.pending_vectors.is_empty());
