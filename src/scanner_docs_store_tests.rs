@@ -50,7 +50,9 @@ fn blob(text: &str, vectors: bool) -> FileMapDoc {
     }
 }
 
-/// Write `doc`'s blob and track it at each of `paths`; returns its content hash.
+/// Write `doc`'s blob and track it at each of `paths`; returns its content hash. Blobs are global to
+/// the test process, so tests that run at once must not write one content with and without
+/// vectors: each test uses its own texts unless it reads the same blob only.
 fn track(store: &mut Store, doc: &FileMapDoc, paths: &[&str]) -> String {
     let hash = crate::hashing::hash_bytes(doc.content.as_bytes());
     store.write_doc(&hash, doc).unwrap();
@@ -130,7 +132,7 @@ fn a_scan_writes_absent_documents_once_per_content_and_settles_their_paths() {
 #[test]
 fn a_wiped_store_is_rebuilt_from_the_blobs() {
     let (_tmp, mut store, config, filters) = setup();
-    track(&mut store, &blob("alpha", true), &["a.md"]);
+    track(&mut store, &blob("wiped", true), &["a.md"]);
     sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
     let dir = doc_store(&store, &config).dir().to_path_buf();
     std::fs::remove_dir_all(&dir).unwrap();
@@ -144,14 +146,14 @@ fn a_wiped_store_is_rebuilt_from_the_blobs() {
 #[test]
 fn rows_without_vectors_are_replaced_once_the_document_is_embedded() {
     let (_tmp, mut store, config, filters) = setup();
-    let bare = blob("alpha", false);
+    let bare = blob("bare", false);
     let hash = crate::hashing::hash_bytes(bare.content.as_bytes());
     track(&mut store, &bare, &["a.md"]);
     sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
     assert_eq!(doc_store(&store, &config).capabilities().unwrap().vectors, 0);
     // The same content, now embedded: same key, the rows gain their vectors.
-    track(&mut store, &blob("alpha", true), &["a.md"]);
-    assert_eq!(crate::hashing::hash_bytes(blob("alpha", true).content.as_bytes()), hash);
+    track(&mut store, &blob("bare", true), &["a.md"]);
+    assert_eq!(crate::hashing::hash_bytes(blob("bare", true).content.as_bytes()), hash);
     assert_eq!(
         sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX),
         1
