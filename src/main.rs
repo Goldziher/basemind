@@ -751,6 +751,10 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     let store = Arc::new(Mutex::new(
         Store::open_with_holder(root, basemind::store::VIEW_WORKING, LockHolder::Watch).context("open store")?,
     ));
+    // Each watcher batch writes blobs without an fsync and leaves no breadcrumb: if the machine goes
+    // down under this process, the marker asks the next scan to verify them. ~keep
+    #[cfg(any(unix, windows))]
+    let _hosting = basemind::scan_evidence::HostingMarker::begin();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

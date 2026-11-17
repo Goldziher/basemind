@@ -169,7 +169,32 @@ impl ScanBreadcrumb {
 
 impl Drop for ScanBreadcrumb {
     fn drop(&mut self) {
+        // The breadcrumb is the evidence that blobs written without an fsync may be torn: it goes
+        // only once they are on disk, or a power loss seconds after a finished scan tore blobs no
+        // record pointed at. ~keep
+        sync_blob_filesystem();
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Write back every dirty page of the filesystem holding the blob store, once per full pass. Linux
+/// only: there the delayed allocation of ext4 and XFS leaves a renamed blob empty after a power
+/// loss. Best-effort, logged on failure.
+fn sync_blob_filesystem() {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+
+        let blobs = crate::store_layout::global_blobs_dir();
+        let Ok(dir) = std::fs::File::open(&blobs) else {
+            return;
+        };
+        // SAFETY: `syncfs` takes an open file descriptor and touches no memory of ours; `dir` keeps
+        // the descriptor open for the duration of the call.
+        if unsafe { libc::syncfs(dir.as_raw_fd()) } != 0 {
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(%error, path = %blobs.display(), "could not write the blob store back to disk");
+        }
     }
 }
 
