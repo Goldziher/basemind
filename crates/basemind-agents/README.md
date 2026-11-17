@@ -132,7 +132,9 @@ Limits:
 - `BASEMIND_AGENT_ID` is self-asserted: a launched agent with a shell can post as anyone.
 - A descendant that leaves the process group survives the session. `opencode acp` starts its
   server (`opencode serve --stdio`) in a process group of its own, with the MCP servers and plugins
-  under it; it exits once its input closes, not when the group is killed.
+  under it; it exits once its input closes, not when the group is killed (in a live probe about
+  1.7 s after the group with its input closed, about 3 s with it open). OpenCode's global
+  configuration started its own MCP servers although `session/new` named none.
 - A project file written during a session is only seen by the next launch.
 - The launcher must not ignore SIGCHLD or reap children it did not start, and must ignore SIGPIPE.
 - Nothing is launched off Unix. On Windows a plan already refuses a batch file (an npm `.cmd`

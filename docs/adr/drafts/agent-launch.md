@@ -160,7 +160,9 @@ id that fails the grammar stops the launch.
      left the group still survives; the engine may record the sessions' process group ids and
      check them at start, but nothing here requires it.
 
-   Left to the engine and the configuration:
+   Left to the engine and the configuration, none of which the crate does, and all of which have
+   to exist before `agent_launch` is offered: launching off by default; who may launch; depth and
+   fan-out limits; an audit log; a restricted serve profile for the injected server. In detail:
    - **Off by default.** Launching is disabled until `[agents.launch] enabled = true`.
    - **Allow-list of harnesses and executables** in the same table; a harness not named there
      cannot be started. The crate starts whatever executable the config names, outside the root.
@@ -206,7 +208,9 @@ call that started it.
   Code's managed settings and user `CLAUDE.md`. A Claude Code version whose init frame lacks the
   mode or the servers still fails every launch.
 - **User-level configuration still applies** to every harness but Claude Code: the child inherits
-  `HOME` and `XDG_*`, so `~/.codex/config.toml`, `~/.gemini/settings.json`,
+  `HOME` and `XDG_*`, so `~/.codex/config.toml` (and `~/.codex/.env`, which Codex 0.169 reads),
+  OpenCode's global configuration (whose MCP servers and plugins started although `session/new`
+  named none), `~/.gemini/settings.json`,
   `~/.cursor/cli-config.json` and Hermes's settings can approve tools, add MCP servers or run
   hooks behind the policy; Codex 0.169 started the user's own MCP servers and plugins next to the
   injected one. OpenCode's inline `permission: ask` overrides its config files' permissions, but
@@ -217,7 +221,7 @@ call that started it.
   verified, under an explicit opt-in. Codex `ReadOnly` uses approval policy `never` with a
   read-only sandbox: nothing is asked, whatever the sandbox blocks fails, and an MCP tool call
   fails rather than runs (Codex 0.169). Claude Code's default mode ran `Read`, a read-only `Bash`
-  command and `ToolSearch` unasked.
+  command and `ToolSearch` unasked inside the working directory; `ls /usr` asked (2.1.326).
 - **PATH and executables.** The harness's own lookups (`#!/usr/bin/env node`, helper binaries)
   search the child's `PATH`, which keeps the launcher's absolute entries; a directory on it that
   the agent can write is outside what the crate checks.
@@ -257,7 +261,10 @@ call that started it.
   session still ends on time and stops reading its pipes; containing such a process needs a cgroup
   or a job object. `opencode acp` 2.3.0 does this by design: it runs its server (`opencode serve
   --stdio`), the MCP servers and plugins in a process group of their own, which exit once the
-  server's input closes, not when the session's group is killed.
+  server's input closes, not when the session's group is killed: in a live probe they outlived a
+  kill of the leader's group by about 1.7 s with its input closed, and by about 3 s (once
+  more than 3 s, gone within 13 s) with it open. The
+  keeper does not reach them either.
 - A follow-up starts a new turn; mid-turn steering, which monocode supports, is not offered.
 - The project files of Grok, Hermes and a generic ACP agent are not known, so they are not
   checked.

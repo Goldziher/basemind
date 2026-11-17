@@ -329,8 +329,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer refused as stale on the next page: the background warm of the in-RAM map counted as an
   index change, though none of the three lists is read from that map.
 - On Windows, a harness given by bare name (the default `claude`, `codex`, `opencode`) is found
-  through `PATHEXT` (`claude.cmd`, `codex.exe`) instead of never matching, or matching the
-  extensionless POSIX shim npm installs beside the `.cmd`.
+  through `PATHEXT` (`codex.exe`) instead of never matching, or matching the extensionless POSIX
+  shim npm installs beside the `.cmd`. A batch file it finds (`claude.cmd`) is refused, as
+  `cmd.exe` would look for `node` in the agent's working directory first, and a Windows child gets
+  `NoDefaultCurrentDirectoryInExePath=1`.
+- `basemind-agents` (not yet wired into the server) closes the gaps of its third security review:
+  - Claude Code is launched with `--disallowedTools` for the tools that start work outside the
+    session (`RemoteTrigger`, `CronCreate`, `ScheduleWakeup`, `SendToProject`, ...), its brief
+    waits for an `initialize` answer reporting the requested mode and only built-in commands, and
+    its init frame may list no plugin or `.claude/`-defined skill or agent.
+  - A repository whose own git config sets a filter, a diff driver, an external diff or an include
+    is refused (Codex runs `git status`, and with it a clean filter, outside its sandbox), and every
+    child gets `core.fsmonitor=false`. Gemini and the unverified ACP agents are refused over a
+    `.env*` file. A root that holds `HOME` or a harness's or basemind's directory is refused.
+  - A harness's process group dies with a launcher killed outright (a keeper process per group),
+    and wall time counts while the machine sleeps.
+  - Requests pending when a session fails are reported withdrawn; a failure's stderr tail moves
+    to the launcher-only `Event::Diagnostics`, and `Event::Error` is one sanitised line. A Codex
+    command asking for more access is a permissions request showing it, a Codex turn frame without
+    a `threadId` fails the session, and an OpenCode mode switch through its config option is caught.
+  - Errors no longer echo paths or tell a missing working directory from one outside the root, and
+    `Debug` output leaves out the MCP server's arguments.
 - On Windows, `admin eval` baselines run their shell commands with Git for Windows' path
   conversion off, so an argument such as `-L '/fn alpha/,/^}/'` reaches git as written.
 - Two installed basemind versions no longer kill each other's daemon. The daemon's socket (named
