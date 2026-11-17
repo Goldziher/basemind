@@ -615,7 +615,8 @@ impl BasemindServer {
             )));
         }
         let _ = (root, agent_id);
-        if options.read_only {
+        // ~keep A one-shot query never syncs, so an index it would open empty would stay empty.
+        if options.read_only || (!options.background && !crate::git_history::GitHistoryIndex::exists(history_dir)) {
             return None;
         }
         match crate::git_history::GitHistoryIndex::open(history_dir) {

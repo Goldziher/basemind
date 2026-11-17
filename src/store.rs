@@ -615,7 +615,12 @@ impl Store {
         // A stale layout leaves an index of the current schema over a map that is gone: the scan
         // that takes the lock replaces both ([`Store::open_index_owed_to_scan`]). ~keep
         let mut index_rebuild_needed = stale_layout;
-        let index_db = if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
+        // ~keep A read creates no index: a view a scan never wrote has none to open.
+        let index_db = if allow_index_db
+            && schema_ok
+            && view_dir.join(crate::index::INDEX_DIR).is_dir()
+            && !writer_lock_is_held(&basemind_dir)
+        {
             match IndexDb::open_tolerating_held_memory(&view_dir, &memory_store_dir(root)) {
                 Ok(db) => Some(db),
                 Err(IndexError::Fjall(fjall::Error::Locked)) => None,

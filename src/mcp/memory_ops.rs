@@ -169,6 +169,9 @@ pub(crate) enum MemoryOpError {
     /// The fsync that makes an acknowledged write durable failed.
     #[error("fsync memory store: {0}")]
     Sync(String),
+    /// Opening or creating the group store on its first use failed.
+    #[error("open memory store: {0}")]
+    Open(String),
     /// Serializing a [`MemoryRecord`] to msgpack failed.
     #[error("serialize memory record: {0}")]
     Serialize(rmp_serde::encode::Error),
@@ -194,6 +197,27 @@ pub(crate) fn require_memory(idx: &IndexDb) -> Result<&crate::index::memory_stor
     })
 }
 
+/// The notes keyspace for a read, or `None` while the group store does not exist (nothing was ever
+/// saved). A read never creates the store.
+fn notes_for_read(idx: &IndexDb) -> Result<Option<&fjall::Keyspace>, MemoryOpError> {
+    require_memory(idx)?.notes().map_err(store_error)
+}
+
+/// The notes keyspace for a write, creating the group store on the first one.
+fn notes_for_write(idx: &IndexDb) -> Result<&fjall::Keyspace, MemoryOpError> {
+    require_memory(idx)?.notes_for_write().map_err(store_error)
+}
+
+/// A failure opening the group store on first use, mapped like the same failure at handle open.
+fn store_error(error: crate::index::IndexError) -> MemoryOpError {
+    match error {
+        crate::index::IndexError::Fjall(fjall::Error::Locked) => MemoryOpError::MemoryDetached,
+        crate::index::IndexError::NewerMemoryStore { stored, current } => MemoryOpError::NewerStore { stored, current },
+        crate::index::IndexError::Fjall(source) => MemoryOpError::Fjall { op: "open", source },
+        other => MemoryOpError::Open(other.to_string()),
+    }
+}
+
 /// Read the raw record for `(scope, vis_byte, owner, key)`, or `None` when absent / undecodable.
 fn read_record(
     idx: &IndexDb,
@@ -203,8 +227,10 @@ fn read_record(
     key: &str,
 ) -> Result<Option<MemoryRecord>, MemoryOpError> {
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
-    let bytes = require_memory(idx)?
-        .memory_by_key
+    let Some(notes) = notes_for_read(idx)? else {
+        return Ok(None);
+    };
+    let bytes = notes
         .get(raw_key)
         .map_err(|source| MemoryOpError::Fjall { op: "get", source })?;
     Ok(bytes.and_then(|b| rmp_serde::from_slice(&b).ok()))
@@ -221,8 +247,7 @@ fn write_record(
 ) -> Result<(), MemoryOpError> {
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
     let bytes = rmp_serde::to_vec_named(record).map_err(MemoryOpError::Serialize)?;
-    require_memory(idx)?
-        .memory_by_key
+    notes_for_write(idx)?
         .insert(raw_key, bytes)
         .map_err(|source| MemoryOpError::Fjall { op: "insert", source })?;
     sync_memory(idx)
@@ -239,7 +264,9 @@ fn sync_memory(idx: &IndexDb) -> Result<(), MemoryOpError> {
 /// Remove the record at `(scope, vis_byte, owner, key)`; returns whether it existed.
 fn remove_record(idx: &IndexDb, scope: &str, vis_byte: u8, owner: &str, key: &str) -> Result<bool, MemoryOpError> {
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
-    let notes = &require_memory(idx)?.memory_by_key;
+    let Some(notes) = notes_for_read(idx)? else {
+        return Ok(false);
+    };
     let existed = notes
         .get(raw_key.as_slice())
         .map_err(|source| MemoryOpError::Fjall { op: "get", source })?
@@ -458,9 +485,11 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
     let mut total: usize = 0;
     let mut last_emitted_key: Option<Vec<u8>> = None;
     let mut has_more = false;
-    for guard in require_memory(idx)?
-        .memory_by_key
-        .range::<Vec<u8>, _>((lower, upper_bound))
+    let notes = notes_for_read(idx)?;
+    for guard in notes
+        .map(|notes| notes.range::<Vec<u8>, _>((lower, upper_bound)))
+        .into_iter()
+        .flatten()
     {
         let (raw_key, raw_val) = guard
             .into_inner()
