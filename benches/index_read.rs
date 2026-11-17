@@ -276,10 +276,11 @@ enum Op {
 impl Op {
     /// The operations this build can run: BM25 exists only under the `code-search` feature.
     fn all() -> Vec<Op> {
-        let mut ops = Self::INDEX.to_vec();
         #[cfg(feature = "code-search")]
-        ops.extend([Op::Bm25Hot, Op::Bm25Rare]);
-        ops
+        let keyword: &[Op] = &[Op::Bm25Hot, Op::Bm25Rare];
+        #[cfg(not(feature = "code-search"))]
+        let keyword: &[Op] = &[];
+        Self::INDEX.iter().chain(keyword).copied().collect()
     }
 
     const INDEX: [Op; 12] = [
