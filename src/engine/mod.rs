@@ -10,4 +10,4 @@ pub(crate) mod term_index;
 pub(crate) mod workspace;
 
 pub(crate) use map_cache::MapCache;
-pub(crate) use workspace::{Lifecycle, SharedReadStack};
+pub(crate) use workspace::{Lifecycle, Workspace};

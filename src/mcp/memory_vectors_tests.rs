@@ -69,7 +69,7 @@ fn server(root: &Path, model: &str) -> ServerState {
             Err(error) => panic!("open the store: {error}"),
         }
     };
-    let shared = crate::mcp::SharedReadStack::new(
+    let shared = crate::mcp::Workspace::new(
         store,
         root.to_path_buf(),
         Arc::new(Config::with_defaults()),

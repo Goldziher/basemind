@@ -56,7 +56,7 @@ fn state(root: &Path, cache: &Path) -> ServerState {
 fn state_over(root: &Path, cache: &Path) -> ServerState {
     let store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("store");
     let repo = crate::git::Repo::discover(root).expect("repo");
-    let shared = super::super::SharedReadStack::new(
+    let shared = super::super::Workspace::new(
         store,
         root.to_path_buf(),
         Arc::new(crate::config::Config::with_defaults()),

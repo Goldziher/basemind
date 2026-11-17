@@ -121,7 +121,7 @@ use rmcp::task_manager::TaskManager;
 
 use crate::store::Store;
 
-pub(crate) use crate::engine::SharedReadStack;
+pub(crate) use crate::engine::Workspace;
 pub(crate) use crate::engine::{Lifecycle, MapCache};
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub use agent_context::AgentContext;
@@ -137,13 +137,13 @@ pub(crate) use state::ServerState;
 /// A daemon-owned read stack and the watcher lifetime that keeps it fresh.
 pub(crate) struct HostedReadStack {
     _watcher: background::WatcherGuard,
-    shared: Arc<SharedReadStack>,
+    shared: Arc<Workspace>,
 }
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 impl HostedReadStack {
     /// Clone the read stack shared by every connection to this hosted workspace.
-    pub(crate) fn shared(&self) -> Arc<SharedReadStack> {
+    pub(crate) fn shared(&self) -> Arc<Workspace> {
         Arc::clone(&self.shared)
     }
 }
@@ -323,7 +323,7 @@ impl BasemindServer {
         );
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
         let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options);
-        let shared = Arc::new(SharedReadStack::new(
+        let shared = Arc::new(Workspace::new(
             store,
             root,
             config,
@@ -411,7 +411,7 @@ impl BasemindServer {
         tool_contract::finalize_router(router)
     }
 
-    /// Build a per-connection server that SHARES a workspace's [`SharedReadStack`] rather than
+    /// Build a per-connection server that SHARES a workspace's [`Workspace`] rather than
     /// opening its own. This is the daemon-hosted seam: the daemon builds one shared read stack per
     /// hot workspace (see [`build_hosted_read_stack`](Self::build_hosted_read_stack)) and hands every
     /// accepted relay connection its own `BasemindServer` over that one stack — so the heavy state
@@ -424,7 +424,7 @@ impl BasemindServer {
     /// advertises nor serves them.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn from_shared(
-        shared: Arc<SharedReadStack>,
+        shared: Arc<Workspace>,
         agent_id: String,
         heavy_admission: Arc<admission::HeavyAdmission>,
         agents: Option<Arc<AgentContext>>,
@@ -451,7 +451,7 @@ impl BasemindServer {
     /// Build (once) the shared read stack the daemon hosts for one workspace, plus its single
     /// "warden" — a background-running [`ServerState`] that owns freshness for the whole workspace:
     /// the empty-index auto-scan, the live filesystem watcher, cache warming, and the git-history
-    /// sync. The warden shares the returned [`SharedReadStack`] by `Arc`, so when its watcher
+    /// sync. The warden shares the returned [`Workspace`] by `Arc`, so when its watcher
     /// rebuilds the in-RAM map every hosted connection sees the refreshed snapshot at once. This is
     /// the N-watchers-per-workspace → one-watcher-per-workspace consolidation: per-connection
     /// servers ([`from_shared`](Self::from_shared)) spawn nothing.
@@ -503,7 +503,7 @@ impl BasemindServer {
             Some(git_history_host),
         );
         let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options);
-        let shared = Arc::new(SharedReadStack::new(
+        let shared = Arc::new(Workspace::new(
             store,
             root.to_path_buf(),
             config,

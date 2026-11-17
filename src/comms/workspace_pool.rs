@@ -518,7 +518,7 @@ impl WorkspacePool {
         root: &Path,
         host: std::sync::Arc<dyn crate::mcp::HostBackend>,
         git_history_host: std::sync::Arc<dyn crate::git_history::remote::HistoryHost>,
-    ) -> anyhow::Result<std::sync::Arc<crate::mcp::SharedReadStack>> {
+    ) -> anyhow::Result<std::sync::Arc<crate::mcp::Workspace>> {
         let (shared, _conn) = self.serve_conn(root, host, git_history_host).await?;
         Ok(shared)
     }
@@ -534,7 +534,7 @@ impl WorkspacePool {
         root: &Path,
         host: std::sync::Arc<dyn crate::mcp::HostBackend>,
         git_history_host: std::sync::Arc<dyn crate::git_history::remote::HistoryHost>,
-    ) -> anyhow::Result<(std::sync::Arc<crate::mcp::SharedReadStack>, ServeConnGuard)> {
+    ) -> anyhow::Result<(std::sync::Arc<crate::mcp::Workspace>, ServeConnGuard)> {
         let (entry, conn) = loop {
             let entry = self.get_or_open_async(root).await.map_err(anyhow::Error::new)?;
             let conn = Self::register_conn(std::sync::Arc::clone(&entry));

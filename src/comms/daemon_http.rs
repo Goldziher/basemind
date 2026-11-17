@@ -44,7 +44,7 @@ impl Broker {
         HttpActivityGuard { broker: self.clone() }
     }
 
-    /// Resolve a repo `root` to its daemon-hosted [`SharedReadStack`](crate::mcp::SharedReadStack),
+    /// Resolve a repo `root` to its daemon-hosted [`Workspace`](crate::mcp::Workspace),
     /// building it on first touch. This is the HTTP front-end's per-request seam: it mirrors exactly
     /// what [`serve_relay_connection`](Broker::serve_relay_connection) does for a UDS relay client —
     /// same host backend (the workspace pool) and git-history host (this broker) — so an HTTP request
@@ -54,7 +54,7 @@ impl Broker {
     pub(crate) async fn host_read_stack(
         self: &Arc<Self>,
         root: &std::path::Path,
-    ) -> anyhow::Result<(Arc<crate::mcp::SharedReadStack>, super::workspace_pool::ServeConnGuard)> {
+    ) -> anyhow::Result<(Arc<crate::mcp::Workspace>, super::workspace_pool::ServeConnGuard)> {
         let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
         let git_history_host = Arc::clone(self) as Arc<dyn crate::git_history::remote::HistoryHost>;
         self.workspaces.serve_conn(root, host, git_history_host).await

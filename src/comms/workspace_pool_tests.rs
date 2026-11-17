@@ -562,7 +562,7 @@ fn a_path_that_resolves_to_the_filesystem_root_is_refused() {
 async fn hosted_stack(
     pool: &std::sync::Arc<WorkspacePool>,
     root: &std::path::Path,
-) -> std::sync::Arc<crate::mcp::SharedReadStack> {
+) -> std::sync::Arc<crate::mcp::Workspace> {
     let host: std::sync::Arc<dyn crate::mcp::HostBackend> = pool.clone();
     let history: std::sync::Arc<dyn crate::git_history::remote::HistoryHost> = std::sync::Arc::new(UnusedHistoryHost);
     pool.get_or_build_serve_state(root, host, history)
@@ -595,7 +595,7 @@ enum CodeQuery {
 /// Answer one code-tool call against a hosted stack, returning the response body with timings scrubbed.
 /// Goes through a real per-connection [`crate::mcp::BasemindServer`], so what is compared is the
 /// bytes a client would receive, not an internal projection of them.
-async fn code_response(shared: &std::sync::Arc<crate::mcp::SharedReadStack>, query: CodeQuery) -> String {
+async fn code_response(shared: &std::sync::Arc<crate::mcp::Workspace>, query: CodeQuery) -> String {
     use rmcp::model::ContentBlock;
     let server = crate::mcp::BasemindServer::from_shared(
         std::sync::Arc::clone(shared),

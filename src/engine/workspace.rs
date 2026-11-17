@@ -1,4 +1,4 @@
-//! The shared, workspace-level read stack ([`SharedReadStack`]) behind [`crate::mcp::ServerState`].
+//! The shared, workspace-level read stack ([`Workspace`]) behind [`crate::mcp::ServerState`].
 //!
 //! Everything here is scoped to a `(root, view)` and is safe to share — via an [`Arc`] — across
 //! many client connections at once. That is the pivot for a single-daemon architecture: one heavy
@@ -23,10 +23,10 @@ use crate::store::Store;
 /// Heavy, workspace-level read state shared across every connection to one `(root, view)`.
 ///
 /// Held behind an [`Arc`] on each [`ServerState`](crate::mcp::ServerState). In the in-process serve/CLI
-/// path exactly one `ServerState` points at a given `SharedReadStack`, so behavior is identical to
+/// path exactly one `ServerState` points at a given `Workspace`, so behavior is identical to
 /// when these fields lived directly on `ServerState`; a future daemon can point many connections at
 /// one stack.
-pub(crate) struct SharedReadStack {
+pub(crate) struct Workspace {
     pub(crate) store: RwLock<Store>,
     pub(crate) root: PathBuf,
     /// In-RAM mirror of every indexed file's L1 blob.
@@ -188,7 +188,7 @@ fn last_scan_degraded(store: &Store) -> bool {
 /// is needed (an empty index, or one whose last full scan was cancelled / aborted before covering the
 /// workspace or finishing its resolve pass: issues #79, #84), and whether the in-RAM cache preload is deferred to the background.
 ///
-/// Factored out so [`SharedReadStack::new`] (which sets the `cache_warming` atomic + eager/deferred
+/// Factored out so [`Workspace::new`] (which sets the `cache_warming` atomic + eager/deferred
 /// cache) and `BasemindServer::new_with_options` (which spawns the matching background tasks) agree
 /// by construction rather than by duplicated expressions.
 pub(crate) fn boot_plan(store: &Store, options: &ServerOptions) -> (bool, bool) {
@@ -204,7 +204,7 @@ pub(crate) fn boot_plan(store: &Store, options: &ServerOptions) -> (bool, bool) 
     (needs_initial_scan, defer_warm)
 }
 
-impl SharedReadStack {
+impl Workspace {
     /// Build the heavy read stack for one `(root, view)`. Owns the opened `store` and the already
     /// resolved `git_history` handle; computes the scope key, corpus size, and the initial in-RAM
     /// code map (eager, deferred-warm placeholder, or lazy) per [`boot_plan`] + [`ServerOptions`].
@@ -299,7 +299,7 @@ impl SharedReadStack {
     }
 }
 
-impl SharedReadStack {
+impl Workspace {
     /// Whether a memory request crosses the daemon's socket, whose frame bounds its size, rather
     /// than being answered in this process.
     #[cfg(feature = "memory")]

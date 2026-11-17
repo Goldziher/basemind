@@ -1,25 +1,25 @@
 //! MCP server per-connection state: [`ServerState`] (identity + a shared read stack), its
 //! [`Lifecycle`] classifier, and the [`MapCache`] read stack over the indexed corpus.
 //!
-//! The heavy, workspace-level read fields live on [`SharedReadStack`](super::SharedReadStack)
+//! The heavy, workspace-level read fields live on [`Workspace`](super::Workspace)
 //! (in `shared_state.rs`) so one stack can be shared — via an [`Arc`] — across many connections.
 //! `ServerState` keeps only what is specific to a single connection: the resolved agent identity,
 //! its lazily-connected link to the daemon, and the client's requested log verbosity.
 
 use std::sync::Arc;
 
-use super::{SharedReadStack, l1_cache, types};
+use super::{Workspace, l1_cache, types};
 use crate::engine::{Lifecycle, MapCache, workspace::CACHE_WARM_WAIT_CAP};
 
 /// Per-connection MCP server state.
 ///
-/// Holds one [`Arc<SharedReadStack>`](super::SharedReadStack) (the heavy read state, shared across
+/// Holds one [`Arc<Workspace>`](super::Workspace) (the heavy read state, shared across
 /// connections) plus this connection's own identity. Field accesses to the shared read stack go
 /// through [`shared`](Self::shared); the identity fields (`agent_id`, `daemon_client`)
 /// are read directly.
 pub(crate) struct ServerState {
     /// The workspace-level read stack shared across every connection to this `(root, view)`.
-    pub(crate) shared: Arc<SharedReadStack>,
+    pub(crate) shared: Arc<Workspace>,
     /// Owner segment for the individual-memory tier: the session's principal, resolved by the one
     /// identity resolver of agent comms (ADR-0021). Group-tier writes ignore it.
     #[allow(dead_code)]
@@ -45,13 +45,13 @@ pub(crate) struct ServerState {
 }
 
 impl ServerState {
-    /// Build a fresh per-connection state that shares the given [`SharedReadStack`].
+    /// Build a fresh per-connection state that shares the given [`Workspace`].
     ///
     /// Each connection gets its own identity: no daemon link yet, no agent context, and the default
     /// log verbosity. The daemon-hosted transports use it to hand every accepted connection the one
     /// shared read stack.
     #[allow(dead_code)]
-    pub(crate) fn for_connection(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
+    pub(crate) fn for_connection(shared: Arc<Workspace>, agent_id: String) -> Self {
         Self {
             shared,
             agent_id,
