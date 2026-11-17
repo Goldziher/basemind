@@ -423,9 +423,23 @@ fn a_subreaper_ancestor_adopts_no_escapee_as_launcher() {
             let Some(escaped) = escape_from_session(escape, false) else {
                 return;
             };
-            // The escapee was adopted by the subreaper above the supervisor.
-            let adopted = crate::procinfo::info(escaped.peer.id.pid).unwrap();
-            assert_eq!(adopted.ppid, wrapper.id.pid, "the subreaper did not adopt the escapee");
+            // The escapee is adopted by the subreaper above the supervisor once the fork that
+            // started it has exited; it may still be alive when the escapee is first placed,
+            // its own parent already adopted (a loaded runner showed that).
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let adopted = crate::procinfo::info(escaped.peer.id.pid).unwrap();
+                if adopted.ppid == wrapper.id.pid {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the subreaper did not adopt the escapee: its parent is {}, the subreaper {}",
+                    adopted.ppid,
+                    wrapper.id.pid
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
             assert_escape_refused(&escaped);
             std::fs::write(std::env::var_os(SUBREAPER_MARKER).unwrap(), "ran").unwrap();
         }
