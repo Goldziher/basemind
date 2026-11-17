@@ -57,8 +57,9 @@ pub const VIEWS_DIR: &str = "views";
 /// Lazy-opened LanceDB store directory under `.basemind/`. Created on first use.
 #[cfg(feature = "intelligence")]
 pub const LANCE_DIR: &str = "lance";
-/// Document retrieval store directories under a view's directory, one per embedding model and
-/// dimension (`crate::lance::docs::store_dir`). Created by the first scan that writes document rows.
+/// The legacy per-view location of the document retrieval stores (`views/<view>/retrieval/`). The
+/// stores are the repository group's now ([`GROUP_LANCE_DIR`]); the first scan that opens the
+/// group store removes this directory (`scanner_docs_store::open_doc_store`).
 #[cfg(feature = "documents")]
 pub const RETRIEVAL_DIR: &str = "retrieval";
 
@@ -147,6 +148,25 @@ pub const GROUPS_DIR: &str = "groups";
 /// `cache_root()/cache/groups/<repo_group_key>/`: the group index of `root`'s repository group.
 pub fn group_index_dir(root: &Path) -> PathBuf {
     cache_root().join(CACHE_DIR).join(GROUPS_DIR).join(repo_group_key(root))
+}
+
+/// Directory of a repository group's document retrieval stores, under its [`GROUPS_DIR`] entry:
+/// `cache/groups/<group>/lance/`, one store per embedding model (`crate::lance::docs`).
+pub const GROUP_LANCE_DIR: &str = "lance";
+
+/// The group retrieval stores ([`GROUP_LANCE_DIR`]) of the workspace cache dir `basemind_dir`
+/// (`cache/workspaces/<key>`), found through the group its marker records, else the group of its
+/// root while the root exists. `None` when neither names a group, or the recorded group is not a
+/// single path component.
+pub fn group_lance_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
+    let marker = read_workspace_marker(basemind_dir)?;
+    let group = match marker.group {
+        Some(group) => group,
+        None => marker.root.exists().then(|| repo_group_key(&marker.root))?,
+    };
+    let single = !group.is_empty() && group != "." && group != ".." && !group.contains(['/', '\\']);
+    let cache = basemind_dir.parent()?.parent()?;
+    single.then(|| cache.join(GROUPS_DIR).join(group).join(GROUP_LANCE_DIR))
 }
 
 /// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every
