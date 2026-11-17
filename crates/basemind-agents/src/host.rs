@@ -58,9 +58,13 @@ pub(crate) fn nested() -> Option<Nested> {
     same_program_above(pid)
 }
 
-/// Whether an ancestor of `pid` runs the program `pid` runs. An ancestor whose program cannot be
-/// read (another user's, on macOS) is passed over: the `serve` this guards against runs as the
-/// user, below the lead's own.
+/// Whether an ancestor of `pid` runs the program `pid` runs, or is a sealed host ([`HOST_MARKER`]).
+///
+/// On macOS an ancestor whose program cannot be read (root's, such as `login`) is passed over: the
+/// `serve` this guards against runs as the user, below the lead's own. On Linux every process's
+/// command name is readable (`/proc/<pid>/comm` takes no ptrace check, and a non-dumpable process's
+/// stays readable while its `exe` does not), so an ancestor whose program cannot be read there has
+/// gone or cannot be described, and the answer is [`Nested::Unknown`]: the check fails closed.
 fn same_program_above(pid: i32) -> Option<Nested> {
     let (Some(me), Some(mine)) = (procinfo::info(pid), procinfo::image(pid)) else {
         return Some(Nested::Unknown);
@@ -70,6 +74,9 @@ fn same_program_above(pid: i32) -> Option<Nested> {
     };
     for proc in &chain.procs {
         let Some(theirs) = procinfo::image(proc.pid) else {
+            if cfg!(any(target_os = "linux", target_os = "android")) {
+                return Some(Nested::Unknown);
+            }
             continue;
         };
         // What was read is the ancestor's only if the pid still names it.
@@ -93,15 +100,18 @@ fn same_program_above(pid: i32) -> Option<Nested> {
 /// seals too, but only after configuration was read, and a process of the same user that was
 /// already waiting could open `/proc/<pid>/fd/0` for writing in between. A short window from
 /// `exec` to this call remains.
+///
+/// The name is the thread-group leader's, whichever thread calls this: `/proc/self` is the leader's
+/// directory and a thread may write the comm of any thread of its group (proc(5)), whereas
+/// `PR_SET_NAME` names only the calling thread, and `/proc/<pid>/comm`, which a process below reads,
+/// is the leader's. The rename comes before the seal: once non-dumpable, the process's `/proc`
+/// entries are root's and it may no longer write them. Should the rename fail, the leader keeps
+/// its program's name, which a `serve` of the same name below it still matches.
 #[must_use]
 pub fn seal_host() -> bool {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        let name = std::ffi::CString::new(HOST_MARKER).expect("the marker holds no NUL");
-        // SAFETY: PR_SET_NAME reads a NUL-terminated string of at most 16 bytes, which `name` is.
-        unsafe {
-            libc::prctl(libc::PR_SET_NAME, name.as_ptr(), 0, 0, 0);
-        }
+        let _ = std::fs::write("/proc/self/comm", HOST_MARKER);
     }
     seal()
 }

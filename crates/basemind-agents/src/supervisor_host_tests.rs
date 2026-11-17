@@ -198,9 +198,13 @@ fn a_process_below_a_sealed_host_is_nested_whatever_it_is_called() {
         }
         Ok(role @ ("sealed" | "unsealed")) => {
             if role == "sealed" {
-                assert!(crate::host::seal_host());
-                let comm = std::fs::read_to_string("/proc/self/comm").unwrap();
-                assert_eq!(comm.trim_end(), crate::host::HOST_MARKER);
+                // From a thread that is neither the leader nor the test's own: the leader is named.
+                assert!(std::thread::spawn(crate::host::seal_host).join().unwrap());
+                let pid = std::process::id();
+                for comm in ["/proc/self/comm".to_owned(), format!("/proc/self/task/{pid}/comm")] {
+                    let named = std::fs::read_to_string(&comm).unwrap();
+                    assert_eq!(named.trim_end(), crate::host::HOST_MARKER, "{comm}");
+                }
             }
             run(
                 std::path::Path::new(&std::env::var_os(MARKER_COPY).unwrap()),
