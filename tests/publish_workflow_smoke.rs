@@ -247,3 +247,22 @@ fn the_website_deploys_only_from_a_release_tag() {
         "only the deploy job may write to Pages"
     );
 }
+
+/// A plugins-only dispatch publishes immutable registry versions, so it runs only from a release
+/// tag that names the plugin version, never from a branch.
+#[test]
+fn plugins_only_dispatch_publishes_only_from_its_release_tag() {
+    let workflow = workflow();
+    for job in ["dispatch-plugin-npm", "dispatch-plugin-hermes"] {
+        let block = job_block(&workflow, job);
+        assert!(!block.contains("refs/heads/"), "{job} must not run from a branch");
+        assert!(
+            block.contains("startsWith(github.ref, 'refs/tags/v')"),
+            "{job} must run only from a tag"
+        );
+        assert!(
+            block.contains("\"v$version\" != \"$GITHUB_REF_NAME\""),
+            "{job} must refuse a tag that does not name the plugin version"
+        );
+    }
+}

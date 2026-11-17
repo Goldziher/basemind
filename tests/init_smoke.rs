@@ -337,7 +337,7 @@ fn print_uses_imperative_verbs() {
     assert!(out.contains("would write ai-rulez rule"), "got:\n{out}");
     assert!(out.contains("would write basemind.toml scaffold"), "got:\n{out}");
     assert!(
-        out.contains("would add basemind's MCP tools to permissions.allow"),
+        out.contains("would add basemind's read-only MCP tools to permissions.allow"),
         "got:\n{out}"
     );
     assert!(
@@ -371,4 +371,44 @@ fn path_ignored_only_by_the_global_ignore_is_still_added_to_the_repo_gitignore()
         gitignore.lines().any(|l| l == ".claude/settings.local.json"),
         "collaborators lack the global ignore, so the repo .gitignore must carry it:\n{gitignore}"
     );
+}
+
+/// No terminal and no `--yes` (an agent's shell running `basemind init`): nothing is written into
+/// the repository, not even with explicit targets, and the run says what it would change.
+#[test]
+fn without_a_terminal_and_without_yes_init_writes_nothing() {
+    let dir = tmpdir();
+    let home = tmpdir();
+    let root = dir.path();
+    let out = run_init_isolated(
+        root,
+        home.path(),
+        &["--rules-target", "claude-local", "--settings-target", "local"],
+    );
+
+    let written: Vec<_> = std::fs::read_dir(root)
+        .expect("read root")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert!(written.is_empty(), "nothing may be written, found {written:?}:\n{out}");
+    assert!(out.contains("would write basemind.toml scaffold"), "got:\n{out}");
+    assert!(
+        out.contains("would add \"CLAUDE.local.md\" to .gitignore"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("re-run with --yes to apply"), "got:\n{out}");
+
+    run_init_isolated(
+        root,
+        home.path(),
+        &["--yes", "--rules-target", "claude-local", "--settings-target", "local"],
+    );
+    for file in [
+        "basemind.toml",
+        "CLAUDE.local.md",
+        ".gitignore",
+        ".claude/settings.local.json",
+    ] {
+        assert!(root.join(file).is_file(), "--yes writes {file}");
+    }
 }

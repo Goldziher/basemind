@@ -332,6 +332,8 @@ jobs:
           set -euo pipefail
           command -v jq
           mise run plugin:pytest
+      - name: node (npm wrapper installer)
+        run: node --test tests/npm_install_https.test.cjs
 
   hermes:
     name: hermes plugin package

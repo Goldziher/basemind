@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       plugins-only:
-        description: "Publish only missing plugin registry versions from main"
+        description: "Publish only missing plugin registry versions; dispatch it from the release tag (Use workflow from: vX.Y.Z)"
         type: boolean
         default: false
       tag:
@@ -946,7 +946,7 @@ jobs:
   dispatch-plugin-npm:
     name: Publish missing npm plugin version
     needs: ci_gate
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins-only && github.ref == 'refs/heads/main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins-only && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -955,6 +955,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
+      # A registry version is immutable: publish it only from the release tag that names it, never
+      # from a branch whose manifests already carry the next, untagged version.
+      - name: Require the dispatched tag to name the plugin version
+        shell: bash
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("plugin/package.json"))["version"])')"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::plugin version $version does not match the dispatched ref $GITHUB_REF_NAME"
+            exit 1
+          fi
       - name: Install reviewed ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@v1
       - name: Verify plugin versions and generated resources
@@ -1017,7 +1027,7 @@ jobs:
   dispatch-plugin-hermes:
     name: Publish missing Hermes plugin version
     needs: ci_gate
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins-only && github.ref == 'refs/heads/main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins-only && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -1027,6 +1037,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
+      # A registry version is immutable: publish it only from the release tag that names it, never
+      # from a branch whose manifests already carry the next, untagged version.
+      - name: Require the dispatched tag to name the plugin version
+        shell: bash
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("plugin/package.json"))["version"])')"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::plugin version $version does not match the dispatched ref $GITHUB_REF_NAME"
+            exit 1
+          fi
       - name: Install reviewed ai-rulez
         uses: xberg-io/actions/setup-ai-rulez@v1
       - name: Verify plugin versions and generated resources

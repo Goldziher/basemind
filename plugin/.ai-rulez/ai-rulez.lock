@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.4'
 scope = 'all'
-tree = 'sha256:748425fc6d02b2c59770275c7f8dbf2f62e5e674c5f619ae1040a7bb1e33ddfa'
+tree = 'sha256:3bc719ffef02da474b284bc99ec35eaa5f5309c8dcafb2e9f4e027040e9679c8'
 
 [[item]]
 kind = 'command'
@@ -22,7 +22,7 @@ digest = 'sha256:fad8ccdb7efc4b27c8eb65c854331a1565fdcbfb1185d3429f44f9fe432405d
 kind = 'command'
 id = 'bm-init'
 path = 'commands/bm-init.md'
-digest = 'sha256:aed27c998273d6a55cc022347c381242f219695c9cf7f703074f0f7d5126b22f'
+digest = 'sha256:5bda2b1c4d4157cd532719d4ab1a3dc07e36c4a0815663df9bbb2f97ea7cf6be'
 
 [[item]]
 kind = 'command'
@@ -40,7 +40,7 @@ digest = 'sha256:4be937bc70951463ccffbe4017c8a1d283e860da99897f8ab481e030abbbf1b
 kind = 'command'
 id = 'bm-statusline'
 path = 'commands/bm-statusline.md'
-digest = 'sha256:edd551ba8eff4dbe320ebb59382ef0cdec02cfd5cb56e8d311a839008f89340e'
+digest = 'sha256:97e4cf0bb225e72bab95c0e967264d9176013f89c8c8a7f98fae1ebe1cc67218'
 
 [[item]]
 kind = 'skill'

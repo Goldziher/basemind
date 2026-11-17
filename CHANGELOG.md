@@ -279,6 +279,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported `"threads"`. The plugin hooks' inbox announcements need `jq`. The agent tools are not
   listed over the HTTP front-end. The `PreToolUse` hook injects a session `as` only on Claude Code
   and Codex; on other hosts the hooks act as the principal, like the tool calls.
+- **BREAKING: `basemind init` without a terminal writes only with `--yes`.** It used to append to
+  `.gitignore` and write `basemind.toml` whenever stdin was not a TTY; it now prints what it would
+  change. `/bm-init` passes `--yes` once the user has chosen.
+- `basemind init --settings-target` lists each read-only tool in `permissions.allow`, under
+  `mcp__plugin_basemind_basemind__` and `mcp__basemind__`, instead of the
+  `mcp__plugin_basemind_basemind__*` wildcard, which also approved `memory_save`, `index_rescan` and
+  the agent tools. It removes that wildcard and entries for retired tools.
+- The plugin ships `scripts/statusline.sh`; `/bm-statusline` runs the installed plugin's copy
+  instead of the marketplace clone's.
+- A `plugins-only` publish dispatch runs only from the release tag that names the plugin version.
+- cargo-deny checks the `full` dependency graph the release binaries are built from.
 
 ### Removed
 
@@ -397,6 +408,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The plugin launcher releases its install lock when a signal (a hook's time limit, a closed host)
+  stops it mid-download, instead of making the next start wait 120 s for it.
+- The session-start hook bounds its `basemind status` probe without a `timeout` binary (stock
+  macOS), so a hung probe no longer holds the session.
+- The status line and the PreToolUse guard keep their state in a directory only the user can write
+  (`$XDG_RUNTIME_DIR/basemind`, else `${TMPDIR:-/tmp}/basemind-<uid>`, mode 0700), never through a
+  link another local user planted in the shared temporary directory.
+- The npm wrapper downloads over HTTPS only, a redirect included, and reports a binary killed by a
+  signal as a failure.
 - A `code_search`, `docs_search` or `code_outline` cursor issued right after the server started is
   no longer refused as stale on the next page: the background warm of the in-RAM map counted as an
   index change, though none of the three lists is read from that map.

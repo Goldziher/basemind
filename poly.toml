@@ -274,6 +274,7 @@ run = "bash tests/statusline_smoke.sh"
 glob = [
   ".claude-plugin/plugin.json",
   ".claude-plugin/statusline.sh",
+  "plugin/.ai-rulez/scripts/statusline.sh",
   "src/comms_cli.rs",
   "src/store_layout.rs",
   "tests/statusline_smoke.sh",

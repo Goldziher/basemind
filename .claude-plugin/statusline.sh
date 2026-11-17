@@ -112,18 +112,40 @@ run_bounded() (
   exit "$rc"
 )
 
+# A directory only this user can write: $XDG_RUNTIME_DIR/basemind, else ${TMPDIR:-/tmp}/basemind-<uid>.
+# Fails when the directory is a link, another user's, or open to others, so no state is written
+# through a path another local user planted in a shared temporary directory.
+private_state_dir() {
+  local dir="${XDG_RUNTIME_DIR:-}"
+  if [[ -n "$dir" && -d "$dir" && ! -L "$dir" && -O "$dir" ]]; then
+    dir="$dir/basemind"
+  else
+    dir="${TMPDIR:-/tmp}"
+    dir="${dir%/}/basemind-$(id -u)"
+  fi
+  mkdir -m 700 "$dir" 2>/dev/null || true
+  [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+  case "$(ls -ld "$dir" 2>/dev/null)" in
+  drwx------*) printf '%s' "$dir" ;;
+  *) return 1 ;;
+  esac
+}
+
 comms_state() {
   command -v basemind >/dev/null 2>&1 || return 1
   command -v pgrep >/dev/null 2>&1 && pgrep -f "comms daemon" >/dev/null 2>&1 || return 1
   [[ $have_jq -eq 1 ]] || return 1
 
-  local cache now cts cu ca json unread agent name
+  local cache now cts cu ca json unread agent name state_dir tmp
   # The actor this session's agent tools act as: the plugin's agent-as hook names the main session
   # from its session id, under the principal `serve` derives with BASEMIND_HOST=claude.
   name="$(printf '%s' "$input" | run_bounded 2 env BASEMIND_HOST=claude basemind agent hook name 2>/dev/null | tr -cd 'a-z0-9_-' || true)"
-  cache="${TMPDIR:-/tmp}/basemind-sl-comms-$(printf '%s %s' "$cwd" "$name" | cksum | cut -d' ' -f1)"
+  cache=""
+  if state_dir="$(private_state_dir)"; then
+    cache="${state_dir}/sl-comms-$(printf '%s %s' "$cwd" "$name" | cksum | cut -d' ' -f1)"
+  fi
   now="$(date +%s)"
-  if [[ -f "$cache" ]]; then
+  if [[ -n "$cache" && -f "$cache" && ! -L "$cache" ]]; then
     read -r cts cu ca <"$cache" 2>/dev/null || true
     if [[ -n "${cts:-}" && "$cts" =~ ^[0-9]+$ ]] && ((now - cts < 8)); then
       printf '%s %s' "${cu:-0}" "${ca:-}"
@@ -138,7 +160,10 @@ comms_state() {
   unread="$(printf '%s' "$json" | jq -r '(.messages | length)' 2>/dev/null | tr -cd '0-9' || true)"
   [[ -n "$unread" ]] || unread=0
   agent="${BASEMIND_AGENT_ID:-${name}}"
-  printf '%s %s %s\n' "$now" "$unread" "${agent:-}" >"$cache" 2>/dev/null || true
+  if [[ -n "$cache" ]] && tmp="$(mktemp "${cache}.XXXXXX" 2>/dev/null)"; then
+    printf '%s %s %s\n' "$now" "$unread" "${agent:-}" >"$tmp" 2>/dev/null && mv -f "$tmp" "$cache" 2>/dev/null ||
+      rm -f "$tmp" 2>/dev/null || true
+  fi
   printf '%s %s' "$unread" "${agent:-}"
 }
 
@@ -178,11 +203,14 @@ mark() { printf '%s%s%s %s%sbasemind%s' "$brand" "$glyph" "$reset" "$bold" "$bra
 
 bm_version() {
   [[ "${BASEMIND_STATUSLINE_VERSION:-1}" == "0" ]] && return 0
-  local dir ver="" parent
+  local dir ver="" parent manifest
   dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || return 0
-  if [[ $have_jq -eq 1 && -f "$dir/plugin.json" ]]; then
-    ver="$(jq -r '.version // empty' "$dir/plugin.json" 2>/dev/null || true)"
-  fi
+  # Beside the manifest (`.claude-plugin/statusline.sh`) or in the plugin's `scripts/`.
+  for manifest in "$dir/plugin.json" "$dir/../.claude-plugin/plugin.json"; do
+    if [[ -z "$ver" && $have_jq -eq 1 && -f "$manifest" ]]; then
+      ver="$(jq -r '.version // empty' "$manifest" 2>/dev/null || true)"
+    fi
+  done
   if [[ -z "$ver" ]]; then
     parent="$(basename "$(dirname "$dir")")"
     [[ "$parent" =~ ^[0-9]+\.[0-9]+ ]] && ver="$parent"

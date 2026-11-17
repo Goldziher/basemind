@@ -54,13 +54,13 @@ pub(crate) fn is_covered(root: &Path, target: &Path) -> Result<bool> {
 }
 
 /// Ensure `target` is covered by `.gitignore`, prompting in an interactive TTY unless `assume_yes`.
-/// Returns the `.gitignore` path that was appended to, or `None` if nothing changed (already
-/// covered, or the user declined the prompt).
+/// Without a TTY only `assume_yes` appends. Returns the `.gitignore` path that was appended to, or
+/// `None` if nothing changed (already covered, declined, or no one to ask).
 pub(crate) fn ensure_coverage(root: &Path, target: &Path, pattern: &str, assume_yes: bool) -> Result<Option<PathBuf>> {
     if is_covered(root, target)? {
         return Ok(None);
     }
-    let should_add = assume_yes || !std::io::stdin().is_terminal() || prompt_add_to_gitignore(pattern)?;
+    let should_add = assume_yes || (std::io::stdin().is_terminal() && prompt_add_to_gitignore(pattern)?);
     if !should_add {
         return Ok(None);
     }

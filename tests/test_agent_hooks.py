@@ -279,10 +279,17 @@ esac""",
         (self.work / ".basemind/blobs/0aaaaaaaa.fm.msgpack").touch()
         (self.work / ".basemind/views/working/index.msgpack").touch()
 
-    def test_unread_mail_is_counted_for_the_session(self) -> None:
-        env = {**os.environ, "HOME": str(self.root), "TMPDIR": str(self.root), "PATH": str(self.bin), "COLUMNS": "200"}
+    def status_line(self) -> str:
+        env = {
+            **os.environ,
+            "HOME": str(self.root),
+            "TMPDIR": str(self.root),
+            "XDG_RUNTIME_DIR": "",
+            "PATH": str(self.bin),
+            "COLUMNS": "200",
+        }
         payload = json.dumps({"session_id": "s1", "workspace": {"current_dir": str(self.work)}})
-        result = subprocess.run(
+        return subprocess.run(
             ["/bin/bash", str(ROOT / ".claude-plugin/statusline.sh")],
             input=payload,
             env=env,
@@ -290,10 +297,22 @@ esac""",
             text=True,
             timeout=30,
             check=True,
-        )
-        self.assertIn("\u2709 2", result.stdout)
+        ).stdout
+
+    def test_unread_mail_is_counted_for_the_session(self) -> None:
+        self.assertIn("\u2709 2", self.status_line())
         args = (self.root / "basemind-args").read_text().splitlines()
         self.assertEqual(args[args.index("--as") + 1], NAME)
+        private = self.root / f"basemind-{os.getuid()}"
+        self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+        self.assertEqual([path.name.startswith("sl-comms-") for path in private.iterdir()], [True])
+
+    def test_the_cache_never_follows_a_planted_link(self) -> None:
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (self.root / f"basemind-{os.getuid()}").symlink_to(elsewhere)
+        self.assertIn("\u2709 2", self.status_line())
+        self.assertEqual(list(elsewhere.iterdir()), [], "nothing is written through the link")
 
 
 class AgentAsManifestTests(unittest.TestCase):
@@ -334,6 +353,28 @@ class AgentAsManifestTests(unittest.TestCase):
         for directory in ("plugin/.ai-rulez/hooks", "plugin/hooks", "hooks", ".codex-plugin/hooks"):
             self.assertTrue((ROOT / directory / "agent-as").is_file(), directory)
             self.assertTrue(os.access(ROOT / directory / "agent-as", os.X_OK), directory)
+
+
+class HookTimeoutTests(unittest.TestCase):
+    """Each hand-written manifest bounds every hook; the scripts bound themselves as well."""
+
+    # Gemini reads `timeout` in milliseconds, Codex and Cursor in seconds.
+    MANIFESTS = (
+        (".codex-plugin/hooks/hooks.json", 1),
+        (".cursor-plugin/hooks/hooks.json", 1),
+        ("gemini-extension.json", 1000),
+    )
+
+    def test_every_hook_has_a_timeout_under_a_minute(self) -> None:
+        for manifest, unit in self.MANIFESTS:
+            groups = json.loads((ROOT / manifest).read_text())["hooks"]
+            hooks = [hook for entries in groups.values() for entry in entries for hook in entry["hooks"]]
+            self.assertTrue(hooks, manifest)
+            for hook in hooks:
+                with self.subTest(manifest=manifest, command=hook["command"]):
+                    self.assertIn("timeout", hook)
+                    self.assertLessEqual(hook["timeout"], 60 * unit)
+                    self.assertGreaterEqual(hook["timeout"], 10 * unit)
 
 
 if __name__ == "__main__":

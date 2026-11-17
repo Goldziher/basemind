@@ -4,8 +4,8 @@ description: Enable the basemind status line in your Claude Code user settings (
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:070f34dd600fdd24509c590c6fe10771de84cca877432ec702a54618569ef688
-Source-Hash: blake3:8810c8f2a8e5c32211d5bf3315335263823c073c88a236e840f2e4801e8daa06
+Content-Hash: blake3:4bec0f17f31181289e828bfbec33120b119bf4cbd1f7eee83576b58340073ddf
+Source-Hash: blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8
 Schema-Version: v1
 -->
 
@@ -25,10 +25,9 @@ Invoke `/bm-statusline`. Use your tools to do this directly — do not ask the u
 any files.
 
 1. **Confirm the plugin is installed.** Check that at least one of these exists:
-   - `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/statusline.sh` (if that var is set)
+   - `${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh` (if that var is set)
+   - a match of `~/.claude/plugins/cache/basemind/basemind/*/scripts/statusline.sh`
    - `~/.claude/plugins/marketplaces/basemind/.claude-plugin/statusline.sh`
-   - a match of
-     `~/.claude/plugins/cache/basemind/basemind/*/.claude-plugin/statusline.sh`
 
    If none exists, tell the user the basemind plugin isn't installed and stop.
 
@@ -39,11 +38,11 @@ any files.
 
    ```json
    { "type": "command",
-     "command": "bash -c 's=$(ls -d \"$HOME\"/.claude/plugins/cache/basemind/basemind/*/.claude-plugin/statusline.sh 2>/dev/null | sort -V | tail -1); [ -f \"$s\" ] || s=\"$HOME/.claude/plugins/marketplaces/basemind/.claude-plugin/statusline.sh\"; [ -f \"$s\" ] && exec bash \"$s\" || printf \"%s\" \"◆ basemind: run /bm-statusline\"'",
+     "command": "bash -c 's=$(ls -d \"$HOME\"/.claude/plugins/cache/basemind/basemind/*/scripts/statusline.sh 2>/dev/null | sort -V | tail -1); [ -f \"$s\" ] || s=\"$HOME/.claude/plugins/marketplaces/basemind/.claude-plugin/statusline.sh\"; [ -f \"$s\" ] && exec bash \"$s\" || printf \"%s\" \"◆ basemind: run /bm-statusline\"'",
      "refreshInterval": 5 }
    ```
 
-   How it resolves, in order: the **highest-versioned** cached copy (`sort -V`, not
+   How it resolves, in order: the **highest-versioned** installed plugin's script (`sort -V`, not
    mtime — an older dir touched more recently must never win; this also makes the bar
    track the newest version the moment `/plugin update` installs it), else the
    marketplace clone, else a one-line hint so the bar is never blank. It re-resolves
@@ -56,7 +55,7 @@ any files.
 3. **Confirm it renders** by running the resolver once:
 
    ```bash
-   printf '{"workspace":{"current_dir":"%s"}}' "$PWD" | bash -c 's=$(ls -d "$HOME"/.claude/plugins/cache/basemind/basemind/*/.claude-plugin/statusline.sh 2>/dev/null | sort -V | tail -1); [ -f "$s" ] || s="$HOME/.claude/plugins/marketplaces/basemind/.claude-plugin/statusline.sh"; [ -f "$s" ] && exec bash "$s" || printf "%s" "◆ basemind: run /bm-statusline"'
+   printf '{"workspace":{"current_dir":"%s"}}' "$PWD" | bash -c 's=$(ls -d "$HOME"/.claude/plugins/cache/basemind/basemind/*/scripts/statusline.sh 2>/dev/null | sort -V | tail -1); [ -f "$s" ] || s="$HOME/.claude/plugins/marketplaces/basemind/.claude-plugin/statusline.sh"; [ -f "$s" ] && exec bash "$s" || printf "%s" "◆ basemind: run /bm-statusline"'
    ```
 
 4. Tell the user it's enabled, and that any other running sessions need a

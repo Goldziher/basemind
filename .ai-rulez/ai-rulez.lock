@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.13.4'
 scope = 'all'
-tree = 'sha256:5bf07d87aa399bd23458ac63939701712f70f407f688569958111ca73675f2cd'
+tree = 'sha256:cfe710d6fb8a7ffcf8a674f94b95b1f0c5d5ef3ab4f9644c93d46dbd9244ce07'
 
 [[served]]
 name = 'adr-workflow'
@@ -106,7 +106,7 @@ digest = 'sha256:2700d984ba10baa2e16ed19b48cc8fd5f7351776f2ce03f6712394d3912f91c
 name = 'poly-and-release-workflow'
 source = '.ai-rulez/skills/poly-and-release-workflow/SKILL.md'
 commit = ''
-digest = 'sha256:81a09ed557ce3e437f8dda541bf6bed8ed9b03ec55b660a86bef91416f5bd21d'
+digest = 'sha256:7b024da2cc9abacf2da61474628c6d5f5549ba68b22868ff7319da487d8df933'
 
 [[served]]
 name = 'rust-conventions'
@@ -208,13 +208,13 @@ digest = 'sha256:f9a074aa5dc1be25cebb0bbf868273fb044e041decb823db6e28c44e1992073
 kind = 'context'
 id = 'code-style'
 path = 'context/code-style.md'
-digest = 'sha256:8806192f4d7f4b53b2d4b40eaee75aee6ea6cf23fb78356cbad30ebc2228545f'
+digest = 'sha256:6962c1760d8e89113ed6cb5e8e2501d18478513bd18ce995c9bae39f8bf3ad7f'
 
 [[item]]
 kind = 'context'
 id = 'crate-layout'
 path = 'context/crate-layout.md'
-digest = 'sha256:32387b3693d48afc8eaa3b75308c4b1c91aa031737ac296afdea2d5e94ea9f31'
+digest = 'sha256:64ba5264177ec1931bba0116ecdbd90099b2f84a1764a555a7f2459f61aa6814'
 
 [[item]]
 kind = 'context'
@@ -274,7 +274,7 @@ digest = 'sha256:2db07fb4bcc1df6aa77f639ec259bb8711736c4eeee0d294e1b43d94e3ed359
 kind = 'rule'
 id = 'module-size-cap'
 path = 'rules/module-size-cap.md'
-digest = 'sha256:c58a75b7db40ea7b898de2f082d160100f8abaf056c694932a6eb271ef24546d'
+digest = 'sha256:d432b435fb7787a4cd8ae426a1a01db1d56ea976c481c50c137d23ab80aa1779'
 
 [[item]]
 kind = 'rule'
@@ -298,7 +298,7 @@ digest = 'sha256:2e2e6421f96d245a5ededcdfd5df14bd6d494da7ceb2158ff61dfd7148737f4
 kind = 'rule'
 id = 'tdd-and-poly'
 path = 'rules/tdd-and-poly.md'
-digest = 'sha256:a2ddaaebf8ce0c85716892b10d1189e3d318d57246677471fa987752f83ff5d6'
+digest = 'sha256:1781c524456fe6f09e1cd4e111a6a0ff9c38708a84029797308a0f8f72618abf'
 
 [[item]]
 kind = 'settings'
@@ -333,4 +333,4 @@ digest = 'sha256:e4917d578dbb347f9bd421af016958322a49c5a5efed178f4c85f39944a2249
 kind = 'skill'
 id = 'poly-and-release-workflow'
 path = 'skills/poly-and-release-workflow'
-digest = 'sha256:235fd401bf5ef07147d2ed9989ec3b60cc439f6f521dfc8dd7a68030b996c41a'
+digest = 'sha256:b5599604a07fb315986c1e3a88632d095c40c14cad9f1db349f700b1e479c5b4'

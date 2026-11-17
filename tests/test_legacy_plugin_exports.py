@@ -1,6 +1,9 @@
 """Public compatibility exports must remain complete and reject drift."""
 
 import importlib.util
+import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,3 +52,35 @@ class LegacyExportsTests(unittest.TestCase):
                 self.assertIn(f"{tree}/hooks/{name}", files)
         self.assertIn(".codex-plugin/hooks/agent-as", files)
         self.assertNotIn(".cursor-plugin/hooks/agent-as", files, "Cursor applies no input agent-as rewrites")
+
+
+class StatusLineShippingTests(unittest.TestCase):
+    """`/bm-statusline` resolves the installed plugin's `scripts/statusline.sh`."""
+
+    def test_the_status_line_ships_in_the_plugin_and_the_marketplace_copy_follows_it(self) -> None:
+        source = ROOT / "plugin/.ai-rulez/scripts/statusline.sh"
+        self.assertEqual(EXPORTS.expected_files(ROOT)[".claude-plugin/statusline.sh"], source)
+        shipped = ROOT / "plugin/scripts/statusline.sh"
+        self.assertEqual(shipped.read_bytes(), source.read_bytes())
+        self.assertIn("/scripts/statusline.sh", (ROOT / "plugin/commands/bm-statusline.md").read_text())
+        self.assertNotIn("*/.claude-plugin/statusline.sh", (ROOT / "plugin/commands/bm-statusline.md").read_text())
+
+    def test_the_installed_script_names_its_plugin_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin = Path(temporary) / "plugin"
+            (plugin / ".claude-plugin").mkdir(parents=True)
+            (plugin / ".claude-plugin/plugin.json").write_text('{"version": "7.8.9"}')
+            (plugin / "scripts").mkdir()
+            script = plugin / "scripts/statusline.sh"
+            script.write_bytes((ROOT / "plugin/.ai-rulez/scripts/statusline.sh").read_bytes())
+            work = Path(temporary) / "work"
+            (work / ".basemind/blobs").mkdir(parents=True)
+            (work / ".basemind/blobs/0aaaaaaaa.fm.msgpack").touch()
+            payload = json.dumps({"workspace": {"current_dir": str(work)}})
+            env = {"PATH": "/usr/bin:/bin:" + str(Path(shutil.which("jq") or "/usr/bin/jq").parent), "COLUMNS": "200"}
+            out = subprocess.run(
+                ["/bin/bash", str(script)], input=payload, env=env, capture_output=True, text=True, timeout=60
+            ).stdout
+            if shutil.which("jq") is None:
+                self.skipTest("jq is required to read the manifest")
+            self.assertIn("v7.8.9", out)

@@ -39,7 +39,7 @@ if (!ensureBinaryExists()) {
       `The postinstall step that downloads the binary from GitHub releases may have failed.\n` +
       `You can try:\n` +
       `  1. Reinstall: pnpm add -g basemind\n` +
-      `  2. Use cargo: cargo install basemind`,
+      `  2. Install the binary another way: https://github.com/Goldziher/basemind#install-the-program`,
   );
   process.exit(1);
 }
@@ -49,4 +49,8 @@ if (result.error) {
   console.error(`basemind: failed to spawn binary: ${result.error.message}`);
   process.exit(1);
 }
-process.exit(result.status ?? 0);
+if (result.signal) {
+  console.error(`basemind: binary terminated by ${result.signal}`);
+  process.exit(1);
+}
+process.exit(result.status ?? 1);

@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:8810c8f2a8e5c32211d5bf3315335263823c073c88a236e840f2e4801e8daa06",
+  "source_hash": "blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -15,7 +15,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm-init.md": {
-      "content_hash": "blake3:345f725ea99cb95587f8f9093dab0b338cdb3e0bd8a9f1823e7c615b6a912b13",
+      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm-scan.md": {
@@ -27,7 +27,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm-statusline.md": {
-      "content_hash": "blake3:42f854544fb11421d5a299c650e29d3502b9f78141fae46017a712c0c6ebc9ed",
+      "content_hash": "blake3:216f3a7a5d7f65112f89dca71ffccf518032e7d02fb20e5fc3c1f281853fcd15",
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm.md": {
@@ -139,7 +139,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm-init.md": {
-      "content_hash": "blake3:345f725ea99cb95587f8f9093dab0b338cdb3e0bd8a9f1823e7c615b6a912b13",
+      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm-scan.md": {
@@ -151,7 +151,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm-statusline.md": {
-      "content_hash": "blake3:42f854544fb11421d5a299c650e29d3502b9f78141fae46017a712c0c6ebc9ed",
+      "content_hash": "blake3:216f3a7a5d7f65112f89dca71ffccf518032e7d02fb20e5fc3c1f281853fcd15",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm.md": {
@@ -255,7 +255,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm-init.md": {
-      "content_hash": "blake3:345f725ea99cb95587f8f9093dab0b338cdb3e0bd8a9f1823e7c615b6a912b13",
+      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm-scan.md": {
@@ -267,7 +267,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm-statusline.md": {
-      "content_hash": "blake3:42f854544fb11421d5a299c650e29d3502b9f78141fae46017a712c0c6ebc9ed",
+      "content_hash": "blake3:216f3a7a5d7f65112f89dca71ffccf518032e7d02fb20e5fc3c1f281853fcd15",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm.md": {
@@ -379,7 +379,7 @@
       "mode": "0644"
     },
     ".opencode/commands/bm-init.md": {
-      "content_hash": "blake3:345f725ea99cb95587f8f9093dab0b338cdb3e0bd8a9f1823e7c615b6a912b13",
+      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
       "mode": "0644"
     },
     ".opencode/commands/bm-scan.md": {
@@ -391,7 +391,7 @@
       "mode": "0644"
     },
     ".opencode/commands/bm-statusline.md": {
-      "content_hash": "blake3:42f854544fb11421d5a299c650e29d3502b9f78141fae46017a712c0c6ebc9ed",
+      "content_hash": "blake3:216f3a7a5d7f65112f89dca71ffccf518032e7d02fb20e5fc3c1f281853fcd15",
       "mode": "0644"
     },
     ".opencode/commands/bm.md": {
@@ -487,7 +487,7 @@
       "mode": "0644"
     },
     ".pi/prompts/bm-init.md": {
-      "content_hash": "blake3:7db9ce4d4695183d01130a6e3df855f927e3321d498bff345c2df9efdb7a863a",
+      "content_hash": "blake3:f79a8df7187f05437f2ec10ef1d0287c26da5f1a84587ec143f01aa15f8ac689",
       "mode": "0644"
     },
     ".pi/prompts/bm-scan.md": {
@@ -499,7 +499,7 @@
       "mode": "0644"
     },
     ".pi/prompts/bm-statusline.md": {
-      "content_hash": "blake3:070f34dd600fdd24509c590c6fe10771de84cca877432ec702a54618569ef688",
+      "content_hash": "blake3:4bec0f17f31181289e828bfbec33120b119bf4cbd1f7eee83576b58340073ddf",
       "mode": "0644"
     },
     ".pi/prompts/bm.md": {
@@ -603,11 +603,11 @@
       "mode": "0644"
     },
     "commands/bm-init.md": {
-      "content_hash": "blake3:345f725ea99cb95587f8f9093dab0b338cdb3e0bd8a9f1823e7c615b6a912b13",
+      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
       "mode": "0644"
     },
     "commands/bm-init.toml": {
-      "content_hash": "blake3:efb1bf1ce7f5662dc618a910bdabcbeb8f0c6936cbd47bbaf2e6953ad9cc0c4d",
+      "content_hash": "blake3:155d31fc504765b33f73befc15e12eb59f1cf594dccb1ec036f22974e8c707dd",
       "mode": "0644"
     },
     "commands/bm-scan.md": {
@@ -627,11 +627,11 @@
       "mode": "0644"
     },
     "commands/bm-statusline.md": {
-      "content_hash": "blake3:42f854544fb11421d5a299c650e29d3502b9f78141fae46017a712c0c6ebc9ed",
+      "content_hash": "blake3:216f3a7a5d7f65112f89dca71ffccf518032e7d02fb20e5fc3c1f281853fcd15",
       "mode": "0644"
     },
     "commands/bm-statusline.toml": {
-      "content_hash": "blake3:85cdaab11b3cb6d0f489a788fe205c8dd75f67b8656d7775179bb2ade4b236b0",
+      "content_hash": "blake3:c857ba1ee25078ade911a5a96c6303f26b51495da03912365c57e854fc081961",
       "mode": "0644"
     },
     "commands/bm.md": {
@@ -659,7 +659,7 @@
       "mode": "0755"
     },
     "hooks/pre-tool-guard": {
-      "content_hash": "blake3:f96fa9b11c6a7a83b32a2c3d4f6f7e73bce480c2bd635985312ab3e8aa4dd08c",
+      "content_hash": "blake3:addc34e895b426ddc02210e3bbc7dfc04a9e3956e423cd4c5781ea47c611f1e1",
       "mode": "0755"
     },
     "hooks/run-hook.cmd": {
@@ -667,7 +667,7 @@
       "mode": "0755"
     },
     "hooks/session-start": {
-      "content_hash": "blake3:165857e5e20ef164e31ad30a18328276dae5e404b97110ebee295fc682380776",
+      "content_hash": "blake3:6e5bdca670392d5a058cdc26c770b901d011cfb3ea160d2fdecf18dbc6b82d4e",
       "mode": "0755"
     },
     "kimi.plugin.json": {
@@ -687,7 +687,11 @@
       "mode": "0644"
     },
     "scripts/mcp-launch.sh": {
-      "content_hash": "blake3:ed3d309723859687d644bd77e71e8308079aff56d98da415bcc24f91195c4393",
+      "content_hash": "blake3:da21d1b8e3b6582d172d6740a2694077f05141b8d2b55b39ff2a25feed4142ed",
+      "mode": "0755"
+    },
+    "scripts/statusline.sh": {
+      "content_hash": "blake3:c25169c9d4c81761600dad1fe6f2df0e79ab518d7cfdf6c64a50aed5bb3c7170",
       "mode": "0755"
     },
     "skills/basemind-cli/SKILL.md": {
@@ -779,7 +783,8 @@
     "hooks/pre-tool-guard",
     "hooks/run-hook.cmd",
     "hooks/session-start",
-    "scripts/mcp-launch.sh"
+    "scripts/mcp-launch.sh",
+    "scripts/statusline.sh"
   ],
   "managed": {
     "package.json": [
