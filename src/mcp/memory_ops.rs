@@ -510,45 +510,6 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
     })
 }
 
-/// Room a daemon reply keeps beside the notes it carries, for its framing and the entries' numbers.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-const REPLY_FRAME_SLACK: usize = 1024 * 1024;
-
-/// `outcome` made fit to cross the daemon's socket, or why it cannot. A note saved before notes
-/// were capped ([`NOTE_MAX_BYTES`]) can be too long for one frame; sent as it is, the reply would
-/// break the link and say nothing of the note. Read by key it is refused by name. In a batched read
-/// (a search's join, a backfill batch) its slot is emptied and the note named in the daemon's log:
-/// the reader takes it for a note it cannot serve, and one such note costs only itself instead of
-/// failing every search whose hits or batch include it.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) fn fit_for_a_frame(
-    outcome: crate::comms::memory_proto::MemoryOutcome,
-) -> Result<crate::comms::memory_proto::MemoryOutcome, String> {
-    use crate::comms::memory_proto::MemoryOutcome;
-    let most = crate::comms::transport::MAX_FRAME_BYTES - REPLY_FRAME_SLACK;
-    let too_long = |entry: &WireMemoryEntry| {
-        format!(
-            "the memory note `{}` is {} bytes, more than a reply from the daemon carries ({most}); it was saved \
-             before notes were capped at {NOTE_MAX_BYTES} bytes. Save it again under the same key with shorter \
-             text to read it",
-            entry.key,
-            wire_bytes(entry)
-        )
-    };
-    match outcome {
-        MemoryOutcome::Got(Some(entry)) if wire_bytes(&entry) > most => Err(too_long(&entry)),
-        MemoryOutcome::GotMany(mut entries) => {
-            for slot in &mut entries {
-                if let Some(entry) = slot.take_if(|entry| wire_bytes(entry) > most) {
-                    tracing::warn!(reason = %too_long(&entry), "a batched memory read left a note out");
-                }
-            }
-            Ok(MemoryOutcome::GotMany(entries))
-        }
-        other => Ok(other),
-    }
-}
-
 /// Dispatch a wire [`MemoryOp`](crate::comms::memory_proto::MemoryOp) against a workspace's
 /// read-write index, returning the wire outcome. This is the entry point the daemon calls; the local
 /// serve path calls the per-op cores directly so it can interleave the LanceDB half without a second
@@ -827,33 +788,5 @@ mod tests {
             rmcp::ErrorData::from(long_note).code,
             rmcp::model::ErrorCode::INVALID_PARAMS
         );
-    }
-
-    /// A note saved before the cap and too long for a frame is refused by name when read by key,
-    /// and left out of a batched read, which still answers the notes beside it; one that fits is
-    /// sent.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    #[test]
-    fn a_note_too_long_for_a_frame_is_refused_by_name() {
-        use crate::comms::memory_proto::MemoryOutcome;
-        let note = |value: String| WireMemoryEntry {
-            key: "huge".into(),
-            value,
-            tags: Vec::new(),
-            created_at: 1,
-            updated_at: 1,
-        };
-        let long = note("x".repeat(crate::comms::transport::MAX_FRAME_BYTES));
-        let fits = note("x".repeat(NOTE_MAX_BYTES * 2));
-        let refused = fit_for_a_frame(MemoryOutcome::Got(Some(long.clone())));
-        assert!(refused.is_err_and(|message| message.contains("`huge`")));
-        let batch = MemoryOutcome::GotMany(vec![None, Some(long), Some(fits.clone())]);
-        assert_eq!(
-            fit_for_a_frame(batch),
-            Ok(MemoryOutcome::GotMany(vec![None, None, Some(fits.clone())])),
-            "only the note too long is left out"
-        );
-        let one = MemoryOutcome::Got(Some(fits));
-        assert_eq!(fit_for_a_frame(one.clone()), Ok(one));
     }
 }

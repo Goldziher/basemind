@@ -306,6 +306,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The daemon socket's forwarded `memory`, `resolved_refs`, `index_read` and `code_search_lanes`
+  requests. No process sends them any more: a CLI next to the daemon forwards its whole call, and a
+  daemon-hosted session reads through the daemon's pool in process. The comms protocol version stays
+  7, so an older basemind of the same generation keeps using a newer daemon; one that still sends a
+  removed request has that link closed (ADR-0039).
 - **BREAKING: the shared worktree index of ADR-0016** (`BASEMIND_INDEX_LAYERED=1`), its sibling seeding of a new
   worktree's view (`BASEMIND_NO_SEED`) and `scan --verify-shared-base`. The group index replaces them.
 - **BREAKING: `index_rescan`'s `full` argument and `basemind rescan --full`.** `{}` and `{"full": true}`

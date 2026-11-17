@@ -676,12 +676,7 @@ impl Broker {
                 embed,
                 verify,
             } => self.on_rescan(root, paths, full, embed, verify).await,
-            CommsRequest::ResolvedRefs { root, query } => self.on_resolved_refs(root, query).await,
-            CommsRequest::IndexRead { root, query } => self.on_index_read(root, query).await,
-            CommsRequest::CodeSearchLanes { root, query } => self.on_code_search_lanes(root, query).await,
             CommsRequest::GitHistory { root, op } => self.on_git_history(root, op).await,
-            #[cfg(feature = "memory")]
-            CommsRequest::Memory { root, scope, op } => self.on_memory(root, scope, op).await,
             CommsRequest::AccessedPaths => self.on_accessed_paths(),
             CommsRequest::WorkspacesList => self.on_workspaces_list().await,
             CommsRequest::WorktreesList { repo_id } => self.on_worktrees_list(repo_id).await,

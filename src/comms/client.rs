@@ -101,13 +101,7 @@ fn request_timeout(req: &CommsRequest) -> Option<std::time::Duration> {
         | CommsRequest::AgentCleanup { .. } => {
             Some(timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS) + AGENT_STORE_OPEN_ALLOWANCE)
         }
-        CommsRequest::Rescan { .. }
-        | CommsRequest::GitHistory { .. }
-        | CommsRequest::ResolvedRefs { .. }
-        | CommsRequest::IndexRead { .. }
-        | CommsRequest::CodeSearchLanes { .. } => None,
-        #[cfg(feature = "memory")]
-        CommsRequest::Memory { .. } => None,
+        CommsRequest::Rescan { .. } | CommsRequest::GitHistory { .. } => None,
         _ => Some(timeout_from_env(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECS)),
     }
 }

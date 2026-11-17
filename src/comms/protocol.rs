@@ -24,6 +24,12 @@ use super::v2::api::{
 /// [`CommsOut::Reply`]); 4→5 the `governance` requests removed; 5→6 the batched memory reads
 /// and `Rescan`'s `verify` flag. 6→7 agent comms v2 (ADR-0021, ADR-0030 rule 13): `Hello` names a
 /// principal and a root, and the four agent requests replace the twenty of the v1 broker.
+///
+/// A request no client of this build sends is retired without a bump, so an older binary of the
+/// same generation keeps using a newer daemon for everything else (ADR-0024 rule 2): the worktree
+/// claims, and the forwarded `memory`, `resolved_refs`, `index_read` and `code_search_lanes` reads
+/// once a CLI next to the daemon forwarded its whole call instead (ADR-0039). An older peer that
+/// still sends one has that link closed by the decode error.
 pub const PROTO_VER: u32 = 7;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
@@ -117,25 +123,13 @@ pub enum CommsRequest {
         #[serde(default)]
         verify: bool,
     },
-    /// Forward a CORE memory operation to the daemon (the sole fjall writer). The namespace
-    /// (`vis_byte` / `owner`) and `scope` are resolved serve-side; the daemon runs the op against
-    /// the workspace's read-write `memory_by_key` index. The vector half (LanceDB) stays on serve.
-    #[cfg(feature = "memory")]
-    Memory {
-        /// Canonical workspace root (worktree root).
-        root: std::path::PathBuf,
-        /// Memory scope resolved serve-side (git scope key or `path:<root>`).
-        scope: String,
-        /// The operation to run.
-        op: crate::comms::memory_proto::MemoryOp,
-    },
     /// Forward a git-history operation to the daemon. `git-history.fjall/` is a fjall database, and
     /// fjall's directory lock is exclusive — so exactly ONE process may hold a repo's history index.
     /// Under this model that process is the daemon: it BUILDS the index ([`GitHistoryOp::Sync`],
     /// serialized per repo so N sessions produce one build) and answers the front-ends' history
-    /// reads from it. A `daemon_writer` serve therefore never opens the database — building it there
-    /// would both steal the daemon's lock and run a multi-GB, minutes-long history walk inside the
-    /// process an agent is actively querying.
+    /// reads from it. No other process opens the database while the daemon is up — building it
+    /// elsewhere would both steal the daemon's lock and run a multi-GB, minutes-long history walk
+    /// inside the process an agent is actively querying.
     ///
     /// [`GitHistoryOp`]: crate::git_history::proto::GitHistoryOp
     GitHistory {
@@ -143,36 +137,6 @@ pub enum CommsRequest {
         root: std::path::PathBuf,
         /// The operation to run.
         op: crate::git_history::proto::GitHistoryOp,
-    },
-    /// Forward a precise resolved-reference read to the daemon. A `daemon_writer` serve holds no
-    /// fjall index, so the cross-file `refs_by_def` / `refs_by_path` edges live only daemon-side;
-    /// this fetches them so `find_callers` / `goto_definition` keep their precise (`resolved: true`)
-    /// cross-file resolution instead of degrading to the name-based fallback. A pure read.
-    ResolvedRefs {
-        /// Canonical workspace root, selecting the daemon's hot workspace.
-        root: std::path::PathBuf,
-        /// The lookup to run against that workspace's read-write index.
-        query: crate::comms::resolved_proto::ResolvedRefQuery,
-    },
-    /// Forward a fjall-backed reference read (`references` / `callers` / `implementations` scans) to
-    /// the daemon. A `daemon_writer` serve holds no fjall index, so these range scans only exist
-    /// daemon-side; answering them there is what keeps the results complete without projecting the
-    /// whole call graph into every session's RAM. A pure read.
-    IndexRead {
-        /// Canonical workspace root, selecting the daemon's hot workspace.
-        root: std::path::PathBuf,
-        /// The scan to run against that workspace's read-write index.
-        query: crate::comms::index_read_proto::IndexReadQuery,
-    },
-    /// Forward the code-search keyword (BM25) and exact (symbol-name) lanes to the daemon. Both are
-    /// answered from fjall, which a reader `serve` cannot open, so without this they return nothing
-    /// at all — and did so silently. Ranking only; the caller hydrates bodies from blobs. A pure
-    /// read.
-    CodeSearchLanes {
-        /// Canonical workspace root, selecting the daemon's hot workspace.
-        root: std::path::PathBuf,
-        /// The lanes to run against that workspace's read-write index.
-        query: crate::comms::code_search_proto::CodeSearchLaneQuery,
     },
     /// Report the workspaces the daemon currently holds hot (drives the statusline).
     AccessedPaths,
@@ -222,12 +186,7 @@ impl CommsRequest {
             Self::AgentStatus => "agent_status",
             Self::AgentCleanup { .. } => "agent_cleanup",
             Self::Rescan { .. } => "rescan",
-            #[cfg(feature = "memory")]
-            Self::Memory { .. } => "memory",
             Self::GitHistory { .. } => "git_history",
-            Self::ResolvedRefs { .. } => "resolved_refs",
-            Self::IndexRead { .. } => "index_read",
-            Self::CodeSearchLanes { .. } => "code_search_lanes",
             Self::AccessedPaths { .. } => "accessed_paths",
             Self::WorkspacesList { .. } => "workspaces_list",
             Self::WorktreesList { .. } => "worktrees_list",
@@ -301,18 +260,9 @@ pub enum CommsResponse {
         /// Wall-clock scan time in milliseconds.
         elapsed_ms: u64,
     },
-    /// Reply to [`CommsRequest::ResolvedRefs`]: the resolved edges.
-    ResolvedRefs(crate::comms::resolved_proto::ResolvedRefResult),
-    /// Reply to [`CommsRequest::IndexRead`]: the scanned page.
-    IndexRead(crate::comms::index_read_proto::IndexReadResult),
-    /// Reply to [`CommsRequest::CodeSearchLanes`]: ranked chunk ids for the keyword + exact lanes.
-    CodeSearchLanes(crate::comms::code_search_proto::CodeSearchLaneResult),
     /// Reply to [`CommsRequest::GitHistory`]: the sync outcome, the indexed HEAD, or a page of
     /// commits, per the op.
     GitHistory(crate::git_history::proto::GitHistoryReply),
-    /// Reply to [`CommsRequest::Memory`]: the outcome of the forwarded memory operation.
-    #[cfg(feature = "memory")]
-    Memory(crate::comms::memory_proto::MemoryOutcome),
     /// Reply to [`CommsRequest::AccessedPaths`]: the daemon's currently-hot workspaces.
     Accessed {
         /// One row per hot workspace, most-recently-used first.
@@ -393,6 +343,38 @@ pub enum CommsOut {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A binary older than whole-call forwarding (ADR-0039) can still send a forwarded read. The
+    /// frame fails to decode, so that link is dropped, and nothing else of the protocol changed.
+    #[test]
+    fn a_retired_forwarded_read_is_a_decode_error() {
+        #[derive(Serialize)]
+        struct Frame {
+            method: &'static str,
+            params: serde_json::Value,
+        }
+        for method in ["memory", "resolved_refs", "index_read", "code_search_lanes"] {
+            let bytes = rmp_serde::to_vec_named(&Frame {
+                method,
+                params: serde_json::json!({ "root": "/repo", "scope": "path:/repo", "op": {}, "query": {} }),
+            })
+            .expect("encode");
+            let error = rmp_serde::from_slice::<CommsRequest>(&bytes).expect_err("a retired method must not decode");
+            assert!(
+                error.to_string().contains(method),
+                "the error names the method: {error}"
+            );
+        }
+        let rescan = rmp_serde::to_vec_named(&Frame {
+            method: "rescan",
+            params: serde_json::json!({ "root": "/repo" }),
+        })
+        .expect("encode");
+        assert!(matches!(
+            rmp_serde::from_slice::<CommsRequest>(&rescan).expect("a live method still decodes"),
+            CommsRequest::Rescan { .. }
+        ));
+    }
 
     /// A client older than the removal of worktree claims can still send one. The frame must fail
     /// to decode as an error the link loop turns into a dropped connection — never a panic, and
