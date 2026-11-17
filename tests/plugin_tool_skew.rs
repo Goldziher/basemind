@@ -155,6 +155,15 @@ fn feature_for(tool: &str) -> Option<(&'static str, bool)> {
     }
 }
 
+/// The refusal a tool answers with because of how [`fixture`] configures the repository: its
+/// `basemind.toml` turns document embedding off, so `docs_search` has no vectors to search.
+fn fixture_refusal(tool: &str) -> Option<&'static str> {
+    match tool {
+        "docs_search" if cfg!(feature = "documents") => Some("`documents.embed` is false"),
+        _ => None,
+    }
+}
+
 // --- extraction ---------------------------------------------------------------------------------
 
 /// Where each referenced name appears: name -> files naming it.
@@ -881,6 +890,10 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
                     Some((feature, false)) => failures.push(format!(
                         "{name}: built without `{feature}`, but the error does not name the feature: {text}"
                     )),
+                    _ if fixture_refusal(name).is_some_and(|reason| text.contains(reason)) => {
+                        answered += 1;
+                        let _ = writeln!(out, "plugin-skew: {name} refused as the fixture configures it: {text}");
+                    }
                     _ => failures.push(format!("{name}: isError result: {text}")),
                 }
             }

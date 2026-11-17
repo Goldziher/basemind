@@ -621,6 +621,15 @@ pub(super) async fn run_search_documents(
     {
         return Err(McpError::invalid_request(reason, None));
     }
+    // ~keep No scan writes a vector store under this setting, so "not built yet, rescan" would never
+    // ~keep come true; say why, before loading an embedding model for nothing.
+    if !state.shared.config.documents.embed {
+        return Err(McpError::invalid_request(
+            "`docs_search`: `documents.embed` is false, so no document vectors are stored. Set it to true \
+             and rescan, or find exact text in documents with `code_grep`.",
+            None,
+        ));
+    }
     let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = {
         let r = &state.shared.config.documents.reranker;
         (
