@@ -23,8 +23,13 @@
 //! - symbol signatures are the short, header-only form;
 //! - no orphan blobs remain;
 //! - a second rescan is a no-op and the blob set stops changing;
-//! - opening the upgraded data with the old binary again fails safe (it works, never corrupts) and
-//!   converges once more on re-upgrade.
+//! - the git history, a memory note and an agents thread the old release wrote are still answered;
+//! - opening the upgraded data with the old binary again fails safe: it holds exactly the paths it
+//!   held before, and a re-upgrade converges (a second scan updates nothing, blob accounting holds).
+//!
+//! A second test leaves the newest old release's daemon running through the upgrade, as a plugin
+//! update does. `BASEMIND_UPGRADE_REQUIRE_CROSS_MINOR` (set by the CI job that bumps the tree to the
+//! next minor first) requires every release upgraded from to be of an older minor.
 
 #![cfg(feature = "documents")]
 
@@ -49,6 +54,10 @@ const NON_CODE: &[&str] = &[
 /// Env var naming the old release binaries to upgrade from (a path list), instead of the
 /// launcher's cache.
 const PIN_ENV: &str = "BASEMIND_UPGRADE_FROM_BIN";
+
+/// Set by the CI job that bumps the tree to the next minor before building: every release upgraded
+/// from must then be of an older minor, so the wipe-and-rebuild of a minor bump is what ran.
+const CROSS_MINOR_ENV: &str = "BASEMIND_UPGRADE_REQUIRE_CROSS_MINOR";
 
 /// Oldest release minor whose CLI shape this test drives (`--root`, `--json`, `code files`).
 const OLDEST_MINOR: u32 = 27;
@@ -77,12 +86,10 @@ fn command(bin: &Path) -> Command {
     cmd
 }
 
-/// `basemind --version` prints `basemind X.Y.Z`; this is Y.
-fn release_minor(bin: &Path) -> u32 {
-    let out = command(bin)
-        .arg("--version")
-        .output()
-        .unwrap_or_else(|e| panic!("run {} --version: {e}", bin.display()));
+/// `basemind --version` prints `basemind X.Y.Z`; this is Y. Run in `env`'s sandbox, so not even
+/// `--version` of an old release can reach a real data home or daemon.
+fn release_minor(env: &Env, bin: &Path) -> u32 {
+    let out = env.run(bin, &["--version"], None);
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.split_whitespace()
         .nth(1)
@@ -141,6 +148,16 @@ struct Env {
     repo: PathBuf,
     data: PathBuf,
     comms: PathBuf,
+    /// Binaries whose daemons are stopped when the test ends, pass or fail.
+    daemon_bins: Vec<PathBuf>,
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        for bin in &self.daemon_bins {
+            let _ = self.run(bin, &["comms", "stop"], None);
+        }
+    }
 }
 
 impl Env {
@@ -245,7 +262,7 @@ impl Env {
     }
 }
 
-fn fixture(tmp: &Path) -> Env {
+fn fixture(tmp: &Path, daemon_bins: &[&Path]) -> Env {
     let repo = tmp.join("repo");
     fs::create_dir_all(repo.join("src")).unwrap();
     fs::create_dir_all(repo.join("docs")).unwrap();
@@ -273,24 +290,98 @@ fn fixture(tmp: &Path) -> Env {
     write("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
     // Keeps the new build from loading an embedding model: the test is about index shape, not vectors.
     write("basemind.toml", "\"$schema\" = \"v1\"\n\n[documents]\nembed = false\n");
-    let _ = Command::new("git").args(["init", "-q"]).current_dir(&repo).status();
+    // Two real commits, so the git history every version indexes has something to carry over.
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(["-c", "user.name=upgrade", "-c", "user.email=upgrade@example.invalid"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .expect("git in PATH");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "first upgrade fixture commit"]);
+    write(
+        "src/lib.rs",
+        "pub fn alpha(x: u32) -> u32 {\n    let y = x + 2;\n    y * 2\n}\n",
+    );
+    git(&["commit", "-qam", "second upgrade fixture commit"]);
     let data = tmp.join("data");
     let comms = tmp.join("comms");
     fs::create_dir_all(&data).unwrap();
     fs::create_dir_all(&comms).unwrap();
-    Env { repo, data, comms }
+    Env {
+        repo,
+        data,
+        comms,
+        daemon_bins: daemon_bins.iter().map(|bin| bin.to_path_buf()).collect(),
+    }
+}
+
+/// Puts something in every store an old release writes besides the code map: a memory note and
+/// an agents thread. The git history is in the fixture already.
+fn populate_old_stores(env: &Env, old: &Path) {
+    if cfg!(feature = "memory") {
+        env.ok(old, &["memory", "put", "upgrade/probe", "kept across upgrades"], None);
+    }
+    if cfg!(feature = "comms") {
+        env.ok(
+            old,
+            &[
+                "agents",
+                "thread-start",
+                "--subject",
+                "upgrade-probe",
+                "--path",
+                "src/**",
+            ],
+            None,
+        );
+    }
+}
+
+/// What the new build must still answer from the stores [`populate_old_stores`] filled.
+fn assert_old_stores_survive(env: &Env, new: &Path, old: &Path) {
+    let log = env.json(new, &["git", "log"]);
+    let summaries: Vec<&str> = log["commits"]
+        .as_array()
+        .map(|commits| commits.iter().filter_map(|c| c["summary"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        summaries.iter().any(|s| s.contains("second upgrade fixture commit"))
+            && summaries.iter().any(|s| s.contains("first upgrade fixture commit")),
+        "{}: git history after the upgrade: {log}",
+        old.display()
+    );
+    if cfg!(feature = "memory") {
+        let note = env.json(new, &["memory", "get", "upgrade/probe"]);
+        assert!(
+            note.to_string().contains("kept across upgrades"),
+            "{}: a memory note written by the old release is gone after the upgrade: {note}",
+            old.display()
+        );
+    }
+    if cfg!(feature = "comms") {
+        // The thread itself may belong to a protocol generation this build does not read; the comms
+        // store the old release left must not stop this build from answering.
+        env.json(new, &["agents", "thread-list"]);
+    }
 }
 
 /// Upgrades one old release to this build and returns whether that release mapped prose into the
 /// code map (the migration path) rather than already keeping it in the document tier.
-fn upgrade_from(old: &Path) -> bool {
+fn upgrade_from(old: &Path) -> (bool, u32) {
     let tmp = tempfile::tempdir().unwrap();
-    let env = fixture(tmp.path());
     let new = Path::new(NEW_BIN);
-    let minor = release_minor(old);
+    let env = fixture(tmp.path(), &[old, new]);
+    let minor = release_minor(&env, old);
     let maps_prose = minor < FIRST_CODE_ONLY_MINOR;
 
     env.ok(old, &["scan"], None);
+    populate_old_stores(&env, old);
     let before = env.code_paths(old);
     for name in NON_CODE {
         assert_eq!(
@@ -353,6 +444,7 @@ fn upgrade_from(old: &Path) -> bool {
         stats["orphan_blob_count"], 0,
         "no orphan blobs left after the upgrade: {stats}"
     );
+    assert_old_stores_survive(&env, new, old);
 
     // --- converge: a second scan is a no-op and the blob set is stable --------------------------
     let blobs_after_first = env.blob_names();
@@ -362,18 +454,33 @@ fn upgrade_from(old: &Path) -> bool {
     assert!(!second.contains("cleanup:"), "nothing left to reclaim:\n{second}");
     assert_eq!(env.blob_names(), blobs_after_first, "the blob set stops changing");
 
-    // --- downgrade fails safe -------------------------------------------------------------------
+    // --- downgrade fails safe: the old release reads the upgraded data back to its own shape -----
+    for bin in [old, new] {
+        let _ = env.run(bin, &["comms", "stop"], None);
+    }
     env.ok(old, &["scan"], None);
-    assert!(
-        !env.code_paths(old).is_empty(),
-        "{}: the old binary still reads and rewrites the shared data",
+    let mut downgraded = env.code_paths(old);
+    let mut expected = before.clone();
+    downgraded.sort();
+    expected.sort();
+    assert_eq!(
+        downgraded,
+        expected,
+        "{}: after a downgrade the old release must hold exactly the paths it held before the upgrade",
         old.display()
     );
+
+    // --- re-upgrade converges again -------------------------------------------------------------
     env.scan_after_stopping_daemons(old, new);
+    let again = env.scan_after_stopping_daemons(old, new);
+    assert!(again.contains("updated 0"), "re-upgrade converges:\n{again}");
     let stats = env.json(new, &["cache", "stats"]);
+    assert_eq!(stats["blob_accounting_ok"], true, "re-upgrade accounting: {stats}");
     assert_eq!(stats["orphan_blob_count"], 0, "re-upgrade converges again: {stats}");
-    assert_eq!(env.code_paths(new).len(), 3);
-    maps_prose
+    let mut code = env.code_paths(new);
+    code.sort();
+    assert_eq!(code, ["src/app.py", "src/lib.rs", "src/main.ts"]);
+    (maps_prose, minor)
 }
 
 #[test]
@@ -396,19 +503,31 @@ fn upgrading_from_cached_releases_migrates_cleans_and_converges() {
         return;
     }
     let mut migrated = 0;
+    let mut cross_minor = 0;
     for old in &olds {
-        let migrates = upgrade_from(old);
+        let (migrates, minor) = upgrade_from(old);
         migrated += usize::from(migrates);
+        cross_minor += usize::from(minor < current_minor());
         let _ = writeln!(
             std::io::stderr().lock(),
-            "upgrade-from-release: {} (0.{}) upgraded, {}",
+            "upgrade-from-release: {} (0.{minor}) upgraded to 0.{}, {}",
             old.display(),
-            release_minor(old),
+            current_minor(),
             if migrates {
                 "prose migrated to the document tier"
             } else {
                 "code-only index kept"
             }
+        );
+    }
+    if std::env::var_os(CROSS_MINOR_ENV).is_some() {
+        assert!(
+            cross_minor == olds.len(),
+            "{CROSS_MINOR_ENV} is set, but {} of the {} releases upgraded from share this build's minor 0.{}: \
+             the release-minor bump was not exercised",
+            olds.len() - cross_minor,
+            olds.len(),
+            current_minor()
         );
     }
     if std::env::var_os("CI").is_some() {
@@ -421,4 +540,59 @@ fn upgrading_from_cached_releases_migrates_cleans_and_converges() {
             "CI exercised no release of the code-only shape, so the same-shape upgrade was not checked"
         );
     }
+}
+
+/// A real plugin update does not stop the daemon an older release left running: the new build's
+/// first scan and reads meet it. The newest release given runs its daemon throughout.
+#[cfg(feature = "comms")]
+#[test]
+fn upgrading_while_the_old_release_s_daemon_still_runs() {
+    let olds = old_binaries();
+    let Some(old) = olds.last() else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no old release binary under CI: {PIN_ENV} is unset"
+        );
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "SKIP: upgrading_while_the_old_release_s_daemon_still_runs checked nothing: {PIN_ENV} is unset"
+        );
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let new = Path::new(NEW_BIN);
+    let env = fixture(tmp.path(), &[old.as_path(), new]);
+    env.ok(old, &["scan"], None);
+    env.ok(old, &["comms", "start"], None);
+    env.ok(old, &["comms", "status"], None);
+
+    // The old daemon is never stopped. A writer it runs may hold the workspace for a moment; the
+    // new scan names it and exits 3, and is retried, but it must get through.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        let out = env.run(new, &["scan"], Some("0"));
+        if out.status.success() {
+            break;
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            out.status.code() == Some(3) && std::time::Instant::now() < deadline,
+            "{}: the new scan did not get past the old release's running daemon: {stderr}",
+            old.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let mut code = env.code_paths(new);
+    code.sort();
+    assert_eq!(
+        code,
+        ["src/app.py", "src/lib.rs", "src/main.ts"],
+        "{}: the new build reads its own index while the old daemon runs",
+        old.display()
+    );
+    let log = env.json(new, &["git", "log"]);
+    assert!(
+        log.to_string().contains("second upgrade fixture commit"),
+        "git history next to the old daemon: {log}"
+    );
 }
