@@ -117,7 +117,10 @@ fn a_prose_query_reaches_camel_case_identifiers() {
     let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0);
 
     assert!(
-        hydrated.hits.iter().any(|h| h.path == "refs.ts" && h.symbol == "findReferences"),
+        hydrated
+            .hits
+            .iter()
+            .any(|h| h.path == "refs.ts" && h.symbol == "findReferences"),
         "{:?}",
         hydrated.hits
     );
@@ -142,11 +145,17 @@ fn common_terms_are_skipped_and_candidates_are_bounded() {
     assert!(rare > 0);
     let (hits, work) = crate::search::bm25::bm25_search_counted(&view, "common zebraword", 50, 20_000);
     assert_eq!(work.terms_skipped, 1, "`common` is in every chunk: {work:?}");
-    assert_eq!(work.candidates, rare, "only the rare term's chunks are scored: {work:?}");
+    assert_eq!(
+        work.candidates, rare,
+        "only the rare term's chunks are scored: {work:?}"
+    );
     assert_eq!(hits.len(), rare);
 
     let (hits, work) = crate::search::bm25::bm25_search_counted(&view, "common", 10, 3);
-    assert_eq!(work.terms_skipped, 0, "a query of common terms only still runs: {work:?}");
+    assert_eq!(
+        work.terms_skipped, 0,
+        "a query of common terms only still runs: {work:?}"
+    );
     assert_eq!(work.candidates, 3, "the accumulator stops at the bound: {work:?}");
     assert_eq!(hits.len(), 3);
 }
