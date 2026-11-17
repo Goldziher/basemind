@@ -7,7 +7,7 @@ amends: ["0029", "0025"]
 # ADR-0038: Retrieval store amendments — liveness list, store version, interim location, model identity
 
 - **Deciders:** the repository owner
-- **Related:** amends ADR-0029 (rules 1, 2, 3, 5, 7, 11) and ADR-0025 (the vector stores' version);
+- **Related:** amends ADR-0029 (rules 1, 2, 3, 5, 7, 8, 11) and ADR-0025 (the vector stores' version);
   ADR-0028
 
 ## Context
@@ -89,6 +89,9 @@ with the code and the benchmark:
    and pruned every 32 versions, read from the table itself, besides the per-process commit
    counter: a `basemind memory save` process commits twice and exits, and never reached the
    counter's period.
+10. **Headings inside a hit (amends rule 8).** A hit's `section` is the heading trail where its
+    text starts; `headings` lists the headings that start inside it. A chunk of a short document
+    spans several sections, and the trail alone names the one before the answer.
 
 ## Consequences
 
@@ -99,7 +102,8 @@ with the code and the benchmark:
 - A view whose allowed set exceeds 2,000 documents pays the widening on every query and may see
   `liveness_depth`.
 - ADR-0029's `lang` column and its Bitmap index are not built: no filter reads them.
-- HTML and the other markup leave `code_grep` in a workspace with documents on, as Markdown did.
+- HTML and the other markup stay searchable by `code_grep`, which reads the document tier's text
+  files.
 - The first scan of this version re-embeds every vector once: blobs stamped with a bare preset name
   do not match the model key.
 - An offline machine pays one embedder probe per scan while documents owe vectors.
