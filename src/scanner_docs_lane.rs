@@ -242,7 +242,9 @@ fn is_unsupported_format_error(msg: &str) -> bool {
 /// most `budget` of them. The rows are rebuilt from the cached blob, so a path owes nothing, and
 /// leaves the set, when no rows can come of it: it is no longer indexed, the embed policy or the
 /// chunk cap now excludes it, its entry or its blob was embedded under another preset, or the blob
-/// is gone or does not decode. Only a blob that could not be read from disk stays owed.
+/// is gone. A blob that could not be read from disk stays owed. One that does not decode (torn by a
+/// power loss) stays owed too, and its entry is dropped so the next full pass extracts the file
+/// again: an entry over a torn blob is skipped as unchanged for good.
 fn requeue_pending_docs(
     store: &mut Store,
     config: &Config,
@@ -261,6 +263,7 @@ fn requeue_pending_docs(
     let queued: ahash::AHashSet<&str> = batches.iter().map(|batch| batch.rel_path.as_str()).collect();
     let mut requeued = Vec::new();
     let mut settled = Vec::new();
+    let mut damaged = Vec::new();
     for rel in store.pending_vectors.docs() {
         let rel_path = rel.to_str_lossy();
         if queued.contains(rel_path.as_ref()) {
@@ -291,12 +294,17 @@ fn requeue_pending_docs(
             Err(StoreError::Io { source, .. }) => {
                 tracing::warn!(rel = %rel_path, error = %source, "doc blob unreadable; its vector rows stay owed");
             }
-            Ok(_) | Err(_) => settled.push(rel_path.into_owned()),
+            Err(error) => {
+                tracing::warn!(rel = %rel_path, %error, "doc blob damaged; the file is extracted again and its rows stay owed");
+                damaged.push(rel_path.into_owned());
+            }
+            Ok(_) => settled.push(rel_path.into_owned()),
         }
     }
     drop(queued);
     store.pending_vectors.settle_docs(&settled);
     batches.extend(requeued);
+    crate::scanner_flush::extract_again(store, &damaged, |store, rel| store.remove_doc(rel));
 }
 
 #[cfg(test)]

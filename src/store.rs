@@ -729,6 +729,15 @@ impl Store {
         }
     }
 
+    /// Have the next pass extract `rel` again although its content is unchanged: its entry's
+    /// extraction epoch is reset, which no pass takes for current.
+    #[cfg(feature = "code-search")]
+    pub(crate) fn extract_again(&mut self, rel: &str) {
+        if let Some(entry) = self.index.files.get_mut(bstr::BStr::new(rel.as_bytes())) {
+            entry.extract_epoch = 0;
+        }
+    }
+
     /// True when some indexed file holds the content `hash_hex`.
     pub fn hash_is_held(&self, hash_hex: &str) -> bool {
         self.hash_refs.is_held(hash_hex)
