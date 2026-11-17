@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use basemind_agents::{
-    AcpFlavor, AgentIdentity, ApprovalRequest, ApprovalVerdict, Event, FinishStatus, Harness, HarnessKind,
-    LaunchConfig, LaunchError, LaunchRequest, PermissionMode, Registry, Session, UnverifiedModeOptIn,
+    AcpFlavor, AgentIdentity, ApprovalRequest, ApprovalSource, ApprovalVerdict, Event, FinishStatus, Harness,
+    HarnessKind, LaunchConfig, LaunchError, LaunchRequest, PermissionMode, Registry, Session, UnverifiedModeOptIn,
 };
 
 /// Claude Code's handshake, up to the brief and the init frame of a supervised session.
@@ -351,6 +351,63 @@ cat > /dev/null
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("answer")).unwrap()).unwrap();
     assert_eq!(answer["response"]["request_id"], "req-1");
     assert_eq!(answer["response"]["response"]["behavior"], "deny");
+}
+
+#[test]
+fn a_request_still_pending_when_the_harness_fails_is_reported_withdrawn() {
+    let claude = format!(
+        r#"{HANDSHAKE}printf '%s\n' '{{"type":"control_request","request_id":"req-1","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{}}}}}}'
+sleep 0.3
+"#
+    );
+    let codex = r#"read -r initialize
+printf '%s\n' '{"id":1,"result":{}}'
+read -r initialized
+read -r thread
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}'
+read -r turn
+printf '%s\n' '{"method":"turn/started","params":{"turn":{"id":"turn-1"}}}'
+printf '%s\n' '{"id":"r-1","method":"item/commandExecution/requestApproval","params":{"itemId":"c1","command":"ls"}}'
+sleep 0.3
+printf '%s\n' '{"method":"error","params":{"error":{"message":"stream lost"}}}'
+cat > /dev/null
+"#;
+    let acp = r#"answer() { read -r line; id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/'); printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$1"; }
+answer '{"protocolVersion":1}'
+answer '{"sessionId":"s-1"}'
+read -r prompt
+printf '%s\n' '{"jsonrpc":"2.0","id":"p-1","method":"session/request_permission","params":{"sessionId":"s-1","toolCall":{"toolCallId":"t-1"},"options":[{"optionId":"a","name":"Allow","kind":"allow_once"}]}}'
+sleep 0.3
+"#;
+    for (kind, body, id) in [
+        (HarnessKind::ClaudeCode, claude.as_str(), "claude-1"),
+        (HarnessKind::Codex, codex, "codex-1"),
+        (HarnessKind::Acp(AcpFlavor::Generic), acp, "acp-1"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec(kind, dir.path(), body);
+        spec.config.unverified_mode = Some(UnverifiedModeOptIn {
+            harness: kind,
+            mode: PermissionMode::Supervised,
+        });
+        spec.config.approval_policy = Some(Arc::new(|_: &ApprovalRequest| ApprovalVerdict::Ask));
+        let events: Vec<_> = launch(&spec).events().collect();
+        let withdrawn = events.iter().position(|event| {
+            *event
+                == Event::ApprovalResolved {
+                    id: id.to_owned(),
+                    allowed: false,
+                    source: ApprovalSource::Withdrawn,
+                }
+        });
+        let finished = events.iter().position(|event| matches!(event, Event::Finished(_)));
+        assert_eq!(
+            events.last(),
+            Some(&Event::Finished(FinishStatus::Failed)),
+            "{events:?}"
+        );
+        assert!(withdrawn.is_some_and(|at| Some(at) < finished), "{kind}: {events:?}");
+    }
 }
 
 #[test]

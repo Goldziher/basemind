@@ -80,7 +80,8 @@ config is trusted.
   do not reach the child, and `Debug` output names variables without their values.
 - At the wall-time limit, or when the harness starts more turns than allowed, the process group is
   killed; a stop, and a session that failed, get the stop grace. The group is gone before
-  `Event::Finished` is reported. Requests a stop declines are reported withdrawn.
+  `Event::Finished` is reported. Requests a stop declines are reported withdrawn, and so is
+  every request still pending when the session ends any other way (a failed or exited harness).
 - Frames (16 MiB and 256 Ki JSON values each), the event queue, channels and tables are bounded;
   an ACP agent that leaves 16 of the client's lines unread fails the session. Dropping a session
   waits at most 2 s for its supervisor, and kills the group either way.

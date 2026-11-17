@@ -76,7 +76,8 @@ id that fails the grammar stops the launch.
      the caller. Approval ids are the crate's own, so a late answer cannot reach a newer request
      that reuses a wire id, and two pending requests sharing a wire id are both denied. A Codex or
      ACP request still pending when its turn ends, and any request pending when the session
-     stops, is answered with a denial and reported withdrawn (Claude Code's requests of a finished
+     stops, is answered with a denial and reported withdrawn; one still pending when the session
+     ends any other way (a failed or exited harness) is reported withdrawn before `Finished` (Claude Code's requests of a finished
      turn are only reported withdrawn: the harness no longer waits on them).
    - **No permission bypass** (Claude `bypassPermissions`, Codex `danger-full-access`, ACP yolo
      modes) without a `BypassOptIn` naming that harness and mode. Like every opt-in it is config

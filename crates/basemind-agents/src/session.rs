@@ -142,6 +142,9 @@ struct Shared {
     abandon: Arc<AtomicBool>,
     /// Set when the session is dropped: a retiring harness is killed without further grace.
     kill_now: AtomicBool,
+    /// The approval requests left for the caller and not yet settled. Whatever is here when
+    /// the session ends, however it ends, is reported withdrawn before `Finished`.
+    pending: Mutex<Vec<String>>,
 }
 
 impl Shared {
@@ -162,11 +165,16 @@ impl Shared {
             events: Arc::default(),
             abandon: Arc::default(),
             kill_now: AtomicBool::new(false),
+            pending: Mutex::default(),
         })
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn pending(&self) -> MutexGuard<'_, Vec<String>> {
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -231,13 +239,16 @@ impl EventSink {
             (verdict, source) = (ApprovalVerdict::Deny, ApprovalSource::TooManyPending);
         }
         self.emit(Event::ApprovalRequest(request));
-        if verdict != ApprovalVerdict::Ask {
+        if verdict == ApprovalVerdict::Ask {
+            self.shared.pending().push(id);
+        } else {
             self.resolved(id, verdict == ApprovalVerdict::Allow, source);
         }
         verdict
     }
 
     pub fn resolved(&self, id: String, allowed: bool, source: ApprovalSource) {
+        self.shared.pending().retain(|pending| *pending != id);
         self.emit(Event::ApprovalResolved { id, allowed, source });
     }
 
@@ -537,6 +548,15 @@ pub(crate) fn start(
                 process::retire(&mut child, budget, &shared.kill_now, reading);
             } else {
                 process::terminate(&mut child);
+            }
+            // A request the adapter did not settle (a harness that failed or exited mid-turn,
+            // a panic) is moot once the group is gone.
+            for id in std::mem::take(&mut *shared.pending()) {
+                shared.events.push_last(Event::ApprovalResolved {
+                    id,
+                    allowed: false,
+                    source: ApprovalSource::Withdrawn,
+                });
             }
             if let (FinishStatus::Failed, Err(error)) = (status, &result) {
                 let _ = stderr_drained.recv_timeout(STDERR_DRAIN);
