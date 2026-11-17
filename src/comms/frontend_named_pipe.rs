@@ -33,7 +33,7 @@ mod imp {
     use crate::comms::accept_gate::{self, AcceptBackoff};
     use crate::comms::daemon::Broker;
     use crate::comms::protocol::{CommsOut, CommsRequest};
-    use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link};
+    use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, holds_whole_frame, serve_link};
 
     /// Read chunk size pulled from the pipe per `read_buf` call.
     const READ_CHUNK: usize = 8 * 1024;
@@ -124,7 +124,9 @@ mod imp {
     impl CommsLink for NamedPipeLink {
         async fn recv(&mut self) -> std::io::Result<Option<CommsRequest>> {
             loop {
-                if let Some(frame) = self.codec.decode(&mut self.read_buf)? {
+                if holds_whole_frame(&self.read_buf)?
+                    && let Some(frame) = self.codec.decode(&mut self.read_buf)?
+                {
                     let req = rmp_serde::from_slice(&frame)
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
                     return Ok(Some(req));
