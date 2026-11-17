@@ -406,8 +406,9 @@ impl CommsClient {
     /// sees the request, so the retry is the first delivery.
     ///
     /// An agent request that writes (a post, a thread change, a read that marks or announces, a
-    /// cleanup) is never retried: a CLI or hook call carries no replay key, so a daemon that
-    /// committed it and died before replying would act on it twice. Its caller sees the error.
+    /// cleanup) is retried only when its frame could not be written: a CLI or hook call carries no
+    /// replay key, so a daemon that read it, committed it and died before replying would act on it
+    /// twice. Its caller sees the error.
     ///
     /// Cancel safety: every request is a correlated [`CommsRequest::Call`] and only the reply
     /// echoing its id is accepted. If a previous request future was dropped after its frame was
@@ -422,7 +423,9 @@ impl CommsClient {
         let what = req.method();
         match bounded(what, timeout, self.send_correlated(req.clone())).await {
             Ok(resp) => Ok(resp),
-            Err(err) if is_connection_lost(&err) && retry_safe(&req) => {
+            // ~keep A frame whose write failed never reached a daemon that could act on it: a
+            // ~keep partial frame does not decode. So even a write is sent again then.
+            Err(err) if is_connection_lost(&err) && (retry_safe(&req) || self.write_incomplete) => {
                 self.reconnect().await?;
                 bounded(what, timeout, self.send_correlated(req)).await
             }
