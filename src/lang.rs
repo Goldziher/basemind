@@ -23,6 +23,11 @@ pub const DEFAULT_PARSE_TIMEOUT: Duration = Duration::from_millis(5_000);
 /// (called ×2 per file when eager L2 is on — once for L1, once for L2).
 static PARSE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 
+/// The per-parse timeout in effect: `BASEMIND_PARSE_TIMEOUT_MS`, else [`DEFAULT_PARSE_TIMEOUT`].
+pub fn parse_timeout() -> Duration {
+    parse_timeout_from_env()
+}
+
 fn parse_timeout_from_env() -> Duration {
     *PARSE_TIMEOUT.get_or_init(|| {
         std::env::var("BASEMIND_PARSE_TIMEOUT_MS")
