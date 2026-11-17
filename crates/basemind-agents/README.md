@@ -85,7 +85,8 @@ config is trusted.
 - The child's environment is `ENV_ALLOWLIST`, the config's additions and the agent identity. An
   addition must be a provider credential or one of a few provider settings, and may not redirect
   configuration, code loading, an endpoint or basemind. Credentials in the launcher's environment
-  do not reach the child, and `Debug` output names variables without their values.
+  do not reach the child, and `Debug` output names variables without their values and counts the
+  MCP server's arguments without printing them.
 - At the wall-time limit, or when the harness starts more turns than allowed, the process group is
   killed; a stop, and a session that failed, get the stop grace. The group is gone before
   `Event::Finished` is reported. Requests a stop declines are reported withdrawn, and so is

@@ -62,7 +62,8 @@ pub(crate) fn check_prompt(text: &str) -> Result<(), LaunchError> {
 /// The exact process an adapter would start: its program, arguments, environment and working
 /// directory. Built without side effects, so a caller can log or inspect a launch beforehand.
 /// Its `Debug` output names the environment variables without their values, which hold
-/// credentials.
+/// credentials, and counts the arguments that carry the MCP server's command line instead of
+/// printing them, as they may hold one too.
 #[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CommandPlan {
@@ -74,13 +75,17 @@ pub struct CommandPlan {
     pub env: BTreeMap<String, OsString>,
     /// The working directory, canonical and inside the spec's root.
     pub cwd: PathBuf,
+    /// How many of the last `args` describe the MCP server.
+    pub(crate) server_args: usize,
 }
 
 impl std::fmt::Debug for CommandPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown = self.args.len().saturating_sub(self.server_args);
         f.debug_struct("CommandPlan")
             .field("program", &self.program)
-            .field("args", &self.args)
+            .field("args", &&self.args[..shown])
+            .field("mcp_server_args", &self.server_args)
             .field("env_names", &self.env.keys().collect::<Vec<_>>())
             .field("cwd", &self.cwd)
             .finish()

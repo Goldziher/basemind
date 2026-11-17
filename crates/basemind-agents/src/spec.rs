@@ -112,7 +112,7 @@ impl Default for Limits {
 ///
 /// It is data: each adapter turns it into that harness's own form (Claude Code's
 /// `--mcp-config`, Codex's `-c mcp_servers.<name>.*`, ACP's `mcpServers`). Its `Debug` output
-/// names the environment variables without their values.
+/// names the environment variables without their values and counts the arguments.
 #[derive(Clone, PartialEq, Eq)]
 pub struct McpServerSpec {
     /// The server name, `[A-Za-z0-9_-]{1,64}`.
@@ -139,7 +139,7 @@ impl std::fmt::Debug for McpServerSpec {
         f.debug_struct("McpServerSpec")
             .field("name", &self.name)
             .field("command", &self.command)
-            .field("args", &self.args)
+            .field("arg_count", &self.args.len())
             .field("env_names", &self.env.keys().collect::<Vec<_>>())
             .field("allow_tools", &self.allow_tools)
             .finish()
@@ -440,6 +440,7 @@ impl LaunchSpec {
         extra_env: &[(&str, &str)],
     ) -> Result<CommandPlan, LaunchError> {
         guard_bypass(&args, prepared.bypass(self))?;
+        let server_arg_count = server_args.len();
         args.extend(server_args);
         let mut env = self.child_env(std::env::vars_os());
         for (name, value) in extra_env {
@@ -450,6 +451,7 @@ impl LaunchSpec {
             args,
             env,
             cwd: prepared.cwd.clone(),
+            server_args: server_arg_count,
         })
     }
 

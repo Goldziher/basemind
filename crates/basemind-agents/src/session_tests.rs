@@ -26,6 +26,7 @@ fn a_working_directory_swapped_for_a_symlink_after_the_check_is_refused() {
         args: vec!["-c".to_owned(), "true".to_owned()],
         env: BTreeMap::new(),
         cwd: spec.prepare().unwrap().cwd,
+        server_args: 0,
     };
 
     // Between the check and the spawn the directory becomes a link out of the root.
@@ -58,6 +59,7 @@ fn nothing_is_launched_while_sigchld_is_ignored() {
             args: vec!["-c".to_owned(), "true".to_owned()],
             env: BTreeMap::new(),
             cwd: spec.prepare().unwrap().cwd,
+            server_args: 0,
         };
         let started = start(&plan, &spec, Box::new(Idle), Box::new(|_| Ok(())));
         assert!(

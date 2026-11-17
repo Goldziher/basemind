@@ -471,6 +471,30 @@ fn debug_output_names_environment_variables_without_their_values() {
 }
 
 #[test]
+fn debug_output_leaves_out_the_mcp_servers_arguments() {
+    let root = tempfile::tempdir().unwrap();
+    let mut server = McpServerSpec::basemind_serve(MCP_COMMAND);
+    server.args.push("--token=server-secret".to_owned());
+    for kind in [HarnessKind::ClaudeCode, HarnessKind::Codex] {
+        let mut spec = spec(kind, root.path());
+        spec.mcp_server = Some(server.clone());
+        let plan = match kind {
+            HarnessKind::ClaudeCode => crate::ClaudeCodeAdapter.plan_spec(&spec),
+            _ => crate::CodexAdapter.plan_spec(&spec),
+        }
+        .unwrap();
+        assert!(plan.args.iter().any(|arg| arg.contains("server-secret")), "{kind}");
+        let shown = format!("{plan:?}");
+        assert!(!shown.contains("server-secret"), "{shown}");
+        assert!(
+            shown.contains("--permission-mode") || shown.contains("app-server"),
+            "{shown}"
+        );
+    }
+    assert!(!format!("{server:?}").contains("server-secret"));
+}
+
+#[test]
 fn request_facing_errors_do_not_echo_the_root_or_a_whole_value() {
     let outer = tempfile::tempdir().unwrap();
     let root = outer.path().join("root");
