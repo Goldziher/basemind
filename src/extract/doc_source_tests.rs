@@ -176,3 +176,46 @@ fn entities_are_placed_where_the_source_says_them() {
         "an entity not in the source is in no chunk"
     );
 }
+
+/// A file that is not UTF-8 (UTF-16 with its BOM, Latin-1) is not chunked from its bytes: xberg's
+/// decoded text is.
+#[test]
+fn a_file_that_is_not_utf8_is_left_to_xberg() {
+    let dir = tempfile::tempdir().unwrap();
+    let utf16 = dir.path().join("utf16.log");
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend("first line\nsecond line\n".encode_utf16().flat_map(u16::to_le_bytes));
+    std::fs::write(&utf16, bytes).unwrap();
+    let latin1 = dir.path().join("latin1.txt");
+    std::fs::write(&latin1, b"caf\xe9 au lait\n").unwrap();
+    let utf8 = dir.path().join("utf8.txt");
+    std::fs::write(&utf8, "café au lait\n").unwrap();
+
+    assert_eq!(read(&utf16), None);
+    assert_eq!(read(&latin1), None);
+    assert_eq!(read(&utf8).as_deref(), Some("café au lait\n"));
+}
+
+/// Entities the source does not hold each cost a window of search; the whole run is bounded, and
+/// once the budget is spent the rest are placed in no chunk.
+#[test]
+fn placing_entities_searches_a_bounded_number_of_bytes() {
+    let source: String = (0..20_000).map(|i| format!("line {i} of a large log\n")).collect();
+    let missing = |i: u32| super::super::DocEntity {
+        category: "location".into(),
+        text: format!("New\nYork {i}"),
+        start: i,
+        end: i + 1,
+        confidence: None,
+    };
+    let mut entities: Vec<_> = (0..2_000).map(missing).collect();
+
+    let searched = place_entities_counted(&source, &mut entities);
+
+    assert!(
+        searched <= 4 * source.len().max(ENTITY_WINDOW) + ENTITY_WINDOW,
+        "searched {searched} bytes of a {}-byte source",
+        source.len()
+    );
+    assert!(entities.iter().all(|e| e.start == u32::MAX), "none is in the source");
+}
