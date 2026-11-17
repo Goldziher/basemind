@@ -744,6 +744,8 @@ fn scan_paths_inner(
     verify_named: bool,
 ) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
+    #[cfg(any(unix, windows))] // Blobs written without an fsync; free inside a hosting process. ~keep
+    let _hosting = crate::scan_evidence::HostingMarker::begin();
     crate::scanner_integrity::claim_writer(store)?;
     if crate::scanner_integrity::needs_full_rebuild(store)? {
         return scan_with_observer(root, store, config, source, embed, cancel, observer);

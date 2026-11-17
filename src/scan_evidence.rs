@@ -171,8 +171,11 @@ impl Drop for ScanBreadcrumb {
     fn drop(&mut self) {
         // The breadcrumb is the evidence that blobs written without an fsync may be torn: it goes
         // only once they are on disk, or a power loss seconds after a finished scan tore blobs no
-        // record pointed at. ~keep
-        sync_blob_filesystem();
+        // record pointed at. A process holding a hosting marker leaves the sync to that marker's
+        // removal: its host holds the store's write lock here, and the sync can take seconds. ~keep
+        if !crate::scan_evidence_hosts::is_hosting() {
+            sync_blob_filesystem();
+        }
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -180,7 +183,7 @@ impl Drop for ScanBreadcrumb {
 /// Write back every dirty page of the filesystem holding the blob store, once per full pass. Linux
 /// only: there the delayed allocation of ext4 and XFS leaves a renamed blob empty after a power
 /// loss. Best-effort, logged on failure.
-fn sync_blob_filesystem() {
+pub(crate) fn sync_blob_filesystem() {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd as _;

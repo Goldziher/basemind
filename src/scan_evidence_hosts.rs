@@ -1,5 +1,6 @@
-//! Hosting markers: the evidence a process that hosts workspaces for others (the daemon) leaves
-//! for whoever starts after the machine went down under it. Re-exported from
+//! Hosting markers: the evidence a process that writes blobs without a breadcrumb (the daemon,
+//! `basemind watch`, an incremental pass) leaves for whoever starts after the machine went down
+//! under it. Re-exported from
 //! [`crate::scan_evidence`].
 
 use std::path::{Path, PathBuf};
@@ -179,14 +180,30 @@ pub fn settle_dead_hosts() {
     }
 }
 
-/// The claim of a process that hosts workspaces for others (the daemon): written when it starts
-/// hosting, removed when it stops cleanly. A scan's breadcrumb covers only the scan in flight; this
-/// covers everything else a host does between scans, and the scan that finished seconds before the
-/// power went. A marker left by a host of an earlier boot means blobs written since may be torn, in
-/// any workspace of the shared store.
+/// The claim of a process that writes blobs without a breadcrumb: the daemon and `basemind watch`
+/// for their lifetime, an incremental pass for its duration. Written when it starts, removed when it
+/// stops cleanly, after the blobs are synced. A scan's breadcrumb covers only the full pass in
+/// flight; this covers everything else, and the pass that finished seconds before the power went. A
+/// marker left by a host of an earlier boot means blobs written since may be torn, in any workspace
+/// of the shared store.
+///
+/// One file per process however many hold it ([`HOLDERS`]): the first to begin writes it, the last
+/// to drop removes it.
 #[derive(Debug)]
 pub struct HostingMarker {
     path: PathBuf,
+    /// Whether this holder is counted in [`HOLDERS`] ([`Self::begin`]); a marker written straight
+    /// into a directory by a test is not.
+    counted: bool,
+}
+
+/// How many [`HostingMarker`]s of this process are alive.
+static HOLDERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+/// Whether this process holds a hosting marker, whose removal syncs the blobs. A full pass in such a
+/// process leaves the sync to it rather than running one under the store lock its host holds.
+pub(crate) fn is_hosting() -> bool {
+    *HOLDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) > 0
 }
 
 impl HostingMarker {
@@ -194,36 +211,60 @@ impl HostingMarker {
     /// never a precondition for work.
     #[cfg(any(unix, windows))]
     pub fn begin() -> Option<Self> {
-        settle_dead_hosts();
-        Self::begin_in(
-            &cache_root().join(HOSTING_DIR),
-            crate::boot_identity::current().as_deref(),
-        )
+        let mut holders = HOLDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = cache_root().join(HOSTING_DIR);
+        let path = if *holders == 0 {
+            settle_dead_hosts();
+            write_marker(&dir, crate::boot_identity::current().as_deref())?
+        } else {
+            dir.join(std::process::id().to_string())
+        };
+        *holders += 1;
+        Some(Self { path, counted: true })
     }
 
-    /// Write this process's marker into `dir`, whole or not at all: another host reading a
-    /// half-written one would take it for the marker of a host from an unknown boot.
-    #[cfg(any(unix, windows))]
+    /// Write this process's marker into `dir`, uncounted. For tests.
+    #[cfg(all(test, any(unix, windows)))]
     fn begin_in(dir: &Path, boot: Option<&str>) -> Option<Self> {
-        std::fs::create_dir_all(dir).ok()?;
-        let record = HostRecord {
-            boot: boot.map(str::to_string),
-            started: crate::boot_identity::process_start(std::process::id()),
-        };
-        let bytes = serde_json::to_vec(&record).ok()?;
-        let path = dir.join(std::process::id().to_string());
-        let temp = dir.join(format!(".{}.tmp", std::process::id()));
-        std::fs::write(&temp, bytes).ok()?;
-        if std::fs::rename(&temp, &path).is_err() {
-            let _ = std::fs::remove_file(&temp);
-            return None;
-        }
-        Some(Self { path })
+        Some(Self {
+            path: write_marker(dir, boot)?,
+            counted: false,
+        })
     }
+}
+
+/// Write this process's marker into `dir`, whole or not at all: another host reading a
+/// half-written one would take it for the marker of a host from an unknown boot.
+#[cfg(any(unix, windows))]
+fn write_marker(dir: &Path, boot: Option<&str>) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    let record = HostRecord {
+        boot: boot.map(str::to_string),
+        started: crate::boot_identity::process_start(std::process::id()),
+    };
+    let bytes = serde_json::to_vec(&record).ok()?;
+    let path = dir.join(std::process::id().to_string());
+    let temp = dir.join(format!(".{}.tmp", std::process::id()));
+    std::fs::write(&temp, bytes).ok()?;
+    if std::fs::rename(&temp, &path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return None;
+    }
+    Some(path)
 }
 
 impl Drop for HostingMarker {
     fn drop(&mut self) {
+        if self.counted {
+            let mut holders = HOLDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            *holders = holders.saturating_sub(1);
+            if *holders > 0 {
+                return;
+            }
+        }
+        // The marker is the evidence that blobs written without an fsync may be torn: it goes only
+        // once they are on disk. ~keep
+        crate::scan_evidence::sync_blob_filesystem();
         let _ = std::fs::remove_file(&self.path);
     }
 }

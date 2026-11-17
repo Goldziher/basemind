@@ -864,3 +864,40 @@ fn a_store_opened_read_only_scans_through_an_index_opened_for_writing() {
     let db = in_place.index_db.as_ref().expect("index");
     assert_eq!(db.view().symbols_by_name_lookup("alpha", 4).len(), 1);
 }
+
+/// An incremental pass outside a hosting process wrote blobs without an fsync and left no evidence
+/// for a power loss to be found by. It holds a hosting marker while it runs.
+#[cfg(any(unix, windows))]
+#[test]
+fn an_incremental_pass_holds_a_hosting_marker_while_it_runs() {
+    struct SeesMarker(Vec<bool>);
+    impl crate::scanner::ScanObserver for SeesMarker {
+        fn on_file(&mut self, _result: crate::scanner::FileResult) {
+            let marker = crate::store::cache_root()
+                .join("hosting")
+                .join(std::process::id().to_string());
+            self.0.push(marker.exists());
+        }
+    }
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let alpha = root.join("alpha.rs");
+    std::fs::write(&alpha, b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+
+    let mut seen = SeesMarker(Vec::new());
+    crate::scanner::scan_paths_with_observer(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        &[alpha],
+        EmbedMode::Deferred,
+        &crate::scanner::ScanCancel::new(),
+        &mut seen,
+    )
+    .expect("incremental scan");
+
+    assert_eq!(seen.0, vec![true], "the pass ran under a hosting marker");
+}
