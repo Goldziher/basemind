@@ -263,8 +263,15 @@ impl IndexDb {
 
     /// Empty every keyspace in place, leaving a current-schema index no scan has sealed. The
     /// in-place form of [`discard_index`], for a store that cannot drop every clone of its handle.
+    ///
+    /// `meta` is emptied first and the journal synced before the rest: fjall writes a cleared
+    /// keyspace's empty version durably at once but journals the clear itself buffered, and recovery
+    /// replays a keyspace's journaled writes over an empty version. Unsynced, a power loss could bring
+    /// back a sealed generation that vouches for rows whose clear did reach the disk.
     pub(crate) fn clear_for_rebuild(&self) -> Result<(), IndexError> {
-        for part in Part::ALL {
+        self.meta.clear()?;
+        self.db.persist(PersistMode::SyncAll)?;
+        for part in Part::ALL.into_iter().filter(|part| *part != Part::Meta) {
             self.keyspace(part).clear()?;
         }
         self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;

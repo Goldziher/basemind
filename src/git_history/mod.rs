@@ -509,13 +509,16 @@ impl GitHistoryIndex {
 }
 
 impl LocalDb {
-    /// Drop all data and reset to an empty index at the current schema. `gh_meta` goes first: the
-    /// journal replays in order, so a crash part-way leaves an index with no head, which the next
-    /// sync rebuilds, never a head over emptied postings. Each keyspace is one journaled clear, not a
-    /// delete per key, so the cost does not grow with the index.
+    /// Drop all data and reset to an empty index at the current schema. `gh_meta` goes first, and the
+    /// journal is synced before the rest: fjall writes a cleared keyspace's empty version durably at
+    /// once but journals the clear itself buffered, and recovery replays a keyspace's journaled writes
+    /// over an empty version. Unsynced, a power loss could bring the head back over postings whose
+    /// clear did reach the disk. Each keyspace is one journaled clear, not a delete per key, so the
+    /// cost does not grow with the index.
     fn clear(&self) -> Result<(), GitHistoryError> {
+        self.meta.clear()?;
+        self.db.persist(fjall::PersistMode::SyncAll)?;
         for ks in [
-            &self.meta,
             &self.commit_by_ord,
             &self.ord_by_sha,
             &self.path_id_by_path,
