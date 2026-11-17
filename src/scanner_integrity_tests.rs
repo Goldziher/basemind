@@ -659,3 +659,37 @@ fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass()
     );
     assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
 }
+
+/// The blob sweep keeps an unreferenced blob only within its grace, judged by mtime. A scan that
+/// reused an old blob for a path its file map did not name yet left it to be swept before the map
+/// named it; the reuse now refreshes the blob's mtime.
+#[test]
+fn a_blob_reused_for_a_new_path_is_kept_young_for_the_sweep() {
+    use std::time::{Duration, SystemTime};
+
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let hash_hex = store.lookup("alpha.rs").expect("entry").hash_hex.clone();
+    let blob = store.blob_path_fm_hex(&hash_hex);
+    let aged = SystemTime::now() - Duration::from_secs(7 * 3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&blob)
+        .and_then(|file| file.set_modified(aged))
+        .expect("age the blob");
+    std::fs::rename(root.join("alpha.rs"), root.join("beta.rs")).expect("rename");
+
+    let report = full_scan(root, &mut store);
+
+    assert_eq!(report.stats.reused_extraction, 1);
+    let mtime = std::fs::metadata(&blob)
+        .and_then(|meta| meta.modified())
+        .expect("mtime");
+    assert!(
+        mtime > aged + Duration::from_secs(3600),
+        "the reused blob is young again"
+    );
+}
