@@ -10,6 +10,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Subcommand;
 
+use crate::engine::Workspace;
 use crate::mcp::BasemindServer;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
@@ -229,7 +230,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 cursor: cursor.map(Cursor),
                 max_tokens,
             };
-            ("git_log", server.git_log_call(p).await)
+            ("git_log", server.op(p, Workspace::git_log).await)
         }
         GitCmd::Recent {
             limit,
@@ -242,7 +243,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 max_tokens,
                 ..log()
             };
-            ("git_log", server.git_log_call(p).await)
+            ("git_log", server.op(p, Workspace::git_log).await)
         }
         GitCmd::Touching {
             path,
@@ -257,7 +258,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 max_tokens,
                 ..log()
             };
-            ("git_log", server.git_log_call(p).await)
+            ("git_log", server.op(p, Workspace::git_log).await)
         }
         GitCmd::Search {
             query,
@@ -274,14 +275,14 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 max_tokens,
                 ..log()
             };
-            ("git_log", server.git_log_call(p).await)
+            ("git_log", server.op(p, Workspace::git_log).await)
         }
         GitCmd::Show { rev } => {
             let p = GitLogParams {
                 rev: Some(rev),
                 ..log()
             };
-            ("git_log", server.git_log_call(p).await)
+            ("git_log", server.op(p, Workspace::git_log).await)
         }
         GitCmd::SymbolHistory {
             path,
@@ -298,7 +299,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 cursor: cursor.map(Cursor),
                 ..log()
             };
-            ("git_log", server.git_log_call(p).await)
+            ("git_log", server.op(p, Workspace::git_log).await)
         }
         GitCmd::Blame {
             path,
