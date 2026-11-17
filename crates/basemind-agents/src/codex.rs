@@ -15,7 +15,7 @@ use crate::harness::HarnessKind;
 use crate::line::{LineDriver, Protocol, Step, TextStream, write_json};
 use crate::registry::Adapter;
 use crate::session::{self, CommandPlan, EventSink, Session};
-use crate::spec::{ApprovalVerdict, LaunchConfig, LaunchRequest, LaunchSpec, PermissionMode, utf8};
+use crate::spec::{ApprovalVerdict, LaunchConfig, LaunchRequest, LaunchSpec, PermissionMode, Prepared, utf8};
 
 const INITIALIZE_ID: u64 = 1;
 const THREAD_ID: u64 = 2;
@@ -48,6 +48,11 @@ impl Adapter for CodexAdapter {
 
 impl CodexAdapter {
     pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
+        self.plan_prepared(spec).map(|(plan, _)| plan)
+    }
+
+    /// The plan and the checked spec it was built from, checked once per launch.
+    fn plan_prepared(&self, spec: &LaunchSpec) -> Result<(CommandPlan, Prepared), LaunchError> {
         let prepared = spec.prepare()?;
         if spec.permission_mode == PermissionMode::AcceptEdits {
             // Codex 0.169 under `on-request` and a workspace-write sandbox ran `touch` unasked:
@@ -78,12 +83,12 @@ impl CodexAdapter {
         }
         let mut args = vec!["app-server".to_owned()];
         args.extend(prepared.model_args.iter().cloned());
-        spec.plan(&prepared, args, server_args, &[])
+        let plan = spec.plan(&prepared, args, server_args, &[])?;
+        Ok((plan, prepared))
     }
 
     fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
-        let plan = self.plan_spec(spec)?;
-        let prepared = spec.prepare()?;
+        let (plan, prepared) = self.plan_prepared(spec)?;
         let access = Access::new(spec.permission_mode, prepared.bypass(spec));
         let protocol = CodexProtocol::new(spec.brief.clone(), utf8(&plan.cwd)?.to_owned(), access);
         let (driver, control) = LineDriver::boxed(protocol);

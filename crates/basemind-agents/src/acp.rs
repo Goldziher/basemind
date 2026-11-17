@@ -115,6 +115,11 @@ impl Adapter for AcpAdapter {
 
 impl AcpAdapter {
     pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
+        self.plan_prepared(spec).map(|(plan, _)| plan)
+    }
+
+    /// The plan and the checked spec it was built from, checked once per launch.
+    pub(crate) fn plan_prepared(&self, spec: &LaunchSpec) -> Result<(CommandPlan, Prepared), LaunchError> {
         let flavor = flavor(spec)?;
         let prepared = spec.prepare()?;
         session_mode(spec, &prepared, flavor)?;
@@ -158,17 +163,18 @@ impl AcpAdapter {
             }
         };
         // ACP hands the MCP server over in `session/new`, not on the command line.
-        spec.plan(
+        let plan = spec.plan(
             &prepared,
             args.into_iter().map(str::to_owned).collect(),
             Vec::new(),
             &env,
-        )
+        )?;
+        Ok((plan, prepared))
     }
 
     fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
-        let plan = self.plan_spec(spec)?;
-        let config = Config::new(spec, &plan)?;
+        let (plan, prepared) = self.plan_prepared(spec)?;
+        let config = Config::new(spec, &plan, &prepared)?;
         let (tx, controls) = channel(CONTROL_QUEUE);
         let driver = Box::new(AcpDriver { config, controls });
         let tx = Mutex::new(tx);
@@ -197,9 +203,8 @@ pub(crate) struct Config {
 }
 
 impl Config {
-    pub fn new(spec: &LaunchSpec, plan: &CommandPlan) -> Result<Self, LaunchError> {
+    pub fn new(spec: &LaunchSpec, plan: &CommandPlan, prepared: &Prepared) -> Result<Self, LaunchError> {
         let flavor = flavor(spec)?;
-        let prepared = spec.prepare()?;
         // ACP names a server's variables explicitly, so the identity is passed by value.
         let env: Vec<EnvVariable> = spec
             .mcp_env_names()
@@ -231,7 +236,7 @@ impl Config {
             brief: spec.brief.clone(),
             mcp_servers,
             session_meta,
-            mode: session_mode(spec, &prepared, flavor)?,
+            mode: session_mode(spec, prepared, flavor)?,
         })
     }
 }
