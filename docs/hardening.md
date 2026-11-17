@@ -8,7 +8,7 @@ They need Python 3.10+ and nothing outside the standard library.
 |---|---|---|
 | `soak.py` + `analyze.py` | no growth in memory / fds / threads under load, quiet idle, clean shutdown, bounded data dir | load + idle + ~1 min (15 min for a short run, 1 h+ for a release) |
 | `functional_sweep.py` | every verb tool and its CLI command answers with the expected structure; RAG finds planted facts, with filters | 1-3 min (`comms` build); 5-15 min first time on a `full` build (model downloads) |
-| `leak_check.py` | no definite leaks in one-shot `basemind scan` (macOS `leaks`) | 1-2 min for the fixture; longer with `--repo` |
+| `leak_check.py` | no leaks in one-shot `basemind scan` beyond the bounded tree-sitter pools (macOS `leaks`) | 1-2 min for the fixtures; longer with `--repo` |
 | `selftest_analyze.py` | `analyze.py`'s rules fire on known-bad input and pass known-good input | seconds |
 
 Build first, outside the repository's `target/` if you like:
@@ -148,10 +148,34 @@ case fails, when nothing passed, or when the server advertises a verb tool the s
 python3 scripts/hardening/leak_check.py --binary "$CARGO_TARGET_DIR/release/basemind" [--repo .]
 ```
 
-Runs `leaks --atExit -- basemind scan` with `MallocStackLogging=1` on the fixture (code and, on a
-`documents` build, the documents) and optionally a clone of `--repo`. `--cmd status` adds more
-one-shots. It fails on any definite leak and on a run `leaks` could not inspect. The full `leaks`
-output, with stacks, is kept per run.
+Runs `leaks --atExit -- basemind scan` with `MallocStackLogging=1` and `RAYON_NUM_THREADS`
+pinned (`--threads`, default 4) on the fixture (code and, on a `documents` build, the documents),
+on two scale fixtures (Rust + Python, 60 and 600 files per language) and optionally a clone of
+`--repo`. `--cmd status` adds more one-shots. The full `leaks` output, with stacks, is kept per run.
+
+`leaks` sees only the system malloc zones. basemind's Rust heap is mimalloc, which registers no
+zone, so `leaks` neither scans it nor reports a Rust leak: a C allocation whose only pointer sits in
+a Rust object looks unreferenced. Two process-lifetime tree-sitter structures are held that way and
+are always reported: the per-thread parser pool (`lang::with_parser`; a rayon worker never exits,
+so its thread-local is never dropped) and the per-language compiled-query caches (`lang`,
+`extract::locals`, `intel::stackgraph`). Their size is threads x languages and does not grow with
+files or with scans in one process:
+
+| run | threads | leaks | bytes |
+|---|---|---|---|
+| 100 files (Rust + Python) | 2 | 189 | 43 KB |
+| 4,000 files (Rust + Python) | 2 | 203 | 44 KB |
+| 100 files | 8 | 420 | 108 KB |
+| 4,000 files | 8 | 469 | 122 KB |
+| live daemon (`leaks <pid>`) after ~200 rescans | 14 | 2,962 | 852 KB |
+| same daemon after ~1,000 rescans | 14 | 2,857 | 806 KB |
+
+A run fails on any leak whose stack does not reach `ts_parser_new` / `ts_query_new` from one of
+those owners (`POOLED_TREE_SITTER` in the script), on pooled bytes above `--max-pooled-bytes`
+(default 1 MiB), on the scale fixtures on more pooled parsers than threads x languages or more
+cached queries than 9 per language (a per-file leak on the 600-file run exceeds both), and on a
+run `leaks` could not inspect. A Rust-heap leak is outside what this check can see; the soak's
+memory rules are the guard for it.
 
 Linux equivalents (not automated here):
 
