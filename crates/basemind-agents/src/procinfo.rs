@@ -47,7 +47,8 @@ pub(crate) fn info(pid: i32) -> Option<ProcInfo> {
     platform::info(pid)
 }
 
-/// Whether `id` is still the same process and has not exited.
+/// Whether `id` is still the same process and has not exited. Only the Unix reaper asks.
+#[cfg(unix)]
 pub(crate) fn running(id: ProcId) -> bool {
     info(id.pid).is_some_and(|now| now.start == id.start && !now.zombie)
 }

@@ -60,7 +60,7 @@ impl Peer {
 
     /// The process `pid` as it is now, standing in for what the kernel would report for a
     /// connection it made.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn of_pid(pid: u32) -> Self {
         Self::of_process(i32::try_from(pid).unwrap()).unwrap()
     }
