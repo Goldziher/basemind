@@ -287,6 +287,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the agent tools. It removes that wildcard and entries for retired tools.
 - The plugin ships `scripts/statusline.sh`; `/bm-statusline` runs the installed plugin's copy
   instead of the marketplace clone's.
+- A `plugins-only` publish dispatch runs only from the release tag that names the plugin version.
 
 ### Removed
 
