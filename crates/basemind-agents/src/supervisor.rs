@@ -56,6 +56,9 @@ pub(crate) struct Entry {
     pub(crate) launcher: Launcher,
     /// The sessions above this one, outermost first: a stop of any of them stops this one.
     pub(crate) lineage: Vec<u64>,
+    /// The configured launcher at the top of its tree, which may control it as long as it
+    /// runs, also once the sessions between them are reaped.
+    pub(crate) top: String,
     launcher_name: String,
     pub(crate) depth: u32,
     pub(crate) token: LaunchToken,
@@ -403,6 +406,7 @@ impl Supervisor {
         let Admitted {
             launcher,
             lineage,
+            top,
             launcher_name,
             depth,
             config,
@@ -461,6 +465,7 @@ impl Supervisor {
                 agent: agent.clone(),
                 launcher,
                 lineage,
+                top,
                 launcher_name,
                 depth,
                 token,
@@ -585,7 +590,8 @@ impl Supervisor {
     /// # Errors
     ///
     /// [`SupervisorError::UnknownSession`], and [`SupervisorError::NotOwner`] unless `caller` is
-    /// the operator or launched the session.
+    /// the operator, the configured launcher at the top of the session's tree, or a session
+    /// above it.
     pub fn stop(&self, caller: &Caller, id: SessionId) -> Result<(), SupervisorError> {
         let inner = &self.inner;
         let mut table = inner.table();

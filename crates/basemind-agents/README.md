@@ -184,8 +184,10 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   count. A symbolic link among the path's directories is followed: the engine picks the path. The
   log is append-only as far as this writer goes, not tamper-resistant: the same user can rewrite
   it; rotating it is the operator's job.
-- **Sessions.** `status`, `list`, `wait`, `stop` (the launcher or the operator; it reaches every
-  session below the one stopped), `answer` for a pending approval, `stop_all`, and `reap` to forget
+- **Sessions.** `status`, `list`, `wait`, `stop` (the operator, the configured launcher at the top
+  of the session's tree, or a session above it, also once the sessions between them are reaped;
+  ownership is by principal name, so a name bound again after `unregister_launcher` controls the
+  old binding's sessions; a stop reaches every session below the one stopped), `answer` for a pending approval, `stop_all`, and `reap` to forget
   finished sessions. Only the operator allows an approval request; a launcher (the lead model, or
   a launched agent over its children) may deny one, and an allow from it is refused with
   `launcher_may_not_allow`. A model that allows launders what the launched agent asks for past the

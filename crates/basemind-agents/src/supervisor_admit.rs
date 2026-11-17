@@ -87,9 +87,9 @@ pub(crate) fn admit<'a>(
     Asker::new(table, caller, None).stamp(refusal);
     let resolved = resolve(policy, table, caller)?;
     Asker::new(table, caller, Some(&resolved)).stamp(refusal);
-    let (launcher, caller_depth, lineage) = match resolved {
+    let (launcher, caller_depth, lineage, top) = match resolved {
         Resolved::Operator => return Err(SupervisorError::CallerNotAdmitted),
-        Resolved::Top(principal) => (Launcher::Principal(principal), 0, Vec::new()),
+        Resolved::Top(principal) => (Launcher::Principal(principal.clone()), 0, Vec::new(), principal),
         Resolved::Session(id) => {
             let parent = &table.sessions[&id];
             // A session told to stop, or not yet running, starts nothing.
@@ -98,7 +98,7 @@ pub(crate) fn admit<'a>(
             }
             let mut lineage = parent.lineage.clone();
             lineage.push(id);
-            (Launcher::Session(id), parent.depth, lineage)
+            (Launcher::Session(id), parent.depth, lineage, parent.top.clone())
         }
     };
     refusal.caller_depth = Some(caller_depth);
@@ -134,6 +134,7 @@ pub(crate) fn admit<'a>(
     Ok(Admitted {
         launcher,
         lineage,
+        top,
         launcher_name,
         depth,
         config,
@@ -144,6 +145,7 @@ pub(crate) fn admit<'a>(
 pub(crate) struct Admitted<'a> {
     pub launcher: Launcher,
     pub lineage: Vec<u64>,
+    pub top: String,
     pub launcher_name: String,
     pub depth: u32,
     pub config: &'a LaunchConfig,
@@ -190,8 +192,13 @@ pub(crate) fn name_of(table: &Table, resolved: &Resolved) -> String {
     }
 }
 
-/// Session `id`, when `resolved` may control it: the operator any, a launcher those it launched.
-/// A stop of a launcher reaches the sessions below it (see [`Supervisor::stop`]).
+/// Session `id`, when `resolved` may control it: the operator any; a configured launcher every
+/// session of the tree it tops, and a session every one below it, also once the sessions between
+/// them are reaped, so none is left that only the operator could stop. A stop of a launcher
+/// reaches the sessions below it (see [`Supervisor::stop`]).
+///
+/// Ownership is by principal name: once a launcher is unregistered and the name bound to another
+/// process, that process controls the sessions of the old binding.
 pub(crate) fn owned(
     table: &mut Table,
     resolved: Result<Resolved, SupervisorError>,
@@ -204,9 +211,8 @@ pub(crate) fn owned(
         .ok_or(SupervisorError::UnknownSession(id))?;
     let allowed = match (&resolved, &entry.launcher) {
         (Resolved::Operator, _) => true,
-        (Resolved::Top(principal), Launcher::Principal(launcher)) => principal == launcher,
-        (Resolved::Session(caller), Launcher::Session(launcher)) => caller == launcher,
-        _ => false,
+        (Resolved::Top(principal), _) => *principal == entry.top,
+        (Resolved::Session(caller), _) => entry.lineage.contains(caller),
     };
     if allowed {
         Ok(entry)

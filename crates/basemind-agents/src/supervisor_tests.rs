@@ -430,8 +430,9 @@ fn a_launched_agent_carries_its_depth_and_token_and_launches_only_within_max_dep
     assert_eq!(child.depth, 2);
     assert_eq!(scratch.env_of(&child.agent)["BASEMIND_AGENT_DEPTH"], "2");
     assert_eq!(deep.status(child.id).unwrap().launcher, parent.agent);
-    // The configured launcher did not launch the child: only its parent and the operator stop it.
-    assert_eq!(deep.stop(&lead(), child.id).unwrap_err().code(), "not_owner");
+    // Another configured launcher tops no session of this tree.
+    let second = Caller::principal("second", own()).unwrap();
+    assert_eq!(deep.stop(&second, child.id).unwrap_err().code(), "not_owner");
     deep.stop(&Caller::launched(&token, inside(&deep, parent.id)), child.id)
         .unwrap();
     assert_eq!(finished(&deep, child.id), FinishStatus::Stopped);

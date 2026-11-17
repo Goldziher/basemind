@@ -1,4 +1,4 @@
-//! Who may answer a session's approval request, and what an answer spends and records.
+//! Who may answer or stop a session, and what an answer spends and records.
 
 use super::attack_tests::{approvals_body, consenting, replies};
 use super::tests::*;
@@ -199,4 +199,41 @@ fn an_allow_that_did_not_reach_the_harness_is_kept_on_the_record() {
     assert!(crate::audit::kept_for(&undelivered), "the correction may be dropped");
     assert_eq!(undelivered.suppressed, None);
     assert!(undelivered.approval.is_some_and(|approval| !approval.allowed));
+}
+
+#[test]
+fn the_top_of_a_tree_stops_a_grandchild_whose_parent_was_reaped() {
+    let scratch = Scratch::new();
+    let dir = scratch.path.display();
+    // Records its environment, then runs until its own release file appears.
+    let body = format!(
+        "env > '{dir}/'\"$BASEMIND_AGENT_ID\".env\n{HANDSHAKE}while [ ! -e '{dir}/'\"$BASEMIND_AGENT_ID\".release ]; do sleep 0.05; done\n{RESULT}"
+    );
+    let (supervisor, _) = start(
+        PolicySpec {
+            max_depth: 2,
+            ..policy(&[HarnessKind::ClaudeCode])
+        },
+        vec![scratch.config(HarnessKind::ClaudeCode, &body)],
+    );
+    let parent = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let token = scratch.env_of(&parent.agent)["BASEMIND_LAUNCH_TOKEN"].clone();
+    let child = supervisor
+        .launch(
+            &Caller::launched(&token, inside(&supervisor, parent.id)),
+            HarnessKind::ClaudeCode,
+            &request(),
+        )
+        .unwrap();
+    let _ = scratch.env_of(&child.agent);
+    // The parent finishes on its own, which stops nothing below it, and is forgotten.
+    std::fs::write(scratch.path.join(format!("{}.release", parent.agent)), "").unwrap();
+    assert_eq!(finished(&supervisor, parent.id), FinishStatus::Completed);
+    assert_eq!(supervisor.reap().len(), 1);
+    assert_eq!(supervisor.status(child.id).unwrap().state, SessionState::Running);
+    // Another configured launcher still may not; the one at the top of the tree may.
+    let second = Caller::principal("second", own()).unwrap();
+    assert_eq!(supervisor.stop(&second, child.id).unwrap_err().code(), "not_owner");
+    supervisor.stop(&lead(), child.id).unwrap();
+    assert_eq!(finished(&supervisor, child.id), FinishStatus::Stopped);
 }
