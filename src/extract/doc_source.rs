@@ -7,8 +7,8 @@
 //! and every chunk's line range follows from its byte range.
 //!
 //! - Prose and logs break at a blank line, else at a line end, and overlap by whole lines.
-//! - Records (CSV, TSV, NDJSON) break at a line end with no overlap; a CSV or TSV chunk after the
-//!   first is embedded with the header line in front of it.
+//! - Records (CSV, TSV, NDJSON) break at a line end with no overlap (in CSV, one outside a quoted
+//!   field); a CSV or TSV chunk after the first is embedded with the header line in front of it.
 //! - Trees (JSON, YAML, TOML) break before the least indented line in the back half of the window
 //!   that does not close a block, so a chunk tends to hold whole top-level entries.
 //!
@@ -23,8 +23,9 @@ use super::DocChunk;
 pub(crate) enum Shape {
     /// Paragraphs and log lines.
     Prose,
-    /// One record per line; `header` when the first line names the columns.
-    Records { header: bool },
+    /// One record per line; `header` when the first line names the columns, `quoted` when a field
+    /// in double quotes may hold a line break (CSV).
+    Records { header: bool, quoted: bool },
     /// Nested keys, by indentation.
     Tree,
 }
@@ -34,10 +35,18 @@ pub(crate) fn shape(mime: &str) -> Option<Shape> {
     let mime = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
     match mime.as_str() {
         "text/plain" => Some(Shape::Prose),
-        "text/csv" | "application/csv" | "text/tab-separated-values" => Some(Shape::Records { header: true }),
-        "application/x-ndjson" | "application/jsonl" | "application/x-jsonlines" => {
-            Some(Shape::Records { header: false })
-        }
+        "text/csv" | "application/csv" => Some(Shape::Records {
+            header: true,
+            quoted: true,
+        }),
+        "text/tab-separated-values" => Some(Shape::Records {
+            header: true,
+            quoted: false,
+        }),
+        "application/x-ndjson" | "application/jsonl" | "application/x-jsonlines" => Some(Shape::Records {
+            header: false,
+            quoted: false,
+        }),
         "application/json" | "text/json" | "application/yaml" | "application/x-yaml" | "text/yaml" | "text/x-yaml"
         | "application/toml" | "application/x-toml" | "text/toml" | "text/x-toml" => Some(Shape::Tree),
         _ => None,
@@ -60,6 +69,9 @@ pub(crate) fn spans(text: &str, shape: Shape, max_chars: usize, overlap: usize) 
         Shape::Prose => overlap.min(max_chars.saturating_sub(1)),
         Shape::Records { .. } | Shape::Tree => 0,
     };
+    let quoted = matches!(shape, Shape::Records { quoted: true, .. });
+    // Whether `start` lies inside a quoted field: a cut forced inside a long field leaves it open.
+    let mut in_quotes = false;
     let mut spans = Vec::new();
     let mut start = 0;
     while start < text.len() {
@@ -70,8 +82,11 @@ pub(crate) fn spans(text: &str, shape: Shape, max_chars: usize, overlap: usize) 
         let end = if window_end == text.len() {
             window_end
         } else {
-            break_in(text, start, window_end, shape)
+            break_in(text, start, window_end, shape, in_quotes)
         };
+        if quoted {
+            in_quotes ^= odd_quotes(&text.as_bytes()[start..end]);
+        }
         if !text[start..end].trim().is_empty() {
             spans.push((start, end));
         }
@@ -87,9 +102,17 @@ pub(crate) fn spans(text: &str, shape: Shape, max_chars: usize, overlap: usize) 
     spans
 }
 
+/// Whether `bytes` hold an odd number of double quotes: a CSV field's quotes come in pairs, an
+/// escaped `""` included, so an odd count crosses a field's opening or closing quote.
+fn odd_quotes(bytes: &[u8]) -> bool {
+    memchr::memchr_iter(b'"', bytes).count() % 2 == 1
+}
+
 /// Where a chunk starting at `start` and limited to `window_end` ends: the best line start in the
-/// back half of the window, else the end of the last whitespace there, else `window_end`.
-fn break_in(text: &str, start: usize, window_end: usize, shape: Shape) -> usize {
+/// back half of the window, else the end of the last whitespace there, else `window_end`. In
+/// quoted records a line end inside a quoted field (`in_quotes` says whether `start` is in one) is
+/// no record end.
+fn break_in(text: &str, start: usize, window_end: usize, shape: Shape, in_quotes: bool) -> usize {
     let mut half = start + (window_end - start) / 2;
     while !text.is_char_boundary(half) {
         half -= 1;
@@ -97,12 +120,21 @@ fn break_in(text: &str, start: usize, window_end: usize, shape: Shape) -> usize 
     let bytes = text.as_bytes();
     // `(rank, at)`: the highest rank wins, the later position on a tie.
     let mut best: Option<(usize, usize)> = None;
+    let (mut quoted_to, mut inside) = (half, in_quotes ^ odd_quotes(&bytes[start..half]));
     for newline in memchr::memchr_iter(b'\n', &bytes[half..window_end]) {
         let at = half + newline + 1;
         if at <= start {
             continue;
         }
         let rank = match shape {
+            Shape::Records { quoted: true, .. } => {
+                inside ^= odd_quotes(&bytes[quoted_to..at]);
+                quoted_to = at;
+                if inside {
+                    continue;
+                }
+                0
+            }
             Shape::Records { .. } => 0,
             Shape::Prose => usize::from(line_is_blank(bytes, at)),
             Shape::Tree => match tree_rank(bytes, at) {
@@ -186,7 +218,7 @@ pub(crate) fn chunks(
     let spans = spans(source, shape, max_chars, overlap);
     let lines = line_ranges(source, &spans);
     let header = match shape {
-        Shape::Records { header: true } => source.lines().next().filter(|line| !line.trim().is_empty()),
+        Shape::Records { header: true, .. } => source.lines().next().filter(|line| !line.trim().is_empty()),
         _ => None,
     };
     let mut dense = Vec::new();

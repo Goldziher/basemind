@@ -57,7 +57,7 @@ def main() -> None:
             hits = json.loads(done.stdout).get("hits", [])
         except json.JSONDecodeError:
             hits = []
-        row = {"id": task["id"], "gold": gold, "found": False}
+        row = {"id": task["id"], "gold": gold, "found": False, "has_section": "gold_section" in meta}
         found = first_gold_hit(hits, gold)
         if found:
             rank, hit = found
@@ -88,13 +88,15 @@ def main() -> None:
         return f"{sum(scored)}/{len(scored)}" if scored else "-"
 
     found = [r for r in rows if r["found"]]
+    # Only a task with a gold section can have its top hit in it; gold-line tasks are not counted.
+    sectioned = sum(1 for r in rows if r["has_section"])
     top = sum(1 for r in found if r["rank"] == 1 and r.get("section_ok"))
     sys.stdout.write(
         "| Tasks with a gold section or line | Gold found in top 10 | Section right | Page right (PDF) "
         "| Lines in section (.md) | Gold line cited (text, data) | Top hit is the gold section |\n"
         "|---|---|---|---|---|---|---|\n"
         f"| {len(rows)} | {len(found)} | {share('section_ok')} | {share('page_ok')} | {share('line_ok')} "
-        f"| {share('gold_line_ok')} | {top}/{len(rows)} |\n"
+        f"| {share('gold_line_ok')} | {top}/{sectioned} |\n"
     )
 
 
