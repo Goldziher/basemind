@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use super::keeps_prior_entry;
 use crate::config::{Config, ConfigV1};
 use crate::index::view::IndexView;
-use crate::scanner::{EmbedMode, FileStatus, ScanReport, ScanSource, scan, scan_paths};
+use crate::scanner::{EmbedMode, FileStatus, ScanReport, ScanSource, scan};
 use crate::store::{Store, VIEW_WORKING, init_isolated_cache};
 
 fn read_failed(kind: ErrorKind) -> FileStatus {
@@ -94,7 +94,7 @@ fn a_file_that_cannot_be_read_keeps_its_indexed_rows() {
     assert!(store.lookup("alpha.rs").is_some());
     assert_eq!(alpha_symbols(&store), 1);
 
-    let report = scan_paths(
+    let report = crate::scanner::scan_paths(
         root,
         &mut store,
         &config,
@@ -138,7 +138,7 @@ fn a_document_that_cannot_be_read_keeps_its_entry() {
     assert_eq!(report.stats.removed, 0);
     assert!(store.lookup_doc("notes.md").is_some());
 
-    let report = scan_paths(
+    let report = crate::scanner::scan_paths(
         root,
         &mut store,
         &config,
