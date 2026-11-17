@@ -50,19 +50,35 @@ pub(crate) struct Bm25Delta {
     retired_bytes: u64,
     /// The writer saw the ledger already over its ceiling, so it stopped collecting keys.
     overflowed: bool,
+    /// A row did not decode, so the tally cannot be trusted.
+    poisoned: bool,
 }
 
 impl Bm25Delta {
     pub(crate) fn is_empty(&self) -> bool {
-        self.docs == 0 && self.total_len == 0 && self.retired.is_empty() && !self.overflowed
+        self.docs == 0 && self.total_len == 0 && self.retired.is_empty() && !self.overflowed && !self.poisoned
     }
 
-    /// A forward row the batch deletes: its chunk leaves `N`, and its postings may now be dead.
+    /// Fold `other`, built for one file's forward rows, in once all of them were read and staged.
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.docs += other.docs;
+        self.total_len += other.total_len;
+        self.retired_bytes += other.retired_bytes;
+        self.overflowed |= other.overflowed;
+        self.poisoned |= other.poisoned;
+        for (content, postings) in other.retired {
+            self.retired.entry(content).or_default().extend(postings);
+        }
+    }
+
+    /// A forward row the batch deletes: its chunk leaves `N`, and its postings may now be dead. A
+    /// row that does not decode still leaves `N`, uncounted, so it poisons the pass.
     pub(crate) fn remove_row(&mut self, ledger: &Bm25PassLedger, key: &[u8], value: &[u8]) {
         let (Some((_, content, ordinal)), Some((doclen, _, terms))) = (
             keys::parse_code_bm25_by_path(key),
             keys::parse_code_bm25_by_path_value(value),
         ) else {
+            self.poisoned = true;
             return;
         };
         self.docs -= 1;
@@ -72,7 +88,7 @@ impl Bm25Delta {
             return;
         }
         let Ok(terms) = rmp_serde::from_slice::<Vec<String>>(terms) else {
-            self.overflowed = true;
+            self.poisoned = true;
             return;
         };
         let postings = self.retired.entry(content).or_default();
@@ -98,6 +114,8 @@ struct PassState {
     retired: AHashMap<Bm25Key, Vec<Vec<u8>>>,
     retired_bytes: u64,
     overflowed: bool,
+    /// A staging, decode or commit error happened while the pass was open.
+    poisoned: bool,
 }
 
 /// The open pass's tally, shared by every clone of one view's [`IndexDb`].
@@ -119,11 +137,23 @@ impl Bm25PassLedger {
         self.full.load(Ordering::Relaxed)
     }
 
+    /// Mark the open pass unable to vouch for its tally (a staging or commit error): it then
+    /// recomputes and sweeps, which is exact whatever the failed batch did.
+    pub(crate) fn poison(&self) {
+        if self.is_open() {
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .poisoned = true;
+        }
+    }
+
     /// Fold one committed batch's delta in.
     pub(crate) fn absorb(&self, delta: Bm25Delta) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.docs += delta.docs;
         state.total_len += delta.total_len;
+        state.poisoned |= delta.poisoned;
         if state.overflowed || delta.overflowed {
             state.overflowed = true;
             return;
@@ -202,11 +232,14 @@ impl Bm25Pass {
     pub(crate) fn finish(self) -> Result<(), IndexError> {
         let db = &self.db;
         let state = db.bm25_pass.reset();
-        let exact = self.base.filter(|_| !state.overflowed).and_then(|(n, len)| {
-            let n = i64::try_from(n).ok()?.checked_add(state.docs)?;
-            let len = i64::try_from(len).ok()?.checked_add(state.total_len)?;
-            Some((u64::try_from(n).ok()?, u64::try_from(len).ok()?))
-        });
+        let exact = self
+            .base
+            .filter(|_| !state.overflowed && !state.poisoned)
+            .and_then(|(n, len)| {
+                let n = i64::try_from(n).ok()?.checked_add(state.docs)?;
+                let len = i64::try_from(len).ok()?.checked_add(state.total_len)?;
+                Some((u64::try_from(n).ok()?, u64::try_from(len).ok()?))
+            });
         match exact {
             Some((n, len)) => {
                 db.retire_bm25_postings(Bm25Candidates(state.retired))?;
@@ -342,6 +375,135 @@ mod tests {
         assert!(!pass.is_exact(), "a pass that never finished left the marker unset");
         pass.finish().unwrap();
         assert_eq!(posting_count(&db), 1);
+    }
+
+    /// A posting no forward row names: garbage only a sweep removes, so it shows which path ran.
+    fn plant_orphan(db: &IndexDb) -> Vec<u8> {
+        let orphan = keys::code_bm25_posting("orphan", &keys::bm25_content_key("gone", "rust", "d"), 0).unwrap();
+        db.code_bm25_postings
+            .insert(&orphan, keys::code_bm25_posting_value(1, 1))
+            .unwrap();
+        orphan
+    }
+
+    fn exact_db_with(files: &[(&str, &str, &[&str])]) -> (tempfile::TempDir, IndexDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = IndexDb::open(dir.path()).unwrap();
+        let pass = db.begin_bm25_pass().unwrap();
+        for (path, hash, terms) in files {
+            upsert(&db, path, hash, terms);
+        }
+        pass.finish().unwrap();
+        (dir, db)
+    }
+
+    /// M1: a read error partway through a file's forward rows must not leave a delta for deletes
+    /// that were never staged, and must make the pass fall back to the exact recompute and sweep.
+    #[test]
+    fn a_forward_read_error_mid_prefix_forces_the_fallback() {
+        let mut two_chunks = postings("a1", &["alpha"]);
+        two_chunks.push(ChunkPosting {
+            chunk_id: "a1:1".to_string(),
+            doclen: 1,
+            terms: vec![("beta".to_string(), 1)],
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let db = IndexDb::open(dir.path()).unwrap();
+        let pass = db.begin_bm25_pass().unwrap();
+        upsert(&db, "src/b.rs", "b1", &["gamma"]);
+        let mut writer = db.writer();
+        writer
+            .upsert_bm25_file(
+                &RelPath::from("src/a.rs"),
+                &keys::bm25_content_key("a1", "rust", "d"),
+                &two_chunks,
+            )
+            .unwrap();
+        writer.commit().unwrap();
+        pass.finish().unwrap();
+        let orphan = plant_orphan(&db);
+
+        let pass = db.begin_bm25_pass().unwrap();
+        let mut writer = db.writer();
+        writer.fail_forward_read_after = Some(1);
+        assert!(
+            writer
+                .upsert_bm25_file(
+                    &RelPath::from("src/a.rs"),
+                    &keys::bm25_content_key("a2", "rust", "d"),
+                    &postings("a2", &["delta"])
+                )
+                .is_err()
+        );
+        writer.fail_forward_read_after = None;
+        writer
+            .upsert_bm25_file(
+                &RelPath::from("src/c.rs"),
+                &keys::bm25_content_key("c1", "rust", "d"),
+                &postings("c1", &["eps"]),
+            )
+            .unwrap();
+        writer.commit().unwrap();
+        pass.finish().unwrap();
+
+        let stamped = db.view().bm25_stats();
+        assert!(
+            db.code_bm25_postings.get(&orphan).unwrap().is_none(),
+            "a pass that saw a staging error sweeps"
+        );
+        assert_eq!(swept(&db).1, stamped, "the stamped stats equal a recompute");
+    }
+
+    /// M1: a forward row that does not decode is deleted and leaves `N`, but the ledger cannot
+    /// count it, so the pass must recompute rather than stamp a stale `N`.
+    #[test]
+    fn an_undecodable_forward_row_forces_the_recompute() {
+        let (_dir, db) = exact_db_with(&[("src/a.rs", "a1", &["alpha"])]);
+        let corrupt = keys::code_bm25_by_path(
+            &RelPath::from("src/c.rs"),
+            &keys::bm25_content_key("c1", "rust", "d"),
+            0,
+        );
+        db.code_bm25_by_path.insert(&corrupt, vec![0u8]).unwrap();
+        db.recompute_bm25_stats().unwrap();
+        assert_eq!(db.view().bm25_stats().map(|(n, _)| n), Some(2));
+
+        let pass = db.begin_bm25_pass().unwrap();
+        let mut writer = db.writer();
+        writer.remove_bm25_file(&RelPath::from("src/c.rs")).unwrap();
+        writer.commit().unwrap();
+        pass.finish().unwrap();
+
+        let stamped = db.view().bm25_stats();
+        assert_eq!(
+            swept(&db).1,
+            stamped,
+            "the stamped N counts the undecodable row's removal"
+        );
+    }
+
+    /// S3: a commit that reports an error may still have reached the journal, so the pass cannot
+    /// vouch for its tally and must sweep.
+    #[test]
+    fn a_commit_error_during_a_pass_forces_the_fallback() {
+        let (_dir, db) = exact_db_with(&[("src/a.rs", "a1", &["alpha"])]);
+        let orphan = plant_orphan(&db);
+        let pass = db.begin_bm25_pass().unwrap();
+        let mut writer = db.writer();
+        writer
+            .upsert_bm25_file(
+                &RelPath::from("src/a.rs"),
+                &keys::bm25_content_key("a2", "rust", "d"),
+                &postings("a2", &["beta"]),
+            )
+            .unwrap();
+        db.fault.inject_commit_failures(1);
+        assert!(writer.commit().is_err());
+        pass.finish().unwrap();
+        assert!(
+            db.code_bm25_postings.get(&orphan).unwrap().is_none(),
+            "a pass that saw a commit error sweeps"
+        );
     }
 
     #[test]

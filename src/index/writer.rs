@@ -41,6 +41,10 @@ pub struct IndexWriter {
     /// upsert still count" invariant cannot be exercised at all.
     #[cfg(test)]
     pub(crate) fail_after_staging: bool,
+    /// Test-only fault seam: fail the read of a file's BM25 forward rows after this many rows, the
+    /// shape of a fjall read error partway through the prefix.
+    #[cfg(all(test, feature = "code-search"))]
+    pub(crate) fail_forward_read_after: Option<usize>,
 }
 
 /// Fixed cost of one entry staged in a fjall write batch, independent of its payload.
@@ -127,6 +131,8 @@ impl IndexWriter {
             bm25_exact_dropped: false,
             #[cfg(test)]
             fail_after_staging: false,
+            #[cfg(all(test, feature = "code-search"))]
+            fail_forward_read_after: None,
         }
     }
 
@@ -228,16 +234,19 @@ impl IndexWriter {
         content: &keys::Bm25Key,
         postings: &[ChunkPosting],
     ) -> Result<(), IndexError> {
-        self.stage_bm25_deletes_for(rel)?;
-        self.stage_bm25_inserts_for(rel, content, postings)?;
+        let staged = self
+            .stage_bm25_deletes_for(rel)
+            .and_then(|()| self.stage_bm25_inserts_for(rel, content, postings));
         #[cfg(test)]
-        if self.fail_after_staging {
-            return Err(IndexError::Io {
+        let staged = staged.and_then(|()| match self.fail_after_staging {
+            true => Err(IndexError::Io {
                 path: rel.to_path_buf(),
                 source: std::io::Error::other("injected bm25 upsert failure after staging"),
-            });
-        }
-        Ok(())
+            }),
+            false => Ok(()),
+        });
+        // A file staged in part leaves rows the pass's tally may not describe. ~keep
+        staged.inspect_err(|_| self.db.bm25_pass.poison())
     }
 
     /// Drop the file's forward rows. Its postings stay, unread by this view, until a retirement or
@@ -245,6 +254,7 @@ impl IndexWriter {
     #[cfg(feature = "code-search")]
     pub fn remove_bm25_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         self.stage_bm25_deletes_for(rel)
+            .inspect_err(|_| self.db.bm25_pass.poison())
     }
 
     /// Stage a single CROSS-FILE resolved edge: the use in `use_rel` binds to a definition in a
@@ -336,6 +346,8 @@ impl IndexWriter {
     pub fn commit(self) -> Result<(), IndexError> {
         #[cfg(test)]
         if self.db.fault.take_injected_commit_failure() {
+            #[cfg(feature = "code-search")]
+            self.db.bm25_pass.poison();
             return Err(IndexError::Io {
                 path: std::path::PathBuf::new(),
                 source: std::io::Error::other("injected commit failure"),
@@ -347,8 +359,11 @@ impl IndexWriter {
         if let Err(error) = &result {
             self.db.record_commit_error(error);
         }
+        // A failed commit may still have reached the journal: the pass can no longer vouch. ~keep
         #[cfg(feature = "code-search")]
-        if result.is_ok() && !self.bm25_delta.is_empty() {
+        if result.is_err() {
+            self.db.bm25_pass.poison();
+        } else if !self.bm25_delta.is_empty() {
             self.db.bm25_pass.absorb(self.bm25_delta);
         }
         if self.changes_bm25_forward {
@@ -499,13 +514,23 @@ impl IndexWriter {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let prefix = keys::code_bm25_by_path_prefix(rel);
         let keys: Vec<Vec<u8>> = if db.bm25_pass.is_open() {
-            // An open pass needs each row's value too: the postings it names and its doclen. ~keep
+            // An open pass needs each row's value too: the postings it names and its doclen. The ~keep
+            // tally is local until every row was read, so a read error leaves none of it behind. ~keep
             let mut keys = Vec::new();
+            let mut delta = super::bm25_pass::Bm25Delta::default();
             for row in db.code_bm25_by_path.prefix(&prefix) {
+                #[cfg(test)]
+                if self.fail_forward_read_after == Some(keys.len()) {
+                    return Err(IndexError::Io {
+                        path: rel.to_path_buf(),
+                        source: std::io::Error::other("injected forward-row read failure"),
+                    });
+                }
                 let (key, value) = row?;
-                self.bm25_delta.remove_row(&db.bm25_pass, &key, &value);
+                delta.remove_row(&db.bm25_pass, &key, &value);
                 keys.push(key.to_vec());
             }
+            self.bm25_delta.merge(delta);
             keys
         } else {
             db.code_bm25_by_path
