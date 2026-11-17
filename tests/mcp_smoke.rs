@@ -1690,73 +1690,45 @@ async fn git_blame_symbol_paginates_by_start_line() {
 async fn reranks_search_results() {
     let dir = build_repo();
     let root = dir.path();
-    run_scan(root);
-    let transport = basemind::mcp::serve_in_memory(root, "working")
-        .await
-        .expect("in-memory serve");
-    let service = ().serve(transport).await.expect("rmcp handshake");
-
-    let no_rerank = service
-        .call_tool(call_params("docs_search", json!({ "query": "function" })))
-        .await;
-    if let Ok(ref resp) = no_rerank {
-        let body = decode_text(resp);
-        if let Some(hits) = body.get("hits").and_then(Value::as_array)
-            && !hits.is_empty()
-        {
-            for hit in hits {
-                assert!(
-                    hit.get("rerank_score").is_none(),
-                    "reranker off — hit must not carry rerank_score: {hit}"
-                );
-            }
-        }
-    }
-
-    let _ = service.cancel().await;
-
-    // Per-query reranker overrides are no longer part of the MCP surface; the reranker is driven
-    // by `[documents.reranker]` in basemind.toml.
     std::fs::write(
-        root.join("basemind.toml"),
-        "[documents.reranker]\nenabled = true\npreset = \"bge-reranker-base\"\n",
+        root.join("guide.md"),
+        "# Functions\n\nEvery function in this project returns a value and logs how long it took.\n",
     )
     .unwrap();
-    let transport = basemind::mcp::serve_in_memory(root, "working")
-        .await
-        .expect("in-memory serve");
-    let service = ().serve(transport).await.expect("rmcp handshake");
 
-    let reranked = service
-        .call_tool(call_params(
-            "docs_search",
-            json!({ "query": "function",
-            }),
-        ))
-        .await;
-    match &reranked {
-        Ok(resp) => {
-            let body = decode_text(resp);
-            if let Some(hits) = body.get("hits").and_then(Value::as_array) {
-                for hit in hits {
-                    assert!(
-                        hit.get("rerank_score").is_some(),
-                        "reranker on — every hit must carry rerank_score: {hit}"
-                    );
-                    let score = hit["rerank_score"].as_f64().expect("rerank_score is f64");
-                    assert!(
-                        (0.0..=1.0).contains(&score),
-                        "rerank_score must be in [0, 1], got {score}"
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            let _ = e;
-        }
+    async fn hits_for(root: &Path, config: &str) -> Vec<Value> {
+        std::fs::write(root.join("basemind.toml"), config).unwrap();
+        run_scan(root);
+        let transport = basemind::mcp::serve_in_memory(root, "working")
+            .await
+            .expect("in-memory serve");
+        let service = ().serve(transport).await.expect("rmcp handshake");
+        let response = service
+            .call_tool(call_params("docs_search", json!({ "query": "function" })))
+            .await
+            .expect("docs_search answers");
+        assert_ne!(response.is_error, Some(true), "{}", error_text(&response));
+        let hits = decode_text(&response)["hits"].as_array().cloned().unwrap_or_default();
+        let _ = service.cancel().await;
+        assert!(!hits.is_empty(), "the indexed guide must be found");
+        hits
     }
 
-    let _ = service.cancel().await;
+    let documents = "[documents]\nenabled = true\n";
+    for hit in hits_for(root, documents).await {
+        assert!(hit.get("rerank_score").is_none(), "reranker off: {hit}");
+    }
+    // The reranker is driven by `[documents.reranker]` in basemind.toml, not by the query.
+    let reranked = format!("{documents}\n[documents.reranker]\nenabled = true\npreset = \"bge-reranker-base\"\n");
+    for hit in hits_for(root, &reranked).await {
+        let score = hit["rerank_score"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("reranker on: {hit}"));
+        assert!(
+            (0.0..=1.0).contains(&score),
+            "rerank_score must be in [0, 1], got {score}"
+        );
+    }
 }
 
 // behind `#[ignore]`.
