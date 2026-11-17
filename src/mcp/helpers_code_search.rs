@@ -84,7 +84,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     };
 
     let keep_text = if rerank_enabled {
-        rerank_top_k.max(1).min(RERANK_CANDIDATES)
+        rerank_top_k.clamp(1, RERANK_CANDIDATES)
     } else {
         0
     };

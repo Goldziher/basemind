@@ -356,8 +356,6 @@ impl Filters {
             .unwrap_or(key)
     }
 
-    /// `[documents] include/exclude`: may `rel` be indexed as a document.
-    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
     /// Whether the document embedder embeds now; probed once per scan.
     #[cfg(feature = "documents")]
     pub(crate) fn doc_embedder_ready(&self, config: &crate::config::Config) -> bool {
@@ -373,6 +371,8 @@ impl Filters {
         })
     }
 
+    /// `[documents] include/exclude`: may `rel` be indexed as a document.
+    #[cfg_attr(not(feature = "documents"), allow(dead_code))]
     pub(crate) fn doc_allowed(&self, rel: &str) -> bool {
         self.doc_scope.allows(self.scoped(rel))
     }
