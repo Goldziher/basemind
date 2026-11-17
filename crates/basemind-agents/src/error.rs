@@ -112,6 +112,16 @@ pub enum LaunchError {
         /// The file or directory found.
         path: PathBuf,
     },
+    /// The config's root is, contains or lies inside a directory the launched agent must not
+    /// be pointed at: it contains the launcher's home, or is or holds or lies inside a harness's
+    /// configuration directory or basemind's store or comms directory.
+    #[error("the root may not be or hold the home directory or a harness or basemind directory")]
+    RootNotAllowed {
+        /// The canonical root.
+        root: PathBuf,
+        /// The directory it collides with.
+        dir: PathBuf,
+    },
     /// A limit is zero or too long to schedule.
     #[error("invalid limits: {0}")]
     InvalidLimits(&'static str),

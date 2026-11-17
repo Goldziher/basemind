@@ -82,6 +82,9 @@ config is trusted.
   root.
 - The working directory is relative and has to resolve inside the config's root, and is checked
   again in the child. The agent is not sandboxed to the root.
+- The root may not contain the launcher's `HOME`, `XDG_CONFIG_HOME` or `XDG_DATA_HOME`, and may not
+  be, contain or lie inside a harness's directory (`~/.claude`, `~/.codex`, `~/.gemini`, ...) or
+  basemind's store and comms directories: a harness lets the agent work in its root.
 - The child's environment is `ENV_ALLOWLIST`, the config's additions and the agent identity. An
   addition must be a provider credential or one of a few provider settings, and may not redirect
   configuration, code loading, an endpoint or basemind. Credentials in the launcher's environment

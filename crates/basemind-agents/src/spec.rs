@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::error::LaunchError;
 use crate::event::ApprovalRequest;
-use crate::guard::{check_env_name, check_project_config, guard_bypass, model_args};
+use crate::guard::{check_env_name, check_project_config, check_root, guard_bypass, model_args};
 use crate::harness::{AcpFlavor, Harness, HarnessKind};
 use crate::identity::AgentIdentity;
 use crate::session::CommandPlan;
@@ -388,6 +388,7 @@ impl LaunchSpec {
         }
         let model_args = model_args(kind, self.model.as_deref(), self.effort.as_deref())?;
         let (root, cwd) = confine(&self.root, self.working_dir.as_deref())?;
+        check_root(&root, &|name| std::env::var_os(name))?;
         check_project_config(kind, &cwd, std::env::var_os("HOME").as_deref().map(Path::new))?;
         let search = std::env::var_os("PATH");
         let program = resolve_executable(&self.harness.executable, search.as_deref(), &root)?;

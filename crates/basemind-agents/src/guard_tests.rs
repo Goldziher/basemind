@@ -159,3 +159,42 @@ fn cursor_may_find_only_its_rules_and_an_unreadable_place_counts_as_present() {
         );
     }
 }
+
+#[test]
+fn a_root_at_or_above_home_or_around_a_configuration_directory_is_refused() {
+    let outer = tempfile::tempdir().unwrap();
+    let outer = outer.path().canonicalize().unwrap();
+    let home = outer.join("home/user");
+    let data = outer.join("data");
+    let comms = outer.join("comms");
+    for dir in [
+        home.join("src/repo"),
+        home.join(".codex/memories"),
+        data.clone(),
+        comms.clone(),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let env = |name: &str| match name {
+        "HOME" => Some(home.clone().into_os_string()),
+        "BASEMIND_DATA_HOME" => Some(data.clone().into_os_string()),
+        "BASEMIND_COMMS_DIR" => Some(comms.clone().into_os_string()),
+        _ => None,
+    };
+    assert!(check_root(&home.join("src/repo"), &env).is_ok());
+    for root in [
+        outer.clone(),
+        outer.join("home"),
+        home.clone(),
+        home.join(".codex"),
+        home.join(".codex/memories"),
+        data.clone(),
+        comms.clone(),
+    ] {
+        assert!(
+            matches!(check_root(&root, &env), Err(LaunchError::RootNotAllowed { .. })),
+            "{} was accepted",
+            root.display()
+        );
+    }
+}

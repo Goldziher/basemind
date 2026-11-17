@@ -117,7 +117,10 @@ id that fails the grammar stops the launch.
      way. The check is not atomic with the exec. The child's `PATH` keeps only absolute entries
      outside the root.
    - **Working directory.** It resolves inside the root, checked at the plan and again in the
-     child. The agent is not sandboxed to the root.
+     child. The agent is not sandboxed to the root. The root itself may not contain the launcher's home or
+     XDG configuration and data directories, nor be, contain or lie inside a harness's own
+     directory or basemind's store and comms directories, where the harness's "inside the
+     workspace" rules would let the agent rewrite them.
    - **Environment.** An allow-list plus config additions whose names must be provider credentials
      or a few provider settings, so the launcher's credentials do not leak and an addition cannot
      redirect configuration, code loading, executable search or the basemind daemon.

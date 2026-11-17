@@ -543,3 +543,18 @@ fn request_facing_errors_do_not_echo_the_root_or_a_whole_value() {
     };
     assert_eq!(argument, format!("{}…", "m".repeat(64)));
 }
+
+#[cfg(unix)]
+#[test]
+fn the_launchers_home_or_the_filesystem_root_is_no_root() {
+    let home = PathBuf::from(std::env::var_os("HOME").expect("the test needs HOME"));
+    for root in [home.as_path(), Path::new("/")] {
+        let result = spec(HarnessKind::Codex, root).prepare();
+        assert!(
+            matches!(result, Err(LaunchError::RootNotAllowed { .. })),
+            "{}: {:?}",
+            root.display(),
+            result.err()
+        );
+    }
+}

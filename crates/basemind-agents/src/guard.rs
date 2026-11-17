@@ -257,6 +257,56 @@ pub(crate) fn check_project_config(kind: HarnessKind, cwd: &Path, home: Option<&
     Ok(())
 }
 
+/// Directories under the home directory that hold a harness's configuration, sessions or
+/// credentials: a root that is, holds or lies inside one would put them where the harness lets
+/// the agent work.
+const HARNESS_HOME_DIRS: &[&str] = &[
+    ".claude",
+    ".codex",
+    ".gemini",
+    ".cursor",
+    ".grok",
+    ".hermes",
+    ".config/opencode",
+    ".local/share/opencode",
+    ".local/share/basemind",
+    "Library/Application Support/basemind",
+];
+
+/// Refuses a root (canonical) that contains `HOME`, `XDG_CONFIG_HOME` or `XDG_DATA_HOME`, or
+/// that is, contains or lies inside a harness's directory ([`HARNESS_HOME_DIRS`]) or basemind's
+/// `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR`. `env` reads the launcher's environment.
+pub(crate) fn check_root(root: &Path, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Result<(), LaunchError> {
+    let resolved = |path: std::path::PathBuf| path.canonicalize().unwrap_or(path);
+    let var = |name: &str| {
+        env(name)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    let home = var("HOME");
+    let umbrellas = [home.clone(), var("XDG_CONFIG_HOME"), var("XDG_DATA_HOME")];
+    let own = home
+        .iter()
+        .flat_map(|home| HARNESS_HOME_DIRS.iter().map(move |dir| home.join(dir)))
+        .chain(var("BASEMIND_DATA_HOME"))
+        .chain(var("BASEMIND_COMMS_DIR"));
+    let refused = |dir: std::path::PathBuf| LaunchError::RootNotAllowed {
+        root: root.to_owned(),
+        dir,
+    };
+    for dir in umbrellas.into_iter().flatten().map(resolved) {
+        if dir.starts_with(root) {
+            return Err(refused(dir));
+        }
+    }
+    for dir in own.map(resolved) {
+        if dir.starts_with(root) || root.starts_with(&dir) {
+            return Err(refused(dir));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "guard_tests.rs"]
 mod tests;
