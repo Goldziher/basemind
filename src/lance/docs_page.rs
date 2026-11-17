@@ -101,6 +101,32 @@ fn min_opt(a: Option<u32>, b: Option<u32>) -> Option<u32> {
     }
 }
 
+/// The Markdown headings (ATX, `#` to `######`) that start a line of `text`, without their marks.
+/// Fenced code is skipped: a `#` comment in a code block is not a heading.
+fn headings_in(text: &str) -> Vec<String> {
+    let mut fenced = false;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced || line.len() - trimmed.len() > 3 {
+            continue;
+        }
+        let level = trimmed.bytes().take_while(|&b| b == b'#').count();
+        let rest = &trimmed[level..];
+        if (1..=6).contains(&level) && (rest.is_empty() || rest.starts_with(' ')) {
+            let heading = rest.trim().trim_end_matches('#').trim();
+            if !heading.is_empty() {
+                out.push(heading.to_string());
+            }
+        }
+    }
+    out
+}
+
 fn tokens_of<T: serde::Serialize>(value: &T) -> u64 {
     serde_json::to_vec(value).map_or(0, |bytes| bytes_to_tokens(bytes.len() as u64))
 }
@@ -114,6 +140,7 @@ fn hit_of(group: &Merged, title: Option<String>, of: Option<u32>) -> DocHit {
         .fold(group.members[0].text.clone(), |acc, member| stitch(&acc, &member.text));
     let mut cite = union(group.members.iter().map(|member| member.cite.clone()));
     cite.section = group.members[0].cite.section.clone();
+    cite.headings = headings_in(&text);
     DocHit {
         path: group.first.paths.first().cloned().unwrap_or_default(),
         also_at: group.first.paths.iter().skip(1).cloned().collect(),

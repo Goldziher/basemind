@@ -334,10 +334,6 @@ name = "doc_measure"
 required-features = ["documents"]
 
 [[example]]
-name = "lance_bench"
-required-features = ["documents"]
-
-[[example]]
 name = "retrieval_bench"
 path = "examples/retrieval_bench/main.rs"
 required-features = ["documents"]

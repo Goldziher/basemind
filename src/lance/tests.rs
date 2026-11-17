@@ -97,8 +97,8 @@ fn schema_ver_bump_triggers_wipe() {
     assert!(!keep.exists(), "a schema_ver bump should wipe the store");
 }
 
-/// A store written before the document-link table was dropped still holds `doc_links.lance`. The
-/// table is no longer declared, which must not read as a mismatch: the store opens, keeps its
+/// A store written before the document-link table (or the per-path `documents` table) was dropped
+/// still holds it. The table is no longer declared, which must not read as a mismatch: the store opens, keeps its
 /// `meta.json`, and leaves the old table on disk.
 #[test]
 fn a_store_holding_the_retired_doc_links_table_opens_without_a_wipe() {
@@ -138,7 +138,7 @@ fn a_store_holding_the_retired_doc_links_table_opens_without_a_wipe() {
         .into_iter()
         .map(|(name, _)| name)
         .collect();
-    assert!(tables.iter().any(|name| name == "documents"), "{tables:?}");
+    assert!(tables.iter().any(|name| name == MEMORY_TABLE), "{tables:?}");
 }
 
 /// A `schema_ver` newer than this binary's belongs to a newer basemind sharing the cache: the open

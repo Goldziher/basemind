@@ -34,15 +34,19 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
+#[cfg(feature = "code-search")]
 use futures::TryStreamExt;
 use lancedb::Connection;
+#[cfg(feature = "code-search")]
 use lancedb::arrow::arrow_array::builder::{FixedSizeListBuilder, Float32Builder, StringBuilder, UInt32Builder};
+#[cfg(feature = "code-search")]
 use lancedb::arrow::arrow_array::{Array, RecordBatch, StringArray};
+#[cfg(feature = "code-search")]
 use lancedb::query::{ExecutableQuery, QueryBase};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-use schema::{DOCUMENTS_TABLE, MEMORY_TABLE, documents_schema, memory_schema};
+use schema::{MEMORY_TABLE, memory_schema};
 
 /// On-disk metadata for the lance store. Tracks the vector dim, the
 /// embedding-model identifier, and the Arrow table schema version; a mismatch on
@@ -51,7 +55,7 @@ use schema::{DOCUMENTS_TABLE, MEMORY_TABLE, documents_schema, memory_schema};
 struct LanceMeta {
     dim: u16,
     embedding_model: String,
-    /// Arrow schema version of the `memory` / `documents` tables (see
+    /// Arrow schema version of the `memory` / `code_chunks` tables (see
     /// [`VECTOR_STORE_VER`]). `#[serde(default)]` makes a pre-0.5 `meta.json` (which
     /// lacks this field) deserialize as `0`, forcing a wipe on upgrade rather than a
     /// parse error — the table column set changed, and a stale-arity table would fault
@@ -138,19 +142,6 @@ fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::stor
 /// 1000 so every store a minor-numbered binary wrote (`schema_ver` = the minor) reads as older.
 pub const VECTOR_STORE_VER: u32 = 1000;
 
-/// One row in the `documents` table.
-#[derive(Debug, Clone)]
-pub struct DocumentRow {
-    pub scope: String,
-    pub path: String,
-    pub chunk_idx: u32,
-    pub mime_type: String,
-    pub text: String,
-    pub byte_start: u32,
-    pub byte_end: u32,
-    pub embedding: Vec<f32>,
-}
-
 /// One row in the `memory` table. It carries the note's vector and tags, never its text: a row
 /// can outlive its note, and the text of a deleted note must not.
 #[derive(Debug, Clone)]
@@ -166,20 +157,6 @@ pub struct MemoryRow {
     /// Microseconds since unix epoch.
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-/// A search hit from the `documents` table.
-#[derive(Debug, Clone)]
-pub struct DocumentHit {
-    pub path: String,
-    pub chunk_idx: u32,
-    pub text: String,
-    pub mime_type: String,
-    pub byte_start: u32,
-    pub byte_end: u32,
-    /// L2 distance from the query vector (lower = closer). LanceDB returns this
-    /// in the `_distance` column.
-    pub distance: f32,
 }
 
 /// A search hit from the `memory` table: which note, and which write of it. The note's text and
@@ -274,7 +251,6 @@ impl LanceStore {
     /// [`Self::open`] waiting at most `wait` for another open of the store.
     fn open_waiting(dir: &Path, dim: u16, embedding_model: &str, wait: std::time::Duration) -> Result<Self> {
         let tables = [
-            (DOCUMENTS_TABLE, documents_schema(dim)),
             (MEMORY_TABLE, memory_schema(dim)),
             #[cfg(feature = "code-search")]
             (schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)),
@@ -410,81 +386,8 @@ impl LanceStore {
         &self.inner.dir
     }
 
-    /// Replace all documents rows for the given `(scope, path)` pair and insert
-    /// the supplied rows. Used by the scanner during incremental re-extract.
-    pub fn replace_document(&self, scope: &str, path: &str, rows: Vec<DocumentRow>) -> Result<()> {
-        self.inner.rt().block_on(async {
-            let table = self
-                .inner
-                .connection
-                .open_table(DOCUMENTS_TABLE)
-                .execute()
-                .await
-                .with_context(|| format!("open {DOCUMENTS_TABLE} table"))?;
-            let predicate = format!(
-                "scope = '{}' AND path = '{}'",
-                escape_sql_literal(scope),
-                escape_sql_literal(path)
-            );
-            table
-                .delete(&predicate)
-                .await
-                .with_context(|| format!("delete existing rows for {scope}/{path}"))?;
-            self.after_commit(&table, DOCUMENTS_TABLE).await;
-            if rows.is_empty() {
-                return Ok(());
-            }
-            let batch = build_documents_batch(self.inner.dim, &rows)?;
-            table
-                .add(batch)
-                .execute()
-                .await
-                .with_context(|| format!("insert {} documents rows", rows.len()))?;
-            self.after_commit(&table, DOCUMENTS_TABLE).await;
-            anyhow::Ok(())
-        })
-    }
-
-    /// KNN over the documents table for one scope.
-    pub fn search_documents(
-        &self,
-        scope: &str,
-        query: Vec<f32>,
-        limit: usize,
-        mime_type_filter: Option<&str>,
-    ) -> Result<Vec<DocumentHit>> {
-        if query.len() != usize::from(self.inner.dim) {
-            return Err(anyhow!(
-                "query vector dim {} does not match store dim {}",
-                query.len(),
-                self.inner.dim
-            ));
-        }
-        self.inner.rt().block_on(async {
-            let table = self
-                .inner
-                .connection
-                .open_table(DOCUMENTS_TABLE)
-                .execute()
-                .await
-                .with_context(|| format!("open {DOCUMENTS_TABLE} table"))?;
-            let mut q = table.vector_search(query).context("build vector search")?.limit(limit);
-            let scope_clause = format!("scope = '{}'", escape_sql_literal(scope));
-            q = match mime_type_filter {
-                Some(m) => q.only_if(format!("{scope_clause} AND mime_type = '{}'", escape_sql_literal(m))),
-                None => q.only_if(scope_clause),
-            };
-            let mut stream = q.execute().await.context("run document search")?;
-            let mut hits = Vec::new();
-            while let Some(batch) = stream.try_next().await.context("stream next batch")? {
-                decode_document_hits(&batch, &mut hits)?;
-            }
-            anyhow::Ok(hits)
-        })
-    }
-
     /// Replace all `code_chunks` rows for a `(scope, path)` pair and insert the supplied rows.
-    /// Delete-then-insert mirrors [`Self::replace_document`] so a re-scan never leaves stale
+    /// Delete-then-insert, so a re-scan never leaves stale
     /// chunks behind.
     #[cfg(feature = "code-search")]
     pub fn replace_code_chunks(&self, scope: &str, path: &str, rows: Vec<CodeRow>) -> Result<()> {
@@ -553,12 +456,7 @@ impl LanceStore {
         self.delete_paths_in(schema::CODE_CHUNKS_TABLE, "path", scope, paths)
     }
 
-    /// Delete every `documents` row of `paths` in `scope`; the batched counterpart of
-    /// [`Self::replace_document`] with no replacement rows.
-    pub fn delete_documents_for_paths(&self, scope: &str, paths: &[String]) -> Result<()> {
-        self.delete_paths_in(DOCUMENTS_TABLE, "path", scope, paths)
-    }
-
+    #[cfg(feature = "code-search")]
     pub(super) fn delete_paths_in(&self, table_name: &str, key_col: &str, scope: &str, paths: &[String]) -> Result<()> {
         // Each batch is one delete transaction (a new table version plus a scan of `path`), so a
         // large purge is dominated by the batch COUNT; 2000 literals keep the predicate small.
@@ -731,54 +629,6 @@ async fn ensure_table(
     Ok(())
 }
 
-fn build_documents_batch(dim: u16, rows: &[DocumentRow]) -> Result<RecordBatch> {
-    let mut scope = StringBuilder::new();
-    let mut path = StringBuilder::new();
-    let mut chunk_idx = UInt32Builder::new();
-    let mut mime = StringBuilder::new();
-    let mut text = StringBuilder::new();
-    let mut byte_start = UInt32Builder::new();
-    let mut byte_end = UInt32Builder::new();
-    let mut embedding = FixedSizeListBuilder::new(Float32Builder::new(), i32::from(dim));
-
-    for r in rows {
-        if r.embedding.len() != usize::from(dim) {
-            return Err(anyhow!(
-                "documents row embedding dim {} does not match store dim {}",
-                r.embedding.len(),
-                dim
-            ));
-        }
-        scope.append_value(&r.scope);
-        path.append_value(&r.path);
-        chunk_idx.append_value(r.chunk_idx);
-        mime.append_value(&r.mime_type);
-        text.append_value(&r.text);
-        byte_start.append_value(r.byte_start);
-        byte_end.append_value(r.byte_end);
-        for v in &r.embedding {
-            embedding.values().append_value(*v);
-        }
-        embedding.append(true);
-    }
-
-    let schema = documents_schema(dim);
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(scope.finish()),
-            Arc::new(path.finish()),
-            Arc::new(chunk_idx.finish()),
-            Arc::new(mime.finish()),
-            Arc::new(text.finish()),
-            Arc::new(byte_start.finish()),
-            Arc::new(byte_end.finish()),
-            Arc::new(embedding.finish()),
-        ],
-    )
-    .context("assemble documents batch")
-}
-
 #[cfg(feature = "code-search")]
 fn build_code_chunks_batch(dim: u16, rows: &[CodeRow]) -> Result<RecordBatch> {
     let mut scope = StringBuilder::new();
@@ -886,58 +736,6 @@ fn decode_code_chunk_hits_with_path_column(
             lang: lang.value(i).to_string(),
             line_start: line_start.value(i),
             line_end: line_end.value(i),
-            byte_start: byte_start.value(i),
-            byte_end: byte_end.value(i),
-            distance: distance.map(|d| d.value(i)).unwrap_or(0.0),
-        });
-    }
-    Ok(())
-}
-
-fn decode_document_hits(batch: &RecordBatch, out: &mut Vec<DocumentHit>) -> Result<()> {
-    decode_document_hits_with_path_column(batch, "path", out)
-}
-
-fn decode_document_hits_with_path_column(
-    batch: &RecordBatch,
-    path_column: &str,
-    out: &mut Vec<DocumentHit>,
-) -> Result<()> {
-    use lancedb::arrow::arrow_array::{Float32Array, UInt32Array};
-    let path = batch
-        .column_by_name(path_column)
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| anyhow!("`{path_column}` column missing"))?;
-    let mime = batch
-        .column_by_name("mime_type")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| anyhow!("`mime_type` column missing"))?;
-    let text = batch
-        .column_by_name("text")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| anyhow!("`text` column missing"))?;
-    let chunk_idx = batch
-        .column_by_name("chunk_idx")
-        .and_then(|c| c.as_any().downcast_ref::<UInt32Array>())
-        .ok_or_else(|| anyhow!("`chunk_idx` column missing"))?;
-    let byte_start = batch
-        .column_by_name("byte_start")
-        .and_then(|c| c.as_any().downcast_ref::<UInt32Array>())
-        .ok_or_else(|| anyhow!("`byte_start` column missing"))?;
-    let byte_end = batch
-        .column_by_name("byte_end")
-        .and_then(|c| c.as_any().downcast_ref::<UInt32Array>())
-        .ok_or_else(|| anyhow!("`byte_end` column missing"))?;
-    let distance = batch
-        .column_by_name("_distance")
-        .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
-
-    for i in 0..batch.num_rows() {
-        out.push(DocumentHit {
-            path: path.value(i).to_string(),
-            chunk_idx: chunk_idx.value(i),
-            text: text.value(i).to_string(),
-            mime_type: mime.value(i).to_string(),
             byte_start: byte_start.value(i),
             byte_end: byte_end.value(i),
             distance: distance.map(|d| d.value(i)).unwrap_or(0.0),

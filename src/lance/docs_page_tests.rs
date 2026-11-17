@@ -16,6 +16,7 @@ fn ranked(doc: &str, ord: u32, text: &str) -> RankedChunk {
             line_end: Some(ord * 10 + 9),
             byte_start: ord * 100,
             byte_end: ord * 100 + 120,
+            headings: Vec::new(),
         },
         text: text.to_string(),
         score: 1.0 / f32::from(u16::try_from(ord).unwrap() + 1),
@@ -64,4 +65,14 @@ fn only_rank_neighbours_merge_so_a_page_can_end_after_any_hit() {
     let groups = merge(vec![ranked("a", 2, "x"), ranked("a", 0, "y"), ranked("a", 1, "z")]);
     let spans: Vec<(u32, u32)> = groups.iter().map(Merged::ord_range).collect();
     assert_eq!(spans, vec![(2, 2), (0, 1)]);
+}
+
+#[test]
+fn a_hit_names_the_headings_that_start_inside_it() {
+    let text = "intro line\n## 5. Staffing\ncrew\n```sh\n# not a heading\n```\n### 7. Recovery ###\n#hashtag\nend";
+    assert_eq!(
+        headings_in(text),
+        vec!["5. Staffing".to_string(), "7. Recovery".to_string()]
+    );
+    assert!(headings_in("no headings here").is_empty());
 }
