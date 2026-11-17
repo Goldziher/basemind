@@ -53,7 +53,7 @@ pub(crate) fn origin(table: &Table, peer: &Peer) -> Origin {
         return Origin::Unknown;
     };
     let supervisor = i32::try_from(std::process::id()).unwrap_or(-1);
-    let Some(chain) = procinfo::ancestors(me.pid) else {
+    let Some(chain) = procinfo::ancestors(&me) else {
         return Origin::Unknown;
     };
     let mut registered = Vec::new();
@@ -210,7 +210,10 @@ pub(crate) fn register(
             child.id()
         }
         Source::Peer(peer) => {
-            let own = procinfo::ancestors(supervisor.id.pid).ok_or(SupervisorError::PeerUnverified)?;
+            let own = procinfo::info(supervisor.id.pid)
+                .as_ref()
+                .and_then(procinfo::ancestors)
+                .ok_or(SupervisorError::PeerUnverified)?;
             if own.procs.iter().any(|ancestor| ancestor.id() == peer.id) {
                 return Err(SupervisorError::CallerNotAdmitted);
             }

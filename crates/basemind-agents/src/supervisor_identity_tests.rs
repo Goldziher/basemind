@@ -28,7 +28,10 @@ fn escapee(dir: &Path) -> Peer {
     loop {
         assert!(crate::procinfo::info(pid).is_some(), "the escaped process is gone");
         let me = i32::try_from(std::process::id()).unwrap();
-        let away = crate::procinfo::ancestors(pid).is_some_and(|chain| chain.procs.iter().all(|proc| proc.pid != me));
+        let away = crate::procinfo::info(pid)
+            .as_ref()
+            .and_then(crate::procinfo::ancestors)
+            .is_some_and(|chain| chain.procs.iter().all(|proc| proc.pid != me));
         if away {
             return Peer::of_pid(u32::try_from(pid).unwrap());
         }

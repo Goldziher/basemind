@@ -81,12 +81,14 @@ pub(crate) struct Chain {
     pub complete: bool,
 }
 
-/// The ancestors of `pid`. `None` when `pid` cannot be read, a link vanished or was reused
-/// while it was read, or the walk ran over a bound no real tree reaches.
-pub(crate) fn ancestors(pid: i32) -> Option<Chain> {
+/// The ancestors of `from`, a process as the caller read it: the walk starts from that reading,
+/// never from a fresh read of its pid, which may name another process by now. `None` when a
+/// link vanished or was reused while it was read, or the walk ran over a bound no real tree
+/// reaches.
+pub(crate) fn ancestors(from: &ProcInfo) -> Option<Chain> {
     const MAX_DEPTH: usize = 4096;
     let mut procs = Vec::new();
-    let mut at = info(pid)?;
+    let mut at = *from;
     loop {
         if at.ppid <= 0 || at.ppid == at.pid {
             return Some(Chain { procs, complete: true });
@@ -235,7 +237,7 @@ mod tests {
             ..me.id()
         }));
         assert!(all().unwrap().iter().any(|proc| proc.id() == me.id()));
-        let chain = ancestors(me.pid).unwrap();
+        let chain = ancestors(&me).unwrap();
         assert_eq!(chain.procs.first().map(|parent| parent.pid), Some(me.ppid));
         assert!(info(0).is_none() && info(-1).is_none());
     }
