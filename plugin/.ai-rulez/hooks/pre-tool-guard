@@ -119,13 +119,33 @@ safe_session="$(printf '%s' "${session}" | tr -c 'A-Za-z0-9._-' '_')"
 [ -n "${safe_session}" ] || safe_session="nosession"
 safe_agent="$(printf '%s' "${agent}" | tr -c 'A-Za-z0-9._-' '_')"
 [ -n "${safe_agent}" ] || safe_agent="main"
-marker_dir="${TMPDIR:-/tmp}/basemind-guard"
-marker="${marker_dir}/${safe_session}.${safe_agent}.${kind}"
-mkdir -p "${marker_dir}" 2>/dev/null || true
-if [ -e "${marker}" ]; then
-  exit 0
+# The markers live in a directory only this user can write: $XDG_RUNTIME_DIR/basemind, else
+# ${TMPDIR:-/tmp}/basemind-<uid>. A link, another user's directory or one open to others is not
+# used, so no marker is written through a path another local user planted; the advice then repeats.
+private_state_dir() {
+  local dir="${XDG_RUNTIME_DIR:-}"
+  if [ -n "${dir}" ] && [ -d "${dir}" ] && [ ! -L "${dir}" ] && [ -O "${dir}" ]; then
+    dir="${dir}/basemind"
+  else
+    dir="${TMPDIR:-/tmp}"
+    dir="${dir%/}/basemind-$(id -u)"
+  fi
+  mkdir -m 700 "${dir}" 2>/dev/null || true
+  [ -d "${dir}" ] && [ ! -L "${dir}" ] && [ -O "${dir}" ] || return 1
+  case "$(ls -ld "${dir}" 2>/dev/null)" in
+  drwx------*) printf '%s' "${dir}" ;;
+  *) return 1 ;;
+  esac
+}
+if state_dir="$(private_state_dir)"; then
+  marker_dir="${state_dir}/guard"
+  mkdir -m 700 "${marker_dir}" 2>/dev/null || true
+  marker="${marker_dir}/${safe_session}.${safe_agent}.${kind}"
+  if [ -e "${marker}" ]; then
+    exit 0
+  fi
+  : >"${marker}" 2>/dev/null || true
 fi
-: >"${marker}" 2>/dev/null || true
 
 emit_advice "basemind is indexed for this repo. Instead of this ${tool} call, use ${alt} — it returns \
 paths + line numbers without reading file bodies, at a fraction of the tokens, and is already \

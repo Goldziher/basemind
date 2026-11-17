@@ -279,10 +279,17 @@ esac""",
         (self.work / ".basemind/blobs/0aaaaaaaa.fm.msgpack").touch()
         (self.work / ".basemind/views/working/index.msgpack").touch()
 
-    def test_unread_mail_is_counted_for_the_session(self) -> None:
-        env = {**os.environ, "HOME": str(self.root), "TMPDIR": str(self.root), "PATH": str(self.bin), "COLUMNS": "200"}
+    def status_line(self) -> str:
+        env = {
+            **os.environ,
+            "HOME": str(self.root),
+            "TMPDIR": str(self.root),
+            "XDG_RUNTIME_DIR": "",
+            "PATH": str(self.bin),
+            "COLUMNS": "200",
+        }
         payload = json.dumps({"session_id": "s1", "workspace": {"current_dir": str(self.work)}})
-        result = subprocess.run(
+        return subprocess.run(
             ["/bin/bash", str(ROOT / ".claude-plugin/statusline.sh")],
             input=payload,
             env=env,
@@ -290,10 +297,22 @@ esac""",
             text=True,
             timeout=30,
             check=True,
-        )
-        self.assertIn("\u2709 2", result.stdout)
+        ).stdout
+
+    def test_unread_mail_is_counted_for_the_session(self) -> None:
+        self.assertIn("\u2709 2", self.status_line())
         args = (self.root / "basemind-args").read_text().splitlines()
         self.assertEqual(args[args.index("--as") + 1], NAME)
+        private = self.root / f"basemind-{os.getuid()}"
+        self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+        self.assertEqual([path.name.startswith("sl-comms-") for path in private.iterdir()], [True])
+
+    def test_the_cache_never_follows_a_planted_link(self) -> None:
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (self.root / f"basemind-{os.getuid()}").symlink_to(elsewhere)
+        self.assertIn("\u2709 2", self.status_line())
+        self.assertEqual(list(elsewhere.iterdir()), [], "nothing is written through the link")
 
 
 class AgentAsManifestTests(unittest.TestCase):
