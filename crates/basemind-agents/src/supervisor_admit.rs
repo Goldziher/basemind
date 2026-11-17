@@ -209,10 +209,10 @@ pub(crate) fn owned(
         .sessions
         .get_mut(&id.0)
         .ok_or(SupervisorError::UnknownSession(id))?;
-    let allowed = match (&resolved, &entry.launcher) {
-        (Resolved::Operator, _) => true,
-        (Resolved::Top(principal), _) => *principal == entry.top,
-        (Resolved::Session(caller), _) => entry.lineage.contains(caller),
+    let allowed = match &resolved {
+        Resolved::Operator => true,
+        Resolved::Top(principal) => *principal == entry.top,
+        Resolved::Session(caller) => entry.lineage.contains(caller),
     };
     if allowed {
         Ok(entry)
