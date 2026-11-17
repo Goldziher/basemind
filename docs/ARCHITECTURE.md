@@ -553,13 +553,16 @@ hourly in the daemon, and on `basemind cache gc`. There is no MCP tool for it: a
 without racing its own rescans. The size-budget enforcer and the last
 sweep's health (`gc-state.json`, shown as `last_gc` by `cache stats`) are in `src/store_gc_budget.rs`.
 Budget eviction never touches a locked, most-recently-used or recently built workspace (even over
-budget, which is reported instead); the rules live in `src/store_gc_protect.rs`.
+budget, which is reported instead); the rules live in `src/store_gc_protect.rs`. A view of an older
+schema or blob layout, or one whose file map does not decode, has no vote in the sweep and is passed
+over without the workspace lock, never removed: an older install may still use it, and its next
+writer open rebuilds it.
 
 Two installed versions share the cache, and the older one must leave the newer one's data alone. A
 namespace of a blob schema newer than the binary's is not counted towards the budget that binary
 enforces (it could never free those bytes, and would evict a workspace every cycle to make up for
 them) and is never swept. A view whose file map a newer version wrote is never evicted (reported as
-`newer_version`), never healed away as damaged, and has no vote in the sweep of an older namespace,
+`newer_version`), never removed as damaged, and has no vote in the sweep of an older namespace,
 which it cannot reference. A file map's version is read on its own before the rest of it, so a newer
 map the binary cannot decode still reads as newer. The sweep of superseded namespaces needs no live
 set and runs even when the current namespace cannot be swept.

@@ -483,7 +483,7 @@ fn global_gc_keeps_a_blob_referenced_by_any_workspace_and_reaps_the_orphan() {
 }
 
 #[test]
-fn global_gc_heals_an_unreadable_workspace_index_without_blocking_other_workspaces() {
+fn global_gc_passes_over_an_unreadable_workspace_index_without_blocking_other_workspaces() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspaces = tmp.path().join("workspaces");
     let blobs = tmp.path().join("blobs");
@@ -504,7 +504,7 @@ fn global_gc_heals_an_unreadable_workspace_index_without_blocking_other_workspac
     fs::write(blobs.join(format!("{live}.fm.msgpack")), b"live").expect("live blob");
     fs::write(blobs.join(format!("{stale}.fm.msgpack")), b"stale").expect("stale blob");
 
-    let report = gc_global_blobs_in(&workspaces, &blobs, Duration::ZERO).expect("gc heals stale view");
+    let report = gc_global_blobs_in(&workspaces, &blobs, Duration::ZERO).expect("gc passes over the stale view");
 
     assert_eq!(report.removed, 1, "the stale workspace no longer pins its blob");
     assert!(
@@ -515,16 +515,21 @@ fn global_gc_heals_an_unreadable_workspace_index_without_blocking_other_workspac
         !blobs.join(format!("{stale}.fm.msgpack")).exists(),
         "stale orphan is reclaimed"
     );
-    assert!(!stale_view.exists(), "the unreadable rebuildable view is quarantined");
+    assert!(
+        stale_view.join(INDEX_FILE).exists(),
+        "the unreadable view is left for its writer open to rebuild"
+    );
     assert_eq!(
         fs::read_to_string(stale_workspace.join(crate::store_layout::AGENT_ID_FILE)).unwrap(),
         "session-stable",
-        "healing a view must preserve stable identity metadata"
+        "passing over a view preserves stable identity metadata"
     );
 }
 
+/// An older basemind may still be using a view of its schema. Deleting it on every pass made that
+/// binary rebuild it, and the next pass delete it again.
 #[test]
-fn global_gc_heals_a_mixed_release_workspace_index() {
+fn global_gc_passes_over_a_mixed_release_workspace_index() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspaces = tmp.path().join("workspaces");
     let stale_view = workspaces.join("key-v23").join(VIEWS_DIR).join("working");
@@ -537,10 +542,10 @@ fn global_gc_heals_a_mixed_release_workspace_index() {
     )
     .expect("write stale index");
 
-    let referenced = collect_referenced_hashes_global_in(&workspaces).expect("heal mixed schema");
+    let referenced = collect_referenced_hashes_global_in(&workspaces).expect("pass over mixed schema");
 
     assert!(referenced.is_empty());
-    assert!(!stale_view.exists(), "the stale view is removed for lazy rebuild");
+    assert!(stale_view.join(INDEX_FILE).exists(), "the stale view is kept");
 }
 
 /// A view a newer basemind wrote is neither healed away nor a reason to stop: it stays as it is,
@@ -588,9 +593,9 @@ fn global_gc_passes_over_a_view_written_by_a_newer_basemind() {
 }
 
 /// A file map from before blobs were namespaced is stale cache like one of an older schema: the
-/// sweep removes the view instead of failing on it.
+/// sweep passes over the view instead of failing on it.
 #[test]
-fn global_gc_heals_a_view_of_an_earlier_blob_layout() {
+fn global_gc_passes_over_a_view_of_an_earlier_blob_layout() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspaces = tmp.path().join("workspaces");
     let stale_view = workspaces.join("key-flat").join(VIEWS_DIR).join("working");
@@ -603,10 +608,10 @@ fn global_gc_heals_a_view_of_an_earlier_blob_layout() {
     )
     .expect("write stale index");
 
-    let referenced = collect_referenced_hashes_global_in(&workspaces).expect("heal");
+    let referenced = collect_referenced_hashes_global_in(&workspaces).expect("pass over");
 
     assert!(referenced.is_empty());
-    assert!(!stale_view.exists(), "the stale view is removed for lazy rebuild");
+    assert!(stale_view.join(INDEX_FILE).exists(), "the stale view is kept");
 }
 
 #[test]
@@ -845,10 +850,10 @@ fn the_report_counts_the_blobs_of_every_namespace() {
     assert_eq!(count_blob_files(&root.path().join("absent")).expect("count"), 0);
 }
 
-/// A workspace can hold a stale view beside one a newer basemind wrote. Healing the first must
-/// neither remove the second nor stop over it.
+/// A workspace can hold a stale view beside one a newer basemind wrote. Neither is removed and
+/// neither stops the sweep.
 #[test]
-fn global_gc_heals_a_stale_view_and_keeps_the_newer_view_beside_it() {
+fn global_gc_passes_over_a_stale_view_and_the_newer_view_beside_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let workspaces = tmp.path().join("workspaces");
     let views = workspaces.join("key").join(VIEWS_DIR);
@@ -865,9 +870,32 @@ fn global_gc_heals_a_stale_view_and_keeps_the_newer_view_beside_it() {
 
     collect_referenced_hashes_global_in(&workspaces).expect("the sweep goes on");
 
-    assert!(!stale.exists(), "the stale view is removed for lazy rebuild");
+    assert!(stale.join(INDEX_FILE).exists(), "the stale view is kept");
     assert!(
         newer.join(INDEX_FILE).exists(),
         "a newer basemind's view is never removed by GC"
     );
+}
+
+/// A workspace another process holds no longer stops the machine-wide mark: passing over its stale
+/// view takes no lock. Healing it took one, and `Locked` aborted the mark of every workspace, so
+/// the global sweep did nothing for as long as an older basemind held its workspace.
+#[test]
+fn global_gc_marks_past_a_locked_workspace_holding_a_stale_view() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let live = "a".repeat(64);
+    seed_workspace(&workspaces, "key-live", &[&live]);
+    let held = workspaces.join("key-held");
+    let stale_view = held.join(VIEWS_DIR).join("working");
+    fs::create_dir_all(&stale_view).expect("mk view");
+    let mut stale = Index::empty();
+    stale.schema_ver = crate::extract::SCHEMA_VER.saturating_sub(1);
+    fs::write(stale_view.join(INDEX_FILE), rmp_serde::to_vec_named(&stale).expect("encode")).expect("write");
+    let _held = crate::store::acquire_lock(&held).expect("an older basemind holds the workspace");
+
+    let referenced = collect_referenced_hashes_global_in(&workspaces).expect("the mark goes on");
+
+    assert!(referenced.code.contains(&live));
+    assert!(stale_view.join(INDEX_FILE).exists());
 }

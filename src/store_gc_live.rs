@@ -6,8 +6,8 @@ use std::path::Path;
 
 use ahash::AHashSet;
 
-use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, read_index};
-use crate::store_gc::{GcError, blob_stem, collect_referenced_hashes, read_dir};
+use crate::store::StoreError;
+use crate::store_gc::blob_stem;
 
 /// The blob suffixes that belong to the CODE lane: produced by the code-map scan from a
 /// [`crate::store::FileEntry`] and live iff some workspace's `files` map references the hash. The
@@ -92,57 +92,9 @@ impl Drop for SweepLock {
     }
 }
 
-/// Collect one workspace's live hashes, healing view indexes that the current binary cannot read.
-///
-/// A schema-mismatched or corrupt `index.msgpack` is rebuildable cache state, not durable data. If
-/// it remains in the global mark set it blocks every workspace's GC forever. Remove only the bad
-/// view while holding the workspace lock, preserving `workspace.json`, `agent-id`, and durable
-/// memory. Transient I/O and lock failures remain fatal so an incomplete live set never drives a
-/// destructive sweep. A view a newer basemind wrote ([`StoreError::NewerSchema`]) is neither healed
-/// nor fatal: it is that binary's live data, kept, and it references only that binary's blob
-/// namespace, so [`collect_referenced_hashes`] passes over it.
-pub(crate) fn collect_workspace_hashes_healing_stale_views(workspace_dir: &Path) -> Result<LiveBlobs, GcError> {
-    match collect_referenced_hashes(workspace_dir) {
-        Ok(referenced) => Ok(referenced),
-        Err(GcError::Store(error)) if is_rebuildable_view_error(&error) => {
-            let _lock = acquire_lock(workspace_dir)?;
-            let views_dir = workspace_dir.join(VIEWS_DIR);
-            for entry in read_dir(&views_dir)? {
-                let entry = entry.map_err(|source| GcError::Io {
-                    path: views_dir.clone(),
-                    source,
-                })?;
-                let view_dir = entry.path();
-                if !view_dir.is_dir() || !view_dir.join(INDEX_FILE).exists() {
-                    continue;
-                }
-                if let Err(error) = read_index(&view_dir) {
-                    // A newer basemind's view beside the stale one is kept and passed over.
-                    if matches!(error, StoreError::NewerSchema { .. }) {
-                        continue;
-                    }
-                    if !is_rebuildable_view_error(&error) {
-                        return Err(GcError::Store(error));
-                    }
-                    std::fs::remove_dir_all(&view_dir).map_err(|source| GcError::Io {
-                        path: view_dir.clone(),
-                        source,
-                    })?;
-                    tracing::warn!(
-                        workspace = %workspace_dir.display(),
-                        view = %view_dir.display(),
-                        %error,
-                        "removed unreadable rebuildable view so global GC can continue"
-                    );
-                }
-            }
-            collect_referenced_hashes(workspace_dir)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn is_rebuildable_view_error(error: &StoreError) -> bool {
+/// Whether `error` reading a file map marks rebuildable cache: an older schema or blob layout, or a
+/// map that does not decode.
+pub(crate) fn is_rebuildable_view_error(error: &StoreError) -> bool {
     matches!(
         error,
         StoreError::SchemaMismatch { .. } | StoreError::StaleBlobLayout { .. } | StoreError::Decode(_)
