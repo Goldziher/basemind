@@ -66,7 +66,11 @@ run = "uv run --no-project --with pytest --with certifi --with build --with mcp=
 
 [tasks."plugin:test"]
 description = "Exercise archive, public export, and actual CLI integration contracts"
-run = [{ task = "plugin:pytest" }, "node tests/basemind_pi_cli_contract.mjs", "node --test tests/npm_install_https.test.cjs"]
+run = [
+  { task = "plugin:pytest" },
+  "node tests/basemind_pi_cli_contract.mjs",
+  "node --test tests/npm_install_https.test.cjs",
+]
 
 [tasks."plugin:verify"]
 description = "Verify native plugin and public export freshness"

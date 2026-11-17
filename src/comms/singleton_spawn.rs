@@ -220,9 +220,10 @@ pub fn spawn_detached_daemon_with(paths: &CommsPaths, grants: Grants) -> std::io
 /// exited, and `kill(pid, 0)` read that zombie as a live daemon.
 ///
 /// Windows has no zombies: dropping the `Child` closes its handle and the exited process goes.
-fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
+fn spawn_detached(command: std::process::Command) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        let mut command = command;
         use std::os::unix::process::CommandExt;
         // SAFETY: the closure runs in the forked child before exec and calls only `setsid`,
         // `fork` and `_exit`, all async-signal-safe.

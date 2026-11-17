@@ -35,6 +35,7 @@ pub fn wanted() -> u64 {
 
 /// The soft limit to set: `wanted`, never above the hard limit or the platform's per-process
 /// ceiling, and never below what is already set.
+#[cfg(unix)]
 fn target_soft(soft: u64, hard: u64, wanted: u64, ceiling: u64) -> u64 {
     wanted.min(hard).min(ceiling).max(soft)
 }
@@ -90,6 +91,7 @@ pub fn raise_to_budget() -> Option<u64> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn the_soft_limit_rises_to_the_budget_within_the_hard_limit_and_never_falls() {
         assert_eq!(target_soft(256, u64::MAX, 4000, 10_240), 4000);
