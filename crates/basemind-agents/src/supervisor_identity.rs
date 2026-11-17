@@ -209,7 +209,7 @@ pub(crate) fn register(
     {
         return Err(SupervisorError::CallerNotAdmitted);
     }
-    let supervisor = Peer::this_process().map_err(|_| SupervisorError::PeerUnverified)?;
+    let supervisor = Peer::embedding().map_err(|_| SupervisorError::PeerUnverified)?;
     let id = match source {
         Source::InProcess => supervisor.id,
         Source::Exited(_) => return Err(SupervisorError::PeerUnverified),

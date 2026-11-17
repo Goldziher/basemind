@@ -51,13 +51,16 @@ impl Peer {
         }
     }
 
-    /// This process, for an embedding that calls the supervisor from its own code (its own user
-    /// interface), never on behalf of a connection.
+    /// The embedding's own process: the peer of a request the embedding makes itself, such as
+    /// the lead's tool calls over its own stdio in the in-process topology, or its user
+    /// interface. Never the peer of a connection: build that with [`Self::of_socket`] on the
+    /// accepted socket. A caller with this peer is whatever this process is registered as, so a
+    /// request handler that used it for a connection would hand that role to whoever connected.
     ///
     /// # Errors
     ///
     /// [`std::io::ErrorKind::Unsupported`] where this crate cannot read the process table.
-    pub fn this_process() -> std::io::Result<Self> {
+    pub fn embedding() -> std::io::Result<Self> {
         let pid = i32::try_from(std::process::id()).map_err(|_| unsupported())?;
         Self::of_process(pid)
     }
@@ -321,7 +324,7 @@ mod tests {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
         let peer = Peer::of_socket(ours.as_fd()).unwrap();
         assert_eq!(peer.pid(), std::process::id());
-        assert_eq!(peer, Peer::this_process().unwrap());
+        assert_eq!(peer, Peer::embedding().unwrap());
         drop(theirs);
     }
 

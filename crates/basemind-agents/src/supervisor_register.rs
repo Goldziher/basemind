@@ -168,7 +168,7 @@ impl Supervisor {
     /// [`SupervisorError::PeerUnverified`] where this process cannot be read. Each refusal is
     /// audited.
     pub fn operator(&self) -> Result<Caller, SupervisorError> {
-        let minted = Peer::this_process()
+        let minted = Peer::embedding()
             .map_err(|_| SupervisorError::PeerUnverified)
             .and_then(|peer| mint_operator(&self.inner.table(), peer));
         if let Err(error) = &minted {

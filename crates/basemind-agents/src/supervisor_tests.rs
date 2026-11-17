@@ -155,7 +155,7 @@ pub(super) fn registered(supervisor: Supervisor) -> Supervisor {
 
 /// This process, the one [`registered`] binds every role to.
 pub(super) fn own() -> Peer {
-    Peer::this_process().unwrap()
+    Peer::embedding().unwrap()
 }
 
 /// The harness process of session `id`, standing in for a process of that session.

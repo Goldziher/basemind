@@ -76,7 +76,7 @@ let supervisor = Supervisor::new(LaunchPolicy::new(spec)?, vec![config], Registr
 // that starts the lead itself registers that child with `register_launcher_child`). Never
 // register a process because it connected to a socket: an escaped agent can connect too.
 supervisor.register_launcher_in_process("lead")?;
-let lead = Caller::principal("lead", Peer::this_process()?)?;
+let lead = Caller::principal("lead", Peer::embedding()?)?;
 let launched = supervisor.launch(&lead, HarnessKind::Codex, &LaunchRequest::new("Review the diff."))?;
 println!("{} runs as {}", launched.id, launched.agent);
 // A launched agent's call: the kernel names the process on the other end of the connection,
