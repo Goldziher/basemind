@@ -8,7 +8,11 @@ fn allowing(flavors: Vec<FlavorPolicy>) -> PolicySpec {
         max_concurrent: 2,
         max_children: 2,
         wall_time: Duration::from_secs(60),
-        budget: None,
+        budget: Budget {
+            max_launches: 8,
+            max_turns: 8,
+            max_allows: 8,
+        },
     }
 }
 
@@ -155,7 +159,7 @@ fn launchers_follow_the_principal_grammar_and_not_the_launched_prefix() {
 fn every_limit_is_above_zero_and_within_its_ceiling() {
     let base = allowing(vec![FlavorPolicy::supervised(HarnessKind::Codex)]);
     type Case = (fn(&mut PolicySpec), PolicyError);
-    let cases: [Case; 8] = [
+    let cases: [Case; 10] = [
         (|s| s.max_depth = 0, PolicyError::ZeroLimit("max_depth")),
         (
             |s| s.max_depth = MAX_DEPTH_CEILING + 1,
@@ -188,12 +192,13 @@ fn every_limit_is_above_zero_and_within_its_ceiling() {
             },
         ),
         (
-            |s| {
-                s.budget = Some(Budget {
-                    max_launches: 0,
-                    max_turns: 1,
-                });
-            },
+            |s| s.budget.max_launches = 0,
+            PolicyError::ZeroLimit("budget.max_launches"),
+        ),
+        (|s| s.budget.max_turns = 0, PolicyError::ZeroLimit("budget.max_turns")),
+        // A policy that allows a launch has to state its budget: there is no unlimited default.
+        (
+            |s| s.budget = Budget::default(),
             PolicyError::ZeroLimit("budget.max_launches"),
         ),
     ];

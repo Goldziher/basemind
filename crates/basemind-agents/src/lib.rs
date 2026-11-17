@@ -21,7 +21,8 @@
 //! ([`LaunchPolicy::default`] allows nothing) and names the harness flavors that may run and
 //! each one's permission mode (a bypass only with an opt-in naming the flavor and mode), the
 //! principals that may launch, the deepest a launched agent may sit, how many sessions may run
-//! at once and per launcher, the longest wall time, and an optional budget. A launched agent
+//! at once and per launcher, the longest wall time, and a required budget of launches, turns
+//! and allows. A launched agent
 //! gets a principal of its own (`launched-<flavor>-<id>-<hex>`), its depth in
 //! [`ENV_AGENT_DEPTH`] and a secret in [`ENV_LAUNCH_TOKEN`].
 //!

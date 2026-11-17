@@ -109,10 +109,9 @@ pub(crate) fn admit<'a>(
             max_depth: policy.max_depth(),
         });
     }
-    if let Some(budget) = policy.budget().filter(|budget| table.launches >= budget.max_launches) {
-        return Err(SupervisorError::BudgetExhausted {
-            max_launches: budget.max_launches,
-        });
+    let max_launches = policy.budget().max_launches;
+    if table.launches >= max_launches {
+        return Err(SupervisorError::BudgetExhausted { max_launches });
     }
     let live = table.live().count();
     if live >= usize::try_from(policy.max_concurrent()).unwrap_or(usize::MAX) {
@@ -160,9 +159,7 @@ pub(crate) fn launched_config(
     let mut config = template.clone();
     config.identity = identity.with_lineage(depth, token);
     config.limits.wall_time = config.limits.wall_time.min(inner.policy.wall_time());
-    if let Some(budget) = inner.policy.budget() {
-        config.limits.max_turns = config.limits.max_turns.min(budget.max_turns);
-    }
+    config.limits.max_turns = config.limits.max_turns.min(inner.policy.budget().max_turns);
     Ok(config)
 }
 

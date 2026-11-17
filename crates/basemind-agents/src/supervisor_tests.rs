@@ -122,7 +122,11 @@ pub(super) fn policy(flavors: &[HarnessKind]) -> PolicySpec {
         max_concurrent: 4,
         max_children: 4,
         wall_time: Duration::from_secs(30),
-        budget: None,
+        budget: Budget {
+            max_launches: 64,
+            max_turns: 100,
+            max_allows: 4096,
+        },
     }
 }
 
@@ -500,10 +504,11 @@ fn the_budget_caps_launches_and_turns_and_an_adapter_refusal_spends_none() {
     config.limits.max_turns = 5;
     let (supervisor, audit) = start(
         PolicySpec {
-            budget: Some(Budget {
+            budget: Budget {
                 max_launches: 1,
                 max_turns: 1,
-            }),
+                max_allows: 0,
+            },
             ..policy(&[HarnessKind::ClaudeCode])
         },
         vec![config],
