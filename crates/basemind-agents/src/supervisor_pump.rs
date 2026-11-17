@@ -70,10 +70,12 @@ impl Drop for Reservation<'_> {
 }
 
 /// Marks the session finished if its pump unwinds before it could, so the session's slot is
-/// not held by an entry nothing will ever update.
+/// not held by an entry nothing will ever update, and reaps the detached processes recorded
+/// for it.
 struct Finish<'a> {
     inner: &'a Inner,
     id: u64,
+    detached: Option<&'a Detached>,
     done: bool,
 }
 
@@ -81,6 +83,9 @@ impl Drop for Finish<'_> {
     fn drop(&mut self) {
         if self.done {
             return;
+        }
+        if let Some(detached) = self.detached {
+            detached.reap(detached::EXIT_GRACE);
         }
         if let Some(entry) = self.inner.table().sessions.get_mut(&self.id) {
             entry.state = SessionState::Finished(FinishStatus::Failed);
@@ -97,8 +102,13 @@ impl Drop for Finish<'_> {
 /// and writes its exit record. An observer that panics is dropped for the session and the
 /// session is stopped; the events are still read to the end.
 pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc<Detached>, flavor: HarnessKind) {
-    let mut finish = Finish { inner, id, done: false };
     let tracks = crate::policy::caveats(flavor).contains(&Caveat::DetachedServer);
+    let mut finish = Finish {
+        inner,
+        id,
+        detached: tracks.then_some(&**detached),
+        done: false,
+    };
     let done = Arc::new(AtomicBool::new(false));
     let tracker = tracks
         .then(|| {
