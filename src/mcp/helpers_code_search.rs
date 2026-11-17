@@ -296,8 +296,8 @@ async fn fjall_lanes(
     forward_fjall_lanes(state, query, limit, want_exact).await
 }
 
-/// Ask the daemon — the sole fjall writer — for the two lanes' rankings. Ranking only: chunk bodies
-/// come from content-addressed blobs this session can already read, so nothing else crosses the wire.
+/// The two lanes' rankings from the daemon's pool, for a daemon-hosted session. Ranking only: chunk
+/// bodies come from content-addressed blobs this session can already read.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 async fn forward_fjall_lanes(
     state: &ServerState,
@@ -336,28 +336,13 @@ async fn forward_fjall_lanes(
         };
     }
 
-    let mut client = match super::helpers_daemon::connect_ephemeral_client(state).await {
-        Ok(client) => client,
-        Err(error) => {
-            return Ok(LaneOutcome {
-                keyword: Vec::new(),
-                exact: Vec::new(),
-                degraded: Some(format!("the daemon is unreachable ({error})")),
-            });
-        }
-    };
-    match client.code_search_lanes(root, request).await {
-        Ok(result) => Ok(LaneOutcome {
-            keyword: result.keyword,
-            exact: result.exact,
-            degraded: None,
-        }),
-        Err(error) => Ok(LaneOutcome {
-            keyword: Vec::new(),
-            exact: Vec::new(),
-            degraded: Some(format!("the daemon refused the lane read ({error})")),
-        }),
-    }
+    // ~keep Only a daemon-hosted session reaches the index it does not hold; a CLI next to the daemon
+    // ~keep forwards its whole call, so whatever gets here reads another process's index.
+    Ok(LaneOutcome {
+        keyword: Vec::new(),
+        exact: Vec::new(),
+        degraded: Some("another process holds the index and this session is not hosted by the daemon".to_string()),
+    })
 }
 
 /// Without `comms` there is no daemon to ask, so a reader session simply has no keyword lane. Still

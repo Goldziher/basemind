@@ -86,7 +86,7 @@ pub(crate) struct ServerState {
     pub(crate) agent_id: String,
     /// This session's link to the daemon for forwarded work, connected on first use (see
     /// `helpers_daemon`). It names no agent.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
+    #[cfg(all(feature = "comms", feature = "memory", any(unix, windows)))]
     pub(crate) daemon_client:
         tokio::sync::OnceCell<std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>>,
     /// Who this session is to the agent tools: set for a daemon-hosted relay session only.
@@ -119,7 +119,7 @@ impl ServerState {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             host: served.host,
             agent_id,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
+            #[cfg(all(feature = "comms", feature = "memory", any(unix, windows)))]
             daemon_client: tokio::sync::OnceCell::new(),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             agents: None,

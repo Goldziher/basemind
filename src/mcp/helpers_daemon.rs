@@ -7,15 +7,18 @@
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
+#[cfg(feature = "memory")]
 use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
+#[cfg(feature = "memory")]
 use tokio::sync::Mutex;
 
 use super::ServerState;
 use crate::comms::client::{ClientHello, CommsClient};
 
 /// Upper bound on dialing (and, if need be, spawning) the daemon.
+#[cfg(feature = "memory")]
 const CONNECT_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Map a [`CommsClientError`](crate::comms::client::CommsClientError) into an MCP error with a
@@ -40,6 +43,7 @@ async fn connect(state: &ServerState) -> Result<CommsClient, McpError> {
 
 /// This session's shared link to the daemon, connected on first use. A failed connect leaves
 /// nothing cached, so the next call dials again.
+#[cfg(feature = "memory")]
 pub(super) async fn daemon_client(state: &ServerState) -> Result<Arc<Mutex<CommsClient>>, McpError> {
     let handle = state
         .daemon_client

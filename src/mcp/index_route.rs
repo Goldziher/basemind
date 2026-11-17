@@ -2,19 +2,17 @@
 //!
 //! The three tools are range scans over fjall keyspaces (`calls_by_callee`, `calls_by_path`,
 //! `implementations_by_trait`), and fjall's directory lock admits ONE process. So a session is in
-//! one of four situations, and [`IndexRoute`] names which:
+//! one of three situations, and [`IndexRoute`] names which:
 //!
 //! * [`Local`](IndexRoute::Local) — this session holds the index (a writer, or `scan`/CLI).
 //! * [`Host`](IndexRoute::Host) — a daemon-hosted connection; the daemon's own workspace pool
 //!   holds the index, reached in-process.
-//! * [`Daemon`](IndexRoute::Daemon) — a `daemon_writer` serve; the machine daemon holds the index,
-//!   reached over its socket.
 //! * [`InRam`](IndexRoute::InRam) — nothing holds an index we can reach (a second plain `serve`
 //!   that lost the lock, or the daemon is down). The scan runs over a lazily built, byte-budgeted
 //!   in-RAM projection of the blobs, which can be truncated and says so via the
 //!   `projections_capped` notice.
 //!
-//! The first three answer from the same fjall index with the same scan code, so their results are
+//! The first two answer from the same fjall index with the same scan code, so their results are
 //! identical; only the last is lossy. A forward that fails (daemon restarting, socket error) falls
 //! back to the projection rather than failing the tool.
 
@@ -45,12 +43,6 @@ pub(super) enum IndexRoute {
         host: Arc<dyn super::HostBackend>,
         root: PathBuf,
     },
-    /// The machine daemon over its socket (`daemon_writer` serve).
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    Daemon {
-        client: Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>,
-        root: PathBuf,
-    },
     /// No reachable index: scan the lazily built in-RAM projection.
     InRam,
 }
@@ -68,19 +60,6 @@ impl IndexRoute {
                     host: Arc::clone(host),
                     root: state.shared.root.clone(),
                 };
-            }
-            if state.daemon_writer {
-                match super::helpers_daemon::daemon_client(state).await {
-                    Ok(client) => {
-                        return Self::Daemon {
-                            client,
-                            root: state.shared.root.clone(),
-                        };
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "daemon unreachable for a reference read; using the in-RAM projection");
-                    }
-                }
             }
         }
         Self::InRam
@@ -103,14 +82,6 @@ impl IndexRoute {
                     },
                 )
             }
-            Self::Daemon { client, root } => Some(
-                client
-                    .lock()
-                    .await
-                    .index_read(root.clone(), query)
-                    .await
-                    .map_err(|error| error.to_string()),
-            ),
         }
     }
 
