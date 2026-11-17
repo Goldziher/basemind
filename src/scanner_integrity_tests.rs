@@ -838,3 +838,29 @@ fn rows_of_a_killed_pass_outlive_no_seal_of_a_store_claimed_in_place() {
     assert!(view.symbols_by_name_lookup("ghost", 4).is_empty());
     assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
 }
+
+/// A read-only open takes an index handle that stamps, migrates and sweeps nothing. A scan that
+/// claims the store writes through a handle opened as a writer's instead, which does all three.
+#[test]
+fn a_store_opened_read_only_scans_through_an_index_opened_for_writing() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let view_dir = {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        full_scan(root, &mut store);
+        store.view_dir.clone()
+    };
+    let mut in_place = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(in_place.index_db.is_some(), "the read-only open took an index handle");
+    let leftover = view_dir.join("index.fjall.discard-4242-0");
+    std::fs::create_dir_all(&leftover).expect("what an interrupted discard leaves");
+
+    std::fs::write(root.join("alpha.rs"), b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+    full_scan(root, &mut in_place);
+
+    assert!(in_place.holds_writer_lock());
+    assert!(!leftover.exists(), "only a writer's open sweeps what a discard left");
+    let db = in_place.index_db.as_ref().expect("index");
+    assert_eq!(db.view().symbols_by_name_lookup("alpha", 4).len(), 1);
+}

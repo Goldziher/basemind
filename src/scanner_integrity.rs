@@ -95,10 +95,17 @@ fn purge_unlisted_rows(store: &Store, db: &IndexDb) -> Result<(), ScanError> {
 /// just taken the lock, it takes in the owed set as it is on disk, which another process may have
 /// added to since this store loaded it. A store that held the lock from its open is the only
 /// writer of the set and has nothing to take in.
+///
+/// The index handle a read-only open took stamps, migrates and sweeps nothing, so a store that just
+/// took the lock drops it and opens the index as a writer does. While a reader still holds a clone
+/// of that handle fjall's lock cannot be taken again, so the scan writes through the handle it has.
 pub(crate) fn claim_writer(store: &mut Store) -> Result<(), ScanError> {
     if store.take_writer_lock()? {
         let on_disk = crate::store_pending::PendingVectors::load(&store.view_dir);
         store.pending_vectors.absorb(on_disk);
+        if store.layered_read.is_none() && store.index_db.as_ref().is_some_and(IndexDb::is_sole_handle) {
+            store.index_db = None;
+        }
     }
     store.open_index_owed_to_scan()?;
     Ok(())

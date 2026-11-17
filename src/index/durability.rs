@@ -251,6 +251,11 @@ impl IndexDb {
         self.db.journal_count() > RECLAIM_SEALED_JOURNALS && self.reclaim_journal()
     }
 
+    /// Whether no other clone of this handle is alive, so dropping it releases fjall's lock.
+    pub(crate) fn is_sole_handle(&self) -> bool {
+        std::sync::Arc::strong_count(&self.synced_seqno) == 1
+    }
+
     #[cfg(test)]
     pub(crate) fn has_unsynced_tail(&self) -> bool {
         self.db.seqno() != self.synced_seqno.load(Ordering::Acquire)
