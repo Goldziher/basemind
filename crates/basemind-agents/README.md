@@ -117,7 +117,9 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
 - **Who launches.** Nothing is trusted by default. Every caller carries a `Peer`: the process the
   kernel reports for its connection (`Peer::of_socket`), pinned to the process that connected (by
   its audit token's pid version on macOS, a pidfd on Linux 6.5+; `Peer::pins_connections` says
-  whether this host pins). The supervisor places that process, not the claim:
+  whether this host pins). A socket whose peer is this process (a `socketpair`, a connected
+  descriptor it inherited) names no peer: only `Peer::embedding()` names this process. The
+  supervisor places that process, not the claim:
   - each harness leads a POSIX session of its own, so a process inside one is that session (by
     session id, by ancestry, or as a detached process the supervisor recorded for it) whatever it
     claims, and its token has to be that session's;

@@ -340,7 +340,10 @@ id that fails the grammar stops the launch.
      from the connection: the `Peer` from `Peer::of_socket` on the accepted connection, right
      after `accept` (never a pid the client sends, never `Peer::embedding()`), and the launch
      token the injected `basemind serve` read from `BASEMIND_LAUNCH_TOKEN`. A transport without
-     peer credentials cannot reach the supervisor.
+     peer credentials cannot reach the supervisor. `Peer::of_socket` refuses a socket whose peer
+     is this process (a `socketpair`, or a pre-connected or inherited descriptor, which Linux
+     reports as its creator's): in-process that process is the principal, so the injected
+     `serve` is given a path to connect to, never a descriptor.
    - **Registration.** Only the two in-process forms exist: `register_launcher_in_process`
      for the lead, and `register_launcher_child(&mut Child)` for a child the embedding spawned
      itself, which must execute nothing another agent can write (no shell, hooks, build steps
