@@ -195,3 +195,27 @@ fn a_file_that_is_not_utf8_is_left_to_xberg() {
     assert_eq!(read(&latin1), None);
     assert_eq!(read(&utf8).as_deref(), Some("café au lait\n"));
 }
+
+/// Entities the source does not hold each cost a window of search; the whole run is bounded, and
+/// once the budget is spent the rest are placed in no chunk.
+#[test]
+fn placing_entities_searches_a_bounded_number_of_bytes() {
+    let source: String = (0..20_000).map(|i| format!("line {i} of a large log\n")).collect();
+    let missing = |i: u32| super::super::DocEntity {
+        category: "location".into(),
+        text: format!("New\nYork {i}"),
+        start: i,
+        end: i + 1,
+        confidence: None,
+    };
+    let mut entities: Vec<_> = (0..2_000).map(missing).collect();
+
+    let searched = place_entities_counted(&source, &mut entities);
+
+    assert!(
+        searched <= 4 * source.len().max(ENTITY_WINDOW) + ENTITY_WINDOW,
+        "searched {searched} bytes of a {}-byte source",
+        source.len()
+    );
+    assert!(entities.iter().all(|e| e.start == u32::MAX), "none is in the source");
+}

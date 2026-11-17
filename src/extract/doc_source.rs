@@ -266,11 +266,23 @@ pub(crate) fn chunk_document(
 
 /// Bytes past the previous entity in which the next one is looked for.
 const ENTITY_WINDOW: usize = 64 * 1024;
+/// The bytes one run of [`place_entities`] may search, as a multiple of the source (at least one
+/// [`ENTITY_WINDOW`]): every entity not found costs a whole window, and the pass runs outside the
+/// extraction deadline.
+const ENTITY_SEARCH_FACTOR: usize = 4;
 
 /// Point each entity at its text in `source`: xberg found it in its own rendering, whose offsets do
 /// not hold in the source the chunks were cut from. Entities are searched in order, each in a bounded
-/// window after the previous match; one not found there is placed in no chunk.
+/// window after the previous match; one not found there is placed in no chunk, and so is every one
+/// left once the run has searched [`ENTITY_SEARCH_FACTOR`] times the source.
 pub(crate) fn place_entities(source: &str, entities: &mut [super::DocEntity]) {
+    place_entities_counted(source, entities);
+}
+
+/// [`place_entities`], returning the bytes searched.
+pub(crate) fn place_entities_counted(source: &str, entities: &mut [super::DocEntity]) -> usize {
+    let mut searched = 0usize;
+    let budget = source.len().max(ENTITY_WINDOW).saturating_mul(ENTITY_SEARCH_FACTOR);
     entities.sort_by_key(|entity| entity.start);
     let bytes = source.as_bytes();
     let mut cursor = 0usize;
@@ -286,7 +298,11 @@ pub(crate) fn place_entities(source: &str, entities: &mut [super::DocEntity]) {
         }
         let needle = entity.text.as_bytes();
         let window_end = cursor.saturating_add(ENTITY_WINDOW).min(bytes.len());
-        let found = (!needle.is_empty())
+        let spent = searched >= budget;
+        if !spent {
+            searched += window_end - cursor;
+        }
+        let found = (!needle.is_empty() && !spent)
             .then(|| memchr::memmem::find(&bytes[cursor..window_end], needle))
             .flatten();
         match found {
@@ -303,6 +319,7 @@ pub(crate) fn place_entities(source: &str, entities: &mut [super::DocEntity]) {
         }
         previous = Some((original, (entity.start, entity.end)));
     }
+    searched
 }
 
 #[cfg(test)]
