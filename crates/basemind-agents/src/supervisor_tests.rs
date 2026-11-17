@@ -195,10 +195,15 @@ pub(super) fn pid_of(supervisor: &Supervisor, id: SessionId) -> i32 {
     i32::try_from(supervisor.status(id).unwrap().pid.unwrap()).unwrap()
 }
 
+/// Whether `pid` runs. Not `kill(pid, 0)`, which also succeeds for a zombie: in a container
+/// without an init that reaps orphans, a killed process stays one.
 pub(super) fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 only checks that the process exists.
-    unsafe { libc::kill(pid, 0) == 0 }
+    crate::procinfo::info(pid).is_some_and(|now| !now.zombie)
 }
+
+/// The variable that lets a test needing `setsid` or `perl` skip where neither is installed.
+/// Unset, a missing tool fails the test, so a host without them never passes silently.
+pub(super) const ALLOW_NO_SETSID: &str = "BASEMIND_TEST_ALLOW_NO_SETSID";
 
 #[test]
 fn the_default_policy_refuses_every_launch_and_every_config() {
@@ -746,17 +751,66 @@ fn the_audit_log_holds_no_brief_environment_value_or_token() {
 }
 
 /// A command prefix that runs the rest of the line in a session of its own, as OpenCode's
-/// server leaves the harness's group. `None` where neither `setsid` nor `perl` is installed.
+/// server leaves the harness's group. Where neither `setsid` nor `perl` is installed, the test
+/// fails, or skips (`None`) when [`ALLOW_NO_SETSID`] is set.
 pub(super) fn own_session_prefix() -> Option<String> {
+    own_session_prefix_in(
+        &std::env::var_os("PATH").unwrap_or_default(),
+        std::env::var_os(ALLOW_NO_SETSID).is_some(),
+    )
+}
+
+/// As [`own_session_prefix`], searching `path`, skipping only when `allow_missing`.
+pub(super) fn own_session_prefix_in(path: &std::ffi::OsStr, allow_missing: bool) -> Option<String> {
     let on_path = |name: &str| {
-        std::env::split_paths(&std::env::var_os("PATH")?)
+        std::env::split_paths(path)
             .map(|dir| dir.join(name))
             .find(|candidate| candidate.is_file())
     };
     if let Some(setsid) = on_path("setsid") {
         return Some(format!("'{}'", setsid.display()));
     }
-    on_path("perl").map(|perl| format!("'{}' -MPOSIX -e 'POSIX::setsid() or die; exec @ARGV'", perl.display()))
+    if let Some(perl) = on_path("perl") {
+        return Some(format!(
+            "'{}' -MPOSIX -e 'POSIX::setsid() or die; exec @ARGV'",
+            perl.display()
+        ));
+    }
+    assert!(
+        allow_missing,
+        "neither setsid nor perl is installed; set {ALLOW_NO_SETSID}=1 to skip the tests that need them"
+    );
+    eprintln!("skipped: neither setsid nor perl is installed and {ALLOW_NO_SETSID} is set");
+    None
+}
+
+#[test]
+#[should_panic(expected = "BASEMIND_TEST_ALLOW_NO_SETSID")]
+fn a_missing_setsid_fails_the_test_unless_skipping_is_allowed() {
+    let _ = own_session_prefix_in(std::ffi::OsStr::new(""), false);
+}
+
+#[test]
+fn a_missing_setsid_skips_when_allowed() {
+    assert_eq!(own_session_prefix_in(std::ffi::OsStr::new(""), true), None);
+}
+
+#[test]
+fn an_exited_unreaped_process_is_not_alive() {
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .unwrap();
+    let pid = i32::try_from(child.id()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // Exited once the kernel no longer describes it as running: a zombie, kept by its parent.
+    while crate::procinfo::info(pid).is_some_and(|now| !now.zombie) {
+        assert!(Instant::now() < deadline, "the child never exited");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let seen = alive(pid);
+    child.wait().unwrap();
+    assert!(!seen, "a zombie counted as alive");
 }
 
 /// The pid a stand-in wrote to `path`.
@@ -774,7 +828,6 @@ pub(super) fn recorded_pid(path: &Path) -> i32 {
 #[test]
 fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
     let Some(own_session) = own_session_prefix() else {
-        eprintln!("skipped: neither setsid nor perl is installed");
         return;
     };
     let scratch = Scratch::new();

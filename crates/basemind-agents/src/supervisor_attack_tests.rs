@@ -16,17 +16,17 @@ use crate::registry::Adapter;
 use crate::session::{CommandPlan, Session};
 
 /// `perl`, which the attack stand-ins use to call `setpgid` and `setsid`. Its absence fails the
-/// test unless `BASEMIND_TEST_ALLOW_NO_SETSID` is set, so a missing tool never passes silently.
+/// test unless [`ALLOW_NO_SETSID`] is set, so a missing tool never passes silently.
 fn perl() -> Option<PathBuf> {
     let found = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join("perl"))
         .find(|candidate| candidate.is_file());
     if found.is_none() {
         assert!(
-            std::env::var_os("BASEMIND_TEST_ALLOW_NO_SETSID").is_some(),
-            "perl is not installed; set BASEMIND_TEST_ALLOW_NO_SETSID=1 to skip the tests that need it"
+            std::env::var_os(ALLOW_NO_SETSID).is_some(),
+            "perl is not installed; set {ALLOW_NO_SETSID}=1 to skip the tests that need it"
         );
-        eprintln!("skipped: perl is not installed and BASEMIND_TEST_ALLOW_NO_SETSID is set");
+        eprintln!("skipped: perl is not installed and {ALLOW_NO_SETSID} is set");
     }
     found
 }
@@ -524,4 +524,38 @@ cat > /dev/null
         .any(|record| record.approval.as_ref().is_some_and(|approval| approval.allowed));
     assert!(!allowed, "an allow was delivered without its audit record");
     assert_eq!(answered.err().map(|error| error.code()), Some("audit_failed"));
+}
+
+#[test]
+fn launches_racing_for_the_last_slot_get_it_once() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, _) = start(
+        PolicySpec {
+            max_concurrent: 1,
+            max_children: 1,
+            ..policy(&[HarnessKind::ClaudeCode])
+        },
+        vec![config],
+    );
+    let supervisor = Arc::new(supervisor);
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let racers: Vec<_> = ["lead", "second", "third", "lead", "second", "third", "lead", "second"]
+        .into_iter()
+        .map(|launcher| {
+            let (supervisor, barrier) = (supervisor.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let caller = Caller::principal(launcher, outside()).unwrap();
+                barrier.wait();
+                supervisor.launch(&caller, HarnessKind::ClaudeCode, &request()).is_ok()
+            })
+        })
+        .collect();
+    let won = racers
+        .into_iter()
+        .map(|racer| racer.join().unwrap())
+        .filter(|won| *won)
+        .count();
+    assert_eq!(won, 1);
+    assert_eq!(supervisor.list().len(), 1);
 }
