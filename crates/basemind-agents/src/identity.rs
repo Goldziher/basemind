@@ -74,17 +74,18 @@ impl LaunchToken {
 
 /// `N` bytes from the operating system's random source.
 pub(crate) fn random_bytes<const N: usize>() -> std::io::Result<[u8; N]> {
-    use std::io::Read;
-    let mut bytes = [0; N];
     #[cfg(unix)]
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    {
+        use std::io::Read;
+        let mut bytes = [0; N];
+        std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
     #[cfg(not(unix))]
-    return Err(std::io::Error::new(
+    Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "no random source off Unix",
-    ));
-    #[cfg(unix)]
-    Ok(bytes)
+    ))
 }
 
 /// `bytes` as lower-case hex.

@@ -158,6 +158,8 @@ fn kill(pgid: i32) {
         // kernel's and our own.
         unsafe { libc::kill(-pgid, libc::SIGKILL) };
     }
+    #[cfg(not(unix))]
+    let _ = pgid;
 }
 
 /// The process group `pid` belongs to, while it exists.
