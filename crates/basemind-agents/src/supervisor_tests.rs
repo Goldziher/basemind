@@ -11,6 +11,7 @@ use super::*;
 use crate::audit::{FileAuditSink, MemoryAuditSink};
 use crate::claude::ClaudeCodeAdapter;
 use crate::harness::{AcpFlavor, Harness};
+use crate::peer::Peer;
 use crate::policy::{Budget, FlavorPolicy, PolicySpec};
 use crate::registry::Adapter;
 use crate::session::CommandPlan;
@@ -136,8 +137,18 @@ fn start(spec: PolicySpec, configs: Vec<LaunchConfig>) -> (Supervisor, Arc<Memor
     (supervisor, audit)
 }
 
+/// A process outside the supervisor's tree: the test runner's parent.
+fn outside() -> Peer {
+    Peer::of_pid(std::os::unix::process::parent_id())
+}
+
+/// The harness process of session `id`, standing in for a process of that session.
+fn inside(supervisor: &Supervisor, id: SessionId) -> Peer {
+    Peer::of_pid(supervisor.status(id).unwrap().pid.unwrap())
+}
+
 fn lead() -> Caller {
-    Caller::principal("lead").unwrap()
+    Caller::principal("lead", outside()).unwrap()
 }
 
 fn request() -> LaunchRequest {
@@ -287,15 +298,19 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
     let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode, HarnessKind::Codex]), vec![config]);
     let claude = HarnessKind::ClaudeCode;
     let cases = [
-        (Caller::principal("stranger").unwrap(), claude, "caller_not_admitted"),
-        (Caller::operator(), claude, "caller_not_admitted"),
-        // A principal with the launched prefix is never a configured launcher.
         (
-            Caller::principal("launched-claude-0-00000000").unwrap(),
+            Caller::principal("stranger", outside()).unwrap(),
             claude,
             "caller_not_admitted",
         ),
-        (Caller::launched("0".repeat(64)), claude, "unknown_token"),
+        (Caller::operator(), claude, "caller_not_admitted"),
+        // A principal with the launched prefix is never a configured launcher.
+        (
+            Caller::principal("launched-claude-0-00000000", outside()).unwrap(),
+            claude,
+            "caller_not_admitted",
+        ),
+        (Caller::launched("0".repeat(64), outside()), claude, "unknown_token"),
         // Allowed by the policy but without a config, and not allowed at all.
         (lead(), HarnessKind::Codex, "flavor_not_allowed"),
         (lead(), HarnessKind::Acp(AcpFlavor::Gemini), "flavor_not_allowed"),
@@ -313,8 +328,8 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
     assert_eq!(callers[1].as_deref(), Some("operator"));
     assert_eq!(callers[3], None, "a token caller was named");
     assert!(supervisor.list().is_empty(), "a refused launch left a session");
-    assert!(Caller::principal("has space").is_err());
-    assert!(!format!("{:?}", Caller::launched("secret-token")).contains("secret-token"));
+    assert!(Caller::principal("has space", outside()).is_err());
+    assert!(!format!("{:?}", Caller::launched("secret-token", outside())).contains("secret-token"));
 }
 
 #[test]
@@ -332,7 +347,11 @@ fn a_launched_agent_carries_its_depth_and_token_and_launches_only_within_max_dep
     assert_eq!(token.len(), 64);
 
     let refused = shallow
-        .launch(&Caller::launched(&token), HarnessKind::ClaudeCode, &request())
+        .launch(
+            &Caller::launched(&token, inside(&shallow, parent.id)),
+            HarnessKind::ClaudeCode,
+            &request(),
+        )
         .unwrap_err();
     assert!(
         matches!(refused, SupervisorError::DepthExceeded { depth: 2, max_depth: 1 }),
@@ -351,7 +370,11 @@ fn a_launched_agent_carries_its_depth_and_token_and_launches_only_within_max_dep
     assert_eq!(finished(&shallow, parent.id), FinishStatus::Stopped);
     // The token of a finished session admits nobody.
     let refused = shallow
-        .launch(&Caller::launched(&token), HarnessKind::ClaudeCode, &request())
+        .launch(
+            &Caller::launched(&token, outside()),
+            HarnessKind::ClaudeCode,
+            &request(),
+        )
         .unwrap_err();
     assert_eq!(refused.code(), "unknown_token");
 
@@ -365,19 +388,24 @@ fn a_launched_agent_carries_its_depth_and_token_and_launches_only_within_max_dep
     let parent = deep.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
     let token = scratch.env_of(&parent.agent)["BASEMIND_LAUNCH_TOKEN"].clone();
     let child = deep
-        .launch(&Caller::launched(&token), HarnessKind::ClaudeCode, &request())
+        .launch(
+            &Caller::launched(&token, inside(&deep, parent.id)),
+            HarnessKind::ClaudeCode,
+            &request(),
+        )
         .unwrap();
     assert_eq!(child.depth, 2);
     assert_eq!(scratch.env_of(&child.agent)["BASEMIND_AGENT_DEPTH"], "2");
     assert_eq!(deep.status(child.id).unwrap().launcher, parent.agent);
     // The configured launcher did not launch the child: only its parent and the operator stop it.
     assert_eq!(deep.stop(&lead(), child.id).unwrap_err().code(), "not_owner");
-    deep.stop(&Caller::launched(&token), child.id).unwrap();
+    deep.stop(&Caller::launched(&token, inside(&deep, parent.id)), child.id)
+        .unwrap();
     assert_eq!(finished(&deep, child.id), FinishStatus::Stopped);
 }
 
 #[test]
-fn a_peer_inside_a_session_group_is_that_session_whatever_it_claims() {
+fn a_peer_inside_a_session_is_that_session_whatever_it_claims() {
     let scratch = Scratch::new();
     let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
     let (supervisor, _) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
@@ -385,14 +413,18 @@ fn a_peer_inside_a_session_group_is_that_session_whatever_it_claims() {
     let pid = supervisor.status(launched.id).unwrap().pid.unwrap();
     // The session's leader claims to be the configured launcher.
     let refused = supervisor
-        .launch(&lead().with_peer_pid(pid), HarnessKind::ClaudeCode, &request())
+        .launch(
+            &Caller::principal("lead", Peer::of_pid(pid)).unwrap(),
+            HarnessKind::ClaudeCode,
+            &request(),
+        )
         .unwrap_err();
     assert!(
         matches!(refused, SupervisorError::DepthExceeded { depth: 2, .. }),
         "{refused}"
     );
     // This process is in no session's group: its claim stands.
-    let own = lead().with_peer_pid(std::process::id());
+    let own = Caller::principal("lead", Peer::this_process().unwrap()).unwrap();
     let second = supervisor.launch(&own, HarnessKind::ClaudeCode, &request()).unwrap();
     assert_eq!(second.depth, 1);
 }
@@ -418,9 +450,9 @@ fn concurrency_and_fan_out_are_refused_with_the_limit_named() {
     );
     assert!(refused.to_string().contains("max_children"));
     supervisor
-        .launch(&Caller::principal("second").unwrap(), claude, &request())
+        .launch(&Caller::principal("second", outside()).unwrap(), claude, &request())
         .unwrap();
-    let third = Caller::principal("third").unwrap();
+    let third = Caller::principal("third", outside()).unwrap();
     let refused = supervisor.launch(&third, claude, &request()).unwrap_err();
     assert!(
         matches!(refused, SupervisorError::ConcurrencyExceeded { max_concurrent: 2 }),
@@ -513,9 +545,9 @@ fn only_the_launcher_or_the_operator_stops_a_session_and_reaping_forgets_it() {
     let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
     let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
-    let second = Caller::principal("second").unwrap();
+    let second = Caller::principal("second", outside()).unwrap();
     assert_eq!(supervisor.stop(&second, launched.id).unwrap_err().code(), "not_owner");
-    let stranger = Caller::principal("stranger").unwrap();
+    let stranger = Caller::principal("stranger", outside()).unwrap();
     assert_eq!(
         supervisor.stop(&stranger, launched.id).unwrap_err().code(),
         "caller_not_admitted"
@@ -553,7 +585,7 @@ fn dropping_the_supervisor_stops_every_session() {
     let pids: Vec<i32> = ["lead", "second"]
         .into_iter()
         .map(|launcher| {
-            let caller = Caller::principal(launcher).unwrap();
+            let caller = Caller::principal(launcher, outside()).unwrap();
             let launched = supervisor.launch(&caller, HarnessKind::ClaudeCode, &request()).unwrap();
             pid_of(&supervisor, launched.id)
         })
@@ -637,7 +669,7 @@ cat > /dev/null
         assert!(Instant::now() < deadline, "the observer saw no approval request");
         std::thread::sleep(Duration::from_millis(20));
     };
-    let second = Caller::principal("second").unwrap();
+    let second = Caller::principal("second", outside()).unwrap();
     assert_eq!(
         supervisor
             .answer(&second, launched.id, &approval, true)
@@ -677,7 +709,11 @@ fn the_audit_log_holds_no_brief_environment_value_or_token() {
     let env = scratch.env_of(&launched.agent);
     let token = env["BASEMIND_LAUNCH_TOKEN"].clone();
     assert_eq!(env["ANTHROPIC_API_KEY"], SECRET, "the stand-in did not see the secret");
-    let refused = supervisor.launch(&Caller::launched(&token), HarnessKind::ClaudeCode, &request());
+    let refused = supervisor.launch(
+        &Caller::launched(&token, inside(&supervisor, launched.id)),
+        HarnessKind::ClaudeCode,
+        &request(),
+    );
     assert!(refused.is_err());
     supervisor.stop(&lead(), launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
@@ -780,4 +816,170 @@ fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
     // SAFETY: the test started this process; it is killed whatever the assertion says.
     unsafe { libc::kill(server, libc::SIGKILL) };
     assert!(survived, "the untracked process died with its group");
+}
+
+/// `perl`, which the attack stand-ins use to call `setpgid` and `setsid`. Its absence fails the
+/// test unless `BASEMIND_TEST_ALLOW_NO_SETSID` is set, so a missing tool never passes silently.
+fn perl() -> Option<PathBuf> {
+    let found = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join("perl"))
+        .find(|candidate| candidate.is_file());
+    if found.is_none() {
+        assert!(
+            std::env::var_os("BASEMIND_TEST_ALLOW_NO_SETSID").is_some(),
+            "perl is not installed; set BASEMIND_TEST_ALLOW_NO_SETSID=1 to skip the tests that need it"
+        );
+        eprintln!("skipped: perl is not installed and BASEMIND_TEST_ALLOW_NO_SETSID is set");
+    }
+    found
+}
+
+/// Lead launches A (Claude Code); A launches C (OpenCode), whose stand-in runs `perl <attack>`
+/// in the background. Returns the supervisor, both sessions and the attacking process's pid.
+/// `attack` is given the scratch directory, where `a.pid` holds A's pid.
+struct Lateral {
+    scratch: Scratch,
+    supervisor: Supervisor,
+    a: Launched,
+    c: Launched,
+    attacker: u32,
+    /// The attacker as it started, so it is killed at the end only while it is still that
+    /// process.
+    started: Peer,
+}
+
+impl Drop for Lateral {
+    fn drop(&mut self) {
+        let pid = self.started.id.pid;
+        if crate::procinfo::info(pid).is_some_and(|now| now.start == self.started.id.start) {
+            // SAFETY: the test started this process, and its start time was checked just now.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+fn lateral(attack: impl Fn(&Path) -> String) -> Option<Lateral> {
+    let perl = perl()?;
+    let scratch = Scratch::new();
+    let pidfile = scratch.path.join("attacker.pid");
+    let body = format!(
+        "{HANDSHAKE}'{perl}' {attack} &\necho $! > '{pidfile}'\ncat > /dev/null\n",
+        perl = perl.display(),
+        attack = attack(&scratch.path),
+        pidfile = pidfile.display(),
+    );
+    let (supervisor, _) = start(
+        PolicySpec {
+            max_depth: 3,
+            ..policy(&[HarnessKind::ClaudeCode, OPENCODE])
+        },
+        vec![
+            scratch.config(HarnessKind::ClaudeCode, &scratch.long()),
+            scratch.config(OPENCODE, &body),
+        ],
+    );
+    let a = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    std::fs::write(scratch.path.join("a.pid"), pid_of(&supervisor, a.id).to_string()).unwrap();
+    let token = scratch.env_of(&a.agent)["BASEMIND_LAUNCH_TOKEN"].clone();
+    let c = supervisor
+        .launch(
+            &Caller::launched(&token, inside(&supervisor, a.id)),
+            OPENCODE,
+            &request(),
+        )
+        .unwrap();
+    let attacker = u32::try_from(recorded_pid(&pidfile)).unwrap();
+    Some(Lateral {
+        scratch,
+        supervisor,
+        a,
+        c,
+        attacker,
+        started: Peer::of_pid(attacker),
+    })
+}
+
+/// What the attacker wrote to `outcome` in the scratch directory, once it has.
+fn attack_outcome(scratch: &Scratch) -> String {
+    let path = scratch.path.join("outcome");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if !text.is_empty() {
+            return text;
+        }
+        assert!(Instant::now() < deadline, "the attacker never reported");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_child_cannot_join_its_launchers_group_and_act_as_its_launcher() {
+    // C's tool process moves into A's process group, then claims to be the configured launcher.
+    let Some(attack) = lateral(|dir| {
+        format!(
+            "-e 'open(my $f, q{{<}}, q{{{dir}/a.pid}}) or die; my $a = <$f>; chomp $a; \
+             my $r = setpgrp(0, $a) ? q{{joined}} : q{{refused}}; \
+             open(my $o, q{{>}}, q{{{dir}/outcome}}) or die; print $o $r; close $o; sleep 300'",
+            dir = dir.display()
+        )
+    }) else {
+        return;
+    };
+    let outcome = attack_outcome(&attack.scratch);
+    let claim = Caller::principal("lead", Peer::of_pid(attack.attacker)).unwrap();
+    // Acting as A, C could stop (and answer for) itself; acting as itself it may not.
+    let stopped = attack.supervisor.stop(&claim, attack.c.id);
+    assert_eq!(outcome, "refused", "C's process joined A's process group");
+    assert_eq!(stopped.map_err(|error| error.code()), Err("not_owner"));
+    let _ = attack.a;
+}
+
+#[test]
+fn a_child_that_leaves_for_a_session_of_its_own_is_still_its_session() {
+    let Some(attack) = lateral(|dir| {
+        format!(
+            "-MPOSIX -e 'my $r = POSIX::setsid() > 0 ? q{{left}} : q{{stayed}}; \
+             open(my $o, q{{>}}, q{{{dir}/outcome}}) or die; print $o $r; close $o; sleep 300'",
+            dir = dir.display()
+        )
+    }) else {
+        return;
+    };
+    assert_eq!(attack_outcome(&attack.scratch), "left");
+    let claim = Caller::principal("lead", Peer::of_pid(attack.attacker)).unwrap();
+    // As the configured launcher it would launch at depth 1 and own A; as C it sits at depth 2.
+    let launched = attack
+        .supervisor
+        .launch(&claim, HarnessKind::ClaudeCode, &request())
+        .unwrap();
+    assert_eq!(
+        launched.depth, 3,
+        "the escaped process launched as the configured launcher"
+    );
+    assert_eq!(
+        attack
+            .supervisor
+            .stop(&claim, attack.a.id)
+            .map_err(|error| error.code()),
+        Err("not_owner")
+    );
+}
+
+#[test]
+fn a_process_below_the_supervisor_in_no_session_is_no_launcher() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, _) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    // A process the supervisor's process started outside any session, as a leftover of a
+    // finished session would be.
+    let mut stray = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let claim = Caller::principal("lead", Peer::of_pid(stray.id())).unwrap();
+    let refused = supervisor.launch(&claim, HarnessKind::ClaudeCode, &request());
+    let _ = stray.kill();
+    let _ = stray.wait();
+    assert_eq!(
+        refused.map(|launched| launched.depth).map_err(|error| error.code()),
+        Err("caller_not_admitted")
+    );
 }

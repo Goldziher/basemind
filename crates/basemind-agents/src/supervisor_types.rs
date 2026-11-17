@@ -8,6 +8,7 @@ use crate::error::LaunchError;
 use crate::event::{Event, FinishStatus};
 use crate::harness::HarnessKind;
 use crate::identity::AgentIdentity;
+use crate::peer::Peer;
 use crate::policy::Caveat;
 use crate::supervisor_codes::launch_error_code;
 
@@ -38,14 +39,15 @@ impl std::fmt::Display for SessionId {
 /// Who is asking the supervisor for something.
 ///
 /// A configured launcher names its principal; a launched agent presents the launch token it
-/// was given in [`ENV_LAUNCH_TOKEN`](crate::ENV_LAUNCH_TOKEN). When the engine knows the
-/// process on the other end of the connection, [`Caller::with_peer_pid`] lets the supervisor
-/// recognize a launched session's process (by its process group) whatever it claims. `Debug`
-/// never shows a token.
+/// was given in [`ENV_LAUNCH_TOKEN`](crate::ENV_LAUNCH_TOKEN). Either way the caller carries the
+/// [`Peer`] the kernel reported for its connection, and the supervisor decides by that process,
+/// not by the claim: a process inside a live session, or below one, is that session whatever it
+/// claims; a process below the supervisor in no session is nobody; only a process outside the
+/// supervisor's tree is the principal it names. `Debug` never shows a token.
 #[derive(Clone)]
 pub struct Caller {
     pub(crate) kind: CallerKind,
-    pub(crate) peer_pid: Option<u32>,
+    pub(crate) peer: Option<Peer>,
 }
 
 #[derive(Clone)]
@@ -64,7 +66,7 @@ impl std::fmt::Debug for Caller {
         };
         f.debug_struct("Caller")
             .field("kind", &kind)
-            .field("peer_pid", &self.peer_pid)
+            .field("peer", &self.peer.map(|peer| peer.pid()))
             .finish()
     }
 }
@@ -75,37 +77,32 @@ impl Caller {
     pub fn operator() -> Self {
         Self {
             kind: CallerKind::Operator,
-            peer_pid: None,
+            peer: None,
         }
     }
 
-    /// A principal of the comms identity model, admitted to launch when the policy names it.
+    /// A principal of the comms identity model on the connection of `peer`, admitted to launch
+    /// when the policy names it and `peer` is outside the supervisor's tree.
     ///
     /// # Errors
     ///
     /// [`LaunchError::InvalidIdentity`] when `principal` fails the principal grammar.
-    pub fn principal(principal: &str) -> Result<Self, LaunchError> {
+    pub fn principal(principal: &str, peer: Peer) -> Result<Self, LaunchError> {
         AgentIdentity::new(principal)?;
         Ok(Self {
             kind: CallerKind::Principal(principal.to_owned()),
-            peer_pid: None,
+            peer: Some(peer),
         })
     }
 
-    /// A launched agent, by the token in its `BASEMIND_LAUNCH_TOKEN`.
+    /// A launched agent on the connection of `peer`, by the token in its
+    /// `BASEMIND_LAUNCH_TOKEN`. The token has to be the session's that `peer` belongs to.
     #[must_use]
-    pub fn launched(token: impl Into<String>) -> Self {
+    pub fn launched(token: impl Into<String>, peer: Peer) -> Self {
         Self {
             kind: CallerKind::Token(token.into()),
-            peer_pid: None,
+            peer: Some(peer),
         }
-    }
-
-    /// The same caller, with the process id of its end of the connection.
-    #[must_use]
-    pub fn with_peer_pid(mut self, pid: u32) -> Self {
-        self.peer_pid = Some(pid);
-        self
     }
 }
 
@@ -193,6 +190,13 @@ pub enum SupervisorError {
     /// The presented launch token belongs to no live session.
     #[error("the launch token is not valid")]
     UnknownToken,
+    /// The caller's process could not be placed: it is gone, its pid was reused, or its
+    /// ancestry could not be read.
+    #[error("the caller's process could not be verified")]
+    PeerUnverified,
+    /// The caller's process does not belong to the session its launch token names.
+    #[error("the launch token does not belong to the caller's process")]
+    PeerMismatch,
     /// The launch would sit deeper than the policy's `max_depth`.
     #[error("depth {depth} is over the limit of max_depth = {max_depth}")]
     DepthExceeded {
@@ -245,6 +249,8 @@ impl SupervisorError {
             Self::FlavorNotAllowed(_) => "flavor_not_allowed",
             Self::CallerNotAdmitted => "caller_not_admitted",
             Self::UnknownToken => "unknown_token",
+            Self::PeerUnverified => "peer_unverified",
+            Self::PeerMismatch => "peer_mismatch",
             Self::DepthExceeded { .. } => "depth_exceeded",
             Self::ConcurrencyExceeded { .. } => "concurrency_exceeded",
             Self::FanOutExceeded { .. } => "fan_out_exceeded",

@@ -18,12 +18,14 @@ use crate::event::{Event, FinishStatus};
 use crate::harness::HarnessKind;
 use crate::identity::{AgentIdentity, LaunchToken};
 use crate::policy::{Caveat, LAUNCHED_PREFIX, LaunchPolicy, PolicyError};
+use crate::procinfo::{self, ProcId};
 use crate::registry::Registry;
 use crate::session::{Session, SessionHandle};
 use crate::spec::{LaunchConfig, LaunchRequest};
 use crate::supervisor_codes::{approval_kind, approval_source, finish_code};
 
 pub use crate::supervisor_codes::launch_error_code;
+use crate::supervisor_identity::resolve;
 use crate::supervisor_types::CallerKind;
 pub use crate::supervisor_types::{
     Caller, Launched, SessionId, SessionObserver, SessionState, SessionStatus, SupervisorError,
@@ -44,20 +46,22 @@ enum Launcher {
 
 /// The caller, once the supervisor has decided who it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Resolved {
+pub(crate) enum Resolved {
     Operator,
     Top(String),
     Session(u64),
 }
 
-struct Entry {
+pub(crate) struct Entry {
     flavor: HarnessKind,
     agent: String,
     launcher: Launcher,
     launcher_name: String,
     depth: u32,
-    token: LaunchToken,
-    state: SessionState,
+    pub(crate) token: LaunchToken,
+    /// The harness's pid and start time, once it runs.
+    pub(crate) leader: Option<ProcId>,
+    pub(crate) state: SessionState,
     stop_requested: bool,
     started: SystemTime,
     root: PathBuf,
@@ -85,14 +89,14 @@ impl Entry {
 }
 
 #[derive(Default)]
-struct Table {
+pub(crate) struct Table {
     next: u64,
     launches: u32,
-    sessions: BTreeMap<u64, Entry>,
+    pub(crate) sessions: BTreeMap<u64, Entry>,
 }
 
 impl Table {
-    fn live(&self) -> impl Iterator<Item = (&u64, &Entry)> {
+    pub(crate) fn live(&self) -> impl Iterator<Item = (&u64, &Entry)> {
         self.sessions.iter().filter(|(_, entry)| entry.state.live())
     }
 }
@@ -292,6 +296,7 @@ impl Supervisor {
                 launcher_name,
                 depth,
                 token,
+                leader: None,
                 state: SessionState::Starting,
                 stop_requested: false,
                 started: SystemTime::now(),
@@ -329,6 +334,9 @@ impl Supervisor {
             .get_mut(&id)
             .expect("only the pump removes a started entry");
         entry.handle = Some(handle.clone());
+        // The harness is unreaped until the session reports it finished, so its pid is still
+        // the process the session started.
+        entry.leader = procinfo::info(i32::try_from(handle.pid()).unwrap_or(-1)).map(|leader| leader.id());
         if entry.stop_requested {
             entry.state = SessionState::Stopping;
             handle.stop();
@@ -670,35 +678,6 @@ fn launched_config(
     Ok(config)
 }
 
-/// Who `caller` is. A peer process inside a live session's process group, or in a group the
-/// session's harness moved its descendants into, is that session whatever it claims; a token
-/// must belong to a live session; a principal must be one the policy admits.
-fn resolve(policy: &LaunchPolicy, table: &Table, caller: &Caller) -> Result<Resolved, SupervisorError> {
-    if let Some(group) = caller.peer_pid.and_then(detached::group_of) {
-        let owner = table.live().find(|(_, entry)| {
-            entry.handle.as_ref().is_some_and(|handle| handle.pid() == group)
-                || entry
-                    .detached
-                    .group_ids()
-                    .iter()
-                    .any(|pgid| u32::try_from(*pgid).ok() == Some(group))
-        });
-        if let Some((id, _)) = owner {
-            return Ok(Resolved::Session(*id));
-        }
-    }
-    match &caller.kind {
-        CallerKind::Operator => Ok(Resolved::Operator),
-        CallerKind::Token(token) => table
-            .live()
-            .find(|(_, entry)| entry.token.matches(token))
-            .map(|(id, _)| Resolved::Session(*id))
-            .ok_or(SupervisorError::UnknownToken),
-        CallerKind::Principal(principal) if policy.admits(principal) => Ok(Resolved::Top(principal.clone())),
-        CallerKind::Principal(_) => Err(SupervisorError::CallerNotAdmitted),
-    }
-}
-
 /// The name a resolved caller is recorded under.
 fn name_of(table: &Table, resolved: &Resolved) -> String {
     match resolved {
@@ -813,6 +792,7 @@ fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc<Detached>,
     let record = table.sessions.get_mut(&id).map(|entry| {
         entry.state = SessionState::Finished(status);
         entry.handle = None;
+        entry.leader = None;
         AuditRecord {
             session: Some(id),
             agent: Some(entry.agent.clone()),

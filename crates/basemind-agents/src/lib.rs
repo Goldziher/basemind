@@ -113,15 +113,18 @@ mod guard;
 mod harness;
 mod identity;
 mod line;
+mod peer;
 mod pipe;
 mod policy;
 mod process;
+mod procinfo;
 mod queue;
 mod registry;
 mod session;
 mod spec;
 mod supervisor;
 mod supervisor_codes;
+mod supervisor_identity;
 mod supervisor_types;
 #[cfg(test)]
 mod test_support;
@@ -134,6 +137,7 @@ pub use error::LaunchError;
 pub use event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, FinishStatus, ToolCall, ToolState};
 pub use harness::{AcpFlavor, Harness, HarnessKind};
 pub use identity::{AgentIdentity, ENV_AGENT_DEPTH, ENV_AGENT_ID, ENV_HOST, ENV_LAUNCH_TOKEN};
+pub use peer::Peer;
 pub use policy::{
     Budget, Caveat, FlavorPolicy, LAUNCHED_PREFIX, LaunchPolicy, MAX_CONCURRENT_CEILING, MAX_DEPTH_CEILING,
     MAX_STOP_GRACE_CEILING, MAX_WALL_TIME_CEILING, PolicyError, PolicySpec, caveats,

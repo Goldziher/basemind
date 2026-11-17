@@ -44,6 +44,7 @@ impl Detached {
     }
 
     /// The recorded group ids.
+    #[cfg(test)]
     pub fn group_ids(&self) -> Vec<i32> {
         self.groups().keys().copied().collect()
     }
@@ -162,22 +163,6 @@ fn kill(pgid: i32) {
     let _ = pgid;
 }
 
-/// The process group `pid` belongs to, while it exists.
-pub(crate) fn group_of(pid: u32) -> Option<u32> {
-    #[cfg(unix)]
-    {
-        let pid = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 0)?;
-        // SAFETY: getpgid only reads the process table.
-        let pgid = unsafe { libc::getpgid(pid) };
-        u32::try_from(pgid).ok().filter(|pgid| *pgid > 0)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        None
-    }
-}
-
 /// Every process, from `ps`. `None` when no `ps` ran.
 fn list() -> Option<Vec<Proc>> {
     let ps = ["/bin/ps", "/usr/bin/ps"]
@@ -287,12 +272,10 @@ mod tests {
     }
 
     #[test]
-    fn the_group_of_this_process_is_known() {
+    fn this_process_and_init_are_never_killable() {
         // SAFETY: getpgrp has no preconditions.
         let own = unsafe { libc::getpgrp() };
-        assert_eq!(group_of(std::process::id()), u32::try_from(own).ok());
         assert!(!killable(own));
         assert!(!killable(1));
-        assert_eq!(group_of(0), None);
     }
 }
