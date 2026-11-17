@@ -103,6 +103,9 @@ with the code and the benchmark:
 - The first scan of this version re-embeds every vector once: blobs stamped with a bare preset name
   do not match the model key.
 - An offline machine pays one embedder probe per scan while documents owe vectors.
+- The reranker stays off by default. On the docs eval corpus `bge-reranker-base` raised nDCG@10 over all
+  tasks (0.954 to 0.967) but lowered it on natural-language questions (0.954 to 0.946), dropped one gold
+  out of the top ten, and cost about 25 times the latency.
 
 ## Alternatives considered
 
