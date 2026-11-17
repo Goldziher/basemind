@@ -151,3 +151,22 @@ fn a_document_that_cannot_be_read_keeps_its_entry() {
     unlock(&file);
 }
 
+/// One file whose extraction panics fails alone: the scan finishes, reports it, and indexes the
+/// rest.
+#[test]
+fn a_file_whose_extraction_panics_is_reported_and_the_scan_completes() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("alpha.rs"), b"pub fn alpha() -> u32 { 1 }\n").expect("write");
+    std::fs::write(
+        root.join(crate::scanner_file::TEST_PANIC_FILE),
+        b"pub fn beta() -> u32 { 2 }\n",
+    )
+    .expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    let report = full_scan(root, &mut store, &config());
+    assert_eq!(report.stats.updated, 1);
+    assert_eq!(report.stats.extract_failed, 1);
+    assert_eq!(alpha_symbols(&store), 1);
+}
