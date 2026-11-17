@@ -50,23 +50,56 @@ pub struct Bm25Hit {
     pub score: f32,
 }
 
+/// Most distinct chunks one query accumulates scores for. Terms are scored rarest first, so once
+/// the map is full only chunks already matched by a rarer term gain score: the allocation is bounded
+/// however common the query's words are.
+const MAX_CANDIDATES: usize = 20_000;
+
+/// A term in more than `1 / COMMON_TERM_DIVISOR` of all chunks is a stopword for a query that also
+/// has a rarer term: its idf is near zero and its posting list is the expensive part of the query.
+const COMMON_TERM_DIVISOR: u64 = 4;
+
 /// Invoke `f` on every lowercased alphanumeric token in `text`. Runs of non-alphanumeric characters
-/// separate tokens, so `find_references()` yields `find` + `references` (snake_case splits improve
-/// recall). Tokens over [`MAX_TERM_LEN`] bytes are dropped. Unicode-aware via `char::is_alphanumeric`.
+/// separate tokens, so `find_references()` yields `find` + `references`. A camelCase or PascalCase
+/// run is emitted whole and then as its words (`findReferences` yields `findreferences`, `find` and
+/// `references`; `HTTPServer` yields `httpserver`, `http` and `server`), so a prose query reaches
+/// identifiers of every casing convention. Tokens over [`MAX_TERM_LEN`] bytes are dropped.
+/// Unicode-aware via `char::is_alphanumeric`.
 fn for_each_token(text: &str, mut f: impl FnMut(&str)) {
-    let mut current = String::new();
-    for ch in text.chars() {
-        if ch.is_alphanumeric() {
-            current.extend(ch.to_lowercase());
-        } else if !current.is_empty() {
-            if current.len() <= MAX_TERM_LEN {
-                f(&current);
-            }
-            current.clear();
+    let mut buf = String::new();
+    let mut emit = |word: &str| {
+        buf.clear();
+        buf.extend(word.chars().flat_map(char::to_lowercase));
+        if !buf.is_empty() && buf.len() <= MAX_TERM_LEN {
+            f(&buf);
         }
+    };
+    for run in text.split(|c: char| !c.is_alphanumeric()).filter(|run| !run.is_empty()) {
+        emit(run);
+        for_each_camel_word(run, &mut emit);
     }
-    if !current.is_empty() && current.len() <= MAX_TERM_LEN {
-        f(&current);
+}
+
+/// Invoke `f` on each word of a camelCase / PascalCase run, and on nothing when the run is one
+/// word. A word starts at an upper-case letter after a lower-case letter or a digit, and at the last
+/// upper-case letter of an acronym followed by a lower-case one (`HTTPServer` is `HTTP` +
+/// `Server`). Allocation-free: this runs per token in the scanner's per-file loop.
+fn for_each_camel_word(run: &str, mut f: impl FnMut(&str)) {
+    let mut start = 0;
+    let mut prev: Option<char> = None;
+    let mut chars = run.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if let Some(p) = prev {
+            let next_lower = chars.peek().is_some_and(|(_, n)| n.is_lowercase());
+            if c.is_uppercase() && (p.is_lowercase() || p.is_numeric() || (p.is_uppercase() && next_lower)) {
+                f(&run[start..at]);
+                start = at;
+            }
+        }
+        prev = Some(c);
+    }
+    if start > 0 {
+        f(&run[start..]);
     }
 }
 
@@ -132,25 +165,84 @@ pub fn bm25_term_score(tf: u32, doclen: u32, avgdl: f32, idf: f32) -> f32 {
     idf * (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm)
 }
 
+/// What one query cost: the terms scored, the common terms skipped, and the distinct chunks scored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Bm25Work {
+    pub terms_scored: usize,
+    pub terms_skipped: usize,
+    pub candidates: usize,
+}
+
 /// Score `query` against the BM25 keyword index in `db` and return the top `limit` chunk hits,
 /// highest score first (ties broken by `chunk_id` for a stable order). Returns empty when the index
 /// is empty, the query has no tokens, or no chunk matches.
 pub fn bm25_search(db: &dyn IndexView, query: &str, limit: usize) -> Vec<Bm25Hit> {
+    bm25_search_counted(db, query, limit, MAX_CANDIDATES).0
+}
+
+/// Count `term`'s postings, stopping once the count passes `stop_after`.
+fn document_frequency(db: &dyn IndexView, term: &str, stop_after: u64) -> u64 {
+    let mut df = 0u64;
+    for row in db.prefix(Part::CodeBm25Postings, &keys::code_bm25_postings_prefix(term)) {
+        if row.is_ok() {
+            df += 1;
+            if df > stop_after {
+                break;
+            }
+        }
+    }
+    df
+}
+
+/// [`bm25_search`] with the candidate bound as a parameter, reporting the work done.
+///
+/// Each term's document frequency is counted first, without allocating. A term in more than a
+/// quarter of all chunks is skipped when a rarer term is present. The kept terms are scored rarest
+/// first into at most `max_candidates` chunks.
+pub fn bm25_search_counted(
+    db: &dyn IndexView,
+    query: &str,
+    limit: usize,
+    max_candidates: usize,
+) -> (Vec<Bm25Hit>, Bm25Work) {
+    let mut work = Bm25Work::default();
     let terms = tokenize_query(query);
     if terms.is_empty() || limit == 0 {
-        return Vec::new();
+        return (Vec::new(), work);
     }
     let Some((n, total_len)) = db.bm25_stats() else {
-        return Vec::new();
+        return (Vec::new(), work);
     };
     if n == 0 {
-        return Vec::new();
+        return (Vec::new(), work);
     }
     let avgdl = (total_len as f32 / n as f32).max(1.0);
+    let common = n / COMMON_TERM_DIVISOR;
+
+    let mut counted: Vec<(String, u64)> = terms
+        .into_iter()
+        .map(|term| {
+            let df = document_frequency(db, &term, common);
+            (term, df)
+        })
+        .filter(|(_, df)| *df > 0)
+        .collect();
+    if counted.iter().any(|(_, df)| *df <= common) {
+        let before = counted.len();
+        counted.retain(|(_, df)| *df <= common);
+        work.terms_skipped = before - counted.len();
+    } else {
+        // Every term is common: score them all, with their exact frequency.
+        for (term, df) in &mut counted {
+            *df = document_frequency(db, term, u64::MAX);
+        }
+    }
+    counted.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
     let mut scores: AHashMap<String, f32> = AHashMap::new();
-    for term in &terms {
-        let mut postings: Vec<(String, u32, u32)> = Vec::new();
+    for (term, df) in &counted {
+        work.terms_scored += 1;
+        let idf = bm25_idf(n, *df);
         for guard in db.prefix(Part::CodeBm25Postings, &keys::code_bm25_postings_prefix(term)) {
             let (k, v) = match guard {
                 Ok(kv) => kv,
@@ -159,21 +251,21 @@ pub fn bm25_search(db: &dyn IndexView, query: &str, limit: usize) -> Vec<Bm25Hit
                     continue;
                 }
             };
-            if let (Some(chunk_id), Some((tf, doclen))) = (
+            let (Some(chunk_id), Some((tf, doclen))) = (
                 keys::parse_code_bm25_posting_chunk_id(&k),
                 keys::parse_code_bm25_posting_value(&v),
-            ) {
-                postings.push((chunk_id.to_string(), tf, doclen));
+            ) else {
+                continue;
+            };
+            let gain = bm25_term_score(tf, doclen, avgdl, idf);
+            if let Some(score) = scores.get_mut(chunk_id) {
+                *score += gain;
+            } else if scores.len() < max_candidates {
+                scores.insert(chunk_id.to_string(), gain);
             }
         }
-        if postings.is_empty() {
-            continue;
-        }
-        let idf = bm25_idf(n, postings.len() as u64);
-        for (chunk_id, tf, doclen) in postings {
-            *scores.entry(chunk_id).or_insert(0.0) += bm25_term_score(tf, doclen, avgdl, idf);
-        }
     }
+    work.candidates = scores.len();
 
     let mut hits: Vec<Bm25Hit> = scores
         .into_iter()
@@ -186,7 +278,7 @@ pub fn bm25_search(db: &dyn IndexView, query: &str, limit: usize) -> Vec<Bm25Hit
             .then_with(|| a.chunk_id.cmp(&b.chunk_id))
     });
     hits.truncate(limit);
-    hits
+    (hits, work)
 }
 
 #[cfg(test)]
@@ -218,6 +310,26 @@ mod tests {
         assert_eq!(counts.get("references"), Some(&1));
         assert_eq!(counts.get("spawn"), Some(&3));
         assert_eq!(counts.get("fn"), Some(&1));
+    }
+
+    #[test]
+    fn tokenizer_splits_camel_and_pascal_case_and_keeps_the_whole_identifier() {
+        let counts = tokenize_counts("findReferences HTTPServer parseV2Config plain");
+        for term in [
+            "findreferences",
+            "find",
+            "references",
+            "httpserver",
+            "http",
+            "server",
+            "parsev2config",
+            "config",
+            "plain",
+        ] {
+            assert_eq!(counts.get(term), Some(&1), "{term}: {counts:?}");
+        }
+        assert_eq!(counts.len(), 11, "{counts:?}");
+        assert_eq!(tokenize_query("find references").len(), 2);
     }
 
     #[test]
