@@ -640,6 +640,7 @@ impl Fixture {
     /// Every child process gets a throwaway data home, comms dir, home and cache, so no run can
     /// reach a daemon, index or configuration that belongs to a real session.
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let program = Path::new(program.as_ref());
         let home = self.tmp.path().join("home");
         let mut cmd = Command::new(program);
         cmd.env("BASEMIND_DATA_HOME", &self.data)
@@ -656,6 +657,12 @@ impl Fixture {
             )
             .env("NO_COLOR", "1")
             .env_remove("BASEMIND_NO_AUTOSPAWN");
+        // ~keep A Linux release loads its bundled lib/ through RUNPATH, which LD_LIBRARY_PATH
+        // ~keep outranks: under CI's /usr/local/lib libheif the loader mixes the two sets and the
+        // ~keep release cannot start. The build under test, which may need the variable, keeps it.
+        if program != Path::new(BIN) && self.daemon_bins.iter().any(|bin| bin == program) {
+            cmd.env_remove("LD_LIBRARY_PATH");
+        }
         cmd
     }
 }
