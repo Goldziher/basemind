@@ -47,6 +47,19 @@ pub(crate) fn info(pid: i32) -> Option<ProcInfo> {
     platform::info(pid)
 }
 
+/// Whether `id` is still the same process and has not exited.
+pub(crate) fn running(id: ProcId) -> bool {
+    info(id.pid).is_some_and(|now| now.start == id.start && !now.zombie)
+}
+
+/// Every process now. `None` when the table could not be read, or read empty: no decision
+/// may rest on an empty listing, since this process at least is always in it.
+pub(crate) fn all() -> Option<Vec<ProcInfo>> {
+    // A process that exited between the listing and its read is simply gone.
+    let procs: Vec<ProcInfo> = platform::pids()?.into_iter().filter_map(info).collect();
+    (!procs.is_empty()).then_some(procs)
+}
+
 /// The ancestors of `pid`, nearest first, ending at a process whose parent is 0 or itself
 /// (the kernel's or init), or at the child of a process of another user, which macOS does not
 /// describe (`login`, `launchd`, a setuid program). `None` when a link vanished while it was
@@ -117,6 +130,15 @@ mod platform {
             zombie: matches!(field(3)?, "Z" | "X"),
         })
     }
+
+    pub fn pids() -> Option<Vec<i32>> {
+        let entries = std::fs::read_dir("/proc").ok()?;
+        Some(
+            entries
+                .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+                .collect(),
+        )
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -152,6 +174,18 @@ mod platform {
             zombie: bsd.pbi_status == libc::SZOMB,
         })
     }
+
+    pub fn pids() -> Option<Vec<i32>> {
+        // SAFETY: with a null buffer proc_listallpids returns the number of processes.
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let room = usize::try_from(count).ok()? + 64;
+        let mut pids = vec![0_i32; room];
+        let bytes = libc::c_int::try_from(room * std::mem::size_of::<i32>()).ok()?;
+        // SAFETY: the buffer holds `room` pids, `bytes` bytes, and the call writes at most that.
+        let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        pids.truncate(usize::try_from(listed).ok()?);
+        Some(pids)
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
@@ -159,6 +193,10 @@ mod platform {
     use super::ProcInfo;
 
     pub fn info(_pid: i32) -> Option<ProcInfo> {
+        None
+    }
+
+    pub fn pids() -> Option<Vec<i32>> {
         None
     }
 }
@@ -173,6 +211,12 @@ mod tests {
         assert_eq!(u32::try_from(me.pid).ok(), Some(std::process::id()));
         assert_eq!(u32::try_from(me.ppid).ok(), Some(std::os::unix::process::parent_id()));
         assert!(!me.zombie);
+        assert!(running(me.id()));
+        assert!(!running(ProcId {
+            start: me.start + 1,
+            ..me.id()
+        }));
+        assert!(all().unwrap().iter().any(|proc| proc.id() == me.id()));
         let chain = ancestors(me.pid).unwrap();
         assert_eq!(chain.first().map(|parent| parent.pid), Some(me.ppid));
         assert!(info(0).is_none() && info(-1).is_none());

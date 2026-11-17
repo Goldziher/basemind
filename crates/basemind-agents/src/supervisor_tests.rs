@@ -1012,3 +1012,91 @@ fn only_a_peer_outside_the_supervisors_tree_is_made_the_operator() {
     supervisor.stop(&operator, launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
 }
+
+/// An OpenCode session whose stand-in starts `perl <attack>` in the background, then completes
+/// its turn and ends. Returns the attacker as it started.
+fn detached_attack(
+    scratch: &Scratch,
+    supervisor_configs: &mut Vec<LaunchConfig>,
+    perl: &Path,
+    attack: &str,
+) -> PathBuf {
+    let pidfile = scratch.path.join("attacker.pid");
+    let body = format!(
+        "'{perl}' {attack} &\necho $! > '{pidfile}'\n{HANDSHAKE}sleep 1\n{RESULT}cat > /dev/null\n",
+        perl = perl.display(),
+        pidfile = pidfile.display(),
+    );
+    supervisor_configs.push(scratch.config(OPENCODE, &body));
+    pidfile
+}
+
+/// Kills the attacker `started` at the end of a test, only while it is still that process.
+struct Reclaim(Peer);
+
+impl Drop for Reclaim {
+    fn drop(&mut self) {
+        let pid = self.0.id.pid;
+        if crate::procinfo::info(pid).is_some_and(|now| now.start == self.0.id.start) {
+            // SAFETY: the test started this process, and its start time was checked just now.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+#[test]
+fn a_detached_process_that_joins_a_sibling_sessions_group_does_not_take_it_down() {
+    let Some(perl) = perl() else {
+        return;
+    };
+    let scratch = Scratch::new();
+    let attack = format!(
+        "-e 'open(my $f, q{{<}}, q{{{dir}/b.pid}}) or die; my $b = <$f>; chomp $b; \
+         my $r = setpgrp(0, $b) ? q{{joined}} : q{{refused}}; \
+         open(my $o, q{{>}}, q{{{dir}/outcome}}) or die; print $o $r; close $o; sleep 300'",
+        dir = scratch.path.display()
+    );
+    let mut configs = vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())];
+    let pidfile = detached_attack(&scratch, &mut configs, &perl, &attack);
+    let (supervisor, _) = start(policy(&[HarnessKind::ClaudeCode, OPENCODE]), configs);
+    let sibling = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let sibling_pid = pid_of(&supervisor, sibling.id);
+    std::fs::write(scratch.path.join("b.pid"), sibling_pid.to_string()).unwrap();
+    let second = Caller::principal("second", outside()).unwrap();
+    let launched = supervisor.launch(&second, OPENCODE, &request()).unwrap();
+    let _reclaim = Reclaim(Peer::of_pid(u32::try_from(recorded_pid(&pidfile)).unwrap()));
+    let outcome = attack_outcome(&scratch);
+    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Completed);
+    assert!(alive(sibling_pid), "the reaper killed a sibling session ({outcome})");
+    assert_eq!(supervisor.status(sibling.id).unwrap().state, SessionState::Running);
+    assert_eq!(outcome, "refused");
+}
+
+#[test]
+fn a_detached_process_that_joins_the_launchers_group_is_still_reaped() {
+    let Some(perl) = perl() else {
+        return;
+    };
+    let scratch = Scratch::new();
+    // SAFETY: getpgrp has no preconditions.
+    let own_group = unsafe { libc::getpgrp() };
+    let attack = format!(
+        "-e 'my $r = setpgrp(0, {own_group}) ? q{{joined}} : q{{refused}}; \
+         open(my $o, q{{>}}, q{{{dir}/outcome}}) or die; print $o $r; close $o; sleep 300'",
+        dir = scratch.path.display()
+    );
+    let mut configs = Vec::new();
+    let pidfile = detached_attack(&scratch, &mut configs, &perl, &attack);
+    let (supervisor, _) = start(policy(&[OPENCODE]), configs);
+    let launched = supervisor.launch(&lead(), OPENCODE, &request()).unwrap();
+    let attacker = Peer::of_pid(u32::try_from(recorded_pid(&pidfile)).unwrap());
+    let _reclaim = Reclaim(attacker);
+    let outcome = attack_outcome(&scratch);
+    assert_eq!(finished(&supervisor, launched.id), FinishStatus::Completed);
+    let survived =
+        crate::procinfo::info(attacker.id.pid).is_some_and(|now| now.start == attacker.id.start && !now.zombie);
+    assert!(
+        !survived,
+        "a process in the launcher's group outlived its session ({outcome})"
+    );
+}

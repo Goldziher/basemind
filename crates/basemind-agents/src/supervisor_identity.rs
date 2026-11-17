@@ -117,7 +117,7 @@ impl Table {
                         // A session id is the leader's pid; a later process holding that pid
                         // started after it.
                         || (proc.sid == leader.pid && proc.start >= leader.start)
-                })
+                }) || entry.detached.contains(proc.id())
             })
             .map(|(id, _)| *id)
     }

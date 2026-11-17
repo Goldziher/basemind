@@ -67,7 +67,7 @@ pub(crate) struct Entry {
     started: SystemTime,
     root: PathBuf,
     handle: Option<SessionHandle>,
-    detached: Arc<Detached>,
+    pub(crate) detached: Arc<Detached>,
     approvals: HashMap<String, &'static str>,
     pump: Option<JoinHandle<()>>,
 }
@@ -378,6 +378,9 @@ impl Supervisor {
         // The harness is unreaped until the session reports it finished, so its pid is still
         // the process the session started.
         entry.leader = procinfo::info(i32::try_from(handle.pid()).unwrap_or(-1)).map(|leader| leader.id());
+        if let Some(leader) = entry.leader {
+            entry.detached.follow(leader);
+        }
         if entry.stop_requested {
             entry.state = SessionState::Stopping;
             handle.stop();
@@ -767,17 +770,17 @@ fn request_stop(entry: &mut Entry) {
 }
 
 /// The thread that owns one session: it reads every event, hands it to the observer, audits
-/// each settled approval, records the harness's detached groups for a flavor that makes them,
-/// and once the session has finished, reaps those groups, marks the session finished and
+/// each settled approval, records the harness's detached processes for a flavor that makes them,
+/// and once the session has finished, reaps those processes, marks the session finished and
 /// writes its exit record.
 fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc<Detached>, flavor: HarnessKind) {
     let tracks = crate::policy::caveats(flavor).contains(&Caveat::DetachedServer);
     let done = Arc::new(AtomicBool::new(false));
     let tracker = tracks.then(|| {
-        let (detached, done, pid) = (detached.clone(), done.clone(), session.pid());
+        let (detached, done) = (detached.clone(), done.clone());
         std::thread::spawn(move || {
             // Once the leader is gone its pid may name another process: stop polling it.
-            while !done.load(Ordering::SeqCst) && detached.poll(pid) {
+            while !done.load(Ordering::SeqCst) && detached.poll() {
                 std::thread::sleep(detached::POLL);
             }
         })
