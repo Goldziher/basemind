@@ -83,7 +83,9 @@ println!("{} runs as {}", launched.id, launched.agent);
 // A launched agent's call, on the socket this process listens on for its own launched agents:
 // the kernel names the process on the other end, which the supervisor places in its session;
 // the token has to be that session's.
-let listener = UnixListener::bind("/run/user/1000/basemind/agents.sock")?;
+// One socket per `serve`, in a directory of mode 0700 made for it: a fixed path would collide
+// between two leads.
+let listener = UnixListener::bind(format!("/run/user/1000/basemind/agents-{}/agents.sock", std::process::id()))?;
 let (connection, _) = listener.accept()?;
 let token = "the token the agent read from BASEMIND_LAUNCH_TOKEN";
 let agent = Caller::launched(token, Peer::of_socket(connection.as_fd())?);
