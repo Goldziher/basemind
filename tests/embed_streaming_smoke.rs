@@ -23,6 +23,9 @@
 //! in-crate unit tests `pending_code_batch_is_metadata_only` / `pending_doc_batch_is_metadata_only`.
 #![cfg(all(feature = "documents", feature = "code-search"))]
 
+#[path = "common/allow_skip.rs"]
+mod allow_skip;
+
 use basemind::config::ConfigV1;
 use basemind::extract::doc::DocBlobs;
 use basemind::scanner::{EmbedMode, ScanSource, scan};
@@ -153,7 +156,10 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
             "every doc chunk carries a full-width embedding"
         );
     } else {
-        eprintln!("SKIP vector-landing assertions: embedder unavailable (offline / cold model)");
+        allow_skip::skip_unless_allowed(
+            allow_skip::NO_EMBEDDER,
+            "vector-landing assertions not run: embedder unavailable (offline / cold model)",
+        );
     }
 }
 
@@ -200,7 +206,10 @@ fn embed_pass_footprint_does_not_ratchet_across_rescans() {
         warm.stats.updated, warm.stats.docs_indexed
     );
     if !embedder_produced_vectors(&store, code_files) {
-        eprintln!("SKIP: embedder produced no vectors (offline / cold model) — nothing to ratchet");
+        allow_skip::skip_unless_allowed(
+            allow_skip::NO_EMBEDDER,
+            "the embedder produced no vectors (offline / cold model), nothing to ratchet",
+        );
         return;
     }
 

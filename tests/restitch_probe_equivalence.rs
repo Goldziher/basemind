@@ -12,6 +12,9 @@
 //! two empty indexes agreeing. Cases skip (rather than fail) when a grammar cannot be fetched.
 #![cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 
+#[path = "common/allow_skip.rs"]
+mod allow_skip;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -107,7 +110,10 @@ fn assert_incremental_equals_full(case: &Case<'_>) {
         .collect();
     let (dir, mut store) = scanned(&files);
     if store.lookup(case.grammar_probe).is_none() {
-        eprintln!("grammar for {} unavailable here - skipping", case.grammar_probe);
+        allow_skip::skip_unless_allowed(
+            allow_skip::NO_GRAMMAR,
+            &format!("grammar for {} unavailable here", case.grammar_probe),
+        );
         return;
     }
     let rows_before = rows(&store);

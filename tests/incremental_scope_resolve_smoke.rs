@@ -12,6 +12,9 @@
 //! skips its assertions rather than failing spuriously — mirrors the guard in `code_intel_smoke.rs`.
 #![cfg(feature = "code-intel-js")]
 
+#[path = "common/allow_skip.rs"]
+mod allow_skip;
+
 use std::fs;
 
 use basemind::config::ConfigV1;
@@ -48,7 +51,10 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
     .unwrap();
 
     if store.lookup("a.ts").is_none() || store.lookup("b.ts").is_none() {
-        eprintln!("typescript grammar unavailable in this environment — skipping cross-file assertions");
+        allow_skip::skip_unless_allowed(
+            allow_skip::NO_GRAMMAR,
+            "typescript grammar unavailable in this environment",
+        );
         return;
     }
 

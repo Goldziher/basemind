@@ -12,6 +12,9 @@
 //! its assertions rather than failing spuriously — mirrors the guard in `code_intel_smoke.rs`.
 #![cfg(feature = "code-intel-js")]
 
+#[path = "common/allow_skip.rs"]
+mod allow_skip;
+
 use std::fs;
 
 use basemind::config::ConfigV1;
@@ -46,7 +49,10 @@ fn scan_paths_refreshes_resolved_edges_after_edit() {
     .unwrap();
 
     if store.lookup("app.js").is_none() {
-        eprintln!("javascript grammar unavailable in this environment — skipping resolution assertions");
+        allow_skip::skip_unless_allowed(
+            allow_skip::NO_GRAMMAR,
+            "javascript grammar unavailable in this environment",
+        );
         return;
     }
 
@@ -103,7 +109,10 @@ fn scan_paths_purges_resolved_edges_for_removed_file() {
     .unwrap();
 
     if store.lookup("gone.js").is_none() || store.lookup("keep.js").is_none() {
-        eprintln!("javascript grammar unavailable in this environment — skipping resolution assertions");
+        allow_skip::skip_unless_allowed(
+            allow_skip::NO_GRAMMAR,
+            "javascript grammar unavailable in this environment",
+        );
         return;
     }
 
