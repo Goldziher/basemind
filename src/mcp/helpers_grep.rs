@@ -104,14 +104,18 @@ pub(super) async fn run_workspace_grep(
 
     let cache = state.shared.cache.load_full();
 
+    let selected = |path: &RelPath, language: &str| {
+        filters.path.as_ref().is_none_or(|f| f.matches(path.as_bytes()))
+            && filters.language.is_none_or(|l| language == l)
+    };
+    let documents = blocking(|| super::helpers_grep_text::text_documents(state, &cache, &selected));
     // Grep needs only path, language and indexed size — every one of them in the symbol-free file
-    // view — so the candidate scan never decodes an outline however large the corpus is.
+    // view — so the candidate scan never decodes an outline however large the corpus is. Code first,
+    // then the text documents, so a cursor's file index means the same file on every page.
     let candidates: Vec<(&RelPath, &super::l1_cache::FileMeta)> = cache
         .file_metas()
-        .filter(|(path, meta)| {
-            filters.path.as_ref().is_none_or(|f| f.matches(path.as_bytes()))
-                && filters.language.is_none_or(|l| *meta.language == *l)
-        })
+        .filter(|(path, meta)| selected(path, &meta.language))
+        .chain(documents.iter().map(|(path, meta)| (path, meta)))
         .collect();
     if candidates.is_empty()
         && let Some(refusal) = super::helpers_files::grep_selects_no_file(state, &cache, &filters)
@@ -125,7 +129,9 @@ pub(super) async fn run_workspace_grep(
     let root = state.shared.root.as_path();
     let files = IndexedFiles::of(state);
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
-    let entries: Vec<GrepEntry> = scanned
+    // Documents have no bloom row: they sit after the code files and are always read.
+    let code_files = scanned.partition_point(|(_, meta)| !meta.hash_hex.is_empty());
+    let entries: Vec<GrepEntry> = scanned[..code_files]
         .iter()
         .map(|(path, meta)| GrepEntry {
             rel: (*path).clone(),
@@ -141,6 +147,10 @@ pub(super) async fn run_workspace_grep(
             .await
             .grep_skip(root, &source, &entries)
             .await
+            .map(|mut skip| {
+                skip.resize(scanned.len(), false);
+                skip
+            })
     } else {
         None
     };
@@ -154,7 +164,8 @@ pub(super) async fn run_workspace_grep(
     let (selected, limit_resume) = select_hits(&counts, limit, skip_files, skip_hits);
     // Judged against the file the bytes were read from: an external path is not under `root`.
     let is_fresh = |file_idx: usize, file: &std::path::Path, bytes: &[u8]| {
-        super::freshness::matches_index(scanned[file_idx].1.into(), file, bytes)
+        let meta = scanned[file_idx].1;
+        meta.hash_hex.is_empty() || super::freshness::matches_index(meta.into(), file, bytes)
     };
     let (mut hits, hit_cursors) = blocking(|| {
         materialize(

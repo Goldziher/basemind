@@ -130,11 +130,11 @@ async fn code_grep_does_not_count_matches_through_a_directory_swapped_for_a_link
     );
 }
 
-/// `code_grep` covers code files. Filters that match only documents are answered with the tool
-/// that searches those, not with "no indexed path", which `find_files` would contradict.
+/// `code_grep` searches the text documents the document tier indexed (markdown, config, data) as
+/// well as code, so an exact string in a README is found where `find_files` lists it.
 #[cfg(feature = "documents")]
 #[test]
-fn code_grep_says_when_its_filters_match_only_documents() {
+fn code_grep_searches_the_text_documents_the_document_tier_indexed() {
     let dir = super::fixture_with(&[]);
     let root = dir.path();
     std::fs::create_dir_all(root.join("docs")).unwrap();
@@ -169,14 +169,15 @@ fn code_grep_says_when_its_filters_match_only_documents() {
         assert_eq!(listed["files"][0], "docs/guide.md", "{listed}");
 
         for arguments in [
-            json!({ "pattern": "harbour", "path": "docs/" }),
-            json!({ "pattern": "harbour", "language": "markdown" }),
+            json!({ "pattern": "harbour is run", "path": "docs/" }),
+            json!({ "pattern": "harbour is run", "language": "markdown" }),
         ] {
-            let refused = super::call_err(&client, "code_grep", arguments.clone()).await;
-            assert!(
-                refused.contains("match only documents (1 indexed, e.g. `docs/guide.md`)")
-                    && refused.contains("`docs_search`"),
-                "{arguments}: {refused}"
+            let found = call(&client, "code_grep", arguments.clone()).await;
+            let hits = rows(&found["hits"]);
+            assert_eq!(hits.len(), 1, "{arguments}: {found}");
+            assert_eq!(
+                (hits[0]["path"].as_str(), hits[0]["line"].as_u64()),
+                (Some("docs/guide.md"), Some(3))
             );
         }
         let _ = client.cancel().await;
@@ -333,4 +334,36 @@ async fn code_grep_pages_split_on_a_shared_line_keep_their_columns() {
     let whole = call(&client, "code_grep", json!({ "pattern": "twice_x\\(" })).await;
     let whole: Vec<_> = rows(&whole["hits"]).iter().map(|row| row["column"].clone()).collect();
     assert_eq!(whole, columns, "paged and whole agree");
+}
+
+const APP_TOML: &str = "[client]\nretry_limit = 3\n";
+const NOTES_MD: &str = "# Notes\n\nThe retry_limit setting caps attempts.\n";
+
+/// Config and markdown files are searched too: an exact string in a config file is not a reason to
+/// fall back to `rg`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_searches_text_files_outside_code() {
+    let (_dir, client) = started_with(&[("cfg/app.toml", APP_TOML), ("docs/notes.md", NOTES_MD)]).await;
+
+    let found = call(&client, "code_grep", json!({ "pattern": "retry_limit" })).await;
+    let paths: Vec<String> = rows(&found["hits"])
+        .iter()
+        .map(|hit| format!("{}:{}", hit["path"].as_str().unwrap(), hit["line"]))
+        .collect();
+    assert_eq!(paths, ["cfg/app.toml:2", "docs/notes.md:3"], "{found}");
+
+    let markdown = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "retry_limit", "language": "markdown" }),
+    )
+    .await;
+    assert_eq!(markdown["total"], 1, "{markdown}");
+    let one_file = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "retry_limit", "path": "cfg/app.toml" }),
+    )
+    .await;
+    assert_eq!(one_file["total"], 1, "{one_file}");
 }
