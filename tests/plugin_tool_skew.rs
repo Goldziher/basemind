@@ -58,9 +58,11 @@ const TEXT_EXTENSIONS: &[&str] = &[
 ];
 
 /// The plugin manifest whose `version` the launcher reads first.
+#[cfg(unix)]
 const PINNING_MANIFEST: &str = "plugin/.claude-plugin/plugin.json";
 
 /// Declares that `main` names a tool surface the pinned release cannot serve. See the module docs.
+#[cfg(unix)]
 const UNRELEASED_SURFACE_MARKER: &str = ".github/unreleased-surface.toml";
 
 /// Names the plugin content references although the binary does not serve them, each with the
@@ -973,6 +975,7 @@ fn today() -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+#[cfg(unix)]
 struct UnreleasedSurface {
     pinned_version: String,
     since: String,
@@ -980,6 +983,7 @@ struct UnreleasedSurface {
     reason: String,
 }
 
+#[cfg(unix)]
 fn unreleased_surface(root: &Path) -> Option<UnreleasedSurface> {
     let text = fs::read_to_string(root.join(UNRELEASED_SURFACE_MARKER)).ok()?;
     let table: toml::Table = toml::from_str(&text).unwrap_or_else(|e| panic!("{UNRELEASED_SURFACE_MARKER}: {e}"));
@@ -1004,6 +1008,7 @@ fn unreleased_surface(root: &Path) -> Option<UnreleasedSurface> {
     Some(marker)
 }
 
+#[cfg(unix)]
 fn manifest_version(root: &Path) -> String {
     let manifest: Value = serde_json::from_str(
         &fs::read_to_string(root.join(PINNING_MANIFEST)).unwrap_or_else(|e| panic!("read {PINNING_MANIFEST}: {e}")),
@@ -1018,6 +1023,7 @@ fn manifest_version(root: &Path) -> String {
 /// The binary of the release the plugin manifests pin. `BASEMIND_SKEW_PINNED_BIN` names it
 /// (`scripts/fetch-release-binaries.sh` downloads it), or is `unreleased` when the pinned version
 /// is the one this tree is about to release, whose binary is the tree build itself.
+#[cfg(unix)]
 fn pinned_binary(pinned: &str) -> Option<PathBuf> {
     match std::env::var("BASEMIND_SKEW_PINNED_BIN") {
         Ok(value) if value == "unreleased" => {
