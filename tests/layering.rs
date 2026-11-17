@@ -47,6 +47,7 @@ use Layer::{Core, Engine, Retrieval, Root};
 /// `Workspace` (ADR-0039).
 const LAYERS: &[(&str, Layer)] = &[
     ("alloc_tag", Core),
+    ("allocator", Core),
     ("backpressure", Core),
     ("boot_identity", Core),
     ("chunk", Core),

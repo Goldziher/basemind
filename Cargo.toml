@@ -154,9 +154,10 @@ full = ["documents", "documents-ocr", "documents-ner", "memory", "comms", "code-
 
 test-support = []
 
-# The system allocator instead of mimalloc, for leak checking only (`scripts/hardening/leak_check.py`):
-# macOS `leaks` scans the malloc zones, and mimalloc registers none, so on a release build every C
-# allocation a Rust value owns looks unreferenced and a Rust-heap leak is invisible. Never shipped.
+# The system allocator instead of mimalloc (`src/allocator.rs`), for leak checking only
+# (`scripts/hardening/leak_check.py`): macOS `leaks` scans the malloc zones, and mimalloc registers
+# none, so on a mimalloc build every C allocation a Rust value owns looks unreferenced and a
+# Rust-heap leak is invisible. Never shipped: every other feature set installs mimalloc.
 system-allocator = []
 
 [dependencies]
@@ -199,12 +200,12 @@ jsonschema = { version = "0.61", default-features = false }
 # types always share LanceDB's identity. A separate Arrow major forks them and breaks `Scannable`/`Schema`. ~keep
 lancedb = { version = "0.41.0", features = ["remote"], optional = true }
 libc = "0.2"
-# ~keep `extended` exposes `mi_option_set`, used by `alloc_tag` to retag the heap off `VM_MEMORY_IOACCELERATOR`.
+# ~keep The global allocator (`src/allocator.rs`). `extended` exposes `mi_option_set`, used by `alloc_tag` to
+# ~keep retag the heap off `VM_MEMORY_IOACCELERATOR`, and `mi_is_in_heap_region`, which proves the binary's allocator.
 libmimalloc-sys = { version = "0.1", features = ["extended"] }
 lru = "0.19.0"
 memchr = "2"
 memmap2 = "0.9"
-mimalloc = "0.1"
 notify = "8"
 notify-debouncer-full = "0.7"
 nucleo-matcher = "0.3.1"
