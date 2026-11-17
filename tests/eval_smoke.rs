@@ -238,8 +238,12 @@ fn savings_are_credited_only_for_correct_answers() {
     let rep: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
     let sv = &rep["modes"]["symbols"]["savings"];
     assert_eq!((sv["credited"].as_u64(), sv["uncredited"].as_u64()), (Some(1), Some(1)));
-    assert_eq!(f(sv, "model_ratio"), 25.0, "savings.rs models code_symbols at 25x");
-    assert!(f(sv, "ratio.median") > 25.0 * 1.25 && sv["flagged"] == true, "{sv}");
+    assert_eq!(
+        f(sv, "model_ratio"),
+        1.0,
+        "savings.rs claims no saving for code_symbols, which the gate measured below 1x"
+    );
+    assert!(f(sv, "ratio.median") > 1.25 && sv["flagged"] == true, "{sv}");
 }
 
 #[test]
