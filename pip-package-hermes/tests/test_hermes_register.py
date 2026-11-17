@@ -174,23 +174,22 @@ def test_session_start_context_without_messages_has_no_count(monkeypatch):
     assert "agent_threads" in text and "unread agent message" not in text
 
 
-def test_delta_context_announces_under_the_session_name_and_keeps_no_state(monkeypatch):
+def test_delta_context_announces_as_the_principal_and_keeps_no_state(monkeypatch):
+    # Hermes cannot rewrite a tool call's arguments, so its agent tools act as the principal.
     msgs = [{"subject": "auth", "from": "peer", "id": "t-abcdef.3", "body_bytes": 42}]
     calls = fake_cli(monkeypatch, {"messages": msgs})
-    out = hermes._delta_context("/tmp", "s1")
+    out = hermes._delta_context("/tmp")
     assert "from peer in auth (t-abcdef.3, 42 bytes)" in out
     assert "agent_inbox" in out
-    assert json.loads(calls[0][1]) == {"session_id": "s1"}
-    args = calls[1][0]
-    assert "--announce" in args and args[args.index("--as") + 1] == "session-1a2b3c4d"
-    assert hermes._delta_context("/tmp", "s1") == out
+    args = calls[0][0]
+    assert args[:2] == ["agent", "inbox"] and "--announce" in args and "--as" not in args
+    assert all(call[0][:3] != ["agent", "hook", "name"] for call in calls)
+    assert hermes._delta_context("/tmp") == out
 
 
-def test_delta_context_is_silent_without_messages_or_a_name(monkeypatch):
+def test_delta_context_is_silent_without_messages(monkeypatch):
     fake_cli(monkeypatch, {"messages": []})
-    assert hermes._delta_context("/tmp", "s1") is None
-    fake_cli(monkeypatch, {"messages": [{"subject": "a", "from": "p", "id": "x"}]}, name="")
-    assert hermes._delta_context("/tmp", "s1") is None
+    assert hermes._delta_context("/tmp") is None
 
 
 def test_pyproject_declares_the_hermes_entry_point():
