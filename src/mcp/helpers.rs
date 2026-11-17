@@ -647,6 +647,21 @@ pub(super) async fn run_telemetry_summary(
     json_result(&response)
 }
 
+/// The error a refused or failed rescan answers with. Another process writing this workspace is the
+/// caller's to retry or rescan through, and is marked [`BUSY_DATA`] so the CLI exits `3` for it as
+/// it does for every other lock contention.
+pub(crate) fn rescan_error(error: &crate::scanner::ScanError) -> McpError {
+    match error {
+        crate::scanner::ScanError::Store(store) if store.is_lock_contention() => {
+            McpError::invalid_request(format!("rescan: {error}"), Some(serde_json::json!({ BUSY_DATA: true })))
+        }
+        _ => McpError::internal_error(format!("rescan: {error}"), None),
+    }
+}
+
+/// Key of the `data` field that marks a tool error as contention for the workspace writer lock.
+pub(crate) const BUSY_DATA: &str = "busy";
+
 #[cfg(test)]
 mod tests {
     use super::normalize_for_history;
@@ -776,18 +791,3 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b), "second lookup must return the same cached Arc");
     }
 }
-
-/// The error a refused or failed rescan answers with. Another process writing this workspace is the
-/// caller's to retry or rescan through, and is marked [`BUSY_DATA`] so the CLI exits `3` for it as
-/// it does for every other lock contention.
-pub(crate) fn rescan_error(error: &crate::scanner::ScanError) -> McpError {
-    match error {
-        crate::scanner::ScanError::Store(store) if store.is_lock_contention() => {
-            McpError::invalid_request(format!("rescan: {error}"), Some(serde_json::json!({ BUSY_DATA: true })))
-        }
-        _ => McpError::internal_error(format!("rescan: {error}"), None),
-    }
-}
-
-/// Key of the `data` field that marks a tool error as contention for the workspace writer lock.
-pub(crate) const BUSY_DATA: &str = "busy";
