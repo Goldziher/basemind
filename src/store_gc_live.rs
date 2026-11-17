@@ -6,7 +6,7 @@ use std::path::Path;
 
 use ahash::AHashSet;
 
-use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR};
+use crate::store::{StoreError, VIEWS_DIR};
 use crate::store_gc::blob_stem;
 
 /// The blob suffixes that belong to the CODE lane: produced by the code-map scan from a
@@ -92,55 +92,51 @@ impl Drop for SweepLock {
     }
 }
 
-/// The first release minor whose writer open moves memory notes out of a view's index into the
-/// group store. Earlier releases kept them in the view's `index.fjall`.
-const GROUP_MEMORY_SINCE_MINOR: u16 = 30;
-
 /// Move into the group store the memory notes a release before 0.30 left in the index of each view of
 /// `workspace`, before a collector removes that index. Only a writer open of the view moved them, so a
 /// workspace not opened for writing since the upgrade still held them, and evicting or reaping it
-/// destroyed notes a user wrote. Returns `false` when they could not be moved: the caller must then
-/// leave the views alone. The caller holds the workspace lock.
+/// destroyed notes a user wrote. Judged by the index itself: a writer open that met a newer notes store
+/// left the notes and still rewrote the file map. Returns `false` when they could not be moved: the
+/// caller must then leave the views alone. The caller holds the workspace lock.
 pub(crate) fn rescue_legacy_memory(workspace: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(workspace.join(VIEWS_DIR)) else {
         return true;
     };
     for entry in entries.flatten() {
         let view_dir = entry.path();
-        if !view_dir.join(crate::index::INDEX_DIR).is_dir() || written_since_group_memory(&view_dir) {
+        if !view_dir.join(crate::index::INDEX_DIR).is_dir() {
             continue;
         }
-        let Some(marker) = crate::store_layout::read_workspace_marker(workspace) else {
-            tracing::warn!(
-                view = %view_dir.display(),
-                "no workspace marker names the group of this view's memory notes; keeping it"
-            );
-            return false;
+        let keep = |why: &str| {
+            tracing::warn!(view = %view_dir.display(), why, "keeping a view whose memory notes could not be moved");
+            false
         };
-        let memory_dir = crate::store_layout::memory_store_dir(&marker.root);
-        if let Err(error) = crate::index::IndexDb::open_with_memory(&view_dir, &memory_dir) {
-            tracing::warn!(
-                view = %view_dir.display(),
-                %error,
-                "could not move this view's memory notes to the group store; keeping it"
-            );
-            return false;
+        match crate::index::memory_store::view_holds_legacy_rows(&view_dir) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(error) => return keep(&error.to_string()),
+        }
+        let Some(memory_dir) = group_memory_dir(workspace) else {
+            return keep("no workspace marker names the group of its notes");
+        };
+        match crate::index::IndexDb::open_with_memory(&view_dir, &memory_dir) {
+            Ok(db) if !db.holds_legacy_memory() => {}
+            Ok(_) => return keep("the group's notes store is a newer basemind's"),
+            Err(error) => return keep(&error.to_string()),
         }
     }
     true
 }
 
-/// Whether the file map of `view_dir` was written by a release whose writer open, which runs before
-/// the map is written, moves memory notes out of the view.
-fn written_since_group_memory(view_dir: &Path) -> bool {
-    #[derive(serde::Deserialize)]
-    struct Version {
-        schema_ver: u16,
+/// The notes store of the group `workspace` belongs to: resolved from its root while that exists,
+/// else the group its marker recorded. A root that is gone resolves to nothing: a linked worktree's
+/// group is not the hash of its own path.
+fn group_memory_dir(workspace: &Path) -> Option<std::path::PathBuf> {
+    let marker = crate::store_layout::read_workspace_marker(workspace)?;
+    if marker.root.exists() {
+        return Some(crate::store_layout::memory_store_dir(&marker.root));
     }
-    std::fs::read(view_dir.join(INDEX_FILE))
-        .ok()
-        .and_then(|bytes| rmp_serde::from_slice::<Version>(&bytes).ok())
-        .is_some_and(|version| version.schema_ver >= GROUP_MEMORY_SINCE_MINOR)
+    marker.group.as_deref().map(crate::store_layout::group_memory_store_dir)
 }
 
 /// Whether `error` reading a file map marks a view the sweep passes over: an older schema or blob
