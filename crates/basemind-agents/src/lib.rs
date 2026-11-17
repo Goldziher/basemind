@@ -36,11 +36,14 @@
 //! ([`Supervisor::register_launcher_child`]); a caller is that principal only from that process
 //! (or the child's descendants). Nothing is registered from a connection. The operator exists
 //! in-process only ([`Supervisor::operator`]), for decisions the human makes through the
-//! embedding's own channel. Any other process is refused. Every registration, launch, stop, exit and
-//! approval decision, and every refusal (coalesced, so a looping caller cannot flood the log),
-//! goes to an [`AuditSink`] ([`FileAuditSink`]: mode 0600, one JSON object per line, capped with
-//! room kept for launches, exits and allows) with fixed outcome codes, the caller as verified,
-//! and no brief, command, environment value or token. The supervisor owns the sessions (status, stop, approvals,
+//! embedding's own channel. Any other process is refused. Every registration, launch, stop,
+//! exit and approval decision, and every refusal (coalesced, so a looping caller cannot flood
+//! the log), goes to an [`AuditSink`] ([`FileAuditSink`]: mode 0600, one JSON object per line,
+//! one writer, capped with a reserve for launches, exits, stops and allows) with fixed outcome
+//! codes, the caller as verified, and no brief, command, environment value or token. A
+//! supervisor claims its whole life's share of that reserve when it is built, and once a record
+//! the reserve holds cannot be written it launches nothing more
+//! ([`Supervisor::audit_exhausted`]). The supervisor owns the sessions (status, stop, approvals,
 //! reaping), kills the detached processes it recorded for a flavor known to leave them
 //! ([`Caveat`]) after its session ends, and stops every session when dropped.
 //!

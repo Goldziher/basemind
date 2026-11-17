@@ -53,8 +53,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use basemind_agents::{
-    AgentIdentity, Caller, FileAuditSink, FlavorPolicy, Harness, HarnessKind, LaunchConfig, LaunchPolicy,
-    LaunchRequest, Peer, PolicySpec, Registry, Supervisor,
+    AgentIdentity, Budget, Caller, FileAuditSink, FlavorPolicy, Harness, HarnessKind, LaunchConfig,
+    LaunchPolicy, LaunchRequest, Peer, PolicySpec, Registry, Supervisor,
 };
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,22 +65,24 @@ spec.max_depth = 1;
 spec.max_concurrent = 4;
 spec.max_children = 2;
 spec.wall_time = Duration::from_secs(30 * 60);
+spec.budget = Budget { max_launches: 20, max_turns: 50, max_allows: 200 };
 let config = LaunchConfig::new(
     Harness::new(HarnessKind::Codex),
     "/work/repo",
     AgentIdentity::new("codex-reviewer")?,
 );
-let audit = Arc::new(FileAuditSink::open("/var/lib/basemind/agent-launch.jsonl")?);
+// One file per supervisor: the sink holds it exclusively and claims the supervisor's reserve.
+let audit = Arc::new(FileAuditSink::open("/var/lib/basemind/agents/launch-audit-4242.jsonl")?);
 let supervisor = Supervisor::new(LaunchPolicy::new(spec)?, vec![config], Registry::with_defaults(), audit)?;
-// At start-up, before any agent runs: the embedding's own process speaks for "lead" (an engine
-// that starts the lead itself registers that child with `register_launcher_child`). Never
-// register a process because it connected to a socket: an escaped agent can connect too.
+// At start-up, before any agent runs, in the lead's own process (its `basemind serve`): that
+// process speaks for "lead". Nothing is ever registered from a connection.
 supervisor.register_launcher_in_process("lead")?;
 let lead = Caller::principal("lead", Peer::embedding()?)?;
 let launched = supervisor.launch(&lead, HarnessKind::Codex, &LaunchRequest::new("Review the diff."))?;
 println!("{} runs as {}", launched.id, launched.agent);
-// A launched agent's call: the kernel names the process on the other end of the connection,
-// which the supervisor places in its session; the token has to be that session's.
+// A launched agent's call, on the socket this process listens on for its own launched agents:
+// the kernel names the process on the other end, which the supervisor places in its session;
+// the token has to be that session's.
 let listener = UnixListener::bind("/run/user/1000/basemind/agents.sock")?;
 let (connection, _) = listener.accept()?;
 let token = "the token the agent read from BASEMIND_LAUNCH_TOKEN";
@@ -99,6 +101,11 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   flavor's rule grants: the same permission mode, bypass and unverified-mode opt-ins, an
   `ApprovalPolicy` only where the rule consents to one (one that allows everything is a bypass),
   pre-approved MCP tools only from the rule's `allow_tools`, and a stop grace of at most 60 s.
+- **Topology.** One is supported: the supervisor lives in the lead's own process (its `basemind
+  serve`, or an in-process embedding), never in the daemon. Launched agents are children of that
+  process, and when it exits its sessions end. The lead's tool calls reach the supervisor in that
+  process, as `Caller::principal(.., Peer::embedding()?)`; a launched agent's injected `basemind
+  serve` reaches it over a socket that process listens on.
 - **Who launches.** Nothing is trusted by default. Every caller carries a `Peer`: the process the
   kernel reports for its connection (`Peer::of_socket`), pinned to the process that connected (by
   its audit token's pid version on macOS, a pidfd on Linux 6.5+; `Peer::pins_connections` says
@@ -106,55 +113,69 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   - each harness leads a POSIX session of its own, so a process inside one is that session (by
     session id, by ancestry, or as a detached process the supervisor recorded for it) whatever it
     claims, and its token has to be that session's;
-  - the engine binds each configured launcher, and the operator, to one process: a child it
-    spawned itself (`register_launcher_child`, `register_operator_child`), its own process
-    (`*_in_process`, which admits that process only, not what descends from it), or a peer outside
-    every session and the supervisor's tree whose ancestry is read up to init and which is not an
-    ancestor of the supervisor (`register_launcher`, `register_operator`). A binding is
-    write-once while its process runs (`role_bound`). A caller is that principal only when its
-    process is the registered one or descends from it, and `Supervisor::operator(peer)` mints the
-    operator only for such a peer, checked again on every call;
+  - the embedding binds each configured launcher to its own process
+    (`register_launcher_in_process`, which admits that process only, not what descends from it)
+    or to a child it spawned and still holds (`register_launcher_child(&mut Child)`: refused once
+    the child has exited, bound by pid and start time; everything the child starts is the
+    principal, so it must run nothing another agent can write, which no agent lead satisfies). A
+    binding is write-once (`role_bound`) until `unregister_launcher` releases it, also after its
+    process exits. Nothing is ever bound to the peer of a connection: any process of the user,
+    an escaped agent's included, can connect;
+  - the operator is bound to the embedding's own process only (`register_operator_in_process`)
+    and made only by `Supervisor::operator()`, in that process, for a decision the human made
+    through the embedding's own channel (an MCP elicitation answered in the lead's client, say),
+    never for a tool call or a connection a launched agent can make; `unregister_operator`
+    releases it, and an operator caller made before is refused from then on;
   - any other process is refused: `peer_unverified` when it is under no registered process or its
     ancestry stops at a process that cannot be read, `caller_not_admitted` below the supervisor.
 
   A process that escaped its session (orphaned past its end, double-forked into a session of its
   own, or started for it by tmux, launchd or ssh) descends from init, a subreaper, or that
-  spawner. None of those is a registered process unless the engine registered one: an ancestor
-  of the supervisor (where a Linux subreaper would adopt the orphan) cannot be registered, but a
-  registered process that is itself a spawner (a shell, a tmux server) admits what it starts. A caller without a peer cannot be built. The operator
-  stops and answers any session and launches none. A session that is stopping launches nothing.
+  spawner, none of which can be registered; it descends from a registered process only when a
+  registered child is itself such a spawner. A caller without a peer cannot be built. The
+  operator stops and answers any session and launches none. A session that is stopping launches
+  nothing.
 - **Depth and fan-out.** A launched agent gets its own principal (`launched-<flavor>-<id>-<hex>`),
   `BASEMIND_AGENT_DEPTH` and a fresh 256-bit token; its depth comes from the supervisor's record,
   never the environment. A launch deeper than `max_depth`, beyond `max_concurrent` live sessions,
   beyond `max_children` live sessions of one launcher, or past the budget's `max_launches` is
-  refused with a `SupervisorError` naming the limit. A session's wall time is the least of the
-  request's, the config's and the policy's; the budget's `max_turns` caps its turns. A slot is
-  reserved before the harness starts and given back when the adapter fails or panics, or the
-  session's thread cannot start.
+  refused with a `SupervisorError` naming the limit. The budget is required. A session's wall
+  time is the least of the request's, the config's and the policy's; the budget's `max_turns`
+  caps its turns. A slot is reserved before the harness starts and given back when the adapter
+  fails or panics, or the session's thread cannot start; the launch stays spent, since its record
+  was written. Every allow, the approval policy's or a caller's, is spent from the session's
+  allowance (1024) and the supervisor's (the budget's `max_allows`); with none left the policy's
+  allow becomes a denial before the harness sees it, and a caller's is refused
+  (`allows_exhausted`).
 - **Audit.** Every registration, launch, refusal, stop, exit and approval decision is one record:
   when, the event, the caller as the supervisor verified it (an unverified caller is recorded as
   nobody, with what it `claimed` and its `peer` pid) and its depth, the session, the launched
   principal, flavor, root, depth, limits, caveats and a fixed outcome code. No brief, approval
   command or detail, environment value, token or harness error text. Records are written outside
   the supervisor's lock. What a caller can loop on is coalesced, keyed by the verified caller or,
-  for an unverified one, by where its process sits (8 a minute per key and outcome, the rest
-  counted in `suppressed`): refusals, a repeated stop, a denial or withdrawal (the approval
-  policy's keyed by session), a failed answer. A request the
-  adapter refuses is checked before a slot is reserved, so it is one refusal, never an accepted
-  launch. A launch whose record cannot be written is refused, an allow answered through the
-  supervisor whose record cannot be written is not delivered, and an allow the approval policy
-  settled whose record cannot be written stops the session, and so does a session's 1024th
-  recorded policy allow, so one session cannot spend the reserve below; every other failed
-  record is counted (`audit_failures`). Once the reserve is spent too, every launch is refused
-  and every policy allow stops its session: the log fails closed, and rotating it is the
-  operator's job. `FileAuditSink` appends one JSON object per line to a file it creates with
-  mode 0600; it refuses a symbolic link, a file with another hard link, a non-regular file (a FIFO
-  without blocking), another user's file or one others can read or write. It is capped (64 MiB by
-  default); the last quarter is kept for launches, exits, registrations and allows, so a flood of
-  the rest cannot crowd them out; past the cap a record is dropped and refused, with an
-  `audit_full` marker and an `audit_dropped` count. A symbolic link among the path's directories
-  is followed: the engine picks the path. The log is append-only as far as this writer goes, not
-  tamper-resistant: the same user can rewrite it.
+  for an unverified one, by where its process sits, never by outcome (8 a minute per key, the
+  rest counted in `suppressed`): refusals, a repeated stop, a denial or withdrawal (the approval
+  policy's keyed by session), a failed answer. A request the adapter refuses is checked before a
+  slot is reserved, so it is one refusal, never an accepted launch.
+- **The reserve.** `FileAuditSink` appends one JSON object per line to a file it creates with
+  mode 0600 and holds with an exclusive lock (a second writer is refused); it refuses a symbolic
+  link, a file with another hard link, a non-regular file (a FIFO without blocking), another
+  user's file or one others can read or write. It is capped (64 MiB by default), and the last
+  quarter is the reserve, which only launches, exits, the stop that stops each session,
+  registrations and their release, and allows may use: never a refusal, a denial or a repeated
+  stop. `Supervisor::new` claims, for its whole life, the most its budget can write there (three
+  records per launch, two per allow, 64 registrations and releases, each at a bound from the
+  configs' roots) through `AuditSink::reserve`, and is refused (`PolicyError::AuditReserve`) when
+  that does not fit. A launch whose record cannot be written is refused, an allow answered
+  through the supervisor whose record cannot be written is not delivered, and an allow the
+  approval policy settled whose record cannot be written stops the session. Any of these marks
+  the log exhausted: from then on every launch is refused (`audit_exhausted`) and no allow is
+  given, `Supervisor::audit_exhausted` says so and the observer hears it once
+  (`SessionObserver::audit_exhausted`). Other failed records are counted (`audit_failures`). Past
+  the cap a record is dropped and refused, with an `audit_full` marker and an `audit_dropped`
+  count. A symbolic link among the path's directories is followed: the engine picks the path. The
+  log is append-only as far as this writer goes, not tamper-resistant: the same user can rewrite
+  it; rotating it is the operator's job.
 - **Sessions.** `status`, `list`, `wait`, `stop` (the launcher or the operator; it reaches every
   session below the one stopped), `answer` for a pending approval, `stop_all`, and `reap` to forget
   finished sessions. Dropping the supervisor stops every session within its stop grace and kills
@@ -168,7 +189,8 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   while that leader is in the same listing. A session past 1024 recorded processes is stopped.
   Once the session ends it waits up to 2 s, then kills what is left: a whole group only when every
   member is the session's and the group is neither init's nor the launcher's, else each process
-  alone, each checked again right before the signal (through a pidfd on Linux). Nothing is killed
+  alone, each checked again right before the signal (through a pidfd on Linux 5.3 and later;
+  before that, and on macOS, a pid reused in that instant could be signalled). Nothing is killed
   without a listing, and the session is reported finished only then. `UserMcpServers` (OpenCode, Codex): the harness starts the
   user's own MCP servers and plugins from its user-level configuration even when the launch names
   none (OpenCode with an empty `mcpServers`); nothing here can switch that off.
@@ -265,11 +287,16 @@ Limits:
 - `BASEMIND_AGENT_ID` is self-asserted: a launched agent with a shell can post as anyone over
   comms. The supervisor does not take it, nor a principal or token, on its word; it places the
   peer process and admits a principal only from its registered process. What remains:
-  - registration is only as good as its source: a principal cannot be registered over a socket
-    the launched agents can reach, since any process of the user, an escaped agent's included,
-    can connect to it, read the lead's secrets and claim any name. Register the embedding's own
-    process or a child it spawned, at start-up; everything the registered process starts acts as
-    the principal, so it must not start processes on another agent's request;
+  - registration is only as good as its source, which is why the crate offers no socket
+    registration: any process of the user, an escaped agent's included, can connect, read the
+    lead's secrets and claim any name. Register the embedding's own process, or a child it spawned
+    and holds, at start-up; everything a registered child starts acts as the principal, so it must
+    start nothing on another agent's request and run nothing another agent can write (hooks,
+    build scripts, a shell in a tree a launched agent edits);
+  - an agent that already runs code as the same user does not need the supervisor: it can run a
+    harness itself with its bypass flag, edit basemind's configuration, or stop and replace the
+    daemon. The supervisor bounds the MCP path, for agents whose harness gates code execution,
+    and the audit's attribution; it does not contain an escapee;
   - a process of the same user can still act through the registered process: by tracing it
     (`ptrace`, a debugger) or injecting code into it, or by typing into it (`tmux send-keys`,
     `osascript` keystrokes, `TIOCSTI` on Linux before 6.2 or with `legacy_tiocsti`), where the
