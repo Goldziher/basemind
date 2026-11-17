@@ -87,7 +87,7 @@ fn purge_file(store: &mut Store, rel: &str) -> Result<(), ScanError> {
 /// The free-space check alone, for the resolve pass: the file map is already durable by then, so a
 /// refusal costs only the resolve tier.
 pub(crate) fn ensure_space(store: &Store) -> Result<(), ScanError> {
-    disk_space::ensure_free_space(&store.view_dir)?;
+    disk_space::ensure_free_space(&crate::store_layout::group_index_dir(&store.root))?;
     Ok(())
 }
 

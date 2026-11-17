@@ -328,8 +328,8 @@ fn unbuilt_dictionary_still_answers_via_the_walk() {
 }
 
 /// Timing comparison, run by hand against a large index:
-/// `BM_FR_VIEW=/path/to/view_dir cargo test --release -- --ignored --nocapture time_name_scans`
-/// (`view_dir` holds `index.fjall`; use a copy, the open is read-write).
+/// `BM_FR_VIEW=/path/to/dir cargo test --release -- --ignored --nocapture time_name_scans`
+/// (`dir` holds an `index.fjall`, such as a group directory; use a copy, the open is read-write).
 #[test]
 #[ignore = "manual benchmark; needs BM_FR_VIEW"]
 fn time_name_scans() {

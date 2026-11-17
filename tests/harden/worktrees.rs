@@ -96,7 +96,7 @@ fn disk_bytes(cache_dir: &Path, root: &Path, group_before: Option<(u64, u64)>) -
     let other = dir_size(cache_dir).saturating_sub(own_journal + own_keyspaces + vectors + manifest);
     DiskBytes {
         journal,
-        journal_logical: basemind::index::journal_bytes_on_disk(&view),
+        journal_logical: basemind::index::journal_bytes_on_disk(&basemind::store_layout::group_index_dir(root)),
         keyspaces,
         vectors,
         manifest,

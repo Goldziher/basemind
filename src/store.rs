@@ -266,10 +266,10 @@ pub struct Store {
     /// so "does any file still hold this content" is a lookup, not a pass over the manifest. Mutate
     /// `index.files` through those two methods only.
     hash_refs: HashRefs,
-    /// Fjall-backed inverted index over symbols / calls / imports. Lives under
-    /// `view_dir/index.fjall/`. Reads + writes from any caller go through `IndexDb`,
-    /// which is cheap to clone (internally Arc'd). `None` in read-only mode when the
-    /// directory doesn't exist yet — callers must handle the absence.
+    /// This view's handle on the group index (`cache/groups/<group>/index.fjall/`, ADR-0028). Every
+    /// read and write goes through `IndexDb`, which is cheap to clone (internally Arc'd).
+    /// `None` for a read-only open in a process that holds no handle on the group (ADR-0037):
+    /// callers must handle the absence.
     pub index_db: Option<IndexDb>,
     /// LanceDB-backed vector store. Lazy-opened on first document insert so a
     /// vanilla code-only scan doesn't pay the LanceDB startup cost.
