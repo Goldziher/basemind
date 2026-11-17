@@ -111,6 +111,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("store_doc_tombstone", Core),
     ("store_gc", Core),
     ("store_gc_budget", Core),
+    ("store_gc_groups", Core),
     ("store_gc_live", Core),
     ("store_gc_namespaces", Core),
     ("store_gc_protect", Core),
