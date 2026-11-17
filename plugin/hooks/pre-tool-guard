@@ -8,8 +8,9 @@
 # (rg, grep, git log/blame/show, find -name); every other command proceeds silently.
 # Three modes via the BASEMIND_GUARD env var:
 #
-#   nudge    (default) — allow the call, attach a one-time advisory naming the basemind
-#                        call that replaces it. Fires once per agent per tool kind.
+#   nudge    (default) — leave the permission decision to the host and attach a one-time
+#                        advisory naming the basemind call that replaces it. Fires once per
+#                        agent per tool kind.
 #   redirect           — deny a Grep/Glob call with a reason telling the agent to use the
 #                        basemind tool instead. Enforcing; no dedup. Bash stays advisory.
 #   off                — no-op.
@@ -92,9 +93,11 @@ Glob)
   ;;
 esac
 
-emit_allow() {
+# Advice carries no permissionDecision: "allow" would skip the host's own permission prompt for the
+# command, and this hook only looks at how the command starts.
+emit_advice() {
   jq -cn --arg m "$1" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",additionalContext:$m}}'
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$m}}'
 }
 emit_deny() {
   jq -cn --arg m "$1" \
@@ -124,7 +127,7 @@ if [ -e "${marker}" ]; then
 fi
 : >"${marker}" 2>/dev/null || true
 
-emit_allow "basemind is indexed for this repo. Instead of this ${tool} call, use ${alt} — it returns \
+emit_advice "basemind is indexed for this repo. Instead of this ${tool} call, use ${alt} — it returns \
 paths + line numbers without reading file bodies, at a fraction of the tokens, and is already \
 loaded, so call it directly. Proceeding with ${tool} for now. (BASEMIND_GUARD=off silences this; \
 =redirect enforces it.)"

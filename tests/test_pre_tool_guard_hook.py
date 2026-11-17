@@ -72,7 +72,7 @@ class PreToolGuardTests(unittest.TestCase):
             with self.subTest(command=command):
                 out = self.bash(command, agent_id=command)
                 decision = json.loads(out)["hookSpecificOutput"]
-                self.assertEqual(decision["permissionDecision"], "allow")
+                self.assertNotIn("permissionDecision", decision)
                 self.assertIn(expected, decision["additionalContext"])
 
     def assert_names_only_verb_tools(self, suggestion: str) -> None:
@@ -137,7 +137,7 @@ class PreToolGuardTests(unittest.TestCase):
         out = subprocess.run(
             ["/bin/bash", str(HOOK)], input=payload, env=env, capture_output=True, text=True, check=True
         ).stdout
-        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertNotIn("permissionDecision", json.loads(out)["hookSpecificOutput"])
 
     def test_grep_tool_still_nudges(self) -> None:
         out = self.run_guard("Grep", {"pattern": "x"})
