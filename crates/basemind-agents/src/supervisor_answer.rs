@@ -124,9 +124,15 @@ impl Supervisor {
         if answered.is_err() {
             reopen();
         }
-        // A denial or a failed answer could be looped on: coalesced like a refusal.
         match (&answered, allow) {
-            (Err(error), _) => inner.refuse(record(error.code(), false), &asker.key),
+            // The allow on the record did not reach the harness: that is kept on the record too,
+            // never coalesced away. Its allowance stays spent, so each allow that is retried
+            // spends another and the records stay within what the reserve holds per allow.
+            (Err(_), true) => {
+                let _ = inner.audit(&record("allow_undelivered", false));
+            }
+            // A denial or a failed one could be looped on: coalesced like a refusal.
+            (Err(error), false) => inner.refuse(record(error.code(), false), &asker.key),
             (Ok(()), false) => inner.refuse(record("denied", false), &asker.key),
             (Ok(()), true) => {}
         }

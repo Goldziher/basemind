@@ -160,3 +160,43 @@ fn a_pending_request_is_allowed_spent_and_recorded_once() {
     assert_eq!(replies(&scratch), (2, 0), "(allowed, denied) as the harness read them");
     assert_eq!(answers(&audit), ["allowed", "unknown_approval", "allowed"]);
 }
+
+#[test]
+fn an_allow_that_did_not_reach_the_harness_is_kept_on_the_record() {
+    let scratch = Scratch::new();
+    // Asks once, then exits: the session ends with the request pending.
+    let body = format!(
+        r#"{HANDSHAKE}printf '%s\n' '{{"type":"control_request","request_id":"req-1","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"true"}}}}}}'
+"#
+    );
+    let mut config = scratch.config(HarnessKind::ClaudeCode, &body);
+    config.approval_policy = crate::test_support::always(ApprovalVerdict::Ask);
+    let (supervisor, audit) = start(consenting(), vec![config]);
+    let gate = Arc::new(Gate::default());
+    let supervisor = supervisor.with_observer(gate.clone());
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let approval = pending(&gate.seen, 1);
+    // The session withdrew the request as it ended; its thread is held before the supervisor
+    // hears so, and the session refuses controls once it is over.
+    let handle = supervisor.inner.table().sessions[&launched.id.0]
+        .handle
+        .clone()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !handle.finished() {
+        assert!(Instant::now() < deadline, "the session never ended");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let answered = supervisor.answer(&supervisor.operator().unwrap(), launched.id, &approval, true);
+    assert_eq!(answered.err().map(|error| error.code()), Some("session_closed"));
+    gate.open();
+    assert_eq!(answers(&audit), ["allowed", "allow_undelivered"]);
+    let undelivered = audit
+        .records()
+        .into_iter()
+        .find(|record| record.outcome == "allow_undelivered")
+        .unwrap();
+    assert!(crate::audit::kept_for(&undelivered), "the correction may be dropped");
+    assert_eq!(undelivered.suppressed, None);
+    assert!(undelivered.approval.is_some_and(|approval| !approval.allowed));
+}

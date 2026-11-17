@@ -3,9 +3,10 @@
 //!
 //! Only a bounded set of records may use the reserve (see [`AuditSink::reserve`]): a launch
 //! record per launch (the budget's `max_launches`, a failed launch included), an exit and one
-//! stop per session, two records per allow (the budget's `max_allows`: a caller's answer and the
-//! session's settlement), and [`MAX_REGISTRATIONS`] registrations and releases. Each is at most
-//! [`record_bound`] bytes, so the product is what the supervisor can ever need.
+//! stop per session, two records per allow (the budget's `max_allows`: a caller's answer, and the
+//! session's settlement or the record that it was not delivered), and [`MAX_REGISTRATIONS`]
+//! registrations and releases. Each is at most [`record_bound`] bytes, so the product is what
+//! the supervisor can ever need.
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -19,7 +20,9 @@ use crate::spec::LaunchConfig;
 pub(crate) const MAX_REGISTRATIONS: u32 = 64;
 /// Records per launch that may use the reserve: the launch, its exit and the stop that ends it.
 const PER_LAUNCH: u64 = 3;
-/// Records per allow that may use the reserve: a caller's answer and the session's settlement.
+/// Records per allow that may use the reserve: a caller's answer, and either the session's
+/// settlement or the record that the answer did not reach the harness (whose allowance stays
+/// spent, so a retry is another allow).
 const PER_ALLOW: u64 = 2;
 /// The longest name a record carries: a principal, by its grammar, and a launched agent's
 /// principal are both shorter.
