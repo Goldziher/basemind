@@ -177,8 +177,6 @@ pub(super) fn default_true() -> bool {
     true
 }
 
-pub(super) use crate::engine::types::code::{OutlineResponse, OutlineSymbol};
-
 /// One `code_symbols` row: where a definition is and what it is. Rows are ranked: the exact name,
 /// then names it prefixes, then names holding it, then (with `fuzzy`) fuzzy matches; which of those
 /// a row is shows by comparing `name` with the query.

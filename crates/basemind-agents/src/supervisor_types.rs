@@ -51,7 +51,7 @@ impl std::fmt::Display for SessionId {
 /// [`Supervisor::operator`](crate::Supervisor::operator) makes one, in the supervisor's own process,
 /// never for a connection.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// let operator = basemind_agents::Caller::operator();
 /// ```
 #[derive(Clone)]

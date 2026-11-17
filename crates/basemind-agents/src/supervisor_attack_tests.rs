@@ -447,10 +447,10 @@ fn a_stopping_session_cannot_launch_and_a_stop_reaches_its_descendants() {
 
 /// An audit sink as slow as a disk under load, that fails the event kinds it is told to.
 #[derive(Default)]
-struct SlowSink {
-    delay: Duration,
-    failing: Vec<AuditEvent>,
-    records: Mutex<Vec<AuditRecord>>,
+pub(super) struct SlowSink {
+    pub(super) delay: Duration,
+    pub(super) failing: Vec<AuditEvent>,
+    pub(super) records: Mutex<Vec<AuditRecord>>,
 }
 
 impl AuditSink for SlowSink {
@@ -509,7 +509,21 @@ fn a_flood_of_refusals_is_coalesced() {
         assert_eq!(refused.err().map(|error| error.code()), Some("caller_not_admitted"));
     }
     let written = outcomes(&audit, AuditEvent::Refusal).len();
-    assert!(written <= 20, "{written} refusal records for one caller's flood");
+    assert_eq!(written, BURST, "refusal records for one caller's flood of 200");
+    drop(supervisor);
+    assert_eq!(
+        suppressed(&audit),
+        200 - BURST as u64,
+        "the suppressed refusals were not counted"
+    );
+}
+
+const BURST: usize = crate::refusals::BURST as usize;
+
+/// The refusals counted rather than written, once the supervisor was dropped and wrote what it
+/// still held.
+pub(super) fn suppressed(audit: &MemoryAuditSink) -> u64 {
+    audit.records().iter().filter_map(|record| record.suppressed).sum()
 }
 
 #[test]
@@ -620,10 +634,9 @@ fn a_flood_under_many_claimed_names_is_coalesced_as_one_caller() {
         assert!(supervisor.launch(&claim, HarnessKind::ClaudeCode, &request()).is_err());
     }
     let written = outcomes(&audit, AuditEvent::Refusal).len();
-    assert!(
-        written <= crate::refusals::BURST as usize,
-        "{written} refusal records for one process under 300 names"
-    );
+    assert_eq!(written, BURST, "refusal records for one process under 300 names");
+    drop(supervisor);
+    assert_eq!(suppressed(&audit), 300 - BURST as u64);
 }
 
 #[test]
@@ -640,7 +653,9 @@ fn a_flood_of_requests_the_adapter_refuses_starts_nothing_and_is_coalesced() {
         "a refused request was recorded as accepted"
     );
     let written = outcomes(&audit, AuditEvent::Refusal).len();
-    assert!(written <= crate::refusals::BURST as usize, "{written} records");
+    assert_eq!(written, BURST, "refusal records for 200 refused requests");
+    drop(supervisor);
+    assert_eq!(suppressed(&audit), 200 - BURST as u64);
 }
 
 #[test]
@@ -662,18 +677,21 @@ fn a_flood_of_stops_and_answers_is_coalesced() {
         assert_eq!(denied.err().map(|error| error.code()), Some("unknown_approval"));
     }
     let records = audit.records();
-    let flood = &records[before..];
-    assert!(
-        flood.len() <= 3 * crate::refusals::BURST as usize,
-        "{} records for 600 calls",
-        flood.len()
-    );
+    // The finished session's exit record may land after `before`; it is no answer to the flood.
+    let flood: Vec<_> = records[before..]
+        .iter()
+        .filter(|record| matches!(record.event, AuditEvent::Stop | AuditEvent::ApprovalAnswer))
+        .collect();
+    // Two callers: the launcher's stops and denials, and the operator's allows.
+    assert_eq!(flood.len(), 2 * BURST, "records for 600 calls");
     assert!(
         !flood
             .iter()
             .any(|record| record.approval.as_ref().is_some_and(|approval| approval.allowed)),
         "an allow of an unknown approval was recorded"
     );
+    drop(supervisor);
+    assert_eq!(suppressed(&audit), 600 - 2 * BURST as u64);
 }
 
 #[test]
@@ -700,11 +718,18 @@ cat > /dev/null
     let supervisor =
         registered(Supervisor::new(LaunchPolicy::new(spec).unwrap(), vec![config], registry(), sink).unwrap());
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
-    let state = supervisor.wait(launched.id, Duration::from_secs(10));
-    assert!(
-        matches!(state, Some(SessionState::Finished(_))),
-        "a session ran on after an allow it could not record: {state:?}"
+    // The stand-in runs on after its answer: only the supervisor's stop ends it.
+    assert_eq!(
+        finished(&supervisor, launched.id),
+        FinishStatus::Stopped,
+        "a session ran on after an allow it could not record"
     );
+    assert!(
+        supervisor.audit_exhausted(),
+        "a kept record failed and the log was not exhausted"
+    );
+    let refused = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request());
+    assert_eq!(refused.err().map(|error| error.code()), Some("audit_exhausted"));
 }
 
 /// A Claude Code stand-in that asks for `count` tool approvals one after the other, appending

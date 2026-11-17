@@ -211,7 +211,9 @@ impl Inner {
 ///
 /// A configured launcher is bound to the supervisor's own process or to a child the embedding
 /// spawned and still holds; the operator only to the supervisor's own process. Nothing is ever
-/// bound to the peer of a connection, and the operator is never minted for one:
+/// bound to the peer of a connection, and the operator is never minted for one. After the
+/// supported calls, the forms that would do so, each refused at compile time with the error
+/// code named (`E0599`, no such method; `E0061`, `operator` takes no peer):
 ///
 /// ```no_run
 /// # fn f(supervisor: &basemind_agents::Supervisor, child: &mut std::process::Child)
@@ -226,25 +228,25 @@ impl Inner {
 /// # }
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// # fn f(supervisor: &basemind_agents::Supervisor, peer: basemind_agents::Peer) {
 /// let _ = supervisor.register_launcher("lead", peer);
 /// # }
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// # fn f(supervisor: &basemind_agents::Supervisor, peer: basemind_agents::Peer) {
 /// let _ = supervisor.register_operator(peer);
 /// # }
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0061
 /// # fn f(supervisor: &basemind_agents::Supervisor, peer: basemind_agents::Peer) {
 /// let _ = supervisor.operator(peer);
 /// # }
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0599
 /// # fn f(supervisor: &basemind_agents::Supervisor, child: &std::process::Child) {
 /// let _ = supervisor.register_operator_child(child);
 /// # }
