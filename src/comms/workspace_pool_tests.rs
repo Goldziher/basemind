@@ -979,3 +979,7 @@ fn a_populated_workspace_with_an_intact_index_is_not_queued_for_rebuild() {
 #[cfg(feature = "comms")]
 #[path = "workspace_pool_agent_tests.rs"]
 mod agent_tests;
+
+#[cfg(feature = "comms")]
+#[path = "workspace_pool_stack_tests.rs"]
+mod stack_tests;

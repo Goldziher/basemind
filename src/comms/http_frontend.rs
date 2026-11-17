@@ -393,18 +393,11 @@ impl HttpRouter {
             Err((status, message)) => return text_response(status, &message),
         };
 
-        let shared = match self.broker.host_read_stack(&root).await {
-            Ok(shared) => shared,
+        // `_conn` keeps the workspace pinned against eviction for the request's lifetime.
+        let (shared, _conn) = match self.broker.host_read_stack(&root).await {
+            Ok(served) => served,
             Err(error) => {
                 tracing::warn!(%error, root = %root.display(), "http: hosting read stack failed");
-                return text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
-            }
-        };
-        // Keep the workspace pinned against eviction for the request's lifetime.
-        let _conn = match self.broker.begin_workspace_conn(&root) {
-            Ok(guard) => guard,
-            Err(error) => {
-                tracing::warn!(%error, root = %root.display(), "http: workspace connection accounting failed");
                 return text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
             }
         };
