@@ -178,12 +178,23 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
         )
     else:
         v.add("R5 no process accumulation under load", False, f"{len(census)} census samples in load")
+    # macOS reuses pids within a long soak: a later CLI one-shot or session can get a closed
+    # session's pid, so only a `serve` sample taken before that pid opened another session counts.
+    reopened: dict[int, list[float]] = {}
+    for r in records:
+        if r.get("kind") == "session" and r.get("event") == "open":
+            reopened.setdefault(r["pid"], []).append(r["t"])
     lingering = []
     for pid, close in sessions_close.items():
         if not close.get("exited"):
             lingering.append(f"{pid} did not exit after {close.get('how')}")
             continue
-        late = [r["t"] for r in by_pid.get(pid, []) if r["t"] > close["t"] + args.exit_grace]
+        next_open = min((t for t in reopened.get(pid, []) if t > close["t"]), default=float("inf"))
+        late = [
+            r["t"]
+            for r in by_pid.get(pid, [])
+            if r["role"] == "serve" and close["t"] + args.exit_grace < r["t"] < next_open
+        ]
         if late:
             lingering.append(f"{pid} still sampled {late[-1] - close['t']:.0f}s after {close.get('how')}")
     v.add(
