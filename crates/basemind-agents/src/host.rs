@@ -8,6 +8,12 @@
 //! only when it carries no launched session's variables and no ancestor of it runs the same
 //! program: Codex filters the environment of the MCP servers it starts, so the variables alone
 //! do not tell.
+//!
+//! A process bound as a launcher or the operator in-process takes requests on its own stdio (the
+//! lead's tool calls). On Linux any process of the same user may open `/proc/<pid>/fd/0` of a
+//! dumpable process (`PTRACE_MODE_READ`, which Yama does not restrict) and write whole requests
+//! into it, so such a process is made non-dumpable first ([`seal`]): its `/proc` entries become
+//! root's, and `ptrace` needs `CAP_SYS_PTRACE`.
 
 use crate::identity::{ENV_AGENT_DEPTH, ENV_LAUNCH_TOKEN};
 use crate::procinfo;
@@ -68,4 +74,25 @@ fn same_program_above(pid: i32) -> Option<Nested> {
         }
     }
     None
+}
+
+/// Makes this process non-dumpable where that guards its descriptors (Linux): returns whether
+/// it is now. A no-op elsewhere: macOS has no `/proc` to open another process's descriptors
+/// through, and launching is Unix-only.
+///
+/// The flag is reset when the process executes another program, so the harnesses this process
+/// starts are dumpable as usual. Core dumps of this process are off from then on.
+pub(crate) fn seal() -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // SAFETY: prctl with PR_SET_DUMPABLE and PR_GET_DUMPABLE takes plain integers.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+            libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) == 0
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        true
+    }
 }

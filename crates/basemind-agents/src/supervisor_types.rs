@@ -273,6 +273,10 @@ pub enum SupervisorError {
     /// program, so nothing is bound to it or to its children.
     #[error("this process runs inside a launched session and may not be registered")]
     NestedHost,
+    /// This process could not be made non-dumpable on Linux, so a process of the same user could
+    /// write requests into its stdio through `/proc`; it is not bound in-process.
+    #[error("this process could not be made non-dumpable and may not be registered in-process")]
+    HostDumpable,
 }
 
 impl SupervisorError {
@@ -302,6 +306,7 @@ impl SupervisorError {
             Self::RegistrationLimit => "registration_limit",
             Self::AuditExhausted => "audit_exhausted",
             Self::NestedHost => "nested_host",
+            Self::HostDumpable => "host_dumpable",
         }
     }
 }

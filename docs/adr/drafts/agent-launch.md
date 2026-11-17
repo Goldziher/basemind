@@ -434,6 +434,15 @@ peer is ever the operator. Operator approvals are elicitations in the lead's own
   - a process of the user that can trace the registered process (`ptrace`, a debugger), inject
     code into it, or type into it (`tmux send-keys`, `osascript` keystrokes, `TIOCSTI` on Linux
     before 6.2 or with `legacy_tiocsti`) acts as it, where the system allows that;
+  - the lead's tool calls are trusted because they arrive on the hosting `serve`'s stdio. On
+    Linux any process of the user can open `/proc/<pid>/fd/0` of a dumpable process
+    (`PTRACE_MODE_READ`, which Yama does not restrict) and append whole JSON-RPC lines to that
+    pipe, so `register_launcher_in_process` and `register_operator_in_process` first set
+    `PR_SET_DUMPABLE` to 0 and refuse (`host_dumpable`) if it does not hold: the process's
+    `/proc` entries become root's and `ptrace` needs `CAP_SYS_PTRACE`. The flag is reset on
+    `exec`, so the harnesses it starts are unaffected. macOS has no `/proc`; attaching to the
+    process (`task_for_pid`) is restricted by SIP and the hardened runtime, and an embedding can
+    add `PT_DENY_ATTACH`. Launching is refused on Windows;
   - an ancestry walk that stops at a process of another user (macOS does not describe root's
     processes) admits nothing past it, so a registered process has to be reachable without one;
   - on Linux before 6.5 a reported peer pid names the connecting process only while it lives:
@@ -519,8 +528,10 @@ should do next.
    `max_depth` allows, identified by its peer process (its session) and its launch token; the
    recommended default is `max_depth = 1`, which refuses every launch by a launched agent's
    processes, those that escaped its session included: they descend from no registered process,
-   since only the lead's own process is registered and it admits no descendant. It does not stop
-   a process of the same user that traces, injects into or types into the lead's process.
+   since only the lead's own process is registered and it admits no descendant, and on Linux
+   that process is non-dumpable, so no process of the user can write into its stdio through
+   `/proc`. It does not stop a process of the same user that traces (with `CAP_SYS_PTRACE`),
+   injects into or types into the lead's process.
 2. **Is the launched agent a sub-identity or a principal?** Recommended and implemented: a
    principal of its own, `launched-<flavor>-<id>-<hex>`, with its launcher recorded in the
    supervisor and the audit log, never taken from what the agent reports. The grammar's `.`

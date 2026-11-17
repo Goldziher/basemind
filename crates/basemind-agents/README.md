@@ -309,6 +309,14 @@ Limits:
     (`ptrace`, a debugger) or injecting code into it, or by typing into it (`tmux send-keys`,
     `osascript` keystrokes, `TIOCSTI` on Linux before 6.2 or with `legacy_tiocsti`), where the
     system allows that; containing that needs a separate user or sandbox;
+  - the lead's tool calls arrive on the hosting process's stdio. On Linux any process of the
+    user could open `/proc/<pid>/fd/0` of a dumpable process and write whole requests into it,
+    so an in-process registration first makes the process non-dumpable (`PR_SET_DUMPABLE` 0,
+    refused with `host_dumpable` if that does not hold): its `/proc` entries become root's and
+    tracing it needs `CAP_SYS_PTRACE`. macOS has no such path to another process's
+    descriptors; what remains there is attaching to it (`task_for_pid`, which SIP and the
+    hardened runtime restrict), which an embedding can refuse further with `PT_DENY_ATTACH`.
+    Launching is off on Windows;
   - an ancestry walk that stops at a process of another user (macOS does not describe root's
     processes) admits nothing past it, so a registered process must be reachable without one;
   - on Linux before 6.5 only the pid of a connection's peer is known, so a pid freed and reused

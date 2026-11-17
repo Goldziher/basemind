@@ -32,6 +32,28 @@ fn host_outcome() -> String {
     )
 }
 
+/// Runs test `name` alone in a fresh process of this test binary with `env`, as `role`, and
+/// returns what it wrote to its [`OUT`] file.
+fn rerun(scratch: &Scratch, name: &str, role: &str, env: &[(&str, &str)]) -> String {
+    let out = scratch.path.join(role);
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([name, "--exact", "--nocapture", "--test-threads=1"])
+        .env_remove(ENV_LAUNCH_TOKEN)
+        .env_remove(ENV_AGENT_DEPTH)
+        .env_remove(crate::host::ALLOW_SAME_PROGRAM_ANCESTOR)
+        .env(ROLE, role)
+        .env(OUT, &out)
+        .envs(env.iter().copied())
+        // Its stdin a pipe, as a `serve`'s is.
+        .stdin(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let stdin = child.stdin.take();
+    assert!(child.wait().unwrap().success(), "the {role} rerun failed");
+    drop(stdin);
+    std::fs::read_to_string(&out).unwrap_or_else(|_| panic!("the {role} rerun ran no test: {name} matched nothing"))
+}
+
 #[test]
 fn a_process_inside_a_launched_session_hosts_no_supervisor() {
     const NAME: &str = "supervisor::host_tests::a_process_inside_a_launched_session_hosts_no_supervisor";
@@ -40,20 +62,7 @@ fn a_process_inside_a_launched_session_hosts_no_supervisor() {
         return;
     }
     let scratch = Scratch::new();
-    let rerun = |role: &str, env: &[(&str, &str)]| {
-        let out = scratch.path.join(role);
-        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-        command
-            .args([NAME, "--exact", "--nocapture", "--test-threads=1"])
-            .env_remove(ENV_LAUNCH_TOKEN)
-            .env_remove(ENV_AGENT_DEPTH)
-            .env_remove(crate::host::ALLOW_SAME_PROGRAM_ANCESTOR)
-            .env(ROLE, role)
-            .env(OUT, &out)
-            .envs(env.iter().copied());
-        assert!(command.status().unwrap().success(), "the {role} rerun failed");
-        std::fs::read_to_string(&out).unwrap_or_else(|_| panic!("the {role} rerun ran no test: {NAME} matched nothing"))
-    };
+    let rerun = |role: &str, env: &[(&str, &str)]| rerun(&scratch, NAME, role, env);
     let allowed = "new=None register=None recorded=[\"registered\"]";
     let refused = "new=Some(NestedHost) register=Some(\"nested_host\") recorded=[\"nested_host\"]";
     let skip_ancestry = (crate::host::ALLOW_SAME_PROGRAM_ANCESTOR, "1");
@@ -90,4 +99,56 @@ fn two_processes_run_the_same_program_by_file_or_by_name() {
         !image(None, None).same_program(&image(None, None)),
         "nothing read matches nothing"
     );
+}
+
+/// Whether another process of this user can open this process's stdin through `/proc`.
+#[cfg(target_os = "linux")]
+fn stdin_reachable() -> bool {
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(": < /proc/{}/fd/0", std::process::id()))
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// What [`registering_in_process_closes_this_processs_stdio_to_the_users_other_processes`]
+/// sees in a fresh process: whether its stdin is reachable before and after it registers, and
+/// whether it is dumpable then.
+#[cfg(target_os = "linux")]
+fn seal_outcome() -> String {
+    let before = stdin_reachable();
+    let scratch = Scratch::new();
+    let (supervisor, _) = start(
+        policy(&[HarnessKind::ClaudeCode]),
+        vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())],
+    );
+    let after = stdin_reachable();
+    // SAFETY: prctl with PR_GET_DUMPABLE takes plain integers.
+    let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+    drop(supervisor);
+    format!("before={before} after={after} dumpable={dumpable}")
+}
+
+/// The lead's tool calls arrive on the hosting process's stdio: a process of the same user that
+/// could open `/proc/<pid>/fd/0` could write them in.
+#[cfg(target_os = "linux")]
+#[test]
+fn registering_in_process_closes_this_processs_stdio_to_the_users_other_processes() {
+    const NAME: &str =
+        "supervisor::host_tests::registering_in_process_closes_this_processs_stdio_to_the_users_other_processes";
+    if let Some(out) = std::env::var_os(OUT) {
+        std::fs::write(out, seal_outcome()).unwrap();
+        return;
+    }
+    let scratch = Scratch::new();
+    // A fresh process: this one is sealed already by whichever test registered first.
+    let seen = rerun(
+        &scratch,
+        NAME,
+        "seal",
+        &[(crate::host::ALLOW_SAME_PROGRAM_ANCESTOR, "1")],
+    );
+    assert_eq!(seen, "before=true after=false dumpable=0");
 }
