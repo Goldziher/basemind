@@ -152,3 +152,82 @@ fn registering_in_process_closes_this_processs_stdio_to_the_users_other_processe
     );
     assert_eq!(seen, "before=true after=false dumpable=0");
 }
+
+/// Which step of [`a_process_below_a_sealed_host_is_nested_whatever_it_is_called`] a rerun plays:
+/// `sealed` or `unsealed` for the middle process, `probe` for the one below it.
+#[cfg(target_os = "linux")]
+const MARKER_ROLE: &str = "BASEMIND_TEST_MARKER_ROLE";
+/// Where the probe writes what `nested()` said.
+#[cfg(target_os = "linux")]
+const MARKER_OUT: &str = "BASEMIND_TEST_MARKER_OUT";
+/// The copy of this test binary, under another name, the middle process starts the probe from.
+#[cfg(target_os = "linux")]
+const MARKER_COPY: &str = "BASEMIND_TEST_MARKER_COPY";
+
+/// A sealed host's executable cannot be read, so a `serve` started below it from a binary of
+/// another name would match it by neither file nor name: the marker the seal sets names it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_below_a_sealed_host_is_nested_whatever_it_is_called() {
+    const NAME: &str = "supervisor::host_tests::a_process_below_a_sealed_host_is_nested_whatever_it_is_called";
+    // The middle process passes MARKER_OUT and MARKER_COPY on to the probe by inheritance.
+    let run = |exe: &std::path::Path, role: &str, env: &[(&str, &std::path::Path)]| {
+        let status = std::process::Command::new(exe)
+            .args([NAME, "--exact", "--nocapture", "--test-threads=1"])
+            .env_remove(ENV_LAUNCH_TOKEN)
+            .env_remove(ENV_AGENT_DEPTH)
+            .env_remove(crate::host::ALLOW_SAME_PROGRAM_ANCESTOR)
+            .env(MARKER_ROLE, role)
+            .envs(env.iter().copied())
+            .status()
+            .unwrap();
+        assert!(status.success(), "the {role} rerun failed");
+    };
+    match std::env::var(MARKER_ROLE).as_deref() {
+        Ok("probe") => {
+            let out = std::env::var_os(MARKER_OUT).unwrap();
+            let seen = match crate::host::nested() {
+                Some(crate::host::Nested::Ancestor(pid)) if pid == std::os::unix::process::parent_id() as i32 => {
+                    "parent"
+                }
+                Some(_) => "other",
+                None => "none",
+            };
+            std::fs::write(out, seen).unwrap();
+            return;
+        }
+        Ok(role @ ("sealed" | "unsealed")) => {
+            if role == "sealed" {
+                // From a thread that is neither the leader nor the test's own: the leader is named.
+                assert!(std::thread::spawn(crate::host::seal_host).join().unwrap());
+                let pid = std::process::id();
+                for comm in ["/proc/self/comm".to_owned(), format!("/proc/self/task/{pid}/comm")] {
+                    let named = std::fs::read_to_string(&comm).unwrap();
+                    assert_eq!(named.trim_end(), crate::host::HOST_MARKER, "{comm}");
+                }
+            }
+            run(
+                std::path::Path::new(&std::env::var_os(MARKER_COPY).unwrap()),
+                "probe",
+                &[],
+            );
+            return;
+        }
+        _ => {}
+    }
+    let scratch = Scratch::new();
+    let copy = scratch.path.join("other-program");
+    std::fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
+    let seen = |role: &str| {
+        let out = scratch.path.join(format!("{role}.out"));
+        run(
+            &std::env::current_exe().unwrap(),
+            role,
+            &[(MARKER_OUT, out.as_path()), (MARKER_COPY, copy.as_path())],
+        );
+        std::fs::read_to_string(out).unwrap()
+    };
+    // The control: below an unsealed process of another program, nothing matches.
+    assert_eq!(seen("unsealed"), "none");
+    assert_eq!(seen("sealed"), "parent");
+}

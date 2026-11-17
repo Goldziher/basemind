@@ -789,6 +789,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "basemind",
+ "basemind-agents",
  "basemind-stack-graphs",
  "basemind-tree-sitter-graph",
  "basemind-tree-sitter-stack-graphs",

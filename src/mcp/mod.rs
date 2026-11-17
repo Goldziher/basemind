@@ -18,6 +18,7 @@ mod background;
 mod budget;
 mod by_path;
 mod completions;
+pub mod lead_tools;
 pub(crate) use crate::engine::cursor;
 mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]

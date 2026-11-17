@@ -1,3 +1,4 @@
+pub mod agents_policy;
 mod code;
 mod comms;
 pub mod daemon;
@@ -287,8 +288,9 @@ fn parse_v1(raw: &str) -> Result<Config, ConfigError> {
         path: PathBuf::new(),
         source,
     })?;
-    let json_value: serde_json::Value =
+    let mut json_value: serde_json::Value =
         serde_json::to_value(&toml_value).expect("toml::Value → serde_json::Value never fails");
+    agents_policy::strip_repo_agents(&mut json_value);
 
     let schema_tag = json_value
         .as_object()

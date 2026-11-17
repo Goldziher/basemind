@@ -198,7 +198,7 @@ impl super::IndexDb {
 /// Posting keys of the chunks a pass is about to replace or drop, by their [`Bm25Key`].
 #[cfg(feature = "code-search")]
 #[derive(Debug, Default)]
-pub(crate) struct Bm25Candidates(AHashMap<Bm25Key, Vec<Vec<u8>>>);
+pub(crate) struct Bm25Candidates(pub(super) AHashMap<Bm25Key, Vec<Vec<u8>>>);
 
 #[cfg(test)]
 mod tests {
