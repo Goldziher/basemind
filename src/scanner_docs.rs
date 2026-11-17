@@ -233,6 +233,7 @@ pub(crate) fn extract_and_persist_doc(
     rel: &str,
     abs: &Path,
     hash: &Hash,
+    read_stamp: (u64, i64),
     mime_type: &str,
     cfg: &DocumentsConfig,
     resources: &ResourcesConfig,
@@ -263,12 +264,23 @@ pub(crate) fn extract_and_persist_doc(
     doc_config.phase = Some(Arc::clone(&filters.doc_phase));
     let mut doc: FileMapDoc =
         extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;
+    // xberg read the file by path after `hash` was taken from an earlier read; a blob stored under
+    // that hash must describe those bytes, or a later revert to them would reuse the wrong text.
+    if file_stamp(abs) != Some(read_stamp) {
+        anyhow::bail!("{rel} changed while it was being extracted; the next scan extracts it again");
+    }
     doc.config_digest.clone_from(&filters.doc_digest);
     store
         .write_doc(hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
 
     Ok(Some(pending_from_doc(&doc, rel, hash_hex, scope, cfg, embed, false)))
+}
+
+/// `(size, mtime)` of the file at `abs` now, as `read_working_tree` reports them for a read.
+pub(crate) fn file_stamp(abs: &Path) -> Option<(u64, i64)> {
+    let meta = std::fs::metadata(abs).ok()?;
+    Some((meta.len(), crate::scanner_file::mtime_nanos(&meta)))
 }
 
 /// Single source of truth for "will this pass embed this doc": embedding runs only on an `Inline`

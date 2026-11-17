@@ -144,6 +144,9 @@ fn process_doc(
         );
         return FileResult::bare(rel.to_string(), FileStatus::SkippedTooLarge { size: size_bytes });
     }
+    // xberg reads the file itself; holding this copy through the extraction would double the
+    // document's footprint for nothing.
+    drop(bytes);
 
     // Both bounds, in the order that makes them complementary: take a concurrency slot first so at ~keep
     // most `max_concurrent_documents` extractions can ever overlap, then serialise through the ~keep
@@ -159,6 +162,7 @@ fn process_doc(
         rel,
         &abs,
         &hash,
+        (size_bytes, mtime),
         &mime_type,
         &config.documents,
         &config.resources,

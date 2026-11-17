@@ -44,6 +44,10 @@ const SCANNER_STACK_SIZE: usize = 256 * 1024 * 1024;
 /// handful of concurrent workers can move the process's footprint by hundreds of megabytes.
 const LARGE_FILE_ADMIT_BYTES: usize = 1024 * 1024;
 
+/// A file of this name panics `process_file` in test builds, standing in for a pathological input.
+#[cfg(test)]
+pub(crate) const TEST_PANIC_FILE: &str = "basemind-test-panic.rs";
+
 /// Process-wide rayon pool the scanner runs its per-file `par_iter` on: sized like the default global
 /// pool but with a much larger per-worker stack (see [`SCANNER_STACK_SIZE`]). Lazily built once.
 ///
@@ -106,7 +110,20 @@ pub(crate) fn run_candidates(
                     if cancel.is_cancelled() || store.index_db.as_ref().is_some_and(IndexDb::has_fatal_fault) {
                         return batch;
                     }
-                    let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);
+                    // One file whose extraction panics is reported failed and keeps its prior rows ~keep
+                    // (`keeps_prior_entry`); unwinding would fail this scan and every later one. ~keep
+                    let result = crate::scanner_lanes::contain_panic(|| {
+                        process_file(root, rel, filters, store, source, config, scope, &mut batch, embed)
+                    })
+                    .unwrap_or_else(|reason| {
+                        tracing::warn!(rel, %reason, "extraction panicked; the file is reported failed");
+                        FileResult::bare(
+                            rel.clone(),
+                            FileStatus::ExtractFailed {
+                                msg: format!("extraction panicked: {reason}"),
+                            },
+                        )
+                    });
                     batch.push_result(result);
                     batch
                 },
@@ -267,6 +284,8 @@ fn process_file(
     {
         let _ = embed;
     }
+    #[cfg(test)]
+    assert!(!rel.ends_with(TEST_PANIC_FILE), "injected extraction panic for {rel}");
     // Only code is code-mapped. Prose, data and config files belong to the document tier (chunked,
     // searchable text); a markdown "outline" or a JSON file's keys are noise in the symbol index.
     // When the documents tier is compiled out there is nowhere else for them to go, so they keep

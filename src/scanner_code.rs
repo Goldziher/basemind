@@ -14,6 +14,8 @@
 
 #![cfg(feature = "code-search")]
 
+use std::sync::atomic::Ordering;
+
 use anyhow::Result;
 
 use crate::chunk::{ChunkOptions, CodeChunkBlob, chunk_file};
@@ -191,20 +193,19 @@ pub(crate) fn chunk_and_embed(
         let chunks = match cached {
             Some(blob) => blob.chunks,
             None => {
-                let chunks = chunk_file(rel, hash_hex, l1, l2, bytes, opts);
                 let blob = CodeChunkBlob {
                     config_digest: digest.to_string(),
                     schema_ver: SCHEMA_VER,
                     extract_epoch: crate::extract::EXTRACT_EPOCH,
                     embedding_dim: 0,
                     embedding_model: String::new(),
-                    chunks: chunks.clone(),
+                    chunks: chunk_file(rel, hash_hex, l1, l2, bytes, opts),
                     embeddings: Vec::new(),
                 };
                 if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
                     tracing::warn!(rel, ?error, "write code-chunk sidecar (chunk-only) failed");
                 }
-                chunks
+                blob.chunks
             }
         };
         if chunks.is_empty() {
@@ -296,6 +297,9 @@ pub(crate) fn chunk_and_embed(
             bm25: Vec::new(),
         }));
     }
+    if filters.code_embed_failed.load(Ordering::Relaxed) {
+        return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
+    }
     let texts: Vec<&str> = chunks.iter().map(|c| c.searchable_text.as_str()).collect();
     crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
     let embeddings = match embedder.embed_batch(&spec, &texts) {
@@ -310,7 +314,13 @@ pub(crate) fn chunk_and_embed(
             return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
         Err(error) => {
-            tracing::warn!(rel, %error, "embed code chunks failed; indexing BM25 keyword lane only");
+            if !filters.code_embed_failed.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    rel,
+                    %error,
+                    "embed code chunks failed; indexing the BM25 keyword lane only for the rest of this scan"
+                );
+            }
             return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
     };
@@ -598,5 +608,59 @@ mod tests {
             !chunk_blob_is_current(&blob, "d1", "python"),
             "built for another grammar"
         );
+    }
+
+    /// A model that cannot load fails the first file's embedding; the rest of the pass goes to the
+    /// keyword lane without asking it again.
+    #[test]
+    fn a_failed_embedder_is_tried_once_per_pass() {
+        use std::sync::atomic::AtomicUsize;
+
+        use crate::scan_retrieval::{Embedder, RetrievalError};
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        struct Unloadable;
+        impl Embedder for Unloadable {
+            fn dim(&self, _spec: &EmbedderSpec<'_>) -> Result<u16, RetrievalError> {
+                Ok(768)
+            }
+            fn embed_batch(&self, _spec: &EmbedderSpec<'_>, _texts: &[&str]) -> Result<Vec<Vec<f32>>, RetrievalError> {
+                CALLS.fetch_add(1, Ordering::SeqCst);
+                Err(RetrievalError("model failed to load".to_string()))
+            }
+        }
+        static UNLOADABLE: Unloadable = Unloadable;
+
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
+        let mut config = crate::config::default_for_root(std::path::Path::new("."));
+        config.code_search.embed = true;
+        let mut filters = Filters::build(&config, Vec::new()).unwrap();
+        filters.retrieval.embedder = &UNLOADABLE;
+        for (i, src) in ["pub fn alpha() -> u32 { 1 }\n", "pub fn beta() -> u32 { 2 }\n"]
+            .iter()
+            .enumerate()
+        {
+            let (l1, l2) = crate::extract::extract_l1_l2("rust", src.as_bytes(), false).expect("extract");
+            let hash = format!("{i:064x}");
+            let batch = chunk_and_embed(
+                &store,
+                &format!("src/f{i}.rs"),
+                src.as_bytes(),
+                &l1,
+                l2.as_ref(),
+                &hash,
+                &config,
+                &filters,
+                EmbedMode::Inline,
+                false,
+            )
+            .expect("chunk")
+            .expect("a file with a function has chunks");
+            assert_eq!(batch.embedding_dim, 0, "keyword lane only");
+            assert!(!batch.bm25.is_empty());
+        }
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
     }
 }

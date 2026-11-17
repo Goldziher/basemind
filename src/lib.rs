@@ -33,6 +33,7 @@ pub mod lance;
 pub mod lang;
 pub mod lang_rules;
 pub mod mcp;
+mod once_map;
 pub mod path;
 pub mod process_start;
 pub mod query;
