@@ -26,14 +26,17 @@
 //! [`ENV_AGENT_DEPTH`] and a secret in [`ENV_LAUNCH_TOKEN`].
 //!
 //! Every caller carries the [`Peer`] the kernel reported for its connection, and the supervisor
-//! decides by that process rather than by what the caller claims. Each harness leads a POSIX
-//! session of its own, so a process inside one (by session id or ancestry) is that session,
-//! at the depth the supervisor recorded, and its token has to be that session's; a process below
-//! the supervisor in no live session is nobody; only a process outside the supervisor's tree is
-//! the principal it names, or the operator ([`Supervisor::operator`]). Every launch, refusal,
-//! stop, exit and approval decision is appended to an [`AuditSink`] ([`FileAuditSink`]: mode
-//! 0600, one JSON object per line, capped) with fixed outcome codes and no brief, command,
-//! environment value or token. The supervisor owns the sessions (status, stop, approvals,
+//! decides by that process rather than by what the caller claims; nothing is trusted by
+//! default. Each harness leads a POSIX session of its own, so a process inside one (by session
+//! id or ancestry) is that session, at the depth the supervisor recorded, and its token has to
+//! be that session's. The engine binds each configured launcher and the operator to one process
+//! ([`Supervisor::register_launcher`], [`Supervisor::register_operator`]); a caller is that
+//! principal, or the operator ([`Supervisor::operator`]), only from that process or a
+//! descendant of it. Any other process is refused. Every registration, launch, stop, exit and
+//! approval decision, and every refusal (coalesced, so a looping caller cannot flood the log),
+//! goes to an [`AuditSink`] ([`FileAuditSink`]: mode 0600, one JSON object per line, capped with
+//! room kept for launches, exits and allows) with fixed outcome codes, the caller as verified,
+//! and no brief, command, environment value or token. The supervisor owns the sessions (status, stop, approvals,
 //! reaping), kills the detached processes it recorded for a flavor known to leave them
 //! ([`Caveat`]) after its session ends, and stops every session when dropped.
 //!
@@ -91,10 +94,9 @@
 //! process group survives the session (the session still ends on time), unless the flavor
 //! carries [`Caveat::DetachedServer`] and the [`Supervisor`] saw it, as it does OpenCode's own
 //! server; a project file written during a session is only seen by the next launch;
-//! `BASEMIND_AGENT_ID` is self-asserted; the supervisor cannot tell a configured launcher or the
-//! operator from any other process of the same user outside its tree, nor from a launched
-//! agent's process that double-forked away from the harness unless the embedding keeps orphans
-//! below it (a Linux child subreaper); no caller can be built where the kernel does not report a
+//! `BASEMIND_AGENT_ID` is self-asserted; a registration is only as trustworthy as the channel the
+//! engine takes it from, and a process of the same user that can trace or inject into the
+//! registered process acts as it; no caller can be built where the kernel does not report a
 //! connection's peer process or the crate cannot read the process table (other than Linux and
 //! macOS); what the ACP agents' modes other than OpenCode's
 //! supervised one ask for was not run against a live harness; the launcher must not reap

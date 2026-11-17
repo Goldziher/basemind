@@ -10,7 +10,8 @@
 //! A configured launcher and the operator are each bound by the engine to one process
 //! ([`Supervisor::register_launcher`](crate::Supervisor::register_launcher),
 //! [`Supervisor::register_operator`](crate::Supervisor::register_operator)). A caller is that
-//! principal only when its peer is that process or a proven descendant of it. A peer in no live
+//! principal only when its peer is that process or a descendant of it, read link by link with
+//! each parent no younger than its child, and the walk failing closed. A peer in no live
 //! session and under no registered process is refused, whatever it claims: a launched agent's
 //! process that escaped its session (orphaned, double-forked, or started for it by tmux,
 //! launchd or ssh) descends from init or from that spawner, never from the registered process.
