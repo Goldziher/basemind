@@ -332,6 +332,10 @@ pub(super) struct SearchHitView {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// The file changed since it was indexed: `line` is where the definition is now, or where it
+    /// was when it can no longer be found. Absent when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -520,6 +524,8 @@ pub(crate) struct ReferenceHit {
     /// by [`super::helpers_calls_scan::mark_shared_lines`].
     #[schemars(skip)]
     pub shared_line: bool,
+    /// The file changed since it was indexed, so `line` is where the call was when it was scanned.
+    pub stale: bool,
 }
 
 impl ReferenceHit {
@@ -563,6 +569,9 @@ impl super::by_path::Located for ReferenceHit {
         if let Some(resolved) = self.resolved {
             map.serialize_entry("resolved", &resolved)?;
         }
+        if self.stale {
+            map.serialize_entry("stale", &true)?;
+        }
         map.end()
     }
 }
@@ -574,8 +583,14 @@ impl Serialize for ReferenceHit {
     }
 }
 
+/// The `resolution` of a `code_refs` name scan: hits are matched by name and nothing binds them to
+/// one definition.
+pub(super) const NAME_ONLY: &str = "name only: pass `path` to check each hit against that file's definition";
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindReferencesResponse {
+    /// Always [`NAME_ONLY`]: no hit was checked against a definition.
+    pub resolution: &'static str,
     /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
     /// predates exact matching answered, whose substring hits are dropped page by page.
     pub total: u32,

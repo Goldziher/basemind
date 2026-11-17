@@ -122,7 +122,36 @@ async fn code_refs_refuses_positions_in_a_file_edited_after_the_scan() {
     );
 
     let unpinned = call(&client, "code_refs", json!({ "name": "file_outline" })).await;
-    assert_eq!(unpinned["total"], 2, "the name scan reads no file: {unpinned}");
+    assert_eq!(unpinned["total"], 2, "{unpinned}");
+    for hit in super::rows(&unpinned["hits"]) {
+        let edited = hit["path"] == "src/outline.rs";
+        assert_eq!(
+            hit.get("stale").is_some(),
+            edited,
+            "only the edited file's hit is stale: {unpinned}"
+        );
+    }
+}
+
+/// A definition listed from the index in a file edited since the scan is reported where it is now,
+/// and flagged `stale`; one in an unedited file is not flagged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_symbols_follows_a_definition_through_an_edit_made_after_the_scan() {
+    let (dir, client) = started().await;
+    prepend(&dir.path().join("src/outline.rs"), "// one\n// two\n");
+
+    let moved = call(&client, "code_symbols", json!({ "name": "file_outline_l2" })).await;
+    let row = &moved["results"][0];
+    assert_eq!(
+        (row["line"].as_u64(), row["stale"].as_bool()),
+        (Some(9), Some(true)),
+        "{moved}"
+    );
+
+    let unedited = call(&client, "code_symbols", json!({ "name": "first" })).await;
+    let row = &unedited["results"][0];
+    assert_eq!(row["path"], "src/callers.rs", "{unedited}");
+    assert!(row.get("stale").is_none(), "{unedited}");
 }
 
 #[cfg(feature = "code-intel-js")]

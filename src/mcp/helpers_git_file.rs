@@ -61,13 +61,20 @@ pub(super) fn run_diff(state: &ServerState, params: DiffFileParams) -> Result<Ca
         crate::git::GitError::OutsideRepo(path) => super::tool_contract::outside_repository("git_diff", &path),
         other => McpError::internal_error(format!("`git_diff`: {other}"), None),
     })?;
-    let diff = result.unwrap_or(crate::git::FileDiff {
-        hunks: Vec::new(),
-        old_exists: false,
-        new_exists: false,
-        binary: false,
-        too_large: false,
-    });
+    let Some(diff) = result else {
+        let to_side = params
+            .rev_new
+            .as_deref()
+            .map_or_else(|| "in the working tree".to_string(), |rev| format!("at `{rev}`"));
+        return Err(McpError::invalid_params(
+            format!(
+                "`git_diff`: `{}` exists neither at `{}` nor {to_side}. `path` is a repo-relative file \
+                 path; locate it with `find_files`.",
+                params.path, params.rev_old
+            ),
+            None,
+        ));
+    };
     let total_hunks = diff.hunks.len();
     let (hunks, clipped) = capped_hunks(diff.hunks);
     let truncated_reason = if hunks.len() == DIFF_HUNKS_MAX && total_hunks > DIFF_HUNKS_MAX {

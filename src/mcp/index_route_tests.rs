@@ -245,6 +245,7 @@ fn references_page(
             },
             cache,
             || None,
+            |_| {},
         ))
         .expect("references"),
     )

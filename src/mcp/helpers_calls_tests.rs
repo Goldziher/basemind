@@ -100,6 +100,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 },
                 &cache,
                 || None,
+                |_| {},
             ))
             .expect("find_references"),
     );
@@ -412,6 +413,7 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
         callee: "g".to_string(),
         resolved: Some(true),
         shared_line: false,
+        stale: false,
     };
     let scan = scan_calls_in_ram(
         &super::super::helpers_calls_scan::InRamCallIndex::empty(),

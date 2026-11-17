@@ -71,6 +71,41 @@ pub(super) fn annotate_symbols(cache: &super::MapCache, hits: &mut [GrepHit]) {
     }
 }
 
+/// The document-tier files `code_grep` searches as text: the ones in a language basemind can read as
+/// text (markdown, JSON, YAML, TOML, CSV ...), not PDFs or Office files, that pass `selected`. Each
+/// carries its size on disk for the byte budget and an empty `hash_hex`, which marks it a document:
+/// it has no bloom row, no outline and no indexed stamp to be stale against. A link is skipped, as
+/// the scan skips one. Blocking: one `lstat` per selected document.
+pub(super) fn text_documents(
+    state: &super::ServerState,
+    cache: &super::MapCache,
+    selected: &dyn Fn(&RelPath, &str) -> bool,
+) -> Vec<(RelPath, super::l1_cache::FileMeta)> {
+    let root = state.shared.root.as_path();
+    cache
+        .doc_paths
+        .iter()
+        .filter_map(|path| {
+            let language = crate::lang::detect(std::path::Path::new(path.as_str()?))?;
+            if !crate::lang::is_non_code(language) || !selected(path, language) {
+                return None;
+            }
+            let file = crate::path::lexical_file(root, path).ok()?;
+            let stat = std::fs::symlink_metadata(file)
+                .ok()
+                .filter(std::fs::Metadata::is_file)?;
+            let meta = super::l1_cache::FileMeta {
+                hash_hex: Box::default(),
+                language: language.into(),
+                size_bytes: stat.len(),
+                mtime_ns: 0,
+                extract_epoch: 0,
+            };
+            Some((path.clone(), meta))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -181,6 +181,7 @@ pub(super) fn call_page_from_wire(wire: WireCallScan) -> CallScanPage {
             callee: hit.callee,
             resolved: None,
             shared_line: false,
+            stale: false,
         });
         hit_keys.push(hit.key);
         hit_starts.push(hit.start_byte);

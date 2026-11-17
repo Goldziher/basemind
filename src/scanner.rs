@@ -752,9 +752,14 @@ fn scan_paths_inner(
     }
     store.retry_vector_store();
     let mut filter = IndexFilter::new(root, config)?;
-    if verify_named {
+    let expanded;
+    let paths = if verify_named {
         filter.verify_blobs();
-    }
+        expanded = crate::scanner_named::expand_named_dirs(root, &store.index, config, filter.filters(), paths);
+        expanded.as_slice()
+    } else {
+        paths
+    };
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();

@@ -148,12 +148,15 @@ pub(super) async fn run_search_symbols(
                     kind: kind_to_str(symbol.kind),
                     name: symbol.name.clone(),
                     signature: symbol.signature.clone(),
+                    stale: false,
                 })
             })
             .collect();
         (page, total, total_is_partial)
     });
 
+    let mut page = page;
+    super::index_route::blocking(|| super::helpers_stale::follow_symbols(state, &cache, &mut page));
     let budget = super::budget::apply_budget(page, params.max_tokens);
     let results = budget.items;
     let returned_through = skip + results.len();

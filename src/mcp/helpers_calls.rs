@@ -125,6 +125,7 @@ pub(super) async fn run_find_references(
     params: super::types::FindReferencesParams,
     cache: &super::MapCache,
     notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
+    flag_stale: impl FnOnce(&mut [ReferenceHit]),
 ) -> Result<CallToolResult, McpError> {
     use super::types::FindReferencesResponse;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
@@ -137,9 +138,11 @@ pub(super) async fn run_find_references(
     mark_shared_lines(route, cache, &mut scan.hits).await;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
-    let budgeted = budget_call_page(scan, &params.name, params.max_tokens);
+    let mut budgeted = budget_call_page(scan, &params.name, params.max_tokens);
+    flag_stale(&mut budgeted.hits);
     super::toon::format_result(
         &FindReferencesResponse {
+            resolution: super::types::NAME_ONLY,
             total,
             truncated: total_is_partial,
             truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
@@ -444,6 +447,7 @@ async fn resolved_callers(
                             callee: site.callee.clone(),
                             resolved: Some(true),
                             shared_line: false,
+                            stale: false,
                         },
                     ));
                 }

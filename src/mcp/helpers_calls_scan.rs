@@ -253,6 +253,7 @@ pub(super) fn scan_calls_examining(
                 callee,
                 resolved: None,
                 shared_line: false,
+                stale: false,
             });
             hit_keys.push(k.to_vec());
             hit_starts.push(start);
@@ -360,6 +361,7 @@ pub(super) fn scan_calls_in_ram_examining(
                 callee: entry.callee.clone(),
                 resolved: None,
                 shared_line: false,
+                stale: false,
             });
             hit_keys.push(entry.key.clone());
             hit_starts.push(entry.start_byte);

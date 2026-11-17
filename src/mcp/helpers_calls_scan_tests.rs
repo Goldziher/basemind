@@ -638,6 +638,7 @@ fn hit(callee: &str) -> ReferenceHit {
         callee: callee.to_string(),
         resolved: None,
         shared_line: false,
+        stale: false,
     }
 }
 

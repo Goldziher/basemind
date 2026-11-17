@@ -226,6 +226,9 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                     },
                     &cache,
                     || state.lifecycle_notice(),
+                    |hits| {
+                        super::index_route::blocking(|| super::helpers_stale::flag_call_sites(state, &cache, hits));
+                    },
                 )
                 .await
             }

@@ -44,7 +44,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 | Capability | What it does | Key tools |
 |---|---|---|
-| **Code intelligence** | Read the code map instead of opening files: what a file contains (`code_outline`), where a name is defined (`code_symbols`), one symbol's body or an exact line span (`code_read`), text search, literal by default (`code_grep`), search by meaning over indexed chunks (`code_search`, needs `--features code-search`), and usages (`code_refs`): call sites of a name, callers of one definition, implementors of a trait / interface / base class, importers of a module, and go-to-definition (**scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)). `find_files` locates or lists files, documents included. Layered over [300+ languages](#how-it-works). | `code_outline` · `code_symbols` · `code_read` · `code_grep` · `code_search` · `code_refs` · `find_files` |
+| **Code intelligence** | Read the code map instead of opening files: what a file contains (`code_outline`), where a name is defined (`code_symbols`), one symbol's body or an exact line span (`code_read`), exact text search over code and text files, literal by default (`code_grep`), search by meaning over indexed chunks (`code_search`, needs `--features code-search`), and usages (`code_refs`): call sites of a name (matched by name), callers of one definition, implementors of a trait / interface / base class, importers of a module, and go-to-definition (scope- and import-aware once a `path` pins the definition: JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)). `find_files` locates or lists files, documents included. Layered over [300+ languages](#how-it-works). | `code_outline` · `code_symbols` · `code_read` · `code_grep` · `code_search` · `code_refs` · `find_files` |
 | **Git intelligence** | Ask what changed recently, which commits touched a file, which commit mentions a phrase (full-text over messages and authors at full branch depth), when a symbol's body changed, who last touched a line or a function, and how a file differs between revisions or from the working tree, as text hunks or as symbols added and removed. | `git_log` · `git_blame` · `git_diff` |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory_save` · `memory_search` · `docs_search` |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
@@ -465,9 +465,9 @@ real callers and report the remainder as complete. Filter on `resolved` when you
 The code map is **code only**. Prose, data and config files — Markdown, reStructuredText, AsciiDoc,
 vimdoc, CSV, JSON, YAML, TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes`
 and Fluent — go to the document tier instead: they are chunked and searched as text with
-`docs_search` (gated by `[documents] include` / `exclude`), and no longer show up in `code_outline`,
-`code_symbols` and `code_grep`. `find_files` still covers them, labelled by grammar name or
-extension. An existing index migrates on its next scan. A build
+`docs_search` (gated by `[documents] include` / `exclude`), and no longer show up in `code_outline`
+and `code_symbols`. `code_grep` still searches them as text, and `find_files` still covers them,
+labelled by grammar name or extension. An existing index migrates on its next scan. A build
 without the `documents` feature keeps the old behaviour, where those files are outlined as code.
 
 ```mermaid
