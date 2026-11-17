@@ -321,7 +321,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 cursor: cursor.map(Cursor),
                 max_tokens,
             };
-            ("git_blame", server.git_blame_call(p).await)
+            ("git_blame", server.op(p, Workspace::git_blame).await)
         }
         GitCmd::BlameSymbol {
             path,
@@ -342,7 +342,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
                 cursor: cursor.map(Cursor),
                 max_tokens,
             };
-            ("git_blame", server.git_blame_call(p).await)
+            ("git_blame", server.op(p, Workspace::git_blame).await)
         }
         GitCmd::Diff {
             path,
