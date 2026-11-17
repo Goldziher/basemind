@@ -655,3 +655,20 @@ async fn git_diff_structural_counts_a_repeated_symbol_once() {
     assert_eq!(diff["common"].as_u64(), Some(distinct.len() as u64), "{diff}");
     assert_eq!((&diff["added"], &diff["removed"]), (&json!([]), &json!([])), "{diff}");
 }
+
+/// A path that is in neither revision is a typo, not a file without changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_refuses_a_path_in_neither_revision() {
+    let (_dir, client) = started().await;
+    let refused = super::call_err(&client, "git_diff", json!({ "path": "src/typo.rs" })).await;
+    assert!(
+        refused.contains("`src/typo.rs`") && refused.contains("find_files"),
+        "{refused}"
+    );
+    let unchanged = call(&client, "git_diff", json!({ "path": "src/outline.rs" })).await;
+    assert_eq!(
+        unchanged["hunks"],
+        json!([]),
+        "an unchanged file is still a diff: {unchanged}"
+    );
+}
