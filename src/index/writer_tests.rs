@@ -470,6 +470,59 @@ fn resolved_edges_dual_partition_consistency() {
     assert!(db.refs_by_path.iter().next().is_none());
 }
 
+/// A full rescan re-resolves every file. Facts that did not change must stage nothing, and facts
+/// that did must leave exactly the new edge set, as the delete-then-insert they replace did.
+#[test]
+fn an_unchanged_resolved_file_is_not_rewritten() {
+    use crate::intel::model::{FileResolvedRefs, ResolvedEdge};
+    let edge = |use_start, def_start| ResolvedEdge {
+        use_start,
+        use_end: use_start + 1,
+        def_start,
+        def_end: def_start + 1,
+    };
+    let (_d, db) = fresh_db();
+    let rel = RelPath::from("src/app.rs");
+    let mut refs = FileResolvedRefs::new("rust");
+    refs.intra = vec![edge(100, 4), edge(200, 4), edge(300, 8)];
+    let mut w = db.writer();
+    w.upsert_resolved_file(&rel, &refs).unwrap();
+    w.commit().unwrap();
+
+    let mut w = db.writer();
+    w.upsert_resolved_file(&rel, &refs).unwrap();
+    assert_eq!(w.staged_bytes(), 0, "re-resolving unchanged facts must stage nothing");
+    w.commit().unwrap();
+    assert_eq!(db.refs_by_path.iter().count(), 3);
+
+    refs.intra = vec![edge(100, 4), edge(300, 9), edge(400, 8)];
+    let mut w = db.writer();
+    w.upsert_resolved_file(&rel, &refs).unwrap();
+    w.commit().unwrap();
+    let mut by_path: Vec<(u32, u32)> = db
+        .refs_by_path
+        .iter()
+        .map(|g| {
+            let (k, _) = g.into_inner().unwrap();
+            let (_up, ustart, _dp, dstart) = keys::parse_ref_by_path(&k).unwrap();
+            (ustart, dstart)
+        })
+        .collect();
+    by_path.sort_unstable();
+    assert_eq!(by_path, vec![(100, 4), (300, 9), (400, 8)]);
+    let mut by_def: Vec<(u32, u32)> = db
+        .refs_by_def
+        .iter()
+        .map(|g| {
+            let (k, _) = g.into_inner().unwrap();
+            let (_dp, dstart, _up, ustart) = keys::parse_ref_by_def(&k).unwrap();
+            (ustart, dstart)
+        })
+        .collect();
+    by_def.sort_unstable();
+    assert_eq!(by_def, by_path, "both partitions hold the same edges");
+}
+
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 #[test]
 fn definition_of_prefers_cross_file_target_over_import_binding() {
