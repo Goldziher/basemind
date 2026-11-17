@@ -57,7 +57,11 @@ pub(super) fn record_call(
     let resp_text = result_text(r);
     let resp_bytes = resp_text.len() as u64;
     let corpus = state.shared.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
-    let savings = super::savings::estimate_from_text(tool, corpus, resp_text.as_ref());
+    let savings = if r.is_error == Some(true) {
+        super::savings::refusal(resp_text.as_ref())
+    } else {
+        super::savings::estimate_from_text(tool, corpus, resp_text.as_ref())
+    };
     state
         .shared
         .telemetry
