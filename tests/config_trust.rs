@@ -53,3 +53,21 @@ fn operator_grants_restore_the_repo_values() {
     clear_grants();
     assert!(cfg.scan.follow_symlinks);
 }
+
+/// A repository cannot turn agent launching on: an `[agents]` table in its `basemind.toml` is
+/// dropped (the operator's own user-level file is the only source), and the rest of the file
+/// still loads instead of failing validation on the unknown table.
+#[test]
+fn an_agents_table_in_the_repo_config_is_dropped_and_the_rest_loads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n[comms]\nagent_id = \"repo-lead\"\n\n[agents.launch]\nenabled = true\n\
+         worktrees_root = \"/tmp\"\n[agents.launch.harness.claude]\nexecutable = \"/tmp/claude\"\n",
+    )
+    .expect("write config");
+    let cfg = config::load(dir.path()).expect("a repo [agents] table must not break the file");
+    assert_eq!(cfg.comms.agent_id.as_deref(), Some("repo-lead"));
+    let serialized = serde_json::to_value(&cfg).expect("serialize");
+    assert!(serialized.get("agents").is_none(), "{serialized}");
+}
