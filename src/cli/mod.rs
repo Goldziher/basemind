@@ -130,9 +130,8 @@ pub fn run(
         .build()
         .context("build tokio runtime")?;
 
-    let intent = context::Intent::Read;
     runtime.block_on(async move {
-        let server = context::build_server_for(root, view, documents, intent)?;
+        let server = context::build_server(root, view, documents)?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
         let opts = Emit {
