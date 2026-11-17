@@ -812,8 +812,11 @@ fn a_stopped_harness_gets_only_the_stop_grace() {
     session.stop();
     assert_eq!(session.wait(), FinishStatus::Stopped);
     let took = stopped.elapsed();
+    // Bounded by what the fault would take, not by how fast a loaded host is: without the stop
+    // grace the harness would get the full retire, 1.5 s for its input to close and 2 s after
+    // SIGTERM.
     assert!(
-        took < Duration::from_millis(1500),
+        took < Duration::from_millis(3000),
         "the stop took {took:?} with a 200 ms grace"
     );
     assert_gone(&leader);
@@ -838,9 +841,11 @@ fn dropping_a_session_that_is_winding_down_kills_the_harness_at_once() {
     }
     let dropped = Instant::now();
     drop(session);
-    let deadline = dropped + Duration::from_millis(1500);
+    // Bounded by what the fault would take, not by how fast a loaded host is: a drop that did
+    // not cut the retire short would leave the harness 3.5 s.
+    let deadline = dropped + Duration::from_millis(3000);
     while alive(&leader) {
-        assert!(Instant::now() < deadline, "the harness outlived the drop by 1.5 s");
+        assert!(Instant::now() < deadline, "the harness outlived the drop by 3 s");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -899,7 +904,9 @@ while :; do sleep 0.05; done
     let done = Instant::now();
     assert_eq!(session.wait(), FinishStatus::Completed);
     let took = done.elapsed();
-    assert!(took < Duration::from_millis(1200), "retiring took {took:?}");
+    // Bounded by what the fault would take, not by how fast a loaded host is: given the exit
+    // grace, the harness would get 200 ms for its input to close and 1.5 s more to exit.
+    assert!(took < Duration::from_millis(1700), "retiring took {took:?}");
 }
 
 #[test]
