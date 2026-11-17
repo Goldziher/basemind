@@ -344,8 +344,8 @@ pub struct RerankerConfig {
     /// `bge-reranker-large` and `bge-reranker-v2-m3` are heavier alternatives).
     #[serde(default = "RerankerConfig::default_preset")]
     pub preset: String,
-    /// How many hits to rerank. The vector search returns `top_k` candidates
-    /// which the cross-encoder then reorders.
+    /// How many of the best fused hits the cross-encoder reorders, at most 50. The hits after
+    /// them follow in fused order: nothing is dropped.
     #[serde(default = "RerankerConfig::default_top_k")]
     #[schemars(range(min = 1))]
     pub top_k: usize,
@@ -356,7 +356,7 @@ impl RerankerConfig {
         "bge-reranker-base".to_string()
     }
     fn default_top_k() -> usize {
-        10
+        50
     }
 }
 
