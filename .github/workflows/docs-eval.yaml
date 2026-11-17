@@ -46,9 +46,12 @@ jobs:
         with:
           install-args: python
 
+      # ~keep ort-sys links against libonnxruntime.a in its download dir and never reruns when that
+      # ~keep dir is gone, so the dir is cached with target/ (see ci.yaml).
       - uses: Swatinem/rust-cache@v2
         with:
           key: docs-eval
+          cache-directories: ~/.cache/ort.pyke.io
 
       - name: Build
         env:
