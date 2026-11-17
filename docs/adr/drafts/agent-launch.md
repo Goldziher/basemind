@@ -91,7 +91,9 @@ id that fails the grammar stops the launch.
      mode, because what it does unasked was not verified, except OpenCode supervised: OpenCode
      2.3.0's default wrote a file unasked, but with `OPENCODE_CONFIG_CONTENT={"permission":"ask"}`,
      which every OpenCode launch now sets, it asked before an edit, a shell command and an MCP
-     call. An ACP agent that reports switching itself to another session mode fails the session.
+     call. An ACP agent that reports switching itself to another session mode fails the session,
+     whether it reports a mode or, as OpenCode 2.3.0 does, a mode-category config option; no live
+     OpenCode turn sent such an update, so that shape is the protocol's.
    - **Only a model and an effort reach the command line from a request,** as the harness's own
      flags after a grammar check; a harness that takes neither at launch refuses them. A brief or
      follow-up may not start with `/`: Claude Code 2.1.325 ran a prompt of `/context` as its own

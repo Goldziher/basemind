@@ -59,7 +59,8 @@ config is trusted.
 - An ACP agent in any other mode needs an `UnverifiedModeOptIn` naming the harness and the mode:
   what it does unasked was not verified. OpenCode supervised needs none: every OpenCode launch
   sets `OPENCODE_CONFIG_CONTENT={"permission":"ask"}`. An ACP agent that reports switching itself
-  to another session mode fails the session. Codex refuses `AcceptEdits`, whose nearest Codex mode
+  to another session mode, as a mode or as its mode config option (OpenCode's `mode`), fails the
+  session. Codex refuses `AcceptEdits`, whose nearest Codex mode
   also runs commands unasked.
 - Of a request, only the model and the effort reach the command line, as the harness's own flags
   after a grammar check; its wall time and turns are clamped to the config's caps, and its brief is

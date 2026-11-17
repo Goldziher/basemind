@@ -16,8 +16,9 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema::{
     CancelNotification, ContentBlock, EnvVariable, Implementation, InitializeRequest, McpServer, McpServerStdio, Meta,
     NewSessionRequest, PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate, SetSessionModeRequest,
-    TextContent, ToolCallStatus, ToolCallUpdateFields, ToolKind,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionNotification, SessionUpdate, SetSessionModeRequest, TextContent,
+    ToolCallStatus, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{Agent, Client, Lines};
@@ -421,8 +422,8 @@ fn approval_request(id: String, request: &RequestPermissionRequest) -> ApprovalR
     }
 }
 
-/// The session mode the agent reports, against the one the session runs in: the mode the
-/// adapter set, else the one `session/new` returned. A switch the agent makes by itself
+/// The session mode the agent reports, as a mode or as its mode config option, against the one
+/// the session runs in: the mode the adapter set, else the one `session/new` returned. A switch the agent makes by itself
 /// changes what it does unasked, so it ends the session.
 struct ModeWatch {
     state: Mutex<ModeState>,
@@ -507,6 +508,11 @@ impl Updates {
             }
             SessionUpdate::ToolCallUpdate(update) => self.merge(&update.tool_call_id.0, update.fields, sink),
             SessionUpdate::CurrentModeUpdate(update) => self.1.report(update.current_mode_id.0.to_string()),
+            SessionUpdate::ConfigOptionUpdate(update) => {
+                if let Some(mode) = mode_option(&update.config_options) {
+                    self.1.report(mode);
+                }
+            }
             _ => {}
         }
     }
@@ -532,6 +538,19 @@ impl Updates {
         }
         sink.emit(Event::ToolCall(tool.clone()));
     }
+}
+
+/// The value of the mode-category select option among `options`: OpenCode 2.3.0 has no session
+/// modes and reports its mode (`build`, `plan`) this way instead.
+fn mode_option(options: &[SessionConfigOption]) -> Option<String> {
+    options
+        .iter()
+        .find_map(|option| match (&option.category, &option.kind) {
+            (Some(SessionConfigOptionCategory::Mode), SessionConfigKind::Select(select)) => {
+                Some(select.current_value.0.to_string())
+            }
+            _ => None,
+        })
 }
 
 /// The error for an agent that switched its session mode by itself.
@@ -618,7 +637,10 @@ where
             let opened = connection.send_request(new_session).block_task().await?;
             let session = opened.session_id;
             sink.emit(Event::HarnessSession(session.0.to_string()));
-            let current = opened.modes.map(|modes| modes.current_mode_id.0.to_string());
+            let current = opened
+                .modes
+                .map(|modes| modes.current_mode_id.0.to_string())
+                .or_else(|| opened.config_options.as_deref().and_then(mode_option));
             if let Some(mode) = &mode {
                 connection
                     .send_request(SetSessionModeRequest::new(session.clone(), mode.clone()))

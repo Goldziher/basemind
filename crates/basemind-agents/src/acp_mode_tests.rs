@@ -105,3 +105,64 @@ fn a_mode_report_matching_the_mode_set_is_accepted() {
     });
     run.result.unwrap();
 }
+
+/// OpenCode 2.3.0's `mode` config option, as its `session/new` returned it, in mode `current`.
+fn opencode_mode_option(current: &str) -> Value {
+    json!({"id": "mode", "name": "Session Mode", "category": "mode", "type": "select", "currentValue": current,
+        "options": [{"value": "build", "name": "Build"}, {"value": "plan", "name": "Plan"}]})
+}
+
+#[test]
+fn a_mode_switched_through_a_config_option_fails_the_session() {
+    let root = tempfile::tempdir().unwrap();
+    let read_only = in_mode(
+        spec(HarnessKind::Acp(AcpFlavor::OpenCode), root.path()),
+        PermissionMode::ReadOnly,
+    );
+    let effort = json!({"id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+        "currentValue": "high", "options": [{"value": "high", "name": "High"}]});
+    let run = converse_with(&read_only, Vec::new(), move |agent| {
+        let initialize = agent.expect("initialize");
+        agent.reply(&initialize, &json!({"protocolVersion": 1}));
+        let new_session = agent.expect("session/new");
+        agent.reply(
+            &new_session,
+            &json!({"sessionId": "sess-1", "configOptions": [opencode_mode_option("build")]}),
+        );
+        let set_mode = agent.expect("session/set_mode");
+        agent.reply(&set_mode, &json!({}));
+        agent.expect("session/prompt");
+        // Another option changing, or the mode reported as set, is fine.
+        agent.update(&json!({"sessionUpdate": "config_option_update",
+            "configOptions": [opencode_mode_option("plan"), effort]}));
+        agent.update(&json!({"sessionUpdate": "config_option_update",
+            "configOptions": [opencode_mode_option("build")]}));
+        agent.expect("session/cancel");
+        while futures::executor::block_on(agent.from_client.next()).is_some() {}
+    });
+    let error = run.result.unwrap_err();
+    assert!(
+        error.to_string().contains("switched itself to session mode \"build\""),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_supervised_opencode_session_runs_in_the_mode_its_config_option_reports() {
+    let root = tempfile::tempdir().unwrap();
+    let supervised = spec(HarnessKind::Acp(AcpFlavor::OpenCode), root.path());
+    let run = converse_with(&supervised, Vec::new(), |agent| {
+        let initialize = agent.expect("initialize");
+        agent.reply(&initialize, &json!({"protocolVersion": 1}));
+        let new_session = agent.expect("session/new");
+        agent.reply(
+            &new_session,
+            &json!({"sessionId": "sess-1", "configOptions": [opencode_mode_option("build")]}),
+        );
+        let prompt = agent.expect("session/prompt");
+        agent.update(&json!({"sessionUpdate": "config_option_update",
+            "configOptions": [opencode_mode_option("build")]}));
+        agent.reply(&prompt, &json!({"stopReason": "end_turn"}));
+    });
+    run.result.unwrap();
+}
