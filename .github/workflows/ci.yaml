@@ -165,10 +165,17 @@ jobs:
         run: brew install protobuf
 
       # ~keep cache-on-failure: main is often red, and a leg that never saves a cache stays cold.
+      # ~keep ort-sys's build script downloads libonnxruntime.a into the ort.pyke.io cache dir and
+      # ~keep emits a link path into it; cargo never reruns the script when that dir is gone. A job
+      # ~keep cancelled after `cargo clippy` saved target/ with that output but no ort-sys rlib, and
+      # ~keep the next `cargo test` failed: could not find native static library `onnxruntime`.
+      # ~keep Caching the dir in the same entry keeps the two consistent; adding a path also changes
+      # ~keep the cache version, so entries saved without it are not restored.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-${{ matrix.features }}
           cache-on-failure: true
+          cache-directories: ${{ (matrix.features == 'full' || matrix.features == 'comms documents') && (runner.os == 'macOS' && '~/Library/Caches/ort.pyke.io' || '~/.cache/ort.pyke.io') || '' }}
 
       # ~keep Grammars are downloaded at test time; a cache keeps a slow or failed download from
       # ~keep deciding which tests can run. The language-pack version is in Cargo.lock.
@@ -256,7 +263,7 @@ jobs:
         shell: bash
         run: |
           df -h . "$RUNNER_TEMP" "${TMPDIR:-/tmp}" || true
-          du -sh target "${TMPDIR:-/tmp}" 2>/dev/null || true
+          du -sh target "${TMPDIR:-/tmp}" ~/.cache/ort.pyke.io ~/Library/Caches/ort.pyke.io 2>/dev/null || true
 
   deny:
     name: cargo-deny
@@ -436,6 +443,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          cache-directories: ~/.cache/ort.pyke.io
 
       - name: run harden.sh
         run: ./scripts/harden.sh
@@ -499,6 +507,7 @@ jobs:
         with:
           key: upgrade-next-minor
           cache-on-failure: true
+          cache-directories: ~/.cache/ort.pyke.io
       - name: Bump the tree to the next minor with the release procedure
         shell: bash
         run: |
@@ -547,6 +556,7 @@ jobs:
         with:
           key: ignored-tests
           cache-on-failure: true
+          cache-directories: ~/.cache/ort.pyke.io
       - name: cargo test --ignored
         env:
           BASEMIND_GIT_PARITY_REPO: ${{ github.workspace }}
