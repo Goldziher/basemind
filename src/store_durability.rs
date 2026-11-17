@@ -115,7 +115,7 @@ impl Store {
     }
 
     /// Open, for the scan about to write into this store, the group index a read-only open did not
-    /// hold (ADR-0038 rule 3), or one beside a file map of another schema or blob layout. The file
+    /// hold (ADR-0036 rule 3), or one beside a file map of another schema or blob layout. The file
     /// map is read again under the lock, since the one loaded at open may be an earlier writer's,
     /// and gets the reconciliation a writer open gives it, written at once. A no-op for a store that
     /// has an index handle.

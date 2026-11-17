@@ -839,7 +839,7 @@ fn rows_of_a_killed_pass_outlive_no_seal_of_a_store_claimed_in_place() {
     assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
 }
 
-/// A read-only open in a process that holds no group handle takes none (ADR-0038 rule 3). A scan that
+/// A read-only open in a process that holds no group handle takes none (ADR-0036 rule 3). A scan that
 /// claims the store opens the group index as a writer, which sweeps what an interrupted discard left.
 #[test]
 fn a_store_opened_read_only_scans_through_an_index_opened_for_writing() {

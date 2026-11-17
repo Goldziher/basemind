@@ -274,7 +274,7 @@ pub struct Store {
     hash_refs: HashRefs,
     /// This view's handle on the group index (`cache/groups/<group>/index.fjall/`, ADR-0028). Every
     /// read and write goes through `IndexDb`, which is cheap to clone (internally Arc'd).
-    /// `None` for a read-only open in a process that holds no handle on the group (ADR-0038):
+    /// `None` for a read-only open in a process that holds no handle on the group (ADR-0036):
     /// callers must handle the absence.
     pub index_db: Option<IndexDb>,
     /// LanceDB-backed vector store. Lazy-opened on first document insert so a

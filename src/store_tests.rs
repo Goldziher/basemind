@@ -71,7 +71,7 @@ fn open_read_only_errors_on_never_scanned_named_view() {
 }
 
 /// A read-only open uses the group index only through a handle its process already holds
-/// (ADR-0038 rule 3): with none it answers from blobs, and with one it shares it.
+/// (ADR-0036 rule 3): with none it answers from blobs, and with one it shares it.
 #[test]
 fn a_read_only_open_shares_the_group_index_only_when_its_process_holds_it() {
     init_isolated_cache();

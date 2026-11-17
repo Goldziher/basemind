@@ -4,7 +4,7 @@ date: 2026-11-17
 amends: ["0028"]
 ---
 
-# ADR-0038: Group index as built — no rollout switch, the group lock, read-only opens
+# ADR-0036: Group index as built — no rollout switch, the group lock, read-only opens
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0028; ADR-0016, ADR-0025, ADR-0027, ADR-0030
