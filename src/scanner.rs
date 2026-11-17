@@ -484,6 +484,7 @@ pub fn scan_with_observer(
         embed,
         cancel,
     };
+    let bm25_pass = crate::scanner_flush::begin_bm25_pass_if_any(store, config);
     let driven = drive_scan(&drive, &candidates, store, &mut report.stats, observer);
     let (seen_count, total_candidates) = (driven.seen.len(), candidates.len());
     // Before the cancel check and the stale purge: a drive stopped by a fatal commit failure is a ~keep
@@ -632,7 +633,9 @@ pub fn scan_with_observer(
     });
     #[cfg(feature = "documents")]
     crate::scanner_integrity::remove_docs_and_flush(store, config, &filters, &scope, &doc_stale)?;
-    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, true));
+    run_optional_lane(LANE_BM25_STATS, || {
+        crate::scanner_flush::finish_bm25_pass(store, config, bm25_pass)
+    });
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store, &filters)
     });

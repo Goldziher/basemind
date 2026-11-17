@@ -28,6 +28,12 @@ pub struct IndexWriter {
     writes_postings: bool,
     /// The batch changes this view's BM25 forward rows, so its commit invalidates the live-key cache.
     changes_bm25_forward: bool,
+    /// What the batch does to the BM25 forward rows, for an open full pass (see `bm25_pass`).
+    #[cfg(feature = "code-search")]
+    bm25_delta: super::bm25_pass::Bm25Delta,
+    /// The batch already stages the drop of the exact-BM25 marker.
+    #[cfg(feature = "code-search")]
+    bm25_exact_dropped: bool,
     /// Test-only fault seam: make the next [`Self::upsert_file`] (or `upsert_bm25_file`) stage its
     /// deletes and inserts and *then* fail. The real failures have exactly that shape — a fjall read
     /// error inside `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and
@@ -115,6 +121,10 @@ impl IndexWriter {
             staged_bytes: 0,
             writes_postings: false,
             changes_bm25_forward: false,
+            #[cfg(feature = "code-search")]
+            bm25_delta: super::bm25_pass::Bm25Delta::default(),
+            #[cfg(feature = "code-search")]
+            bm25_exact_dropped: false,
             #[cfg(test)]
             fail_after_staging: false,
         }
@@ -337,6 +347,10 @@ impl IndexWriter {
         if let Err(error) = &result {
             self.db.record_commit_error(error);
         }
+        #[cfg(feature = "code-search")]
+        if result.is_ok() && !self.bm25_delta.is_empty() {
+            self.db.bm25_pass.absorb(self.bm25_delta);
+        }
         if self.changes_bm25_forward {
             // After the commit, failed or not: a cache built from rows read before it is stale. ~keep
             self.db.bm25_live.invalidate();
@@ -483,16 +497,46 @@ impl IndexWriter {
     #[cfg(feature = "code-search")]
     fn stage_bm25_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        let keys: Vec<Vec<u8>> = db
-            .code_bm25_by_path
-            .prefix_keys(&keys::code_bm25_by_path_prefix(rel))
-            .map(|key| key.map(|key| key.to_vec()))
-            .collect::<Result<_, _>>()?;
+        let prefix = keys::code_bm25_by_path_prefix(rel);
+        let keys: Vec<Vec<u8>> = if db.bm25_pass.is_open() {
+            // An open pass needs each row's value too: the postings it names and its doclen. ~keep
+            let mut keys = Vec::new();
+            for row in db.code_bm25_by_path.prefix(&prefix) {
+                let (key, value) = row?;
+                self.bm25_delta.remove_row(&db.bm25_pass, &key, &value);
+                keys.push(key.to_vec());
+            }
+            keys
+        } else {
+            db.code_bm25_by_path
+                .prefix_keys(&prefix)
+                .map(|key| key.map(|key| key.to_vec()))
+                .collect::<Result<_, _>>()?
+        };
         self.changes_bm25_forward |= !keys.is_empty();
         for key in keys {
             stage_remove(batch, staged_bytes, &db.code_bm25_by_path, key);
         }
+        if self.changes_bm25_forward {
+            self.drop_bm25_exact_outside_pass();
+        }
         Ok(())
+    }
+
+    /// A forward-row write outside an open full pass makes the stored BM25 state unvouched for:
+    /// stage the drop of the exact marker into the same batch, once.
+    #[cfg(feature = "code-search")]
+    fn drop_bm25_exact_outside_pass(&mut self) {
+        if self.bm25_exact_dropped || self.db.bm25_pass.is_open() {
+            return;
+        }
+        stage_remove(
+            &mut self.batch,
+            &mut self.staged_bytes,
+            &self.db.meta,
+            IndexDb::bm25_exact_marker(),
+        );
+        self.bm25_exact_dropped = true;
     }
 
     #[cfg(feature = "code-search")]
@@ -545,8 +589,14 @@ impl IndexWriter {
                 keys::code_bm25_by_path(rel, content, ordinal),
                 value,
             );
+            if db.bm25_pass.is_open() {
+                self.bm25_delta.add_row(posting.doclen);
+            }
             self.writes_postings = true;
             self.changes_bm25_forward = true;
+        }
+        if self.changes_bm25_forward {
+            self.drop_bm25_exact_outside_pass();
         }
         Ok(())
     }

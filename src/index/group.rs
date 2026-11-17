@@ -306,6 +306,8 @@ impl GroupDb {
                     .or_default(),
             ),
             bm25_gate: Arc::clone(&self.bm25_gate),
+            #[cfg(feature = "code-search")]
+            bm25_pass: Arc::default(),
             grep_bloom: scoped(Part::GrepBloom),
             embeddings: self.embeddings.clone(),
             fault: Arc::default(),
