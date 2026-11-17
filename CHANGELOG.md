@@ -394,6 +394,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The status line and the PreToolUse guard keep their state in a directory only the user can write
   (`$XDG_RUNTIME_DIR/basemind`, else `${TMPDIR:-/tmp}/basemind-<uid>`, mode 0700), never through a
   link another local user planted in the shared temporary directory.
+- The npm wrapper downloads over HTTPS only, a redirect included, and reports a binary killed by a
+  signal as a failure.
 - A `code_search`, `docs_search` or `code_outline` cursor issued right after the server started is
   no longer refused as stale on the next page: the background warm of the in-RAM map counted as an
   index change, though none of the three lists is read from that map.

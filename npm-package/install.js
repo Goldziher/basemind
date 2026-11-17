@@ -2,10 +2,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const https = require("node:https");
-const http = require("node:http");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
-const AdmZip = require("adm-zip");
 
 const { version } = require("./package.json");
 
@@ -57,17 +55,37 @@ function getReleaseAssets() {
   };
 }
 
+// Every request, a redirect's target included, goes over HTTPS: over plain HTTP anyone on the path
+// could replace the archive and the checksums file together.
+function httpsUrl(location, base) {
+  const url = new URL(location, base);
+  if (url.protocol !== "https:") {
+    throw new Error(`refusing to download over ${url.protocol} (${url.href}); only https: is allowed`);
+  }
+  return url;
+}
+
+// The URL to request next, or a rejection that stops the chain before any request is made.
+function nextUrl(url, maxRedirects, reject) {
+  if (maxRedirects <= 0) {
+    reject(new Error("Too many redirects"));
+    return null;
+  }
+  try {
+    return httpsUrl(url);
+  } catch (error) {
+    reject(error);
+    return null;
+  }
+}
+
 function downloadWithRedirects(url, dest, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
-    if (maxRedirects <= 0) {
-      reject(new Error("Too many redirects"));
-    }
+    const urlObj = nextUrl(url, maxRedirects, reject);
+    if (!urlObj) return;
 
-    const urlObj = new URL(url);
-    const client = urlObj.protocol === "https:" ? https : http;
-
-    const req = client.get(
-      url,
+    const req = https.get(
+      urlObj,
       {
         headers: {
           "User-Agent": "basemind-npm-wrapper",
@@ -75,7 +93,8 @@ function downloadWithRedirects(url, dest, maxRedirects = 5) {
       },
       (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          downloadWithRedirects(res.headers.location, dest, maxRedirects - 1)
+          res.resume();
+          downloadWithRedirects(new URL(res.headers.location, urlObj).href, dest, maxRedirects - 1)
             .then(resolve)
             .catch(reject);
           return;
@@ -140,15 +159,11 @@ function retryWithBackoff(fn, maxAttempts = 3) {
 
 function fetchTextWithRedirects(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
-    if (maxRedirects <= 0) {
-      reject(new Error("Too many redirects"));
-    }
+    const urlObj = nextUrl(url, maxRedirects, reject);
+    if (!urlObj) return;
 
-    const urlObj = new URL(url);
-    const client = urlObj.protocol === "https:" ? https : http;
-
-    const req = client.get(
-      url,
+    const req = https.get(
+      urlObj,
       {
         headers: {
           "User-Agent": "basemind-npm-wrapper",
@@ -156,7 +171,8 @@ function fetchTextWithRedirects(url, maxRedirects = 5) {
       },
       (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          fetchTextWithRedirects(res.headers.location, maxRedirects - 1)
+          res.resume();
+          fetchTextWithRedirects(new URL(res.headers.location, urlObj).href, maxRedirects - 1)
             .then(resolve)
             .catch(reject);
           return;
@@ -255,6 +271,7 @@ async function installBinary() {
     console.log("Extracting archive (binary + bundled libraries)...");
 
     if (isZip) {
+      const AdmZip = require("adm-zip");
       const zip = new AdmZip(archivePath);
       zip.extractAllTo(binDir, true);
     } else {
@@ -282,4 +299,8 @@ async function installBinary() {
   }
 }
 
-installBinary();
+if (require.main === module) {
+  installBinary();
+}
+
+module.exports = { downloadWithRedirects, fetchTextWithRedirects };
