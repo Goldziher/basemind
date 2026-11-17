@@ -6,7 +6,7 @@ stay connected, no calls), `shutdown` (clean close, host SIGKILL, serve SIGKILL,
 a sweep for any surviving process of the run). `analyze.py` turns the NDJSON into a verdict.
 
 Usage:
-    soak.py --binary target/release/basemind [--repo PATH] [--duration 600] [--idle 180]
+    soak.py --binary target/release/basemind [--repo PATH | --fixture] [--duration 600] [--idle 180]
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import contextlib
 import json
 import os
 import random
+import shutil
 import signal
 import subprocess
 import sys
@@ -46,6 +47,7 @@ from common import (  # noqa: E402 - path set up above
     sample_pid,
     terminate_owned,
 )
+from fixtures import build_fixture  # noqa: E402
 
 HOST_SCRIPT = r"""
 import json, subprocess, sys, time
@@ -462,9 +464,11 @@ def shutdown_checks(wl: Workload, sampler: Sampler, sink: Ndjson, iso: Isolation
 
     if args.inject_orphan:
         # Proof that the sweep fires: a detached process anchored in the run root, as a leaked child would be.
-        subprocess.Popen(["sleep", "600"], cwd=iso.root, env=wl.env, start_new_session=True)  # noqa: S603,S607
+        subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(600)"], cwd=iso.root, env=wl.env, start_new_session=True
+        )
         sink.write(
-            {"kind": "note", "text": "injected a detached `sleep 600` whose cwd is the run root (--inject-orphan)"}
+            {"kind": "note", "text": "injected a detached 600 s sleeper whose cwd is the run root (--inject-orphan)"}
         )
 
     time.sleep(2)
@@ -484,6 +488,12 @@ def main() -> int:  # noqa: PLR0915
     ap.add_argument(
         "--repo", type=Path, help="repository to copy and soak (default: a local clone of this checkout's HEAD)"
     )
+    ap.add_argument(
+        "--fixture",
+        action="store_true",
+        help="soak the generated fixture repository (functional_sweep's) instead of a repository copy",
+    )
+    ap.add_argument("--scan-timeout", type=float, default=1800, help="seconds the initial CLI scan may take")
     ap.add_argument("--duration", type=float, default=600, help="load phase seconds, warm-up included (default 600)")
     ap.add_argument(
         "--warmup", type=float, default=120, help="seconds at the start of load excluded from slopes (default 120)"
@@ -529,14 +539,20 @@ def main() -> int:  # noqa: PLR0915
             iso.cleanup()
 
     install_cleanup(cleanup)
+    args.binary = iso.stage_binary(args.binary)
 
     repo = iso.root / "repo"
-    src = (args.repo or repo_root()).resolve()
-    log(f"copying {src} -> {repo}")
-    if (src / ".git").exists():
-        clone_repo(src, repo)
+    if args.fixture:
+        src = Path("<generated fixture>")
+        log(f"building the fixture repository at {repo}")
+        build_fixture(repo)
     else:
-        subprocess.run(["cp", "-R", str(src), str(repo)], check=True)  # noqa: S607
+        src = (args.repo or repo_root()).resolve()
+        log(f"copying {src} -> {repo}")
+        if (src / ".git").exists():
+            clone_repo(src, repo)
+        else:
+            shutil.copytree(src, repo, symlinks=True)
     sink.write(
         {
             "kind": "meta",
@@ -560,20 +576,31 @@ def main() -> int:  # noqa: PLR0915
 
     log("initial CLI scan (no daemon yet: a direct scan)")
     started = time.monotonic()
-    scan = run_cli(args.binary, ["scan"], repo, wl.env, timeout=1800)
+    try:
+        scan = run_cli(args.binary, ["scan"], repo, wl.env, timeout=args.scan_timeout)
+        code: int | None = scan.returncode
+        err = scan.stderr
+    except subprocess.TimeoutExpired as exc:
+        code = None
+        tail = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else exc.stderr or ""
+        err = f"timed out after {args.scan_timeout:.0f}s; stderr tail: {tail}"
     sink.write(
         {
             "kind": "cli",
             "argv": ["scan"],
-            "exit_code": scan.returncode,
-            "ok": scan.returncode == 0,
+            "exit_code": code,
+            "ok": code == 0,
             "ms": round((time.monotonic() - started) * 1000),
             "initial": True,
-            **({"stderr": scan.stderr[-500:]} if scan.returncode else {}),
+            **({"stderr": err[-500:]} if code != 0 else {}),
         }
     )
-    if scan.returncode != 0:
-        log(f"initial scan failed: {scan.stderr[-500:]}")
+    if code is None:
+        # Without an index there is nothing to soak; the record above is what analyze.py judges.
+        log(f"initial scan {err[:200]}")
+        return 1
+    if code != 0:
+        log(f"initial scan failed: {err[-500:]}")
 
     sampler.start()
     sampler.phase = "warmup"
@@ -614,5 +641,6 @@ def main() -> int:  # noqa: PLR0915
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     sys.exit(main())

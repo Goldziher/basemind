@@ -56,6 +56,8 @@ class Rule:
     name: str
     passed: bool
     detail: str
+    value: str = ""
+    threshold: str = ""
 
 
 @dataclass
@@ -63,8 +65,8 @@ class Verdict:
     rules: list[Rule] = field(default_factory=list)
     sections: list[str] = field(default_factory=list)
 
-    def add(self, name: str, passed: bool, detail: str) -> None:
-        self.rules.append(Rule(name, passed, detail))
+    def add(self, name: str, passed: bool, detail: str, value: str = "", threshold: str = "") -> None:
+        self.rules.append(Rule(name, passed, detail, value, threshold))
 
     @property
     def passed(self) -> bool:
@@ -108,6 +110,8 @@ def growth_rule(
         not climbing,
         f"slope {whole.slope:+.3f} {unit}/min (±{2 * whole.se:.3f}), second half {half.slope:+.3f} "
         f"(±{2 * half.se:.3f}) {unit}/min{' (levelled off)' if plateaued else ''}, tolerance {tol} {unit}/min; {first:.1f} -> {last:.1f} {unit} over {pts[-1][0]:.1f} min, n={whole.n}",
+        f"{whole.slope:+.3f} {unit}/min (2SE {2 * whole.se:.3f}; 2nd half {half.slope:+.3f})",
+        f"{tol} {unit}/min",
     )
 
 
@@ -140,6 +144,8 @@ def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: 
         not rising,
         f"window floors {' / '.join(f'{f:.1f}' for f in floors)} MiB, windows 2-4 rise {rate:+.3f} MiB/min "
         f"(tolerance {args.floor_tol}) over {minutes:.1f} min",
+        f"{rate:+.3f} MiB/min (floors {floors[1]:.1f} / {floors[2]:.1f} / {floors[3]:.1f} MiB)",
+        f"{args.floor_tol} MiB/min",
     )
 
 
@@ -257,6 +263,8 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
             cores <= args.idle_cpu,
             f"{cores * 100:.3f}% of one core over {window:.0f}s (threshold {args.idle_cpu * 100:.1f}%); "
             f"busiest {busiest[0]} {busiest[1] / window * 100:.3f}%",
+            f"{cores * 100:.3f}% of a core",
+            f"{args.idle_cpu * 100:.1f}%",
         )
         if idle_wake:
             rate = sum(idle_wake) / window
@@ -264,6 +272,8 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
                 "R6b idle wakeups",
                 rate <= args.idle_wakeups,
                 f"{rate:.1f} wakeups/s summed over the run's processes (threshold {args.idle_wakeups}/s)",
+                f"{rate:.1f}/s",
+                f"{args.idle_wakeups}/s",
             )
     else:
         v.add("R6 idle CPU", False, f"idle window after settle is {window:.0f}s (need >= {args.min_idle_window}s)")
