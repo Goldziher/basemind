@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+#[cfg(any(feature = "memory", feature = "code-search"))]
 use rmcp::ErrorData as McpError;
 #[cfg(feature = "memory")]
 use rmcp::model::CallToolResult;

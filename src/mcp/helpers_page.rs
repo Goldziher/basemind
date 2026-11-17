@@ -32,11 +32,8 @@ pub(super) const RANKED_DEPTH: u32 = 100;
 /// What a ranked tool asks its retrieval for: the depth, and one hit that only says whether the
 /// ranking continues past it.
 #[cfg_attr(
-    not(any(feature = "code-search", feature = "documents")),
-    allow(
-        dead_code,
-        reason = "compiled for its tests when neither ranked tool is in the build"
-    )
+    not(feature = "code-search"),
+    allow(dead_code, reason = "compiled for its tests when `code_search` is not in the build")
 )]
 pub(super) const RANKED_FETCH: u32 = RANKED_DEPTH + 1;
 /// `truncated_reason` of a ranking that goes on past [`RANKED_DEPTH`].
