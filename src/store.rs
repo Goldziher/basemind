@@ -944,9 +944,6 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
     Ok(Some(index))
 }
 
-/// Acquire the store's advisory `.lock` (exclusive flock, with bounded retry).
-/// Reused by `store_gc::run_gc` so the mark+sweep races neither a concurrent scan
-/// nor a `basemind watch`.
 /// Retries a rightful writer performs when opening the Fjall index hits a *transient* fjall
 /// `Locked`. The caller already holds the `.basemind/.lock` advisory lock, so it is the sole
 /// legitimate writer — any fjall contention here is a short-lived reader open (a CLI `query` /
