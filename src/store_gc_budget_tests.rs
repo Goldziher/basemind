@@ -191,6 +191,56 @@ fn budget_eviction_keeps_group_memory_readable() {
     assert_eq!(db.notes().get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
 }
 
+/// A release before 0.30 kept memory notes in each view's index, and only a writer open of the view
+/// moved them to the group store. Evicting a workspace no writer had opened since the upgrade
+/// deleted the only copy of notes a user wrote.
+#[test]
+fn budget_eviction_moves_pre_030_memory_notes_to_the_group_store_first() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let blobs = tmp.path().join("blobs");
+    fs::create_dir_all(&blobs).expect("mk blobs");
+    let age = Duration::from_secs(9999);
+    let cold = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), age);
+    let _newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
+    let working = cold.join(VIEWS_DIR).join("working");
+    let mut pre_group = Index::empty();
+    pre_group.schema_ver = 29;
+    fs::write(
+        working.join(INDEX_FILE),
+        rmp_serde::to_vec_named(&pre_group).expect("encode index"),
+    )
+    .expect("write a 0.29 file map");
+    fs::File::options()
+        .write(true)
+        .open(working.join(INDEX_FILE))
+        .and_then(|file| file.set_modified(SystemTime::now() - age))
+        .expect("age the file map");
+    {
+        let db = fjall::Database::builder(working.join(crate::index::INDEX_DIR))
+            .open()
+            .expect("open the view's index");
+        let notes = db
+            .keyspace("memory_by_key", fjall::KeyspaceCreateOptions::default)
+            .expect("the notes keyspace of a 0.29 view");
+        notes
+            .insert(b"k".to_vec(), b"only copy".to_vec())
+            .expect("write a note");
+    }
+
+    let report =
+        enforce_cache_budget_in(&workspaces, &blobs, 1, Duration::ZERO, Duration::ZERO).expect("evict cache payload");
+
+    assert_eq!(report.evicted, 1);
+    assert!(!working.exists(), "the cold workspace's views are evicted");
+    let root = read_workspace_marker(&cold).expect("marker").root;
+    let reader = tmp.path().join("reader");
+    let db = crate::index::IndexDb::open_with_memory(&reader, &crate::store_layout::memory_store_dir(&root))
+        .expect("open the group store");
+    assert_eq!(db.notes().get(b"k").unwrap().as_deref(), Some(&b"only copy"[..]));
+}
+
 #[test]
 fn budget_eviction_preserves_identity_and_durable_memory() {
     let tmp = tempfile::tempdir().expect("tempdir");

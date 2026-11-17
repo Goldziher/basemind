@@ -74,7 +74,9 @@ pub struct ReapReport {
     /// Kept because the recorded root still exists.
     pub kept_live: usize,
     /// Kept because the root cannot be verified: no marker and the dir is not provably disposable,
-    /// or the recorded root sits on a volume that is not mounted.
+    /// or the recorded root sits on a volume that is not mounted. Also kept: an orphan whose view
+    /// holds memory notes a release before 0.30 kept there, which could not be moved to the group
+    /// store.
     pub kept_unverifiable: usize,
     /// Skipped because another process holds the workspace `.lock`.
     pub skipped_locked: usize,
@@ -157,6 +159,10 @@ fn reap_orphaned_workspaces_at(workspaces_dir: &Path, now: SystemTime) -> Result
             );
             continue;
         };
+        if !crate::store_gc_live::rescue_legacy_memory(&workspace_dir) {
+            report.kept_unverifiable += 1;
+            continue;
+        }
         let bytes = dir_size(&workspace_dir)?;
         crate::store_lock::remove_dir_under_lock(&workspace_dir).map_err(|source| GcError::Io {
             path: workspace_dir.clone(),
@@ -397,6 +403,47 @@ mod tests {
             b"memory",
             "group memory is never reaped"
         );
+    }
+
+    /// A release before 0.30 kept memory notes in each view's index. Reaping an orphan no writer had
+    /// opened since the upgrade deleted them; they are moved to a group store first.
+    #[test]
+    fn reaping_an_orphan_moves_its_pre_030_memory_notes_to_a_group_store_first() {
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let root = make_root(tmp.path(), "gone-0-29");
+        let workspace = seed_workspace(&workspaces, "key-0-29", Some(&root), &[]);
+        let working = workspace.join(VIEWS_DIR).join("working");
+        let mut pre_group = Index::empty();
+        pre_group.schema_ver = 29;
+        fs::write(
+            working.join(INDEX_FILE),
+            rmp_serde::to_vec_named(&pre_group).expect("encode index"),
+        )
+        .expect("write a 0.29 file map");
+        {
+            let db = fjall::Database::builder(working.join(crate::index::INDEX_DIR))
+                .open()
+                .expect("open the view's index");
+            let notes = db
+                .keyspace("memory_by_key", fjall::KeyspaceCreateOptions::default)
+                .expect("the notes keyspace of a 0.29 view");
+            notes
+                .insert(b"k".to_vec(), b"only copy".to_vec())
+                .expect("write a note");
+        }
+        let marker_root = read_workspace_marker(&workspace).expect("marker").root;
+        fs::remove_dir_all(&root).expect("delete the repo");
+
+        let report = reap_orphaned_workspaces_in(&workspaces).expect("reap");
+
+        assert_eq!(report.reaped, 1);
+        assert!(!workspace.exists());
+        let reader = tmp.path().join("reader");
+        let memory_dir = crate::store_layout::memory_store_dir(&marker_root);
+        let db = crate::index::IndexDb::open_with_memory(&reader, &memory_dir).expect("open the group store");
+        assert_eq!(db.notes().get(b"k").unwrap().as_deref(), Some(&b"only copy"[..]));
     }
 
     #[test]

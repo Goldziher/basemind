@@ -551,6 +551,9 @@ fn evict_workspace(dir: &Path) -> Result<Eviction, GcError> {
         tracing::debug!(workspace = %dir.display(), "over-budget workspace was written by a newer basemind; skipping");
         return Ok(Eviction::Refused(ProtectionReason::NewerVersion));
     }
+    if !crate::store_gc_live::rescue_legacy_memory(dir) {
+        return Ok(Eviction::Refused(ProtectionReason::LegacyMemory));
+    }
     let before = dir_size(dir)?;
     for path in rebuildable_workspace_paths(dir) {
         remove_cache_path(&path)?;

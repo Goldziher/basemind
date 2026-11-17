@@ -6,7 +6,7 @@ use std::path::Path;
 
 use ahash::AHashSet;
 
-use crate::store::StoreError;
+use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR};
 use crate::store_gc::blob_stem;
 
 /// The blob suffixes that belong to the CODE lane: produced by the code-map scan from a
@@ -90,6 +90,57 @@ impl Drop for SweepLock {
     fn drop(&mut self) {
         let _ = fs2::FileExt::unlock(&self.0);
     }
+}
+
+/// The first release minor whose writer open moves memory notes out of a view's index into the
+/// group store. Earlier releases kept them in the view's `index.fjall`.
+const GROUP_MEMORY_SINCE_MINOR: u16 = 30;
+
+/// Move into the group store the memory notes a release before 0.30 left in the index of each view of
+/// `workspace`, before a collector removes that index. Only a writer open of the view moved them, so a
+/// workspace not opened for writing since the upgrade still held them, and evicting or reaping it
+/// destroyed notes a user wrote. Returns `false` when they could not be moved: the caller must then
+/// leave the views alone. The caller holds the workspace lock.
+pub(crate) fn rescue_legacy_memory(workspace: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(workspace.join(VIEWS_DIR)) else {
+        return true;
+    };
+    for entry in entries.flatten() {
+        let view_dir = entry.path();
+        if !view_dir.join(crate::index::INDEX_DIR).is_dir() || written_since_group_memory(&view_dir) {
+            continue;
+        }
+        let Some(marker) = crate::store_layout::read_workspace_marker(workspace) else {
+            tracing::warn!(
+                view = %view_dir.display(),
+                "no workspace marker names the group of this view's memory notes; keeping it"
+            );
+            return false;
+        };
+        let memory_dir = crate::store_layout::memory_store_dir(&marker.root);
+        if let Err(error) = crate::index::IndexDb::open_with_memory(&view_dir, &memory_dir) {
+            tracing::warn!(
+                view = %view_dir.display(),
+                %error,
+                "could not move this view's memory notes to the group store; keeping it"
+            );
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the file map of `view_dir` was written by a release whose writer open, which runs before
+/// the map is written, moves memory notes out of the view.
+fn written_since_group_memory(view_dir: &Path) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Version {
+        schema_ver: u16,
+    }
+    std::fs::read(view_dir.join(INDEX_FILE))
+        .ok()
+        .and_then(|bytes| rmp_serde::from_slice::<Version>(&bytes).ok())
+        .is_some_and(|version| version.schema_ver >= GROUP_MEMORY_SINCE_MINOR)
 }
 
 /// Whether `error` reading a file map marks rebuildable cache: an older schema or blob layout, or a
