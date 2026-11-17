@@ -96,23 +96,23 @@ them.
 | [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Superseded by ADR-0026 |
 | [0011](0011-mcp-tool-surface-redesign.md) | MCP tool-surface redesign — consolidation into nine domains | Superseded by ADR-0018 |
 | [0012](0012-grep-content-prefilter.md) | Per-file trigram bloom prefilter for `code grep` | Accepted |
-| [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted (amended by ADR-0021, ADR-0024) |
+| [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted (amended by ADR-0021, ADR-0024, ADR-0030) |
 | [0014](0014-cli-mcp-parity-guard.md) | Executable CLI/MCP parity guard | Accepted (amended by ADR-0018, ADR-0023) |
 | [0015](0015-bounded-document-extraction.md) | Bound document extraction with a thread cap, tombstones and a phase budget | Proposed |
-| [0016](0016-shared-base-index-and-worktree-overlays.md) | Shared base index with per-worktree overlays | Accepted |
+| [0016](0016-shared-base-index-and-worktree-overlays.md) | Shared base index with per-worktree overlays | Superseded by ADR-0028 |
 | [0017](0017-surface-reduction.md) | Surface reduction — remove graph, web, shell, token-saving and review queue | Accepted (amended by ADR-0022) |
-| [0018](0018-mcp-verb-tools.md) | MCP surface — verb tools with exact schemas | Accepted (amended by ADR-0020, ADR-0022) |
+| [0018](0018-mcp-verb-tools.md) | MCP surface — verb tools with exact schemas | Accepted (amended by ADR-0020, ADR-0022, ADR-0030) |
 | [0019](0019-library-crate-layering.md) | Library crate layering | Superseded by ADR-0023 |
-| [0020](0020-verb-tool-contract-amendments.md) | Verb-tool contract — no output schemas, always-load scope, kept domain tools | Accepted (amended by ADR-0021, ADR-0022) |
-| [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, per-actor delivery, three deferred tools | Accepted (amended by ADR-0027) |
-| [0022](0022-surface-adr-amendments.md) | Surface ADR amendments — as-built facts and a measurable value gate | Accepted (amended by ADR-0027) |
-| [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted (amended by ADR-0027) |
-| [0024](0024-daemon-and-process-model.md) | Daemon and process model — rendezvous scoped by protocol generation | Accepted |
-| [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted |
+| [0020](0020-verb-tool-contract-amendments.md) | Verb-tool contract — no output schemas, always-load scope, kept domain tools | Accepted (amended by ADR-0021, ADR-0022, ADR-0030) |
+| [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, per-actor delivery, three deferred tools | Accepted (amended by ADR-0027, ADR-0030) |
+| [0022](0022-surface-adr-amendments.md) | Surface ADR amendments — as-built facts and a measurable value gate | Accepted (amended by ADR-0027, ADR-0030, ADR-0031) |
+| [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted (amended by ADR-0027, ADR-0032) |
+| [0024](0024-daemon-and-process-model.md) | Daemon and process model — rendezvous scoped by protocol generation | Accepted (amended by ADR-0028, ADR-0030) |
+| [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted (amended by ADR-0028, ADR-0030) |
 | [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Superseded by ADR-0027 |
 | [0027](0027-single-breaking-release.md) | Release and branch policy — trunk-based, one breaking release | Accepted |
-| [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Proposed |
-| [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Proposed |
-| [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Proposed |
-| [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Proposed |
-| [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Proposed |
+| [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Accepted |
+| [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Accepted |
+| [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted |
+| [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted |
+| [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted |

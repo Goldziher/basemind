@@ -1,11 +1,12 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-18
+superseded-by: "0028"
 ---
 
 # ADR-0016: Shared base index with per-worktree overlays
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0028
 - **Date:** 2026-10-18
 - **Deciders:** Na'aman Hirschfeld
 - **Related:** ADR-0012, issue #87, [implementation plan](../layered-index-design.md)

@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-11-16
+status: accepted
+date: 2026-11-17
 supersedes: "0016"
 amends: ["0024", "0025"]
 ---

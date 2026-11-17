@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-11-16
+status: accepted
+date: 2026-11-17
 ---
 
 # ADR-0029: Document retrieval pipeline and retrieval store

@@ -1,0 +1,22 @@
+# Standalone adrlint configuration, used for `adrlint lock`. It mirrors `[lint.markdown.adrlint]`
+# in poly.toml, which is what `poly lint docs/adr` reads.
+[adr]
+dir = "docs/adr"
+start = 0
+
+[lock]
+enabled = true
+path = "adrlint.lock"
+statuses = ["accepted", "rejected"]
+
+[markdown]
+enabled = false
+
+[rules]
+MADR01c = "off"
+MADR01d = "off"
+MADR06 = "off"
+MADR31 = "off"
+# The template shares number 0000 with the first record; poly.toml exempts exactly that pair, and
+# this file has no per-file form, so the duplicate-number rule is off here and poly enforces it.
+MADR43 = "off"

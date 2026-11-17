@@ -1,0 +1,92 @@
+version = 1
+canonical = 1
+
+[adrs."docs/adr/0000-record-architecture-decisions.md"]
+number = 0
+status = "accepted"
+blake3 = "65a50ea76de804b4e225fe9a53517c1f09391457c6c454469ed5227beaa2ffe1"
+
+[adrs."docs/adr/0012-grep-content-prefilter.md"]
+number = 12
+status = "accepted"
+blake3 = "543f95201e5ae76b0cf20795584de2af253c4b19f1b123071e0b134faa00b065"
+
+[adrs."docs/adr/0013-comms-robustness-idempotency-replay.md"]
+number = 13
+status = "accepted"
+blake3 = "5e149db3dd1a56c3372873d5dd9ee6037369cf98dd220b49ceb18fb0363a340c"
+
+[adrs."docs/adr/0014-cli-mcp-parity-guard.md"]
+number = 14
+status = "accepted"
+blake3 = "f2fbca2c66398e5661550bba7f7ab55aec08005066520da75eaa5b7529278923"
+
+[adrs."docs/adr/0017-surface-reduction.md"]
+number = 17
+status = "accepted"
+blake3 = "b3be14a3fd4bdc7e84a0076db1113b2a66839d623fcd0cec7c6c19d9c75e149d"
+
+[adrs."docs/adr/0018-mcp-verb-tools.md"]
+number = 18
+status = "accepted"
+blake3 = "663ecc82be2effe8895a180c4a8e48d4116157c924ce5b51c626d3416f641887"
+
+[adrs."docs/adr/0020-verb-tool-contract-amendments.md"]
+number = 20
+status = "accepted"
+blake3 = "70b1f5b6c8d6e73a9f6b36eecc7e15b45d1f086496d6c084753a1c845799fbfa"
+
+[adrs."docs/adr/0021-agent-comms-v2.md"]
+number = 21
+status = "accepted"
+blake3 = "811cf5cc771c3ca7a903c6f6954535aaaaeadb5478f3ceaa4fae1c7d3fd96824"
+
+[adrs."docs/adr/0022-surface-adr-amendments.md"]
+number = 22
+status = "accepted"
+blake3 = "5cae43912a7ff8768663e124afc08665eb43281f333c411a60b821e4fb0206e1"
+
+[adrs."docs/adr/0023-library-crate-layering-revised.md"]
+number = 23
+status = "accepted"
+blake3 = "58b82071ded51dc8eab5648c820d58826272006f586ab0ef255a81dce983d6d2"
+
+[adrs."docs/adr/0024-daemon-and-process-model.md"]
+number = 24
+status = "accepted"
+blake3 = "510c47e51e5e331b55f895a8b79eeb3d7acfa81b704746ceededfed3a841bbe4"
+
+[adrs."docs/adr/0025-store-versioning-and-durability.md"]
+number = 25
+status = "accepted"
+blake3 = "b30baad6d366125c81d8eabb93b9fdd8f55a68525cfba46d463a72f681d6015e"
+
+[adrs."docs/adr/0027-single-breaking-release.md"]
+number = 27
+status = "accepted"
+blake3 = "dd618d8cdf4cfc00182bfde82af6f0fb20614dc9a185b9ec9409b780e06cdcd0"
+
+[adrs."docs/adr/0028-content-keyed-group-index.md"]
+number = 28
+status = "accepted"
+blake3 = "47462004dcc1175ac6ca682cc1bc6f473f3d1d97650fe0960d6ede603b409d89"
+
+[adrs."docs/adr/0029-document-retrieval-pipeline-and-store.md"]
+number = 29
+status = "accepted"
+blake3 = "ca31900137a90e5a655cd2d8f02b63a6144e86726ac01fc39e4680372fcd8c79"
+
+[adrs."docs/adr/0030-as-built-daemon-wire-and-store-rules.md"]
+number = 30
+status = "accepted"
+blake3 = "c9391bdf94c8b252431c8064cf62b3a5804da4c648d3cba1bb0c45a8782bf0dd"
+
+[adrs."docs/adr/0031-value-gate-by-job.md"]
+number = 31
+status = "accepted"
+blake3 = "b92a42ca45370355e2ef40e70396c8c73f81bd23680368902dfad6d87af0ff6e"
+
+[adrs."docs/adr/0032-layering-as-built.md"]
+number = 32
+status = "accepted"
+blake3 = "ac2ac5737e8169dc7064cdac0447b6c3ab6cc59fa3a8c5b87edac2ac66bbec52"
