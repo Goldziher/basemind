@@ -73,11 +73,15 @@ jobs:
             throw "zlibstatic.lib was not produced in $zlibFix"
           }
 
+      # ~keep ort-sys's build script links against libonnxruntime.a in its download dir and never
+      # ~keep reruns when that dir is gone, so a target/ saved by a failed build must carry it (see
+      # ~keep ci.yaml). %LOCALAPPDATA%\ort.pyke.io on Windows, ~/Library/Caches/ort.pyke.io on macOS.
       - name: Setup cache
         uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.triple }}
           cache-on-failure: true
+          cache-directories: ${{ runner.os == 'Windows' && '~/AppData/Local/ort.pyke.io' || '~/Library/Caches/ort.pyke.io' }}
 
       - name: Discard incomplete xberg Tesseract source cache
         shell: bash
