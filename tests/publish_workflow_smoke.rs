@@ -10,11 +10,17 @@
 
 use std::path::PathBuf;
 
-fn workflow() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/publish.yaml");
+fn read_workflow(name: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(".github/workflows")
+        .join(name);
     std::fs::read_to_string(&path)
-        .expect("read .github/workflows/publish.yaml")
+        .unwrap_or_else(|e| panic!("read .github/workflows/{name}: {e}"))
         .replace("\r\n", "\n")
+}
+
+fn workflow() -> String {
+    read_workflow("publish.yaml")
 }
 
 /// The body of a top-level job: from its 2-space-indented `name:` header to the next
@@ -68,20 +74,101 @@ fn registry_publishes_wait_for_a_finalized_release() {
     }
 }
 
-/// Binary releases with Git-pinned dependencies cannot be reconstructed by crates.io, so
-/// the source-crate publish must be skipped without blocking the platform artifacts.
+/// A release that cannot reach crates.io fails before anything publishes. v0.33.0 skipped crates.io
+/// for a Git-pinned dependency with a green run; every other registry shipped it.
 #[test]
-fn crates_publish_is_skipped_for_git_dependencies() {
+fn a_crates_io_blocker_fails_the_release_instead_of_skipping_it() {
     let workflow = workflow();
     let meta = job_block(&workflow, "meta");
     let publish = job_block(&workflow, "publish_crates");
     assert!(
-        meta.contains("crates_publishable=false") && meta.contains("git[[:space:]]*="),
-        "meta must detect Git dependencies in the root Cargo manifest",
+        meta.contains("git[[:space:]]*=") && meta.contains("exit 1") && !meta.contains("crates_publishable"),
+        "meta must fail, not skip, on a Git-pinned dependency",
     );
     assert!(
-        publish.contains("needs.meta.outputs.crates_publishable == 'true'"),
-        "publish_crates must skip source publication when Git dependencies are present",
+        meta.contains("scripts/check_vendored_crates.py"),
+        "meta must refuse vendored crates that drifted from their published version",
+    );
+    assert!(
+        !publish.contains("crates_publishable"),
+        "publish_crates must not be skippable for publishability"
+    );
+    assert!(
+        publish.contains("publish basemind --features full"),
+        "the basemind publish must verify the `full` build against the registry copies of its forks",
+    );
+}
+
+/// Nothing publishes for a commit CI has not passed.
+#[test]
+fn publish_waits_for_a_green_ci_run() {
+    let workflow = workflow();
+    let gate = job_block(&workflow, "ci_gate");
+    assert!(
+        gate.contains(".github/scripts/require-green-ci.sh") && gate.contains("actions: read"),
+        "ci_gate must run require-green-ci.sh with actions:read",
+    );
+    assert!(
+        job_block(&workflow, "meta").contains("needs: ci_gate"),
+        "meta, and through it every release job, must need ci_gate",
+    );
+    for job in ["dispatch-plugin-npm", "dispatch-plugin-hermes"] {
+        assert!(
+            job_block(&workflow, job).contains("needs: ci_gate"),
+            "{job} publishes from a dispatch and must need ci_gate too",
+        );
+    }
+}
+
+/// The workflow token is read-only unless a job asks for more, and the jobs that compile code
+/// (the reusable build) never get write access.
+#[test]
+fn only_the_jobs_that_write_get_write_permissions() {
+    let workflow = workflow();
+    let top = &workflow[..workflow.find("\njobs:\n").expect("jobs:")];
+    assert!(
+        top.contains("permissions:\n  contents: read\n") && !top.contains("id-token: write"),
+        "the workflow-level token must be contents: read",
+    );
+    assert!(
+        job_block(&workflow, "build").contains("contents: read"),
+        "the build job must be read-only"
+    );
+    let build = read_workflow("release-build.yaml");
+    assert!(
+        build.contains("permissions:\n  contents: read\n") && !build.contains(": write"),
+        "release-build.yaml compiles third-party code and must not hold a write token",
+    );
+}
+
+/// Every archive is run on a clean runner before it can be uploaded, and the release refuses to go
+/// out while plugin content is marked as ahead of its binary.
+#[test]
+fn archives_are_executed_before_upload() {
+    let workflow = workflow();
+    let build = read_workflow("release-build.yaml");
+    assert!(
+        build.contains("scripts/smoke_release_archive.py") && build.contains("needs: [build-native, build-linux]"),
+        "release-build.yaml must smoke-test every archive after building it",
+    );
+    for triple in [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+    ] {
+        assert!(
+            build.matches(triple).count() >= 2,
+            "{triple} must be built and smoke-tested"
+        );
+    }
+    assert!(
+        job_block(&workflow, "checksums").contains("needs: [meta, create_release, build]"),
+        "the upload job must wait for the smoke-tested build",
+    );
+    assert!(
+        job_block(&workflow, "meta").contains(".github/unreleased-surface.toml"),
+        "meta must refuse to release while the unreleased-surface marker exists",
     );
 }
 
