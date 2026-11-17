@@ -185,7 +185,9 @@ def main() -> int:
     )
     args = ap.parse_args()
     if args.tool is None or not shutil.which(args.tool):
-        sys.stderr.write(f"leak_check.py needs macOS `leaks` or Linux `valgrind`; `{args.tool or 'either'}` not found\n")
+        sys.stderr.write(
+            f"leak_check.py needs macOS `leaks` or Linux `valgrind`; `{args.tool or 'either'}` not found\n"
+        )
         return 2
     run_one = run_leaks if args.tool == "leaks" else run_valgrind
     binary = args.binary.resolve()
