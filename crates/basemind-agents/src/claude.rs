@@ -23,6 +23,26 @@ const PARTIAL_INPUT_BYTES: usize = 1024 * 1024;
 /// The most content blocks whose partial input is collected at once; the block index is
 /// the harness's to choose, so the table is bounded here.
 const PARTIAL_BLOCKS: usize = 16;
+/// Claude Code tools that start or schedule work outside the session (remote triggers, cron
+/// jobs, wake-ups, messages to other projects, notifications, workflows, other worktrees). The
+/// adapter disallows them and `system/init` must not offer them: what they start is outside the
+/// session's limits and its process group. Claude Code 2.1.326 dropped all of them from its
+/// `tools` under `--disallowedTools`.
+const OUT_OF_SESSION_TOOLS: &[&str] = &[
+    "RemoteTrigger",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "ScheduleWakeup",
+    "SendToProject",
+    "SendToProjectContext",
+    "PushNotification",
+    "Workflow",
+    "EnterWorktree",
+    "ExitWorktree",
+    "Monitor",
+    "TaskStop",
+];
 /// Older CLIs never acknowledge the initialize request; the prompt goes out regardless.
 const INIT_PATIENCE: Duration = Duration::from_secs(8);
 
@@ -69,6 +89,7 @@ impl ClaudeCodeAdapter {
         ]
         .map(str::to_owned)
         .into();
+        args.extend(["--disallowedTools".to_owned(), OUT_OF_SESSION_TOOLS.join(",")]);
         let mut servers = serde_json::Map::new();
         if let (Some(server), Some(command)) = (&spec.mcp_server, &prepared.mcp_command) {
             // The server inherits the harness's environment, which carries the identity.
@@ -115,7 +136,8 @@ fn permission_mode(mode: PermissionMode) -> &'static str {
 
 /// Checks Claude Code's `system/init` frame: it has to report the permission mode the adapter
 /// asked for, exactly the MCP servers it injected and each of them as loaded from
-/// `--mcp-config` (`source: "dynamic"`), and only built-in plugins. Claude Code 2.1.325 was
+/// `--mcp-config` (`source: "dynamic"`), only built-in plugins, and none of the
+/// [`OUT_OF_SESSION_TOOLS`]. Claude Code 2.1.325 was
 /// seen to report exactly that under the adapter's flags, and project, plugin and claude.ai
 /// servers and user plugins without them; a version that stops honouring the flags, or whose
 /// frame no longer carries the mode and the servers, fails the session here.
@@ -145,6 +167,17 @@ fn check_init(frame: &Value, mode: &str, servers: &[String]) -> Result<(), Launc
         return Err(LaunchError::Protocol(format!(
             "Claude Code loaded MCP server {} from {}, not from the adapter's --mcp-config",
             server["name"], server["source"]
+        )));
+    }
+    let tools = frame["tools"]
+        .as_array()
+        .ok_or_else(|| LaunchError::Protocol("Claude Code reported no tools".to_owned()))?;
+    if let Some(tool) = tools
+        .iter()
+        .find(|tool| tool.as_str().is_some_and(|tool| OUT_OF_SESSION_TOOLS.contains(&tool)))
+    {
+        return Err(LaunchError::Protocol(format!(
+            "Claude Code offers {tool}, which starts work outside the session"
         )));
     }
     let mut plugins = frame["plugins"].as_array().into_iter().flatten();

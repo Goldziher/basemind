@@ -101,6 +101,11 @@ id that fails the grammar stops the launch.
      A failed session's error is split: `Event::Diagnostics` carries the full text and the
      harness's stderr tail for the launcher's logs, `Event::Error` one sanitised line of at most
      512 bytes without the stderr, which is all the engine relays to a model.
+   - **No work outside the session.** Claude Code is launched with `--disallowedTools` for the
+     tools that start or schedule work the session's limits and process group do not reach
+     (remote triggers, cron jobs, wake-ups, messages to other projects, push notifications,
+     workflows, other worktrees), and its init frame may offer none of them; Claude Code 2.1.326
+     dropped all of them under the flag.
    - **No project configuration.** Claude Code is asked for no setting sources, hooks disabled and
      only the injected MCP server, and the session fails unless its `system/init` frame reports the
      requested permission mode, exactly the injected MCP server as loaded from `--mcp-config`

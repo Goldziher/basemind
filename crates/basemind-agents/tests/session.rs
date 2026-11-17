@@ -16,7 +16,7 @@ use basemind_agents::{
 const HANDSHAKE: &str = r#"read -r init
 printf '%s\n' '{"type":"control_response","response":{"request_id":"basemind-init"}}'
 read -r prompt
-printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"default","mcp_servers":[]}'
+printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"default","mcp_servers":[],"tools":[]}'
 "#;
 
 /// Writes an executable `/bin/sh` script that stands in for a harness. It ignores its
@@ -124,7 +124,7 @@ printf '%s\n' '{{"type":"control_response","response":{{"request_id":"basemind-i
 read -r prompt
 printf '%s\n' "$prompt" > "{dir}/prompt"
 echo 'Loading plugins...'
-printf '%s\n' '{{"type":"system","subtype":"init","session_id":"s-1","permissionMode":"default","mcp_servers":[]}}'
+printf '%s\n' '{{"type":"system","subtype":"init","session_id":"s-1","permissionMode":"default","mcp_servers":[],"tools":[]}}'
 printf '%s\n' '{{"type":"stream_event","event":{{"type":"message_start"}}}}'
 printf '%s\n' '{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"It is a code map."}}}}}}'
 printf '%s\n' '{{"type":"result","result":"It is a code map."}}'
@@ -804,7 +804,7 @@ fn a_harness_that_stopped_reading_is_not_given_the_exit_grace() {
     let body = r#"read -r init
 printf '%s\n' '{"type":"control_response","response":{"request_id":"basemind-init"}}'
 sleep 0.3
-printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"default","mcp_servers":[]}'
+printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"default","mcp_servers":[],"tools":[]}'
 printf '%s\n' '{"type":"result","result":"Done."}'
 while :; do sleep 0.05; done
 "#;
@@ -834,7 +834,7 @@ fn a_refused_init_frame_lets_the_harness_finish_on_the_end_of_its_input() {
         r#"read -r init
 printf '%s\n' '{{"type":"control_response","response":{{"request_id":"basemind-init"}}}}'
 read -r prompt
-printf '%s\n' '{{"type":"system","subtype":"init","permissionMode":"bypassPermissions","mcp_servers":[]}}'
+printf '%s\n' '{{"type":"system","subtype":"init","permissionMode":"bypassPermissions","mcp_servers":[],"tools":[]}}'
 trap '' TERM
 cat > /dev/null
 echo saved > '{}'

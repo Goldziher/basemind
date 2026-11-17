@@ -12,7 +12,8 @@ fn protocol() -> ClaudeProtocol {
 
 /// The `system/init` frame of a supervised session without MCP servers.
 fn init(session: Option<&str>) -> Value {
-    let mut frame = json!({"type": "system", "subtype": "init", "permissionMode": "default", "mcp_servers": []});
+    let mut frame =
+        json!({"type": "system", "subtype": "init", "permissionMode": "default", "mcp_servers": [], "tools": []});
     if let Some(session) = session {
         frame["session_id"] = session.into();
     }
@@ -678,7 +679,7 @@ fn the_init_frame_must_report_the_requested_mode_and_only_the_injected_servers()
         let mut protocol = ClaudeProtocol::new("brief".to_owned(), mode, servers);
         protocol.frame(frame, &mut Vec::new(), &sink)
     };
-    let frame = |mode: &str, servers: Value| json!({"type": "system", "subtype": "init", "permissionMode": mode, "mcp_servers": servers});
+    let frame = |mode: &str, servers: Value| json!({"type": "system", "subtype": "init", "permissionMode": mode, "mcp_servers": servers, "tools": []});
     let basemind = json!([{"name": "basemind", "status": "connected"}]);
     assert!(run("default", &["basemind"], frame("default", basemind.clone())).is_ok());
     for (mode, servers, reported) in [
@@ -734,6 +735,43 @@ const LIVE_INIT: &str = include_str!("../tests/fixtures/live/claude-2.1.325-init
 const LIVE_INIT_WITHOUT_ISOLATION: &str =
     include_str!("../tests/fixtures/live/claude-2.1.325-init-without-isolation.json");
 
+/// `system/init` of Claude Code 2.1.326 under the adapter's flags with `--disallowedTools`, and
+/// no injected server.
+const LIVE_INIT_DISALLOWED: &str = include_str!("../tests/fixtures/live/claude-2.1.326-init-disallowed.json");
+
+#[test]
+fn the_tools_that_start_work_outside_the_session_are_disallowed_and_checked() {
+    let root = tempfile::tempdir().unwrap();
+    let plan = ClaudeCodeAdapter
+        .plan_spec(&spec(HarnessKind::ClaudeCode, root.path()))
+        .unwrap();
+    let disallowed: Vec<&str> = value_of(&plan.args, "--disallowedTools").unwrap().split(',').collect();
+    for tool in [
+        "RemoteTrigger",
+        "CronCreate",
+        "ScheduleWakeup",
+        "SendToProject",
+        "SendToProjectContext",
+    ] {
+        assert!(disallowed.contains(&tool), "{tool} is not disallowed: {disallowed:?}");
+    }
+    for tool in ["PushNotification", "Workflow", "EnterWorktree"] {
+        assert!(disallowed.contains(&tool), "{tool} is not disallowed: {disallowed:?}");
+    }
+    let run = |frame: &str, servers: Vec<String>| {
+        let (sink, _events) = EventSink::for_test(None, 1);
+        let mut protocol = ClaudeProtocol::new("brief".to_owned(), "default", servers);
+        protocol.frame(serde_json::from_str(frame).unwrap(), &mut Vec::new(), &sink)
+    };
+    assert!(run(LIVE_INIT_DISALLOWED, Vec::new()).is_ok());
+    // The 2.1.325 frame was recorded without the flag: it offers them, and fails.
+    let error = run(LIVE_INIT, vec!["stub".to_owned()]).unwrap_err();
+    assert!(error.to_string().contains("outside the session"), "{error}");
+    let mut frame: Value = serde_json::from_str(LIVE_INIT_DISALLOWED).unwrap();
+    frame.as_object_mut().unwrap().remove("tools");
+    assert!(run(&frame.to_string(), Vec::new()).is_err());
+}
+
 #[test]
 fn a_recorded_init_frame_passes_and_one_without_isolation_fails() {
     let run = |frame: &str, servers: Vec<String>| {
@@ -741,7 +779,9 @@ fn a_recorded_init_frame_passes_and_one_without_isolation_fails() {
         let mut protocol = ClaudeProtocol::new("brief".to_owned(), "default", servers);
         protocol.frame(serde_json::from_str(frame).unwrap(), &mut Vec::new(), &sink)
     };
-    assert!(run(LIVE_INIT, vec!["stub".to_owned()]).is_ok());
+    let mut live: Value = serde_json::from_str(LIVE_INIT).unwrap();
+    live["tools"] = json!(["Bash", "Read", "mcp__stub__ping"]);
+    assert!(run(&live.to_string(), vec!["stub".to_owned()]).is_ok());
 
     // Even a launcher that expected every one of those servers by name is refused: they were
     // not loaded from the adapter's `--mcp-config`.
@@ -759,7 +799,7 @@ fn a_recorded_init_frame_passes_and_one_without_isolation_fails() {
     );
 
     // A user plugin alone fails the session too.
-    let mut frame: Value = serde_json::from_str(LIVE_INIT).unwrap();
+    let mut frame = live;
     frame["plugins"] = json!([{"name": "basemind", "path": "/home/user/.claude/plugins/cache/basemind", "source": "basemind@basemind"}]);
     let error = run(&frame.to_string(), vec!["stub".to_owned()]).unwrap_err();
     assert!(error.to_string().contains("loaded plugin"), "{error}");

@@ -69,6 +69,9 @@ config is trusted.
 - A failed session reports `Event::Diagnostics`, the full error and the last 8 KiB of the
   harness's stderr, for the launcher's logs only, then `Event::Error`: one line of at most 512
   bytes with control characters replaced and no stderr, which is what a model may be shown.
+- Claude Code is launched with `--disallowedTools` for its tools that start or schedule work
+  outside the session (`RemoteTrigger`, `CronCreate`, `ScheduleWakeup`, `SendToProject`,
+  `PushNotification`, `Workflow`, `EnterWorktree`, ...), and its init frame may offer none of them.
 - Claude Code is asked for no setting sources, hooks disabled and only the config's MCP server, and
   the session fails unless Claude Code's init frame reports the requested permission mode, exactly
   that server as loaded from `--mcp-config` (`source: "dynamic"`) and only built-in plugins.
@@ -132,6 +135,11 @@ protocol captures. Recorded frames, redacted, are the fixtures in `tests/fixture
   a deny answers the tool call with an error result and the turn goes on. In the default mode
   `Read`, a read-only `Bash` (`ls`) and `ToolSearch` ran unasked; `Write` and the MCP tool asked.
   A prompt of `/context` ran as a slash command.
+- **Claude Code 2.1.326.** `--disallowedTools` with a comma-joined list removed all thirteen listed
+  tools from `system/init`'s `tools`. Under the adapter's flags no user or project skill or agent
+  was listed, and the `initialize` answer reported `current_permission_mode` and only commands
+  marked `builtin`. `ls /usr` through Bash asked (`blocked_path`), unlike `ls` inside the
+  working directory. No frame but `system/init` carried `permissionMode`.
 - **Codex 0.169.0** (`codex app-server`). `-c key=value` after `app-server` is accepted.
   `item/fileChange/requestApproval` carries `itemId` and no changes; the `fileChange` item
   announced before it carries them. `applyPatchApproval` requires `fileChanges` (generated schema).
