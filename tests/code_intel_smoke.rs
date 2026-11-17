@@ -35,7 +35,10 @@ fn scan_resolves_intra_file_references_for_javascript() {
     .unwrap();
 
     if store.lookup("app.js").is_none() {
-        eprintln!("javascript grammar unavailable in this environment — skipping resolution assertions");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+            "the javascript grammar is unavailable",
+        );
         return;
     }
 
@@ -85,7 +88,10 @@ fn scan_resolves_cross_file_references_for_typescript() {
     .unwrap();
 
     if store.lookup("a.ts").is_none() || store.lookup("b.ts").is_none() {
-        eprintln!("typescript grammar unavailable in this environment — skipping cross-file assertions");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+            "the typescript grammar is unavailable",
+        );
         return;
     }
 
@@ -131,7 +137,10 @@ fn resolved_references_do_not_conflate_same_named_symbols_across_files() {
     .unwrap();
 
     if store.lookup("a.js").is_none() || store.lookup("b.js").is_none() {
-        eprintln!("javascript grammar unavailable in this environment — skipping no-conflation assertions");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+            "the javascript grammar is unavailable",
+        );
         return;
     }
 
