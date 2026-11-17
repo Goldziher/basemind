@@ -127,6 +127,7 @@ code-search = ["intelligence", "xberg/reranker", "xberg/reranker-presets"]
 memory = ["intelligence"]
 
 comms = [
+  "dep:basemind-agents",
   "dep:hyper",
   "dep:hyper-util",
   "dep:http",
@@ -256,6 +257,10 @@ zstd = "0.14.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.7"
+
+# ~keep `basemind serve --lead` (ADR-0040) hosts the agent-launch supervisor; launching is Unix-only.
+[target.'cfg(unix)'.dependencies]
+basemind-agents = { version = "0.1.0", path = "crates/basemind-agents", optional = true }
 
 [dev-dependencies]
 basemind = { path = ".", features = ["test-support"] }

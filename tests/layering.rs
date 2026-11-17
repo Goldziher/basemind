@@ -77,6 +77,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("lance", Retrieval),
     ("lang", Core),
     ("lang_rules", Core),
+    ("lead", Root),
     ("mcp", Root),
     ("once_map", Core),
     ("path", Core),

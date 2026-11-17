@@ -1,0 +1,80 @@
+[
+  {
+    "name": "agent_launch",
+    "title": "Launch an agent",
+    "description": "Use to hand a task to an agent in another harness (Claude Code, Codex, OpenCode) that the operator allowed: it starts the agent in `working_dir`, its own existing worktree under the operator's worktrees root, with `brief` as its first prompt, and returns the session id, the agent's id and a basemind thread both of you are members of. Every approval the agent asks for is denied unless the operator's policy allows it; nothing here can allow one. Limits are clamped to the operator's caps; a refusal is a stable code. Example: {\"harness\":\"claude\",\"brief\":\"Review src/store.rs for races\",\"working_dir\":\"review-store\"}",
+    "inputSchema": {
+      "required": [
+        "harness",
+        "brief",
+        "working_dir"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "harness": {
+          "description": "`claude`, `codex` or `opencode`, one the operator allows.",
+          "type": "string"
+        },
+        "brief": {
+          "description": "The agent's first prompt, at most 1 MiB, not starting with `/`.",
+          "type": "string"
+        },
+        "working_dir": {
+          "description": "The agent's own existing worktree, relative to the operator's worktrees root.",
+          "type": "string"
+        },
+        "model": {
+          "description": "The model, for Claude Code or Codex.",
+          "type": "string",
+          "default": null
+        },
+        "effort": {
+          "description": "The reasoning effort, for Claude Code or Codex.",
+          "type": "string",
+          "default": null
+        },
+        "max_turns": {
+          "description": "Turns the session may run, lowered to the operator's cap.",
+          "type": "integer",
+          "default": null
+        },
+        "wall_time_s": {
+          "description": "Seconds the session may run, lowered to the operator's cap.",
+          "type": "integer",
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "agent_stop",
+    "title": "Stop a launched agent",
+    "description": "Use to stop an agent you launched with agent_launch, by the `session` id it returned; agents it launched stop with it. Stopping a finished session changes nothing. Example: {\"session\":1}",
+    "inputSchema": {
+      "required": [
+        "session"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "session": {
+          "description": "The session id `agent_launch` returned.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  }
+]
