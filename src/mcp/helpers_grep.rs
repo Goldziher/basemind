@@ -33,6 +33,12 @@ use crate::path::RelPath;
 /// that the cut point is deterministic — a non-deterministic cut would corrupt cursor pagination.
 const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
+tokio::task_local! {
+    /// The cancellation token of the MCP `code_grep` call running on this task. The sweep runs on
+    /// rayon threads that aborting the tool's task does not stop, so it checks the token per file.
+    pub(super) static GREP_CANCEL: tokio_util::sync::CancellationToken;
+}
+
 /// Body of the `code` tool's `grep` mode.
 ///
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
@@ -154,10 +160,27 @@ pub(super) async fn run_workspace_grep(
     } else {
         None
     };
+    let cancel = GREP_CANCEL.try_with(Clone::clone).ok();
+    let cancelled = || {
+        cancel
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    };
     let (counts, skipped_files) = blocking(|| {
         let sweep = Sweep::new(files);
-        count_all(&sweep, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits)
+        count_all(
+            &sweep,
+            &paths,
+            skip.as_deref(),
+            &re,
+            literal.as_ref(),
+            skip_hits,
+            &cancelled,
+        )
     });
+    if cancelled() {
+        return Err(super::tasks::request_cancelled());
+    }
 
     let total = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
 
@@ -262,7 +285,7 @@ fn apply_byte_budget<'a, 'b>(
 /// the totals mean "matches remaining from the cursor position", not "matches in the repo".
 ///
 /// Also returns how many files could not be searched: gone, leading out of the repository, or
-/// opened and found unreadable or not UTF-8.
+/// opened and found unreadable or not UTF-8. Once `cancelled` says so, no further file is read.
 fn count_all(
     sweep: &Sweep<'_>,
     scanned: &[&RelPath],
@@ -270,12 +293,13 @@ fn count_all(
     re: &LineRegex,
     literal: Option<&Finder<'static>>,
     skip_hits: u32,
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> (Vec<u32>, usize) {
     let searched: Vec<Option<u32>> = scanned
         .par_iter()
         .enumerate()
         .map(|(i, path)| {
-            if skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
+            if cancelled() || skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
                 return Some(0);
             }
             with_indexed_bytes(sweep.path(path), sweep.max_file_bytes(), |bytes| {

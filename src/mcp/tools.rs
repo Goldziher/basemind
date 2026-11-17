@@ -112,8 +112,11 @@ impl BasemindServer {
     pub(crate) async fn code_grep(
         &self,
         Parameters(args): Parameters<Strict<CodeGrepParams>>,
+        ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.answer(args, |p| self.code_grep_call(p)).await
+        super::helpers_grep::GREP_CANCEL
+            .scope(ctx.ct, self.answer(args, |p| self.code_grep_call(p)))
+            .await
     }
 
     #[tool(
