@@ -25,6 +25,8 @@ mod grep;
 mod history;
 #[path = "verb_behaviour/refs.rs"]
 mod refs;
+#[path = "verb_behaviour/rescan.rs"]
+mod rescan;
 #[path = "verb_behaviour/safety.rs"]
 mod safety;
 #[path = "verb_behaviour/stale.rs"]
