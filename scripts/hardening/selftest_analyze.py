@@ -273,6 +273,29 @@ def fd_leak(rng: random.Random) -> list[dict[str, Any]]:
     return recs
 
 
+def _on_windows(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark the run as sampled on Windows, where `fds` is the process handle count: one handle per
+    live thread on top of the descriptors."""
+    for r in recs:
+        if r.get("kind") == "meta":
+            r["platform"] = "Windows-2022Server-10.0.20348-SP0"
+        elif r.get("kind") == "proc":
+            r["fds"] += r["threads"]
+    return recs
+
+
+def win_pool_step(rng: random.Random) -> list[dict[str, Any]]:
+    """On Windows the pool step of `pool-step` also steps the handle count, one per thread, and both
+    return at idle (soak run 44175503432: handles 234 -> 253 -> 233 beside threads 40 -> 61 -> 39,
+    handles net of threads 192-196 throughout): bounded, so it passes."""
+    return _on_windows(pool_step(rng))
+
+
+def win_handle_leak(rng: random.Random) -> list[dict[str, Any]]:
+    """On Windows one handle per 20-second cycle is never closed while the threads stay flat."""
+    return _on_windows(fd_leak(rng))
+
+
 def leaked_child(rng: random.Random) -> list[dict[str, Any]]:
     """A process of the run is still alive after every shutdown step."""
     recs = healthy(rng)
@@ -301,6 +324,8 @@ CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set
     ("store-climb", store_climb, 1, {"R8"}),
     ("idle-busy", idle_busy, 1, {"R6"}),
     ("fd-leak", fd_leak, 1, {"R3"}),
+    ("win-pool-step", win_pool_step, 0, set()),
+    ("win-handle-leak", win_handle_leak, 1, {"R3"}),
     ("leaked-child", leaked_child, 1, {"R7"}),
     ("checked-nothing", checked_nothing, 1, {"R0", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"}),
 ]

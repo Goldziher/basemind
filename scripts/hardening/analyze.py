@@ -250,6 +250,7 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
 
     # ---- R2-R4: memory, descriptors, threads of every long-lived process ----
     marks = {r["name"]: r["t"] for r in records if r.get("kind") == "phase"}
+    windows = str(meta.get("platform", "")).startswith("Windows")
     for pid in long_lived:
         role = "daemon" if pid in daemon_pids else "main serve"
         series = [r for r in by_pid[pid] if r["phase"] == "load"]
@@ -263,7 +264,19 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
             growth_rule(
                 v, f"R2 {role} {pid} memory (rss)", [(r["t"], r["rss"]) for r in series], args.mem_tol, "MiB", MIB
             )
-        growth_rule(v, f"R3 {role} {pid} open fds", [(r["t"], r["fds"]) for r in series], args.fd_tol, "fds")
+        if windows:
+            # A Windows handle count includes one handle per live thread, so a pool that grows at a
+            # concurrency peak and is reaped at idle reads as handle growth (R4 judges threads). The
+            # handles a call can leak are the ones threads do not account for.
+            growth_rule(
+                v,
+                f"R3 {role} {pid} open handles net of threads",
+                [(r["t"], r["fds"] - r["threads"]) for r in series],
+                args.fd_tol,
+                "handles",
+            )
+        else:
+            growth_rule(v, f"R3 {role} {pid} open fds", [(r["t"], r["fds"]) for r in series], args.fd_tol, "fds")
         thread_rule(v, f"R4 {role} {pid} threads", by_pid[pid], marks, args)
 
     # ---- R5: no process accumulation during load ----
