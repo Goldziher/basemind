@@ -460,6 +460,12 @@ pub(crate) struct ListResult {
     pub next_cursor: Option<Vec<u8>>,
 }
 
+/// How many matching notes a listing counts before it stops: `total` is exact below this and a
+/// lower bound at it. The listing's `truncated_reason: "scan_cap"` is derived from it.
+pub(crate) fn list_scan_cap(limit: usize) -> usize {
+    limit.saturating_mul(8).max(2_000)
+}
+
 /// Range-scan core for `memory_list`: iterate the namespace, applying the key-prefix + tag filters,
 /// truncating each surfaced value, and computing pagination. `query.cursor` is the raw last-seen key
 /// bytes from a previous page; `next_cursor` is the raw last-emitted key bytes for the next page.
@@ -480,7 +486,7 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
         Some(b) => Bound::Excluded(b),
         None => Bound::Unbounded,
     };
-    let scan_cap = limit.saturating_mul(8).max(2_000);
+    let scan_cap = list_scan_cap(limit);
     let mut entries: Vec<WireMemoryEntry> = Vec::with_capacity(limit.min(64));
     let mut total: usize = 0;
     let mut last_emitted_key: Option<Vec<u8>> = None;

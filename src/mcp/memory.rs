@@ -476,9 +476,12 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
         cursor_bytes,
     )
     .await?;
+    // ~keep Derived from the count rather than the wire flag, which also reports a `limit` cut.
+    let truncated = page.total as usize > super::memory_ops::list_scan_cap(limit);
     json_result(&MemoryListResponse {
         total: page.total as usize,
-        truncated: page.truncated,
+        truncated,
+        truncated_reason: truncated.then_some("scan_cap"),
         entries: page.entries.into_iter().map(wire_to_entry).collect(),
         next_cursor: page.next_cursor.as_deref().map(Cursor::encode_fjall),
         elapsed_us: elapsed_us(__body),

@@ -119,8 +119,9 @@ pub(super) trait Generation {
     fn recorded_holder(&self) -> Option<DaemonRecord>;
     /// Whether the process now under `holder.pid` can be the daemon that wrote `holder`.
     fn can_have_written(&self, holder: &DaemonRecord) -> bool;
-    /// Signal `pid` to terminate; whether it is gone afterwards.
-    fn terminate(&self, pid: u32, grace: Duration) -> bool;
+    /// Signal `pid` to terminate; whether it is gone afterwards. The forced kill that follows the
+    /// grace is sent only while `before_kill` still holds.
+    fn terminate(&self, pid: u32, grace: Duration, before_kill: &dyn Fn() -> bool) -> bool;
 }
 
 /// The machine as it is: the generation at `paths`.
@@ -163,8 +164,8 @@ impl Generation for Live<'_> {
         crate::process_start::can_have_written(holder)
     }
 
-    fn terminate(&self, pid: u32, grace: Duration) -> bool {
-        off_worker(|| force_terminate(pid, grace))
+    fn terminate(&self, pid: u32, grace: Duration, before_kill: &dyn Fn() -> bool) -> bool {
+        off_worker(|| force_terminate(pid, grace, before_kill))
     }
 }
 
@@ -352,7 +353,8 @@ async fn settle(
 /// platform tells a process's start time: macOS, Linux and Windows), and the lock is read again
 /// after the pidfile. What remains is a process that already ran when the dead daemon took the
 /// lock and was given its pid afterwards, which pid allocation makes unlikely and nothing here
-/// rules out.
+/// rules out. The same three checks are made again right before the forced kill that follows the
+/// SIGTERM grace, since the daemon may have released the lock or exited within it.
 pub async fn reclaim_holder(paths: &CommsPaths, reported_pid: Option<u32>, rules: ReclaimRules) -> Reclaimed {
     reclaim(&Live(paths), reported_pid, rules).await
 }
@@ -407,11 +409,25 @@ async fn reclaim(generation: &impl Generation, reported_pid: Option<u32>, rules:
         daemon_pid = holder.pid,
         "comms: the daemon stopped answering without exiting; terminating it by pid"
     );
-    if generation.terminate(holder.pid, rules.term_grace) {
+    if generation.terminate(holder.pid, rules.term_grace, &|| still_holds(generation, &holder)) {
         Reclaimed::Gone { forced: true }
-    } else {
+    } else if still_holds(generation, &holder) {
         Reclaimed::Survived { pid: holder.pid }
+    } else {
+        Reclaimed::Unidentified
     }
+}
+
+/// Whether `holder` still holds the generation, read again immediately before a forced kill: the
+/// lock reads held, the pidfile names the same process, and that process can have written it. A
+/// daemon that released the lock during the grace, or whose pid has since passed to another
+/// process, is not killed.
+fn still_holds(generation: &impl Generation, holder: &DaemonRecord) -> bool {
+    generation.lock_state() == LockState::Held
+        && generation
+            .recorded_holder()
+            .is_some_and(|now| now.pid == holder.pid && now.started_unix == holder.started_unix)
+        && generation.can_have_written(holder)
 }
 
 fn stale(report: StatusReport) -> SingletonError {

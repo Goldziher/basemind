@@ -170,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     names because they say something else: `skipped_files` (files that could not be searched),
     `limit_clamped` (`find_files` lowered an over-large `limit`), `body_truncated` (one commit's
     message in a `git_log` search hit) and `too_large` (`git_diff` did not diff a file over 4 MiB).
-    `memory_search` still sets a bare `truncated` on a listing.
+    A `memory_search` listing no longer sets `truncated` on a `limit` cut; it sets `truncated` and
+    `truncated_reason: "scan_cap"` when its `total` stopped counting at the scan cap.
   - `git_diff {structural}`: `common` is a count, not a list. Two definitions sharing a name and kind are
     counted once.
   - `git_diff {}`: each status list is cut at 200 paths, in path order; `omitted` counts the rest and the
@@ -353,6 +354,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `Debug` output leaves out the MCP server's arguments.
 - On Windows, `admin eval` baselines run their shell commands with Git for Windows' path
   conversion off, so an argument such as `-L '/fn alpha/,/^}/'` reaches git as written.
+- `basemind scan` next to a running daemon is forwarded to it as a full rescan (ADR-0024 rule 5)
+  instead of stopping with "already running against this repo" (exit 3). It prints `scan via daemon`
+  with the daemon's counts, then syncs the git-history index through the daemon unless
+  `--no-git-history`. A flag the daemon cannot apply (`--rebuild-git-history`, `--verify-shared-base`,
+  a `--documents-*` / `--llm-*` override) exits 2 naming it; `--staged` and `--rev` exit 3 while the
+  daemon holds the workspace. With no daemon the scan runs directly and starts none, and a lock held by
+  any other process still exits 3 naming it.
+- A daemon that stopped answering is SIGKILLed (`TerminateProcess` on Windows) only if, after the
+  SIGTERM grace, its generation's lock still reads held and the pidfile still names the same process.
+  One that released the lock while draining, or whose pid passed to another process, is not killed.
 - Two installed basemind versions no longer kill each other's daemon. The daemon's socket (named
   pipe on Windows), lock, pidfile, log, `http.addr` and comms store moved from the comms directory
   into a protocol-generation subdirectory, `comms/g1/`, and its record in the daemon registry moved

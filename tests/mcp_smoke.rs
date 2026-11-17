@@ -1012,6 +1012,11 @@ async fn mcp_server_exercises_representative_tools() {
             .and_then(Value::as_str)
             .expect("memory_search first page must carry next_cursor")
             .to_string();
+        assert!(
+            page1.get("truncated").is_none() && page1.get("truncated_reason").is_none(),
+            "a `limit` cut is paging, not truncation, and a false flag is left out: {page1}"
+        );
+        assert_eq!(page1.get("total").and_then(Value::as_u64), Some(3), "{page1}");
         let page2 = decode_text(
             &service
                 .call_tool(call_params(

@@ -209,8 +209,7 @@ A client that read `truncated` as "there is another page" must read `next_cursor
 Four fields keep their own names because they say something else: `skipped_files` (`code_grep`:
 files that could not be searched), `limit_clamped` (`find_files`: an over-large `limit` was
 lowered), `body_truncated` (`git_log` search: one commit's message was shortened; read it with
-`rev`) and `too_large` (`git_diff`: a file over 4 MiB was not diffed). `memory_search` still sets a
-bare `truncated` on a listing.
+`rev`) and `too_large` (`git_diff`: a file over 4 MiB was not diffed).
 
 | Tool | Before | Now |
 | --- | --- | --- |
@@ -221,6 +220,7 @@ bare `truncated` on a listing.
 | `code_symbols` | `truncated` on a `limit` cut, `total_is_partial` | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when a fuzzy sweep stopped at its cap |
 | `code_refs` | `total_is_partial` | `truncated`, `truncated_reason: "scan_cap"` (`total` is a lower bound; `next_cursor` resumes the scan) |
 | `find_files` | `truncated` | removed: `next_cursor` says a listing goes on |
+| `memory_search` listing | `truncated` on a `limit` cut | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when `total` stopped counting (a lower bound) |
 | `code_search`, `docs_search` | none | `truncated`, `truncated_reason` (`depth`, `rerank_top_k`, `filter_depth`) |
 | `git_diff {}` | none | `truncated`, `truncated_reason: "path_cap"`, `omitted` (paths), `path` |
 | `git_diff {path}` | `truncated`, `total_hunks` | `truncated`, `truncated_reason` (`hunk_cap`, `byte_cap`), `omitted` (hunks) |
