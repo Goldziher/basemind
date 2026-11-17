@@ -4,10 +4,10 @@ date: 2026-11-17
 amends: ["0029", "0025"]
 ---
 
-# ADR-0037: Retrieval store amendments — liveness list, store version, interim location, model identity
+# ADR-0037: Retrieval store amendments — liveness list, store version, group location, model identity
 
 - **Deciders:** the repository owner
-- **Related:** amends ADR-0029 (rules 1, 2, 3, 5, 7, 8, 11) and ADR-0025 (the vector stores' version);
+- **Related:** amends ADR-0029 (rules 1, 2, 3, 5, 7, 8, 10, 11) and ADR-0025 (the vector stores' version);
   ADR-0028
 
 ## Context
@@ -25,14 +25,21 @@ with the code and the benchmark:
   For the vector rows of memory notes it re-embeds every note at every minor, although nothing in
   their layout changed. The request on this branch was to decouple both stores from the minor,
   provided a model or layout change can never serve a stale vector.
-- **Rule 2** puts the store under the repository group (ADR-0028). The group directory, lock and
-  live-key map are being built on another branch and do not exist here.
+- **Rule 2** puts the store under the repository group (ADR-0028), and rule 11 leaves deleting dead
+  rows to the group sweep. The group directory and lock exist, and `Store::group_live_doc_keys`
+  lists the document keys every view of the group names; the first implementation still kept one
+  store per view, so two worktrees of a repository held, and embedded, the same rows twice.
 - **Rules 5 and 7** name `kind`, `path` and `keywords` filters and a reranker that scores 50 hits,
   without saying what values they take or which setting holds the 50.
 - **Rule 1** names HTML a document type, but the scan sent every file a tree-sitter grammar claims to
   the code map, so no HTML file reached the document store (15 of 86 eval tasks scored zero).
 - **Rule 2** names the store by "model", and the code used the preset name. A preset name is
   xberg's: a release that points it at another model would mix two models' vectors in one store.
+- **Rule 1** leaves JSON, YAML, TOML, CSV and logs to `code_grep`, but the scan sends them, and
+  plain text, to the document tier, and `docs_search` says it searches config and data files.
+  **Rule 10** keeps what xberg reports, and for these files xberg reports a rewrite: a plain-text
+  paragraph or a whole log becomes one line, a JSON or YAML file a list of `key: value`
+  paragraphs. No chunk of that text is found in the file again, so none cited a line.
 - **Rule 11** says nothing of a document whose embedding failed. Indexed without vectors and marked
   attempted, it never got them, even once the embedder worked again.
 
@@ -55,13 +62,16 @@ with the code and the benchmark:
    - memory vector rows are found by note key and checked against the note's `updated_at`
      (ADR-0025 (c)), and a missing row is rebuilt from the note.
    The version is bumped when a table's columns change.
-3. **Interim location (amends rule 2 until ADR-0028 lands).** The store is
-   `views/<view>/retrieval/<model-slug>-<dim>-<hash8>/` in the workspace cache, chosen in one
-   function, `lance::docs::store_dir(parent, model, dim)`; rows carry no path or workspace. Each
-   view has its own store because each view's scan deletes the rows its document map does not
-   name; two views sharing one would delete each other's rows. When the group directory exists,
-   `store_dir` is called with it and that deletion moves to the group sweep, which passes every
-   view's live keys.
+3. **Group location (amends rules 2 and 11).** The store is
+   `cache/groups/<group>/lance/<model-slug>-<dim>-<hash8>/` (`lance::docs::group_store_dir`), one
+   per repository group and model; rows carry no path or workspace, so every worktree of the group
+   reads and writes the same rows, and a document another worktree already wrote is not written
+   again. A view searches only the keys its own document map names (rule 1 here). A scan deletes a
+   row only when its key is in no view's document map (`Store::group_live_doc_keys`); when a view's
+   map cannot be read the liveness is unknown and nothing is deleted. A store an earlier build kept
+   under `views/<view>/retrieval/` is deleted by the first scan that opens the group store, which
+   fills it from the cached blobs, without embedding again; the rows' shape is unchanged, so
+   `VECTOR_STORE_VER` stays.
 4. **Filter values (amends rule 5).** `kind` is one of `pdf`, `office`, `html`, `markdown`,
    `email`, `notebook`, `text`, `other`; `path` is a glob over the view's document paths;
    `keywords` is a comma-separated list, a document passing when it has any of them as a whole
@@ -92,13 +102,27 @@ with the code and the benchmark:
 10. **Headings inside a hit (amends rule 8).** A hit's `section` is the heading trail where its
     text starts; `headings` lists the headings that start inside it. A chunk of a short document
     spans several sections, and the trail alone names the one before the answer.
+11. **Text and data files are chunked from the file (amends rules 1 and 10).** Plain text and
+    logs, CSV and TSV, NDJSON, JSON, YAML and TOML are documents, chunked by basemind from the
+    file's own text in one pass (`extract::doc::source`), not from xberg's rendering: prose and logs
+    end a chunk at a blank line, else a line end, and overlap by whole lines; records (CSV, TSV,
+    NDJSON) end at a line end without overlap, and a CSV or TSV chunk is embedded with the header
+    line in front; trees (JSON, YAML, TOML) end before the least indented line of the window's back
+    half that does not close a block. Each chunk's line range follows from its byte range, so every
+    chunk cites its lines. xberg still extracts the file, for keywords, entities (placed again in
+    the file's text), language and summary. These files are embedded like any other document,
+    under `embed_include` / `embed_exclude` and the chunk cap. A Markdown chunk, which xberg does
+    chunk, is found in its file with whitespace collapsed on both sides (xberg joins a soft-wrapped
+    paragraph into one line), and by a run of plain text when a list marker, table padding or an
+    entity was rewritten, so it cites its lines too.
 
 ## Consequences
 
 - Upgrading wipes each vector store once (its old version is the minor, below 1000); after that a
   release minor no longer wipes the memory vectors.
-- Each view of each worktree holds its own copy of the document rows until ADR-0028's group
-  directory exists.
+- The worktrees of a repository share one copy of the document rows. Two worktrees whose
+  `basemind.toml` embed policies differ for one document share its rows too: the last scan that
+  wrote or stripped its vectors decides whether the shared rows carry them.
 - A view whose allowed set exceeds 2,000 documents pays the widening on every query and may see
   `liveness_depth`.
 - ADR-0029's `lang` column and its Bitmap index are not built: no filter reads them.
@@ -107,6 +131,8 @@ with the code and the benchmark:
 - The first scan of this version re-embeds every vector once: blobs stamped with a bare preset name
   do not match the model key.
 - An offline machine pays one embedder probe per scan while documents owe vectors.
+- The extraction digest moves to `doc/4`: every document is extracted again once, and re-embedded.
+  A plain-text file no longer reaches xberg's Markdown splitter at any size.
 - The reranker stays off by default. On the docs eval corpus `bge-reranker-base` raised nDCG@10 over all
   tasks (0.954 to 0.967) but lowered it on natural-language questions (0.954 to 0.946), dropped one gold
   out of the top ten, and cost about 25 times the latency.
@@ -117,4 +143,6 @@ with the code and the benchmark:
 - **Keep the minor as the version** — rejected: every minor re-embeds every memory note for no
   layout change, and the model-named directory and versioned `doc_key` already keep stale rows
   from being served.
-- **Build the group directory here** — rejected: it is ADR-0028's work, in progress elsewhere.
+- **Copy the per-view stores into the group store** — rejected: the rows are rebuilt from the
+  cached blobs without embedding, and the views of one group hold the same rows, so a copy would
+  have to merge duplicates for no gain.

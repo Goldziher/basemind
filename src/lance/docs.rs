@@ -1,9 +1,10 @@
 //! The document retrieval store (ADR-0029): `doc_chunks` and `docs`, keyed by `doc_key`, in one
 //! LanceDB directory per embedding model and dimension.
 //!
-//! Where that directory is lives in [`store_dir`] alone. Today it is beside the workspace's other
-//! stores; ADR-0029 rule 2 puts it under the repository group, and moving it is a change of that
-//! one function's argument, since rows carry no path, scope or workspace.
+//! The directory is the repository group's (ADR-0029 rule 2, ADR-0037 rule 3): every worktree of
+//! a repository shares one store, [`group_store_dir`], since rows carry no path, scope or workspace.
+//! A view reads only the keys its own document map names, and a row is deleted only when no view
+//! of the group names its key.
 
 use std::path::{Path, PathBuf};
 
@@ -28,13 +29,13 @@ pub use crate::store::doc_key;
 /// Keys per `doc_key IN (...)` statement of a write or a lookup.
 const KEYS_PER_STATEMENT: usize = 2_000;
 
-/// The directory of the retrieval store for `model` at `dim`, under `parent`.
-///
-/// `parent` is the view directory today: a view's scan deletes the rows its own document map does
-/// not name, so two views must not share a store. The group-index work (ADR-0028) hands the group
-/// directory instead, with the group sweep deleting what no view names, and the store moves to
-/// `groups/<group>/lance/<model>-<dim>-<hash>/` with no other change. The name ends in a hash of the model's own name, so two models whose readable
-/// slug collides never share, and wipe, one directory.
+/// Directory of a repository group's retrieval stores, under the group directory
+/// (`cache/groups/<group>/lance/`).
+pub const GROUP_STORE_DIR: &str = "lance";
+
+/// The directory of the retrieval store for `model` at `dim`, under `parent`. The name ends in a
+/// hash of the model's own name, so two models whose readable slug collides never share, and wipe,
+/// one directory.
 pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
     let model = crate::embeddings::model_key(model);
     let slug: String = model
@@ -48,9 +49,17 @@ pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
         })
         .collect();
     let hash = crate::hashing::hex(&crate::hashing::hash_bytes(model.as_bytes()));
-    parent
-        .join(crate::store_layout::RETRIEVAL_DIR)
-        .join(format!("{slug}-{dim}-{}", &hash[..8]))
+    parent.join(format!("{slug}-{dim}-{}", &hash[..8]))
+}
+
+/// The retrieval store of `root`'s repository group for `model` at `dim`:
+/// `cache/groups/<group>/lance/<model>-<dim>-<hash>/`. Shared by every worktree of the group.
+pub fn group_store_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
+    store_dir(
+        &crate::store_layout::group_index_dir(root).join(GROUP_STORE_DIR),
+        model,
+        dim,
+    )
 }
 
 /// The coarse kind of a MIME type, the `kind` filter of `docs_search`.

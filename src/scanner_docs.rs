@@ -394,15 +394,10 @@ mod doc_rows;
 pub(crate) use doc_rows::open_doc_store;
 
 /// Drop the `index.doc_files` entries of documents that no longer exist (or are no longer routed
-/// to the doc tier), then the store rows no remaining document names. Serial apply pass. The
+/// to the doc tier), then the store rows no view of the group names. Serial apply pass. The
 /// tracking entry is dropped unconditionally; the row delete is best-effort and never creates the
 /// store.
-pub(crate) fn delete_stale_documents(
-    store: &mut Store,
-    config: &crate::config::Config,
-    filters: &Filters,
-    stale: &[String],
-) {
+pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::Config, stale: &[String]) {
     if stale.is_empty() {
         return;
     }
@@ -410,7 +405,7 @@ pub(crate) fn delete_stale_documents(
         store.remove_doc(path);
         store.remove_doc_tombstone(path);
     }
-    doc_rows::remove_dead_document_rows(store, config, filters);
+    doc_rows::remove_dead_document_rows(store, config);
 }
 
 /// Rewrite without vectors the rows of every tracked doc that is no longer embed-eligible
