@@ -41,7 +41,7 @@ fn index_keyspaces_compress_level_zero_and_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     {
         let db = IndexDb::open(dir.path()).unwrap();
-        for ks in [&db.code_bm25_postings, &db.refs_by_def, db.notes()] {
+        for ks in [db.code_bm25_postings.raw(), db.refs_by_def.raw(), db.notes()] {
             for i in 0..ROWS {
                 ks.insert(i.to_be_bytes(), vec![7u8; VALUE_LEN]).unwrap();
             }
@@ -57,6 +57,7 @@ fn index_keyspaces_compress_level_zero_and_round_trip() {
     let db = IndexDb::open(dir.path()).unwrap();
     let row = db
         .code_bm25_postings
+        .raw()
         .get(7usize.to_be_bytes())
         .unwrap()
         .expect("row survives reopen");

@@ -103,7 +103,7 @@ pub(crate) fn claim_writer(store: &mut Store) -> Result<(), ScanError> {
     if store.take_writer_lock()? {
         let on_disk = crate::store_pending::PendingVectors::load(&store.view_dir);
         store.pending_vectors.absorb(on_disk);
-        if store.layered_read.is_none() && store.index_db.as_ref().is_some_and(IndexDb::is_sole_handle) {
+        if store.index_db.as_ref().is_some_and(IndexDb::is_sole_handle) {
             store.index_db = None;
         }
     }
@@ -155,7 +155,7 @@ fn purge_rows(db: &IndexDb, path: &crate::path::RelPath) -> Result<(), StoreErro
 /// The free-space check alone, for the resolve pass: the file map is already durable by then, so a
 /// refusal costs only the resolve tier.
 pub(crate) fn ensure_space(store: &Store) -> Result<(), ScanError> {
-    disk_space::ensure_free_space(&store.view_dir)?;
+    disk_space::ensure_free_space(&crate::store_layout::group_index_dir(&store.root))?;
     Ok(())
 }
 
@@ -262,36 +262,48 @@ pub(crate) fn finish_index_writes(store: &Store) {
     }
 }
 
-/// Drop the grep bloom rows of every content no indexed file references any more. Rows are shared by
-/// content, so a removed or edited file leaves its old row behind until this full-pass sweep (or, for
+/// Drop the grep bloom rows of every content no indexed file of the group references any more (see
+/// [`crate::store_group_live`]). Rows are shared by content, so a removed or edited file leaves its old row behind until this full-pass sweep (or, for
 /// a watcher batch, [`drop_unheld_grep_bloom_rows`]).
 pub(crate) fn sweep_grep_bloom_rows(store: &Store) {
     let Some(idx) = store.index_db.as_ref() else {
         return;
     };
-    let live: ahash::AHashSet<&str> = store
-        .index
-        .files
-        .values()
-        .map(|entry| entry.hash_hex.as_str())
-        .collect();
-    if let Err(error) = idx.sweep_grep_bloom(&live) {
+    let liveness = match store.content_liveness() {
+        Ok(liveness) => liveness,
+        Err(error) => {
+            tracing::warn!(%error, "grep bloom sweep skipped; unreferenced rows stay until the next full scan");
+            return;
+        }
+    };
+    if let Err(error) = idx.sweep_grep_bloom(|hash| liveness.holds(hash)) {
         tracing::warn!(%error, "grep bloom sweep failed; unreferenced rows stay until the next full scan");
     }
 }
 
-/// Drop the grep bloom rows of `hashes` that no indexed file holds any more. `hashes` are the
-/// contents the pass's changed or removed paths held before it ran, so the cost follows the batch,
-/// not the index; a hash another path still holds (or one the pass just wrote for a new path) stays.
-/// Runs after the pass has applied its entries and committed its rows, so it sees the final manifest.
+/// Drop the grep bloom rows of `hashes` that no indexed file of the group holds any more. `hashes`
+/// are the contents the pass's changed or removed paths held before it ran, so the cost follows the
+/// batch, not the index; a hash another path still holds (or one the pass just wrote for a new path)
+/// stays. Runs after the pass has applied its entries and committed its rows, so it sees the final
+/// manifest.
 pub(crate) fn drop_unheld_grep_bloom_rows(store: &Store, hashes: &[String]) {
     let Some(idx) = store.index_db.as_ref() else {
         return;
     };
+    if hashes.iter().all(|hash| store.hash_is_held(hash)) {
+        return;
+    }
+    let liveness = match store.content_liveness() {
+        Ok(liveness) => liveness,
+        Err(error) => {
+            tracing::warn!(%error, "grep bloom row removal skipped; unreferenced rows stay until the next full scan");
+            return;
+        }
+    };
     let unheld: ahash::AHashSet<&str> = hashes
         .iter()
         .map(String::as_str)
-        .filter(|hash| !store.hash_is_held(hash))
+        .filter(|hash| !liveness.holds(hash))
         .collect();
     if unheld.is_empty() {
         return;

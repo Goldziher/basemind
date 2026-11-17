@@ -136,6 +136,15 @@ pub fn repo_group_dir(root: &Path) -> PathBuf {
     cache_root().join(CACHE_DIR).join(REPOS_DIR).join(repo_group_key(root))
 }
 
+/// Sub-directory of the cache holding the derived state of each repository group (ADR-0028), keyed
+/// by [`repo_group_key`]: the group index and its lock. Rebuildable, unlike [`REPOS_DIR`].
+pub const GROUPS_DIR: &str = "groups";
+
+/// `cache_root()/cache/groups/<repo_group_key>/`: the group index of `root`'s repository group.
+pub fn group_index_dir(root: &Path) -> PathBuf {
+    cache_root().join(CACHE_DIR).join(GROUPS_DIR).join(repo_group_key(root))
+}
+
 /// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every
 /// workspace in the group, so budget eviction and the orphan reaper never touch it.
 pub fn memory_store_dir(root: &Path) -> PathBuf {
@@ -813,5 +822,17 @@ mod status_sidecar_tests {
     fn count_fm_blobs_is_zero_for_missing_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert_eq!(count_fm_blobs(&dir.path().join("does-not-exist")), 0);
+    }
+}
+
+/// Make the entries of directory `path` durable: a rename or create inside it survives a crash
+/// only once the directory itself is synced. A no-op where directories cannot be synced.
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return std::fs::File::open(path)?.sync_all();
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
     }
 }

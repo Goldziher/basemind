@@ -20,21 +20,13 @@
 pub(crate) mod durability;
 pub mod fault;
 pub mod grep_bloom;
+pub(crate) mod group;
 pub mod keys;
 pub mod keys_memory;
 pub mod keys_probe;
-pub(crate) mod layered_merge;
-#[cfg(test)]
-mod layered_persist;
-pub(crate) mod layered_shadow;
-mod layered_verify;
-pub use layered_verify::verify_rows as verify_shared_base;
-pub(crate) mod layered_view;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
-pub mod sorted_run;
-#[cfg(test)]
-mod sorted_run_prototype;
+pub mod scoped;
 pub mod view;
 #[cfg(test)]
 mod view_tests;
@@ -323,6 +315,40 @@ pub enum IndexError {
     BehindFileMap { index: u64, file_map: u64 },
 }
 
+/// The group memory store at `memory_dir`, or why a handle has none. A read-only open
+/// (`tolerate_held_memory`) accepts a store another process holds.
+type OpenedMemory = Result<std::sync::Arc<memory_store::MemoryDb>, MemoryUnavailable>;
+
+pub(crate) fn open_memory(memory_dir: &Path, tolerate_held_memory: bool) -> Result<OpenedMemory, IndexError> {
+    let version = if tolerate_held_memory {
+        memory_store::Version::Check
+    } else {
+        memory_store::Version::Stamp
+    };
+    match memory_store::open_shared(memory_dir, version) {
+        Ok(memory) => Ok(Ok(memory)),
+        Err(IndexError::Fjall(fjall::Error::Locked)) if tolerate_held_memory => {
+            tracing::debug!(
+                memory_dir = %memory_dir.display(),
+                "group memory store is held by another process; memory is unavailable locally"
+            );
+            Ok(Err(MemoryUnavailable::HeldElsewhere))
+        }
+        // The notes of a newer basemind are not this binary's to read or write, and no reason
+        // to refuse the code index of every worktree in the group. ~keep
+        Err(IndexError::NewerMemoryStore { stored, current }) => {
+            tracing::warn!(
+                memory_dir = %memory_dir.display(),
+                stored,
+                current,
+                "memory store written by a newer basemind; memory is unavailable until basemind is upgraded"
+            );
+            Ok(Err(MemoryUnavailable::NewerStore { stored, current }))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// One `(keyspace, key, value)` row, as returned by [`IndexDb::resolution_rows`].
 pub type ResolutionRow = (&'static str, Vec<u8>, Vec<u8>);
 
@@ -333,14 +359,14 @@ pub struct IndexDb {
     pub(crate) db: Database,
     /// Carries the `schema_ver` row read + stamped in [`IndexDb::open`]; also read and written
     /// by the BM25 corpus-stats recompute.
-    pub(in crate::index) meta: Keyspace,
-    pub(in crate::index) symbols_by_path: Keyspace,
+    pub(in crate::index) meta: scoped::Scoped,
+    pub(in crate::index) symbols_by_path: scoped::Scoped,
     /// Reserved fast-path partition: written on every upsert so that future name-based
     /// symbol search can skip the in-RAM linear scan. Not yet read by any MCP query path;
     /// kept to avoid a schema migration when the read path lands.
-    pub(in crate::index) symbols_by_name: Keyspace,
-    pub(in crate::index) calls_by_path: Keyspace,
-    pub(in crate::index) calls_by_callee: Keyspace,
+    pub(in crate::index) symbols_by_name: scoped::Scoped,
+    pub(in crate::index) calls_by_path: scoped::Scoped,
+    pub(in crate::index) calls_by_callee: scoped::Scoped,
     /// Distinct callee names of `calls_by_callee`; lets the substring name scan range-scan only the
     /// matching names instead of walking the partition.
     pub(in crate::index) callee_names: std::sync::Arc<name_dict::NameDict>,
@@ -348,39 +374,39 @@ pub struct IndexDb {
     /// `dependents`-by-module queries can use a prefix scan instead of iterating the
     /// full import set. Not yet read by any MCP query path; kept to avoid a schema
     /// migration when the read path lands.
-    pub(in crate::index) imports_by_module: Keyspace,
-    pub(in crate::index) imports_by_path: Keyspace,
+    pub(in crate::index) imports_by_module: scoped::Scoped,
+    pub(in crate::index) imports_by_path: scoped::Scoped,
     /// `implementations_by_trait`: prefix scans on trait name — backs `find_implementations`.
-    pub(in crate::index) implementations_by_trait: Keyspace,
+    pub(in crate::index) implementations_by_trait: scoped::Scoped,
     /// Distinct trait names of `implementations_by_trait`, as [`Self::callee_names`] is for callees.
     pub(in crate::index) trait_names: std::sync::Arc<name_dict::NameDict>,
     /// `implementations_by_path`: companion to keep the per-file delete on upsert O(prefix).
-    pub(in crate::index) implementations_by_path: Keyspace,
+    pub(in crate::index) implementations_by_path: scoped::Scoped,
     /// `refs_by_def`: scope/import-resolved reference edges keyed by defining site — backs the
     /// resolved `find_references` / `find_callers`. Written by the scanner's resolve pass (B3).
-    pub(in crate::index) refs_by_def: Keyspace,
+    pub(in crate::index) refs_by_def: scoped::Scoped,
     /// `refs_by_path`: companion keyed by the use file — O(prefix) delete on re-resolve and the
     /// forward lookup behind `goto_definition`. Written by the scanner's resolve pass (B3).
-    pub(in crate::index) refs_by_path: Keyspace,
+    pub(in crate::index) refs_by_path: scoped::Scoped,
     /// `import_targets`: importer + import-binding offset -> the definition the stitch bound it to,
     /// plus one reserved probe-manifest row per importer (see [`keys_probe`]).
-    pub(in crate::index) import_targets: Keyspace,
+    pub(in crate::index) import_targets: scoped::Scoped,
     /// `importers_by_probe`: probed path hash + importer. Every path the resolver consulted for an
     /// importer's imports, so the incremental re-stitch finds exactly the importers a changed,
     /// added or deleted path can affect.
-    pub(in crate::index) importers_by_probe: Keyspace,
+    pub(in crate::index) importers_by_probe: scoped::Scoped,
     /// `code_bm25_postings`: term → chunks (with inlined tf + doclen) for the code-search BM25
     /// keyword lane. Always created for DB stability; written only under the `code-search` feature.
-    pub(in crate::index) code_bm25_postings: Keyspace,
+    pub(in crate::index) code_bm25_postings: scoped::Scoped,
     /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(chunk_id, doclen,
     /// terms)`, so a re-scan deletes the previous postings in O(prefix). Always created.
-    pub(in crate::index) code_bm25_by_path: Keyspace,
+    pub(in crate::index) code_bm25_by_path: scoped::Scoped,
     /// `grep_bloom`: hex content hash -> trigram bloom filter of that content (see [`grep_bloom`]),
     /// shared by every path holding the bytes. A candidate PREFILTER for `code grep` only; a missing
     /// row (including an older-version or path-keyed one) means "candidate", which is why the layout
     /// moved on by `ROW_VERSION` with no schema bump: the scan's sweep drops stale rows and
     /// backfills the current ones.
-    pub(in crate::index) grep_bloom: Keyspace,
+    pub(in crate::index) grep_bloom: scoped::Scoped,
     #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
     /// First fatal commit error (disk full, poisoned handle) seen through any clone of this handle;
@@ -396,6 +422,9 @@ pub struct IndexDb {
     /// True when this open found an index written under another [`INDEX_SCHEMA_VER`] and discarded
     /// it, so the database is empty while the file map that fed it may still be populated.
     wiped_on_open: bool,
+    /// The group index this handle is one view of, kept alive as long as the handle; `None` for a
+    /// database of the view's own.
+    pub(crate) group: Option<group::GroupView>,
 }
 
 /// Why an [`IndexDb`] holds no memory notes. Memory operations on such a handle are refused with
@@ -490,14 +519,14 @@ impl IndexDb {
     /// in this view are merged into that store (last writer wins by timestamp) and removed from the
     /// view before any schema-mismatch wipe can destroy them.
     pub fn open_with_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
-        Self::open_inner(view_dir, memory_dir, false)
+        Self::open_inner(view_dir, Some(memory_dir), false)
     }
 
     /// [`IndexDb::open_with_memory`] for read-only consumers: when another process holds the group
     /// memory store, the view index still opens and [`IndexDb::memory_detached`] reports `true`
     /// instead of the whole open failing with `Locked`. Only a lock on the view itself fails.
     pub fn open_tolerating_held_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
-        Self::open_inner(view_dir, memory_dir, true)
+        Self::open_inner(view_dir, Some(memory_dir), true)
     }
 
     /// Whether this handle holds no memory notes (see [`IndexDb::memory`]). Memory operations on
@@ -527,7 +556,13 @@ impl IndexDb {
         self.wiped_on_open
     }
 
-    fn open_inner(view_dir: &Path, memory_dir: &Path, tolerate_held_memory: bool) -> Result<Self, IndexError> {
+    /// Open the database at `dir` (a group directory) with no memory store: [`group::GroupDb`] takes
+    /// its keyspaces and gives each view its own memory handle.
+    pub(crate) fn open_without_memory(dir: &Path) -> Result<Self, IndexError> {
+        Self::open_inner(dir, None, false)
+    }
+
+    fn open_inner(view_dir: &Path, memory_dir: Option<&Path>, tolerate_held_memory: bool) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
         // `tolerate_held_memory` is the read-only open: it deletes, migrates and wipes nothing. ~keep
         if !tolerate_held_memory {
@@ -549,33 +584,14 @@ impl IndexDb {
             .max_journaling_size(journal_bytes)
             .open()
             .map_err(durability::classify_open_error)?;
-        let version = if tolerate_held_memory {
-            memory_store::Version::Check
-        } else {
-            memory_store::remove_retired_placeholder(view_dir);
-            memory_store::Version::Stamp
-        };
-        let memory = match memory_store::open_shared(memory_dir, version) {
-            Ok(memory) => Ok(memory),
-            Err(IndexError::Fjall(fjall::Error::Locked)) if tolerate_held_memory => {
-                tracing::debug!(
-                    memory_dir = %memory_dir.display(),
-                    "group memory store is held by another process; memory is unavailable locally"
-                );
-                Err(MemoryUnavailable::HeldElsewhere)
+        let memory = match memory_dir {
+            Some(memory_dir) => {
+                if !tolerate_held_memory {
+                    memory_store::remove_retired_placeholder(view_dir);
+                }
+                open_memory(memory_dir, tolerate_held_memory)?
             }
-            // The notes of a newer basemind are not this binary's to read or write, and no reason
-            // to refuse the code index of every worktree in the group. ~keep
-            Err(IndexError::NewerMemoryStore { stored, current }) => {
-                tracing::warn!(
-                    memory_dir = %memory_dir.display(),
-                    stored,
-                    current,
-                    "memory store written by a newer basemind; memory is unavailable until basemind is upgraded"
-                );
-                Err(MemoryUnavailable::NewerStore { stored, current })
-            }
-            Err(error) => return Err(error),
+            None => Err(MemoryUnavailable::HeldElsewhere),
         };
         if let (Ok(memory), false) = (&memory, tolerate_held_memory) {
             memory_store::migrate_legacy(&db, memory)?;
@@ -671,27 +687,29 @@ impl IndexDb {
             }
         }
 
+        let whole = scoped::Scoped::whole;
         Ok(Self {
             db,
-            meta,
-            symbols_by_path,
-            symbols_by_name,
-            calls_by_path,
-            calls_by_callee,
+            meta: whole(meta),
+            symbols_by_path: whole(symbols_by_path),
+            symbols_by_name: whole(symbols_by_name),
+            calls_by_path: whole(calls_by_path),
+            calls_by_callee: whole(calls_by_callee),
             callee_names: std::sync::Arc::default(),
-            imports_by_module,
-            imports_by_path,
-            implementations_by_trait,
+            imports_by_module: whole(imports_by_module),
+            imports_by_path: whole(imports_by_path),
+            implementations_by_trait: whole(implementations_by_trait),
             trait_names: std::sync::Arc::default(),
-            implementations_by_path,
-            refs_by_def,
-            refs_by_path,
-            import_targets,
-            importers_by_probe,
-            code_bm25_postings,
-            code_bm25_by_path,
-            grep_bloom,
+            implementations_by_path: whole(implementations_by_path),
+            refs_by_def: whole(refs_by_def),
+            refs_by_path: whole(refs_by_path),
+            import_targets: whole(import_targets),
+            importers_by_probe: whole(importers_by_probe),
+            code_bm25_postings: whole(code_bm25_postings),
+            code_bm25_by_path: whole(code_bm25_by_path),
+            grep_bloom: whole(grep_bloom),
             embeddings,
+            group: None,
             fault: std::sync::Arc::default(),
             synced_seqno: std::sync::Arc::default(),
             memory,
@@ -728,6 +746,21 @@ impl IndexDb {
         self.fault.record(error);
     }
 
+    /// The other views whose rows this database holds, as `(workspace key, view)`, for a sweep of
+    /// content-keyed rows (see [`crate::store_group_live`]). Empty for a database of the view's own.
+    pub(crate) fn sibling_views(&self) -> Result<Vec<(String, String)>, IndexError> {
+        let Some(own) = &self.group else {
+            return Ok(Vec::new());
+        };
+        Ok(own
+            .group
+            .views()?
+            .into_iter()
+            .filter(|(_, _, id)| *id != own.view_id)
+            .map(|(workspace, view, _)| (workspace, view))
+            .collect())
+    }
+
     /// Open a new batched writer scoped to this DB. Multiple writers can coexist — Fjall
     /// handles internal serialization. Used by the scanner's per-file worker tasks.
     pub fn writer(&self) -> writer::IndexWriter {
@@ -757,8 +790,8 @@ impl IndexDb {
             ("import_targets", &self.import_targets),
             ("importers_by_probe", &self.importers_by_probe),
         ] {
-            for guard in keyspace.iter() {
-                let (k, v) = guard.into_inner()?;
+            for row in keyspace.iter() {
+                let (k, v) = row?;
                 rows.push((name, k.to_vec(), v.to_vec()));
             }
         }
@@ -773,8 +806,8 @@ impl IndexDb {
         let mut candidates = ahash::AHashSet::new();
         for path in paths {
             let rel = crate::path::RelPath::from(path.as_str());
-            for guard in self.code_bm25_by_path.prefix(keys::code_bm25_by_path_prefix(&rel)) {
-                let (key, value) = guard.into_inner()?;
+            for row in self.code_bm25_by_path.prefix(&keys::code_bm25_by_path_prefix(&rel)) {
+                let (key, value) = row?;
                 if let (Some((_, chunk)), Some(terms)) = (keys::parse_code_bm25_by_path(&key), value.get(4..)) {
                     for term in rmp_serde::from_slice::<Vec<String>>(terms)? {
                         candidates.extend(keys::code_bm25_posting(&term, &chunk));
@@ -811,14 +844,14 @@ impl IndexDb {
     #[cfg(feature = "code-search")]
     pub(crate) fn sweep_bm25_postings(&self) -> Result<(), IndexError> {
         let mut live = ahash::AHashSet::new();
-        for guard in self.code_bm25_by_path.iter() {
-            if let Some((_path, chunk)) = keys::parse_code_bm25_by_path(&guard.key()?) {
+        for key in self.code_bm25_by_path.keys() {
+            if let Some((_path, chunk)) = keys::parse_code_bm25_by_path(&key?) {
                 live.insert(chunk);
             }
         }
         let mut writer = self.writer();
-        for guard in self.code_bm25_postings.iter() {
-            let key = guard.key()?;
+        for key in self.code_bm25_postings.keys() {
+            let key = key?;
             if !keys::parse_code_bm25_posting_chunk_id(&key).is_some_and(|chunk| live.contains(chunk)) {
                 writer.remove_bm25_posting(&key);
                 if writer.staged_bytes() >= BM25_PRUNE_BATCH_BYTES {
@@ -842,8 +875,8 @@ impl IndexDb {
     pub fn recompute_bm25_stats(&self) -> Result<(), IndexError> {
         let mut n: u64 = 0;
         let mut total_len: u64 = 0;
-        for guard in self.code_bm25_by_path.iter() {
-            let (_k, v) = guard.into_inner()?;
+        for row in self.code_bm25_by_path.iter() {
+            let (_k, v) = row?;
             if v.len() >= 4 {
                 total_len += u64::from(u32::from_be_bytes([v[0], v[1], v[2], v[3]]));
             }

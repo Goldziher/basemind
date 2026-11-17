@@ -43,11 +43,19 @@ fn rows(iter: KvIter<'_>) -> Rows {
         .collect()
 }
 
+/// The rows of `part` as stored, read past the view: a view-scoped keyspace's own rows, with the
+/// view prefix taken off, and every row of a keyspace the group shares.
 fn direct_rows(db: &IndexDb, part: Part) -> Rows {
+    let prefix = db
+        .group
+        .as_ref()
+        .filter(|_| db.keyspace(part).is_view_scoped())
+        .map(|view| super::scoped::view_prefix(view.view_id).to_vec())
+        .unwrap_or_default();
     db.keyspace_for_test(part)
-        .iter()
+        .prefix(&prefix)
         .map(|g| g.into_inner().expect("row"))
-        .map(|(k, v)| (k.to_vec(), v.to_vec()))
+        .map(|(k, v)| (k[prefix.len()..].to_vec(), v.to_vec()))
         .collect()
 }
 
@@ -129,21 +137,21 @@ fn the_generic_layer_reads_what_each_keyspace_holds() {
 }
 
 #[test]
-fn parts_name_exactly_the_layered_keyspaces() {
+fn parts_name_exactly_the_view_keyspaces() {
     let names: std::collections::BTreeSet<_> = Part::ALL.iter().map(|p| p.name()).collect();
     assert_eq!(names.len(), Part::ALL.len(), "part names are unique");
-    let unlayered = ["embeddings", "memory_by_key"];
+    let not_viewed = ["embeddings", "memory_by_key"];
     for name in &names {
         assert!(
             super::KEYSPACE_MEMTABLE_BYTES.iter().any(|(k, _)| k == name),
             "{name} must be a real keyspace"
         );
-        assert!(!unlayered.contains(name), "{name} is per-group or per-worktree state");
+        assert!(!not_viewed.contains(name), "{name} is never read through a view");
     }
     for (keyspace, _) in super::KEYSPACE_MEMTABLE_BYTES {
         assert!(
-            names.contains(keyspace) || unlayered.contains(keyspace),
-            "keyspace {keyspace} is neither a layered Part nor listed as unlayered"
+            names.contains(keyspace) || not_viewed.contains(keyspace),
+            "keyspace {keyspace} is neither a Part nor listed as never read through a view"
         );
     }
 }

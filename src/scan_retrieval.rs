@@ -73,9 +73,6 @@ pub trait VectorStore: Sync {
     /// Compact and prune the store after a scan's writes; no-op when the scan never opened it.
     fn maintain(&self, store: &Store);
 
-    /// Publish this scan's rows to the shared snapshot when that is enabled.
-    fn publish_snapshot(&self, store: &Store, config: &Config, scope: &str) -> Result<(), RetrievalError>;
-
     /// Write the rows of every embedded batch, one file at a time from its chunk sidecar. Returns
     /// the number of files written.
     #[cfg(feature = "code-search")]

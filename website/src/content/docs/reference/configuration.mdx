@@ -441,7 +441,6 @@ Read directly rather than mapped from a config key:
 
 | Variable | Effect |
 |---|---|
-| `BASEMIND_NO_SEED` | Any non-empty value other than `0` stops a new linked-worktree view from being seeded from a sibling worktree's index. |
 | `BASEMIND_DATA_HOME` | Overrides the global cache root. |
 | `BASEMIND_GREP_BLOOM` | `0` disables the per-file trigram bloom prefilter of `code_grep` and forces the full sweep. Anything else (or unset) leaves it on. See [Performance](/reference/performance/#code-grep). |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Whole seconds a blob must age before the sweep (`basemind cache gc`, post-migration cleanup, the daemon's hourly sweep) may reclaim it. Default `21600` (6 h); `0` reclaims every unreferenced blob at once. |

@@ -288,6 +288,19 @@ impl Worktree {
 
     /// Grep candidate selection: which files the trigram blooms cannot rule out for `pattern`.
     /// `hits` is the number of files a grep would still have to read.
+    /// The code-search keyword lane: `bm25_search` over the view, first page. `bm25_search` does not
+    /// report the postings it read, so `rows` stays 0.
+    #[cfg(feature = "code-search")]
+    pub fn bm25(&self, query: &str, limit: usize) -> OpResult {
+        let view = self.view();
+        let hits = basemind::search::bm25::bm25_search(&view, query, limit);
+        OpResult {
+            hits: hits.len(),
+            total: hits.len(),
+            rows: 0,
+        }
+    }
+
     pub fn grep_candidates(&self, pattern: &str) -> OpResult {
         let needle = Needle::compile(pattern).expect("a literal pattern compiles to a needle");
         let skip = self.view().grep_skip_verdicts(&self.root, &self.grep_entries, &needle);

@@ -1,18 +1,16 @@
-//! Layout and result projection for content-addressed Lance tables.
+//! Liveness projection for content-keyed Lance rows (ADR-0028, ADR-0029): a search over rows keyed
+//! by content keeps only those a view's file map holds, and expands each to the view's live paths.
+//!
+//! Moved out of the deleted shared Lance lane (ADR-0016) for the group vector store; nothing calls it
+//! until that store lands.
+#![cfg_attr(not(test), allow(dead_code))] // ~keep kept for the ADR-0029 group vector store
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 
 const MAX_CANDIDATES: usize = 4096;
 
-/// Model and dimensionality partition shared tables without exposing model strings as paths.
-pub fn shared_directory(group: &Path, model: &str, dim: u16) -> PathBuf {
-    let model = blake3::hash(model.as_bytes());
-    group.join("lance").join(format!("{model}-{dim}"))
-}
-
-/// All effective paths for each hash, for exactly one lane and workspace snapshot.
+/// All effective paths for each content key, for exactly one lane and view.
 #[derive(Default)]
 pub struct LivePaths<'a> {
     by_hash: BTreeMap<Cow<'a, str>, BTreeSet<&'a str>>,
@@ -20,21 +18,7 @@ pub struct LivePaths<'a> {
 }
 
 impl<'a> LivePaths<'a> {
-    #[cfg(feature = "code-search")]
-    pub fn from_code_entries(entries: impl IntoIterator<Item = (&'a str, &'a crate::store::FileEntry)>) -> Self {
-        let mut paths = Self::default();
-        for (path, entry) in entries {
-            paths
-                .by_hash
-                .entry(Cow::Owned(code_content_key(entry)))
-                .or_default()
-                .insert(path);
-        }
-        paths
-    }
-
-    #[cfg(any(feature = "documents", feature = "code-search"))]
-    pub(super) fn from_exact(entries: impl IntoIterator<Item = (&'a str, u32, &'a str)>) -> Self {
+    pub(crate) fn from_exact(entries: impl IntoIterator<Item = (&'a str, u32, &'a str)>) -> Self {
         let mut paths = Self::default();
         for (key, ordinal, path) in entries {
             paths.exact.entry((key, ordinal)).or_default().insert(path);
@@ -42,7 +26,7 @@ impl<'a> LivePaths<'a> {
         paths
     }
 
-    pub(super) fn paths_for_chunk<'b>(&'b self, hash: &'b str, ordinal: u32) -> impl Iterator<Item = &'a str> + 'b {
+    fn paths_for_chunk<'b>(&'b self, hash: &'b str, ordinal: u32) -> impl Iterator<Item = &'a str> + 'b {
         self.exact
             .get(&(hash, ordinal))
             .into_iter()
@@ -50,7 +34,7 @@ impl<'a> LivePaths<'a> {
             .chain(self.paths_for(hash))
     }
 
-    pub(super) fn paths_for(&self, hash: &str) -> impl Iterator<Item = &'a str> + '_ {
+    fn paths_for(&self, hash: &str) -> impl Iterator<Item = &'a str> + '_ {
         self.by_hash
             .get(hash)
             .into_iter()
@@ -66,16 +50,6 @@ impl<'a> FromIterator<(&'a str, &'a str)> for LivePaths<'a> {
         }
         paths
     }
-}
-
-#[cfg(feature = "code-search")]
-pub fn code_content_key(entry: &crate::store::FileEntry) -> String {
-    let mut hash = blake3::Hasher::new();
-    hash.update(&entry.extract_epoch.to_le_bytes());
-    hash.update(&(entry.hash_hex.len() as u64).to_le_bytes());
-    hash.update(entry.hash_hex.as_bytes());
-    hash.update(entry.language.as_bytes());
-    hash.finalize().to_hex().to_string()
 }
 
 /// A ranked row from one scope of a shared table.
@@ -152,15 +126,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shared_identity_isolates_models_and_dimensions() {
-        let group = Path::new("group");
-        let path = shared_directory(group, "../model", 384);
-        assert_eq!(path.parent().unwrap(), group.join("lance"));
-        assert_ne!(path, shared_directory(group, "../model", 768));
-        assert_ne!(path, shared_directory(group, "model", 384));
-    }
-
-    #[test]
     fn retries_with_more_candidates_then_expands_and_orders_live_paths() {
         let paths = LivePaths::from_iter([("live", "z.rs"), ("live", "a.rs"), ("live", "a.rs")]);
         let mut requests = Vec::new();
@@ -221,5 +186,21 @@ mod tests {
         assert_eq!(overlap(100), Some(10));
         assert_eq!(overlap(MAX_CANDIDATES - 5), None);
         assert_eq!(overlap(MAX_CANDIDATES), None);
+    }
+
+    #[test]
+    fn exact_rows_expand_only_to_the_paths_of_their_ordinal() {
+        let paths = LivePaths::from_exact([("key", 0, "a.rs"), ("key", 1, "b.rs")]);
+        let hits = search_live(&paths, 5, |_| {
+            Ok::<_, ()>(vec![ContentHit {
+                hash: "key".into(),
+                chunk_idx: 1,
+                distance: 0.5,
+                value: (),
+            }])
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(hits.iter().map(|hit| hit.path).collect::<Vec<_>>(), ["b.rs"]);
     }
 }

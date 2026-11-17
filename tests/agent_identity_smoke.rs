@@ -76,9 +76,10 @@ fn two_cli_invocations_in_different_workspaces_get_distinct_agent_ids() {
 }
 
 /// The behavior the old doc comment CLAIMED but never delivered: a CLI call in a workspace adopts
-/// the identity the `serve` session in THAT workspace persisted.
+/// the identity the `serve` session in THAT workspace resolved. Resolving it creates no workspace
+/// cache dir: a dir holding only an agent id was left behind for every directory an agent ran in.
 #[test]
-fn a_cli_invocation_shares_the_persisted_id_of_the_serve_session_in_the_same_workspace() {
+fn a_cli_invocation_shares_the_id_of_the_serve_session_in_the_same_workspace() {
     let machine = FakeMachine::new();
     let root = workspace();
 
@@ -88,14 +89,25 @@ fn a_cli_invocation_shares_the_persisted_id_of_the_serve_session_in_the_same_wor
     let from_cli = identity::resolve(&request(&machine, root.path()));
 
     assert_eq!(served.id().as_str(), from_cli.id().as_str());
-    let persisted = std::fs::read_to_string(
-        machine
-            .paths_for(root.path())
-            .workspace_cache_dir
-            .join(identity::AGENT_ID_FILE),
-    )
-    .expect("serve persists the agent id in the workspace cache dir");
-    assert_eq!(persisted.trim(), served.id().as_str());
+    assert!(
+        !machine.paths_for(root.path()).workspace_cache_dir.exists(),
+        "resolving an identity must not create the workspace cache dir"
+    );
+}
+
+/// A workspace whose id an older binary persisted keeps that id.
+#[test]
+fn an_id_an_older_binary_persisted_is_kept() {
+    let machine = FakeMachine::new();
+    let root = workspace();
+    let dir = machine.paths_for(root.path()).workspace_cache_dir;
+    std::fs::create_dir_all(&dir).expect("workspace cache dir");
+    std::fs::write(dir.join(identity::AGENT_ID_FILE), "session-older").expect("persisted id");
+
+    let resolved = identity::resolve(&request(&machine, root.path()));
+
+    assert_eq!(resolved.id().as_str(), "session-older");
+    assert_eq!(resolved.source(), IdentitySource::Workspace);
 }
 
 #[test]
