@@ -42,7 +42,7 @@ use crate::store::{
     CACHE_DIR, LOCK_FILE, LOCK_META_FILE, WORKSPACES_DIR, acquire_lock, cache_root, read_workspace_marker,
     writer_lock_is_held,
 };
-use crate::store_cache_admin::TELEMETRY_FILENAME;
+use crate::store_cache_admin::{TELEMETRY_FILENAME, TELEMETRY_ROTATED_FILENAME};
 use crate::store_gc::{GcError, dir_size};
 use crate::store_layout::AGENT_ID_FILE;
 
@@ -50,7 +50,13 @@ use crate::store_layout::AGENT_ID_FILE;
 /// identity, the telemetry log, and the store lock with its holder sidecar. None of them is index
 /// state, and each is recreated on demand. Any other entry (a subdirectory, a symlink, an unknown
 /// file, an unparsable `workspace.json`) keeps the dir.
-const DISPOSABLE_LEFTOVERS: [&str; 4] = [AGENT_ID_FILE, TELEMETRY_FILENAME, LOCK_FILE, LOCK_META_FILE];
+const DISPOSABLE_LEFTOVERS: [&str; 5] = [
+    AGENT_ID_FILE,
+    TELEMETRY_FILENAME,
+    TELEMETRY_ROTATED_FILENAME,
+    LOCK_FILE,
+    LOCK_META_FILE,
+];
 
 /// How long a marker-less dir of [`DISPOSABLE_LEFTOVERS`] must sit untouched before it is reaped.
 /// A scan creates its dir and takes `.lock` before it writes the marker, and the identity resolver

@@ -55,6 +55,9 @@ impl BlobStorePaths {
 /// [`crate::mcp::telemetry::TELEMETRY_FILENAME`]; duplicated here to avoid a dependency on
 /// the MCP module from the cleanup layer.
 pub(crate) const TELEMETRY_FILENAME: &str = "telemetry.jsonl";
+/// The generation of the telemetry log kept after a rotation (at 8 MiB, `TELEMETRY_ROTATE_BYTES` in
+/// the MCP telemetry module).
+pub(crate) const TELEMETRY_ROTATED_FILENAME: &str = "telemetry.jsonl.1";
 
 /// A clearable component of the `.basemind/` cache directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +133,7 @@ pub struct CacheStats {
     /// which case live git-tool results are cached in RAM and legitimately leave no disk
     /// footprint. It is not, on its own, evidence that the git cache is unused.
     pub git_cache_bytes: u64,
-    /// Byte size of `telemetry.jsonl`.
+    /// Byte size of `telemetry.jsonl` and its rotated generation `telemetry.jsonl.1`.
     pub telemetry_bytes: u64,
     /// Recursive byte size of the precomputed git-history index (`git-history.fjall/`). Added in
     /// 0.16: before that this directory (a sibling of `views/`, often hundreds of MB on a
@@ -211,7 +214,10 @@ pub(crate) fn clear_component_in(
         CacheComponent::Views => remove_dir_if_exists(&basemind_dir.join(VIEWS_DIR))?,
         CacheComponent::Lance => clear_lance(basemind_dir)?,
         CacheComponent::GitCache => remove_dir_if_exists(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?,
-        CacheComponent::Telemetry => remove_file_if_exists(&basemind_dir.join(TELEMETRY_FILENAME))?,
+        CacheComponent::Telemetry => {
+            remove_file_if_exists(&basemind_dir.join(TELEMETRY_FILENAME))?;
+            remove_file_if_exists(&basemind_dir.join(TELEMETRY_ROTATED_FILENAME))?;
+        }
         CacheComponent::All => remove_dir_if_exists(basemind_dir)?,
     }
     Ok(report)
@@ -333,7 +339,8 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
     let views_bytes = dir_size(&basemind_dir.join(VIEWS_DIR))?;
     let lance_bytes = dir_size(&basemind_dir.join("lance"))?;
     let git_cache_bytes = dir_size(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?;
-    let telemetry_bytes = file_size(&basemind_dir.join(TELEMETRY_FILENAME))?;
+    let telemetry_bytes =
+        file_size(&basemind_dir.join(TELEMETRY_FILENAME))? + file_size(&basemind_dir.join(TELEMETRY_ROTATED_FILENAME))?;
     let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
 
     let total_bytes = dir_size(basemind_dir)? + blobs_bytes + memory_vectors_bytes;
