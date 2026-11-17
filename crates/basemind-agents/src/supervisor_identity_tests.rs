@@ -78,9 +78,24 @@ fn assert_escape_refused(escaped: &Escaped) {
     // Placed outside every session and every registered process, for where it is, not merely
     // because a link of its ancestry could not be read: the walk reached init, or on macOS
     // stopped only at launchd (pid 1, root's, which it does not describe).
-    let placed = crate::supervisor_identity::origin(&escaped.supervisor.inner.table(), &escaped.peer);
-    let me = crate::procinfo::info(escaped.peer.id.pid).unwrap();
-    let chain = crate::procinfo::ancestors(&me).unwrap();
+    // Read until the ancestry holds still across the placement: an exiting intermediate
+    // parent can still be reparented while it is read.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (placed, chain, me) = loop {
+        let me = crate::procinfo::info(escaped.peer.id.pid).unwrap();
+        let before = crate::procinfo::ancestors(&me).unwrap();
+        let placed = crate::supervisor_identity::origin(&escaped.supervisor.inner.table(), &escaped.peer);
+        let after = crate::procinfo::ancestors(&me).unwrap();
+        let ids = |chain: &crate::procinfo::Chain| chain.procs.iter().map(|proc| proc.id()).collect::<Vec<_>>();
+        if ids(&before) == ids(&after) && before.complete == after.complete {
+            break (placed, after, me);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the escaped process's ancestry never held still"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     let top = chain.procs.last().unwrap_or(&me);
     let expected = crate::supervisor_identity::Origin::Outside {
         complete: chain.complete,
