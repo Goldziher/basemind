@@ -29,6 +29,7 @@ impl Fixture {
             root: self.basemind_dir.join(BLOBS_DIR),
             schema: crate::extract::SCHEMA_VER,
             gc_state: self.basemind_dir.join(crate::store_gc_budget::GC_STATE_FILE),
+            repos: self._tmp.path().join("repos"),
         }
     }
 }
@@ -902,4 +903,41 @@ fn global_gc_marks_past_a_locked_workspace_holding_a_stale_view() {
 
     assert!(referenced.code.contains(&live));
     assert!(stale_view.join(INDEX_FILE).exists());
+}
+
+/// The per-repository group directories were neither counted nor reaped. Stats report their size and
+/// how many no workspace marker names, and nothing else about the cache changes.
+#[test]
+fn cache_stats_report_the_repository_groups_without_counting_them_in_the_total() {
+    let fx = build_fixture();
+    let before = cache_stats_in(&fx.basemind_dir, &fx.blobs()).expect("stats");
+    let workspace_before = crate::store_cache_admin::dir_size(&fx.basemind_dir).expect("size");
+    let repos = fx.blobs().repos;
+    for (group, bytes) in [("named", 3usize), ("orphan", 5)] {
+        fs::create_dir_all(repos.join(group).join(crate::store::MEMORY_STORE_DIR)).expect("mk group");
+        fs::write(
+            repos.join(group).join(crate::store::MEMORY_STORE_DIR).join("data"),
+            vec![0u8; bytes],
+        )
+        .expect("write");
+    }
+    fs::write(
+        fx.basemind_dir.join(crate::store::WORKSPACE_MARKER_FILE),
+        br#"{"root":"/gone","updated_unix":0,"group":"named"}"#,
+    )
+    .expect("write marker");
+
+    let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs()).expect("stats");
+
+    assert_eq!((stats.repo_groups, stats.repo_groups_unnamed), (2, 1));
+    let measured = crate::store_cache_admin::dir_size(&repos.join("named")).expect("size")
+        + crate::store_cache_admin::dir_size(&repos.join("orphan")).expect("size");
+    assert!(measured >= 8);
+    assert_eq!(stats.repo_groups_bytes, measured);
+    let marker = crate::store_cache_admin::dir_size(&fx.basemind_dir).expect("size") - workspace_before;
+    assert_eq!(
+        stats.total_bytes,
+        before.total_bytes + marker,
+        "only the marker the test wrote grew the total; the groups are not in it"
+    );
 }
