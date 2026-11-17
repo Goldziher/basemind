@@ -633,6 +633,12 @@ impl Store {
         } else {
             None
         };
+        // The journal lost the tail a fsynced file map vouches for: serve, but say a rescan is owed. ~keep
+        if let Some(db) = index_db.as_ref()
+            && db.scan_generation().is_ok_and(|sealed| index.generation > sealed)
+        {
+            index_rebuild_needed = true;
+        }
         let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);
         Ok(Self {
             root: root.to_path_buf(),

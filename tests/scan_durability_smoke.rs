@@ -388,6 +388,22 @@ fn a_scan_into_a_read_only_opened_store_rebuilds_an_index_behind_its_file_map() 
     assert_eq!(settled.index.files.len(), 3);
 }
 
+/// After a power loss the fsynced file map can vouch for a generation the index journal lost. A
+/// read-only open used to serve that index with nothing to say rows were missing until a writer
+/// opened the store; it now reports the rescan owed.
+#[test]
+fn a_read_only_open_of_an_index_behind_its_file_map_reports_a_rescan_owed() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    scanned_store_with_an_index_behind(root);
+
+    let store = Store::open_read_only(root, VIEW_WORKING).expect("open read-only");
+    assert!(store.index_db.is_some(), "the index is still served");
+    assert!(store.rescan_owed(), "with the rescan it owes reported");
+    assert!(store.needs_full_scan());
+}
+
 /// An incremental scan cannot rebuild the index from the paths it was handed, so it runs the full
 /// pass instead of re-indexing one file and sealing over the rest.
 #[test]
