@@ -176,7 +176,7 @@ pub(super) fn lance_visibility(visibility: Visibility) -> &'static str {
 #[cfg(feature = "memory")]
 pub(super) fn memory_namespace(state: &ServerState, visibility: Visibility) -> (u8, &str) {
     let owner: &str = match visibility {
-        Visibility::Individual => &state.agent_id,
+        Visibility::Individual => &state.shared.memory_owner,
         Visibility::Group => "",
     };
     (visibility.vis_byte(), owner)
