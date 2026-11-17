@@ -717,3 +717,42 @@ fn open_wipes_a_store_stamped_by_an_older_basemind() {
         "rows written under the older schema are gone"
     );
 }
+
+/// Every session's Hello writes its agent record. At fjall's 64 MiB default memtable per keyspace
+/// those writes stayed resident in the daemon until a keyspace held 64 MiB: a soak of 12,000
+/// sessions grew the daemon by ~300 bytes each with nothing else growing. Writing past
+/// [`MEMTABLE_BYTES`] (but far below 64 MiB) must rotate and flush the keyspace, after a reopen
+/// too, since fjall keeps the size a keyspace was created with.
+#[test]
+fn agent_writes_flush_at_the_configured_memtable_size() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    drop(CommsStore::open(dir.path()).expect("create store"));
+    let store = CommsStore::open(dir.path()).expect("reopen store");
+    let card = AgentCard {
+        name: "x".repeat(1024),
+        ..AgentCard::default()
+    };
+    let mut written = 0u64;
+    let mut i = 0u64;
+    while written < 2 * MEMTABLE_BYTES {
+        let record = AgentRecord {
+            agent_id: agent_id(&format!("agent-{i}")),
+            card: card.clone(),
+            kind: super::super::model::AgentKind::Other,
+            first_seen: 0,
+            last_seen: 0,
+        };
+        written += rmp_serde::to_vec_named(&record).expect("encode").len() as u64;
+        store.put_agent(&record).expect("put agent");
+        i += 1;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while store.agents.disk_space() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{written} bytes of agent records never left the memtable: the keyspace is not \
+             rotating at {MEMTABLE_BYTES} bytes"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}

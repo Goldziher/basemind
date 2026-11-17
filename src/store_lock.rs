@@ -27,6 +27,8 @@ pub enum LockHolder {
     Scan,
     /// `basemind rescan` — an incremental re-index.
     Rescan,
+    /// The machine daemon (`basemind comms daemon`), the sole writer of every workspace it hosts.
+    Daemon,
     /// GC / cache maintenance or any caller that did not specify a more precise identity.
     Maintenance,
 }
@@ -40,6 +42,7 @@ impl LockHolder {
             LockHolder::Watch => "basemind watch",
             LockHolder::Scan => "basemind scan",
             LockHolder::Rescan => "basemind rescan",
+            LockHolder::Daemon => "basemind comms daemon",
             LockHolder::Maintenance => "a basemind cache/maintenance task",
         }
     }

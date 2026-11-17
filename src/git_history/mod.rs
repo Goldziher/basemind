@@ -29,7 +29,11 @@
 //!
 //! A process that can reach neither keeps `git_history: None` and falls back to the live walk. The
 //! index is a pure accelerator — tools use it only when `last_indexed_head == HEAD` and otherwise
-//! live-walk (reporting `partial: true`), so it can never serve stale or incorrect results.
+//! live-walk (reporting `partial: true`), so it can never serve stale or incorrect results. A build
+//! or append marks the index in progress before it writes a row and clears the mark in the batch
+//! that stamps the new head; while the mark stands the index reports no head, so a run cut off
+//! between two batch commits is rebuilt by the next sync instead of being served with commits
+//! missing from its posting lists.
 //!
 //! ## Partitions
 //!
@@ -74,7 +78,12 @@ use crate::path::RelPath;
 ///
 /// `+6` switched every keyspace to LZ4 at all levels (fjall's default leaves L0/L1 raw and persists the
 /// policy at keyspace creation, so existing stores must be recreated to pick it up).
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 6;
+///
+/// `+7` rebuilds the stored file lists, which changed three ways: a move lists its source as
+/// deleted, no directory is listed as modified, and a merge lists only what it changed against
+/// every parent. An index built before keeps the old lists, and the history of a path read from it
+/// would disagree with the live walk.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 7;
 
 /// LZ4 on data and index blocks at every level; see [`crate::index`]'s `index_keyspace_options`.
 fn keyspace_options() -> KeyspaceCreateOptions {
@@ -195,6 +204,50 @@ pub enum GitHistoryError {
     ForeignHistory { root: PathBuf, workdir: PathBuf },
 }
 
+/// Name prefix of a git-history directory set aside by [`discard_dir`] and not yet deleted.
+const DISCARD_PREFIX: &str = "git-history.fjall.discard-";
+
+/// Delete the database directory `dir` so a crash at any point leaves the whole database or none of
+/// it at `dir`. A half-deleted one fails every later open, which left the history tools on the live
+/// walk for good. Renamed aside first, the rename made durable, then deleted; a deletion that does
+/// not finish is completed by [`sweep_discarded`] on a later open.
+fn discard_dir(dir: &Path) -> Result<(), GitHistoryError> {
+    static SEQUENCE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let aside = dir.with_file_name(format!(
+        "{DISCARD_PREFIX}{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::rename(dir, &aside).map_err(|source| GitHistoryError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    if let Some(parent) = dir.parent()
+        && let Err(error) = crate::store_base::sync_directory(parent)
+    {
+        tracing::warn!(%error, "could not fsync the workspace directory after setting git history aside");
+    }
+    if let Err(error) = std::fs::remove_dir_all(&aside) {
+        tracing::warn!(%error, path = %aside.display(), "git history not fully deleted; the next open retries");
+    }
+    Ok(())
+}
+
+/// Delete what an interrupted [`discard_dir`] left under `basemind_dir`. Best-effort: a leftover
+/// costs disk space only.
+fn sweep_discarded(basemind_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(basemind_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(DISCARD_PREFIX)
+            && let Err(error) = std::fs::remove_dir_all(entry.path())
+        {
+            tracing::warn!(%error, path = %entry.path().display(), "could not delete discarded git history");
+        }
+    }
+}
+
 /// Per-commit metadata stored in `gh_commit_by_ord`. File paths are interned to `path_id` (u32) so
 /// the change edges are not duplicated as full path strings (the key size control on a monorepo).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -273,6 +326,7 @@ impl GitHistoryIndex {
     /// [`GitHistoryError::NewerSchema`]. Returns `Err` if another process holds the Fjall lock —
     /// read-only callers swallow that to `None`.
     pub fn open(basemind_dir: &Path) -> Result<Self, GitHistoryError> {
+        sweep_discarded(basemind_dir);
         let dir = basemind_dir.join(GIT_HISTORY_DIR);
         let mut attempt = 0;
         loop {
@@ -285,6 +339,12 @@ impl GitHistoryIndex {
                 Err(other) => return Err(other),
             }
         }
+    }
+
+    /// Whether the index under `basemind_dir` exists. Only a build creates it: a reader that finds
+    /// none answers as an unbuilt index (history tools live-walk) instead of creating an empty one.
+    pub fn exists(basemind_dir: &Path) -> bool {
+        basemind_dir.join(GIT_HISTORY_DIR).is_dir()
     }
 
     /// A handle backed by an index another process holds (the DAEMON's), reached through
@@ -344,10 +404,7 @@ impl GitHistoryIndex {
         if matches!(on_disk_ver, Some(ver) if ver != GIT_HISTORY_SCHEMA) {
             drop(meta);
             drop(db);
-            std::fs::remove_dir_all(dir).map_err(|source| GitHistoryError::Io {
-                path: dir.to_path_buf(),
-                source,
-            })?;
+            discard_dir(dir)?;
             std::fs::create_dir_all(dir).map_err(|source| GitHistoryError::Io {
                 path: dir.to_path_buf(),
                 source,
@@ -381,8 +438,26 @@ impl GitHistoryIndex {
     /// Drop all data and reset to an empty index at the current schema. Used by `revalidate` when a
     /// history rewrite is detected and by the manual force-rebuild path. Safe because only the
     /// `.basemind/.lock` holder ever opens this DB, so no other process holds a handle.
-    pub fn clear(&self, basemind_dir: &Path) -> Result<(), GitHistoryError> {
-        self.require_local()?.clear(basemind_dir)
+    pub fn clear(&self) -> Result<(), GitHistoryError> {
+        self.require_local()?.clear()
+    }
+
+    /// Record that a build or append for `head` failed at `unix_secs`. Best-effort: a record that
+    /// cannot be written costs one more rebuild.
+    pub(crate) fn record_failed_build(&self, head: &[u8; 20], unix_secs: u64) {
+        if let Some(db) = self.local() {
+            let record = [&head[..], &unix_secs.to_be_bytes()].concat();
+            if let Err(error) = db.meta.insert(keys::META_FAILED_BUILD, record) {
+                tracing::debug!(%error, "could not record a failed git-history build");
+            }
+        }
+    }
+
+    /// When a build or append for `head` last failed, in unix seconds, or `None`.
+    pub(crate) fn failed_build_at(&self, head: &[u8; 20]) -> Option<u64> {
+        let record = self.local()?.meta.get(keys::META_FAILED_BUILD).ok().flatten()?;
+        let (sha, secs) = record.split_at_checked(20)?;
+        (sha == head).then(|| <[u8; 8]>::try_from(secs).ok().map(u64::from_be_bytes))?
     }
 
     /// A batched writer over the underlying Fjall database. Only a local index has one.
@@ -399,7 +474,12 @@ impl GitHistoryIndex {
     /// the raw form is a builder-side detail; the forwarded path uses
     /// [`last_indexed_head_hex`](Self::last_indexed_head_hex).
     pub fn last_indexed_head(&self) -> Option<[u8; 20]> {
-        self.local()?.meta_sha(keys::META_LAST_HEAD)
+        self.local()?.indexed_head()
+    }
+
+    /// Whether a build or append started and never stamped its head. Local only.
+    pub fn build_interrupted(&self) -> bool {
+        self.local().is_some_and(LocalDb::build_in_progress)
     }
 
     /// Last indexed HEAD as a 40-char hex string — the freshness key the MCP tools compare HEAD to.
@@ -407,7 +487,7 @@ impl GitHistoryIndex {
     /// `None`, which fails the freshness check closed (the caller live-walks).
     pub fn last_indexed_head_hex(&self) -> Option<String> {
         match &self.backend {
-            Backend::Local(db) => db.meta_sha(keys::META_LAST_HEAD).map(|s| keys::sha_raw_to_hex(&s)),
+            Backend::Local(db) => db.indexed_head().map(|s| keys::sha_raw_to_hex(&s)),
             Backend::Remote(remote) => remote.indexed_head(),
         }
     }
@@ -432,7 +512,7 @@ impl GitHistoryIndex {
         self.local().map(|db| db.meta_u32(keys::META_COMMIT_COUNT)).unwrap_or(0)
     }
 
-    /// True when nothing has been indexed yet.
+    /// True when nothing has been indexed yet, or a build or append was cut off.
     pub fn is_empty(&self) -> bool {
         self.last_indexed_head_hex().is_none()
     }
@@ -458,9 +538,15 @@ impl GitHistoryIndex {
 }
 
 impl LocalDb {
-    /// Drop all data and reset to an empty index at the current schema.
-    fn clear(&self, basemind_dir: &Path) -> Result<(), GitHistoryError> {
-        let dir = basemind_dir.join(GIT_HISTORY_DIR);
+    /// Drop all data and reset to an empty index at the current schema. `gh_meta` goes first, and the
+    /// journal is synced before the rest: fjall writes a cleared keyspace's empty version durably at
+    /// once but journals the clear itself buffered, and recovery replays a keyspace's journaled writes
+    /// over an empty version. Unsynced, a power loss could bring the head back over postings whose
+    /// clear did reach the disk. Each keyspace is one journaled clear, not a delete per key, so the
+    /// cost does not grow with the index.
+    fn clear(&self) -> Result<(), GitHistoryError> {
+        self.meta.clear()?;
+        self.db.persist(fjall::PersistMode::SyncAll)?;
         for ks in [
             &self.commit_by_ord,
             &self.ord_by_sha,
@@ -469,14 +555,9 @@ impl LocalDb {
             &self.path_to_ords,
             &self.commit_text_by_ord,
             &self.term_to_ords,
-            &self.meta,
         ] {
-            let keys: Vec<_> = ks.iter().filter_map(|g| g.into_inner().ok().map(|(k, _)| k)).collect();
-            for k in keys {
-                ks.remove(k)?;
-            }
+            ks.clear()?;
         }
-        let _ = dir;
         self.meta
             .insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(())
@@ -510,6 +591,19 @@ impl LocalDb {
             .flatten()
             .and_then(|b| keys::parse_u32(&b))
             .unwrap_or(0)
+    }
+
+    /// The stamped head, or `None` while a build or append is in progress or was cut off.
+    fn indexed_head(&self) -> Option<[u8; 20]> {
+        if self.build_in_progress() {
+            return None;
+        }
+        self.meta_sha(keys::META_LAST_HEAD)
+    }
+
+    /// A read error counts as in progress, so the index fails closed.
+    fn build_in_progress(&self) -> bool {
+        self.meta.contains_key(keys::META_BUILD_IN_PROGRESS).unwrap_or(true)
     }
 
     fn meta_sha(&self, key: &[u8]) -> Option<[u8; 20]> {
@@ -611,6 +705,19 @@ pub struct GitHistoryWriter {
 const COMMIT_BATCH: usize = 4096;
 
 impl GitHistoryWriter {
+    /// Mark the index in progress before the first row is staged. Written straight to the journal,
+    /// so it precedes every batch this writer commits: no surviving row can outlive the mark.
+    ///
+    /// The head goes in the same batch: an older binary of the same minor shares this index and
+    /// knows no mark, and would otherwise append from the old head past the rows a cut-off run left.
+    pub fn begin(&mut self) -> Result<(), GitHistoryError> {
+        let mut mark = self.db.db.batch();
+        mark.insert(&self.db.meta, keys::META_BUILD_IN_PROGRESS, [1u8]);
+        mark.remove(&self.db.meta, keys::META_LAST_HEAD);
+        mark.commit()?;
+        Ok(())
+    }
+
     pub fn put_commit_meta(&mut self, ord: u32, meta: &CommitMeta) -> Result<(), GitHistoryError> {
         let sha20 = keys::sha_hex_to_raw(&meta.sha).unwrap_or([0u8; 20]);
         let value = encoding::encode_commit_meta(
@@ -692,6 +799,8 @@ impl GitHistoryWriter {
         meta.insert(&self.db.meta, keys::META_COMMIT_COUNT, commit_count.to_be_bytes());
         meta.insert(&self.db.meta, keys::META_ROOT_SHA, root.to_vec());
         meta.insert(&self.db.meta, keys::META_LAST_HEAD, head.to_vec());
+        meta.remove(&self.db.meta, keys::META_BUILD_IN_PROGRESS);
+        meta.remove(&self.db.meta, keys::META_FAILED_BUILD);
         meta.commit()?;
         self.db.compact()?;
         Ok(())
@@ -754,6 +863,74 @@ mod tests {
     }
 
     #[test]
+    fn open_sweeps_a_directory_an_interrupted_wipe_set_aside() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let aside = dir.path().join(format!("{DISCARD_PREFIX}1-0"));
+        std::fs::create_dir_all(aside.join("journals")).expect("a half-deleted leftover");
+
+        drop(GitHistoryIndex::open(dir.path()).expect("open"));
+
+        assert!(!aside.exists(), "the leftover is deleted on the next open");
+    }
+
+    #[test]
+    fn clear_drops_the_head_with_every_row_and_keeps_the_stamp() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = GitHistoryIndex::open(dir.path()).expect("open");
+        let sha = "11".repeat(20);
+        let sha20 = keys::sha_hex_to_raw(&sha).expect("a valid sha");
+        let mut writer = index.writer().expect("writer");
+        writer.begin().expect("mark the build");
+        let meta = CommitMeta {
+            sha,
+            summary: "c1".to_owned(),
+            author: "t".to_owned(),
+            author_email: "t@e.x".to_owned(),
+            author_time_unix: 0,
+            files: Vec::new(),
+        };
+        writer.put_commit_meta(0, &meta).expect("commit row");
+        writer.put_ord_for_sha(&sha20, 0).expect("sha row");
+        writer.finish_meta(&sha20, &sha20, 1, 0, 1).expect("stamp the head");
+        assert_eq!(index.last_indexed_head(), Some(sha20));
+
+        index.clear().expect("clear");
+
+        assert_eq!(index.last_indexed_head(), None);
+        assert!(!index.build_interrupted());
+        assert_eq!(index.ord_for_sha(&sha20), None);
+        assert_eq!(index.commit_count(), 0);
+        drop(index);
+        assert_eq!(
+            raw_meta(dir.path(), keys::META_SCHEMA_VER),
+            Some(GIT_HISTORY_SCHEMA.to_be_bytes().to_vec())
+        );
+    }
+
+    /// An older patch binary of the same minor shares this index and knows no in-progress mark:
+    /// had the head survived a cut-off append, it would append past the rows the cut left.
+    #[test]
+    fn a_build_in_progress_leaves_no_head_on_disk_for_a_binary_that_ignores_the_mark() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = GitHistoryIndex::open(dir.path()).expect("open");
+        let sha20 = [0x22u8; 20];
+        index
+            .writer()
+            .expect("writer")
+            .finish_meta(&sha20, &sha20, 0, 0, 0)
+            .expect("stamp a head");
+        index.writer().expect("writer").begin().expect("mark an append");
+        drop(index);
+
+        assert_eq!(raw_meta(dir.path(), keys::META_BUILD_IN_PROGRESS), Some(vec![1u8]));
+        assert_eq!(
+            raw_meta(dir.path(), keys::META_LAST_HEAD),
+            None,
+            "no head to append from"
+        );
+    }
+
+    #[test]
     fn open_wipes_an_index_stamped_by_an_older_basemind() {
         let dir = tempfile::tempdir().expect("tempdir");
         stamp_schema_ver(dir.path(), GIT_HISTORY_SCHEMA - 1);
@@ -770,5 +947,11 @@ mod tests {
             None,
             "rows written under the older schema are gone"
         );
+        let leftovers = std::fs::read_dir(dir.path())
+            .expect("read the workspace dir")
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(DISCARD_PREFIX))
+            .count();
+        assert_eq!(leftovers, 0, "the wiped database was set aside and deleted");
     }
 }

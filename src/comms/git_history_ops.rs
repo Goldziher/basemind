@@ -102,6 +102,10 @@ impl Broker {
             GitHistoryError::RootRefused(crate::config::root_guard::refusal_message(&root, refusal))
         })?;
         let dir = crate::git_history::shared_history_basemind_dir(&root);
+        // ~keep Only a sync builds the index; a read of one never built creates nothing.
+        if !matches!(op, GitHistoryOp::Sync) && self.history_lookup(&dir).is_none() && !GitHistoryIndex::exists(&dir) {
+            return Ok(unbuilt_reply(&op));
+        }
         let entry = self.history_entry(&dir).await?;
         entry.touch();
 
@@ -177,6 +181,15 @@ impl crate::git_history::remote::HistoryHost for Broker {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<GitHistoryReply, GitHistoryError>> + Send + '_>>
     {
         Box::pin(self.run_git_history_inproc(root, op))
+    }
+}
+
+/// What an index that was never built answers to a read: no indexed HEAD (the caller live-walks)
+/// and no commits.
+fn unbuilt_reply(op: &GitHistoryOp) -> GitHistoryReply {
+    match op {
+        GitHistoryOp::IndexedHead => GitHistoryReply::IndexedHead(None),
+        _ => GitHistoryReply::Commits(Vec::new()),
     }
 }
 

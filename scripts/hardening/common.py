@@ -10,6 +10,11 @@ test is repeated immediately before any signal, so a process this run did not st
 another session's daemon, is never signalled. (macOS no longer exposes another process's
 environment, so an environment marker cannot be used for this; `BASEMIND_HARDENING_SESSION` is
 still set, for a human reading `ps` output on Linux.)
+
+Windows exposes neither another process's cwd nor its open files without a debugger, so there the
+binary under test is copied into the run root (`Isolation.stage_binary`) and a process belongs to
+the run when its executable lies inside the root, or when it descends from such a process. The
+daemon `serve` spawns re-executes `current_exe()`, so it is anchored the same way.
 """
 
 from __future__ import annotations
@@ -36,6 +41,8 @@ from typing import IO, Any
 SESSION_ENV = "BASEMIND_HARDENING_SESSION"
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
+IS_WINDOWS = sys.platform == "win32"
+BINARY_NAMES = ("basemind", "basemind.exe")
 MIB = 1024 * 1024
 MAX_SOCKET_PATH = 100
 
@@ -63,10 +70,12 @@ def repo_root() -> Path:
 def forbidden_data_homes() -> list[Path]:
     """The real per-user basemind data homes; a run must never resolve to one of them."""
     home = Path.home()
-    return [
+    homes = [
         home / ".local" / "share" / "basemind",
         home / "Library" / "Application Support" / "basemind",
     ]
+    homes += [Path(os.environ[var]) / "basemind" for var in ("APPDATA", "LOCALAPPDATA") if os.environ.get(var)]
+    return homes
 
 
 @dataclass
@@ -82,7 +91,7 @@ class Isolation:
     def __post_init__(self) -> None:
         base = tempfile.gettempdir()
         probe = Path(base).resolve() / "bmh-xxxxxxxx" / "comms" / "g1" / "comms.sock"
-        if len(str(probe)) > MAX_SOCKET_PATH:
+        if not IS_WINDOWS and len(str(probe)) > MAX_SOCKET_PATH:
             base = "/tmp"  # noqa: S108 - a Unix socket path must stay under ~104 bytes
         self.root = Path(tempfile.mkdtemp(prefix="bmh-", dir=base)).resolve()
         self.data_home = self.root / "data"
@@ -101,6 +110,22 @@ class Isolation:
             env.update(extra)
         check_env(env, self)
         return env
+
+    def stage_binary(self, binary: Path) -> Path:
+        """The binary every process of the run is started from.
+
+        On Windows a copy inside the run root (with the DLLs beside it), so that ownership can be
+        decided by executable path; elsewhere `binary` itself.
+        """
+        if not IS_WINDOWS:
+            return binary
+        dest = self.root / "bin"
+        dest.mkdir(exist_ok=True)
+        for dll in binary.parent.glob("*.dll"):
+            shutil.copy2(dll, dest / dll.name)
+        staged = dest / binary.name
+        shutil.copy2(binary, staged)
+        return staged
 
     def cleanup(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
@@ -129,6 +154,8 @@ def check_env(env: dict[str, str], iso: Isolation) -> None:
 
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True) if (IS_MAC or IS_LINUX) else None
 _libproc = ctypes.CDLL("/usr/lib/libproc.dylib") if IS_MAC else None
+if IS_WINDOWS:
+    import winproc  # every entry script puts this directory on sys.path first
 
 # <sys/proc_info.h>: proc_pidinfo flavors and struct offsets.
 _PROC_PIDLISTFDS = 1
@@ -223,6 +250,8 @@ def _open_paths_linux(pid: int) -> list[str]:
 
 def proc_argv(pid: int) -> list[str] | None:
     """argv of a same-user process, or None when it is gone or unreadable."""
+    if IS_WINDOWS:
+        return winproc.argv(pid)
     return _argv_mac(pid) if IS_MAC else _argv_linux(pid) if IS_LINUX else None
 
 
@@ -235,7 +264,9 @@ def proc_open_paths(pid: int) -> list[str]:
 
 
 def all_pids() -> dict[int, int]:
-    """pid -> ppid for every process of this user."""
+    """pid -> ppid for every process of this user (every process on Windows)."""
+    if IS_WINDOWS:
+        return {pid: e.ppid for pid, e in winproc.snapshot().items()}
     out = subprocess.run(
         ["ps", "-U", str(os.getuid()), "-o", "pid=,ppid="],  # noqa: S607 - ps from PATH is intended
         capture_output=True,
@@ -251,11 +282,20 @@ def all_pids() -> dict[int, int]:
 
 
 def _inside(path: str | None, root: Path) -> bool:
-    return bool(path) and (path == str(root) or path.startswith(str(root) + os.sep))
+    if not path:
+        return False
+    if IS_WINDOWS:
+        path, base = os.path.normcase(path), os.path.normcase(str(root))
+    else:
+        base = str(root)
+    return path == base or path.startswith(base + os.sep)
 
 
-def anchored(pid: int, root: Path, binary_names: tuple[str, ...] = ("basemind",)) -> bool:
-    """Whether `pid` has its cwd, or (for a basemind binary) an open file, inside `root`."""
+def anchored(pid: int, root: Path, binary_names: tuple[str, ...] = BINARY_NAMES) -> bool:
+    """Whether `pid` has its cwd, or (for a basemind binary) an open file, inside `root`; on
+    Windows, whether its executable is inside `root` (see `Isolation.stage_binary`)."""
+    if IS_WINDOWS:
+        return _inside(winproc.exe_path(pid), root)
     if _inside(proc_cwd(pid), root):
         return True
     argv = proc_argv(pid) or []
@@ -300,12 +340,15 @@ def role_of(argv: list[str]) -> str:
         return "daemon"
     if args[:1] == ["serve"]:
         return "serve"
-    if argv and Path(argv[0]).name == "basemind":
+    if argv and Path(argv[0]).name in BINARY_NAMES:
         return "cli:" + " ".join(args[:2])
     return "child:" + (Path(argv[0]).name if argv else "?")
 
 
 def pid_alive(pid: int) -> bool:
+    if IS_WINDOWS:
+        # `os.kill(pid, 0)` is TerminateProcess on Windows. ~keep
+        return winproc.alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -320,16 +363,18 @@ def terminate_owned(root: Path, grace: float = 5.0) -> list[int]:
     signalled: list[int] = []
     for pid in owned_processes(root):
         if still_owned(pid, root):
-            with contextlib.suppress(ProcessLookupError):
+            # A pid that exits in between is ProcessLookupError on Unix, a plain OSError on Windows.
+            with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGTERM)
                 signalled.append(pid)
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline and any(pid_alive(p) for p in signalled):
         time.sleep(0.1)
+    hard = getattr(signal, "SIGKILL", signal.SIGTERM)
     for pid in signalled:
         if pid_alive(pid) and still_owned(pid, root):
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+            with contextlib.suppress(OSError):
+                os.kill(pid, hard)
     return signalled
 
 
@@ -460,12 +505,34 @@ def _sample_linux(pid: int) -> ProcSample | None:
     )
 
 
+def _sample_windows(pid: int) -> ProcSample | None:
+    """Working set as `rss`; private bytes (commit charge, what a leak grows) as `footprint`;
+    handles as `fds`. Windows has no cheap virtual-size or wakeup counter: `vsz` is 0."""
+    entry = winproc.snapshot().get(pid)
+    if entry is None:
+        return None
+    s = winproc.sample(pid, entry.threads)
+    if s is None:
+        return None
+    return ProcSample(
+        rss=s.working_set,
+        footprint=s.private,
+        vsz=0,
+        threads=s.threads,
+        fds=s.handles,
+        cpu_s=s.cpu_s,
+        wakeups=None,
+    )
+
+
 def sample_pid(pid: int) -> ProcSample | None:
     """Resource sample of one process, or None when it is gone."""
     if IS_MAC:
         return _sample_mac(pid)
     if IS_LINUX:
         return _sample_linux(pid)
+    if IS_WINDOWS:
+        return _sample_windows(pid)
     return None
 
 
@@ -726,5 +793,6 @@ def install_cleanup(callback: Any) -> None:
     import atexit  # noqa: PLC0415 - local to keep the module import side-effect free
 
     atexit.register(run_once)
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, handler)
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), handler)

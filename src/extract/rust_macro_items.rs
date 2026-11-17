@@ -7,11 +7,13 @@
 //! back to the file's coordinates. Bodies that do not parse cleanly as Rust (`cfg_if!`) contribute
 //! no items, and their calls stay with L2's lexical token-tree match.
 
+use std::time::Instant;
+
 use tree_sitter::{Node, Point, Tree};
 
 use super::l1::{CombinedL1, run_combined};
 use super::{Call, ExtractError, Implementation, Import, Symbol};
-use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser};
+use crate::lang::{LangId, ParseOutcome, parse_timed, parse_timeout, with_parser};
 
 /// Largest macro body re-parsed; a bigger one is left opaque.
 const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -87,11 +89,21 @@ pub(super) struct MacroBodies {
 impl MacroBodies {
     /// Parse the item-position macro bodies under `root`. Empty for every language but Rust.
     pub(super) fn collect(lang: LangId, root: Node, source: &[u8]) -> Result<Self, ExtractError> {
+        Self::collect_until(lang, root, source, Instant::now() + parse_timeout())
+    }
+
+    /// [`Self::collect`] with every body parsed by `deadline`: one parse budget for the file's
+    /// bodies together, so up to [`MAX_BODIES_PER_FILE`] of them cannot each spend a whole one.
+    /// Bodies the deadline leaves unparsed contribute nothing, as a timed-out body does.
+    fn collect_until(lang: LangId, root: Node, source: &[u8], deadline: Instant) -> Result<Self, ExtractError> {
         let mut out = Self::default();
         if lang != "rust" {
             return Ok(out);
         }
-        let mut budget = MAX_BODIES_PER_FILE;
+        let mut budget = Budget {
+            bodies: MAX_BODIES_PER_FILE,
+            deadline,
+        };
         let base = Origin {
             byte: 0,
             point: Point { row: 0, column: 0 },
@@ -166,29 +178,36 @@ impl MacroBodies {
     }
 }
 
+/// What one file may still spend on macro bodies.
+struct Budget {
+    bodies: usize,
+    deadline: Instant,
+}
+
 fn collect(
     lang: LangId,
     root: Node,
     source: &[u8],
     origin: Origin,
     depth: u8,
-    budget: &mut usize,
+    budget: &mut Budget,
     out: &mut Vec<MacroBody>,
 ) -> Result<(), ExtractError> {
     if depth >= MAX_DEPTH {
         return Ok(());
     }
     for body in item_macro_bodies(root, source) {
-        if *budget == 0 {
+        let remaining = budget.deadline.saturating_duration_since(Instant::now());
+        if budget.bodies == 0 || remaining.is_zero() {
             return Ok(());
         }
         let (start, end) = (body.start_byte() + 1, body.end_byte().saturating_sub(1));
         if end <= start || end - start > MAX_BODY_BYTES {
             continue;
         }
-        *budget -= 1;
+        budget.bodies -= 1;
         let text = &source[start..end];
-        let tree = match with_parser(lang, |p| parse_with_default_timeout(p, text))? {
+        let tree = match with_parser(lang, |p| parse_timed(p, text, remaining))? {
             ParseOutcome::Ok(tree) => tree,
             ParseOutcome::Failed | ParseOutcome::TimedOut => continue,
         };
@@ -285,4 +304,26 @@ fn shift_impl(mut i: Implementation, o: Origin) -> Implementation {
     i.start_byte = o.shift_byte(i.start_byte);
     (i.start_row, i.start_col) = o.shift_point(i.start_row, i.start_col);
     i
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// The deadline is the file's, not each body's: once it has passed, no further body is parsed.
+    #[test]
+    fn a_files_macro_bodies_share_one_parse_deadline() {
+        let src = b"cfg_a! { pub fn a() {} }\ncfg_b! { pub fn b() {} }\n";
+        let tree = with_parser("rust", |p| p.parse(src, None))
+            .expect("rust grammar")
+            .expect("parse");
+        let root = tree.root_node();
+        let later = Instant::now() + Duration::from_secs(60);
+        let found = MacroBodies::collect_until("rust", root, src, later).expect("collect");
+        assert_eq!(found.bodies.len(), 2);
+        let spent = MacroBodies::collect_until("rust", root, src, Instant::now()).expect("collect");
+        assert!(spent.bodies.is_empty(), "a spent deadline parses no body");
+    }
 }

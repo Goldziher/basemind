@@ -681,7 +681,7 @@ pub(super) fn truth_join(
             served.insert(hit.key);
             joined.hits.push(MemorySearchHit {
                 key: note.key.clone(),
-                value: note.value.clone(),
+                value: super::memory_ops::preview(&note.value),
                 tags: note.tags.clone(),
                 distance: hit.distance,
             });

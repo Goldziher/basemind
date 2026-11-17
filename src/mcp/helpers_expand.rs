@@ -70,7 +70,7 @@ async fn read_span(
             None,
         ));
     }
-    state.await_cache_ready().await;
+    // Only the store's file map is consulted: a span never waits for the in-RAM map to build.
     let file = indexed_file(state, &*state.shared.store.read().await, "code_read", path)?;
     let span = blocking(|| read_lines(&file, line, end_line))
         .map_err(|_| freshness::unloadable("code_read", path, Unloadable::Gone, 0))?;

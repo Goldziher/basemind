@@ -107,7 +107,10 @@ fn assert_incremental_equals_full(case: &Case<'_>) {
         .collect();
     let (dir, mut store) = scanned(&files);
     if store.lookup(case.grammar_probe).is_none() {
-        eprintln!("grammar for {} unavailable here - skipping", case.grammar_probe);
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+            &format!("the grammar for {} is unavailable", case.grammar_probe),
+        );
         return;
     }
     let rows_before = rows(&store);

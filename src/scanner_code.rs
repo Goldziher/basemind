@@ -14,6 +14,8 @@
 
 #![cfg(feature = "code-search")]
 
+use std::sync::atomic::Ordering;
+
 use anyhow::Result;
 
 use crate::chunk::{ChunkOptions, CodeChunkBlob, chunk_file};
@@ -105,9 +107,9 @@ fn bm25_batch_from_chunks(
 /// match — `balanced` and `multilingual` share dim 768, so a dim-only check would falsely reuse
 /// stale-model vectors across that switch — and the blob must actually carry one embedding per chunk.
 /// Mirrors the documents tier's `scanner_docs::cached_doc_is_reusable`.
-fn code_cache_is_reusable(blob: &CodeChunkBlob, dim: u16, preset: &str) -> bool {
+fn code_cache_is_reusable(blob: &CodeChunkBlob, dim: u16, model_key: &str) -> bool {
     blob.embedding_dim == dim
-        && blob.embedding_model == crate::embeddings::model_key(preset)
+        && blob.embedding_model == model_key
         && !blob.chunks.is_empty()
         && blob.embeddings.len() == blob.chunks.len()
 }
@@ -121,19 +123,30 @@ fn chunk_blob_is_current(blob: &CodeChunkBlob, digest: &str, lang: &str) -> bool
         && blob.chunks.first().is_none_or(|c| c.lang == lang)
 }
 
-/// Adopt a legacy (digest-less) sidecar under the current settings by writing it back stamped, so a
-/// later config change is detected against it. Costs one sidecar write per legacy file, no re-embed.
-fn stamp_legacy_digest(
+/// True when a cached chunk sidecar was cut from an outline of an older extract epoch (or predates
+/// the field), so its symbol ranges may no longer match the current outline.
+fn chunk_blob_predates_epoch(blob: &CodeChunkBlob) -> bool {
+    blob.extract_epoch < crate::extract::EXTRACT_EPOCH
+}
+
+/// Adopt a sidecar that is missing its digest (legacy) or carries an older extract epoch whose chunks
+/// re-chunk identically, by writing it back stamped, so a later config or epoch change is detected
+/// against it and the next scan does not re-check it. Costs one sidecar write per such file, no
+/// re-embed.
+fn stamp_legacy_fields(
     store: &Store,
     rel: &str,
     hash_hex: &str,
     mut blob: CodeChunkBlob,
     digest: &str,
 ) -> CodeChunkBlob {
-    if blob.config_digest.is_empty() {
-        blob.config_digest = digest.to_string();
+    if blob.config_digest.is_empty() || chunk_blob_predates_epoch(&blob) {
+        if blob.config_digest.is_empty() {
+            blob.config_digest = digest.to_string();
+        }
+        blob.extract_epoch = blob.extract_epoch.max(crate::extract::EXTRACT_EPOCH);
         if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
-            tracing::warn!(rel, ?error, "stamp code-chunk sidecar with config digest failed");
+            tracing::warn!(rel, ?error, "stamp code-chunk sidecar failed");
         }
     }
     blob
@@ -143,7 +156,8 @@ fn stamp_legacy_digest(
 /// already exists (the embedding cache); otherwise chunks, embeds in bulk, and writes the blob.
 /// Returns `Ok(None)` when the file yields no chunks. Never opens LanceDB — the write is deferred.
 /// `refresh` marks outlines re-extracted for a newer `EXTRACT_EPOCH`: a sidecar chunked from the old
-/// outline is reused only when re-chunking gives the same chunks.
+/// outline, or one whose own stamp predates the epoch, is reused only when re-chunking gives the same
+/// chunks.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn chunk_and_embed(
     store: &Store,
@@ -169,26 +183,29 @@ pub(crate) fn chunk_and_embed(
         .ok()
         .flatten()
         .filter(|blob| chunk_blob_is_current(blob, digest, &l1.language))
-        .filter(|blob| !refresh || blob.chunks == chunk_file(rel, hash_hex, l1, l2, bytes, opts))
-        .map(|blob| stamp_legacy_digest(store, rel, hash_hex, blob, digest));
+        .filter(|blob| {
+            !(refresh || chunk_blob_predates_epoch(blob))
+                || blob.chunks == chunk_file(rel, hash_hex, l1, l2, bytes, opts)
+        })
+        .map(|blob| stamp_legacy_fields(store, rel, hash_hex, blob, digest));
 
     if !embed {
         let chunks = match cached {
             Some(blob) => blob.chunks,
             None => {
-                let chunks = chunk_file(rel, hash_hex, l1, l2, bytes, opts);
                 let blob = CodeChunkBlob {
                     config_digest: digest.to_string(),
                     schema_ver: SCHEMA_VER,
+                    extract_epoch: crate::extract::EXTRACT_EPOCH,
                     embedding_dim: 0,
                     embedding_model: String::new(),
-                    chunks: chunks.clone(),
+                    chunks: chunk_file(rel, hash_hex, l1, l2, bytes, opts),
                     embeddings: Vec::new(),
                 };
                 if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
                     tracing::warn!(rel, ?error, "write code-chunk sidecar (chunk-only) failed");
                 }
-                chunks
+                blob.chunks
             }
         };
         if chunks.is_empty() {
@@ -229,7 +246,7 @@ pub(crate) fn chunk_and_embed(
     };
 
     if let Some(blob) = &cached
-        && code_cache_is_reusable(blob, dim, &config.documents.embedding_preset)
+        && code_cache_is_reusable(blob, dim, &filters.model_key)
     {
         let over_cap = over_chunk_cap(rel, blob.chunks.len(), cfg);
         return Ok(Some(PendingCodeBatch {
@@ -249,6 +266,7 @@ pub(crate) fn chunk_and_embed(
         let blob = CodeChunkBlob {
             config_digest: digest.to_string(),
             schema_ver: SCHEMA_VER,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: 0,
             embedding_model: String::new(),
             chunks: Vec::new(),
@@ -263,6 +281,7 @@ pub(crate) fn chunk_and_embed(
         let blob = CodeChunkBlob {
             config_digest: digest.to_string(),
             schema_ver: SCHEMA_VER,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: 0,
             embedding_model: String::new(),
             chunks,
@@ -278,6 +297,9 @@ pub(crate) fn chunk_and_embed(
             bm25: Vec::new(),
         }));
     }
+    if filters.code_embed_failed.load(Ordering::Relaxed) {
+        return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
+    }
     let texts: Vec<&str> = chunks.iter().map(|c| c.searchable_text.as_str()).collect();
     crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
     let embeddings = match embedder.embed_batch(&spec, &texts) {
@@ -292,7 +314,13 @@ pub(crate) fn chunk_and_embed(
             return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
         Err(error) => {
-            tracing::warn!(rel, %error, "embed code chunks failed; indexing BM25 keyword lane only");
+            if !filters.code_embed_failed.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    rel,
+                    %error,
+                    "embed code chunks failed; indexing the BM25 keyword lane only for the rest of this scan"
+                );
+            }
             return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks, cfg));
         }
     };
@@ -300,8 +328,9 @@ pub(crate) fn chunk_and_embed(
     let blob = CodeChunkBlob {
         config_digest: digest.to_string(),
         schema_ver: SCHEMA_VER,
+        extract_epoch: crate::extract::EXTRACT_EPOCH,
         embedding_dim: dim,
-        embedding_model: crate::embeddings::model_key(&config.documents.embedding_preset).into_owned(),
+        embedding_model: filters.model_key.clone(),
         chunks,
         embeddings,
     };
@@ -446,6 +475,7 @@ mod tests {
         CodeChunkBlob {
             config_digest: String::new(),
             schema_ver: 0,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: dim,
             embedding_model: model.to_string(),
             chunks: vec![chunk("h:0", "alpha")],
@@ -453,41 +483,47 @@ mod tests {
         }
     }
 
+    /// The model key the scan stamps for `balanced` (`embeddings::model_key`, out of this layer's
+    /// reach) and the one another model under that name would have.
+    const BALANCED: &str = "balanced@0123456789ab";
+    const REMAPPED: &str = "balanced@ba9876543210";
+
     #[test]
     fn code_cache_reuse_requires_matching_dim_and_model() {
-        let blob = embedded_blob(&crate::embeddings::model_key("balanced"), 768);
-        assert!(code_cache_is_reusable(&blob, 768, "balanced"));
+        let blob = embedded_blob(BALANCED, 768);
+        assert!(code_cache_is_reusable(&blob, 768, BALANCED));
         assert!(
-            !code_cache_is_reusable(&embedded_blob("balanced", 768), 768, "balanced"),
+            !code_cache_is_reusable(&embedded_blob("balanced", 768), 768, BALANCED),
             "a blob stamped with the bare name predates the model identity and is re-embedded"
         );
         assert!(
-            !code_cache_is_reusable(&embedded_blob("balanced@000000000000", 768), 768, "balanced"),
+            !code_cache_is_reusable(&embedded_blob(REMAPPED, 768), 768, BALANCED),
             "another model under the same preset name must miss"
         );
         assert!(
-            !code_cache_is_reusable(&blob, 768, "multilingual"),
+            !code_cache_is_reusable(&blob, 768, "multilingual@0123456789ab"),
             "same-dim different-model must miss and force a re-embed"
         );
-        assert!(!code_cache_is_reusable(&blob, 384, "balanced"));
-        assert!(!code_cache_is_reusable(&embedded_blob("", 768), 768, "balanced"));
+        assert!(!code_cache_is_reusable(&blob, 384, BALANCED));
+        assert!(!code_cache_is_reusable(&embedded_blob("", 768), 768, BALANCED));
     }
 
     #[test]
     fn code_cache_reuse_rejects_chunkless_or_unembedded_blob() {
-        let mut blob = embedded_blob(&crate::embeddings::model_key("balanced"), 768);
+        let mut blob = embedded_blob(BALANCED, 768);
         blob.chunks.clear();
         blob.embeddings.clear();
-        assert!(!code_cache_is_reusable(&blob, 768, "balanced"));
+        assert!(!code_cache_is_reusable(&blob, 768, BALANCED));
         let chunk_only = CodeChunkBlob {
             config_digest: String::new(),
             schema_ver: 0,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: 768,
-            embedding_model: "balanced".to_string(),
+            embedding_model: BALANCED.to_string(),
             chunks: vec![chunk("h:0", "alpha")],
             embeddings: Vec::new(),
         };
-        assert!(!code_cache_is_reusable(&chunk_only, 768, "balanced"));
+        assert!(!code_cache_is_reusable(&chunk_only, 768, BALANCED));
     }
 
     #[test]
@@ -585,5 +621,59 @@ mod tests {
             !chunk_blob_is_current(&blob, "d1", "python"),
             "built for another grammar"
         );
+    }
+
+    /// A model that cannot load fails the first file's embedding; the rest of the pass goes to the
+    /// keyword lane without asking it again.
+    #[test]
+    fn a_failed_embedder_is_tried_once_per_pass() {
+        use std::sync::atomic::AtomicUsize;
+
+        use crate::scan_retrieval::{Embedder, RetrievalError};
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        struct Unloadable;
+        impl Embedder for Unloadable {
+            fn dim(&self, _spec: &EmbedderSpec<'_>) -> Result<u16, RetrievalError> {
+                Ok(768)
+            }
+            fn embed_batch(&self, _spec: &EmbedderSpec<'_>, _texts: &[&str]) -> Result<Vec<Vec<f32>>, RetrievalError> {
+                CALLS.fetch_add(1, Ordering::SeqCst);
+                Err(RetrievalError("model failed to load".to_string()))
+            }
+        }
+        static UNLOADABLE: Unloadable = Unloadable;
+
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
+        let mut config = crate::config::default_for_root(std::path::Path::new("."));
+        config.code_search.embed = true;
+        let mut filters = Filters::build(&config, Vec::new()).unwrap();
+        filters.retrieval.embedder = &UNLOADABLE;
+        for (i, src) in ["pub fn alpha() -> u32 { 1 }\n", "pub fn beta() -> u32 { 2 }\n"]
+            .iter()
+            .enumerate()
+        {
+            let (l1, l2) = crate::extract::extract_l1_l2("rust", src.as_bytes(), false).expect("extract");
+            let hash = format!("{i:064x}");
+            let batch = chunk_and_embed(
+                &store,
+                &format!("src/f{i}.rs"),
+                src.as_bytes(),
+                &l1,
+                l2.as_ref(),
+                &hash,
+                &config,
+                &filters,
+                EmbedMode::Inline,
+                false,
+            )
+            .expect("chunk")
+            .expect("a file with a function has chunks");
+            assert_eq!(batch.embedding_dim, 0, "keyword lane only");
+            assert!(!batch.bm25.is_empty());
+        }
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
     }
 }

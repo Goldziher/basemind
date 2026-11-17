@@ -60,11 +60,17 @@ pub(super) fn open_index_for_writer(
     Ok((index_db, index_rebuild_needed || index.rebuild_pending))
 }
 
-/// Remove the file map of a view written for an earlier blob store layout, and the index built
-/// from it: the index is of the current schema, so nothing else would empty it, and rows of files
-/// deleted since would outlive the map that knew of them. The caller holds the workspace lock.
-pub(super) fn discard_view_of_a_stale_layout(view_dir: &Path) -> Result<(), StoreError> {
-    super::wipe_view(view_dir)?;
+/// Remove the file map of a view written for an earlier blob store layout, or one of this version
+/// that does not decode, and the index built from it: the index is of the current schema, so
+/// nothing else would empty it, and rows of files deleted since would outlive the map that knew of
+/// them. A map whose version cannot be read (`why`) is set aside instead of deleted. The caller
+/// holds the workspace lock.
+pub(super) fn discard_view_of_a_stale_layout(view_dir: &Path, why: &StoreError) -> Result<(), StoreError> {
+    if matches!(why, StoreError::UnreadableFileMap { .. }) {
+        super::file_map::set_aside_unreadable_map(view_dir)?;
+    } else {
+        super::wipe_view(view_dir)?;
+    }
     if view_dir.join(crate::index::INDEX_DIR).exists() {
         crate::index::durability::discard_index(view_dir)?;
     }
@@ -111,7 +117,9 @@ impl Store {
         Ok(())
     }
 
-    /// Whether this store was opened holding the workspace lock, or has taken it since.
+    /// Whether this store was opened holding the workspace lock, or has taken it since: only then
+    /// may this process create or rebuild the workspace's vector store.
+    #[cfg(any(test, feature = "code-search"))]
     pub(crate) fn holds_writer_lock(&self) -> bool {
         self._lock.is_some()
     }
@@ -129,27 +137,56 @@ impl Store {
             || (self.layered_read.is_none() && crate::scan_evidence::blobs_need_verifying(&self.basemind_dir))
     }
 
-    /// Open, for the scan about to write into this store, the index a read-only open left alone
-    /// for being of an older schema. This is where that index is replaced: the same recovery a
-    /// writer open takes, file map emptied and written at once. A no-op for every other store.
+    /// Take the workspace lock for a scan into a store opened without it, and keep it. Refused with
+    /// [`StoreError::Locked`] while another process holds it: a scan in place beside that writer
+    /// raced it on the file map, and through a store with no index handle recorded files in the map
+    /// whose rows it never wrote. Returns whether it took the lock, which a store already holding it
+    /// does not.
+    pub(crate) fn take_writer_lock(&mut self) -> Result<bool, StoreError> {
+        if self._lock.is_some() {
+            return Ok(false);
+        }
+        self._lock = Some(super::acquire_lock_as(&self.basemind_dir, super::LockHolder::Rescan)?);
+        Ok(true)
+    }
+
+    /// Open, for the scan about to write into this store, the index a read-only open did not: one of
+    /// an older schema, one another writer held, or one beside a file map of another schema or blob
+    /// layout. The file map is read again under the lock, since the one loaded at open may be an
+    /// earlier writer's, and gets the recovery a writer open gives it, written at once. A no-op for
+    /// a store that has an index handle or reads a layered base.
     ///
     /// The recovery wipes and rewrites, so it runs under the workspace lock a writer open holds.
     /// A store opened read-only has none: it is taken here and kept, and the scan is refused with
     /// [`StoreError::Locked`] while another process holds it.
     pub(crate) fn open_index_owed_to_scan(&mut self) -> Result<(), StoreError> {
-        if self.index_db.is_some() || !self.index_rebuild_needed || self.layered_read.is_some() {
+        if self.index_db.is_some() || self.layered_read.is_some() {
             return Ok(());
         }
-        if self._lock.is_none() {
-            self._lock = Some(super::acquire_lock_as(&self.basemind_dir, super::LockHolder::Rescan)?);
-        }
-        if matches!(
-            super::read_index(&self.view_dir),
-            Err(StoreError::StaleBlobLayout { .. })
-        ) {
-            discard_view_of_a_stale_layout(&self.view_dir)?;
-        }
-        let (index_db, _) = open_index_for_writer(&self.root, &self.view, &self.view_dir, &mut self.index)?;
+        self.take_writer_lock()?;
+        self.ensure_dirs()?;
+        let mut index = match super::read_index(&self.view_dir) {
+            Ok(Some(index)) => index,
+            Ok(None) => Index::empty(),
+            Err(StoreError::SchemaMismatch { .. }) => {
+                self.reset_stale_schema = true;
+                super::wipe_view(&self.view_dir)?;
+                Index::empty()
+            }
+            Err(
+                error @ (StoreError::StaleBlobLayout { .. }
+                | StoreError::Decode(_)
+                | StoreError::UnreadableFileMap { .. }),
+            ) => {
+                self.reset_stale_schema = true;
+                discard_view_of_a_stale_layout(&self.view_dir, &error)?;
+                Index::empty()
+            }
+            Err(error) => return Err(error),
+        };
+        let (index_db, rebuild_needed) = open_index_for_writer(&self.root, &self.view, &self.view_dir, &mut index)?;
+        self.index = index;
+        self.index_rebuild_needed |= rebuild_needed;
         self.hash_refs = HashRefs::of(&self.index.files);
         self.index_db = Some(index_db);
         self.flush()

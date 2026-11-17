@@ -40,6 +40,17 @@ impl DocumentSink for DocumentLane {
         process_doc(root, rel, filters, store, config, embed)
     }
 
+    fn embedder_ready(&self, config: &Config) -> bool {
+        crate::extract::doc::text::document_embedder_ready(
+            &config.documents.embedding_preset,
+            config
+                .resources
+                .effective_embed_threads(config.documents.embed_max_threads),
+            config.resources.embed_batch_size,
+            config.resources.onnx_provider,
+        )
+    }
+
     fn abandoned_extractions(&self) -> usize {
         crate::extract::doc_guard::abandoned_extractions()
     }
@@ -172,6 +183,9 @@ fn process_doc(
         );
         return FileResult::bare(rel.to_string(), FileStatus::SkippedTooLarge { size: size_bytes });
     }
+    // xberg reads the file itself; holding this copy through the extraction would double the
+    // document's footprint for nothing.
+    drop(bytes);
 
     // Both bounds, in the order that makes them complementary: take a concurrency slot first so at ~keep
     // most `max_concurrent_documents` extractions can ever overlap, then serialise through the ~keep
@@ -187,6 +201,7 @@ fn process_doc(
         rel,
         &abs,
         &hash,
+        (size_bytes, mtime),
         &mime_type,
         &config.documents,
         &config.resources,

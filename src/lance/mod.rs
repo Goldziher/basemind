@@ -135,7 +135,7 @@ fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::stor
 /// Table-layout version of every LanceDB store (the memory vectors, the workspace vector store and
 /// the document retrieval store), recorded in `meta.json` beside the model and dimension.
 ///
-/// Independent of the release minor (ADR-0035): a minor that changes no table leaves the stores,
+/// Independent of the release minor (ADR-0037): a minor that changes no table leaves the stores,
 /// and the memory vectors in them, in place. Stale rows are kept out by the keys, not by a wipe: a
 /// store directory is named by its model and dimension, a document's `doc_key` hashes the blob
 /// schema, and a memory row is checked against its note's `updated_at`. Bump it when a table's
@@ -323,7 +323,58 @@ impl LanceStore {
             write_meta(&meta_path, &expected)?;
         }
         ensure_store_id(dir)?;
+        Self::connect(dir, dim, &expected.embedding_model, tables)
+    }
 
+    /// Open the store at `dir` for reading only, for a caller that does not hold the workspace
+    /// lock: it never wipes, creates or writes. A store that is absent, of another dimension, model
+    /// or schema, or of a newer basemind is refused with the reason, and left as it is: wiping it
+    /// here destroyed the writer's tables, and a writer and a reader of different presets then wiped
+    /// each other on every search.
+    pub fn open_existing(dir: &Path, dim: u16, embedding_model: &str) -> Result<Self> {
+        let meta_path = dir.join(META_FILE);
+        if !meta_path.exists() {
+            return Err(anyhow!(
+                "no vector store has been built at {} yet; run `basemind scan`",
+                dir.display()
+            ));
+        }
+        // Held while the check runs and the connection opens: a writer's wipe waits on it. ~keep
+        let _opening = lock_open(dir, OPEN_LOCK_WAIT)?;
+        let bytes = std::fs::read(&meta_path).with_context(|| format!("read {}", meta_path.display()))?;
+        if let Ok(MetaVersion { schema_ver }) = serde_json::from_slice(&bytes)
+            && schema_ver > VECTOR_STORE_VER
+        {
+            return Err(anyhow!(
+                "the vector store at {} was written by a newer basemind (schema {schema_ver}); this binary \
+                 understands {VECTOR_STORE_VER}: upgrade basemind",
+                dir.display()
+            ));
+        }
+        let actual: LanceMeta = serde_json::from_slice(&bytes)
+            .with_context(|| format!("unreadable {}; `basemind scan` rebuilds it", meta_path.display()))?;
+        let model = crate::embeddings::model_key(embedding_model);
+        if (actual.dim, actual.embedding_model.as_str(), actual.schema_ver) != (dim, model.as_ref(), VECTOR_STORE_VER) {
+            return Err(anyhow!(
+                "the vector store at {} was built for {} ({} dimensions, schema {}), and this session \
+                 embeds with {model} ({dim} dimensions, schema {VECTOR_STORE_VER}): search with \
+                 the preset the scan used, or run `basemind scan` with this one",
+                dir.display(),
+                actual.embedding_model,
+                actual.dim,
+                actual.schema_ver
+            ));
+        }
+        Self::connect(dir, dim, &model, &[])
+    }
+
+    /// Connect to the store at `dir` of model `model_key`, creating those of `tables` it lacks.
+    fn connect(
+        dir: &Path,
+        dim: u16,
+        model_key: &str,
+        tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
+    ) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -345,7 +396,7 @@ impl LanceStore {
                 runtime: Some(runtime),
                 connection,
                 dim,
-                embedding_model: expected.embedding_model.clone(),
+                embedding_model: model_key.to_string(),
                 dir: dir.to_path_buf(),
                 commits: std::sync::Mutex::new(std::collections::HashMap::new()),
             }),

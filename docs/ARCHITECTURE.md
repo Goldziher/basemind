@@ -207,7 +207,7 @@ src/
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer; the key is the tool name
 │   └── budget.rs, toon.rs, lean.rs, lenient.rs, notifications.rs,
 │       completions.rs, prompts.rs, tokens.rs, background.rs, daemon_forward.rs,
-│       map_fingerprint.rs, identity.rs — response budgeting, TOON/lean output
+│       identity.rs — response budgeting, TOON/lean output
 │       shaping, request leniency, daemon-forward plumbing for Seam B
 ├── stdio_relay.rs          — protocol-aware stdio relay behind `basemind serve`; survives a
 │                             daemon replacement without closing the host's pipes
@@ -553,15 +553,32 @@ hourly in the daemon, and on `basemind cache gc`. There is no MCP tool for it: a
 without racing its own rescans. The size-budget enforcer and the last
 sweep's health (`gc-state.json`, shown as `last_gc` by `cache stats`) are in `src/store_gc_budget.rs`.
 Budget eviction never touches a locked, most-recently-used or recently built workspace (even over
-budget, which is reported instead); the rules live in `src/store_gc_protect.rs`.
+budget, which is reported instead); the rules live in `src/store_gc_protect.rs`. The collector heals
+nothing: a view of an older schema or blob layout, or one whose file map does not decode, has no vote
+in the sweep and is passed over without the workspace lock, never removed, and its next writer open
+rebuilds it. An older install may still use such a view, but the view outlives its blobs: the sweep of
+superseded namespaces reaps that install's blobs by age, so it re-extracts them on its next scan.
+
+Before eviction or the orphan reaper removes a workspace, each view whose index still holds the notes
+keyspace of a release before 0.30 has its notes moved to the group store by a writer open under the
+workspace lock (judged by the index, not by the file map's version). The group is the one
+`workspace.json` records (`group`, written by the first open of a current version), so the notes of a
+deleted linked worktree reach its clone's group; a workspace whose notes cannot be moved is kept and
+reported (`legacy_memory`, `kept_unverifiable`). The reaper takes a root for deleted only on a
+definite "not found": a root it may not stat, or a stale mount, is kept. `telemetry.jsonl` is
+rotated to `telemetry.jsonl.1` at 8 MiB, keeping one generation. The per-repository group directories (`repos/`) are
+never collected; `cache stats` reports their size and how many no workspace marker names.
 
 Two installed versions share the cache, and the older one must leave the newer one's data alone. A
 namespace of a blob schema newer than the binary's is not counted towards the budget that binary
 enforces (it could never free those bytes, and would evict a workspace every cycle to make up for
 them) and is never swept. A view whose file map a newer version wrote is never evicted (reported as
-`newer_version`), never healed away as damaged, and has no vote in the sweep of an older namespace,
-which it cannot reference. A file map's version is read on its own before the rest of it, so a newer
-map the binary cannot decode still reads as newer. The sweep of superseded namespaces needs no live
+`newer_version`), never removed as damaged, and has no vote in the sweep of an older namespace,
+which it cannot reference. A file map's version fields (`schema_ver`, `blob_layout`) are read on their
+own before the rest of it, so a newer map the binary cannot decode still reads as newer, and eviction
+treats a newer blob layout as a newer view. A map that does not decode is rebuilt by a writer open
+only when those fields read as this binary's; one whose fields cannot be read at all is renamed aside
+(`index.msgpack.unreadable-<time>`), never deleted, and a read-only open refuses both. The sweep of superseded namespaces needs no live
 set and runs even when the current namespace cannot be swept.
 
 A file map also records the layout of the blob store it was written for (`blob_layout`; `1` is
@@ -574,10 +591,16 @@ Blobs are written to a temporary file and renamed, without an fsync; the file ma
 the Fjall index sealed the same generation. So after a power loss a file map can name a blob whose
 bytes never reached the disk. Two records make the next scan a full one that decodes each combined
 and document blob instead of trusting it for existing (`verify-blobs` in the workspace cache
-directory): the breadcrumb of a scan that never finished, and the marker of a daemon
-(`hosting/<pid>`, holding the boot it was started in and its process start) left from an earlier boot
-of the machine. The second asks every workspace at once, since the marker does not say which ones its
-daemon served, and the markers go only after every request is written. A daemon killed while the
+directory): the breadcrumb of a scan that never finished, and a hosting marker (`hosting/<pid>`,
+holding the boot it was started in and its process start) left from an earlier boot of the machine.
+The daemon and `basemind watch` hold a hosting marker for their lifetime, and every incremental pass
+for its duration (one marker per process, however many hold it). The marker asks every workspace at
+once, since it does not say which ones its process served, and the markers go only after every
+request is written. On Linux a full pass drops its breadcrumb, and the last holder drops its hosting
+marker, only after a `syncfs` of the blob filesystem; a full pass in a process that holds a hosting
+marker leaves the sync to the marker, so none runs under a host's store lock. macOS and Windows have
+no such sync: there a finished pass leaves no evidence, and its blobs are trusted for existing after
+a power loss. A daemon killed while the
 machine stayed up tore nothing (a blob is renamed into place whole) and asks for nothing; a pid alone
 is not trusted, because after a restart another process has the number. The boot is the platform's
 per-boot id (Linux `boot_id`, macOS `kern.bootsessionuuid`, Windows `BootId`), not a boot time a
@@ -598,7 +621,21 @@ the view also records which store its rows went to (`vector-store-id`; the store
 rows again, and so does the pass that verifies blobs.
 
 An open that does not hold the workspace lock writes nothing: it stamps no version in the index or
-in the notes store, flushes no journal and creates no placeholder.
+in the notes store, flushes no journal and creates no placeholder. The vector store too: a search in
+a process without the lock opens `lance/` read-only and reports the lane unavailable, naming why,
+when the store is absent, built for another embedding model or dimension, or a newer basemind's;
+only the lock holder creates, wipes or rebuilds it. A vector debt whose cached blob exists but does
+not decode stays owed, and its file is sent to be extracted again. A scan into such a store takes the
+lock first and keeps it, or is refused while another process holds it (an `isError` result naming the
+holder; exit `3` from the CLI), and then opens the code index as a writer would.
+
+A pass that writes index rows records in the index that it is open (`rows_unlisted`) before its first
+row; only the flush that ends a pass that was not cancelled clears it, in the same synced batch as its
+seal. A pass that finds the record open, or none at all, removes the rows of every path no file map
+lists (a full pass after its drive, an incremental pass before it): a pass killed between committing
+rows and writing its file map otherwise left rows of files that may no longer exist, which no scan
+revisits. Emptying the code or git-history index in place clears and syncs its metadata keyspace
+before the others, so a power loss cannot bring back a generation or a head over emptied rows.
 
 ## MCP surface
 
@@ -719,6 +756,13 @@ commit walk behind `path` + `symbol`, and full-text `query` / `author` search) a
   while one that diverges leaves the index untouched (`RebuildOutcome::Skipped`) and answers by live
   walk, so switching worktrees never wipes and rebuilds the history. The first build may come from any
   worktree. Index sync runs on a dedicated two-thread pool.
+- A build or append marks the index in progress and removes its head in one batch before its first
+  row; the batch that stamps the new head clears the mark. A marked index has no head, so even an
+  older binary of the same minor rebuilds it rather than appending past a cut-off run. A linked
+  worktree may rebuild an interrupted index, which the main checkout may then rebuild again for its
+  own head: once per interruption. A build or append that fails records its HEAD, and for an hour the
+  next sync at that HEAD leaves the index to the live walk instead of rebuilding the whole history
+  only to fail at the same commit.
 
 ## Resource governance
 
@@ -1099,7 +1143,7 @@ Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key` F
 `(scope, vis_byte, owner, key)` and the LanceDB memory table has `agent_id` + `visibility` columns.
 Group memory (`visibility=group`, default, `owner=""`) is shared across agents in a repo; individual
 memory (`visibility=individual`, `owner=agent_id`) is private to one agent. The vector tables are
-guarded by `VECTOR_STORE_VER`, a table-layout version independent of the release minor (ADR-0035); a
+guarded by `VECTOR_STORE_VER`, a table-layout version independent of the release minor (ADR-0037); a
 mismatch wipes them and the notes re-embed into them.
 The notes are not: `memory.fjall` carries its own version (`store_meta`), is never wiped, and a
 store a newer basemind wrote is refused for memory operations only ("written by a newer

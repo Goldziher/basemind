@@ -8,7 +8,7 @@ They need Python 3.10+ and nothing outside the standard library.
 |---|---|---|
 | `soak.py` + `analyze.py` | no growth in memory / fds / threads under load, quiet idle, clean shutdown, bounded data dir | load + idle + ~1 min (15 min for a short run, 1 h+ for a release) |
 | `functional_sweep.py` | every verb tool and its CLI command answers with the expected structure; RAG finds planted facts, with filters | 1-3 min (`comms` build); 5-15 min first time on a `full` build (model downloads) |
-| `leak_check.py` | no definite leaks in one-shot `basemind scan` (macOS `leaks`) | 1-2 min for the fixture; longer with `--repo` |
+| `leak_check.py` | no leaks in one-shot `basemind scan` beyond the bounded tree-sitter pools (macOS `leaks`); no definitely-lost blocks (Linux valgrind) | 1-2 min for the fixtures (`leaks`); several under valgrind; longer with `--repo` |
 | `selftest_analyze.py` | `analyze.py`'s rules fire on known-bad input and pass known-good input | seconds |
 
 Build first, outside the repository's `target/` if you like:
@@ -47,7 +47,8 @@ python3 scripts/hardening/analyze.py reports/hardening/soak-<ts>/soak.ndjson
 ```
 
 `--repo PATH` soaks a copy of another repository (default: `git clone --local` of this checkout's
-HEAD into the temp dir; the original is never written). For a release, run at least
+HEAD into the temp dir; the original is never written); `--fixture` soaks the functional sweep's
+generated fixture instead. For a release, run at least
 `--duration 3600 --idle 600`.
 
 What it does:
@@ -76,7 +77,13 @@ Every `--sample-every` seconds (default 5) a sampler thread records, for each pr
 (daemon, serve, CLI one-shots, any child): RSS, physical footprint (macOS), virtual size, thread
 count, open fd count, cumulative CPU time and its delta, and idle wakeups (macOS); plus the data
 dir and comms dir sizes and a census of live processes. macOS reads `proc_pid_rusage` /
-`proc_pidinfo` through `ctypes`; Linux reads `/proc`.
+`proc_pidinfo` through `ctypes`; Linux reads `/proc`; Windows (`winproc.py`) reads kernel32 / ntdll
+through `ctypes`: working set as RSS, private bytes as the footprint R2 gates on, handles as fds.
+
+Windows exposes neither another process's cwd nor its open files, so there each script copies the
+binary under test into the run's temp root and a process belongs to the run when its executable
+lies inside that root (the daemon re-executes the same copy), or when it descends from one.
+`--inject-orphan` therefore proves R7 on macOS and Linux only.
 
 ### Pass rules (`analyze.py`)
 
@@ -88,6 +95,7 @@ phase only (the first `--warmup` seconds of load are excluded), in units per min
 | R0 | fewer than 20 post-warm-up samples for every long-lived process, fewer than 10 idle samples, no tool calls | 20 / 10 | a run that measured nothing must not pass |
 | R1 | more than one daemon pid seen before shutdown | 1 | a replaced daemon is a crash or a takeover; it also resets every slope |
 | R2 memory | slope > 1 MiB/min **and** slope − 2·SE > 0 **and not** (second-half slope + 2·SE < 1 MiB/min) | `--mem-tol 1.0` | 1 MiB/min is 1.4 GiB/day for an always-on daemon: the smallest growth that would matter in practice and still clears sampling noise over a 10-minute window. The significance and plateau clauses let a cache that fills after warm-up and then levels off pass, while a noisy but steady climb still fails. On macOS the gate is the physical footprint (what Activity Monitor and jetsam count); RSS is judged too |
+| R2f memory floor (daemon) | on a load phase of at least `--floor-min-minutes` (30): the 10th-percentile footprint of the last of four equal windows exceeds the second's, the floors rise monotonically, and the rise is over `--floor-tol` per minute between the window centres | `--floor-tol 0.25` MiB/min | a leak under 1 MiB/min is a few MiB over ten minutes, inside the sampling noise, so R2 cannot see it; a percentile floor ignores memtable sawtooth and scan peaks, and leaving out the first window lets a cache that fills and stops pass. 0.25 MiB/min is 360 MiB/day. Measured: a 45-minute soak of the daemon at c121971a had floors 235 / 252 / 275 / 282 MiB (+1.5 MiB/min) |
 | R3 fds | same shape | `--fd-tol 0.2` fds/min | one descriptor lost per five minutes; a per-call or per-session leak under this workload is several per minute |
 | R4 threads | same shape | `--thread-tol 0.2` threads/min | as fds: a thread per session or per rescan shows as several per minute |
 | R5 | max live processes of the run in the second half of load > max in the first half | 0 extra | sessions and one-shots are sequential, so the census is flat unless something accumulates |
@@ -118,7 +126,7 @@ latencies.
   records with `ok: false` in the NDJSON.
 
 `selftest_analyze.py` writes synthetic NDJSON for a healthy run, a cache that levels off after
-warm-up, a 3 MiB/min climb, a busy idle, an fd leak, a leaked child and an empty run, and checks
+warm-up, an hour-long run whose cache fills and holds, an hour-long 0.5 MiB/min climb (fails R2f only), a 3 MiB/min climb, a busy idle, an fd leak, a leaked child and an empty run, and checks
 that `analyze.py` passes the first two and fails each of the others on exactly the rule it targets.
 `soak.py --inject-orphan` leaks a detached `sleep` (cwd: the run's temp root) before the survivor sweep, so a
 real run proves R7 fires.
@@ -142,29 +150,77 @@ the PDF fact and an excluding filter must drop it.
 A case answering that its Cargo feature is not compiled in is a counted skip. The run fails when any
 case fails, when nothing passed, or when the server advertises a verb tool the sweep did not call.
 
-## One-shot leak check (macOS)
+## One-shot leak check (macOS, Linux)
 
 ```bash
 python3 scripts/hardening/leak_check.py --binary "$CARGO_TARGET_DIR/release/basemind" [--repo .]
 ```
 
-Runs `leaks --atExit -- basemind scan` with `MallocStackLogging=1` on the fixture (code and, on a
-`documents` build, the documents) and optionally a clone of `--repo`. `--cmd status` adds more
-one-shots. It fails on any definite leak and on a run `leaks` could not inspect. The full `leaks`
-output, with stacks, is kept per run.
+Runs `basemind scan` under the platform's checker (`--tool` overrides) with `RAYON_NUM_THREADS`
+pinned (`--threads`, default 4) on the fixture (code and, on a `documents` build, the documents),
+on two scale fixtures (Rust + Python, 60 and 600 files per language) and optionally a clone of
+`--repo`. `--cmd status` adds more one-shots. The full checker output, with stacks, is kept per run,
+beside `leaks.report.md` and `leaks.json`.
 
-Linux equivalents (not automated here):
+On macOS the checker is `leaks --atExit` with `MallocStackLogging=1`.
+
+`leaks` sees only the system malloc zones. basemind's Rust heap is mimalloc, which registers no
+zone, so `leaks` neither scans it nor reports a Rust leak: a C allocation whose only pointer sits in
+a Rust object looks unreferenced. Two process-lifetime tree-sitter structures are held that way and
+are always reported: the per-thread parser pool (`lang::with_parser`; a rayon worker never exits,
+so its thread-local is never dropped) and the per-language compiled-query caches (`lang`,
+`extract::locals`, `intel::stackgraph`). Their size is threads x languages and does not grow with
+files or with scans in one process:
+
+| run | threads | leaks | bytes |
+|---|---|---|---|
+| 100 files (Rust + Python) | 2 | 189 | 43 KB |
+| 4,000 files (Rust + Python) | 2 | 203 | 44 KB |
+| 100 files | 8 | 420 | 108 KB |
+| 4,000 files | 8 | 469 | 122 KB |
+| live daemon (`leaks <pid>`) after ~200 rescans | 14 | 2,962 | 852 KB |
+| same daemon after ~1,000 rescans | 14 | 2,857 | 806 KB |
+
+A run fails on any leak whose stack does not reach `ts_parser_new` / `ts_query_new` from one of
+those owners (`POOLED_TREE_SITTER` in the script), on pooled bytes above `--max-pooled-bytes`
+(default 1 MiB), on the scale fixtures on more pooled parsers than threads x languages or more
+cached queries than 9 per language (a per-file leak on the 600-file run exceeds both), and on a
+run `leaks` could not inspect. A Rust-heap leak is outside what this check can see; the soak's
+memory rules are the guard for it.
+
+On Linux the checker is `valgrind --leak-check=full`, and a run fails on any "definitely lost"
+block or a run valgrind could not inspect. valgrind, too, sees only allocations made through the C
+allocator, but it scans the mimalloc pages for pointers, so the tree-sitter pools above are
+reachable there and need no allowlist. Windows has no checker wired up.
+
+## CI (`.github/workflows/hardening.yaml`)
+
+The workflow runs the whole pass on `ubuntu-latest`, `macos-26` and `windows-2022` (the image the
+Windows release is built on): selftest, functional sweep, soak plus `analyze.py`, and the leak
+check (`valgrind` on Linux, `leaks` on macOS; on Windows a visible notice says it was skipped).
+It runs nightly, on a pull request or a push to main that touches `scripts/hardening/**` or the
+workflow (5-minute soak), and on demand:
 
 ```bash
-valgrind --leak-check=full --errors-for-leak-kinds=definite --error-exitcode=1 basemind scan
-heaptrack basemind scan && heaptrack_print heaptrack.basemind.*.zst | grep -A20 'MEMORY LEAKS'
+gh workflow run hardening.yaml --ref main -f soak_minutes=60 -f features=full
+gh workflow run hardening.yaml --ref main -f inject_orphan=true   # R7 must turn every Unix leg red
+gh workflow run hardening.yaml --ref main -f soak_self=true       # soak a clone of this repository
 ```
 
-Run either with `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` pointing at fresh temp dirs.
+CI soaks the generated fixture (`--fixture`): a `full` scan of this repository did not finish in
+30 minutes on the Linux and Windows runners.
+
+The binary is `cargo build --release --features <features>`; when that fails on a runner the leg
+retries with `comms` and says so in a warning and in the summary title. A leg fails when any step
+fails: a selftest case, a sweep case, a soak rule, or a leak. Each leg writes a table (rule,
+value, threshold, verdict) to the run's summary page and uploads its report directory as the
+`hardening-<os>` artifact, also on failure: `selftest/`, `sweep/sweep.report.md`,
+`soak/soak.ndjson` with `soak.report.md` and `verdict.json`, and `leaks/` with the raw checker
+output. Read a failure from the summary row first, then the matching report as described above.
 
 ## Not covered
 
-- Linux and Windows: the sampler supports Linux `/proc` but the scripts have only been run on macOS.
-  Windows has no sampler.
+- Windows: no one-shot leak check, no idle-wakeup counter (R6b), and `--inject-orphan` cannot
+  anchor its sleeper to the run.
 - The daemon's own idle reap (10 minutes after the last client) is not waited for; `comms stop` is
   the shutdown exercised.

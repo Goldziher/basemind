@@ -546,3 +546,17 @@ fn images_are_denied_without_the_ocr_tier_but_svg_is_text() {
         "the allowlist cannot route an image to an extractor that is not compiled in"
     );
 }
+
+/// The post-extraction check compares against what `read_working_tree` reported, so the two must
+/// agree on an untouched file and disagree once it is rewritten.
+#[test]
+fn file_stamp_matches_the_read_until_the_file_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let abs = dir.path().join("notes.md");
+    std::fs::write(&abs, b"# Notes\n").unwrap();
+    let (_, size, mtime) = crate::scanner_file::read_working_tree(dir.path(), "notes.md", 1 << 20, false).unwrap();
+    assert_eq!(file_stamp(&abs), Some((size, mtime)));
+    std::fs::write(&abs, b"# Notes, edited\n").unwrap();
+    assert_ne!(file_stamp(&abs), Some((size, mtime)));
+    assert_eq!(file_stamp(&dir.path().join("gone.md")), None);
+}

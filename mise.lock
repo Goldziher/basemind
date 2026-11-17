@@ -31,6 +31,35 @@ checksum_source = "mise-versions"
 url = "https://github.com/Goldziher/poly/releases/download/v0.32.1/poly-0.32.1-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/Goldziher/poly/releases/assets/694766438"
 
+[[tools."github:taiki-e/cargo-hack"]]
+version = "0.6.46"
+backend = "github:taiki-e/cargo-hack"
+specifiers = ["0.6.46"]
+
+[tools."github:taiki-e/cargo-hack"."platforms.linux-arm64"]
+checksum = "sha256:6194a409da4a47bc7a7407583b6cbeba8ee98c1fbfb81d57f1e337124aa111ba"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698521742"
+provenance = "github-attestations"
+
+[tools."github:taiki-e/cargo-hack"."platforms.linux-x64"]
+checksum = "sha256:ff1b9441986e494d32ce46a7c5a25af1cda3a18da2cde306b2f96dd0e7055b28"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698520256"
+provenance = "github-attestations"
+
+[tools."github:taiki-e/cargo-hack"."platforms.macos-arm64"]
+checksum = "sha256:9ad9fae78158671df8161b1803bb6b9f6a8b0081adc70a5c2bb91dff5ec4044d"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698520811"
+provenance = "github-attestations"
+
+[tools."github:taiki-e/cargo-hack"."platforms.windows-x64"]
+checksum = "sha256:c647159f27352aa1a28c3383a937802c71dbda048a15a628e086c7bad4b57fa0"
+url = "https://github.com/taiki-e/cargo-hack/releases/download/v0.6.46/cargo-hack-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/taiki-e/cargo-hack/releases/assets/698522469"
+provenance = "github-attestations"
+
 [[tools.node]]
 version = "26.13.0"
 backend = "core:node"

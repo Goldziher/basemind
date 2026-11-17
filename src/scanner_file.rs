@@ -44,6 +44,10 @@ const SCANNER_STACK_SIZE: usize = 256 * 1024 * 1024;
 /// handful of concurrent workers can move the process's footprint by hundreds of megabytes.
 const LARGE_FILE_ADMIT_BYTES: usize = 1024 * 1024;
 
+/// A file of this name panics `process_file` in test builds, standing in for a pathological input.
+#[cfg(test)]
+pub(crate) const TEST_PANIC_FILE: &str = "basemind-test-panic.rs";
+
 /// Process-wide rayon pool the scanner runs its per-file `par_iter` on: sized like the default global
 /// pool but with a much larger per-worker stack (see [`SCANNER_STACK_SIZE`]). Lazily built once.
 ///
@@ -106,7 +110,20 @@ pub(crate) fn run_candidates(
                     if cancel.is_cancelled() || store.index_db.as_ref().is_some_and(IndexDb::has_fatal_fault) {
                         return batch;
                     }
-                    let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);
+                    // One file whose extraction panics is reported failed and keeps its prior rows ~keep
+                    // (`keeps_prior_entry`); unwinding would fail this scan and every later one. ~keep
+                    let result = crate::scanner_lanes::contain_panic(|| {
+                        process_file(root, rel, filters, store, source, config, scope, &mut batch, embed)
+                    })
+                    .unwrap_or_else(|reason| {
+                        tracing::warn!(rel, %reason, "extraction panicked; the file is reported failed");
+                        FileResult::bare(
+                            rel.clone(),
+                            FileStatus::ExtractFailed {
+                                msg: format!("extraction panicked: {reason}"),
+                            },
+                        )
+                    });
                     batch.push_result(result);
                     batch
                 },
@@ -117,6 +134,46 @@ pub(crate) fn run_candidates(
                 a
             })
     })
+}
+
+/// Refresh the mtime of the blobs a scan reuses for a path the file map does not yet name them for.
+/// The blob sweep keeps an unreferenced blob only within its grace, judged by mtime, so an old blob
+/// reused here could be swept before this scan's file map named it, leaving the map naming a
+/// missing blob. Best-effort: a blob that is not there needs no protection.
+///
+/// Only a new reference needs it: a blob the file map already holds, or one a pending rebuild pins,
+/// counts as referenced for the sweep, and a rebuild or an embedding pass reuses every file's blob,
+/// so touching those would cost three metadata writes per file. A sweep that read the blob's mtime
+/// just before the touch can still remove it; that window is a few microseconds and accepted.
+fn touch_reused_blobs(store: &Store, hash_hex: &str) {
+    if store.hash_is_held(hash_hex)
+        || store
+            .index
+            .rebuild_pins
+            .binary_search_by(|pin| pin.as_str().cmp(hash_hex))
+            .is_ok()
+    {
+        return;
+    }
+    let paths = [
+        Some(store.blob_path_fm_hex(hash_hex)),
+        Some(store.blob_path_rref_hex(hash_hex)),
+        #[cfg(feature = "code-search")]
+        Some(store.blob_path_chunk_hex(hash_hex)),
+        #[cfg(not(feature = "code-search"))]
+        None,
+    ];
+    for path in paths.into_iter().flatten() {
+        let touched = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(SystemTime::now()));
+        if let Err(error) = touched
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(%error, path = %path.display(), "could not refresh a reused blob's mtime");
+        }
+    }
 }
 
 /// True when the extraction blobs required to classify a file as `Unchanged` are present on disk for
@@ -146,7 +203,9 @@ fn extraction_sidecars_present(store: &Store, config: &Config, filters: &Filters
 ///
 /// This is distinct from [`extraction_sidecars_present`] (blob *presence*, which governs l1/l2/chunk
 /// reuse). The sidecar must have been chunked under the current `[code_search]` settings (its
-/// `config_digest`; a legacy digest-less sidecar is re-checked once so it can be stamped). Then, a
+/// `config_digest`; a legacy digest-less sidecar is re-checked once so it can be stamped) and from an
+/// outline of the current extract epoch (a refresh scan run with code-search off rewrites the outline
+/// but leaves the sidecar cut from the old one). Then, a
 /// `Deferred` pass never embeds, so any such sidecar satisfies it; an `Inline` pass over an
 /// embed-eligible file requires embeddings for the current preset to already exist, else the file
 /// must be re-processed to fill them, and a changed embed policy re-processes it so its vector rows
@@ -168,7 +227,7 @@ fn embed_state_satisfied(
     let Ok(Some(peek)) = store.peek_chunk_state(hash_hex) else {
         return false;
     };
-    if peek.config_digest != filters.code_digest {
+    if peek.config_digest != filters.code_digest || peek.extract_epoch < extract::EXTRACT_EPOCH {
         return false;
     }
     // A changed embed policy may have purged this file's keyword postings along with its vectors
@@ -184,7 +243,7 @@ fn embed_state_satisfied(
     }
     peek.chunks.is_empty()
         || (peek.embedding_dim > 0
-            && peek.embedding_model == crate::embeddings::model_key(&config.documents.embedding_preset)
+            && peek.embedding_model == filters.model_key
             && peek.embeddings.len() == peek.chunks.len())
 }
 
@@ -225,6 +284,8 @@ fn process_file(
     {
         let _ = embed;
     }
+    #[cfg(test)]
+    assert!(!rel.ends_with(TEST_PANIC_FILE), "injected extraction panic for {rel}");
     // Only code is code-mapped. Prose, data and config files belong to the document tier (chunked,
     // searchable text); a markdown "outline" or a JSON file's keys are noise in the symbol index.
     // When the documents tier is compiled out there is nowhere else for them to go, so they keep
@@ -376,6 +437,9 @@ fn process_file(
         None
     };
     let reused = reused_pair.is_some();
+    if reused {
+        touch_reused_blobs(store, hash_hex_str);
+    }
 
     let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) = match reused_pair {
         Some(pair) => pair,

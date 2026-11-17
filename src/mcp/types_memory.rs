@@ -91,8 +91,15 @@ pub struct MemoryListParams {
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryListResponse {
+    /// Notes matching the listing. A lower bound when `truncated`.
     pub total: usize,
+    /// True when counting stopped at the scan cap, so `total` is a lower bound. A page cut at
+    /// `limit` is paging (`next_cursor` alone), not truncation.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// `scan_cap` whenever `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
     pub entries: Vec<MemoryEntry>,
     /// Opaque cursor to pass back on the next call when more results are available.
     /// Stable across rescans.

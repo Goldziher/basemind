@@ -49,7 +49,7 @@ fn python_resolves_cross_file_function_and_class_on_direct_import() {
     let main = "from lib import foo, Bar\nfoo()\nBar()\n";
     let (_d, store) = scan_repo(&[("lib.py", lib), ("main.py", main)]);
     if store.lookup("lib.py").is_none() {
-        eprintln!("python grammar unavailable — skipping");
+        basemind::testing::unavailable("BASEMIND_TEST_ALLOW_NO_GRAMMAR", "the python grammar is unavailable");
         return;
     }
     let lib_rel = RelPath::from("lib.py");
@@ -80,7 +80,7 @@ fn python_resolves_cross_file_through_package_reexport() {
     let app = "from pkg import QuerySet\n\n\ndef use():\n    return QuerySet()\n";
     let (_d, store) = scan_repo(&[("pkg/query.py", query), ("pkg/__init__.py", init), ("app.py", app)]);
     if store.lookup("pkg/query.py").is_none() {
-        eprintln!("python grammar unavailable — skipping");
+        basemind::testing::unavailable("BASEMIND_TEST_ALLOW_NO_GRAMMAR", "the python grammar is unavailable");
         return;
     }
     let query_rel = RelPath::from("pkg/query.py");
@@ -102,7 +102,7 @@ fn java_resolves_cross_file_class_via_import() {
     let main = "package other;\nimport app.Lib;\npublic class Main {\n  int run() { return Lib.greet(); }\n}\n";
     let (_d, store) = scan_repo(&[("app/Lib.java", lib), ("other/Main.java", main)]);
     if store.lookup("app/Lib.java").is_none() {
-        eprintln!("java grammar unavailable — skipping");
+        basemind::testing::unavailable("BASEMIND_TEST_ALLOW_NO_GRAMMAR", "the java grammar is unavailable");
         return;
     }
     let lib_rel = RelPath::from("app/Lib.java");

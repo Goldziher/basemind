@@ -312,6 +312,26 @@ async fn a_search_embeds_the_notes_it_finds_without_rows_and_answers_from_the_no
     );
 }
 
+/// A search lists previews, as a prefix listing does: a note of megabytes is read whole by `key`,
+/// never once per hit.
+#[tokio::test]
+async fn a_search_hit_carries_a_preview_of_a_long_note() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    let long = "word ".repeat(10_000);
+    save(&state, "long", &long).await;
+
+    let found = search_json(&state, "word", 10).await;
+
+    let value = found["hits"][0]["value"].as_str().expect("a hit");
+    assert_eq!(
+        value.chars().count(),
+        crate::mcp::memory_ops::MEMORY_PREVIEW_CHARS + 1,
+        "{found}"
+    );
+    assert!(value.ends_with('…'), "{value}");
+}
+
 /// Two worktrees of one clone configured with different presets share the group directory. Each
 /// model has its own store there: opening one must leave the other's rows alone.
 #[tokio::test]
@@ -973,26 +993,5 @@ async fn a_store_that_would_not_open_is_unavailable_at_once_to_the_next_call() {
     assert!(!dir.exists(), "the store was not opened again");
 }
 
-/// An `individual` note belongs to the workspace's durable owner, not to the session that saved
-/// it: a server started again (a new session id) finds it.
-#[tokio::test]
-async fn an_individual_note_survives_a_server_restart() {
-    let root = tempfile::tempdir().unwrap();
-    let first = server(root.path(), "m");
-    let owner = first.shared.memory_owner.clone();
-    assert_ne!(owner, "test", "the owner is not the session id");
-    let params = crate::mcp::types_memory::MemoryPutParams {
-        visibility: Visibility::Individual,
-        ..put_params("plan", "ship on friday", false)
-    };
-    crate::mcp::memory::run_memory_put(&first, params).await.unwrap();
-    drop(first);
-
-    let restarted = server(root.path(), "m");
-    assert_eq!(restarted.shared.memory_owner, owner);
-    let (vis_byte, namespace_owner) = crate::mcp::memory::memory_namespace(&restarted, Visibility::Individual);
-    let note = crate::mcp::memory::memory_get_wire(&restarted, vis_byte, namespace_owner, "plan")
-        .await
-        .unwrap();
-    assert!(note.is_some(), "the note saved before the restart is found");
-}
+#[path = "memory_vectors_restart_tests.rs"]
+mod restart;

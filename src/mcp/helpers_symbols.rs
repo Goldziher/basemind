@@ -14,13 +14,9 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
-use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, kind_to_str, parse_kind};
+use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, kind_to_str, parse_kind};
 use super::types::{SearchHitView, SearchResponse, SearchSymbolsParams};
 use crate::path::RelPath;
-
-/// The literal ranks, best first. A fuzzy match ranks after all of them.
-const LITERAL_RANKS: [&str; 3] = ["exact", "prefix", "substring"];
-const FUZZY: &str = "fuzzy";
 
 /// Fuzzy candidates held while ranking. A needle of two letters is a subsequence of most names in
 /// a large corpus; past this many the total is reported as partial instead of holding them all.
@@ -33,7 +29,6 @@ const FUZZY_SCORE_FLOOR_PCT: u32 = 85;
 struct Candidate<'a> {
     path: &'a RelPath,
     symbol: usize,
-    matched: &'static str,
 }
 
 /// Which literal rank `name` holds for `needle`; the caller has established it contains it.
@@ -51,7 +46,6 @@ fn literal_rank(name: &[u8], needle: &[u8]) -> usize {
 pub(super) async fn run_search_symbols(
     state: &ServerState,
     params: SearchSymbolsParams,
-    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
@@ -68,7 +62,6 @@ pub(super) async fn run_search_symbols(
         next_cursor: None,
         cursor_invalidated,
         notice: state.lifecycle_notice(),
-        elapsed_us: elapsed_us(started),
     };
 
     let skip = match params.cursor.as_ref() {
@@ -100,11 +93,7 @@ pub(super) async fn run_search_symbols(
                 let rank = literal_rank(terms.name(symbol), needle);
                 literal_total += 1;
                 if literal[rank].len() < want {
-                    literal[rank].push(Candidate {
-                        path,
-                        symbol,
-                        matched: LITERAL_RANKS[rank],
-                    });
+                    literal[rank].push(Candidate { path, symbol });
                 }
             }
         }
@@ -130,14 +119,7 @@ pub(super) async fn run_search_symbols(
                         total_is_partial = true;
                         break 'sweep;
                     }
-                    fuzzy.push((
-                        score,
-                        Candidate {
-                            path,
-                            symbol,
-                            matched: FUZZY,
-                        },
-                    ));
+                    fuzzy.push((score, Candidate { path, symbol }));
                 }
             }
             // Best score first; the sweep order (path, then outline position) breaks ties stably.
@@ -162,18 +144,19 @@ pub(super) async fn run_search_symbols(
                 let symbol = l1.symbols.get(candidate.symbol)?;
                 Some(SearchHitView {
                     path: candidate.path.clone(),
-                    name: symbol.name.clone(),
-                    kind: kind_to_str(symbol.kind),
                     line: symbol.start_row + 1,
-                    column: symbol.start_col + 1,
+                    kind: kind_to_str(symbol.kind),
+                    name: symbol.name.clone(),
                     signature: symbol.signature.clone(),
-                    matched: candidate.matched,
+                    stale: false,
                 })
             })
             .collect();
         (page, total, total_is_partial)
     });
 
+    let mut page = page;
+    super::index_route::blocking(|| super::helpers_stale::follow_symbols(state, &cache, &mut page));
     let budget = super::budget::apply_budget(page, params.max_tokens);
     let results = budget.items;
     let returned_through = skip + results.len();
@@ -189,7 +172,6 @@ pub(super) async fn run_search_symbols(
             next_cursor,
             cursor_invalidated: false,
             notice: state.lifecycle_notice(),
-            elapsed_us: elapsed_us(started),
         },
         format,
     )

@@ -155,7 +155,10 @@ async fn git_diff_reports_a_file_too_large_to_diff() {
     let worktree = call(&client, "git_diff", json!({ "path": "huge.txt" })).await;
     assert_eq!(worktree["too_large"], true, "{}", worktree["truncated"]);
     assert_eq!(worktree["hunks"], json!([]));
-    assert_eq!(worktree["present_at_to"], true);
+    assert!(
+        worktree.get("present_at_to").is_none(),
+        "the file is in the working tree, which is not said: {worktree}"
+    );
 
     git(dir.path(), &["add", "-A"]);
     git(dir.path(), &["commit", "-qm", "huge"]);
@@ -281,14 +284,14 @@ async fn code_grep_clips_long_lines_around_the_match() {
         json!({ "pattern": "WIDE_NEEDLE", "context": true }),
     )
     .await;
-    let hit = &body["hits"][0];
+    let hit = &super::rows(&body["hits"])[0];
     let text = hit["text"].as_str().expect("text");
     assert!(text.contains("WIDE_NEEDLE"), "the window holds the match: {text}");
     assert!(text.len() <= 420, "{} bytes", text.len());
     assert!(text.starts_with('…') && text.ends_with('…'), "{text}");
     assert_eq!(
         hit["column"], 1_505,
-        "the column still counts from the start of the line"
+        "a clipped line still places its one match, counted from the start of the line"
     );
     for key in ["context_before", "context_after"] {
         let context = hit[key].as_str().expect("context line");
@@ -304,14 +307,15 @@ async fn code_grep_names_no_symbol_for_a_file_edited_since_the_scan() {
     let path = dir.path().join("src/outline.rs");
 
     let fresh = call(&client, "code_grep", json!({ "pattern": "file_outline() +" })).await;
-    assert_eq!(fresh["hits"][0]["symbol"]["name"], "render", "{fresh}");
+    assert_eq!(super::rows(&fresh["hits"])[0]["symbol"], "render", "{fresh}");
 
     let source = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, format!("// a new first line\n// and another\n{source}")).unwrap();
 
     let edited = call(&client, "code_grep", json!({ "pattern": "file_outline() +" })).await;
-    assert_eq!(edited["hits"][0]["line"], 21, "{edited}");
-    assert!(edited["hits"][0].get("symbol").is_none(), "{edited}");
+    let edited = super::rows(&edited["hits"]);
+    assert_eq!(edited[0]["line"], 21, "{edited:?}");
+    assert!(edited[0].get("symbol").is_none(), "{edited:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -349,7 +353,7 @@ async fn git_log_of_a_rev_holds_its_file_list_to_max_tokens() {
     git(root, &["commit", "-qm", "six hundred files"]);
 
     let shown = call(&client, "git_log", json!({ "rev": "HEAD", "max_tokens": 200 })).await;
-    let files = shown["files"].as_array().expect("files").len();
+    let files = shown["files"].as_object().expect("files").len();
     assert!((1..100).contains(&files), "200 tokens of file rows, not {files}");
     assert_eq!(shown["budgeted"], true, "a token-budget cut, like every other list's");
     assert_eq!(
@@ -361,7 +365,7 @@ async fn git_log_of_a_rev_holds_its_file_list_to_max_tokens() {
     assert_eq!(shown["commit"]["summary"], "six hundred files");
 
     let whole = call(&client, "git_log", json!({ "rev": "HEAD", "max_tokens": 100000 })).await;
-    assert_eq!(whole["files"].as_array().expect("files").len(), 600);
+    assert_eq!(whole["files"].as_object().expect("files").len(), 600);
     assert!(whole.get("omitted").is_none() && whole.get("budgeted").is_none());
 }
 
@@ -650,4 +654,21 @@ async fn git_diff_structural_counts_a_repeated_symbol_once() {
     .await;
     assert_eq!(diff["common"].as_u64(), Some(distinct.len() as u64), "{diff}");
     assert_eq!((&diff["added"], &diff["removed"]), (&json!([]), &json!([])), "{diff}");
+}
+
+/// A path that is in neither revision is a typo, not a file without changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_refuses_a_path_in_neither_revision() {
+    let (_dir, client) = started().await;
+    let refused = super::call_err(&client, "git_diff", json!({ "path": "src/typo.rs" })).await;
+    assert!(
+        refused.contains("`src/typo.rs`") && refused.contains("find_files"),
+        "{refused}"
+    );
+    let unchanged = call(&client, "git_diff", json!({ "path": "src/outline.rs" })).await;
+    assert_eq!(
+        unchanged["hunks"],
+        json!([]),
+        "an unchanged file is still a diff: {unchanged}"
+    );
 }

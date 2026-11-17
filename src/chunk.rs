@@ -99,6 +99,11 @@ pub struct CodeChunkBlob {
     /// blobs written before the field existed; those are adopted (and stamped) on first reuse.
     #[serde(default)]
     pub config_digest: String,
+    /// The [`crate::extract::EXTRACT_EPOCH`] of the outline the chunks were cut from. Symbol ranges
+    /// move when the extractor changes, so a blob below the current epoch is re-chunked. `0` on
+    /// blobs written before the field existed, which therefore always read as stale.
+    #[serde(default)]
+    pub extract_epoch: u16,
 }
 
 /// A [`CodeChunkBlob`] decoded without its embeddings: the chunks a search hit is built from. The
@@ -135,6 +140,9 @@ pub struct CodeChunkBlobPeek {
     /// See [`CodeChunkBlob::config_digest`]; `""` for a blob that predates it.
     #[serde(default)]
     pub config_digest: String,
+    /// See [`CodeChunkBlob::extract_epoch`]; `0` for a blob that predates it.
+    #[serde(default)]
+    pub extract_epoch: u16,
 }
 
 /// A chunk before line numbers / ids / searchable_text are finalized.
@@ -185,23 +193,17 @@ fn line_of(newlines: &[usize], byte: usize) -> u32 {
 /// Proximity-join a doc comment onto a symbol: pick the doc whose `end_byte` is the largest
 /// value `<= symbol.start_byte` such that the bytes between the doc and the symbol are only
 /// whitespace (i.e. the doc sits immediately above the symbol). Returns the doc text.
-fn doc_for_symbol(docs: &[DocComment], sym: &Symbol, source: &str) -> Option<String> {
+///
+/// `docs_by_end` is sorted by `end_byte`, stably. Only the latest-ending doc can qualify: an
+/// earlier one's gap contains the latest one's gap, so it fails whenever that one does. One binary
+/// search and one gap scan per symbol, instead of a gap scan per doc that precedes it.
+fn doc_for_symbol(docs_by_end: &[&DocComment], sym: &Symbol, source: &str) -> Option<String> {
     let start = sym.start_byte as usize;
-    let mut best: Option<&DocComment> = None;
-    for d in docs {
-        let de = d.end_byte as usize;
-        if de > start {
-            continue;
-        }
-        let gap = source.get(de..start).unwrap_or("");
-        if !gap.chars().all(char::is_whitespace) {
-            continue;
-        }
-        if best.is_none_or(|b| de > b.end_byte as usize) {
-            best = Some(d);
-        }
-    }
-    best.map(|d| d.text.clone())
+    let before = &docs_by_end[..docs_by_end.partition_point(|d| d.end_byte as usize <= start)];
+    let latest_end = before.last()?.end_byte;
+    let doc = before[before.partition_point(|d| d.end_byte < latest_end)];
+    let gap = source.get(latest_end as usize..start).unwrap_or("");
+    gap.chars().all(char::is_whitespace).then(|| doc.text.clone())
 }
 
 /// Merge a set of `[start, end)` intervals into a sorted, non-overlapping list.
@@ -287,7 +289,8 @@ pub fn chunk_file(
         return Vec::new();
     };
     let len = source.len();
-    let docs: &[DocComment] = l2.map(|m| m.docs.as_slice()).unwrap_or(&[]);
+    let mut docs: Vec<&DocComment> = l2.map_or_else(Vec::new, |m| m.docs.iter().collect());
+    docs.sort_by_key(|d| d.end_byte);
 
     let mut raws: Vec<RawChunk> = Vec::new();
 
@@ -307,7 +310,7 @@ pub fn chunk_file(
             kind: Some(kind_str(sym.kind)),
             symbol: Some(sym.name.clone()),
             signature: sym.signature.clone(),
-            doc: doc_for_symbol(docs, sym, source),
+            doc: doc_for_symbol(&docs, sym, source),
             byte_start: s,
             byte_end: e,
             text,
@@ -387,6 +390,54 @@ pub fn chunk_file(
 mod tests {
     use super::*;
     use crate::extract::{DocComment, FileMapL1, FileMapL2, Symbol, SymbolKind};
+
+    /// The binary search attaches the same doc a scan of every preceding doc does.
+    #[test]
+    fn doc_join_matches_a_scan_of_every_doc() {
+        fn scan_all(docs: &[DocComment], sym: &Symbol, source: &str) -> Option<String> {
+            let start = sym.start_byte as usize;
+            let mut best: Option<&DocComment> = None;
+            for d in docs {
+                let de = d.end_byte as usize;
+                let gap_ok = de <= start && source.get(de..start).unwrap_or("").chars().all(char::is_whitespace);
+                if gap_ok && best.is_none_or(|b| de > b.end_byte as usize) {
+                    best = Some(d);
+                }
+            }
+            best.map(|d| d.text.clone())
+        }
+        let source = "/// a\nfn a() {}\n// x\n/// b1\n/// b2\n\n  fn b() {}\nlet q = 1; fn c() {}\n/// d\n";
+        let doc = |text: &str| {
+            let start = source.find(text).expect("doc in source");
+            DocComment {
+                text: text.to_string(),
+                start_byte: start as u32,
+                end_byte: (start + text.len()) as u32,
+            }
+        };
+        // Out of order on purpose, with two docs ending at the same byte.
+        let mut docs = vec![doc("/// b2"), doc("/// a"), doc("// x"), doc("/// b1"), doc("/// d")];
+        docs.push(DocComment {
+            text: "/// b2 (twin)".to_string(),
+            ..doc("/// b2")
+        });
+        let mut by_end: Vec<&DocComment> = docs.iter().collect();
+        by_end.sort_by_key(|d| d.end_byte);
+        for name in ["fn a", "fn b", "fn c", "/// d"] {
+            let at = source.find(name).expect("symbol in source") as u32;
+            let symbol = sym(name, SymbolKind::Function, at, at + 4, 0, None);
+            assert_eq!(
+                doc_for_symbol(&by_end, &symbol, source),
+                scan_all(&docs, &symbol, source),
+                "{name}"
+            );
+        }
+        let b = source.find("fn b").unwrap() as u32;
+        assert_eq!(
+            doc_for_symbol(&by_end, &sym("b", SymbolKind::Function, b, b + 4, 0, None), source).as_deref(),
+            Some("/// b2")
+        );
+    }
 
     fn sym(name: &str, kind: SymbolKind, start: u32, end: u32, row: u32, sig: Option<&str>) -> Symbol {
         Symbol {
@@ -543,6 +594,7 @@ mod tests {
             embedding_model: "balanced".to_string(),
             chunks: Vec::new(),
             embeddings: Vec::new(),
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
         };
         let bytes = rmp_serde::to_vec_named(&blob).expect("serialize blob");
         let decoded: CodeChunkBlob = rmp_serde::from_slice(&bytes).expect("deserialize blob");
@@ -582,6 +634,10 @@ mod tests {
         assert_ne!(
             decoded.embedding_model, "balanced",
             "empty model must not match a named preset — forces re-embed"
+        );
+        assert_eq!(
+            decoded.extract_epoch, 0,
+            "a pre-epoch blob reads as cut from a stale outline"
         );
     }
 }

@@ -4,7 +4,7 @@ date: 2026-11-17
 amends: ["0029", "0025"]
 ---
 
-# ADR-0035: Retrieval store amendments — liveness list, store version, interim location, model identity
+# ADR-0037: Retrieval store amendments — liveness list, store version, interim location, model identity
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0029 (rules 1, 2, 3, 5, 7, 11) and ADR-0025 (the vector stores' version);

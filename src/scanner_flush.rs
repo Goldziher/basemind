@@ -185,8 +185,11 @@ fn requeue_pending_docs(
 /// Queue a batch for code files an earlier scan left owing rows and this scan did not process, at
 /// most `budget` of them. The rows are rebuilt from the cached chunk sidecar, so a path owes
 /// nothing, and leaves the set, when no rows can come of it: it is no longer indexed, the embed
-/// policy or the chunk cap now excludes it, or its sidecar is gone, does not decode or carries no
-/// vectors of the current preset. Only a sidecar that could not be read from disk stays owed.
+/// policy or the chunk cap now excludes it, or its sidecar is gone or carries no vectors of the
+/// current preset. A sidecar that could not be read from disk stays owed. One that does not decode
+/// (torn by a power loss) stays owed too, and its file is marked for extraction again
+/// ([`Store::extract_again`]): it exists, so every later pass would skip the file as unchanged
+/// and its rows would never be repaid.
 #[cfg(feature = "code-search")]
 fn requeue_pending_code(
     store: &mut Store,
@@ -201,10 +204,10 @@ fn requeue_pending_code(
         return;
     }
     let cfg = &config.code_search;
-    let preset = &config.documents.embedding_preset;
     let queued: ahash::AHashSet<&str> = batches.iter().map(|batch| batch.rel_path.as_str()).collect();
     let mut requeued = Vec::new();
     let mut settled = Vec::new();
+    let mut damaged = Vec::new();
     for rel in store.pending_vectors.code() {
         let rel_path = rel.to_str_lossy();
         if queued.contains(rel_path.as_ref()) {
@@ -221,7 +224,7 @@ fn requeue_pending_code(
         match store.peek_chunk_state(&entry.hash_hex) {
             Ok(Some(peek))
                 if peek.embedding_dim > 0
-                    && peek.embedding_model == crate::embeddings::model_key(preset)
+                    && peek.embedding_model == filters.model_key
                     && peek.embeddings.len() == peek.chunks.len()
                     && !crate::scanner_code::over_chunk_cap(&rel_path, peek.chunks.len(), cfg) =>
             {
@@ -236,12 +239,33 @@ fn requeue_pending_code(
             Err(StoreError::Io { source, .. }) => {
                 tracing::warn!(rel = %rel_path, error = %source, "chunk sidecar unreadable; its vector rows stay owed");
             }
-            Ok(_) | Err(_) => settled.push(rel_path.into_owned()),
+            Err(error) => {
+                tracing::warn!(rel = %rel_path, %error, "chunk sidecar damaged; the file is extracted again and its rows stay owed");
+                damaged.push(rel_path.into_owned());
+            }
+            Ok(_) => settled.push(rel_path.into_owned()),
         }
     }
     drop(queued);
     store.pending_vectors.settle_code(&settled);
     batches.extend(requeued);
+    extract_again(store, &damaged, Store::extract_again);
+}
+
+/// Mark each of `damaged` for extraction again through `mark`, and write the file map that says
+/// so: the lanes run after the pass's own flush, and a mark left in memory would be lost with a
+/// one-shot process. A failed write only logs; the debts stay, and the next pass marks again.
+#[cfg(any(feature = "code-search", feature = "documents"))]
+pub(crate) fn extract_again(store: &mut Store, damaged: &[String], mark: fn(&mut Store, &str)) {
+    if damaged.is_empty() {
+        return;
+    }
+    for rel in damaged {
+        mark(store, rel);
+    }
+    if let Err(error) = store.flush() {
+        tracing::warn!(%error, "could not record files to extract again; the next pass retries");
+    }
 }
 
 #[cfg(not(feature = "code-search"))]

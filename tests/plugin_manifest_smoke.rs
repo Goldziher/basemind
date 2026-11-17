@@ -123,7 +123,7 @@ fn gemini_and_kimi_manifests_launch_the_stdio_server() {
 }
 
 #[test]
-fn codex_mcp_should_launch_latest_release_from_workspace() {
+fn codex_mcp_should_launch_the_pinned_release_from_workspace() {
     let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let plugin_manifest_path = repository_root.join(".codex-plugin/plugin.json");
     let plugin_manifest: Value =
@@ -159,7 +159,7 @@ fn codex_mcp_should_launch_latest_release_from_workspace() {
         args.get(1)
             .and_then(Value::as_str)
             .is_some_and(|loader| loader.contains("codex-mcp-launch.mjs")),
-        "Codex must locate and run the bundled latest-release launcher",
+        "Codex must locate and run the bundled launcher",
     );
     let loader = args.get(1).and_then(Value::as_str).unwrap_or_default();
     assert!(
@@ -177,12 +177,13 @@ fn codex_mcp_should_launch_latest_release_from_workspace() {
     let bootstrap = std::fs::read_to_string(repository_root.join("scripts/codex-mcp-launch.mjs"))
         .expect("read Codex MCP bootstrap");
     assert!(
-        bootstrap.contains("https://github.com/Goldziher/basemind/releases/latest"),
-        "Codex must resolve the latest published release rather than a version range",
+        !bootstrap.contains("releases/latest") && !bootstrap.contains("BASEMIND_FORCE_VERSION"),
+        "Codex must run the release its plugin manifest pins, not the latest one: the skills and hooks \
+         beside it were written for that release",
     );
     assert!(
-        bootstrap.contains("BASEMIND_FORCE_VERSION"),
-        "Codex must hand the resolved tag to the serialized release launcher",
+        bootstrap.contains("\"bash\"") && bootstrap.contains("mcp-launch.sh"),
+        "the Codex bootstrap must run the bash launcher through bash, which Windows needs",
     );
     let sync_script = std::fs::read_to_string(repository_root.join("scripts/sync-to-codex-plugin.sh"))
         .expect("read Codex plugin sync script");

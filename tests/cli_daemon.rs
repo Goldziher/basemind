@@ -247,10 +247,11 @@ fn live_daemon_serves_rescan_memory_and_blocks_destructive_commands() {
     let scan = env.run(&["scan", "--quiet"]);
     assert_eq!(
         code(&scan),
-        3,
-        "scan next to the daemon is a collision: {}",
+        0,
+        "scan next to the daemon is forwarded to it: {}",
         text(&scan)
     );
+    assert!(text(&scan).contains("scan via daemon"), "{}", text(&scan));
     let blobs = env.run(&["cache", "clear", "--component", "blobs", "--yes"]);
     assert_eq!(
         code(&blobs),

@@ -7,6 +7,13 @@
 
 use crate::scan_retrieval::Retrieval;
 
+/// The identity of `preset`'s model that stored vectors carry ([`crate::embeddings::model_key`]),
+/// for the core scan, which cannot reach the embedding layer itself.
+#[cfg(feature = "code-search")]
+pub(crate) fn model_key(preset: &str) -> String {
+    crate::embeddings::model_key(preset).into_owned()
+}
+
 /// The retrieval implementations of this build.
 pub(crate) fn backend() -> Retrieval {
     Retrieval {

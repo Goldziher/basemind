@@ -40,7 +40,7 @@ pub(super) fn extract_l1_from_tree(
     let mut combined = run_combined(lang, root, source)?;
     bodies.extend_l1(lang, source, &mut combined)?;
     let (symbols, imports, implementations) = combined;
-    let rationale = super::rationale::extract_rationale(root, source);
+    let rationale = super::rationale::extract_rationale(lang, root, source);
 
     Ok(FileMapL1 {
         schema_ver: SCHEMA_VER,
@@ -57,7 +57,8 @@ pub(super) fn extract_l1_from_tree(
 }
 
 /// Count nodes in the tree that are tree-sitter ERROR or MISSING markers.
-/// Single iterative DFS — avoids recursion blowing the stack on deeply nested code.
+/// Single iterative DFS — avoids recursion blowing the stack on deeply nested code. Descends only
+/// into subtrees that hold a marker (`has_error`), so one typo costs its path, not the whole tree.
 fn count_error_nodes(root: Node) -> u32 {
     let mut count: u32 = 0;
     let mut cursor = root.walk();
@@ -66,9 +67,10 @@ fn count_error_nodes(root: Node) -> u32 {
         if node.is_error() || node.is_missing() {
             count = count.saturating_add(1);
         }
-        for child in node.children(&mut cursor) {
-            stack.push(child);
-        }
+        stack.extend(
+            node.children(&mut cursor)
+                .filter(|child| child.has_error() || child.is_missing()),
+        );
     }
     count
 }
@@ -171,7 +173,11 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8], lang: LangId) -> Optio
     let mut start_col = 0u32;
     let mut signature: Option<String> = None;
     let mut decorators: Vec<String> = Vec::new();
-    let mut symbol_node: Option<Node> = None;
+    // The outline is a map of what a file exposes, not of what its function bodies compute:
+    // bindings and nested definitions inside a function/method/lambda are implementation detail.
+    // A Rust `fn` item is the exception: it is a named item callable by path in its scope (test
+    // fixtures, helpers), and a call to it would otherwise resolve to nothing.
+    let nested_rust_fn = |n: Node| lang == "rust" && n.kind() == "function_item";
 
     for cap in m.captures() {
         let cname = capture_name(q, cap.index);
@@ -186,8 +192,12 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8], lang: LangId) -> Optio
                 }
             }
         } else if let Some(suffix) = cname.strip_prefix("symbol.") {
+            // Decided before the signature is built: most value matches in JS and Python are
+            // function locals, and their signature would be collapsed only to be dropped.
+            if !nested_rust_fn(node) && is_function_local(node) {
+                return None;
+            }
             kind = Some(SymbolKind::from_capture_suffix(suffix));
-            symbol_node = Some(node);
             start_byte = node.start_byte() as u32;
             end_byte = node.end_byte() as u32;
             let p = node.start_position();
@@ -202,15 +212,6 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8], lang: LangId) -> Optio
                 }
             }
         }
-    }
-
-    // The outline is a map of what a file exposes, not of what its function bodies compute:
-    // bindings and nested definitions inside a function/method/lambda are implementation detail.
-    // A Rust `fn` item is the exception: it is a named item callable by path in its scope (test
-    // fixtures, helpers), and a call to it would otherwise resolve to nothing.
-    let nested_rust_fn = |n: Node| lang == "rust" && n.kind() == "function_item";
-    if symbol_node.is_some_and(|n| !nested_rust_fn(n) && is_function_local(n)) {
-        return None;
     }
 
     Some(Symbol {
@@ -530,6 +531,28 @@ fn build_import(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Import> {
 mod tests {
     use super::*;
     use crate::extract::RationaleKind;
+
+    /// The pruned walk counts exactly what a walk of every node counts.
+    #[test]
+    fn error_count_matches_a_walk_of_every_node() {
+        fn every_node(root: Node) -> u32 {
+            let mut cursor = root.walk();
+            let mut stack = vec![root];
+            let mut count = 0;
+            while let Some(node) = stack.pop() {
+                count += u32::from(node.is_error() || node.is_missing());
+                stack.extend(node.children(&mut cursor));
+            }
+            count
+        }
+        let src = b"fn ok() {}\nfn a( { let = ; }\nstruct S { x: }\nfn b() { if { }\nfn ok2() -> u8 { 1 }\n";
+        let tree = crate::lang::with_parser("rust", |p| p.parse(src, None))
+            .expect("rust grammar")
+            .expect("parse");
+        let root = tree.root_node();
+        assert!(every_node(root) >= 2, "the fixture must contain several error markers");
+        assert_eq!(count_error_nodes(root), every_node(root));
+    }
 
     #[test]
     fn extract_implementation_rust_trait_impl() {

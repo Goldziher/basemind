@@ -12,10 +12,10 @@ fn bin() -> &'static str {
 
 /// A `basemind` invocation isolated from every daemon but its own. `init_isolated_cache` pins one comms
 /// directory for the whole test binary, so on `comms` builds a daemon started by a sibling test is "up"
-/// for this one: `rescan` hands its scan to that daemon, which keeps the workspace writer lock for about
-/// 20 s, and a following local `scan` is refused. A private directory plus no auto-spawn keeps the scans
-/// local.
-#[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
+/// for this one: `scan` and `rescan` hand their scan to that daemon (ADR-0024 rule 5), which reads its own
+/// environment rather than the `BASEMIND_INDEX_*` variables set here, refuses `--verify-shared-base`, and
+/// keeps the workspace writer lock for about 20 s. A private directory plus no auto-spawn keeps the scans
+/// local, which is what a test of the direct scan needs.
 fn basemind(comms: &Path) -> Command {
     let mut command = Command::new(bin());
     command
@@ -147,8 +147,9 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
     }
     git(root, &["add", "."]);
     git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let comms = tempfile::tempdir().unwrap();
     let verify = || {
-        Command::new(bin())
+        basemind(comms.path())
             .args([
                 "--root",
                 root.to_str().unwrap(),
@@ -171,7 +172,7 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
     if !cfg!(any(feature = "code-intel-js", feature = "code-intel-stack")) {
         #[cfg(unix)]
         {
-            let output = Command::new(bin())
+            let output = basemind(comms.path())
                 .env("BASEMIND_INDEX_LAYERED", "1")
                 .env("BASEMIND_INDEX_RECLAIM_BACKUP", "0")
                 .args([
@@ -191,7 +192,7 @@ fn explicit_shared_base_verification_uses_standalone_for_dirty_worktrees() {
             assert!(!views.join("working").exists());
         }
         let opted_in = || {
-            Command::new(bin())
+            basemind(comms.path())
                 .env("BASEMIND_INDEX_LAYERED", "1")
                 .args(["--root", root.to_str().unwrap(), "scan", "--no-git-history"])
                 .output()
@@ -383,8 +384,9 @@ fn verified_retirement_restores_standalone_after_route_loss() {
     .unwrap();
     git(root, &["add", "."]);
     git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+    let comms = tempfile::tempdir().unwrap();
     let scan = |mode, verify| {
-        let mut command = Command::new(bin());
+        let mut command = basemind(comms.path());
         command.env("BASEMIND_INDEX_LAYERED", mode).args([
             "--root",
             root.to_str().unwrap(),
@@ -456,7 +458,8 @@ fn only_full_scan_can_reconstruct_a_reclaimed_working_view() {
     let views = basemind::store::workspace_cache_dir(root).join("views");
 
     let journal = views.join("working.migration");
-    let retired = Command::new(bin())
+    let comms = tempfile::tempdir().unwrap();
+    let retired = basemind(comms.path())
         .env("BASEMIND_INDEX_LAYERED", "1")
         .env("BASEMIND_INDEX_RECLAIM_BACKUP", "1")
         .args([
@@ -476,7 +479,7 @@ fn only_full_scan_can_reconstruct_a_reclaimed_working_view() {
     let marker: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
     assert_eq!(marker["phase"], "RebuildRequired");
     let invoke = |args: &[&str]| {
-        Command::new(bin())
+        basemind(comms.path())
             .env("BASEMIND_INDEX_LAYERED", "0")
             .args(["--root", root.to_str().unwrap()])
             .args(args)

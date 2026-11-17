@@ -298,6 +298,9 @@ struct SampleFile {
     path: basemind::path::RelPath,
     /// non-empty when the file has at least one indexed symbol
     sample_symbol: Option<String>,
+    /// 1-based line of `sample_symbol`'s definition: a name an impl block shares with its type
+    /// needs it to pick one definition.
+    sample_line: Option<u32>,
     /// non-empty when the file has at least one import with a resolved module
     sample_module: Option<String>,
 }
@@ -348,7 +351,9 @@ fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
             }
         }
         if sample.is_none() && !l1.symbols.is_empty() && l1.symbols.iter().any(|s| !s.name.is_empty()) {
-            let sym = l1.symbols.iter().find(|s| !s.name.is_empty()).map(|s| s.name.clone());
+            let picked = l1.symbols.iter().find(|s| !s.name.is_empty());
+            let sym = picked.map(|s| s.name.clone());
+            let line = picked.map(|s| s.start_row + 1);
             let module = l1
                 .imports
                 .iter()
@@ -357,6 +362,7 @@ fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
             sample = Some(SampleFile {
                 path: path.clone(),
                 sample_symbol: sym,
+                sample_line: line,
                 sample_module: module,
             });
         }
@@ -459,14 +465,14 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
                 svc,
                 &mut records,
                 "git_blame",
-                json!({ "path": &sample.path, "symbol": sym }),
+                json!({ "path": &sample.path, "symbol": sym, "line": sample.sample_line }),
             )
             .await;
             call(
                 svc,
                 &mut records,
                 "git_log",
-                json!({ "path": &sample.path, "symbol": sym, "limit": 20 }),
+                json!({ "path": &sample.path, "symbol": sym, "line": sample.sample_line, "limit": 20 }),
             )
             .await;
             call(svc, &mut records, "code_refs", json!({ "name": sym, "limit": 100 })).await;
@@ -488,7 +494,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             svc,
             &mut records,
             "code_read",
-            json!({ "path": &sample.path, "symbol": sym }),
+            json!({ "path": &sample.path, "symbol": sym, "line": sample.sample_line }),
         )
         .await;
     }
@@ -806,10 +812,14 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
 
     // Canaries count rows, so each asks for a budget far above its page instead of the default.
     const WHOLE_PAGE: u32 = 1_000_000;
-    let count = |body: &Value, key: &str| {
-        body.get(key)
-            .and_then(Value::as_array)
-            .map_or(0, |rows| rows.len() as u64)
+    // A list, or one grouped by file (`code_grep` / `code_refs` hits: `{"<path>": [row, ...]}`).
+    let count = |body: &Value, key: &str| match body.get(key) {
+        Some(Value::Array(rows)) => rows.len() as u64,
+        Some(Value::Object(files)) => files
+            .values()
+            .map(|rows| rows.as_array().map_or(0, Vec::len) as u64)
+            .sum(),
+        _ => 0,
     };
 
     match repo_name {
@@ -892,7 +902,7 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 .await
                 && let Some(body) = canary_body(&out)
             {
-                let hits = body.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
+                let hits = body.get("total").and_then(Value::as_u64).unwrap_or(0);
                 record.canaries.insert("grep_fn_spawn_hits".into(), json!(hits));
             }
             #[cfg(feature = "code-search")]
@@ -963,15 +973,24 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
+                // A list row names the author but not the email, so the email side is git's: every
+                // commit whose author name or email holds the token, by full sha.
                 let token_lc = token.to_lowercase();
+                let by_token: Vec<String> = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo_root)
+                    .args(["log", "--format=%H %an %ae"])
+                    .output()
+                    .ok()
+                    .and_then(|out| String::from_utf8(out.stdout).ok())
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|line| line.to_lowercase().contains(&token_lc))
+                    .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+                    .collect();
                 let consistent = commits.iter().all(|c| {
-                    let name = c.get("author").and_then(Value::as_str).unwrap_or("").to_lowercase();
-                    let email = c
-                        .get("author_email")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_lowercase();
-                    name.contains(&token_lc) || email.contains(&token_lc)
+                    let sha = c.get("sha").and_then(Value::as_str).unwrap_or("");
+                    !sha.is_empty() && by_token.iter().any(|full| full.starts_with(sha))
                 });
                 record
                     .canaries
@@ -1001,10 +1020,12 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 // the canary green after a resolution regression.
                 let cross_file_hits = body
                     .get("hits")
-                    .and_then(Value::as_array)
-                    .map(|hits| {
-                        hits.iter()
-                            .filter(|h| h.get("path").and_then(Value::as_str) != Some("django/utils/encoding.py"))
+                    .and_then(Value::as_object)
+                    .map(|files| {
+                        files
+                            .iter()
+                            .filter(|(path, _)| path.as_str() != "django/utils/encoding.py")
+                            .flat_map(|(_, hits)| hits.as_array().into_iter().flatten())
                             .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(true))
                             .count() as u64
                     })

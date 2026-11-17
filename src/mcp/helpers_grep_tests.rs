@@ -239,6 +239,7 @@ fn the_optimised_sweep_is_byte_identical_to_the_original_over_a_generated_corpus
                 &re,
                 literal.as_ref(),
                 skip_hits,
+                &|| false,
             );
             let old_counts = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
             assert_eq!(
@@ -262,6 +263,7 @@ fn the_optimised_sweep_is_byte_identical_to_the_original_over_a_generated_corpus
                             &re,
                             literal.as_ref(),
                             skip_hits,
+                            &|| false,
                         );
                         let (sel, resume) = select_hits(&counts, limit, skip_files, skip_hits);
                         let new = materialize(
@@ -408,6 +410,7 @@ fn the_bloom_prefilter_never_changes_a_result_even_after_edits_deletes_and_new_f
                 &re,
                 literal.as_ref(),
                 skip_hits,
+                &|| false,
             );
             let oracle = reference::count(dir.path(), &refs, &re, literal.as_ref(), skip_hits);
             assert_eq!(filtered, oracle, "counts diverge for {pattern:?} skip_hits={skip_hits}");
@@ -606,4 +609,20 @@ fn a_lone_carriage_return_is_not_a_line_end_for_the_anchors() {
         matches!(lines_end_at_lf(&re, "a\r\nc\n"), std::borrow::Cow::Borrowed(_)),
         "a file with only `\\r\\n` endings is searched as it is"
     );
+}
+
+/// A cancelled call reads no further file: the rayon sweep outlives the aborted tool task otherwise.
+#[test]
+fn a_cancelled_sweep_reads_no_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = generate_corpus(dir.path());
+    let refs: Vec<&RelPath> = paths.iter().collect();
+    let re = LineRegex::new(Regex::new("needle").expect("regex"));
+    let sweep = Sweep::new(IndexedFiles::contained(dir.path()));
+
+    let (live, _) = count_all(&sweep, &refs, None, &re, None, 0, &|| false);
+    assert!(live.iter().any(|&count| count > 0), "the corpus holds the needle");
+    let (cancelled, skipped) = count_all(&sweep, &refs, None, &re, None, 0, &|| true);
+    assert!(cancelled.iter().all(|&count| count == 0), "{cancelled:?}");
+    assert_eq!(skipped, 0);
 }

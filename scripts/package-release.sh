@@ -46,6 +46,9 @@ STAGING_DIR="basemind-staging-${TRIPLE}"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR/lib"
 
+# The licence and the third-party notices travel with the binary and its bundled libraries.
+cp LICENSE ATTRIBUTIONS.md "$STAGING_DIR/"
+
 BINS_IN_STAGING=()
 for bin in "${BINARIES[@]}"; do
   cp "${RELEASE_DIR}/${bin}${BINEXT}" "$STAGING_DIR/${bin}${BINEXT}"

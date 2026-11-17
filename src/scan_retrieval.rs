@@ -156,6 +156,9 @@ pub trait DocumentSink: Sync {
     /// Timed-out extraction threads still running.
     fn abandoned_extractions(&self) -> usize;
 
+    /// Whether the document embedder embeds now (one probe text).
+    fn embedder_ready(&self, config: &Config) -> bool;
+
     /// Queue up to `budget` batches for documents an earlier scan left owing rows.
     fn requeue(
         &self,

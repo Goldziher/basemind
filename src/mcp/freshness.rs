@@ -53,13 +53,15 @@ pub(super) fn indexed_outline(
     path: &RelPath,
 ) -> Option<(crate::store::FileEntry, std::sync::Arc<crate::extract::FileMapL1>)> {
     let entry = store.lookup(path)?.clone();
-    let l1 = cache.outline_of_content(&entry.hash_hex).or_else(|| {
-        store
-            .read_l1_by_hex(&entry.hash_hex)
-            .ok()
-            .flatten()
-            .map(std::sync::Arc::new)
-    })?;
+    let l1 = cache
+        .outline_of_content(&entry.hash_hex, entry.extract_epoch)
+        .or_else(|| {
+            store
+                .read_l1_by_hex(&entry.hash_hex)
+                .ok()
+                .flatten()
+                .map(std::sync::Arc::new)
+        })?;
     Some((entry, l1))
 }
 

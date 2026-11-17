@@ -59,9 +59,10 @@ use it first: a bare `basemind` from `PATH` can be a different version over the 
   in `code_symbols`, `code_outline` or `code_grep`; `find_files` lists them). Anything that is neither code nor an
   extractable document is **skipped**, not counted as a failure. Existing indexes migrate on the
   next scan, which also reclaims stale blobs (`cleanup: reclaimed N orphaned blob(s)`).
-- If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
-  CLI `scan` will fail with a lock error. Use `basemind rescan [path…]` (the CLI forwards to the running daemon) or
-  `index_rescan {}` over MCP instead; the lock error exits with code 3.
+- If a daemon is running, `scan` is forwarded to it and prints `scan via daemon`; it never
+  starts one. A flag the daemon cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a
+  `--documents-*` / `--llm-*` override) exits 2 naming it. Another process holding the store lock
+  (`basemind watch`, another scan) makes `scan` exit 3 and name the holder.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
   This needs `BASEMIND_ALLOW_EXTRA_ROOTS` in the environment that launches basemind (`1`, or a

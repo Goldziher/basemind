@@ -384,7 +384,7 @@ pub fn with_query_prefix(prefix: Option<&str>, query: &str) -> String {
 /// A stand-in for the document embedder, settable by integration tests (the `test-support`
 /// feature): `Some(f)` makes every document embedding call answer with `f(texts, dim)`, so a test
 /// can make the embedder fail, then work, without a model.
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", feature = "documents"))]
 pub mod test_document_embedder {
     use std::sync::RwLock;
 

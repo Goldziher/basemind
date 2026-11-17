@@ -132,7 +132,12 @@ pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, Mcp
 
 pub(super) use timing::elapsed_us;
 
-/// Canonical contract for the `elapsed_us` field carried by every latency-relevant response.
+/// Canonical contract for the `elapsed_us` field carried by the responses of `code_outline`,
+/// `code_search`, `docs_search`, `git_blame`, the memory tools and `index_status`; `code_read`
+/// answers with the source and no timing. The locating tools (`code_symbols`, `code_grep`, `code_refs`,
+/// `find_files`, `git_log`, `git_diff`) leave it out: their answer is a few rows, the field cost as
+/// much as one, and ADR-0031 holds them to the shell's token cost. Telemetry records the latency of
+/// every call either way.
 ///
 /// basemind's index-backed queries are genuinely microsecond-scale (an indexed `commits_touching`
 /// is ~37 µs against ~2 ms for the equivalent live git walk), so latency is reported in
@@ -190,6 +195,17 @@ pub(super) mod timing {
     }
 }
 
+/// Hex digits of a commit sha in a `git_log` list. Twelve is the abbreviation the Linux kernel
+/// settled on: a prefix that long names one commit in any repository of a realistic size, and every
+/// tool that takes a revision resolves it.
+pub(super) const SHA_ABBREV: usize = 12;
+
+/// `sha` cut to [`SHA_ABBREV`] hex digits.
+pub(super) fn abbreviated_sha(mut sha: String) -> String {
+    sha.truncate(SHA_ABBREV);
+    sha
+}
+
 pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> CommitView {
     let files = if include_files {
         Some(
@@ -205,8 +221,7 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
         None
     };
     CommitView {
-        sha: c.sha,
-        short_sha: c.short_sha,
+        sha: abbreviated_sha(c.sha),
         summary: c.summary,
         author: c.author,
         author_time_unix: c.author_time_unix,
@@ -226,13 +241,19 @@ pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::R
 /// The git-history index, but only when it is present AND indexes exactly the current `head`.
 /// History tools use it as a pure accelerator: a stale or absent index returns `None`, and the
 /// caller falls back to the live walk, so a result is never served from a HEAD the index hasn't
-/// caught up to (or from a rewritten history).
+/// caught up to (or from a rewritten history). A stale index asks for a sync
+/// ([`super::history_sync::request`]), so a commit made while the server runs is indexed for the
+/// calls after it.
 pub(super) fn git_history_if_fresh<'a>(
     state: &'a ServerState,
     head: &str,
 ) -> Option<&'a crate::git_history::GitHistoryIndex> {
     let index = state.shared.git_history.as_deref()?;
-    (index.last_indexed_head_hex().as_deref() == Some(head)).then_some(index)
+    if index.last_indexed_head_hex().as_deref() == Some(head) {
+        return Some(index);
+    }
+    super::history_sync::request(state);
+    None
 }
 
 /// Derive a stable 32-bit snapshot id from a HEAD sha. Used as the in-memory cursor's
@@ -606,7 +627,7 @@ pub(super) async fn scan_and_refresh(
     })
     .await
     .map_err(|e| McpError::internal_error(format!("scan join: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("rescan: {e}"), None))?;
+    .map_err(|e| rescan_error(&e))?;
 
     if was_scoped && report.stats.updated == 0 && report.stats.removed == 0 {
         return Ok(report);
@@ -621,17 +642,19 @@ pub(super) async fn scan_and_refresh(
             .shared
             .corpus_bytes
             .store(corpus_bytes, std::sync::atomic::Ordering::Relaxed);
-        let cache = if was_scoped {
-            state.shared.cache.load().with_delta(&store, &updated, &removed)
+        let current = state.shared.cache.load();
+        if was_scoped {
+            Some(current.with_delta(&store, &updated, &removed))
         } else {
-            super::MapCache::build(
+            current.refreshed(
                 &store,
                 super::l1_cache::budget_bytes_from(&state.shared.config.resources),
             )
-        };
-        std::sync::Arc::new(cache)
+        }
     };
-    state.shared.cache.store(new_cache);
+    if let Some(cache) = new_cache {
+        state.shared.cache.store(std::sync::Arc::new(cache));
+    }
     state.shared.note_index_changed();
 
     Ok(report)
@@ -646,6 +669,21 @@ pub(super) async fn run_telemetry_summary(
     let response = super::telemetry::summarize(state.shared.telemetry.path(), params).await?;
     json_result(&response)
 }
+
+/// The error a refused or failed rescan answers with. Another process writing this workspace is the
+/// caller's to retry or rescan through, and is marked [`BUSY_DATA`] so the CLI exits `3` for it as
+/// it does for every other lock contention.
+pub(crate) fn rescan_error(error: &crate::scanner::ScanError) -> McpError {
+    match error {
+        crate::scanner::ScanError::Store(store) if store.is_lock_contention() => {
+            McpError::invalid_request(format!("rescan: {error}"), Some(serde_json::json!({ BUSY_DATA: true })))
+        }
+        _ => McpError::internal_error(format!("rescan: {error}"), None),
+    }
+}
+
+/// Key of the `data` field that marks a tool error as contention for the workspace writer lock.
+pub(crate) const BUSY_DATA: &str = "busy";
 
 #[cfg(test)]
 mod tests {

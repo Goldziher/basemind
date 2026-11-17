@@ -44,7 +44,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 | Capability | What it does | Key tools |
 |---|---|---|
-| **Code intelligence** | Read the code map instead of opening files: what a file contains (`code_outline`), where a name is defined (`code_symbols`), one symbol's body or an exact line span (`code_read`), text search, literal by default (`code_grep`), search by meaning over indexed chunks (`code_search`, needs `--features code-search`), and usages (`code_refs`): call sites of a name, callers of one definition, implementors of a trait / interface / base class, importers of a module, and go-to-definition (**scope- and import-aware**, JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)). `find_files` locates or lists files, documents included. Layered over [300+ languages](#how-it-works). | `code_outline` · `code_symbols` · `code_read` · `code_grep` · `code_search` · `code_refs` · `find_files` |
+| **Code intelligence** | Read the code map instead of opening files: what a file contains (`code_outline`), where a name is defined (`code_symbols`), one symbol's body or an exact line span (`code_read`), exact text search over code and text files, literal by default (`code_grep`), search by meaning over indexed chunks (`code_search`, needs `--features code-search`), and usages (`code_refs`): call sites of a name (matched by name), callers of one definition, implementors of a trait / interface / base class, importers of a module, and go-to-definition (scope- and import-aware once a `path` pins the definition: JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)). `find_files` locates or lists files, documents included. Layered over [300+ languages](#how-it-works). | `code_outline` · `code_symbols` · `code_read` · `code_grep` · `code_search` · `code_refs` · `find_files` |
 | **Git intelligence** | Ask what changed recently, which commits touched a file, which commit mentions a phrase (full-text over messages and authors at full branch depth), when a symbol's body changed, who last touched a line or a function, and how a file differs between revisions or from the working tree, as text hunks or as symbols added and removed. | `git_log` · `git_blame` · `git_diff` |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory_save` · `memory_search` · `docs_search` |
 | **Agent comms** | Threads addressed by subject, path-glob, and members; scope discovery; inbox delivery; lifecycle status; and dry-run/apply retention cleanup. | `agents` (`register` · `list` · `thread_start` · `thread_list` · `join` · `leave` · `members` · `add_member` · `remove_member` · `archive` · `post` · `history` · `message` · `inbox` · `ack` · `wait` · `cleanup` · `status`) |
@@ -196,14 +196,11 @@ launcher downloads the matching published basemind binary, or uses `BASEMIND_BIN
 <details>
 <summary><strong>Hermes</strong></summary>
 
-[Install the program](#install-the-program) first. Install the locally generated wheel into the
-same Python environment Hermes runs in, then enable the plugin:
+[Install the program](#install-the-program) first. Install the plugin into the same Python
+environment Hermes runs in, at the version of your `basemind` binary, then enable it:
 
 ```bash
-git clone https://github.com/Goldziher/basemind
-cd basemind
-uv build --wheel --out-dir dist/hermes plugin/.hermes/package
-python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-0.29.3-py3-none-any.whl
+python -m pip install "basemind-hermes-plugin==$(basemind --version | awk '{print $2}')"
 hermes plugins enable basemind
 ```
 
@@ -213,8 +210,13 @@ The binary must be on `PATH`. Comms notifications are
 best-effort. You can also configure `mcp_servers.basemind` with `command: basemind` and
 `args: [serve]` for direct access to the tools.
 
-PyPI version 0.29.3 predates the skill-registration fix and MCP bridge. Use the source wheel above
-until a newer release includes these changes; reinstalling that published version will not add them.
+To run a binary built from a checkout, build the wheel from the same checkout, so its skills name
+the tools that binary serves:
+
+```bash
+uv build --wheel --out-dir dist/hermes plugin/.hermes/package
+python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-*.whl
+```
 
 </details>
 
@@ -465,9 +467,9 @@ real callers and report the remainder as complete. Filter on `resolved` when you
 The code map is **code only**. Prose, data and config files — Markdown, reStructuredText, AsciiDoc,
 vimdoc, CSV, JSON, YAML, TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes`
 and Fluent — go to the document tier instead: they are chunked and searched as text with
-`docs_search` (gated by `[documents] include` / `exclude`), and no longer show up in `code_outline`,
-`code_symbols` and `code_grep`. `find_files` still covers them, labelled by grammar name or
-extension. An existing index migrates on its next scan. A build
+`docs_search` (gated by `[documents] include` / `exclude`), and no longer show up in `code_outline`
+and `code_symbols`. `code_grep` still searches them as text, and `find_files` still covers them,
+labelled by grammar name or extension. An existing index migrates on its next scan. A build
 without the `documents` feature keeps the old behaviour, where those files are outlined as code.
 
 ```mermaid
@@ -493,7 +495,8 @@ Search and memory are powered by a vector store ([LanceDB]).
 The daemon answers the MCP handshake immediately and warms the code map into memory in the
 background, so a client never blocks waiting for a large repo to load. The `status` tool reports
 `warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
-`indexing` / `index_build_ms`.
+`indexing` / `index_build_ms`, and the boot-time git-history sync `history_syncing` (a `git_log` or
+`git_blame` cursor issued before it ends may be refused as stale).
 
 While the server isn't fully ready, `status` and every code-map read tool may carry a `notice`
 object — `{ state, message, retry }` — instead of (or alongside) their normal result:
@@ -755,8 +758,11 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 <details>
 <summary><strong>Measuring query latency (<code>elapsed_us</code>)</strong></summary>
 
-Every latency-relevant tool — the code, git, document and memory lookups and `index_status` —
-reports its own latency as **`elapsed_us`** on its response.
+`code_outline`, `code_search`, `docs_search`, `git_blame`, the memory tools and `index_status`
+report their own latency as **`elapsed_us`** on their response. The locating tools (`code_symbols`, `code_grep`, `code_refs`,
+`find_files`, `git_log`, `git_diff`) leave it out: their answer is a short list, and a timing field
+on it would cost as much as a row. Telemetry records every call's latency, and the CLI times the
+call itself when the response has no `elapsed_us`.
 Don't wrap the CLI in `time`; ask basemind.
 
 Resolution is **microseconds** on purpose: an indexed `git_log` with `path` is ~37 µs, so
@@ -782,7 +788,7 @@ part of a `time basemind …` measurement that was never the query — and a lon
 it once at boot, not per call:
 
 ```console
-$ basemind code symbols run_workspace_grep --limit 1 --json
+$ basemind code outline src/store.rs --json
 {
   ...
   "elapsed_us": 90,        # the query
@@ -1116,12 +1122,12 @@ arguments are 1-based.
 | `0` | Success. |
 | `1` | Runtime error. |
 | `2` | Usage error: bad flag or argument (including an invalid `rescan` path, or a destructive command without `--yes`). |
-| `3` | Busy: another process holds the workspace writer lock. Retry later, or use `basemind rescan`, which the daemon serves. |
+| `3` | Busy: another process holds the workspace writer lock, or the daemon a scan was forwarded to is stopping. Retry later. |
 | `4` | A required daemon is unreachable. |
 | `130` | Interrupted by Ctrl-C; completed work is committed and the index stays consistent. |
 
 With a comms daemon running, the one-shot CLI forwards memory operations, reference/caller reads,
-the grep prefilter and rescans to it (the daemon is the sole index writer) instead of failing or
+the grep prefilter, scans and rescans to it (the daemon is the sole index writer) instead of failing or
 degrading to a truncated in-memory view.
 
 **Code (`basemind code`)**
@@ -1218,7 +1224,7 @@ after handling it so each thread's inbox cursor advances independently.
 
 | Command | Purpose |
 |---|---|
-| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. |
+| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. With a daemon running, a working-tree scan is forwarded to it; a flag it cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a `--documents-*` / `--llm-*` override) is refused with exit 2, and `--staged` / `--rev` exit 3 while the daemon holds the workspace. A scan starts no daemon. |
 | `rescan [<path>…] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or with none the whole tree. Routed through the daemon when one runs. |
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |

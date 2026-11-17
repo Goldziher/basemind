@@ -146,6 +146,15 @@ pub fn memory_store_dir(root: &Path) -> PathBuf {
     repo_group_dir(root).join(MEMORY_STORE_DIR)
 }
 
+/// [`memory_store_dir`] of the group keyed `group` ([`repo_group_key`]), for a root that is gone.
+pub fn group_memory_store_dir(group: &str) -> PathBuf {
+    cache_root()
+        .join(CACHE_DIR)
+        .join(REPOS_DIR)
+        .join(group)
+        .join(MEMORY_STORE_DIR)
+}
+
 /// Directory, beside [`MEMORY_STORE_DIR`], that holds the vector stores of the memory notes: one
 /// subdirectory per embedding model and dimension.
 pub const MEMORY_VECTORS_DIR: &str = "memory.lance";
@@ -189,6 +198,11 @@ pub struct WorkspaceMarker {
     pub root: PathBuf,
     /// Unix-epoch seconds when the marker was (re)written. Diagnostics only.
     pub updated_unix: i64,
+    /// The root's repository group ([`repo_group_key`]), recorded while the root exists: a collector
+    /// that finds the root gone can no longer resolve it, and a linked worktree's group is not the
+    /// hash of its own root. `None` in a marker written before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// Idempotently record `root` in `basemind_dir/workspace.json`.
@@ -201,6 +215,7 @@ pub fn ensure_workspace_marker(basemind_dir: &Path, root: &Path) {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if let Some(existing) = read_workspace_marker(basemind_dir)
         && existing.root == canonical
+        && existing.group.is_some()
     {
         return;
     }
@@ -208,9 +223,11 @@ pub fn ensure_workspace_marker(basemind_dir: &Path, root: &Path) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let group = Some(repo_group_key(&canonical));
     let marker = WorkspaceMarker {
         root: canonical,
         updated_unix,
+        group,
     };
     let Ok(bytes) = serde_json::to_vec(&marker) else {
         return;
@@ -238,8 +255,8 @@ pub struct StatusSidecar {
     /// Number of code files in the working view's index (`Index::files.len()` — the same population
     /// the MCP `status` tool reports as `file_count`).
     pub file_count: usize,
-    /// Number of content-addressed filemap blobs on disk (`*.fm.msgpack` in the global blob store),
-    /// counted consistently with the MCP `status` tool's `blob_count`.
+    /// Number of distinct file contents the working view's file map holds, one filemap blob each.
+    /// Unlike the MCP `status` tool's `blob_count`, it counts this workspace's blobs only.
     pub blob_count: usize,
     /// Unix-epoch seconds when the sidecar was written (i.e. when the scan that produced it finished).
     pub scanned_unix: i64,
@@ -431,11 +448,83 @@ fn marked_isolated_root(path: PathBuf) -> Option<PathBuf> {
     path.join(ISOLATION_MARKER).is_file().then_some(path)
 }
 
-/// Sets `$BASEMIND_DATA_HOME` exactly once (via [`std::sync::Once`]) to a leaked [`tempfile::TempDir`]
-/// so it outlives every test in the binary, and is idempotent across the many fixture constructors
-/// that call it. Workspace-keying + content-addressed blobs keep tests mutually isolated even
-/// though they share this one cache root, so all tests in a binary can safely share it — no
-/// per-test env churn, no races on `set_var`.
+/// Name prefix of a cache dir created by [`init_isolated_cache`], so the stale sweep only stats
+/// directories it could have created.
+#[cfg(any(feature = "test-support", test))]
+const ISOLATED_CACHE_PREFIX: &str = "basemind-test-";
+
+/// The `tempfile` default prefix, which isolated caches carried before they were named.
+#[cfg(any(feature = "test-support", test))]
+const LEGACY_ISOLATED_CACHE_PREFIX: &str = ".tmp";
+
+/// A marked cache this old belongs to a test process that was killed before its exit handler ran.
+#[cfg(any(feature = "test-support", test))]
+const STALE_ISOLATED_CACHE_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Removals per sweep, so a backlog costs a test binary's start-up a bounded amount of work.
+#[cfg(any(feature = "test-support", test))]
+const MAX_STALE_REMOVALS: usize = 64;
+
+/// The isolated cache this process created (never one it adopted), removed at process exit.
+#[cfg(any(feature = "test-support", test))]
+static CREATED_ISOLATED_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// `atexit` handler: best-effort removal of [`CREATED_ISOLATED_ROOT`]. A daemon still holding files
+/// there (or Windows refusing to delete an open file) only leaves debris for the stale sweep.
+#[cfg(any(feature = "test-support", test))]
+extern "C" fn remove_created_isolated_cache() {
+    if let Some(root) = CREATED_ISOLATED_ROOT.get() {
+        // Unwinding out of an `extern "C"` fn aborts the exiting process. ~keep
+        let _ = std::panic::catch_unwind(|| std::fs::remove_dir_all(root));
+    }
+}
+
+/// Remove marked isolated caches directly under `temp_root` whose marker is at least `max_age`
+/// old, returning how many were removed. Only entries named with [`ISOLATED_CACHE_PREFIX`] or
+/// [`LEGACY_ISOLATED_CACHE_PREFIX`] are inspected, nothing is descended into, and a directory
+/// without [`ISOLATION_MARKER`] is never touched. Errors are ignored.
+#[cfg(any(feature = "test-support", test))]
+fn sweep_stale_isolated_caches(temp_root: &Path, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(temp_root) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if removed >= MAX_STALE_REMOVALS {
+            break;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with(ISOLATED_CACHE_PREFIX) || name.starts_with(LEGACY_ISOLATED_CACHE_PREFIX)) {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let dir = entry.path();
+        let Ok(marker) = std::fs::symlink_metadata(dir.join(ISOLATION_MARKER)) else {
+            continue;
+        };
+        let stale = marker.is_file()
+            && marker
+                .modified()
+                .ok()
+                .and_then(|written| now.duration_since(written).ok())
+                .is_some_and(|age| age >= max_age);
+        if stale && std::fs::remove_dir_all(&dir).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Sets `$BASEMIND_DATA_HOME` exactly once (via [`std::sync::Once`]) to a temp dir that outlives
+/// every test in the binary, and is idempotent across the many fixture constructors that call it.
+/// The process that created the dir removes it at exit; ones left by killed processes are swept
+/// when the next one is created. Workspace-keying + content-addressed blobs keep tests mutually
+/// isolated even though they share this one cache root, so all tests in a binary can safely share
+/// it — no per-test env churn, no races on `set_var`.
 ///
 /// Also pins `$BASEMIND_COMMS_DIR` under the same tempdir. On a `comms` build the real `basemind
 /// serve` binary is a `daemon_writer` that forwards every write to the machine daemon (auto-spawned
@@ -458,13 +547,26 @@ pub fn init_isolated_cache() {
         //
         // The marker is what makes adoption safe: an unmarked `$BASEMIND_DATA_HOME` is a developer's
         // REAL cache, and a test must never be pointed at that. ~keep
-        let root: &Path = match inherited_isolated_root() {
-            Some(path) => Box::leak(Box::new(path)).as_path(),
+        let root: PathBuf = match inherited_isolated_root() {
+            Some(path) => path,
             None => {
-                let dir = Box::leak(Box::new(tempfile::tempdir().expect("create isolated cache tempdir")));
-                std::fs::write(dir.path().join(ISOLATION_MARKER), b"basemind test cache\n")
+                let temp_root = std::env::temp_dir();
+                sweep_stale_isolated_caches(&temp_root, STALE_ISOLATED_CACHE_AGE);
+                let dir = tempfile::Builder::new()
+                    .prefix(ISOLATED_CACHE_PREFIX)
+                    .tempdir_in(&temp_root)
+                    .expect("create isolated cache tempdir")
+                    .keep();
+                std::fs::write(dir.join(ISOLATION_MARKER), b"basemind test cache\n")
                     .expect("write the isolated-cache marker");
-                dir.path()
+                if CREATED_ISOLATED_ROOT.set(dir.clone()).is_ok() {
+                    // SAFETY: registers a plain `extern "C" fn()` with no captured state; it reads
+                    // only the `OnceLock` set just above. ~keep
+                    unsafe {
+                        libc::atexit(remove_created_isolated_cache);
+                    }
+                }
+                dir
             }
         };
         let comms_dir = root.join("comms");
@@ -569,6 +671,45 @@ mod daemon_isolation_tests {
         assert_eq!(
             resolved, None,
             "an unmarked data home is the developer's real cache and must not be adopted"
+        );
+    }
+
+    /// A killed test process never runs its exit handler, so its cache is reclaimed by the next
+    /// one's sweep: stale marked dirs (new and legacy names) go, while an unmarked dir and a fresh
+    /// marked dir stay.
+    #[test]
+    fn the_sweep_removes_only_stale_marked_caches() {
+        let temp_root = tempfile::tempdir().expect("tempdir");
+        let age = STALE_ISOLATED_CACHE_AGE;
+        let long_ago = std::time::SystemTime::now() - age - std::time::Duration::from_secs(60);
+        let make = |name: &str, marker_written: Option<std::time::SystemTime>| {
+            let dir = temp_root.path().join(name);
+            std::fs::create_dir_all(dir.join("cache")).expect("create candidate");
+            if let Some(written) = marker_written {
+                let marker = dir.join(ISOLATION_MARKER);
+                std::fs::write(&marker, b"basemind test cache\n").expect("write marker");
+                std::fs::File::options()
+                    .write(true)
+                    .open(&marker)
+                    .and_then(|file| file.set_modified(written))
+                    .expect("backdate marker");
+            }
+            dir
+        };
+        let stale = make("basemind-test-stale", Some(long_ago));
+        let legacy = make(".tmpLegacy", Some(long_ago));
+        let unmarked = make("basemind-test-unmarked", None);
+        let fresh = make("basemind-test-fresh", Some(std::time::SystemTime::now()));
+
+        let removed = sweep_stale_isolated_caches(temp_root.path(), age);
+
+        assert_eq!(removed, 2, "exactly the stale and the legacy marked caches are removed");
+        assert!(!stale.exists(), "a stale marked cache must be removed");
+        assert!(!legacy.exists(), "a stale legacy `.tmp*` marked cache must be removed");
+        assert!(unmarked.exists(), "an unmarked dir must never be touched");
+        assert!(
+            fresh.exists(),
+            "a fresh marked cache belongs to a live process and must stay"
         );
     }
 }

@@ -39,7 +39,6 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
             None,
         ));
     }
-    let started = std::time::Instant::now();
     state.await_cache_ready().await;
     run_workspace_grep(
         state,
@@ -54,14 +53,12 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
             literal: !p.regex.unwrap_or(false),
             cursor: p.cursor,
         },
-        started,
     )
     .await
 }
 
 /// `code_symbols`: find definitions by name.
 pub(super) async fn code_symbols(state: &ServerState, p: CodeSymbolsParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     super::helpers_symbols::run_search_symbols(
         state,
         SearchSymbolsParams {
@@ -73,7 +70,6 @@ pub(super) async fn code_symbols(state: &ServerState, p: CodeSymbolsParams) -> R
             format: None,
             cursor: p.cursor,
         },
-        started,
     )
     .await
 }
@@ -189,7 +185,6 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
     let relation = Relation::parse(p.relation.as_deref())?;
     let substring = super::helpers_refs_match::Matching::parse(p.match_mode.as_deref())?
         == super::helpers_refs_match::Matching::Substring;
-    let started = std::time::Instant::now();
     let shape_error = |problem: &str| McpError::invalid_params(format!("`code_refs`: {problem}; {REFS_SHAPES}"), None);
     if relation != Relation::Definition && p.column.is_some() {
         return Err(shape_error("`column` applies only to relation `definition`"));
@@ -213,7 +208,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                     max_tokens: budget(p.max_tokens),
                     cursor: p.cursor,
                 };
-                run_callers(state, callers, started).await
+                run_callers(state, callers).await
             }
             None => {
                 state.await_cache_ready().await;
@@ -231,7 +226,9 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                     },
                     &cache,
                     || state.lifecycle_notice(),
-                    started,
+                    |hits| {
+                        super::index_route::blocking(|| super::helpers_stale::flag_call_sites(state, &cache, hits));
+                    },
                 )
                 .await
             }
@@ -255,7 +252,6 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                 },
                 &cache,
                 || state.lifecycle_notice(),
-                started,
             )
             .await
         }
@@ -268,7 +264,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                     "relation `importers` matches `name` against import paths and takes no `match`",
                 ));
             }
-            run_dependents(state, p.name, p.limit, p.cursor, budget(p.max_tokens), started).await
+            run_dependents(state, p.name, p.limit, p.cursor, budget(p.max_tokens)).await
         }
         Relation::Definition => {
             let (Some(path), Some(line)) = (p.path, p.line) else {
@@ -300,11 +296,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
 /// scan to [`run_find_callers`]: a daemon-hosted connection resolves in-process through the pool's
 /// read-write index, a `daemon_writer` serve forwards to the daemon, and everything else reads its
 /// own store.
-async fn run_callers(
-    state: &ServerState,
-    params: FindCallersParams,
-    started: std::time::Instant,
-) -> Result<CallToolResult, McpError> {
+async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
     let route = IndexRoute::resolve(state).await;
     let store = state.shared.store.read().await;
@@ -336,7 +328,6 @@ async fn run_callers(
         &cache,
         params,
         || state.lifecycle_notice(),
-        started,
     )
     .await
 }
@@ -467,7 +458,6 @@ async fn run_dependents(
     limit: Option<u32>,
     cursor: Option<super::cursor::Cursor>,
     max_tokens: Option<u32>,
-    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     use std::sync::atomic::Ordering;
 
@@ -519,12 +509,10 @@ async fn run_dependents(
     let budgeted = super::budget::apply_budget(page, max_tokens);
     let next = skip + budgeted.items.len();
     json_result(&DependentsResponse {
-        module,
         total,
         budgeted: budgeted.budgeted,
         paths: budgeted.items,
         next_cursor: (next < total).then(|| super::cursor::Cursor::encode_in_memory(next as u64, generation)),
         notice: state.lifecycle_notice(),
-        elapsed_us: elapsed_us(started),
     })
 }

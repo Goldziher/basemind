@@ -15,7 +15,7 @@ use super::ServerState;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use super::helpers_filters::{Filters, PathFilter};
-use super::helpers_grep_text::{annotate_symbols, clip_line, line_text};
+use super::helpers_grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
 use super::index_route::blocking;
 use super::tool_contract::{IndexedFiles, Sweep};
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
@@ -33,18 +33,23 @@ use crate::path::RelPath;
 /// that the cut point is deterministic — a non-deterministic cut would corrupt cursor pagination.
 const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
+tokio::task_local! {
+    /// The cancellation token of the MCP `code_grep` call running on this task. The sweep runs on
+    /// rayon threads that aborting the tool's task does not stop, so it checks the token per file.
+    pub(super) static GREP_CANCEL: tokio_util::sync::CancellationToken;
+}
+
 /// Body of the `code` tool's `grep` mode.
 ///
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
 /// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped and counted in
 /// `skipped_files`), and applies the compiled regex. `limit` caps returned HITS, never files
-/// scanned, so `total_matches` and `total_files_matched` are exact for the scanned window. Supports
+/// scanned, so `total` is exact for the scanned window. Supports
 /// in-memory pagination via `cursor` / `next_cursor` on the same
 /// `encode_in_memory(offset, generation)` scheme as `list_files`.
 pub(super) async fn run_workspace_grep(
     state: &ServerState,
     params: WorkspaceGrepParams,
-    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
@@ -56,10 +61,7 @@ pub(super) async fn run_workspace_grep(
             if snapshot_id != generation {
                 return super::toon::format_result(
                     &WorkspaceGrepResponse {
-                        pattern: params.pattern,
-                        regex: !params.literal,
-                        total_files_matched: 0,
-                        total_matches: 0,
+                        total: 0,
                         truncated: false,
                         truncated_reason: None,
                         budgeted: false,
@@ -68,7 +70,6 @@ pub(super) async fn run_workspace_grep(
                         skipped_files: 0,
                         cursor_invalidated: true,
                         notice: state.lifecycle_notice(),
-                        elapsed_us: super::helpers::elapsed_us(started),
                     },
                     format,
                 );
@@ -109,14 +110,18 @@ pub(super) async fn run_workspace_grep(
 
     let cache = state.shared.cache.load_full();
 
+    let selected = |path: &RelPath, language: &str| {
+        filters.path.as_ref().is_none_or(|f| f.matches(path.as_bytes()))
+            && filters.language.is_none_or(|l| language == l)
+    };
+    let documents = blocking(|| super::helpers_grep_text::text_documents(state, &cache, &selected));
     // Grep needs only path, language and indexed size — every one of them in the symbol-free file
-    // view — so the candidate scan never decodes an outline however large the corpus is.
+    // view — so the candidate scan never decodes an outline however large the corpus is. Code first,
+    // then the text documents, so a cursor's file index means the same file on every page.
     let candidates: Vec<(&RelPath, &super::l1_cache::FileMeta)> = cache
         .file_metas()
-        .filter(|(path, meta)| {
-            filters.path.as_ref().is_none_or(|f| f.matches(path.as_bytes()))
-                && filters.language.is_none_or(|l| *meta.language == *l)
-        })
+        .filter(|(path, meta)| selected(path, &meta.language))
+        .chain(documents.iter().map(|(path, meta)| (path, meta)))
         .collect();
     if candidates.is_empty()
         && let Some(refusal) = super::helpers_files::grep_selects_no_file(state, &cache, &filters)
@@ -130,7 +135,9 @@ pub(super) async fn run_workspace_grep(
     let root = state.shared.root.as_path();
     let files = IndexedFiles::of(state);
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
-    let entries: Vec<GrepEntry> = scanned
+    // Documents have no bloom row: they sit after the code files and are always read.
+    let code_files = scanned.partition_point(|(_, meta)| !meta.hash_hex.is_empty());
+    let entries: Vec<GrepEntry> = scanned[..code_files]
         .iter()
         .map(|(path, meta)| GrepEntry {
             rel: (*path).clone(),
@@ -146,21 +153,42 @@ pub(super) async fn run_workspace_grep(
             .await
             .grep_skip(root, &source, &entries)
             .await
+            .map(|mut skip| {
+                skip.resize(scanned.len(), false);
+                skip
+            })
     } else {
         None
     };
+    let cancel = GREP_CANCEL.try_with(Clone::clone).ok();
+    let cancelled = || {
+        cancel
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    };
     let (counts, skipped_files) = blocking(|| {
         let sweep = Sweep::new(files);
-        count_all(&sweep, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits)
+        count_all(
+            &sweep,
+            &paths,
+            skip.as_deref(),
+            &re,
+            literal.as_ref(),
+            skip_hits,
+            &cancelled,
+        )
     });
+    if cancelled() {
+        return Err(super::tasks::request_cancelled());
+    }
 
-    let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
-    let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
+    let total = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
 
     let (selected, limit_resume) = select_hits(&counts, limit, skip_files, skip_hits);
     // Judged against the file the bytes were read from: an external path is not under `root`.
     let is_fresh = |file_idx: usize, file: &std::path::Path, bytes: &[u8]| {
-        super::freshness::matches_index(scanned[file_idx].1.into(), file, bytes)
+        let meta = scanned[file_idx].1;
+        meta.hash_hex.is_empty() || super::freshness::matches_index(meta.into(), file, bytes)
     };
     let (mut hits, hit_cursors) = blocking(|| {
         materialize(
@@ -186,7 +214,7 @@ pub(super) async fn run_workspace_grep(
         (None, false) => None,
     };
 
-    let budget = super::budget::apply_budget(hits, params.max_tokens);
+    let budget = super::budget::apply_budget_by_path(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
         let resume = hit_cursors
@@ -199,10 +227,7 @@ pub(super) async fn run_workspace_grep(
 
     super::toon::format_result(
         &WorkspaceGrepResponse {
-            pattern: params.pattern,
-            regex: !params.literal,
-            total_files_matched,
-            total_matches,
+            total,
             truncated: byte_budget_hit,
             truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
             budgeted,
@@ -211,7 +236,6 @@ pub(super) async fn run_workspace_grep(
             skipped_files,
             cursor_invalidated: false,
             notice: state.lifecycle_notice(),
-            elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
     )
@@ -261,7 +285,7 @@ fn apply_byte_budget<'a, 'b>(
 /// the totals mean "matches remaining from the cursor position", not "matches in the repo".
 ///
 /// Also returns how many files could not be searched: gone, leading out of the repository, or
-/// opened and found unreadable or not UTF-8.
+/// opened and found unreadable or not UTF-8. Once `cancelled` says so, no further file is read.
 fn count_all(
     sweep: &Sweep<'_>,
     scanned: &[&RelPath],
@@ -269,12 +293,13 @@ fn count_all(
     re: &LineRegex,
     literal: Option<&Finder<'static>>,
     skip_hits: u32,
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> (Vec<u32>, usize) {
     let searched: Vec<Option<u32>> = scanned
         .par_iter()
         .enumerate()
         .map(|(i, path)| {
-            if skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
+            if cancelled() || skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
                 return Some(0);
             }
             with_indexed_bytes(sweep.path(path), sweep.max_file_bytes(), |bytes| {
@@ -555,13 +580,27 @@ fn collect_hits(
 
     let mut out = Vec::with_capacity(sel.take);
     let text = lines_end_at_lf(re, source);
-    for (ordinal, mat) in line_matches(re, &text).enumerate().skip(sel.hit_skip as usize) {
+    let line_of = |byte: usize| line_starts.partition_point(|&ls| ls <= byte).saturating_sub(1);
+    // Every match of the file is walked, the skipped ones too, so whether a match shares its line
+    // is decided over the file and not over this page.
+    let mut matches = line_matches(re, &text).enumerate().peekable();
+    let mut previous_line: Option<usize> = None;
+    while let Some((ordinal, mat)) = matches.next() {
         if out.len() >= sel.take {
             break;
         }
         let match_start = mat.start();
-        let line_idx = line_starts.partition_point(|&ls| ls <= match_start).saturating_sub(1);
+        let line_idx = line_of(match_start);
+        let shares_line = previous_line == Some(line_idx)
+            || matches
+                .peek()
+                .is_some_and(|(_, next)| line_of(next.start()) == line_idx);
+        previous_line = Some(line_idx);
+        if ordinal < sel.hit_skip as usize {
+            continue;
+        }
         let line_start_byte = line_starts[line_idx];
+        let line = line_text(source, &line_starts, line_idx);
 
         let context_before =
             (include_context && line_idx > 0).then(|| clip_line(line_text(source, &line_starts, line_idx - 1), 0, 0));
@@ -574,11 +613,8 @@ fn collect_hits(
                 path: path.clone(),
                 line: (line_idx as u32) + 1,
                 column: (match_start - line_start_byte) as u32 + 1,
-                text: clip_line(
-                    line_text(source, &line_starts, line_idx),
-                    match_start - line_start_byte,
-                    mat.len(),
-                ),
+                write_column: shares_line || line.len() > LINE_TEXT_MAX,
+                text: clip_line(line, match_start - line_start_byte, mat.len()),
                 symbol: None,
                 context_before,
                 context_after,

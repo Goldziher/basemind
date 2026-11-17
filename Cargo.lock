@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-stack-graphs"
-version = "0.14.1"
+version = "0.14.2"
 dependencies = [
  "ahash",
  "basemind-lsp-positions",

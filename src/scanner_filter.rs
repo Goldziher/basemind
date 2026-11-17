@@ -232,6 +232,10 @@ pub(crate) struct Filters {
     /// Whether the document embedder works, probed on the first document that owes vectors.
     #[cfg(feature = "documents")]
     doc_embedder_ready: std::sync::OnceLock<bool>,
+    /// The model identity code vectors are stamped with and reused under: the
+    /// `[documents] embedding_preset`'s [`crate::embeddings::model_key`].
+    #[cfg(feature = "code-search")]
+    pub(crate) model_key: String,
     /// [`crate::config::DocumentsConfig::effective_phase_budget_secs`], to re-arm [`Self::doc_phase`].
     #[cfg_attr(not(feature = "documents"), allow(dead_code))]
     pub(crate) doc_phase_budget_secs: u64,
@@ -269,6 +273,10 @@ pub(crate) struct Filters {
     /// shortly before it may be lost too, so every indexed path is owed its rows again.
     #[cfg_attr(not(any(feature = "code-search", feature = "documents")), allow(dead_code))]
     pub(crate) vector_rows_unsure: bool,
+    /// Set by the first code-chunk embedding that fails in this pass (a model that cannot load or
+    /// download): the rest of the pass indexes the keyword lane only instead of retrying per file.
+    #[cfg(feature = "code-search")]
+    pub(crate) code_embed_failed: std::sync::atomic::AtomicBool,
 }
 
 impl Filters {
@@ -323,6 +331,8 @@ impl Filters {
             doc_phase: std::sync::Arc::default(),
             #[cfg(feature = "documents")]
             doc_embedder_ready: std::sync::OnceLock::new(),
+            #[cfg(feature = "code-search")]
+            model_key: crate::retrieval_wiring::model_key(&config.documents.embedding_preset),
             doc_phase_budget_secs: config.documents.effective_phase_budget_secs(),
             submodule_prefixes,
             eager_l2: config.scan.eager_l2,
@@ -334,6 +344,8 @@ impl Filters {
             reflush_embeds: false,
             verify_blobs: false,
             vector_rows_unsure: false,
+            #[cfg(feature = "code-search")]
+            code_embed_failed: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -359,16 +371,9 @@ impl Filters {
     /// Whether the document embedder embeds now; probed once per scan.
     #[cfg(feature = "documents")]
     pub(crate) fn doc_embedder_ready(&self, config: &crate::config::Config) -> bool {
-        *self.doc_embedder_ready.get_or_init(|| {
-            crate::extract::doc::text::document_embedder_ready(
-                &config.documents.embedding_preset,
-                config
-                    .resources
-                    .effective_embed_threads(config.documents.embed_max_threads),
-                config.resources.embed_batch_size,
-                config.resources.onnx_provider,
-            )
-        })
+        *self
+            .doc_embedder_ready
+            .get_or_init(|| self.retrieval.documents.embedder_ready(config))
     }
 
     /// `[documents] include/exclude`: may `rel` be indexed as a document.
