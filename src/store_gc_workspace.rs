@@ -136,11 +136,30 @@ fn reap_orphaned_workspaces_at(workspaces_dir: &Path, now: SystemTime) -> Result
             }
             continue;
         };
-        if marker.root.exists() {
-            report.kept_live += 1;
-            continue;
+        // Only a definite "not found" reads as deleted: `exists()` is false for a root this process
+        // may not stat (EPERM, EACCES) or a stale mount (ESTALE), and that cache is not an orphan. ~keep
+        match marker.root.try_exists() {
+            Ok(true) => {
+                report.kept_live += 1;
+                continue;
+            }
+            Err(error) => {
+                report.kept_unverifiable += 1;
+                tracing::debug!(
+                    workspace = %workspace_dir.display(),
+                    root = %marker.root.display(),
+                    %error,
+                    "workspace root cannot be checked; keeping"
+                );
+                continue;
+            }
+            Ok(false) => {}
         }
-        if marker.root.parent().is_some_and(|parent| !parent.exists()) {
+        if marker
+            .root
+            .parent()
+            .is_some_and(|parent| !matches!(parent.try_exists(), Ok(true)))
+        {
             report.kept_unverifiable += 1;
             tracing::debug!(
                 workspace = %workspace_dir.display(),
@@ -517,6 +536,31 @@ mod tests {
             group_note(&group, &tmp.path().join("reader")).as_deref(),
             Some(&b"only copy"[..])
         );
+    }
+
+    /// A root this process may not stat is not a deleted root: `exists()` read the permission error
+    /// as "gone" and the reaper deleted a live workspace's cache.
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_whose_root_cannot_be_checked_is_never_reaped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let guarded = tmp.path().join("guarded");
+        let root = make_root(&guarded, "repo");
+        let workspace = seed_workspace(&workspaces, "key-guarded", Some(&root), &["e".repeat(64).as_str()]);
+        fs::set_permissions(&guarded, fs::Permissions::from_mode(0o000)).expect("deny the parent");
+        let unreadable = root.try_exists().is_err();
+
+        let report = reap_orphaned_workspaces_in(&workspaces);
+        fs::set_permissions(&guarded, fs::Permissions::from_mode(0o755)).expect("restore");
+        let report = report.expect("reap");
+
+        assert!(unreadable, "the root could not be checked, or this test proves nothing");
+        assert_eq!(report.reaped, 0, "a root that cannot be checked is not a deleted one");
+        assert_eq!(report.kept_unverifiable, 1);
+        assert!(workspace.exists());
     }
 
     #[test]
