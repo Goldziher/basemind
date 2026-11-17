@@ -98,7 +98,8 @@ impl Supervisor {
 
     fn bind(&self, role: Role, source: Source) -> Result<(), SupervisorError> {
         let inner = &self.inner;
-        // Held until the record is written, so a failed write undoes only its own binding.
+        // Held until the binding is made, after its record: no other registration or release
+        // comes between the check and the binding.
         let _registering = inner
             .registering
             .lock()
@@ -110,7 +111,7 @@ impl Supervisor {
         // A process bound in-process takes the role's requests on its stdio: on Linux it is made
         // non-dumpable first, so no process of the user can write into it through /proc.
         let sealed = !matches!(source, Source::InProcess) || nested || crate::host::seal();
-        let mut table = inner.table();
+        let table = inner.table();
         let bound = if inner.registrations.load(Ordering::SeqCst) >= MAX_REGISTRATIONS {
             Err(SupervisorError::RegistrationLimit)
         } else if nested {
@@ -118,7 +119,7 @@ impl Supervisor {
         } else if !sealed {
             Err(SupervisorError::HostDumpable)
         } else {
-            register(&inner.policy, &mut table, role.clone(), source)
+            register(&inner.policy, &table, &role, source)
         };
         drop(table);
         let mut record = AuditRecord {
@@ -134,10 +135,11 @@ impl Supervisor {
         };
         record.peer = Some(id.pid.unsigned_abs());
         inner.registrations.fetch_add(1, Ordering::SeqCst);
-        if let Err(error) = inner.audit(&record) {
-            inner.table().registered.retain(|entry| *entry != (role.clone(), id));
-            return Err(SupervisorError::Audit(error));
-        }
+        // The binding is made only once its record is written, so nothing is admitted under it
+        // that the log would show before the registration, or after a registration it lost.
+        // `registering` keeps another binding or release of the role out meanwhile.
+        inner.audit(&record).map_err(SupervisorError::Audit)?;
+        inner.table().registered.push((role, id));
         Ok(())
     }
 
