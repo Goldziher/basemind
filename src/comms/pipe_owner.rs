@@ -25,7 +25,7 @@ const TOKEN_USER: u32 = 1;
 unsafe extern "system" {
     fn GetNamedPipeServerProcessId(pipe: isize, server_pid: *mut u32) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-    fn GetCurrentProcess() -> isize;
+    fn GetCurrentProcess() -> *mut c_void;
     fn CloseHandle(handle: isize) -> i32;
 }
 
@@ -70,7 +70,7 @@ fn served_by_this_user(client: &NamedPipeClient) -> std::io::Result<bool> {
     // SAFETY: `server` is a handle this function opened and closes once.
     unsafe { CloseHandle(server) };
     // SAFETY: the pseudo-handle of the current process needs no closing.
-    let ours = token_user(unsafe { GetCurrentProcess() })?;
+    let ours = token_user(unsafe { GetCurrentProcess() } as isize)?;
     let Ok(theirs) = theirs else {
         return Ok(false);
     };
