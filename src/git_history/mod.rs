@@ -427,8 +427,26 @@ impl GitHistoryIndex {
     /// Drop all data and reset to an empty index at the current schema. Used by `revalidate` when a
     /// history rewrite is detected and by the manual force-rebuild path. Safe because only the
     /// `.basemind/.lock` holder ever opens this DB, so no other process holds a handle.
-    pub fn clear(&self, _basemind_dir: &Path) -> Result<(), GitHistoryError> {
+    pub fn clear(&self) -> Result<(), GitHistoryError> {
         self.require_local()?.clear()
+    }
+
+    /// Record that a build or append for `head` failed at `unix_secs`. Best-effort: a record that
+    /// cannot be written costs one more rebuild.
+    pub(crate) fn record_failed_build(&self, head: &[u8; 20], unix_secs: u64) {
+        if let Some(db) = self.local() {
+            let record = [&head[..], &unix_secs.to_be_bytes()].concat();
+            if let Err(error) = db.meta.insert(keys::META_FAILED_BUILD, record) {
+                tracing::debug!(%error, "could not record a failed git-history build");
+            }
+        }
+    }
+
+    /// When a build or append for `head` last failed, in unix seconds, or `None`.
+    pub(crate) fn failed_build_at(&self, head: &[u8; 20]) -> Option<u64> {
+        let record = self.local()?.meta.get(keys::META_FAILED_BUILD).ok().flatten()?;
+        let (sha, secs) = record.split_at_checked(20)?;
+        (sha == head).then(|| <[u8; 8]>::try_from(secs).ok().map(u64::from_be_bytes))?
     }
 
     /// A batched writer over the underlying Fjall database. Only a local index has one.
@@ -771,6 +789,7 @@ impl GitHistoryWriter {
         meta.insert(&self.db.meta, keys::META_ROOT_SHA, root.to_vec());
         meta.insert(&self.db.meta, keys::META_LAST_HEAD, head.to_vec());
         meta.remove(&self.db.meta, keys::META_BUILD_IN_PROGRESS);
+        meta.remove(&self.db.meta, keys::META_FAILED_BUILD);
         meta.commit()?;
         self.db.compact()?;
         Ok(())
@@ -864,7 +883,7 @@ mod tests {
         writer.finish_meta(&sha20, &sha20, 1, 0, 1).expect("stamp the head");
         assert_eq!(index.last_indexed_head(), Some(sha20));
 
-        index.clear(dir.path()).expect("clear");
+        index.clear().expect("clear");
 
         assert_eq!(index.last_indexed_head(), None);
         assert!(!index.build_interrupted());

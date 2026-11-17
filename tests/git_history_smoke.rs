@@ -291,7 +291,7 @@ fn bench_rebuild_peak_rss() {
     let bdir = root.join(".basemind");
     std::fs::create_dir_all(&bdir).unwrap();
     let index = GitHistoryIndex::open(&bdir).expect("open");
-    index.clear(&bdir).expect("clear");
+    index.clear().expect("clear");
     let start = std::time::Instant::now();
     let outcome = builder::sync(&index, &repo, &bdir).expect("sync");
     let elapsed = start.elapsed();

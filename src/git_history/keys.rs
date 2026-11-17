@@ -18,6 +18,10 @@ pub const META_COMMIT_COUNT: &[u8] = b"commit_count";
 /// written by a run cut off in between are not covered by any posting list, so while this row
 /// exists the index has no indexed head and the next sync rebuilds it.
 pub const META_BUILD_IN_PROGRESS: &[u8] = b"build_in_progress";
+/// `head sha (20 bytes) ‖ unix seconds (u64 BE)` of the last build or append that failed, cleared by
+/// the batch that stamps a head. Lets a sync at that HEAD back off instead of rebuilding the whole
+/// history only to fail at the same commit.
+pub const META_FAILED_BUILD: &[u8] = b"failed_build";
 
 /// `u16:len ‖ bytes`. Returns `None` past the 64 KiB ceiling so a pathological path is skipped
 /// (and falls back to the live walk) rather than panicking inside a rayon worker.

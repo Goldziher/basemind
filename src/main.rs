@@ -516,7 +516,7 @@ fn sync_git_history_after_scan(
             return;
         }
     };
-    if force_rebuild && let Err(error) = index.clear(&basemind_dir) {
+    if force_rebuild && let Err(error) = index.clear() {
         tracing::warn!(?error, "git-history index clear failed");
     }
     match basemind::git_history::builder::sync(&index, &repo, &basemind_dir) {

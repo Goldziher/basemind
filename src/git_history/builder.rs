@@ -39,15 +39,15 @@ pub enum RebuildOutcome {
 /// And only a repository the caller actually rooted at is built: `repo` reaching here from a
 /// workspace root *below* its workdir means an ancestor repository was inherited, which
 /// [`history_scope_ok`](super::history_scope_ok) refuses.
-pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+pub fn sync(index: &GitHistoryIndex, repo: &Repo, _basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
     // Run on a small dedicated pool, not rayon's global one: a first build walks hundreds of thousands
     // of commits in parallel, and on the global pool it starves every other par_iter in the process
     // (a read-stack warm that takes 12 s took 469 s while a 248k-commit build was running).
     // Under thread exhaustion the pool cannot be built; degrade to the caller's thread (slower, and on
     // rayon's global pool) rather than panicking.
     match history_pool() {
-        Some(pool) => pool.install(|| sync_inner(index, repo, basemind_dir)),
-        None => sync_inner(index, repo, basemind_dir),
+        Some(pool) => pool.install(|| sync_inner(index, repo)),
+        None => sync_inner(index, repo),
     }
 }
 
@@ -68,7 +68,7 @@ fn history_pool() -> Option<&'static rayon::ThreadPool> {
     .as_ref()
 }
 
-fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, GitHistoryError> {
     index.require_local()?;
     if !super::history_scope_ok(repo) {
         return Err(GitHistoryError::ForeignHistory {
@@ -91,7 +91,7 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Resu
         && repo.is_ancestor(&last_hex, &head)
         && fingerprint_ok(index, repo, &head)
     {
-        return append_since(index, repo, &last_hex, &head);
+        return append_since(index, repo, &last_hex, &head).inspect_err(|_| record_failure(index, &head));
     }
 
     // The index tracks ONE head, and every worktree of a clone shares it. A linked worktree on its
@@ -101,21 +101,54 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Resu
     // build is left to a linked worktree; afterwards it may append (above) but never wipe. The index
     // is a pure accelerator (tools use it only when `last_indexed_head == HEAD`), so a linked
     // worktree at any other head reads via the live walk: correct, just slower.
+    // An interrupted index makes `is_empty` true, so a linked worktree may rebuild it here and the
+    // main checkout then rebuild it again for its own head ("history-rewrite"): the ping-pong above,
+    // once per interruption. ~keep
     if repo.is_linked_worktree() && !index.is_empty() {
         return Ok(RebuildOutcome::Skipped {
             reason: "linked worktree diverges from the indexed head",
         });
     }
 
-    let reason = if index.build_interrupted() {
+    let interrupted = index.build_interrupted();
+    if interrupted && backing_off(index, &head, now_unix()) {
+        return Ok(RebuildOutcome::Skipped {
+            reason: "a build at this head failed within the hour",
+        });
+    }
+    let reason = if interrupted {
         "interrupted"
     } else if index.is_empty() {
         "initial"
     } else {
         "history-rewrite"
     };
-    index.clear(basemind_dir)?;
-    rebuild(index, repo, reason)
+    index.clear()?;
+    rebuild(index, repo, reason).inspect_err(|_| record_failure(index, &head))
+}
+
+/// How long a sync at the HEAD a build or append failed for leaves the index to the live walk. A
+/// failure that recurs (a commit `commit_record` cannot read, a full disk) would otherwise cost a walk
+/// of the whole history on every scan and every serve start.
+const FAILED_BUILD_BACKOFF_SECS: u64 = 3600;
+
+/// Whether the last failed build was for `head` and is younger than [`FAILED_BUILD_BACKOFF_SECS`].
+fn backing_off(index: &GitHistoryIndex, head: &str, now: u64) -> bool {
+    keys::sha_hex_to_raw(head)
+        .and_then(|head20| index.failed_build_at(&head20))
+        .is_some_and(|failed| now.saturating_sub(failed) < FAILED_BUILD_BACKOFF_SECS)
+}
+
+fn record_failure(index: &GitHistoryIndex, head: &str) {
+    if let Some(head20) = keys::sha_hex_to_raw(head) {
+        index.record_failed_build(&head20, now_unix());
+    }
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Defense-in-depth: even when the ancestry check passes, a rewrite below `last_head` (graft,
@@ -420,7 +453,8 @@ mod tests {
     fn an_append_cut_off_after_a_batch_commit_is_rebuilt_not_skipped() {
         let repo_dir = tempfile::tempdir().expect("tempdir");
         let root = repo_dir.path();
-        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["init", "-q"]);
+        git(root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
         git(root, &["config", "commit.gpgsign", "false"]);
         commit(root, "a.rs", "1", "c1");
         let cache = tempfile::tempdir().expect("cache dir");
@@ -481,5 +515,43 @@ mod tests {
             expected,
             "every commit is in the posting list"
         );
+    }
+
+    /// A build that fails at a commit it cannot read fails again at that commit: a sync at the same
+    /// HEAD leaves the marked index to the live walk for an hour instead of walking the whole
+    /// history each time, then tries again.
+    #[test]
+    fn a_failed_build_is_not_retried_at_the_same_head_within_the_hour() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        let repo = Repo::discover(root).expect("discover");
+        let head = git(root, &["rev-parse", "HEAD"]);
+        let head20 = keys::sha_hex_to_raw(head.trim()).expect("a sha");
+        index
+            .writer()
+            .expect("writer")
+            .begin()
+            .expect("a build that was cut off");
+        index.record_failed_build(&head20, now_unix());
+
+        let outcome = sync(&index, &repo, cache.path()).expect("sync");
+        assert!(matches!(outcome, RebuildOutcome::Skipped { .. }), "{outcome:?}");
+        assert!(index.build_interrupted(), "the marked index is left as it was");
+
+        index.record_failed_build(&head20, now_unix() - FAILED_BUILD_BACKOFF_SECS);
+        let outcome = sync(&index, &repo, cache.path()).expect("sync");
+        assert_eq!(
+            outcome,
+            RebuildOutcome::FullRebuild {
+                reason: "interrupted",
+                commits: 1
+            }
+        );
+        assert_eq!(index.failed_build_at(&head20), None, "a stamped head clears the record");
     }
 }
