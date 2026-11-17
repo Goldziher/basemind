@@ -457,39 +457,51 @@ where
     keep_going
 }
 
-/// Approximate resident cost of one decoded L1, in bytes.
+/// Approximate resident cost of one decoded L1 held by the cache, in bytes.
 ///
-/// Approximate is the point: the budget shapes residency, and an exact `size_of_val` walk would
-/// cost more than the eviction it informs. It counts every heap allocation the value owns (each
-/// `Vec`'s element storage plus each owned `String`'s bytes), so it tracks the order-of-magnitude
-/// spread between a 40-line source file and a generated one — which is the whole reason the budget
-/// is in bytes rather than entries.
+/// Approximate is the point: the budget shapes residency, and an exact walk of the allocator's
+/// books would cost more than the eviction it informs. It counts every heap allocation the value
+/// owns at its capacity, rounded up to the allocator's size class, plus what the cache itself
+/// spends on the entry (the `Arc` header, the LRU node and its content-hash key). Counting lengths
+/// alone, as it once did, charged a short name or signature a few bytes for an allocation that
+/// occupies a whole size class, and charged nothing for the entry: the budget then admitted a heap
+/// noticeably larger than itself. It still tracks the order-of-magnitude spread between a 40-line
+/// source file and a generated one, which is why the budget is in bytes rather than entries.
 pub(crate) fn l1_heap_bytes(l1: &FileMapL1) -> u64 {
-    let mut total = std::mem::size_of::<FileMapL1>() as u64;
-    total += l1.language.len() as u64;
-    total += (l1.symbols.len() * std::mem::size_of::<crate::extract::Symbol>()) as u64;
+    use std::mem::size_of;
+    let strings = |items: &[String]| items.iter().map(|s| alloc_bytes(s.capacity())).sum::<u64>();
+    let mut total = ENTRY_OVERHEAD_BYTES + alloc_bytes(size_of::<FileMapL1>()) + alloc_bytes(l1.language.capacity());
+    total += alloc_bytes(l1.symbols.capacity() * size_of::<crate::extract::Symbol>());
     for sym in &l1.symbols {
-        total += sym.name.len() as u64;
-        total += sym.signature.as_ref().map_or(0, String::len) as u64;
-        total += (sym.decorators.len() * std::mem::size_of::<String>()) as u64;
-        total += sym.decorators.iter().map(|d| d.len() as u64).sum::<u64>();
+        total += alloc_bytes(sym.name.capacity());
+        total += sym.signature.as_ref().map_or(0, |sig| alloc_bytes(sig.capacity()));
+        total += alloc_bytes(sym.decorators.capacity() * size_of::<String>()) + strings(&sym.decorators);
     }
-    total += (l1.imports.len() * std::mem::size_of::<crate::extract::Import>()) as u64;
+    total += alloc_bytes(l1.imports.capacity() * size_of::<crate::extract::Import>());
     for imp in &l1.imports {
-        total += imp.module.as_ref().map_or(0, String::len) as u64;
-        total += imp.raw.len() as u64;
+        total += imp.module.as_ref().map_or(0, |module| alloc_bytes(module.capacity()));
+        total += alloc_bytes(imp.raw.capacity());
     }
-    total += (l1.implementations.len() * std::mem::size_of::<crate::extract::Implementation>()) as u64;
+    total += alloc_bytes(l1.implementations.capacity() * size_of::<crate::extract::Implementation>());
     for imp in &l1.implementations {
-        total += (imp.trait_name.len() + imp.impl_type.len()) as u64;
+        total += alloc_bytes(imp.trait_name.capacity()) + alloc_bytes(imp.impl_type.capacity());
     }
-    total += (l1.rationale.len() * std::mem::size_of::<crate::extract::RationaleRecord>()) as u64;
+    total += alloc_bytes(l1.rationale.capacity() * size_of::<crate::extract::RationaleRecord>());
     for rec in &l1.rationale {
-        total += rec.text.len() as u64;
-        total += (rec.citations.len() * std::mem::size_of::<String>()) as u64;
-        total += rec.citations.iter().map(|c| c.len() as u64).sum::<u64>();
+        total += alloc_bytes(rec.text.capacity());
+        total += alloc_bytes(rec.citations.capacity() * size_of::<String>()) + strings(&rec.citations);
     }
     total
+}
+
+/// What the cache spends on one entry besides the outline: the `Arc` header, the LRU's node and
+/// hash slot, and the boxed 64-hex content-hash key.
+const ENTRY_OVERHEAD_BYTES: u64 = 16 + 64 + 16 + 64;
+
+/// Bytes an allocation of `len` bytes occupies: the allocator serves it from a size class, at
+/// least 16-byte granular. Nothing for an empty (unallocated) buffer.
+fn alloc_bytes(len: usize) -> u64 {
+    if len == 0 { 0 } else { len.next_multiple_of(16) as u64 }
 }
 
 /// Resolve `[resources] max_map_cache_mb` to a byte budget. `0` stays `0` (unbounded).
@@ -539,6 +551,20 @@ mod tests {
             rationale: Vec::new(),
             extract_epoch: crate::extract::EXTRACT_EPOCH,
         }
+    }
+
+    /// A short string occupies a whole allocation, and every entry costs the cache its own node and
+    /// key: a one-symbol outline is charged for both, not for the few bytes of its name.
+    #[test]
+    fn heap_bytes_charges_size_classes_and_the_entry() {
+        let mut l1 = l1_with("a", 1);
+        l1.language = String::new();
+        let floor = ENTRY_OVERHEAD_BYTES
+            + alloc_bytes(std::mem::size_of::<FileMapL1>())
+            + alloc_bytes(std::mem::size_of::<Symbol>())
+            + 16
+            + 16;
+        assert_eq!(l1_heap_bytes(&l1), floor);
     }
 
     /// The charge must scale with a value's own heap, not with the entry count — the exact reason
