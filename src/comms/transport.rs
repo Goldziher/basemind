@@ -27,6 +27,9 @@ use super::protocol::{CommsOut, CommsRequest};
 /// message body while bounding worst-case memory.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
+/// How long one reply may take to write before the link is dropped.
+pub const LINK_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Whether `buf` holds one whole length-delimited frame (`u32` big-endian length, then the body).
 /// A declared length past [`MAX_FRAME_BYTES`] is an error.
 ///
@@ -180,7 +183,12 @@ pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, g
                 }
             }
         };
-        if link.send(out).await.is_err() {
+        // A client that stopped reading would park this task, its link guard and the drain on a
+        // full socket buffer for good. ~keep
+        if !matches!(
+            tokio::time::timeout(LINK_WRITE_TIMEOUT, link.send(out)).await,
+            Ok(Ok(()))
+        ) {
             break;
         }
     }
@@ -199,6 +207,36 @@ mod tests {
                 body: "x".repeat(body_bytes),
             },
         }
+    }
+
+    /// A link whose client stopped reading must end once a reply cannot be written in time,
+    /// releasing its guard so the daemon can idle out and drain.
+    #[tokio::test(start_paused = true)]
+    async fn a_reply_that_cannot_be_written_ends_the_link() {
+        struct Stuck(Option<CommsRequest>);
+        impl CommsLink for Stuck {
+            async fn recv(&mut self) -> std::io::Result<Option<CommsRequest>> {
+                match self.0.take() {
+                    Some(req) => Ok(Some(req)),
+                    None => std::future::pending().await,
+                }
+            }
+            async fn send(&mut self, _out: CommsOut) -> std::io::Result<()> {
+                std::future::pending().await
+            }
+            fn peer_cred(&self) -> PeerCred {
+                PeerCred::default()
+            }
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let guard = broker.register_link();
+        tokio::time::timeout(
+            LINK_WRITE_TIMEOUT * 2,
+            serve_link(Arc::clone(&broker), Stuck(Some(CommsRequest::Ping)), guard),
+        )
+        .await
+        .expect("the link ends when its reply cannot be written");
     }
 
     #[test]
