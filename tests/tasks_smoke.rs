@@ -166,7 +166,12 @@ async fn a_call_past_the_threshold_becomes_a_task_and_completes() {
     };
     let task_id = create.task.task_id.clone();
 
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let final_task = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the task never reached a terminal state"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let info = client
             .peer()

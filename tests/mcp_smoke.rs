@@ -2755,8 +2755,12 @@ async fn rescan_emits_progress_and_no_logging() {
         "logging capability must not be advertised"
     );
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
+    // Progress notifications reach `on_progress` on the client's own task, which may run after the
+    // call's result is returned: wait for both instead of sleeping. The ceiling only stops a hang.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while progress.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     let captured_progress = progress.lock().unwrap().clone();
 
     assert!(
