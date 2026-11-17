@@ -580,6 +580,12 @@ impl IndexDb {
         Self::open_inner(dir, None, false, Some(group_cache_bytes()))
     }
 
+    /// Open the group database at `dir` to read it, writing nothing: no schema stamp, no flush, no
+    /// wipe. An index of another schema is [`IndexError::NeedsRescan`].
+    pub(crate) fn open_group_for_reading(dir: &Path) -> Result<Self, IndexError> {
+        Self::open_inner(dir, None, true, Some(group_cache_bytes()))
+    }
+
     fn open_inner(
         view_dir: &Path,
         memory_dir: Option<&Path>,

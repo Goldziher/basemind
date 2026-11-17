@@ -39,7 +39,7 @@ pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -
     let store = if daemon {
         Store::open_read_only_no_index(root, view).context("open store (blobs only; the daemon holds the index)")?
     } else {
-        Store::open_read_only(root, view).context("open store (read-only)")?
+        Store::open_for_query(root, view).context("open store (read-only)")?
     };
     // A query or a hook would otherwise answer empty with nothing to say why.
     if store.rescan_owed() {

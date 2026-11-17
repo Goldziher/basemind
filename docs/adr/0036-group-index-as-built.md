@@ -32,10 +32,14 @@ force for the clauses that changed. A clause not named here stands.
    `.lock.meta` holder record, in `cache/groups/<group>/`. Contention reports the holder like any
    other store lock.
 3. **ADR-0028 rule 8, "a process that cannot take the lock answers from blobs", is read with
-   ADR-0030 rule 26 ("an open without the workspace lock writes nothing"):** opening the group
-   database writes (journal, schema stamp, incarnation), so a read-only open uses the group index
-   only through a handle its own process already holds, and otherwise answers from blobs. It never
-   takes the group lock. A writer open takes it.
+   ADR-0030 rule 26 ("an open without the workspace lock writes nothing"):** a read-only open never
+   opens the group database the way a writer does (schema stamp, incarnation, journal flush, wipe).
+   It uses a handle its own process already holds. Failing that, a one-shot CLI command run with no
+   daemon tries the group lock once, without waiting, as holder "a one-shot basemind query"; when it
+   wins, it opens the database for reading only (a database with no incarnation or of another
+   schema is not read) and holds the lock until the command exits. A held lock answers from blobs.
+   A long-lived reader (`serve` beside a writer) never takes the group lock: every writer of the
+   group would wait on it. A writer that meets the query's lock retries as for any holder.
 4. **ADR-0028 rule 11, "a workspace's per-view `index.fjall` and `lance/` are deleted when this
    binary first scans it", becomes:** the per-view `index.fjall` is deleted at the writer open of
    each view, before the view is reconciled with the group. The workspace's `lance/` stays until the
@@ -45,15 +49,21 @@ force for the clauses that changed. A clause not named here stands.
 
 - Each stage after this one changes the group layout in place; the single
   `INDEX_PARTITION_REVISION` bump of ADR-0028 rule 12 rides the last of them.
-- With no daemon, every read-only CLI query answers from blobs, in the main worktree too, until a
-  writer in the same process holds the group.
+- With no daemon, a read-only CLI query answers from the group index when no other process holds
+  the group lock, and from blobs while one does (a scan, `serve`, the daemon).
+- A writer starting during a one-shot query waits for it within its usual lock retries; a query
+  longer than those makes the writer report the query as the holder.
 - The per-view index and its tests are gone: the durability tests run against the group layout.
 
 ## Alternatives considered
 
 - **Keep the `BASEMIND_INDEX_GROUP` switch until stage 5** — rejected: it kept two layouts and two
   test matrices alive for a format no release carries.
-- **Let a read-only open take a free group lock** — rejected: the open writes, which ADR-0030 rule
-  26 forbids without the lock a writer holds, and a long-lived reader would lock every writer of
-  the group out.
+- **Let every read-only open take a free group lock** — rejected for long-lived readers, which
+  would lock every writer of the group out; kept for one-shot CLI commands, whose open writes no
+  row.
+- **Serve read-only CLI queries from blobs only** — rejected: `memory get` and `memory list` were
+  refused, and index-backed answers (references, BM25) degraded, whenever no daemon ran.
+- **Auto-spawn the daemon for every read-only CLI query** — rejected: a one-shot command would
+  start a long-lived process, and `BASEMIND_NO_AUTOSPAWN` would leave the refusal in place.
 - **A file named `index.lock`** — rejected: the store lock already records and reports its holder.

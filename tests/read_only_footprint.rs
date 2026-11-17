@@ -53,6 +53,11 @@ impl Home {
 
     /// Run the one-shot CLI against `root`; returns whether it succeeded.
     fn run(&self, root: &Path, args: &[&str]) -> bool {
+        self.output(root, args).0
+    }
+
+    /// Run the one-shot CLI against `root`; returns success, stdout and stderr.
+    fn output(&self, root: &Path, args: &[&str]) -> (bool, String, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_basemind"))
             .arg("--root")
             .arg(root)
@@ -63,7 +68,11 @@ impl Home {
             .env("BASEMIND_NO_AUTOSPAWN", "1")
             .output()
             .expect("run basemind");
-        out.status.success()
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
     }
 
     /// Every `*.fjall` directory and `*.jnl` file under the data home and the comms directory,
@@ -132,11 +141,55 @@ fn reads_after_a_scan_add_no_store() {
 
     assert!(home.run(repo.path(), &["status"]), "status");
     assert!(home.run(repo.path(), &["git", "log"]), "git log");
-    // ~keep With no daemon a read-only CLI does not open the group index (ADR-0036 rule 3), so these
-    // ~keep are refused; what counts is that they leave no notes store behind.
-    home.run(repo.path(), &["memory", "get", "absent"]);
-    home.run(repo.path(), &["memory", "list", "--prefix", "a"]);
+    #[cfg(feature = "memory")]
+    {
+        assert!(home.run(repo.path(), &["memory", "get", "absent"]), "memory get");
+        assert!(
+            home.run(repo.path(), &["memory", "list", "--prefix", "a"]),
+            "memory list"
+        );
+    }
     home.run(repo.path(), &["agents", "inbox"]);
 
     assert_eq!(home.stores(), (scanned, 2), "a read created a store");
+}
+
+/// With no daemon, every read-only CLI command over a scanned workspace answers, from the group
+/// index: the one-shot query opens it for reading under the group lock (ADR-0036 rule 3).
+#[test]
+fn every_read_only_command_answers_with_no_daemon() {
+    let repo = repo();
+    std::fs::write(repo.path().join("b.rs"), b"pub fn beta() {\n    alpha();\n}\n").expect("write b.rs");
+    let home = Home::new();
+    assert!(home.run(repo.path(), &["scan"]), "scan");
+    let scanned = home.stores();
+
+    let answers: &[(&[&str], &str)] = &[
+        (&["status"], "\"file_count\": 2"),
+        (&["code", "outline", "a.rs"], "alpha"),
+        (&["code", "symbols", "alpha"], "a.rs"),
+        (&["code", "read", "a.rs", "--symbol", "alpha"], "pub fn alpha"),
+        (&["code", "grep", "alpha"], "b.rs"),
+        (&["code", "refs", "alpha"], "b.rs"),
+        (&["code", "find", "b.rs"], "b.rs"),
+        (&["git", "log"], "init"),
+        (&["git", "blame", "a.rs"], "\"suspect_sha\""),
+        (&["git", "diff"], "b.rs"),
+    ];
+    for (args, expected) in answers {
+        let out = home.output(repo.path(), args);
+        assert!(out.0, "basemind {args:?} failed: {}", out.2);
+        assert!(
+            out.1.contains(expected),
+            "basemind {args:?} lacks {expected:?}: {}",
+            out.1
+        );
+    }
+    #[cfg(feature = "memory")]
+    for args in [&["memory", "get", "absent"][..], &["memory", "list"][..]] {
+        let out = home.output(repo.path(), args);
+        assert!(out.0, "basemind {args:?} failed: {}", out.2);
+    }
+
+    assert_eq!(home.stores(), scanned, "a read created a store");
 }
