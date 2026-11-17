@@ -114,6 +114,7 @@ impl StoreError {
     }
 }
 
+pub use crate::store_group_live::{LivenessUnknown, doc_key};
 pub use crate::store_lock::{LOCK_CONTENTION_HELP, LockHolder, LockMeta, WriterProbe, probe_writer_lock};
 pub(crate) use crate::store_lock::{
     acquire_lock, acquire_lock_as, lock_contention_message, try_acquire_lock_as, writer_lock_is_held,

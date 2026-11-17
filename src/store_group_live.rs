@@ -1,23 +1,79 @@
-//! Which contents a repository group still holds, for the sweeps of content-keyed index rows.
+//! Which contents a repository group still holds, for the sweeps of content-keyed rows.
 //!
 //! The grep bloom and the BM25 postings are keyed by content, not by path. In a group index
 //! (ADR-0028) one such row serves every worktree of the group holding that content, so a sweep run
 //! by one worktree may drop a row only when no view of the group holds the content: its own
 //! in-memory file map, and the file map on disk of every other view. A file map that cannot be read
 //! and is not provably of another schema makes the liveness unknowable, and the sweep is skipped.
+//!
+//! The document rows of the retrieval store (ADR-0029) are keyed the same way, by [`doc_key`]:
+//! [`Store::group_live_doc_keys`] lists the keys every view of the group names.
 
 use std::path::PathBuf;
 
-use crate::store::{Store, StoreError};
+use ahash::AHashSet;
+
+use crate::store::{Index, Store, StoreError};
 use crate::store_hash_refs::HashRefs;
 
 /// Why the group's liveness could not be established. A sweep given this must delete nothing.
 #[derive(Debug, thiserror::Error)]
-#[error("file map at {path} is unreadable, so the contents it holds are unknown: {source}")]
-pub(crate) struct LivenessUnknown {
-    path: PathBuf,
-    #[source]
-    source: StoreError,
+pub enum LivenessUnknown {
+    /// A view's file map could not be read, so the contents it holds are unknown.
+    #[error("file map at {path} is unreadable, so the contents it holds are unknown: {source}")]
+    UnreadableMap {
+        path: PathBuf,
+        #[source]
+        source: StoreError,
+    },
+    /// The store has no handle on its group index, so the group's other views cannot be listed.
+    #[error("the store at {view_dir} holds no group index handle, so the group's other views are unknown")]
+    NoGroup { view_dir: PathBuf },
+}
+
+/// The key of one document's rows in the retrieval store (ADR-0028 rule 2, ADR-0029): 16 bytes of
+/// blake3 over the blob schema, the content hash and the extraction digest the scan recorded, as
+/// hex. The same bytes extracted under the same settings by the same extractor are one set of rows
+/// wherever and however often they appear; a different setting or a new extractor makes a new set,
+/// so no row of an older extraction is served for a newer one.
+pub fn doc_key(content_hash_hex: &str, doc_digest: &str) -> String {
+    let mut input = Vec::with_capacity(content_hash_hex.len() + doc_digest.len() + 32);
+    input.extend_from_slice(b"basemind/doc_key/1\0");
+    input.extend_from_slice(&crate::extract::SCHEMA_VER.to_le_bytes());
+    for part in [content_hash_hex, doc_digest] {
+        input.extend_from_slice(&u32::try_from(part.len()).unwrap_or(u32::MAX).to_le_bytes());
+        input.extend_from_slice(part.as_bytes());
+    }
+    let hash = crate::hashing::hash_bytes(&input);
+    crate::hashing::hex(&hash)[..32].to_string()
+}
+
+/// Every document key `index` names.
+fn doc_keys_of(index: &Index) -> impl Iterator<Item = String> + '_ {
+    index
+        .doc_files
+        .values()
+        .map(|entry| doc_key(&entry.hash_hex, &entry.config_digest))
+}
+
+/// Call `each` with the file map under every one of `view_dirs`. A view with no file map holds
+/// nothing; one of an older or newer schema, or of an earlier blob layout, is rebuilt by its next
+/// scan before it is read again, so its rows are not a sweep's to keep.
+fn for_each_map(
+    view_dirs: impl IntoIterator<Item = PathBuf>,
+    mut each: impl FnMut(&Index),
+) -> Result<(), LivenessUnknown> {
+    for view_dir in view_dirs {
+        match crate::store::read_index(&view_dir) {
+            Ok(Some(index)) => each(&index),
+            Ok(None)
+            | Err(
+                StoreError::SchemaMismatch { .. } | StoreError::NewerSchema { .. } | StoreError::StaleBlobLayout { .. },
+            ) => {}
+            Err(source) => return Err(LivenessUnknown::UnreadableMap { path: view_dir, source }),
+        }
+    }
+    Ok(())
 }
 
 /// The contents held by the views of a group other than the sweeping one, read from their file maps.
@@ -25,32 +81,19 @@ pub(crate) struct LivenessUnknown {
 pub(crate) struct SiblingContents(HashRefs);
 
 impl SiblingContents {
-    /// The contents named by the file maps under `view_dirs`. A view with no file map holds nothing;
-    /// one of an older or newer schema, or of an earlier blob layout, is rebuilt by its next scan
-    /// before it is read again, so its rows are not this sweep's to keep.
+    /// The contents named by the file maps under `view_dirs` (see [`for_each_map`]).
     pub(crate) fn read(view_dirs: impl IntoIterator<Item = PathBuf>) -> Result<Self, LivenessUnknown> {
         let mut refs = HashRefs::default();
-        for view_dir in view_dirs {
-            match crate::store::read_index(&view_dir) {
-                Ok(Some(index)) => {
-                    for hash in index
-                        .files
-                        .values()
-                        .map(|entry| entry.hash_hex.as_str())
-                        .chain(index.rebuild_pins.iter().map(String::as_str))
-                    {
-                        refs.acquire(hash);
-                    }
-                }
-                Ok(None)
-                | Err(
-                    StoreError::SchemaMismatch { .. }
-                    | StoreError::NewerSchema { .. }
-                    | StoreError::StaleBlobLayout { .. },
-                ) => {}
-                Err(source) => return Err(LivenessUnknown { path: view_dir, source }),
+        for_each_map(view_dirs, |index| {
+            for hash in index
+                .files
+                .values()
+                .map(|entry| entry.hash_hex.as_str())
+                .chain(index.rebuild_pins.iter().map(String::as_str))
+            {
+                refs.acquire(hash);
             }
-        }
+        })?;
         Ok(Self(refs))
     }
 
@@ -88,7 +131,7 @@ impl Store {
         let Some(db) = self.index_db.as_ref() else {
             return Ok(Vec::new());
         };
-        let views = db.sibling_views().map_err(|error| LivenessUnknown {
+        let views = db.sibling_views().map_err(|error| LivenessUnknown::UnreadableMap {
             path: self.view_dir.clone(),
             source: error.into(),
         })?;
@@ -100,6 +143,32 @@ impl Store {
             .map(|(workspace, view)| workspaces.join(workspace).join(crate::store::VIEWS_DIR).join(view))
             .collect())
     }
+
+    /// The document key of every document named by any view of this store's group: this store's own
+    /// file map in memory and every other view's file map on disk, found through the group's view
+    /// records. A retrieval-store row under any other key belongs to no view and may be swept.
+    ///
+    /// Keys are computed from what each file map records (content hash and extraction digest), never
+    /// from the current configuration. Fails, and a sweep must then delete nothing, when the store
+    /// holds no group index handle or a sibling's file map cannot be read.
+    pub fn group_live_doc_keys(&self) -> Result<AHashSet<String>, LivenessUnknown> {
+        if self.index_db.as_ref().is_none_or(|db| db.group.is_none()) {
+            return Err(LivenessUnknown::NoGroup {
+                view_dir: self.view_dir.clone(),
+            });
+        }
+        live_doc_keys_in(&self.index, self.sibling_view_dirs()?)
+    }
+}
+
+/// The document keys named by `own` and by the file maps under `view_dirs`.
+fn live_doc_keys_in(
+    own: &Index,
+    view_dirs: impl IntoIterator<Item = PathBuf>,
+) -> Result<AHashSet<String>, LivenessUnknown> {
+    let mut keys: AHashSet<String> = doc_keys_of(own).collect();
+    for_each_map(view_dirs, |index| keys.extend(doc_keys_of(index)))?;
+    Ok(keys)
 }
 
 #[cfg(test)]
@@ -107,7 +176,40 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::store::{FileEntry, INDEX_FILE, Index};
+    use crate::store::{DocEntry, FileEntry, INDEX_FILE, Index};
+
+    fn doc_entry(hash: &str, digest: &str) -> DocEntry {
+        DocEntry {
+            hash_hex: hash.to_string(),
+            embedding_preset: String::new(),
+            size_bytes: 1,
+            mtime: 0,
+            embedded: false,
+            embed_attempted: false,
+            config_digest: digest.to_string(),
+        }
+    }
+
+    /// A file map holding the documents `docs`, as `(content hash, extraction digest)`.
+    fn doc_map(docs: &[(&str, &str)]) -> Index {
+        let mut index = Index::empty();
+        for (i, (hash, digest)) in docs.iter().enumerate() {
+            index.doc_files.insert(
+                crate::path::RelPath::from(format!("d{i}.pdf").as_str()),
+                doc_entry(hash, digest),
+            );
+        }
+        index
+    }
+
+    fn write_index(view_dir: &Path, index: &Index) {
+        std::fs::create_dir_all(view_dir).expect("view dir");
+        std::fs::write(
+            view_dir.join(INDEX_FILE),
+            rmp_serde::to_vec_named(index).expect("encode"),
+        )
+        .expect("write");
+    }
 
     fn write_map(view_dir: &Path, hashes: &[&str]) {
         std::fs::create_dir_all(view_dir).expect("view dir");
@@ -166,5 +268,41 @@ mod tests {
         let siblings = SiblingContents::read([older]).expect("another schema is not unknown");
 
         assert!(!siblings.holds("h"));
+    }
+
+    #[test]
+    fn live_doc_keys_are_those_every_view_names_under_its_recorded_digest() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (b, c, missing) = (temp.path().join("b"), temp.path().join("c"), temp.path().join("none"));
+        write_index(&b, &doc_map(&[("in-b", "d1")]));
+        write_index(&c, &doc_map(&[("shared", "d1"), ("in-c", "d2")]));
+        let own = doc_map(&[("shared", "d1"), ("own", "d1")]);
+
+        let keys = live_doc_keys_in(&own, [b, c, missing]).expect("readable");
+
+        let expected: AHashSet<String> = [("in-b", "d1"), ("shared", "d1"), ("in-c", "d2"), ("own", "d1")]
+            .into_iter()
+            .map(|(hash, digest)| doc_key(hash, digest))
+            .collect();
+        assert_eq!(keys, expected);
+        assert!(
+            !keys.contains(&doc_key("in-c", "d1")),
+            "the key is the digest the map recorded, not another"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_sibling_file_map_leaves_live_doc_keys_unknown() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let damaged = temp.path().join("damaged");
+        std::fs::create_dir_all(&damaged).expect("view dir");
+        std::fs::write(damaged.join(INDEX_FILE), b"\xc1 not msgpack").expect("write");
+
+        let unknown = live_doc_keys_in(&doc_map(&[("own", "d")]), [damaged]);
+
+        assert!(
+            matches!(unknown, Err(LivenessUnknown::UnreadableMap { .. })),
+            "{unknown:?}"
+        );
     }
 }

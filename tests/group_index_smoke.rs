@@ -156,3 +156,48 @@ fn a_file_map_of_another_incarnation_is_emptied() {
     assert!(reopened.rescan_owed());
     assert!(reopened.index.files.is_empty());
 }
+
+fn doc_entry(hash: &str) -> basemind::store::DocEntry {
+    basemind::store::DocEntry {
+        hash_hex: hash.to_string(),
+        embedding_preset: String::new(),
+        size_bytes: 1,
+        mtime: 0,
+        embedded: false,
+        embed_attempted: false,
+        config_digest: "digest".to_string(),
+    }
+}
+
+/// The retrieval store's sweep keeps a document while any view of the group names it: the sweeping
+/// view's own file map in memory and every other view's on disk (ADR-0028 rule 10).
+#[test]
+fn live_doc_keys_cover_every_view_of_the_group() {
+    layout();
+    let (_tmp, main, linked) = group();
+    let mut b = scan_working(&linked);
+    b.upsert_doc("guide.pdf", doc_entry("in-b"));
+    b.flush().expect("flush the linked view's file map");
+    let mut a = scan_working(&main);
+    a.upsert_doc("notes.pdf", doc_entry("in-a"));
+    let key = |hash: &str| basemind::store::doc_key(hash, "digest");
+
+    let live = a.group_live_doc_keys().expect("a writer holds the group");
+    assert_eq!(live, [key("in-a"), key("in-b")].into_iter().collect());
+
+    b.remove_doc("guide.pdf");
+    b.flush().expect("flush the linked view's file map");
+    let live = a.group_live_doc_keys().expect("a writer holds the group");
+    assert_eq!(
+        live,
+        [key("in-a")].into_iter().collect(),
+        "a document no view names is dead"
+    );
+    drop((a, b));
+
+    let reader = Store::open_read_only_no_index(&main, VIEW_WORKING).expect("open without the index");
+    assert!(
+        reader.group_live_doc_keys().is_err(),
+        "without the group handle the other views are unknown, so nothing is live for certain"
+    );
+}

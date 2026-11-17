@@ -23,6 +23,8 @@ use super::docs_schema::{
 };
 use super::{LanceStore, escape_sql_literal};
 
+pub use crate::store::doc_key;
+
 /// Keys per `doc_key IN (...)` statement of a write or a lookup.
 const KEYS_PER_STATEMENT: usize = 2_000;
 
@@ -49,23 +51,6 @@ pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
     parent
         .join(crate::store_layout::RETRIEVAL_DIR)
         .join(format!("{slug}-{dim}-{}", &hash[..8]))
-}
-
-/// The key of one document's rows: 16 bytes of blake3 over the blob schema, the content hash and
-/// the extraction digest the scan recorded, as hex. The same bytes extracted under the same
-/// settings by the same extractor are one set of rows wherever and however often they appear; a
-/// different setting or a new extractor makes a new set, so no row of an older extraction is
-/// served for a newer one.
-pub fn doc_key(content_hash_hex: &str, doc_digest: &str) -> String {
-    let mut input = Vec::with_capacity(content_hash_hex.len() + doc_digest.len() + 32);
-    input.extend_from_slice(b"basemind/doc_key/1\0");
-    input.extend_from_slice(&crate::extract::SCHEMA_VER.to_le_bytes());
-    for part in [content_hash_hex, doc_digest] {
-        input.extend_from_slice(&u32::try_from(part.len()).unwrap_or(u32::MAX).to_le_bytes());
-        input.extend_from_slice(part.as_bytes());
-    }
-    let hash = crate::hashing::hash_bytes(&input);
-    crate::hashing::hex(&hash)[..32].to_string()
 }
 
 /// The coarse kind of a MIME type, the `kind` filter of `docs_search`.
