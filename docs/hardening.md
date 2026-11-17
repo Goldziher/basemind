@@ -8,7 +8,7 @@ They need Python 3.10+ and nothing outside the standard library.
 |---|---|---|
 | `soak.py` + `analyze.py` | no growth in memory / fds / threads under load, quiet idle, clean shutdown, bounded data dir | load + idle + ~1 min (15 min for a short run, 1 h+ for a release) |
 | `functional_sweep.py` | every verb tool and its CLI command answers with the expected structure; RAG finds planted facts, with filters | 1-3 min (`comms` build); 5-15 min first time on a `full` build (model downloads) |
-| `leak_check.py` | no leaks in one-shot `basemind scan` beyond the bounded tree-sitter pools (macOS `leaks`); no definitely-lost blocks (Linux valgrind) | 1-2 min for the fixtures (`leaks`); several under valgrind; longer with `--repo` |
+| `leak_check.py` | no leaks in one-shot `basemind scan` (macOS `leaks`); no definitely-lost blocks (Linux valgrind); on a `system-allocator` build | 1-2 min for the fixtures (`leaks`); several under valgrind; longer with `--repo` |
 | `selftest_analyze.py` | `analyze.py`'s rules fire on known-bad input and pass known-good input | seconds |
 
 Build first, outside the repository's `target/` if you like:
@@ -165,6 +165,7 @@ case fails, when nothing passed, or when the server advertises a verb tool the s
 ## One-shot leak check (macOS, Linux)
 
 ```bash
+cargo build --release --bin basemind --features "<features>,system-allocator"
 python3 scripts/hardening/leak_check.py --binary "$CARGO_TARGET_DIR/release/basemind" [--repo .]
 ```
 
@@ -172,38 +173,19 @@ Runs `basemind scan` under the platform's checker (`--tool` overrides) with `RAY
 pinned (`--threads`, default 4) on the fixture (code and, on a `documents` build, the documents),
 on two scale fixtures (Rust + Python, 60 and 600 files per language) and optionally a clone of
 `--repo`. `--cmd status` adds more one-shots. The full checker output, with stacks, is kept per run,
-beside `leaks.report.md` and `leaks.json`.
+beside `leaks.report.md` and `leaks.json`. A run fails on any leak and on a run the checker could
+not inspect: `leaks --atExit` (with `MallocStackLogging=1`) on macOS counts every unreachable block,
+`valgrind --leak-check=full` on Linux every "definitely lost" one. Windows has no checker wired up.
 
-On macOS the checker is `leaks --atExit` with `MallocStackLogging=1`.
-
-`leaks` sees only the system malloc zones. basemind's Rust heap is mimalloc, which registers no
-zone, so `leaks` neither scans it nor reports a Rust leak: a C allocation whose only pointer sits in
-a Rust object looks unreferenced. Two process-lifetime tree-sitter structures are held that way and
-are always reported: the per-thread parser pool (`lang::with_parser`; a rayon worker never exits,
-so its thread-local is never dropped) and the per-language compiled-query caches (`lang`,
-`extract::locals`, `intel::stackgraph`). Their size is threads x languages and does not grow with
-files or with scans in one process:
-
-| run | threads | leaks | bytes |
-|---|---|---|---|
-| 100 files (Rust + Python) | 2 | 189 | 43 KB |
-| 4,000 files (Rust + Python) | 2 | 203 | 44 KB |
-| 100 files | 8 | 420 | 108 KB |
-| 4,000 files | 8 | 469 | 122 KB |
-| live daemon (`leaks <pid>`) after ~200 rescans | 14 | 2,962 | 852 KB |
-| same daemon after ~1,000 rescans | 14 | 2,857 | 806 KB |
-
-A run fails on any leak whose stack does not reach `ts_parser_new` / `ts_query_new` from one of
-those owners (`POOLED_TREE_SITTER` in the script), on pooled bytes above `--max-pooled-bytes`
-(default 1 MiB), on the scale fixtures on more pooled parsers than threads x languages or more
-cached queries than 9 per language (a per-file leak on the 600-file run exceeds both), and on a
-run `leaks` could not inspect. A Rust-heap leak is outside what this check can see; the soak's
-memory rules are the guard for it.
-
-On Linux the checker is `valgrind --leak-check=full`, and a run fails on any "definitely lost"
-block or a run valgrind could not inspect. valgrind, too, sees only allocations made through the C
-allocator, but it scans the mimalloc pages for pointers, so the tree-sitter pools above are
-reachable there and need no allowlist. Windows has no checker wired up.
+The binary must use the system allocator (`--features system-allocator`, never shipped); the
+script refuses a mimalloc build. Neither checker sees mimalloc's heap: it maps its own pages and
+registers no malloc zone, so a Rust-heap leak is invisible, and `leaks`, which looks for pointers
+only in malloc zones, stacks and globals, reports every C block a Rust value owns as unreferenced.
+On the shipped allocator a `code-intel-stack` scan reported 1,750 "leaks" (300 KB), all
+tree-sitter state reachable from process-lifetime owners: the per-thread parser pool, the
+per-language query caches, and the stack-graph engines (`intel::stackgraph::ENGINES`; the Python
+`.tsg` compiles 132 stanza queries plus one combined query). The same scans on the system
+allocator report 0, and a build that forgets seven vectors at start-up reports exactly 7.
 
 ## CI (`.github/workflows/hardening.yaml`)
 

@@ -186,13 +186,27 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.leak_tool == 'valgrind' }}
         run: command -v valgrind || { sudo apt-get update && sudo apt-get install -y valgrind; }
 
-      - name: One-shot leak check (${{ matrix.leak_tool }})
+      # ~keep Neither checker sees mimalloc's heap, and `leaks` reports every C block a Rust value owns
+      # ~keep as unreferenced, so the leak check runs the same features on the system allocator.
+      - name: Build the leak-check binary (system allocator)
+        id: leak_build
         if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.leak_tool != '' }}
+        shell: bash
+        env:
+          BUILT: ${{ steps.build.outputs.built }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --bin basemind --features "$BUILT,system-allocator"
+          mkdir -p "$RUNNER_TEMP/leak-bin"
+          cp target/release/basemind "$RUNNER_TEMP/leak-bin/basemind"
+
+      - name: One-shot leak check (${{ matrix.leak_tool }})
+        if: ${{ !cancelled() && steps.leak_build.outcome == 'success' }}
         timeout-minutes: 60
         shell: bash
         run: |
-          python scripts/hardening/leak_check.py --binary "$BASEMIND_BIN" --tool "${{ matrix.leak_tool }}" \
-            --out "$HARDENING_REPORTS/leaks"
+          python scripts/hardening/leak_check.py --binary "$RUNNER_TEMP/leak-bin/basemind" \
+            --tool "${{ matrix.leak_tool }}" --out "$HARDENING_REPORTS/leaks"
 
       - name: One-shot leak check skipped (Windows)
         if: ${{ matrix.leak_tool == '' }}

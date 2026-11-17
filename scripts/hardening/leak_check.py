@@ -2,15 +2,18 @@
 """Definite-leak check of one-shot basemind paths: macOS `leaks --atExit`, Linux valgrind memcheck.
 
 Runs `basemind scan` (and any extra one-shot command given with --cmd) against the generated
-fixture (code + documents) and, optionally, a copy of a real repository, each under the
-platform's leak checker, and reports the leak count, leaked bytes and the allocation sites. A run
-the checker could not inspect is an error, not a pass.
+fixture (code + documents), two scale fixtures and, optionally, a copy of a real repository, each
+under the platform's leak checker, and reports the leak count, leaked bytes and the allocation
+sites. Any leak fails the run; a run the checker could not inspect is an error, not a pass.
+
+The binary must be built with `--features system-allocator`. The shipped allocator, mimalloc,
+takes its memory with mmap and registers no malloc zone, so neither checker sees a Rust-heap leak,
+and `leaks` (which scans only malloc zones for pointers) reports every C allocation a Rust value
+owns, such as the cached tree-sitter queries, as unreferenced. On the system allocator both
+checkers see the whole heap, so a report is a real leak and needs no allowlist.
 
 - macOS: `leaks --atExit` with `MallocStackLogging=1`; counts every unreachable block.
-- Linux: `valgrind --leak-check=full`; counts "definitely lost" blocks. basemind's global
-  allocator is mimalloc, which takes its memory with mmap, so memcheck sees only what goes through
-  the C allocator (tree-sitter, the C and C++ dependencies); mimalloc's pages are still scanned
-  for pointers, so a C block a Rust value still holds is not reported.
+- Linux: `valgrind --leak-check=full`; counts "definitely lost" blocks.
 
 Usage:
     leak_check.py --binary target/release/basemind [--repo PATH] [--cmd "status"] [--tool leaks|valgrind]
@@ -45,26 +48,8 @@ VG_ALLOCATORS = ("malloc", "calloc", "realloc", "operator new", "posix_memalign"
 GROUP_TOTAL = re.compile(r"^\s*(\d+) \(([\d.]+)([KMG]?)(?: bytes)?\) (?:<< TOTAL >>|ROOT )", re.MULTILINE)
 UNIT = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
 
-# Process-lifetime tree-sitter state that `leaks` reports although it is reachable. basemind's Rust
-# heap is mimalloc, which registers no malloc zone, so `leaks` never scans it: a C allocation whose
-# only pointer lives in a Rust object (a Box, an Arc, a hash map's table) looks unreferenced. Two
-# such structures outlive a scan by design: the per-thread parser pool (`lang::with_parser`, one
-# parser per worker thread and language; a rayon worker never exits, so its thread-local is never
-# dropped) and the per-language compiled-query caches (`lang`, `extract::locals`,
-# `intel::stackgraph`). Their size depends on threads x languages, never on files or on how many
-# scans a process runs (measured: docs/hardening.md). A root is allowed only when its tree-sitter
-# constructor was reached from one of these owners, matched on mangled path fragments so a rebuild
-# (new crate hashes) still matches.
-POOLED_TREE_SITTER = {
-    "ts_parser_new": ("8basemind7extract", "8basemind5intel", "8basemind4lang", "8basemind6engine3git11fingerprint"),
-    "ts_query_new": ("8basemind4lang", "8basemind7extract6locals", "8basemind5intel10stackgraph"),
-}
-# Upper bound on compiled queries one language can cache: the combined L1 query, one per
-# `QueryKind` (5), locals, and the stack-graph import and export queries.
-QUERIES_PER_LANGUAGE = 9
-# The scale fixture: two languages, files per language for the small and large run. A cost that
-# grows with files exceeds the per-thread bound on the large run; a bounded one does not.
-SCALE_LANGUAGES = 2
+# The scale fixture: Rust and Python files per language for the small and large run. A leak per
+# file shows as a count that grows from the small run to the large one.
 SCALE_FILES = (60, 600)
 
 
@@ -87,8 +72,7 @@ def _site_of(own: list[str]) -> tuple[str, str]:
 
 
 def leak_groups(report: str) -> list[dict]:
-    """One record per stack group: root count, leaked nodes and bytes, owner frame, C wrapper, and
-    whether it is a pooled tree-sitter allocation (see `POOLED_TREE_SITTER`)."""
+    """One record per stack group: root count, leaked nodes and bytes, owner frame and C wrapper."""
     groups = []
     for block in re.split(r"\n(?=STACK OF )", report):
         head = STACK_HEAD.match(block)
@@ -101,7 +85,6 @@ def leak_groups(report: str) -> list[dict]:
             nodes, size = int(total.group(1)), int(float(total.group(2)) * UNIT[total.group(3)])
         else:
             nodes, size = int(head.group(1)), 0
-        pooled = any(frag in owner for frag in POOLED_TREE_SITTER.get(wrapper, ()))
         groups.append(
             {
                 "roots": int(head.group(1)),
@@ -109,7 +92,6 @@ def leak_groups(report: str) -> list[dict]:
                 "bytes": size,
                 "owner": owner,
                 "wrapper": wrapper,
-                "pooled": pooled,
             }
         )
     return groups
@@ -198,45 +180,43 @@ def run_valgrind(  # noqa: PLR0913, PLR0917
     }
 
 
-def judge(result: dict, threads: int, languages: int | None, max_pooled_bytes: int) -> list[str]:
-    """Why a run fails, empty when it passes. Every leak must be a pooled tree-sitter root, the
-    pooled bytes must stay under `max_pooled_bytes`, and where the language count is known the
-    pooled roots must fit threads x languages parsers plus the per-language query caches."""
+def judge(result: dict) -> list[str]:
+    """Why a `leaks` run fails, empty when it passes: any leaked block, or a leak count the stacks
+    do not account for."""
     if not result["inspected"]:
         return ["leaks could not inspect the process"]
-    reasons = []
+    if not result["leaks"]:
+        return []
     groups = result["groups"]
-    other = [g for g in groups if not g["pooled"]]
-    if other:
-        reasons.append(
-            f"{sum(g['nodes'] for g in other)} leaks outside the tree-sitter pools, first at "
-            f"`{other[0]['owner']} -> {other[0]['wrapper'] or '?'}`"
-        )
-    pooled_nodes = sum(g["nodes"] for g in groups if g["pooled"])
-    if result["leaks"] is not None and pooled_nodes + sum(g["nodes"] for g in other) < result["leaks"]:
-        reasons.append(f"{result['leaks']} leaks reported but only {pooled_nodes} attributed to stacks")
-    pooled_bytes = sum(g["bytes"] for g in groups if g["pooled"])
-    if pooled_bytes > max_pooled_bytes:
-        reasons.append(f"pooled tree-sitter bytes {pooled_bytes} > cap {max_pooled_bytes}")
-    if languages is not None:
-        parsers = sum(g["roots"] for g in groups if g["pooled"] and g["wrapper"] == "ts_parser_new")
-        queries = sum(g["roots"] for g in groups if g["pooled"] and g["wrapper"] == "ts_query_new")
-        if parsers > threads * languages:
-            reasons.append(f"{parsers} pooled parsers > {threads} threads x {languages} languages")
-        if queries > QUERIES_PER_LANGUAGE * languages:
-            reasons.append(f"{queries} cached queries > {QUERIES_PER_LANGUAGE} x {languages} languages")
+    reasons = [
+        f"{result['leaks']} leaks ({result['bytes']} bytes) in {len(groups)} stack groups, first at "
+        f"`{groups[0]['owner']} -> {groups[0]['wrapper'] or '?'}`"
+        if groups
+        else f"{result['leaks']} leaks ({result['bytes']} bytes) and no stack (MallocStackLogging off?)"
+    ]
+    attributed = sum(g["nodes"] for g in groups)
+    if groups and attributed < result["leaks"]:
+        reasons.append(f"only {attributed} of {result['leaks']} leaks attributed to stacks")
     return reasons
 
 
 def judge_valgrind(result: dict) -> list[str]:
-    """Why a valgrind run fails, empty when it passes: any definitely-lost block. memcheck scans
-    mimalloc's pages for pointers, so the tree-sitter pools a Rust value holds are reachable and
-    need no allowlist here."""
+    """Why a valgrind run fails, empty when it passes: any definitely-lost block."""
     if not result["inspected"]:
         return ["valgrind could not inspect the process"]
     if result["leaks"]:
         return [f"{result['leaks']} blocks ({result['bytes']} bytes) definitely lost"]
     return []
+
+
+def uses_mimalloc(binary: Path) -> bool:
+    """Whether `binary` routes Rust allocations through mimalloc: its global-allocator shim calls
+    `mi_malloc_aligned`, which nothing else in basemind does, so the symbol is linked only then."""
+    nm = shutil.which("nm")
+    if nm is None:
+        return False
+    out = subprocess.run([nm, str(binary)], capture_output=True, text=True, check=False).stdout  # noqa: S603
+    return re.search(r"\b_?mi_malloc_aligned$", out, re.MULTILINE) is not None
 
 
 def build_scale_fixture(root: Path, files: int) -> Path:
@@ -304,16 +284,16 @@ def main() -> int:  # noqa: C901, PLR0915
         help="leak checker (default: leaks on macOS, valgrind on Linux)",
     )
     ap.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS for every run (default 4)")
-    ap.add_argument(
-        "--max-pooled-bytes",
-        type=int,
-        default=1024 * 1024,
-        help="cap on leaked bytes attributed to the tree-sitter pools, per run (default 1 MiB)",
-    )
     args = ap.parse_args()
     if args.tool is None or not shutil.which(args.tool):
         sys.stderr.write(
             f"leak_check.py needs macOS `leaks` or Linux `valgrind`; `{args.tool or 'either'}` not found\n"
+        )
+        return 2
+    if uses_mimalloc(args.binary):
+        sys.stderr.write(
+            f"{args.binary} allocates through mimalloc, whose heap neither checker can see; "
+            "build it with `--features system-allocator`\n"
         )
         return 2
     run_one = run_leaks if args.tool == "leaks" else run_valgrind
@@ -330,15 +310,14 @@ def main() -> int:  # noqa: C901, PLR0915
 
     install_cleanup(cleanup)
 
-    # (label, target, isolation, tree-sitter languages when known)
-    targets: list[tuple[str, Path, Isolation, int | None]] = []
+    targets: list[tuple[str, Path, Isolation]] = []
     iso = Isolation("leaks-fixture")
     isolations.append(iso)
-    targets.append(("fixture", build_fixture(iso.root / "repo"), iso, None))
+    targets.append(("fixture", build_fixture(iso.root / "repo"), iso))
     for files in SCALE_FILES:
         iso_s = Isolation(f"leaks-scale{files}")
         isolations.append(iso_s)
-        targets.append((f"scale{files}", build_scale_fixture(iso_s.root / "repo", files), iso_s, SCALE_LANGUAGES))
+        targets.append((f"scale{files}", build_scale_fixture(iso_s.root / "repo", files), iso_s))
     if args.repo:
         iso2 = Isolation("leaks-repo")
         isolations.append(iso2)
@@ -346,22 +325,16 @@ def main() -> int:  # noqa: C901, PLR0915
         subprocess.run(
             ["git", "clone", "-q", "--local", "--no-hardlinks", str(args.repo.resolve()), str(dest)], check=True
         )  # noqa: S603,S607
-        targets.append(("repo", dest, iso2, None))
+        targets.append(("repo", dest, iso2))
 
     extra = {"RAYON_NUM_THREADS": str(args.threads), **dict(kv.split("=", 1) for kv in args.env)}
-    threads = int(extra["RAYON_NUM_THREADS"])
     results = []
-    for label, target, t_iso, languages in targets:
+    for label, target, t_iso in targets:
         for argv in [["scan"], *[shlex.split(c) for c in args.cmd]]:
             name = f"{label}-{'-'.join(argv)}"
             log(f"{args.tool}: basemind {' '.join(argv)} in {label}")
             result = run_one(binary, target, argv, t_iso, out, name, extra)
-            result["reasons"] = (
-                judge(result, threads, languages, args.max_pooled_bytes)
-                if args.tool == "leaks"
-                else judge_valgrind(result)
-            )
-            result["pooled"] = sum(g["bytes"] for g in result["groups"] if g["pooled"])
+            result["reasons"] = judge(result) if args.tool == "leaks" else judge_valgrind(result)
             results.append(result)
 
     ok = all(not r["reasons"] for r in results)
@@ -371,16 +344,15 @@ def main() -> int:  # noqa: C901, PLR0915
         f"- binary: `{binary}`",
         f"- checker: `{args.tool}`",
         f"- env: {extra}",
-        f"- pooled tree-sitter cap: {args.max_pooled_bytes} bytes per run; on the scale fixtures also "
-        f"{threads} threads x {SCALE_LANGUAGES} languages parsers and {QUERIES_PER_LANGUAGE} queries per language",
+        "- pass: no leaked block",
         "",
-        "| run | inspected | leaks | bytes | pooled bytes | verdict | secs | log |",
-        "|---|---|---|---|---|---|---|---|",
+        "| run | inspected | leaks | bytes | verdict | secs | log |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in results:
         verdict = "pass" if not r["reasons"] else "**FAIL**: " + "; ".join(r["reasons"])
         lines.append(
-            f"| {r['label']} | {r['inspected']} | {r['leaks']} | {r['bytes']} | {r['pooled']} | {verdict} | "
+            f"| {r['label']} | {r['inspected']} | {r['leaks']} | {r['bytes']} | {verdict} | "
             f"{r['secs']} | `{r['log']}` |"
         )
     for r in results:

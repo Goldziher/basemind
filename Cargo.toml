@@ -154,6 +154,11 @@ full = ["documents", "documents-ocr", "documents-ner", "memory", "comms", "code-
 
 test-support = []
 
+# The system allocator instead of mimalloc, for leak checking only (`scripts/hardening/leak_check.py`):
+# macOS `leaks` scans the malloc zones, and mimalloc registers none, so on a release build every C
+# allocation a Rust value owns looks unreferenced and a Rust-heap leak is invisible. Never shipped.
+system-allocator = []
+
 [dependencies]
 ahash = "0.8"
 anstream = "1.0"
