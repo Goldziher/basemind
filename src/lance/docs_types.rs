@@ -14,8 +14,12 @@ pub struct DocCite {
     /// First page (slide, for a presentation), 1-based.
     pub page_start: Option<u32>,
     pub page_end: Option<u32>,
-    /// Heading trail, outermost first.
+    /// Heading trail where the text starts, outermost first.
     pub section: Option<Vec<String>>,
+    /// Headings that start inside the text, in order: a hit spanning several short sections names
+    /// each, where `section` names only the one it starts in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headings: Vec<String>,
     /// First source line, 1-based; text sources only.
     pub line_start: Option<u32>,
     pub line_end: Option<u32>,

@@ -446,6 +446,7 @@ pub fn cite_of(hit: &DocChunkHit) -> DocCite {
         line_end: hit.line_end,
         byte_start: hit.byte_start,
         byte_end: hit.byte_end,
+        headings: Vec::new(),
     }
 }
 

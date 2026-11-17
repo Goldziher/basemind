@@ -160,6 +160,7 @@ fn ranked_chunk(doc: &str, ord: u32, text: &str) -> RankedChunk {
             line_end: Some(ord * 10 + 9),
             byte_start: ord * 100,
             byte_end: ord * 100 + 120,
+            headings: Vec::new(),
         },
         text: text.to_string(),
         score: 1.0 / f32::from(u16::try_from(ord).unwrap() + 1),

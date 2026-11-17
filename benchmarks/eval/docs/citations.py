@@ -1,7 +1,8 @@
 """Score the citations `docs_search` gives on an eval workspace, not only the path.
 
 For every task whose gold names a section, run the query through the CLI and take the first hit on the
-gold document. Its citation is checked against the task: the heading trail must name `gold_section`, a
+gold document. Its citation is checked against the task: the heading trail or a heading inside the hit
+(`cite.headings`) must name `gold_section`, a
 PDF's page range must hold `gold_page`, and a Markdown gold's line range must overlap the lines of that
 section in the source file. Prints one Markdown table; writes per-task rows to OUT.ndjson.
 
@@ -61,8 +62,10 @@ def main() -> None:
             rank, hit = found
             cite = hit.get("cite") or {}
             trail = " > ".join(cite.get("section") or [])
+            headings = cite.get("headings") or []
             row.update(found=True, rank=rank, section=trail, cite=cite)
-            row["section_ok"] = meta["gold_section"].lower() in trail.lower()
+            gold_section = meta["gold_section"].lower()
+            row["section_ok"] = gold_section in trail.lower() or any(gold_section in h.lower() for h in headings)
             if "gold_page" in meta:
                 start, end = cite.get("page_start"), cite.get("page_end") or cite.get("page_start")
                 row["page_ok"] = start is not None and start <= meta["gold_page"] <= end
