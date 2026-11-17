@@ -2,14 +2,12 @@
 //! cheap pickaxe that pages through the history a window of commits at a time. Split from
 //! `helpers_git.rs` for the 1000-line per-file cap.
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
-
-use super::ServerState;
-use super::helpers::{commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id, json_result, require_git_repo};
-use super::helpers_filters::reject_zero_limit;
-use super::helpers_git_show::budget_commits;
-use super::types::{CommitView, FindCommitsByPathParams, FindCommitsByPathResponse};
+use super::common::{commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id, require_git_repo};
+use super::show::budget_commits;
+use crate::engine::cursor::reject_zero_limit;
+use crate::engine::error::EngineError;
+use crate::engine::types::git::{CommitView, FindCommitsByPathParams, FindCommitsByPathResponse};
+use crate::engine::workspace::Workspace;
 
 /// Set in a paged window's cursor offset when a commit on an earlier page matched.
 pub(super) const MATCHED_EARLIER: u64 = 1 << 63;
@@ -27,32 +25,32 @@ pub(super) struct ByPathPage {
     pub(super) matched: bool,
 }
 
-/// The `by_path` operation: a cheap pickaxe — regex over the changed **paths** of a bounded
-/// window of commits, never over patch text.
-pub(super) fn run_by_path(state: &ServerState, params: FindCommitsByPathParams) -> Result<CallToolResult, McpError> {
-    json_result(&by_path(state, "git_by_path", params)?.response)
+impl Workspace {
+    /// `basemind git by-path`: a cheap pickaxe — regex over the changed **paths** of a bounded
+    /// window of commits, never over patch text.
+    pub(crate) fn git_by_path(
+        &self,
+        params: FindCommitsByPathParams,
+    ) -> Result<FindCommitsByPathResponse, EngineError> {
+        Ok(by_path(self, "git_by_path", params)?.response)
+    }
 }
 
 /// One page inspects a window of commits, newest first, starting at the commit offset its cursor
 /// carries. A window that ends before the history does hands back a cursor to the commit after it,
 /// so every match is reachable however far back it lies; a page can then be short, or empty, and
 /// still not be the last.
-pub(super) fn by_path(
-    state: &ServerState,
-    tool: &str,
-    params: FindCommitsByPathParams,
-) -> Result<ByPathPage, McpError> {
+pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParams) -> Result<ByPathPage, EngineError> {
     // A window or page of 0 makes no progress, and its cursor would hand back the same offset forever.
     reject_zero_limit(tool, params.limit)?;
     if params.window == Some(0) {
-        return Err(McpError::invalid_params(
-            format!("`{tool}`: `window` must be at least 1; omit it for the default of 200 commits."),
-            None,
-        ));
+        return Err(EngineError::invalid_argument(format!(
+            "`{tool}`: `window` must be at least 1; omit it for the default of 200 commits."
+        )));
     }
-    let repo = require_git_repo(state)?;
-    let re = regex::Regex::new(&params.pattern)
-        .map_err(|e| McpError::invalid_params(format!("invalid regex: {e}"), None))?;
+    let repo = require_git_repo(ws)?;
+    let re =
+        regex::Regex::new(&params.pattern).map_err(|e| EngineError::invalid_argument(format!("invalid regex: {e}")))?;
     let window = params.window.unwrap_or(200).min(1000) as usize;
     let limit = params.limit.unwrap_or(50).min(500) as usize;
 
@@ -91,13 +89,13 @@ pub(super) fn by_path(
     // ~keep A cursor cut from the live walk keeps paging it, so an index that catches up between two
     // ~keep pages does not cut the walk off; one cut from the index needs the index.
     let live_cursor = cursor_snapshot.is_some_and(|issued| issued & LIVE_WALK != 0);
-    let indexed = git_history_if_fresh(state, &head)
+    let indexed = git_history_if_fresh(ws, &head)
         .filter(|_| !live_cursor)
         .map(|index| index.recent_commits(start, fetch, true))
         .filter(|commits| !commits.is_empty());
     let snapshot = snapshot_of(indexed.is_none());
     if cursor_snapshot.is_some_and(|issued| issued != snapshot) {
-        return Err(super::cursor_bind::walk_switched(tool));
+        return Err(crate::engine::cursor::walk_switched(tool));
     }
     let mut commits = match indexed {
         Some(commits) => commits,
@@ -106,7 +104,7 @@ pub(super) fn by_path(
         // its depth would be a new entry, walked again from HEAD, for every page.
         None => repo
             .log_window(&head, start, fetch, true)
-            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?,
+            .map_err(|e| EngineError::internal(format!("log: {e}")))?,
     };
     // A history that ends exactly at the window is whole.
     let window_exhausted = commits.len() > window;
@@ -147,7 +145,7 @@ pub(super) fn by_path(
             commits: hits,
             budgeted,
             next_cursor: next_offset
-                .map(|offset| super::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)),
+                .map(|offset| crate::engine::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)),
             cursor_invalidated: false,
         },
         matched,
@@ -155,5 +153,5 @@ pub(super) fn by_path(
 }
 
 #[cfg(test)]
-#[path = "helpers_git_by_path_tests.rs"]
+#[path = "by_path_tests.rs"]
 mod tests;

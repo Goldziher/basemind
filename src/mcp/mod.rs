@@ -44,11 +44,6 @@ mod helpers_documents;
 mod helpers_expand;
 pub(crate) mod helpers_files;
 mod helpers_filters;
-mod helpers_fingerprint;
-mod helpers_git;
-mod helpers_git_by_path;
-mod helpers_git_file;
-mod helpers_git_show;
 mod helpers_grep;
 mod helpers_grep_text;
 pub(crate) mod helpers_impls;
@@ -56,7 +51,6 @@ mod helpers_intel;
 mod helpers_memory;
 #[cfg(any(feature = "code-search", feature = "documents", test))]
 mod helpers_page;
-mod helpers_pick;
 mod helpers_refs_match;
 mod helpers_stale;
 mod helpers_symbols;
@@ -107,7 +101,6 @@ pub(crate) mod toon;
 mod types;
 mod types_code;
 mod types_documents;
-mod types_git;
 mod types_impls;
 pub(crate) mod types_memory;
 mod types_tools;
@@ -175,8 +168,6 @@ pub use params::Parameters;
 /// process now serves every client of that workspace.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) const HOSTED_GIT_CACHE_MEM: usize = 1024;
-
-pub(crate) use crate::engine::outline_cache::{OutlineCache, OutlineEntry};
 
 /// Shared MCP server state. `ToolRouter<Self>` is Clone (Arc inside), so we hold it directly
 /// on the struct as the `#[tool_handler]` macro expects.
@@ -249,6 +240,7 @@ impl From<ServerOptions> for crate::engine::workspace::OpenOptions {
             read_only: options.read_only,
             forwards_writes: options.daemon_writer,
             lazy_cache: options.lazy_cache,
+            history_sync: Some(history_sync::request),
         }
     }
 }
@@ -367,7 +359,7 @@ impl BasemindServer {
                 background::spawn_view_watcher(Arc::clone(&state))
             };
             watcher = Some(Arc::new(watcher_guard));
-            history_sync::request(&state);
+            history_sync::request(&state.shared);
             if needs_initial_scan {
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
@@ -528,7 +520,7 @@ impl BasemindServer {
         // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
         let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
-        history_sync::request(&warden);
+        history_sync::request(&warden.shared);
         if needs_initial_scan {
             background::spawn_initial_scan(Arc::clone(&warden));
         } else if defer_warm {

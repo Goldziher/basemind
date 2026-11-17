@@ -6,9 +6,8 @@
 //! with `line`: any 1-based line inside the definition it means. Without one, a definition at item
 //! level wins over same-named functions nested in function bodies (a Rust `fn` inside a test).
 
-use rmcp::ErrorData as McpError;
-
-use super::helpers::kind_to_str;
+use crate::engine::error::EngineError;
+use crate::engine::types::code::kind_to_str;
 use crate::extract::{Symbol, SymbolKind};
 use crate::path::RelPath;
 
@@ -16,7 +15,7 @@ use crate::path::RelPath;
 const CANDIDATES_MAX: usize = 20;
 
 /// The definition a pinned call names.
-pub(super) struct Picked<'a> {
+pub(crate) struct Picked<'a> {
     pub symbol: &'a Symbol,
     /// Position among the same-named definitions of the file with the same nesting, in outline
     /// order, with [`NESTED_OCCURRENCE`] set for a nested one. `git_log` uses it to follow the same
@@ -26,10 +25,10 @@ pub(super) struct Picked<'a> {
 }
 
 /// Set in [`Picked::occurrence`] when the definition is nested in a function body.
-pub(super) const NESTED_OCCURRENCE: usize = 1 << (usize::BITS - 1);
+pub(crate) const NESTED_OCCURRENCE: usize = 1 << (usize::BITS - 1);
 
 /// Whether `symbol` lies inside the span of another function or method of `symbols`.
-pub(super) fn is_nested(symbols: &[Symbol], symbol: &Symbol) -> bool {
+pub(crate) fn is_nested(symbols: &[Symbol], symbol: &Symbol) -> bool {
     symbols.iter().any(|outer| {
         matches!(outer.kind, SymbolKind::Function | SymbolKind::Method)
             && outer.start_byte <= symbol.start_byte
@@ -50,7 +49,7 @@ fn occurrence_of(symbols: &[Symbol], candidates: &[&Symbol], picked: &Symbol) ->
 }
 
 /// The definition `occurrence` names among the same-named definitions of `symbols`.
-pub(super) fn nth_occurrence<'a>(
+pub(crate) fn nth_occurrence<'a>(
     symbols: &'a [Symbol],
     same_name: impl Iterator<Item = &'a Symbol>,
     occurrence: usize,
@@ -61,7 +60,7 @@ pub(super) fn nth_occurrence<'a>(
 }
 
 /// 1-based inclusive line span of `symbol`. Without the file's bytes only the first line is known.
-pub(super) fn line_span(symbol: &Symbol, source: Option<&[u8]>) -> (u32, u32) {
+pub(crate) fn line_span(symbol: &Symbol, source: Option<&[u8]>) -> (u32, u32) {
     let line = symbol.start_row + 1;
     let Some(bytes) = source else {
         return (line, line);
@@ -97,7 +96,7 @@ fn bounded_list(items: impl ExactSizeIterator<Item = String>) -> String {
 /// error then says where the symbol was looked for, since the working tree may well define it.
 /// Errors name every candidate with its span, so the next call can pass a `line`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn pick_symbol<'a>(
+pub(crate) fn pick_symbol<'a>(
     tool: &str,
     path: &RelPath,
     rev: Option<&str>,
@@ -106,7 +105,7 @@ pub(super) fn pick_symbol<'a>(
     name: &str,
     kind: Option<SymbolKind>,
     line: Option<u32>,
-) -> Result<Picked<'a>, McpError> {
+) -> Result<Picked<'a>, EngineError> {
     let candidates: Vec<&Symbol> = symbols
         .iter()
         .filter(|symbol| symbol.name == name && kind.is_none_or(|wanted| symbol.kind == wanted))
@@ -139,10 +138,9 @@ pub(super) fn pick_symbol<'a>(
         } else {
             format!("it defines: {}", bounded_list(others.into_iter()))
         };
-        return Err(McpError::invalid_params(
-            format!("`{tool}`: no symbol `{name}`{of_kind} in {place}; {available}"),
-            None,
-        ));
+        return Err(EngineError::invalid_argument(format!(
+            "`{tool}`: no symbol `{name}`{of_kind} in {place}; {available}"
+        )));
     }
 
     let Some(line) = line else {
@@ -158,15 +156,12 @@ pub(super) fn pick_symbol<'a>(
                 occurrence: occurrence_of(symbols, &candidates, symbol),
             });
         }
-        return Err(McpError::invalid_params(
-            format!(
-                "`{tool}`: `{name}` names {} definitions in {place}: {}. Pass `line` (any line inside the one \
+        return Err(EngineError::invalid_argument(format!(
+            "`{tool}`: `{name}` names {} definitions in {place}: {}. Pass `line` (any line inside the one \
                  you mean).",
-                candidates.len(),
-                listed()
-            ),
-            None,
-        ));
+            candidates.len(),
+            listed()
+        )));
     };
 
     let holding = candidates
@@ -181,13 +176,10 @@ pub(super) fn pick_symbol<'a>(
             symbol,
             occurrence: occurrence_of(symbols, &candidates, symbol),
         }),
-        None => Err(McpError::invalid_params(
-            format!(
-                "`{tool}`: `line` {line} is inside no definition of `{name}` in {place}: {}",
-                listed()
-            ),
-            None,
-        )),
+        None => Err(EngineError::invalid_argument(format!(
+            "`{tool}`: `line` {line} is inside no definition of `{name}` in {place}: {}",
+            listed()
+        ))),
     }
 }
 
@@ -218,10 +210,10 @@ mod tests {
         ]
     }
 
-    fn message(result: Result<Picked<'_>, McpError>) -> String {
+    fn message(result: Result<Picked<'_>, EngineError>) -> String {
         match result {
             Ok(_) => panic!("expected a refusal"),
-            Err(error) => error.message.into_owned(),
+            Err(error) => error.to_string(),
         }
     }
 

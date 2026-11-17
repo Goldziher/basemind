@@ -148,6 +148,35 @@ fn base64url_decode(s: &str) -> Result<Vec<u8>, &'static str> {
     Ok(decoded)
 }
 
+/// The error for a cursor that outlived the index or history it was cut from.
+pub(crate) fn stale_cursor(tool: &str) -> EngineError {
+    EngineError::invalid_argument(format!(
+        "`{tool}`: the index or git history changed since this cursor was issued, so it no longer points \
+         into the list. Call again without `cursor`."
+    ))
+}
+
+/// The refusal for a cursor of a paged git walk issued on the other source of commits: the live walk
+/// before the git-history index came up, or the index before it fell back to the live walk. The two
+/// order commits that a sync appended differently, so the offset may skip or repeat commits.
+pub(crate) fn walk_switched(tool: &str) -> EngineError {
+    EngineError::invalid_argument(format!(
+        "`{tool}`: the git-history index came up (or stopped answering) since this cursor was issued, and \
+         it orders commits differently from the live walk, so the cursor no longer points into the list. \
+         Restart the walk: call again without `cursor`."
+    ))
+}
+
+/// Refuse `limit: 0`: it returns an empty page whose cursor points back at the same position.
+pub(crate) fn reject_zero_limit(tool: &str, limit: Option<u32>) -> Result<(), EngineError> {
+    if limit == Some(0) {
+        return Err(EngineError::invalid_argument(format!(
+            "`{tool}`: `limit` must be at least 1; omit it for the default page size."
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

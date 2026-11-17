@@ -199,6 +199,26 @@ impl BasemindServer {
         adapter::call(&self.state, p, op).await
     }
 
+    /// [`op`](Self::op) for a verb tool that pages nothing (`git_diff`): no cursor to bind, the same
+    /// telemetry row ([`adapter::call_unpaged`]).
+    pub(crate) async fn op_unpaged<P, R>(&self, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+    where
+        P: super::strict::ToolArgs + serde::Serialize + Send + 'static,
+        R: serde::Serialize + 'static,
+    {
+        adapter::call_unpaged(&self.state, p, op).await
+    }
+
+    /// Run the engine operation `op` for a CLI-only command (`git churn`, `git by-path`): no MCP
+    /// tool, so no cursor binding and no telemetry row ([`adapter::run`]).
+    pub(crate) async fn cli_op<P, R>(&self, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+    where
+        P: Send + 'static,
+        R: serde::Serialize + 'static,
+    {
+        adapter::run(&self.state.shared, p, op).await
+    }
+
     /// Body of `code_outline`, shared with `basemind code outline`.
     pub(crate) async fn code_outline_call(&self, p: CodeOutlineParams) -> Result<CallToolResult, McpError> {
         self.op(p, Workspace::code_outline).await

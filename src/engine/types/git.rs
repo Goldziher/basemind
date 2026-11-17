@@ -1,18 +1,97 @@
-//! Internal request shapes and response payloads of the git bodies.
-//!
-//! The wire arguments of `git_log` / `git_blame` / `git_diff` live in `types_tools.rs`; the
-//! per-operation structs below (`RecentChangesParams`, `BlameFileParams`, …) are what the bodies in
-//! `helpers_git.rs` / `helpers_git_file.rs` take.
-//!
-//! Split out of `types.rs` to keep both files within the per-file size budget; the public paths stay
-//! stable via re-exports in `types.rs`.
+//! Types of the git operations: the wire arguments of `git_log` / `git_blame` / `git_diff`, the
+//! per-operation shapes the bodies in `engine/git` take (`RecentChangesParams`, `BlameFileParams`,
+//! …), and their answers. `mcp::types` and `mcp::types_tools` re-export them, so the tool schemas
+//! and the public paths stay where they were.
 
-use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
-use super::cursor::Cursor;
-use super::types::default_true;
+use super::default_true;
+use crate::engine::cursor::Cursor;
 use crate::path::RelPath;
+
+/// Arguments of `git_log`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitLogParams {
+    /// Only commits touching this file; a trailing `/` means a directory (200 commits inspected per
+    /// page; follow `next_cursor`). Not with `query` or `author`.
+    #[serde(default)]
+    pub path: Option<RelPath>,
+    /// Words the commit message must all contain. Combines with `author` only.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Words the author name or email must all contain. Combines with `query` only.
+    #[serde(default)]
+    pub author: Option<String>,
+    /// History of this symbol's body, one window of commits per page; needs `path`, combines
+    /// with nothing else but `line`.
+    #[serde(default)]
+    pub symbol: Option<String>,
+    /// With `symbol`: 1-based line inside the definition meant, when several share the name.
+    #[serde(default)]
+    pub line: Option<u32>,
+    /// Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.
+    #[serde(default)]
+    pub rev: Option<String>,
+    /// Max commits (default 20).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+    /// Token budget for the list (default 6000).
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+}
+
+/// Arguments of `git_blame`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitBlameParams {
+    /// Repo-relative file path.
+    pub path: RelPath,
+    /// First line of a span, 1-based, as numbered at `rev`. With `symbol`: a line inside the
+    /// definition meant.
+    #[serde(default)]
+    pub line: Option<u32>,
+    /// Last line of a span, inclusive (default: `line`). Needs `line`; not with `symbol`.
+    #[serde(default)]
+    pub end_line: Option<u32>,
+    /// Blame this symbol's lines, as they are at `rev`, instead of a span.
+    #[serde(default)]
+    pub symbol: Option<String>,
+    /// Revision to blame at (default HEAD).
+    #[serde(default)]
+    pub rev: Option<String>,
+    /// Max hunks (default 100).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+    /// Token budget for the list (default 6000).
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+}
+
+/// Arguments of `git_diff`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitDiffParams {
+    /// File to diff, or a directory ending in `/` to narrow the status; omit every argument for
+    /// the whole working-tree status.
+    #[serde(default)]
+    pub path: Option<RelPath>,
+    /// Old revision (default HEAD). Needs `path`.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// New revision (default: the working tree). Needs `path`; not with `structural`.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Symbol-level diff of `from` against the indexed working tree, instead of text hunks.
+    #[serde(default)]
+    pub structural: Option<bool>,
+}
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchGitHistoryParams {
@@ -202,7 +281,7 @@ pub struct BlameSymbolParams {
 
 /// One commit of a `git_log` list.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct CommitView {
+pub(crate) struct CommitView {
     pub sha: String,
     pub summary: String,
     pub author: String,
@@ -214,7 +293,7 @@ pub(in crate::mcp) struct CommitView {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct CommitFileView {
+pub(crate) struct CommitFileView {
     pub path: RelPath,
     pub change: &'static str,
 }
@@ -247,7 +326,7 @@ fn is_true(flag: &bool) -> bool {
 /// The commit `git_log {rev}` shows: its whole message and its author's email, beside what a list
 /// row carries.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct GitCommitHit {
+pub(crate) struct GitCommitHit {
     pub sha: String,
     pub summary: String,
     pub author: String,
@@ -261,7 +340,7 @@ pub(in crate::mcp) struct GitCommitHit {
 
 /// Response of `git_log` with `rev`: one commit with its whole message and changed-file list.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct GitShowResponse {
+pub(crate) struct GitShowResponse {
     pub commit: GitCommitHit,
     /// The files the commit changed, each path with how.
     #[serde(serialize_with = "files_by_path")]
@@ -270,12 +349,12 @@ pub(in crate::mcp) struct GitShowResponse {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     /// Changed files left out of `files` when `budgeted`.
-    #[serde(skip_serializing_if = "super::types::is_zero")]
+    #[serde(skip_serializing_if = "crate::engine::types::is_zero")]
     pub omitted: usize,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct SearchGitHistoryResponse {
+pub(crate) struct SearchGitHistoryResponse {
     /// Matching commits, newest first. A message's body is not listed: `git_log {rev}` shows it.
     pub commits: Vec<CommitView>,
     /// True when the search did not cover the whole history.
@@ -297,7 +376,7 @@ pub(in crate::mcp) struct SearchGitHistoryResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct WorkingTreeStatusView {
+pub(crate) struct WorkingTreeStatusView {
     /// Each list is left out when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub staged_added: Vec<RelPath>,
@@ -320,7 +399,7 @@ pub(in crate::mcp) struct WorkingTreeStatusView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// Paths left out, over all five lists.
-    #[serde(skip_serializing_if = "super::types::is_zero")]
+    #[serde(skip_serializing_if = "crate::engine::types::is_zero")]
     pub omitted: usize,
     /// Nothing is staged, modified or untracked: in the whole working tree, or under `path` when
     /// the status was narrowed to a directory.
@@ -328,7 +407,7 @@ pub(in crate::mcp) struct WorkingTreeStatusView {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct RecentChangesResponse {
+pub(crate) struct RecentChangesResponse {
     pub commits: Vec<CommitView>,
     /// `true` when the walk may have stopped early (today: shallow clone). Agents should
     /// treat the absence of an expected commit as inconclusive when this is set.
@@ -350,7 +429,7 @@ pub(in crate::mcp) struct RecentChangesResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct CommitsTouchingResponse {
+pub(crate) struct CommitsTouchingResponse {
     pub commits: Vec<CommitView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
@@ -370,13 +449,13 @@ pub(in crate::mcp) struct CommitsTouchingResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct DiffSymbolView {
+pub(crate) struct DiffSymbolView {
     pub name: String,
     pub kind: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct DiffOutlineResponse {
+pub(crate) struct DiffOutlineResponse {
     pub path: RelPath,
     pub rev: String,
     pub added: Vec<DiffSymbolView>,
@@ -389,7 +468,7 @@ pub(in crate::mcp) struct DiffOutlineResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct BlameHunkView {
+pub(crate) struct BlameHunkView {
     pub commit_sha: String,
     pub short_sha: String,
     /// 1-based first line of the hunk in the blamed file.
@@ -408,7 +487,7 @@ pub(in crate::mcp) struct BlameHunkView {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct BlameResponse {
+pub(crate) struct BlameResponse {
     pub path: RelPath,
     pub suspect_sha: String,
     pub hunks: Vec<BlameHunkView>,
@@ -426,14 +505,14 @@ pub(in crate::mcp) struct BlameResponse {
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
     /// index lookup + response construction), excluding MCP transport, argument deserialization,
     /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// building or loading the git-history index. See [`crate::engine::timing`] for the
     /// full contract.
     #[serde(default)]
     pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct BlameSymbolResponse {
+pub(crate) struct BlameSymbolResponse {
     pub path: RelPath,
     pub suspect_sha: String,
     pub name: String,
@@ -459,14 +538,14 @@ pub(in crate::mcp) struct BlameSymbolResponse {
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
     /// index lookup + response construction), excluding MCP transport, argument deserialization,
     /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// building or loading the git-history index. See [`crate::engine::timing`] for the
     /// full contract.
     #[serde(default)]
     pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct FindCommitsByPathResponse {
+pub(crate) struct FindCommitsByPathResponse {
     /// Commits this page inspected, newest first from where its cursor starts.
     pub window_inspected: u32,
     /// Why `commits` is empty so far: no commit inspected up to this page touches the directory
@@ -495,7 +574,7 @@ pub(in crate::mcp) struct FindCommitsByPathResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct HotFileEntry {
+pub(crate) struct HotFileEntry {
     pub path: RelPath,
     pub commits_touching: u32,
     pub added: u32,
@@ -504,21 +583,21 @@ pub(in crate::mcp) struct HotFileEntry {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct HotFilesResponse {
+pub(crate) struct HotFilesResponse {
     pub window_inspected: u32,
     pub total_files_changed: u32,
     pub files: Vec<HotFileEntry>,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
     /// index lookup + response construction), excluding MCP transport, argument deserialization,
     /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// building or loading the git-history index. See [`crate::engine::timing`] for the
     /// full contract.
     #[serde(default)]
     pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct HunkView {
+pub(crate) struct HunkView {
     pub old_line_start: u32,
     pub old_line_count: u32,
     pub new_line_start: u32,
@@ -529,7 +608,7 @@ pub(in crate::mcp) struct HunkView {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct DiffFileResponse {
+pub(crate) struct DiffFileResponse {
     pub path: RelPath,
     /// Full sha of the old side.
     pub from: String,
@@ -555,13 +634,13 @@ pub(in crate::mcp) struct DiffFileResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// Hunks left out of `hunks`.
-    #[serde(skip_serializing_if = "super::types::is_zero")]
+    #[serde(skip_serializing_if = "crate::engine::types::is_zero")]
     pub omitted: usize,
     pub hunks: Vec<HunkView>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct SymbolHistoryEntry {
+pub(crate) struct SymbolHistoryEntry {
     pub sha: String,
     pub summary: String,
     pub author: String,
@@ -570,7 +649,7 @@ pub(in crate::mcp) struct SymbolHistoryEntry {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(in crate::mcp) struct SymbolHistoryResponse {
+pub(crate) struct SymbolHistoryResponse {
     pub kind: Option<String>,
     pub commits_inspected: u32,
     pub history: Vec<SymbolHistoryEntry>,
@@ -602,4 +681,33 @@ pub(in crate::mcp) struct SymbolHistoryResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+}
+
+/// Answer of `git_log`: the shape its arguments select, serialized as that shape alone.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum GitLogResult {
+    Recent(RecentChangesResponse),
+    Touching(CommitsTouchingResponse),
+    Directory(FindCommitsByPathResponse),
+    Search(SearchGitHistoryResponse),
+    Symbol(SymbolHistoryResponse),
+    Show(GitShowResponse),
+}
+
+/// Answer of `git_blame`: a file or span, or one symbol.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum GitBlameResult {
+    File(BlameResponse),
+    Symbol(BlameSymbolResponse),
+}
+
+/// Answer of `git_diff`: the working-tree status, a text diff or a symbol-level diff.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum GitDiffResult {
+    Status(WorkingTreeStatusView),
+    Text(DiffFileResponse),
+    Structural(DiffOutlineResponse),
 }

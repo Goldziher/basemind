@@ -5,14 +5,13 @@
 //! summary alone and is held to a token budget as a whole. `show` is the escape hatch that returns
 //! one commit whole.
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
 use serde::Serialize;
 
-use super::ServerState;
-use super::budget::apply_budget;
-use super::helpers::{json_result, require_git_repo};
-use super::types::{CommitFileView, GitCommitHit, GitShowResponse};
+use super::common::require_git_repo;
+use crate::engine::budget::apply_budget;
+use crate::engine::error::EngineError;
+use crate::engine::types::git::{CommitFileView, GitCommitHit, GitShowResponse};
+use crate::engine::workspace::Workspace;
 
 /// Token budget applied to a commit list when the caller passes no `max_tokens`.
 pub(super) const GIT_BUDGET_DEFAULT_TOKENS: u32 = 20_000;
@@ -28,14 +27,14 @@ pub(super) fn budget_commits<T: Serialize>(commits: Vec<T>, max_tokens: Option<u
 
 /// The `show` operation: one commit by sha or revision, with its whole message and its
 /// changed files. The file list is held to `max_tokens`, and what it leaves out is counted.
-pub(super) fn run_show(state: &ServerState, sha: &str, max_tokens: Option<u32>) -> Result<CallToolResult, McpError> {
-    let repo = require_git_repo(state)?;
+pub(super) fn run_show(ws: &Workspace, sha: &str, max_tokens: Option<u32>) -> Result<GitShowResponse, EngineError> {
+    let repo = require_git_repo(ws)?;
     let full = repo
         .resolve_rev(sha)
-        .map_err(|e| McpError::invalid_params(format!("`git_log`: cannot resolve `{sha}`: {e}"), None))?;
+        .map_err(|e| EngineError::invalid_argument(format!("`git_log`: cannot resolve `{sha}`: {e}")))?;
     let info = repo
         .commit_record(&full)
-        .ok_or_else(|| McpError::invalid_params(format!("`git_log`: `{sha}` is not a commit"), None))?;
+        .ok_or_else(|| EngineError::invalid_argument(format!("`git_log`: `{sha}` is not a commit")))?;
     let files: Vec<CommitFileView> = info
         .files
         .iter()
@@ -46,7 +45,7 @@ pub(super) fn run_show(state: &ServerState, sha: &str, max_tokens: Option<u32>) 
         .collect();
     let total = files.len();
     let files = apply_budget(files, max_tokens).items;
-    json_result(&GitShowResponse {
+    Ok(GitShowResponse {
         commit: GitCommitHit {
             sha: info.sha,
             summary: info.summary,

@@ -210,7 +210,7 @@ pub(super) async fn run_find_callers(
     let source = super::index_route::blocking(|| {
         super::freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), files.max_file_bytes)
     })?;
-    let symbol = super::helpers_pick::pick_symbol(
+    let symbol = crate::engine::pick::pick_symbol(
         "code_refs",
         &params.path,
         None,

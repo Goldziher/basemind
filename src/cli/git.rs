@@ -375,7 +375,10 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             };
             ("git_diff", server.git_diff_call(p).await)
         }
-        GitCmd::Churn { window, top_k } => ("git_churn", server.git_churn_call(HotFilesParams { window, top_k })),
+        GitCmd::Churn { window, top_k } => (
+            "git_churn",
+            server.git_churn_call(HotFilesParams { window, top_k }).await,
+        ),
         GitCmd::ByPath {
             pattern,
             window,
@@ -384,13 +387,15 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut im
             max_tokens,
         } => (
             "git_by_path",
-            server.git_by_path_call(FindCommitsByPathParams {
-                pattern,
-                window,
-                limit,
-                cursor: cursor.map(Cursor),
-                max_tokens,
-            }),
+            server
+                .git_by_path_call(FindCommitsByPathParams {
+                    pattern,
+                    window,
+                    limit,
+                    cursor: cursor.map(Cursor),
+                    max_tokens,
+                })
+                .await,
         ),
     };
 
