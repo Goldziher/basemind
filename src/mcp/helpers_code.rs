@@ -19,10 +19,10 @@ use super::index_route::IndexRoute;
 use super::tool_contract::budget;
 use super::types::{
     DependentsResponse, FindCallersParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
-    ListFilesParams, SearchSymbolsParams, WorkspaceGrepParams,
+    ListFilesParams, WorkspaceGrepParams,
 };
 use super::types_impls::FindImplementationsParams;
-use super::types_tools::{CodeGrepParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams, FindFilesToolParams};
+use super::types_tools::{CodeGrepParams, CodeRefsParams, CodeSearchParams, FindFilesToolParams};
 
 /// `code_grep`: content search over every indexed code file.
 pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
@@ -44,23 +44,6 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
             format: None,
             include_context: p.context.unwrap_or(false),
             literal: !p.regex.unwrap_or(false),
-            cursor: p.cursor,
-        },
-    )
-    .await
-}
-
-/// `code_symbols`: find definitions by name.
-pub(super) async fn code_symbols(state: &ServerState, p: CodeSymbolsParams) -> Result<CallToolResult, McpError> {
-    super::helpers_symbols::run_search_symbols(
-        state,
-        SearchSymbolsParams {
-            needle: p.name,
-            kind: p.kind,
-            fuzzy: p.fuzzy.unwrap_or(false),
-            limit: p.limit,
-            max_tokens: budget(p.max_tokens),
-            format: None,
             cursor: p.cursor,
         },
     )

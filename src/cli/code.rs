@@ -279,14 +279,17 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         } => (
             "code_symbols",
             server
-                .code_symbols_call(CodeSymbolsParams {
-                    name,
-                    kind,
-                    fuzzy: fuzzy.then_some(true),
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+                .op(
+                    CodeSymbolsParams {
+                        name,
+                        kind,
+                        fuzzy: fuzzy.then_some(true),
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    Workspace::code_symbols,
+                )
                 .await,
         ),
         CodeCmd::Read {

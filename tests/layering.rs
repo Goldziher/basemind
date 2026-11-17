@@ -1114,7 +1114,7 @@ fn the_engine_api_check_flags_each_shape() {
 /// `(rmcp_files, helper_lines)`: the non-test files under `src/mcp` that name rmcp, `McpError` or
 /// `CallToolResult`, and the lines of the non-test `src/mcp/helpers*.rs` files. Each engine step
 /// moves tool bodies out of the adapter, so neither may rise; lower them here when they fall.
-const ADAPTER_RATCHET: (usize, usize) = (58, 6_229);
+const ADAPTER_RATCHET: (usize, usize) = (57, 5_955);
 
 /// A test file under `src/mcp`: every test module there lives in a `*_tests.rs` file.
 fn is_test_file(path: &Path) -> bool {

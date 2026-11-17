@@ -59,31 +59,8 @@ tool_args! {
     IndexRescanParams => "index_rescan",
 }
 
-pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams};
+pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymbolsParams};
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
-
-/// Arguments of `code_symbols`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CodeSymbolsParams {
-    /// Symbol name or fragment (case-sensitive).
-    pub name: String,
-    /// function, method, struct, enum, class, interface, trait, type, const, module, macro.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Also match the name as a fuzzy subsequence, ranked last.
-    #[serde(default)]
-    pub fuzzy: Option<bool>,
-    /// Max hits (default 100).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
 
 /// Arguments of `code_grep`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
