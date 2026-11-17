@@ -573,9 +573,11 @@ fn holds_a_newer_view(workspace: &Path) -> bool {
 /// Bytes of a file map that hold its header and first field.
 const FILE_MAP_HEAD_BYTES: u64 = 32;
 
-/// Whether the file map of `view_dir` was written by a newer basemind, from its first bytes: the
-/// map's first field is `schema_ver`, and a file map can run to many megabytes. A head of another
-/// shape is decoded whole, as [`crate::store::read_index`] does.
+/// Whether the file map of `view_dir` was written by a newer basemind. Its first field is
+/// `schema_ver`, so an older or newer schema is told from the first bytes of a map that can run to
+/// many megabytes; a map of this schema, or a head of another shape, is judged by its version fields
+/// ([`crate::store::written_by_newer`]), since a newer blob layout shares the schema. A map whose
+/// version cannot be read counts as newer: it may be, and it is never this version's to evict.
 fn view_is_newer(view_dir: &Path) -> bool {
     use std::io::Read as _;
     #[cfg(test)]
@@ -586,12 +588,10 @@ fn view_is_newer(view_dir: &Path) -> bool {
     if read.is_err() {
         return false;
     }
-    match leading_schema_ver(&head) {
-        Some(found) => found > crate::extract::SCHEMA_VER,
-        None => matches!(
-            crate::store::read_index(view_dir),
-            Err(crate::store::StoreError::NewerSchema { .. })
-        ),
+    match leading_schema_ver(&head).map(|found| found.cmp(&crate::extract::SCHEMA_VER)) {
+        Some(std::cmp::Ordering::Greater) => true,
+        Some(std::cmp::Ordering::Less) => false,
+        _ => crate::store::written_by_newer(view_dir),
     }
 }
 

@@ -560,3 +560,17 @@ fn a_workspace_a_newer_basemind_took_during_the_pass_costs_no_other_workspace() 
     assert!(idle.join(VIEWS_DIR).exists(), "the idle workspace keeps its index");
     assert!(report.total_bytes_after <= 128 * 1024, "{}", report.total_bytes_after);
 }
+
+/// A file map of this schema but a newer blob layout is a newer basemind's live view, which every
+/// open refuses; eviction must not take it for this version's cache.
+#[test]
+fn a_file_map_of_a_newer_blob_layout_is_a_newer_view() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let view = tmp.path().join("key-layout").join(VIEWS_DIR).join("working");
+    fs::create_dir_all(&view).expect("mk view");
+    let mut newer = Index::empty();
+    newer.blob_layout = crate::store_layout::BLOB_LAYOUT + 1;
+    fs::write(view.join(INDEX_FILE), rmp_serde::to_vec_named(&newer).expect("encode")).expect("write");
+
+    assert!(view_is_newer(&view));
+}

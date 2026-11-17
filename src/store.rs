@@ -18,7 +18,7 @@ mod durability;
 mod file_map;
 pub use durability::RESCAN_OWED;
 use file_map::migrate_legacy_index_into_views;
-pub(crate) use file_map::{check_schema, read_index, wipe_view};
+pub(crate) use file_map::{check_schema, read_index, wipe_view, written_by_newer};
 
 /// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
 /// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like

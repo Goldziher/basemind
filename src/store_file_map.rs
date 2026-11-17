@@ -102,15 +102,29 @@ pub(super) fn migrate_legacy_index_into_views(basemind_dir: &Path) -> Result<(),
 /// layout, `Err(StoreError::Decode)` on a map of this version that does not decode, and
 /// `Err(StoreError::UnreadableFileMap)` on one whose version cannot be read. Reused by `store_gc` to
 /// enumerate the live blob hashes referenced by every view.
-pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
-    /// The fields that say which basemind wrote the map: `schema_ver`, which every layout has had,
-    /// and `blob_layout`, absent (`0`) before blob namespaces.
-    #[derive(Deserialize)]
-    struct Version {
-        schema_ver: u16,
-        #[serde(default)]
-        blob_layout: u8,
+/// The fields that say which basemind wrote a file map: `schema_ver`, which every layout has had,
+/// and `blob_layout`, absent (`0`) before blob namespaces.
+#[derive(Deserialize)]
+struct Version {
+    schema_ver: u16,
+    #[serde(default)]
+    blob_layout: u8,
+}
+
+/// Whether the file map of `view_dir` may be a newer basemind's: its version fields read a newer
+/// schema or blob layout, or cannot be read at all. Reads the fields alone, never the whole map
+/// into memory. `false` when there is no map.
+pub(crate) fn written_by_newer(view_dir: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(view_dir.join(INDEX_FILE)) else {
+        return false;
+    };
+    match rmp_serde::from_slice::<Version>(&bytes) {
+        Ok(version) => version.schema_ver > SCHEMA_VER || version.blob_layout > crate::store_layout::BLOB_LAYOUT,
+        Err(_) => true,
     }
+}
+
+pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
     let path = view_dir.join(INDEX_FILE);
     if !path.exists() {
         return Ok(None);
