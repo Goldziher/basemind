@@ -130,7 +130,12 @@ fn code_symbols_finds_symbol() {
 fn code_references_finds_call_sites() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["code", "references", "alpha"], &["name", "total", "hits"]);
+    let v = assert_json_fields(root, &["code", "references", "alpha"], &["total", "hits"]);
+    assert_eq!(
+        v["hits"]["c.rs"].as_array().map(Vec::len),
+        Some(2),
+        "hits listed under their file: {v}"
+    );
     assert_eq!(v["total"], 2, "alpha is called twice in c.rs");
     assert_human_contains(root, &["code", "references", "alpha"], "c.rs");
 }
@@ -152,7 +157,7 @@ fn admin_status_reports_file_count() {
 fn code_files_enumerates() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["code", "files"], &["total", "returned", "files"]);
+    let v = assert_json_fields(root, &["code", "files"], &["total", "files"]);
     assert_eq!(v["total"], 2);
     assert_human_contains(root, &["code", "files"], "a.rs");
 }
@@ -161,12 +166,11 @@ fn code_files_enumerates() {
 fn git_status_is_clean() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(
-        root,
-        &["git", "status"],
-        &["staged_added", "modified", "untracked", "is_clean"],
-    );
+    let v = assert_json_fields(root, &["git", "status"], &["is_clean"]);
     assert_eq!(v["is_clean"], true, "repo should be clean after commit");
+    for list in ["staged_added", "modified", "untracked"] {
+        assert!(v.get(list).is_none(), "an empty `{list}` is left out: {v}");
+    }
     assert_human_contains(root, &["git", "status"], "is_clean");
 }
 

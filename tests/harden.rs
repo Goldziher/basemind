@@ -806,10 +806,14 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
 
     // Canaries count rows, so each asks for a budget far above its page instead of the default.
     const WHOLE_PAGE: u32 = 1_000_000;
-    let count = |body: &Value, key: &str| {
-        body.get(key)
-            .and_then(Value::as_array)
-            .map_or(0, |rows| rows.len() as u64)
+    // A list, or one grouped by file (`code_grep` / `code_refs` hits: `{"<path>": [row, ...]}`).
+    let count = |body: &Value, key: &str| match body.get(key) {
+        Some(Value::Array(rows)) => rows.len() as u64,
+        Some(Value::Object(files)) => files
+            .values()
+            .map(|rows| rows.as_array().map_or(0, Vec::len) as u64)
+            .sum(),
+        _ => 0,
     };
 
     match repo_name {
@@ -892,7 +896,7 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 .await
                 && let Some(body) = canary_body(&out)
             {
-                let hits = body.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
+                let hits = body.get("total").and_then(Value::as_u64).unwrap_or(0);
                 record.canaries.insert("grep_fn_spawn_hits".into(), json!(hits));
             }
             #[cfg(feature = "code-search")]
@@ -963,15 +967,24 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
+                // A list row names the author but not the email, so the email side is git's: every
+                // commit whose author name or email holds the token, by full sha.
                 let token_lc = token.to_lowercase();
+                let by_token: Vec<String> = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo_root)
+                    .args(["log", "--format=%H %an %ae"])
+                    .output()
+                    .ok()
+                    .and_then(|out| String::from_utf8(out.stdout).ok())
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|line| line.to_lowercase().contains(&token_lc))
+                    .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+                    .collect();
                 let consistent = commits.iter().all(|c| {
-                    let name = c.get("author").and_then(Value::as_str).unwrap_or("").to_lowercase();
-                    let email = c
-                        .get("author_email")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_lowercase();
-                    name.contains(&token_lc) || email.contains(&token_lc)
+                    let sha = c.get("sha").and_then(Value::as_str).unwrap_or("");
+                    !sha.is_empty() && by_token.iter().any(|full| full.starts_with(sha))
                 });
                 record
                     .canaries
@@ -1001,10 +1014,12 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 // the canary green after a resolution regression.
                 let cross_file_hits = body
                     .get("hits")
-                    .and_then(Value::as_array)
-                    .map(|hits| {
-                        hits.iter()
-                            .filter(|h| h.get("path").and_then(Value::as_str) != Some("django/utils/encoding.py"))
+                    .and_then(Value::as_object)
+                    .map(|files| {
+                        files
+                            .iter()
+                            .filter(|(path, _)| path.as_str() != "django/utils/encoding.py")
+                            .flat_map(|(_, hits)| hits.as_array().into_iter().flatten())
                             .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(true))
                             .count() as u64
                     })

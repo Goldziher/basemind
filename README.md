@@ -756,8 +756,11 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 <details>
 <summary><strong>Measuring query latency (<code>elapsed_us</code>)</strong></summary>
 
-Every latency-relevant tool — the code, git, document and memory lookups and `index_status` —
-reports its own latency as **`elapsed_us`** on its response.
+`code_outline`, `code_search`, `docs_search`, `git_blame`, the memory tools and `index_status`
+report their own latency as **`elapsed_us`** on their response. The locating tools (`code_symbols`, `code_grep`, `code_refs`,
+`find_files`, `git_log`, `git_diff`) leave it out: their answer is a short list, and a timing field
+on it would cost as much as a row. Telemetry records every call's latency, and the CLI times the
+call itself when the response has no `elapsed_us`.
 Don't wrap the CLI in `time`; ask basemind.
 
 Resolution is **microseconds** on purpose: an indexed `git_log` with `path` is ~37 µs, so
@@ -783,7 +786,7 @@ part of a `time basemind …` measurement that was never the query — and a lon
 it once at boot, not per call:
 
 ```console
-$ basemind code symbols run_workspace_grep --limit 1 --json
+$ basemind code outline src/store.rs --json
 {
   ...
   "elapsed_us": 90,        # the query

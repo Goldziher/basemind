@@ -37,9 +37,6 @@ pub struct SearchGitHistoryParams {
     /// is set and `next_cursor` resumes at the first dropped hit.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Cap on each hit's commit body, in characters. Default 1000; 0 omits the body.
-    #[serde(default)]
-    pub body_chars: Option<u32>,
     /// Terms every hit's author name or email must also contain. `pattern` is matched against its
     /// own `field`; these are matched against the author only, never the message.
     #[serde(default)]
@@ -203,14 +200,16 @@ pub struct BlameSymbolParams {
     pub max_tokens: Option<u32>,
 }
 
+/// One commit of a `git_log` list.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct CommitView {
     pub sha: String,
-    pub short_sha: String,
     pub summary: String,
     pub author: String,
     pub author_time_unix: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The files the commit changed: each path with how (`added`, `modified`, `deleted`,
+    /// `renamed`). A merge lists only what it changed against every parent.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "files_by_path_opt")]
     pub files: Option<Vec<CommitFileView>>,
 }
 
@@ -220,32 +219,52 @@ pub(in crate::mcp) struct CommitFileView {
     pub change: &'static str,
 }
 
-/// A `search_git_history` hit — carries the author email and full commit body (the fields the FTS
-/// index adds over the other git tools' [`CommitView`]).
+/// A file list written as `{"<path>": "<change>", ...}`: a path is a file's key, not a field
+/// repeated beside its change. A path that is not UTF-8 is written lossily.
+fn files_by_path<S: serde::Serializer>(files: &[CommitFileView], serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+
+    let mut map = serializer.serialize_map(Some(files.len()))?;
+    for file in files {
+        map.serialize_entry(&file.path.to_str_lossy(), file.change)?;
+    }
+    map.end()
+}
+
+/// `serialize_with` for an optional file list; `skip_serializing_if` leaves out the `None`.
+fn files_by_path_opt<S: serde::Serializer>(
+    files: &Option<Vec<CommitFileView>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    files_by_path(files.as_deref().unwrap_or_default(), serializer)
+}
+
+/// `skip_serializing_if` for a flag that is written only when false.
+fn is_true(flag: &bool) -> bool {
+    *flag
+}
+
+/// The commit `git_log {rev}` shows: its whole message and its author's email, beside what a list
+/// row carries.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct GitCommitHit {
     pub sha: String,
-    pub short_sha: String,
     pub summary: String,
     pub author: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub author_email: String,
     pub author_time_unix: i64,
-    /// Full message body, present only for indexed hits with a non-empty body.
+    /// The message after its summary line; absent when there is none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub body: String,
-    /// True when `body` was cut at `body_chars`; it then ends in a marker naming `git_log` with `rev`.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub body_truncated: bool,
-    /// Full body length in bytes, present only when `body_truncated`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub body_bytes: Option<usize>,
 }
 
 /// Response of `git_log` with `rev`: one commit with its whole message and changed-file list.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct GitShowResponse {
     pub commit: GitCommitHit,
+    /// The files the commit changed, each path with how.
+    #[serde(serialize_with = "files_by_path")]
     pub files: Vec<CommitFileView>,
     /// True when `max_tokens` dropped trailing `files`; raise it to list them.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -253,14 +272,12 @@ pub(in crate::mcp) struct GitShowResponse {
     /// Changed files left out of `files` when `budgeted`.
     #[serde(skip_serializing_if = "super::types::is_zero")]
     pub omitted: usize,
-    /// Server-side handler latency in microseconds. See [`crate::mcp::helpers::timing`].
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct SearchGitHistoryResponse {
-    pub commits: Vec<GitCommitHit>,
+    /// Matching commits, newest first. A message's body is not listed: `git_log {rev}` shows it.
+    pub commits: Vec<CommitView>,
     /// True when the search did not cover the whole history.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
@@ -277,21 +294,20 @@ pub(in crate::mcp) struct SearchGitHistoryResponse {
     pub next_cursor: Option<Cursor>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
-    /// index lookup + response construction), excluding MCP transport, argument deserialization,
-    /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
-    /// full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct WorkingTreeStatusView {
+    /// Each list is left out when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub staged_added: Vec<RelPath>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub staged_modified: Vec<RelPath>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub staged_deleted: Vec<RelPath>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub modified: Vec<RelPath>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub untracked: Vec<RelPath>,
     /// The directory the status was narrowed to, when `path` named one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -309,13 +325,6 @@ pub(in crate::mcp) struct WorkingTreeStatusView {
     /// Nothing is staged, modified or untracked: in the whole working tree, or under `path` when
     /// the status was narrowed to a directory.
     pub is_clean: bool,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
-    /// index lookup + response construction), excluding MCP transport, argument deserialization,
-    /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
-    /// full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -338,18 +347,10 @@ pub(in crate::mcp) struct RecentChangesResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
-    /// index lookup + response construction), excluding MCP transport, argument deserialization,
-    /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
-    /// full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct CommitsTouchingResponse {
-    pub path: RelPath,
     pub commits: Vec<CommitView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
@@ -366,13 +367,6 @@ pub(in crate::mcp) struct CommitsTouchingResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
-    /// index lookup + response construction), excluding MCP transport, argument deserialization,
-    /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
-    /// full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -392,13 +386,6 @@ pub(in crate::mcp) struct DiffOutlineResponse {
     pub common: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
-    /// index lookup + response construction), excluding MCP transport, argument deserialization,
-    /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
-    /// full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -480,7 +467,6 @@ pub(in crate::mcp) struct BlameSymbolResponse {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct FindCommitsByPathResponse {
-    pub pattern: String,
     /// Commits this page inspected, newest first from where its cursor starts.
     pub window_inspected: u32,
     /// Why `commits` is empty so far: no commit inspected up to this page touches the directory
@@ -506,13 +492,6 @@ pub(in crate::mcp) struct FindCommitsByPathResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
-    /// index lookup + response construction), excluding MCP transport, argument deserialization,
-    /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
-    /// full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -540,11 +519,12 @@ pub(in crate::mcp) struct HotFilesResponse {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct HunkView {
-    pub kind: &'static str,
     pub old_line_start: u32,
     pub old_line_count: u32,
     pub new_line_start: u32,
     pub new_line_count: u32,
+    /// The added lines when nothing was removed, the removed lines when nothing was added, else the
+    /// removed lines prefixed `-` followed by the added lines prefixed `+`.
     pub text: String,
 }
 
@@ -555,7 +535,11 @@ pub(in crate::mcp) struct DiffFileResponse {
     pub from: String,
     /// Full sha of the new side, or `working tree`.
     pub to: String,
+    /// False when the file does not exist at `from` (it was added); absent when it does.
+    #[serde(skip_serializing_if = "is_true")]
     pub present_at_from: bool,
+    /// False when the file does not exist at `to` (it was deleted); absent when it does.
+    #[serde(skip_serializing_if = "is_true")]
     pub present_at_to: bool,
     /// True for a binary file, which has no text hunks.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -574,19 +558,11 @@ pub(in crate::mcp) struct DiffFileResponse {
     #[serde(skip_serializing_if = "super::types::is_zero")]
     pub omitted: usize,
     pub hunks: Vec<HunkView>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
-    /// index lookup + response construction), excluding MCP transport, argument deserialization,
-    /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
-    /// full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct SymbolHistoryEntry {
     pub sha: String,
-    pub short_sha: String,
     pub summary: String,
     pub author: String,
     pub author_time_unix: i64,
@@ -595,8 +571,6 @@ pub(in crate::mcp) struct SymbolHistoryEntry {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct SymbolHistoryResponse {
-    pub path: RelPath,
-    pub name: String,
     pub kind: Option<String>,
     pub commits_inspected: u32,
     pub history: Vec<SymbolHistoryEntry>,
@@ -628,11 +602,4 @@ pub(in crate::mcp) struct SymbolHistoryResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
-    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
-    /// index lookup + response construction), excluding MCP transport, argument deserialization,
-    /// and response serialization. A first call against a cold server also includes lazily
-    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
-    /// full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }

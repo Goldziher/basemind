@@ -416,7 +416,6 @@ impl MapCache {
 
     /// Whether `path` is one of the indexed files. Answered from the symbol-free view, so it costs
     /// no blob read.
-    #[cfg(test)]
     pub(crate) fn contains(&self, path: &crate::path::RelPath) -> bool {
         self.files.contains(path)
     }

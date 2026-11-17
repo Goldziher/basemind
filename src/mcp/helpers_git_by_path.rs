@@ -6,9 +6,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
-use super::helpers::{
-    commit_to_view, elapsed_us, git_history_if_fresh, head_sha, head_snapshot_id, json_result, require_git_repo,
-};
+use super::helpers::{commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id, json_result, require_git_repo};
 use super::helpers_filters::reject_zero_limit;
 use super::helpers_git_show::budget_commits;
 use super::types::{CommitView, FindCommitsByPathParams, FindCommitsByPathResponse};
@@ -44,7 +42,6 @@ pub(super) fn by_path(
     tool: &str,
     params: FindCommitsByPathParams,
 ) -> Result<ByPathPage, McpError> {
-    let started = std::time::Instant::now();
     // A window or page of 0 makes no progress, and its cursor would hand back the same offset forever.
     reject_zero_limit(tool, params.limit)?;
     if params.window == Some(0) {
@@ -68,7 +65,6 @@ pub(super) fn by_path(
             if snapshot_id & !LIVE_WALK != snapshot_of(false) {
                 return Ok(ByPathPage {
                     response: FindCommitsByPathResponse {
-                        pattern: params.pattern,
                         window_inspected: 0,
                         unmatched: None,
                         truncated: false,
@@ -77,7 +73,6 @@ pub(super) fn by_path(
                         next_cursor: None,
                         budgeted: false,
                         cursor_invalidated: true,
-                        elapsed_us: elapsed_us(started),
                     },
                     matched: true,
                 });
@@ -93,7 +88,11 @@ pub(super) fn by_path(
 
     // One commit past the window is asked for, only to learn whether history continues beyond it.
     let fetch = window + 1;
+    // ~keep A cursor cut from the live walk keeps paging it, so an index that catches up between two
+    // ~keep pages does not cut the walk off; one cut from the index needs the index.
+    let live_cursor = cursor_snapshot.is_some_and(|issued| issued & LIVE_WALK != 0);
     let indexed = git_history_if_fresh(state, &head)
+        .filter(|_| !live_cursor)
         .map(|index| index.recent_commits(start, fetch, true))
         .filter(|commits| !commits.is_empty());
     let snapshot = snapshot_of(indexed.is_none());
@@ -141,7 +140,6 @@ pub(super) fn by_path(
     let carried = if matched { MATCHED_EARLIER } else { 0 };
     Ok(ByPathPage {
         response: FindCommitsByPathResponse {
-            pattern: params.pattern,
             window_inspected: u32::try_from(commits.len()).unwrap_or(u32::MAX),
             unmatched: None,
             truncated: window_edge,
@@ -151,7 +149,6 @@ pub(super) fn by_path(
             next_cursor: next_offset
                 .map(|offset| super::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)),
             cursor_invalidated: false,
-            elapsed_us: elapsed_us(started),
         },
         matched,
     })

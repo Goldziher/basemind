@@ -15,7 +15,7 @@ use super::ServerState;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use super::helpers_filters::{Filters, PathFilter};
-use super::helpers_grep_text::{annotate_symbols, clip_line, line_text};
+use super::helpers_grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
 use super::index_route::blocking;
 use super::tool_contract::{IndexedFiles, Sweep};
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
@@ -38,13 +38,12 @@ const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
 /// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped and counted in
 /// `skipped_files`), and applies the compiled regex. `limit` caps returned HITS, never files
-/// scanned, so `total_matches` and `total_files_matched` are exact for the scanned window. Supports
+/// scanned, so `total` is exact for the scanned window. Supports
 /// in-memory pagination via `cursor` / `next_cursor` on the same
 /// `encode_in_memory(offset, generation)` scheme as `list_files`.
 pub(super) async fn run_workspace_grep(
     state: &ServerState,
     params: WorkspaceGrepParams,
-    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
@@ -56,10 +55,7 @@ pub(super) async fn run_workspace_grep(
             if snapshot_id != generation {
                 return super::toon::format_result(
                     &WorkspaceGrepResponse {
-                        pattern: params.pattern,
-                        regex: !params.literal,
-                        total_files_matched: 0,
-                        total_matches: 0,
+                        total: 0,
                         truncated: false,
                         truncated_reason: None,
                         budgeted: false,
@@ -68,7 +64,6 @@ pub(super) async fn run_workspace_grep(
                         skipped_files: 0,
                         cursor_invalidated: true,
                         notice: state.lifecycle_notice(),
-                        elapsed_us: super::helpers::elapsed_us(started),
                     },
                     format,
                 );
@@ -154,8 +149,7 @@ pub(super) async fn run_workspace_grep(
         count_all(&sweep, &paths, skip.as_deref(), &re, literal.as_ref(), skip_hits)
     });
 
-    let total_matches = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
-    let total_files_matched = counts.iter().filter(|&&c| c > 0).count();
+    let total = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
 
     let (selected, limit_resume) = select_hits(&counts, limit, skip_files, skip_hits);
     // Judged against the file the bytes were read from: an external path is not under `root`.
@@ -186,7 +180,7 @@ pub(super) async fn run_workspace_grep(
         (None, false) => None,
     };
 
-    let budget = super::budget::apply_budget(hits, params.max_tokens);
+    let budget = super::budget::apply_budget_by_path(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
         let resume = hit_cursors
@@ -199,10 +193,7 @@ pub(super) async fn run_workspace_grep(
 
     super::toon::format_result(
         &WorkspaceGrepResponse {
-            pattern: params.pattern,
-            regex: !params.literal,
-            total_files_matched,
-            total_matches,
+            total,
             truncated: byte_budget_hit,
             truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
             budgeted,
@@ -211,7 +202,6 @@ pub(super) async fn run_workspace_grep(
             skipped_files,
             cursor_invalidated: false,
             notice: state.lifecycle_notice(),
-            elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
     )
@@ -555,13 +545,27 @@ fn collect_hits(
 
     let mut out = Vec::with_capacity(sel.take);
     let text = lines_end_at_lf(re, source);
-    for (ordinal, mat) in line_matches(re, &text).enumerate().skip(sel.hit_skip as usize) {
+    let line_of = |byte: usize| line_starts.partition_point(|&ls| ls <= byte).saturating_sub(1);
+    // Every match of the file is walked, the skipped ones too, so whether a match shares its line
+    // is decided over the file and not over this page.
+    let mut matches = line_matches(re, &text).enumerate().peekable();
+    let mut previous_line: Option<usize> = None;
+    while let Some((ordinal, mat)) = matches.next() {
         if out.len() >= sel.take {
             break;
         }
         let match_start = mat.start();
-        let line_idx = line_starts.partition_point(|&ls| ls <= match_start).saturating_sub(1);
+        let line_idx = line_of(match_start);
+        let shares_line = previous_line == Some(line_idx)
+            || matches
+                .peek()
+                .is_some_and(|(_, next)| line_of(next.start()) == line_idx);
+        previous_line = Some(line_idx);
+        if ordinal < sel.hit_skip as usize {
+            continue;
+        }
         let line_start_byte = line_starts[line_idx];
+        let line = line_text(source, &line_starts, line_idx);
 
         let context_before =
             (include_context && line_idx > 0).then(|| clip_line(line_text(source, &line_starts, line_idx - 1), 0, 0));
@@ -574,11 +578,8 @@ fn collect_hits(
                 path: path.clone(),
                 line: (line_idx as u32) + 1,
                 column: (match_start - line_start_byte) as u32 + 1,
-                text: clip_line(
-                    line_text(source, &line_starts, line_idx),
-                    match_start - line_start_byte,
-                    mat.len(),
-                ),
+                write_column: shares_line || line.len() > LINE_TEXT_MAX,
+                text: clip_line(line, match_start - line_start_byte, mat.len()),
                 symbol: None,
                 context_before,
                 context_after,

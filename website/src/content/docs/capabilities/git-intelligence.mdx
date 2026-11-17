@@ -69,8 +69,8 @@ abbreviated sha, or any revision (`HEAD~3`, a branch).
 }
 ```
 
-Squash-merge commits can carry message bodies of hundreds of kilobytes, so list responses cut a
-long body (`body_truncated: true`); read the whole message with `rev`. The list is held to
+Squash-merge commits can carry message bodies of hundreds of kilobytes, so a list names each
+commit by its summary; read the whole message with `rev`. The list is held to
 `max_tokens` (default 6000): overflow is dropped, the response carries `budgeted: true` and
 `next_cursor` resumes at the first dropped commit.
 

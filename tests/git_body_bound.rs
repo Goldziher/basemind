@@ -2,9 +2,9 @@
 //!
 //! A squash-merge commit can carry a body of hundreds of kilobytes; a commit search used to return
 //! every hit's body whole, so one call at `limit` 100 cost megabytes. These tests build a repo with
-//! large-body commits and pin the three bounds: the per-hit body cap, the token budget on every
-//! commit list (`max_tokens`, with `next_cursor` resuming at the first dropped commit), and
-//! `git_log {rev}` as the way back to the whole message.
+//! large-body commits and pin the three bounds: a list names a commit by its summary and carries no
+//! body, every commit list is held to a token budget (`max_tokens`, with `next_cursor` resuming at
+//! the first dropped commit), and `git_log {rev}` is the way to the whole message.
 
 use std::path::Path;
 use std::process::Command;
@@ -122,7 +122,7 @@ fn commits(value: &Value) -> &Vec<Value> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn search_caps_each_body_and_marks_the_cut() {
+async fn search_lists_no_commit_body() {
     let dir = build_repo();
     let service = spawn(dir.path()).await;
 
@@ -134,20 +134,13 @@ async fn search_caps_each_body_and_marks_the_cut() {
         "{COMMITS} hits with ~{BIG_BODY_BYTES}-byte bodies must stay small, got {size} bytes"
     );
     for hit in hits {
-        let body = hit["body"].as_str().expect("body");
-        assert!(body.starts_with(TOKEN), "{body}");
-        let short_sha = hit["short_sha"].as_str().expect("short_sha");
-        assert!(
-            body.contains("body truncated") && body.contains(short_sha),
-            "marker must name the commit to ask for in full: {body}"
+        let keys: Vec<&String> = hit.as_object().expect("a commit").keys().collect();
+        assert_eq!(
+            keys,
+            ["sha", "summary", "author", "author_time_unix"],
+            "a hit names the commit and leaves its message to `rev`: {hit}"
         );
-        assert_eq!(hit["body_truncated"], json!(true));
-        assert!(hit["body_bytes"].as_u64().expect("body_bytes") > BIG_BODY_BYTES as u64 - 100);
-        assert!(
-            body.chars().count() < 1_300,
-            "default cap is about 1000 chars: {}",
-            body.len()
-        );
+        assert_eq!(hit["sha"].as_str().map(str::len), Some(12), "{hit}");
     }
 
     let _ = service.cancel().await;
@@ -190,7 +183,12 @@ async fn show_returns_the_whole_message_and_files() {
 
     let (shown, size) = call(&service, json!({ "rev": sha })).await;
     let commit = &shown["commit"];
-    assert_eq!(commit["sha"], json!(sha));
+    assert!(
+        commit["sha"]
+            .as_str()
+            .is_some_and(|full| full.len() == 40 && full.starts_with(&sha)),
+        "`rev` resolves the list's 12 digits and names the commit in full: {commit}"
+    );
     let body = commit["body"].as_str().expect("body");
     assert!(
         body.len() >= BIG_BODY_BYTES - 100,
@@ -199,8 +197,7 @@ async fn show_returns_the_whole_message_and_files() {
     );
     assert!(commit.get("body_truncated").is_none());
     assert!(size >= BIG_BODY_BYTES - 100);
-    let files = shown["files"].as_array().expect("files");
-    assert!(files.iter().any(|file| file["path"] == json!("a.rs")), "{files:?}");
+    assert_eq!(shown["files"]["a.rs"], "modified", "{shown}");
 
     // A full sha and a symbolic revision both resolve.
     let (by_rev, _) = call(&service, json!({ "rev": "HEAD" })).await;

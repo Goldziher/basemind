@@ -114,10 +114,6 @@ pub(crate) struct SharedReadStack {
     /// that can be starved for minutes by other sessions' scans. Cache-reading tools await
     /// [`cache_ready`](Self::cache_ready) while this is set (see [`super::ServerState::await_cache_ready`]).
     pub(crate) cache_warming: AtomicBool,
-    /// True while this serve's boot-time git-history sync runs. A paged git walk that spans its end
-    /// is refused (the index orders commits differently from the live walk), so `index_status`
-    /// reports it for a caller that wants to page through history without that refusal.
-    pub(crate) history_syncing: AtomicBool,
     /// Wall-clock duration of the boot-time cache preload, in milliseconds, once it completes
     /// (`0` = still warming or no deferred preload this session). Surfaced on `status` as `warm_ms`.
     pub(crate) cache_warm_ms: AtomicU64,
@@ -146,6 +142,16 @@ pub(crate) struct SharedReadStack {
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
     /// without the lock.
     pub(crate) read_only: bool,
+    /// True on a long-lived serve, which keeps the git-history index caught up with HEAD: a history
+    /// call that finds the index behind asks for a sync. The one-shot CLI never syncs.
+    pub(crate) history_catch_up: bool,
+    /// True while a git-history sync this stack asked for is running, so a burst of history calls
+    /// behind a moved HEAD starts one sync, not one per call.
+    /// `index_status` reports it: a paged git walk that spans the end of a sync is refused,
+    /// because the index orders commits differently from the live walk.
+    pub(crate) history_syncing: Arc<AtomicBool>,
+    /// The git index's file list as `find_files` last read it ([`super::helpers_files`]).
+    pub(super) tracked: std::sync::Mutex<super::helpers_files::TrackedCache>,
     /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
     /// instead of writing locally. The store is opened read-only, but — unlike a plain
     /// [`read_only`](Self::read_only) fallback — the empty-index auto-scan, the filesystem
@@ -268,13 +274,15 @@ impl SharedReadStack {
             initial_scan_active: AtomicBool::new(false),
             initial_scan_ms: AtomicU64::new(0),
             cache_warming: AtomicBool::new(defer_warm),
-            history_syncing: AtomicBool::new(false),
             cache_warm_ms: AtomicU64::new(0),
             cache_ready: Notify::new(),
             rescan_active: AtomicBool::new(false),
             lazy_cache: options.lazy_cache,
             lazy_cache_built: tokio::sync::OnceCell::new(),
             read_only: options.read_only,
+            history_catch_up: options.background,
+            history_syncing: Arc::new(AtomicBool::new(false)),
+            tracked: std::sync::Mutex::default(),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             daemon_writer: options.daemon_writer,
             #[cfg(all(feature = "comms", any(unix, windows)))]

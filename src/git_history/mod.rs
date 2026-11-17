@@ -78,7 +78,12 @@ use crate::path::RelPath;
 ///
 /// `+6` switched every keyspace to LZ4 at all levels (fjall's default leaves L0/L1 raw and persists the
 /// policy at keyspace creation, so existing stores must be recreated to pick it up).
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 6;
+///
+/// `+7` rebuilds the stored file lists, which changed three ways: a move lists its source as
+/// deleted, no directory is listed as modified, and a merge lists only what it changed against
+/// every parent. An index built before keeps the old lists, and the history of a path read from it
+/// would disagree with the live walk.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 7;
 
 /// LZ4 on data and index blocks at every level; see [`crate::index`]'s `index_keyspace_options`.
 fn keyspace_options() -> KeyspaceCreateOptions {

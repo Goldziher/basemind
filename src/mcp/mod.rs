@@ -12,6 +12,7 @@ pub(crate) mod admission;
 pub mod agent_tools;
 mod background;
 mod budget;
+mod by_path;
 mod completions;
 pub(crate) mod cursor;
 mod cursor_bind;
@@ -57,6 +58,7 @@ mod helpers_pick;
 mod helpers_refs_match;
 mod helpers_symbols;
 mod helpers_telemetry;
+mod history_sync;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod host;
 mod identity;
@@ -381,7 +383,7 @@ impl BasemindServer {
                 background::spawn_view_watcher(Arc::clone(&state))
             };
             watcher = Some(Arc::new(watcher_guard));
-            Self::spawn_git_history_sync(&state, &history_dir);
+            history_sync::request(&state);
             if needs_initial_scan {
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
@@ -556,7 +558,7 @@ impl BasemindServer {
         // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
         let warden = Arc::new(ServerState::for_connection(Arc::clone(&shared), agent_id));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
-        Self::spawn_git_history_sync(&warden, &history_dir);
+        history_sync::request(&warden);
         if needs_initial_scan {
             background::spawn_initial_scan(Arc::clone(&warden));
         } else if defer_warm {
@@ -628,96 +630,6 @@ impl BasemindServer {
                 tracing::warn!(?error, "git-history index unavailable; tools will live-walk");
                 None
             }
-        }
-    }
-
-    /// Kick the git-history index up to date, off the MCP thread. A session whose handle is
-    /// daemon-backed ASKS the daemon to do it (which serializes the build per repo, so N sessions
-    /// cause one walk); a session that holds the database does it in-process, as it always has.
-    ///
-    /// Keyed off the handle the routing above actually produced, not off `daemon_writer`: a
-    /// non-`daemon_writer` session that found a live daemon also holds a forwarding handle, and
-    /// asking the builder to write through it is a guaranteed
-    /// [`NotLocal`](crate::git_history::GitHistoryError::NotLocal).
-    ///
-    /// Only ever reached with `background: true` (i.e. `serve`). The one-shot CLI requests no sync at
-    /// all: it exits in milliseconds, and a first build on a deep repo is a minutes-long walk.
-    fn spawn_git_history_sync(state: &Arc<ServerState>, history_dir: &std::path::Path) {
-        let Some(index) = state.shared.git_history.as_deref() else {
-            return;
-        };
-        let _ = index;
-        // ~keep Cleared by whichever task below ends the sync, however it ends.
-        struct Syncing(Arc<ServerState>);
-        impl Drop for Syncing {
-            fn drop(&mut self) {
-                self.0
-                    .shared
-                    .history_syncing
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        let begin = || {
-            state
-                .shared
-                .history_syncing
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            Syncing(Arc::clone(state))
-        };
-        // ~keep A daemon-hosted handle syncs in-process through the seam (the daemon's own build lock),
-        // ~keep never over the socket back to itself.
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if let Some(host) = crate::git_history::remote::history_host(index) {
-            let root = state.shared.root.clone();
-            let syncing = begin();
-            tokio::spawn(async move {
-                let _syncing = syncing;
-                match host
-                    .run_history(root, crate::git_history::proto::GitHistoryOp::Sync)
-                    .await
-                {
-                    Ok(reply) => tracing::info!(?reply, "git-history index synced in-process (hosted)"),
-                    Err(error) => tracing::warn!(%error, "git-history in-process sync failed; history tools live-walk"),
-                }
-            });
-            return;
-        }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if index.forwarder().is_some_and(|forwarder| forwarder.hosts_in_process()) {
-            return;
-        }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if index.is_daemon_backed() {
-            let root = state.shared.root.clone();
-            let agent_id = state.agent_id.clone();
-            let syncing = begin();
-            tokio::spawn(async move {
-                let _syncing = syncing;
-                let Ok(agent) = crate::comms::ids::AgentId::parse(agent_id) else {
-                    return;
-                };
-                match crate::git_history::remote::request_sync(root, agent).await {
-                    Some(outcome) => tracing::info!(?outcome, "git-history index synced by the daemon"),
-                    None => tracing::warn!("git-history index sync unavailable; history tools live-walk"),
-                }
-            });
-            return;
-        }
-        if let (Some(git_history), Some(repo)) = (state.shared.git_history.clone(), state.shared.repo.clone()) {
-            let history_dir = history_dir.to_path_buf();
-            let syncing = begin();
-            tokio::task::spawn_blocking(move || {
-                let _syncing = syncing;
-                match crate::git_history::builder::sync(&git_history, &repo, &history_dir) {
-                    Ok(outcome) => tracing::info!(?outcome, "git-history index sync complete"),
-                    Err(error) => tracing::warn!(%error, "git-history index sync failed; tools live-walk"),
-                }
-                // Fjall 3.1 can deadlock while dropping its final database handle after a
-                // background sync (fjall-rs/fjall#260). This path is only used by a standalone
-                // MCP process; the daemon-backed path above owns and closes the shared database.
-                // Keep this clone alive until process exit so Tokio runtime shutdown cannot hang.
-                std::mem::forget(git_history);
-            });
         }
     }
 

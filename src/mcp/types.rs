@@ -320,21 +320,18 @@ pub(super) struct OutlineSymbol {
     pub signature: Option<String>,
 }
 
+/// One `code_symbols` row: where a definition is and what it is. Rows are ranked: the exact name,
+/// then names it prefixes, then names holding it, then (with `fuzzy`) fuzzy matches; which of those
+/// a row is shows by comparing `name` with the query.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct SearchHitView {
     pub path: RelPath,
-    pub name: String,
-    pub kind: &'static str,
     /// 1-based line of the definition.
     pub line: u32,
-    /// 1-based column of the definition.
-    pub column: u32,
+    pub kind: &'static str,
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
-    /// How the name matched: `exact`, `prefix`, `substring` or `fuzzy`. Rows are ranked in that
-    /// order.
-    #[serde(rename = "match")]
-    pub matched: &'static str,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -364,68 +361,13 @@ pub(super) struct SearchResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. A first call against a cold server also includes index warm-up;
-    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
+/// Response of `find_files`: a fuzzy search ranked best first, or a listing in path order.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ListFilesEntry {
-    pub path: RelPath,
-    pub language: String,
-    pub size_bytes: u64,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct ListFilesResponse {
-    /// Files that pass the filters, across every page; `next_cursor` continues past this one.
+pub(super) struct FilesResponse {
+    /// Files that match, from this page on: `next_cursor` continues past this one.
     pub total: usize,
-    pub returned: usize,
-    /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
-    /// was clamped down to it. Surfaced so callers know the page size was reduced (bug #17).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub limit_clamped: bool,
-    /// True when a `max_tokens` budget dropped trailing files. Page the rest with `next_cursor`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    pub files: Vec<ListFilesEntry>,
-    /// Opaque cursor to pass back on the next call when more results are available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Cursor>,
-    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
-    /// (a rescan happened between calls). The caller must restart pagination from the top.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub cursor_invalidated: bool,
-    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
-    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice: Option<LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. A first call against a cold server also includes index warm-up;
-    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct FindFilesEntry {
-    pub path: RelPath,
-    pub language: String,
-    pub size_bytes: u64,
-    /// Fuzzy match score from `nucleo-matcher` (higher is a better match). Not comparable
-    /// across queries — only meaningful to rank entries within one response.
-    pub score: u32,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct FindFilesResponse {
-    /// Files that match, across every page; `next_cursor` continues past this one.
-    pub total: usize,
-    pub returned: usize,
     /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
     /// was clamped down to it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -433,8 +375,8 @@ pub(super) struct FindFilesResponse {
     /// True when a `max_tokens` budget dropped trailing files. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
-    /// Matches sorted by descending `score` (ties broken by path, ascending).
-    pub files: Vec<FindFilesEntry>,
+    /// Repo-relative paths: by descending match quality for a query (ties by path), else by path.
+    pub files: Vec<RelPath>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
@@ -446,17 +388,10 @@ pub(super) struct FindFilesResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. A first call against a cold server also includes index warm-up;
-    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct DependentsResponse {
-    pub module: String,
     /// Importing files, across every page.
     pub total: usize,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -466,8 +401,6 @@ pub(super) struct DependentsResponse {
     pub next_cursor: Option<Cursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -567,32 +500,66 @@ pub(super) struct StatusResponse {
 
 #[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct ReferenceHit {
+    /// The file of the call site: the key the hit is listed under.
     pub path: RelPath,
     /// 1-based line of the call site; `0` when the index holds no position for it.
     pub line: u32,
-    /// Byte column of the call site: 0-based here, written 1-based.
+    /// Byte column of the call site: 0-based here, written 1-based, and only when
+    /// [`shared_line`](Self::shared_line) is set.
     pub column: u32,
+    /// The name called. Written only when it is not the name asked for (a `substring` match, or an
+    /// alias the definition is called by); [`ReferenceHit::named`] clears it otherwise.
     pub callee: String,
     /// With a pinned definition: `true` when scope / import resolution proved this site binds to
     /// it, `false` when resolution checked the site and did not. Absent when nothing was checked:
     /// no definition was pinned, resolution has no facts about the definition (`resolution` on the
     /// response says why), or the site's file lies past the probe cap.
     pub resolved: Option<bool>,
+    /// Another call site of the same callee is on this line of this file, in the whole result and
+    /// not only this page, so the line alone does not tell them apart and `column` is written. Set
+    /// by [`super::helpers_calls_scan::mark_shared_lines`].
+    #[schemars(skip)]
+    pub shared_line: bool,
 }
 
-/// Written by hand so a call site with no recorded position omits `line` and `column` together. A
-/// derived form would emit `"line": 0`, which is not a line, beside a `column` of 1.
-impl Serialize for ReferenceHit {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl ReferenceHit {
+    /// This hit as listed for a query of `name`: the callee is left out when it is `name`.
+    pub(super) fn named(mut self, name: &str) -> Self {
+        if self.callee == name {
+            self.callee.clear();
+        }
+        self
+    }
+}
+
+/// Written by hand so a call site with no recorded position omits `line` instead of reporting line
+/// 0, and so a callee that is the name asked for is not repeated on every row.
+impl super::by_path::Located for ReferenceHit {
+    fn located(&self) -> &RelPath {
+        &self.path
+    }
+
+    fn writes_column(&self) -> Option<bool> {
+        Some(self.shared_line)
+    }
+
+    fn line(&self) -> u32 {
+        self.line
+    }
+
+    fn serialize_row<S: serde::Serializer>(&self, serializer: S, column: bool) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
 
         let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("path", &self.path)?;
         if self.line != 0 {
             map.serialize_entry("line", &self.line)?;
-            map.serialize_entry("column", &self.column.saturating_add(1))?;
+            if column {
+                map.serialize_entry("column", &self.column.saturating_add(1))?;
+            }
         }
-        map.serialize_entry("callee", &self.callee)?;
+        if !self.callee.is_empty() {
+            map.serialize_entry("callee", &self.callee)?;
+        }
         if let Some(resolved) = self.resolved {
             map.serialize_entry("resolved", &resolved)?;
         }
@@ -600,12 +567,15 @@ impl Serialize for ReferenceHit {
     }
 }
 
+/// A call site on its own, as the token budget costs it.
+impl Serialize for ReferenceHit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        super::by_path::Located::serialize_row(self, serializer, false)
+    }
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindReferencesResponse {
-    pub name: String,
-    /// How `name` was matched against callee identifiers: `exact` or `substring`.
-    #[serde(rename = "match")]
-    pub matching: &'static str,
     /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
     /// predates exact matching answered, whose substring hits are dropped page by page.
     pub total: u32,
@@ -619,6 +589,8 @@ pub(super) struct FindReferencesResponse {
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// The call sites under the file each is in.
+    #[serde(serialize_with = "super::by_path::serialize")]
     pub hits: Vec<ReferenceHit>,
     /// Opaque cursor to pass back on the next call when more results are available.
     /// Stable across rescans.
@@ -628,21 +600,12 @@ pub(super) struct FindReferencesResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. A first call against a cold server also includes index warm-up;
-    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindCallersResponse {
     /// The definition the callers were pinned to.
     pub definition: DefinitionView,
-    /// How `name` was matched against callee identifiers: `exact` or `substring`.
-    #[serde(rename = "match")]
-    pub matching: &'static str,
     /// Why no hit carries `resolved`: `unsupported for <language>`, `no resolution facts for this
     /// file`, `no resolution facts for this definition` (the file has facts and none names it), or
     /// that the index's resolve pass has not finished.
@@ -661,13 +624,13 @@ pub(super) struct FindCallersResponse {
     pub truncated_reason: Option<&'static str>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// The call sites under the file each is in.
+    #[serde(serialize_with = "super::by_path::serialize")]
     pub hits: Vec<ReferenceHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -705,16 +668,10 @@ pub(super) struct GotoDefinitionResponse {
     /// (module-global, unresolved name, or a language without resolution coverage).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub definition: Option<DefinitionLocation>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (scope
-    /// resolution + index lookup + response construction), excluding MCP transport, argument
-    /// deserialization, and response serialization. A first call against a cold server also
-    /// includes index warm-up. See [`crate::mcp::helpers::timing`] for the full contract.
     /// Why there is no `definition`, when the file's language has no scope resolution:
     /// `unsupported for <language>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -759,19 +716,27 @@ pub(super) fn is_zero(count: &usize) -> bool {
     *count == 0
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+/// One `code_grep` hit, listed under its file ([`super::by_path`] writes it).
+#[derive(Debug, schemars::JsonSchema)]
 pub(super) struct GrepHit {
+    /// The file the hit is in: the key the hit is listed under, not a field of its own.
     pub path: RelPath,
     /// 1-based line number of the match.
     pub line: u32,
-    /// 1-based byte column of the match within the line.
+    /// 1-based byte column of the match, written only when [`write_column`](Self::write_column)
+    /// is set.
     pub column: u32,
+    /// The file holds another match on this line, or `text` is a clipped window of the line: the
+    /// line alone does not place the match, so `column` is written. Decided over every match in
+    /// the file, so a page boundary does not change it.
+    #[schemars(skip)]
+    pub write_column: bool,
     /// The matching line, so the hit can be read without opening the file. A line over 400 bytes is
     /// cut to a window around the match, `…` marking each cut side.
     pub text: String,
-    /// The innermost symbol whose span holds the match; absent outside every symbol.
+    /// Name of the innermost symbol whose span holds the match; absent outside every symbol.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub symbol: Option<GrepSymbol>,
+    pub symbol: Option<String>,
     /// The line immediately before the match, when context was requested and line > 1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_before: Option<String>,
@@ -779,19 +744,55 @@ pub(super) struct GrepHit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_after: Option<String>,
     /// Byte offset of the match in the file; used to find `symbol`, not part of the response.
-    #[serde(skip)]
     pub start_byte: u32,
     /// The file changed since it was indexed. The hit is from the file as it is now, and `symbol`
     /// is left out: the indexed outline describes other bytes until `index_rescan`.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
 }
 
-/// The symbol a grep hit sits in.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct GrepSymbol {
-    pub name: String,
-    pub kind: &'static str,
+impl super::by_path::Located for GrepHit {
+    fn located(&self) -> &RelPath {
+        &self.path
+    }
+
+    fn writes_column(&self) -> Option<bool> {
+        Some(self.write_column)
+    }
+
+    fn line(&self) -> u32 {
+        self.line
+    }
+
+    fn serialize_row<S: serde::Serializer>(&self, serializer: S, column: bool) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("line", &self.line)?;
+        if column {
+            map.serialize_entry("column", &self.column)?;
+        }
+        map.serialize_entry("text", &self.text)?;
+        if let Some(symbol) = &self.symbol {
+            map.serialize_entry("symbol", symbol)?;
+        }
+        if let Some(before) = &self.context_before {
+            map.serialize_entry("context_before", before)?;
+        }
+        if let Some(after) = &self.context_after {
+            map.serialize_entry("context_after", after)?;
+        }
+        if self.stale {
+            map.serialize_entry("stale", &true)?;
+        }
+        map.end()
+    }
+}
+
+/// A hit on its own, as the token budget costs it.
+impl Serialize for GrepHit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        super::by_path::Located::serialize_row(self, serializer, false)
+    }
 }
 
 /// `truncated_reason` of a scan that stopped at its cap before the end of the matches.
@@ -809,27 +810,23 @@ pub(super) enum GrepTruncation {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorkspaceGrepResponse {
-    /// Echoed pattern from the request.
-    pub pattern: String,
-    /// Whether `pattern` was compiled as a regex; false means it was matched as literal text.
-    pub regex: bool,
-    /// Number of files that had at least one match. Exact: every candidate file is scanned.
-    pub total_files_matched: usize,
-    /// Exact hit count across the whole scanned corpus — not just the returned page. Exceeds
-    /// `hits.len()` when `limit` or the token budget cut the page; `next_cursor` continues.
-    pub total_matches: u32,
-    /// True when files were left unread, so `total_matches` does not cover them. Never true
-    /// because `limit` cut the page or because the corpus is large: grep scans every candidate
-    /// file it may read. Absent when false.
+    /// Exact hit count across the whole scanned corpus — not just the returned page. Exceeds the
+    /// hits listed when `limit` or the token budget cut the page; `next_cursor` continues.
+    pub total: u32,
+    /// True when files were left unread, so `total` does not cover them. Never true because
+    /// `limit` cut the page or because the corpus is large: grep scans every candidate file it may
+    /// read. Absent when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `byte_budget` whenever `truncated` is true. There is no `omitted`: the matches in the
     /// unread files were never counted. `next_cursor` continues with those files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<GrepTruncation>,
-    /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
+    /// True when a `max_tokens` budget dropped trailing hits. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// The hits under the file each is in, files in the order searched.
+    #[serde(serialize_with = "super::by_path::serialize")]
     pub hits: Vec<GrepHit>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -845,12 +842,6 @@ pub(super) struct WorkspaceGrepResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
-    /// lookup + response construction), excluding MCP transport, argument deserialization, and
-    /// response serialization. A first call against a cold server also includes index warm-up;
-    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
-    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

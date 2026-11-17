@@ -117,3 +117,4 @@ them.
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted |
 | [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted |
 | [0033](0033-store-evidence-collection-and-recovery-rules.md) | Store rules after the sixth storage review — evidence, collection, recovery | Proposed |
+| [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Proposed |

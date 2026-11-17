@@ -289,6 +289,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_archive_entries` still apply: they bound the zip containers that Office files (docx, pptx, xlsx,
   odt) are. A config that set `extract_archives = true` has its documents extracted again once, on the
   first scan after upgrading.
+- **BREAKING: lean rows on the locating tools.** `code_symbols`, `code_grep`, `code_refs`,
+  `find_files`, `git_log` and `git_diff` answer with what the shell would print plus what they add,
+  and drop what repeated per row or echoed the call (ADR-0031 holds a locating tool to 1.5 times the
+  shell's tokens). None of them carries `elapsed_us` any more; the CLI times the call itself.
+  `code_grep` and `code_refs` list hits under their file (`{"<path>": [hit, ...]}`), with a
+  `column` only where the line does not place the hit, decided over the whole result and not the page;
+  a grep hit's `symbol` is the enclosing symbol's name, `total_matches` is `total`, and
+  `pattern`, `regex` and `total_files_matched` are gone; a call site writes `callee` and an
+  implementation `trait_name` only when it is not the name asked for, and `name`, `match` and
+  `module` are no longer echoed. A `code_symbols` row is `path`, `line`, `kind`, `name` and
+  `signature` (no `column`, no `match`). `find_files` lists paths alone (no `language`,
+  `size_bytes`, `score` or `returned`). A `git_log` row is `sha` (its first 12 hex digits),
+  `summary`, `author` and `author_time_unix`, with `files` as `{"<path>": "<change>"}`; `short_sha`,
+  the `path` / `pattern` / `name` echoes and a search hit's `body`, `author_email`,
+  `body_truncated` and `body_bytes` are gone (`git_log {rev}` keeps the full sha, body and email).
+  `git_diff` drops a hunk's `kind`, writes `present_at_from` / `present_at_to` only when false, and
+  leaves an empty status list out. The CLI's `--json` output has the same shapes;
+  [`docs/UPGRADING.md`](docs/UPGRADING.md) lists every field.
 - **LLM summarization and the `[llm]` table.** LLM-backed (abstractive) summarization and the LLM NER
   backend are gone. `[documents.summarization] strategy = "abstractive"` is still accepted, logs a one-time
   deprecation warning and produces extractive (TextRank) summaries. `[documents.ner] backend = "llm"` is
@@ -611,6 +629,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A commit's file list on `git_log` lists the source of a moved file as `deleted` beside its destination as
   `renamed`. Only the destination was listed, so the history of the directory a file moved out of missed the
   move, and the git-history index's history of the old path missed it where the live walk listed it.
+- `git_log {path}` no longer lists a merge that took the path unchanged from one side: a merge touches a
+  path, and lists it among its files, only when it differs there from every parent, as `git log --cc`
+  has it. Every other commit that changes the path is listed: unlike `git log -- <path>`, no side of a
+  merge is pruned. On tokio, a file's history was more than half such merges.
+- A commit's file list on `git_log` no longer names the directories above a changed file (`src` as
+  `modified`).
+- The git-history index and the git cache rebuild their file lists once, so the three fixes above (and the
+  moved file's source) reach a repository indexed by an earlier build.
+- `find_files` finds the file a query names up to one typo (`buidl` finds `build.rs`, `SCEURITY` finds
+  `SECURITY.md`) when no path holds the query as typed; a transposed letter matched nothing, or only
+  paths holding the letters in order. It also covers every file git tracks that the scan does not index
+  (images, fonts, and files the scan was told to leave out, as `git ls-files` lists them), in a search
+  and in a listing; an entry a sparse checkout left out of the working tree is not listed. A query that
+  holds whitespace or a `!`, `^`, `$` or `'` operator gets no typo pass. A page asked for after
+  `git add` or `git rm` changed that listing reports `cursor_invalidated`.
 - `basemind git by-path` refuses `--window 0` and `--limit 0`, which returned the same `next_cursor`
   forever.
 - `code_refs` answered by a daemon that predates exact matching no longer sets `truncated_reason:

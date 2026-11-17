@@ -227,10 +227,11 @@ impl Env {
     fn code_paths(&self, bin: &Path) -> Vec<String> {
         let listed: Vec<String> = self.json(bin, &["code", "files"])["files"]
             .as_array()
+            // ~keep A release before lean rows lists `{"path": ...}` objects; this build lists the paths.
             .map(|files| {
                 files
                     .iter()
-                    .filter_map(|f| f["path"].as_str().map(String::from))
+                    .filter_map(|f| f.as_str().or_else(|| f["path"].as_str()).map(String::from))
                     .collect()
             })
             .unwrap_or_default();
@@ -337,7 +338,7 @@ fn upgrade_from(old: &Path) -> bool {
         "signature must stop at the class header, not embed the body: {signature:?}"
     );
     assert_eq!(
-        env.json(new, &["code", "grep", "Usage"])["total_matches"],
+        env.json(new, &["code", "grep", "Usage"])["total"],
         0,
         "README is not in the code grep"
     );
