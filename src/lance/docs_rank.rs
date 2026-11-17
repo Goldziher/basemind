@@ -1,4 +1,4 @@
-//! Rank document chunks for one query (ADR-0029 rules 3 to 7, as amended by ADR-0038).
+//! Rank document chunks for one query (ADR-0029 rules 3 to 7, as amended by ADR-0037).
 //!
 //! 1. **Live documents.** The view's document map names, for every path, the `doc_key` its rows
 //!    are stored under. A `path` glob and a `keywords` filter narrow that set.
@@ -26,7 +26,7 @@ use super::docs_types::{DocCite, DocLaneUnavailable, DocsRanking, LaneRanks, Ran
 
 /// Candidates each lane returns (ADR-0029 rule 4).
 pub const LANE_CANDIDATES: usize = 200;
-/// Allowed keys sent to the store as a pre-filter; more are projected after ranking (ADR-0038).
+/// Allowed keys sent to the store as a pre-filter; more are projected after ranking (ADR-0037).
 pub const LIVE_KEYS_PREFILTER: usize = 2_000;
 /// The most candidates a lane fetches while widening past dead or filtered-out rows.
 pub const LIVE_WIDEN_CAP: usize = 4_096;

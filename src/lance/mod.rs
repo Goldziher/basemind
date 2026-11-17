@@ -134,7 +134,7 @@ fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::stor
 /// Table-layout version of every LanceDB store (the memory vectors, the workspace vector store and
 /// the document retrieval store), recorded in `meta.json` beside the model and dimension.
 ///
-/// Independent of the release minor (ADR-0038): a minor that changes no table leaves the stores,
+/// Independent of the release minor (ADR-0037): a minor that changes no table leaves the stores,
 /// and the memory vectors in them, in place. Stale rows are kept out by the keys, not by a wipe: a
 /// store directory is named by its model and dimension, a document's `doc_key` hashes the blob
 /// schema, and a memory row is checked against its note's `updated_at`. Bump it when a table's

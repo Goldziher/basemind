@@ -1150,7 +1150,7 @@ Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key` F
 `(scope, vis_byte, owner, key)` and the LanceDB memory table has `agent_id` + `visibility` columns.
 Group memory (`visibility=group`, default, `owner=""`) is shared across agents in a repo; individual
 memory (`visibility=individual`, `owner=agent_id`) is private to one agent. The vector tables are
-guarded by `VECTOR_STORE_VER`, a table-layout version independent of the release minor (ADR-0038); a
+guarded by `VECTOR_STORE_VER`, a table-layout version independent of the release minor (ADR-0037); a
 mismatch wipes them and the notes re-embed into them.
 The notes are not: `memory.fjall` carries its own version (`store_meta`), is never wiped, and a
 store a newer basemind wrote is refused for memory operations only ("written by a newer
