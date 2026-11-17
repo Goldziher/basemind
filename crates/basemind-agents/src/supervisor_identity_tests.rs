@@ -431,3 +431,41 @@ fn a_subreaper_ancestor_adopts_no_escapee_as_launcher() {
         }
     }
 }
+
+/// Notes, as each registration is written, whether the supervisor already admits the role.
+#[derive(Default)]
+struct BoundAtRecord {
+    supervisor: std::sync::OnceLock<std::sync::Weak<Inner>>,
+    seen: Mutex<Vec<bool>>,
+}
+
+impl crate::audit::AuditSink for BoundAtRecord {
+    fn record(&self, record: &AuditRecord) -> std::io::Result<()> {
+        if record.event == AuditEvent::Registration
+            && record.outcome == "registered"
+            && let Some(inner) = self.supervisor.get().and_then(std::sync::Weak::upgrade)
+        {
+            let bound = !inner.table().registered.is_empty();
+            self.seen.lock().unwrap().push(bound);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_role_is_bound_only_once_its_registration_is_recorded() {
+    let scratch = Scratch::new();
+    let sink = Arc::new(BoundAtRecord::default());
+    let supervisor = Supervisor::new(
+        LaunchPolicy::new(policy(&[HarnessKind::ClaudeCode])).unwrap(),
+        vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())],
+        registry(),
+        sink.clone(),
+    )
+    .unwrap();
+    sink.supervisor.set(Arc::downgrade(&supervisor.inner)).unwrap();
+    supervisor.register_launcher_in_process("lead").unwrap();
+    // A launch racing the registration could not be admitted, and logged, before it.
+    assert_eq!(*sink.seen.lock().unwrap(), [false]);
+    supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+}

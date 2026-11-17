@@ -180,7 +180,9 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
                 if *allowed {
                     // The harness already has the allow (spent from the session's allowance,
                     // so it is within what the log was sized for); one that is not on the
-                    // record ends the session rather than let it act on it unrecorded.
+                    // record ends the session rather than let it act on it unrecorded. A
+                    // launcher that dies before this line leaves the allow unrecorded; its
+                    // sessions die with it.
                     if inner.audit(&record).is_err() {
                         session.stop();
                     }

@@ -83,7 +83,9 @@ println!("{} runs as {}", launched.id, launched.agent);
 // A launched agent's call, on the socket this process listens on for its own launched agents:
 // the kernel names the process on the other end, which the supervisor places in its session;
 // the token has to be that session's.
-let listener = UnixListener::bind("/run/user/1000/basemind/agents.sock")?;
+// One socket per `serve`, in a directory of mode 0700 made for it: a fixed path would collide
+// between two leads.
+let listener = UnixListener::bind(format!("/run/user/1000/basemind/agents-{}/agents.sock", std::process::id()))?;
 let (connection, _) = listener.accept()?;
 let token = "the token the agent read from BASEMIND_LAUNCH_TOKEN";
 let agent = Caller::launched(token, Peer::of_socket(connection.as_fd())?);
@@ -166,7 +168,17 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   for an unverified one, by where its process sits, never by outcome (8 a minute per key, the
   rest counted in `suppressed`): refusals, a repeated stop, a denial or withdrawal (the approval
   policy's keyed by session), a failed answer. A request the adapter refuses is checked before a
-  slot is reserved, so it is one refusal, never an accepted launch.
+  slot is reserved, so it is one refusal, never an accepted launch. Every unverified caller in one
+  place shares a key (all processes outside the tree are `unverified`), so one flood hides the
+  others' attempts behind a `suppressed` count: the intended trade-off, since keying by what a
+  caller claims would let one process spread its refusals over many keys. A token presented from
+  outside its session is refused `peer_mismatch` while that session lives and `unknown_token`
+  otherwise, which tells the caller whether the token is live; it is kept, as the audit's sign of
+  a stolen token, and a process able to present one can read the session's environment anyway.
+  An allow the approval policy gave is recorded once the session reports it settled, after the
+  harness has it: a launcher killed in between leaves that allow unrecorded (the session dies with
+  it). One the policy gives to an ACP agent that cannot take a single-use allow is spent from the
+  allowance and then sent as a denial.
 - **The reserve.** `FileAuditSink` appends one JSON object per line to a file it creates with
   mode 0600 and holds with an exclusive lock (a second writer is refused); it refuses a symbolic
   link, a file with another hard link, a non-regular file (a FIFO without blocking), another

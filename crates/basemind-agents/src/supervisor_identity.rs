@@ -196,15 +196,16 @@ impl Source {
     }
 }
 
-/// Binds `role` to the process `source` names. A binding is write-once: it is released only by
-/// an explicit unregistration, also once its process is gone.
+/// The process `source` names, when `role` may be bound to it; the caller binds it once the
+/// registration is on the record. A binding is write-once: it is released only by an explicit
+/// unregistration, also once its process is gone.
 pub(crate) fn register(
     policy: &crate::LaunchPolicy,
-    table: &mut Table,
-    role: Role,
+    table: &Table,
+    role: &Role,
     source: Source,
 ) -> Result<ProcId, SupervisorError> {
-    if let Role::Launcher(principal) = &role
+    if let Role::Launcher(principal) = role
         && !policy.admits(principal)
     {
         return Err(SupervisorError::CallerNotAdmitted);
@@ -214,7 +215,7 @@ pub(crate) fn register(
         Source::InProcess => supervisor.id,
         Source::Exited(_) => return Err(SupervisorError::PeerUnverified),
         // The operator is in-process only; no public path reaches this.
-        Source::Child(_) if role == Role::Operator => return Err(SupervisorError::CallerNotAdmitted),
+        Source::Child(_) if *role == Role::Operator => return Err(SupervisorError::CallerNotAdmitted),
         Source::Child(pid) => {
             let child = i32::try_from(pid)
                 .ok()
@@ -232,10 +233,9 @@ pub(crate) fn register(
             child.id()
         }
     };
-    if table.registered.iter().any(|(bound, _)| *bound == role) {
+    if table.registered.iter().any(|(bound, _)| bound == role) {
         return Err(SupervisorError::RoleBound);
     }
-    table.registered.push((role, id));
     Ok(id)
 }
 

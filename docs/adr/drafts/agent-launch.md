@@ -375,6 +375,60 @@ id that fails the grammar stops the launch.
      anyone but the operator unless the flavor sets `launcher_may_allow`, which needs
      `max_depth = 1`. A model-facing error is the `SupervisorError` code, not its text.
 
+### Engine obligations
+
+The crate's guarantees hold only when the engine meets all of these before `agent_launch` is
+offered. The crate now enforces what it can: a nested host (`NestedHost` / `nested_host`), a
+model's allow (`launcher_may_not_allow`), a dumpable in-process host on Linux
+(`host_dumpable`), a self-peer socket (`Peer::of_socket` refuses it), and `launcher_may_allow`
+with `max_depth` above 1. The rest cannot be enforced by the API and stays written here.
+
+1. **Host.** Host the supervisor only in a `serve` started with the explicit lead switch, and
+   register it in-process at start-up, before the first launch. The injected `serve` runs the
+   restricted profile, which relays `agent_launch` / `agent_stop` to the parent's socket and
+   never constructs a `Supervisor`. Use `register_launcher_child` only for a just-spawned,
+   unwaited child that executes nothing another agent can write. Never register from a
+   connection.
+2. **Callers.** Build every connection's caller with `Peer::of_socket` on the accepted
+   descriptor, right after `accept`; never use `Peer::embedding()` for a connection. Give the
+   injected `serve` a path, never a `socketpair` or a pre-connected or inherited descriptor, and
+   keep `O_CLOEXEC` on every listening and accepted socket. Refuse callers, or at least
+   launching, when `!Peer::pins_connections()` (Linux before 6.5).
+3. **Listener.** One socket per `serve`, in a directory of mode 0700 created for it (the README
+   example's fixed `/run/user/1000/basemind/agents.sock` would collide between leads). Bound the
+   connections and their threads, and each connection's request size and rate: every
+   connection costs an ancestry walk through the process table.
+4. **Process hygiene.** No `SIG_IGN` or `SA_NOCLDWAIT` on `SIGCHLD`; no `waitpid(-1)` anywhere
+   in the process, dependencies included; `SIGPIPE` ignored; the `Supervisor` dropped on
+   shutdown, so `stop_all` and the kill path run.
+5. **Policy, from configuration only.** `enabled = false` maps to `LaunchPolicy::default()`. A
+   flavor allow-list, each with a fixed mode. `max_depth = 1`. No `BypassOptIn` or
+   `UnverifiedModeOptIn` on a flavor reachable over MCP without a per-launch human approval
+   (open question 3). No `ApprovalPolicy` that allows on its own. `max_concurrent` and
+   `max_children` small, `wall_time` well under the 24 h ceiling.
+6. **Audit.** A `FileAuditSink` per supervisor under the data directory (open question 7);
+   launching stays off when it cannot be opened or `Supervisor::new` refuses the reserve. Surface
+   `audit_failures()`, `FileAuditSink::dropped()` and `SessionObserver::audit_exhausted` to the
+   operator outside the log, and turn launching off on exhaustion until the log is rotated.
+7. **Model-facing replies** carry `SupervisorError::code()` and `Event::Error` only, never
+   `Event::Diagnostics` or an error's text.
+8. **The MCP surface.** `agent_launch` and `agent_stop` take no mode, opt-in, executable,
+   environment or principal field; `harness` must be in the allow-list. Annotations:
+   `read_only_hint = false`, open-world. While launching is off they answer `disabled` with no
+   side effect, or are not advertised. No tool lets a model allow an approval request.
+   `Supervisor::status` and `Supervisor::list` are unscoped: scope them to the caller's own tree
+   before exposing them.
+9. **No direct adapter launch.** The engine never calls the public `Registry::launch`, which
+   bypasses the policy, the identity checks and the audit; gating it behind a feature is worth
+   considering when the crate is wired.
+10. **The operator.** Register one only once the client declared elicitation and is
+    interactive: a headless `claude -p` or an SDK host answers elicitations without a human. Mint
+    `operator()` only for a decision the human made there, shown the grant itself.
+11. **Worktrees.** Give each launched agent its own worktree, a root the lead does not execute
+    from. The supervisor refuses planted code as a caller, but the lead's harness still runs
+    what a launched agent writes into the lead's tree (git hooks, build scripts, project
+    settings) with the lead's permissions; that is not something the supervisor sees.
+
 ### Tool surface, later
 
 Two deferred verb tools beside `agent_post`, `agent_inbox` and `agent_threads`:
