@@ -368,6 +368,13 @@ impl Supervisor {
             flavor: Some(flavor.id()),
             ..AuditRecord::new(AuditEvent::Refusal, "")
         };
+        // The request is checked against the flavor's config before anything is reserved or
+        // recorded as accepted, and outside the lock: planning reads the file system.
+        let unplannable = inner
+            .configs
+            .iter()
+            .find(|config| config.harness.kind == flavor)
+            .and_then(|config| inner.registry.plan(config, request).err());
         // The table is locked from admission to the slot's reservation, so concurrent launches
         // cannot overshoot a limit; no audit record is written while it is held.
         let mut table = inner.table();
@@ -378,7 +385,10 @@ impl Supervisor {
             launcher_name,
             depth,
             config,
-        } = match admitted {
+        } = match admitted.and_then(|admitted| match unplannable {
+            Some(error) => Err(SupervisorError::Launch(error)),
+            None => Ok(admitted),
+        }) {
             Ok(admitted) => admitted,
             Err(error) => {
                 let key = Asker::new(&table, caller, None).key;
@@ -570,16 +580,17 @@ impl Supervisor {
         };
         record.flavor = Some(entry.flavor.id());
         record.agent = Some(entry.agent.clone());
-        if entry.state.live() {
-            request_stop(entry);
-        } else {
-            record.outcome = "already_finished";
+        match entry.state {
+            SessionState::Finished(_) => record.outcome = "already_finished",
+            SessionState::Stopping => record.outcome = "already_stopping",
+            SessionState::Starting | SessionState::Running => request_stop(entry),
         }
         // Every session below this one stops with it: once it is gone its token stops
         // resolving, and nothing but the operator could stop them.
         let mut cascaded = Vec::new();
         for (below, entry) in &mut table.sessions {
-            if entry.state.live() && entry.lineage.contains(&id.0) {
+            let stoppable = matches!(entry.state, SessionState::Starting | SessionState::Running);
+            if stoppable && !entry.stop_requested && entry.lineage.contains(&id.0) {
                 request_stop(entry);
                 cascaded.push(AuditRecord {
                     caller: record.caller.clone(),
@@ -591,7 +602,13 @@ impl Supervisor {
             }
         }
         drop(table);
-        let _ = inner.audit(&record);
+        // Only a stop that stopped something is written in full; a repeated one could be
+        // looped on, so it is coalesced like a refusal.
+        if record.outcome == "requested" {
+            let _ = inner.audit(&record);
+        } else {
+            inner.refuse(record, &asker.key);
+        }
         for record in &cascaded {
             let _ = inner.audit(record);
         }
@@ -647,11 +664,20 @@ impl Supervisor {
                 return Err(error);
             }
         };
-        // An id the session did not issue is the caller's own text: it is not recorded.
-        let (recorded_id, kind) = match entry.approvals.get(approval) {
-            Some(kind) => (approval.to_owned(), *kind),
-            None => ("unknown".to_owned(), "unknown"),
+        // An id the session did not issue is the caller's own text: it is neither recorded nor
+        // delivered.
+        let Some(kind) = entry.approvals.get(approval).copied() else {
+            let flavor = entry.flavor.id();
+            drop(table);
+            let mut record = AuditRecord {
+                session: Some(id.0),
+                flavor: Some(flavor),
+                ..AuditRecord::new(AuditEvent::ApprovalAnswer, "")
+            };
+            asker.stamp(&mut record);
+            return Err(refuse(inner, record, &asker.key, SupervisorError::UnknownApproval));
         };
+        let recorded_id = approval.to_owned();
         let handle = entry.handle.clone();
         let flavor = entry.flavor.id();
         drop(table);
@@ -680,13 +706,10 @@ impl Supervisor {
             .ok_or(LaunchError::SessionClosed)
             .and_then(|handle| handle.answer(approval, allow))
             .map_err(SupervisorError::Launch);
+        // A denial or a failed answer could be looped on: coalesced like a refusal.
         match (&answered, allow) {
-            (Err(error), _) => {
-                let _ = inner.audit(&record(error.code(), false));
-            }
-            (Ok(()), false) => {
-                let _ = inner.audit(&record("denied", false));
-            }
+            (Err(error), _) => inner.refuse(record(error.code(), false), &asker.key),
+            (Ok(()), false) => inner.refuse(record("denied", false), &asker.key),
             (Ok(()), true) => {}
         }
         answered

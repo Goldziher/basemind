@@ -526,13 +526,10 @@ fn the_budget_caps_launches_and_turns_and_an_adapter_refusal_spends_none() {
         .into_iter()
         .filter(|record| record.event == AuditEvent::Launch)
         .collect();
+    // The refused request was never accepted: only the launch that started is recorded.
+    assert_eq!(launches.len(), 1, "the launch was not recorded before starting");
     assert_eq!(
-        launches.len(),
-        2,
-        "both admitted launches were recorded before starting"
-    );
-    assert_eq!(
-        launches[1].limits.unwrap().max_turns,
+        launches[0].limits.unwrap().max_turns,
         1,
         "the budget did not cap the turns"
     );

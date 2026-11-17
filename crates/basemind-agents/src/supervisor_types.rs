@@ -240,6 +240,9 @@ pub enum SupervisorError {
     /// The caller did not launch the session and is not the operator.
     #[error("session {0} was not launched by the caller")]
     NotOwner(SessionId),
+    /// The session has no pending approval request of that id.
+    #[error("no pending approval request of that id")]
+    UnknownApproval,
 }
 
 impl SupervisorError {
@@ -263,6 +266,7 @@ impl SupervisorError {
             Self::Launch(error) => launch_error_code(error),
             Self::UnknownSession(_) => "unknown_session",
             Self::NotOwner(_) => "not_owner",
+            Self::UnknownApproval => "unknown_approval",
         }
     }
 }

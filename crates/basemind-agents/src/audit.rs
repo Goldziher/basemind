@@ -217,12 +217,14 @@ const MARKER_ROOM: u64 = 4096;
 /// The log is append-only as far as this writer goes; it is not tamper-resistant: any process
 /// of the same user can rewrite or truncate it.
 ///
-/// Once the file would grow past its cap ([`DEFAULT_AUDIT_MAX_BYTES`] unless
-/// [`FileAuditSink::with_max_bytes`] says otherwise), each further record is dropped and
-/// refused with an error: a supervisor then refuses the launch that record was for, and counts
-/// the other failures. The first drop appends an `audit_full` marker and dropping the sink an
-/// `audit_dropped` one with the count, in room kept past the cap for them. Rotating the log is
-/// the operator's job.
+/// The last quarter of the cap ([`DEFAULT_AUDIT_MAX_BYTES`] unless
+/// [`FileAuditSink::with_max_bytes`] says otherwise) is kept for launches, exits, registrations
+/// and allows, so refusals, stops and denials, which a launched agent can loop on, cannot fill
+/// it. A record that does not fit is dropped and refused with an error: a supervisor then
+/// refuses the launch or the caller's allow that record was for, stops a session whose
+/// policy-settled allow it was, and counts the other failures. The first drop appends an
+/// `audit_full` marker and dropping the sink an `audit_dropped` one with the count, in room
+/// kept past the cap for them. Rotating the log is the operator's job.
 #[derive(Debug)]
 pub struct FileAuditSink {
     path: PathBuf,
@@ -327,7 +329,12 @@ impl AuditSink for FileAuditSink {
         let mut line = record.to_json_line();
         line.push('\n');
         let mut log = self.log();
-        if log.size.saturating_add(line.len() as u64) > self.max_bytes {
+        let limit = if kept_for(record) {
+            self.max_bytes
+        } else {
+            self.max_bytes - self.max_bytes / 4
+        };
+        if log.size.saturating_add(line.len() as u64) > limit {
             log.dropped += 1;
             if log.dropped == 1 {
                 let marker = LogFile::marker("audit_full", None);
@@ -338,6 +345,19 @@ impl AuditSink for FileAuditSink {
             return Err(std::io::Error::other("the audit log is full"));
         }
         log.append(&line)
+    }
+}
+
+/// Whether `record` may use the part of the cap kept for what must not go unrecorded: a
+/// launch, an exit, a registration, or an allow.
+fn kept_for(record: &AuditRecord) -> bool {
+    match record.event {
+        AuditEvent::Launch | AuditEvent::Exit => true,
+        AuditEvent::Registration => record.outcome == "registered",
+        AuditEvent::Approval | AuditEvent::ApprovalAnswer => {
+            record.approval.as_ref().is_some_and(|approval| approval.allowed)
+        }
+        AuditEvent::Refusal | AuditEvent::Stop => false,
     }
 }
 

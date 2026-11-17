@@ -160,7 +160,8 @@ fn a_full_log_drops_records_with_a_marker_and_counts_them() {
         .to_json_line()
         .len() as u64
         + 1;
-    let sink = FileAuditSink::open(&path).unwrap().with_max_bytes(3 * line);
+    // A refusal may use three quarters of the cap: three lines.
+    let sink = FileAuditSink::open(&path).unwrap().with_max_bytes(4 * line);
     let written = (0..10)
         .filter(|_| {
             sink.record(&AuditRecord::new(AuditEvent::Refusal, "fan_out_exceeded"))
@@ -175,5 +176,35 @@ fn a_full_log_drops_records_with_a_marker_and_counts_them() {
     let names: Vec<&str> = events.iter().map(|event| event["event"].as_str().unwrap()).collect();
     assert_eq!(names, ["refusal", "refusal", "refusal", "audit_full", "audit_dropped"]);
     assert_eq!(events[4]["dropped"], 7);
-    assert!(text.len() as u64 <= 3 * line + MARKER_ROOM);
+    assert!(text.len() as u64 <= 4 * line + MARKER_ROOM);
+}
+
+#[test]
+fn a_full_log_keeps_room_for_launches_exits_and_allows() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = FileAuditSink::open(dir.path().join("audit.jsonl"))
+        .unwrap()
+        .with_max_bytes(8 * 1024);
+    let refusal = AuditRecord {
+        caller: Some("flooder".to_owned()),
+        ..AuditRecord::new(AuditEvent::Refusal, "caller_not_admitted")
+    };
+    let mut written = 0;
+    while sink.record(&refusal).is_ok() {
+        written += 1;
+        assert!(written < 10_000, "the cap never applied");
+    }
+    // Refusals filled what they may use; a launch, an allow and an exit still go on the record.
+    sink.record(&AuditRecord::new(AuditEvent::Launch, "accepted")).unwrap();
+    sink.record(&AuditRecord {
+        approval: Some(AuditApproval {
+            id: "1".to_owned(),
+            kind: "command",
+            allowed: true,
+            source: "caller",
+        }),
+        ..AuditRecord::new(AuditEvent::ApprovalAnswer, "allowed")
+    })
+    .unwrap();
+    sink.record(&AuditRecord::new(AuditEvent::Exit, "completed")).unwrap();
 }

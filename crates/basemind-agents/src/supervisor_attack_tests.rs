@@ -847,3 +847,84 @@ fn a_flood_under_many_claimed_names_is_coalesced_as_one_caller() {
         "{written} refusal records for one process under 300 names"
     );
 }
+
+#[test]
+fn a_flood_of_requests_the_adapter_refuses_starts_nothing_and_is_coalesced() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    for _ in 0..200 {
+        let refused = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &LaunchRequest::new("/context"));
+        assert_eq!(refused.err().map(|error| error.code()), Some("slash_command_prompt"));
+    }
+    assert!(
+        outcomes(&audit, AuditEvent::Launch).is_empty(),
+        "a refused request was recorded as accepted"
+    );
+    let written = outcomes(&audit, AuditEvent::Refusal).len();
+    assert!(written <= crate::refusals::BURST as usize, "{written} records");
+}
+
+#[test]
+fn a_flood_of_stops_and_answers_is_coalesced() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    let done = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    supervisor.stop(&lead(), done.id).unwrap();
+    assert_eq!(finished(&supervisor, done.id), FinishStatus::Stopped);
+    let live = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let before = audit.records().len();
+    for _ in 0..200 {
+        supervisor.stop(&lead(), done.id).unwrap();
+        // An approval id the session never issued, allowed and denied.
+        let allowed = supervisor.answer(&lead(), live.id, "never-issued", true);
+        assert_eq!(allowed.err().map(|error| error.code()), Some("unknown_approval"));
+        let denied = supervisor.answer(&lead(), live.id, "never-issued", false);
+        assert_eq!(denied.err().map(|error| error.code()), Some("unknown_approval"));
+    }
+    let records = audit.records();
+    let flood = &records[before..];
+    assert!(
+        flood.len() <= 3 * crate::refusals::BURST as usize,
+        "{} records for 600 calls",
+        flood.len()
+    );
+    assert!(
+        !flood
+            .iter()
+            .any(|record| record.approval.as_ref().is_some_and(|approval| approval.allowed)),
+        "an allow of an unknown approval was recorded"
+    );
+}
+
+#[test]
+fn an_allow_the_policy_settled_but_could_not_record_stops_the_session() {
+    let scratch = Scratch::new();
+    let body = format!(
+        r#"{HANDSHAKE}printf '%s\n' '{{"type":"control_request","request_id":"req-1","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"true"}}}}}}'
+cat > /dev/null
+"#
+    );
+    let mut config = scratch.config(HarnessKind::ClaudeCode, &body);
+    config.approval_policy = crate::test_support::always(crate::spec::ApprovalVerdict::Allow);
+    let sink = Arc::new(SlowSink {
+        failing: vec![AuditEvent::Approval],
+        ..SlowSink::default()
+    });
+    let spec = PolicySpec {
+        flavors: vec![FlavorPolicy {
+            approval_policy: true,
+            ..FlavorPolicy::supervised(HarnessKind::ClaudeCode)
+        }],
+        ..policy(&[])
+    };
+    let supervisor =
+        registered(Supervisor::new(LaunchPolicy::new(spec).unwrap(), vec![config], registry(), sink).unwrap());
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    let state = supervisor.wait(launched.id, Duration::from_secs(10));
+    assert!(
+        matches!(state, Some(SessionState::Finished(_))),
+        "a session ran on after an allow it could not record: {state:?}"
+    );
+}

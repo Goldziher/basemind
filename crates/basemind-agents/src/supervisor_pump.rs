@@ -57,11 +57,15 @@ impl Drop for Reservation<'_> {
         }
         drop(table);
         self.inner.changed.notify_all();
-        let _ = self.inner.audit(&AuditRecord {
-            session: Some(self.id),
-            outcome: self.outcome,
-            ..self.refusal.clone()
-        });
+        let key = self.refusal.caller.clone().unwrap_or_default();
+        self.inner.refuse(
+            AuditRecord {
+                session: Some(self.id),
+                outcome: self.outcome,
+                ..self.refusal.clone()
+            },
+            &key,
+        );
     }
 }
 
@@ -144,7 +148,7 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
                     .get_mut(&id)
                     .and_then(|entry| entry.approvals.remove(approval))
                     .unwrap_or("unknown");
-                let _ = inner.audit(&AuditRecord {
+                let recorded = inner.audit(&AuditRecord {
                     session: Some(id),
                     flavor: Some(flavor.id()),
                     approval: Some(AuditApproval {
@@ -155,6 +159,11 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
                     }),
                     ..AuditRecord::new(AuditEvent::Approval, if *allowed { "allowed" } else { "denied" })
                 });
+                // The harness already has the allow; an allow that is not on the record ends
+                // the session rather than let it act on it unrecorded.
+                if *allowed && recorded.is_err() {
+                    session.stop();
+                }
             }
             Event::Finished(finished) => status = *finished,
             _ => {}
