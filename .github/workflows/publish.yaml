@@ -413,9 +413,8 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
+        uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           targets: ${{ matrix.triple }}
 
       - name: Install system dependencies
@@ -805,9 +804,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
+        uses: ./.github/actions/setup-rust
 
       - name: Authenticate to crates.io
         uses: rust-lang/crates-io-auth-action@v1

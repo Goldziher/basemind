@@ -1,5 +1,5 @@
-# Versions follow the xberg-io/toolchains baseline named in toolchains.toml. Rust has no
-# rust-toolchain.toml here and follows the stable channel. ~keep
+# Versions follow the xberg-io/toolchains baseline named in toolchains.toml. Rust is pinned in
+# rust-toolchain.toml, which the baseline's `rust` entry is checked against. ~keep
 [settings]
 lockfile = true
 lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64", "windows-x64"]
