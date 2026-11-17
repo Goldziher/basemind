@@ -441,6 +441,46 @@ pub(crate) fn embed_chunks(
     Ok(dim)
 }
 
+/// Embed `inputs` with the document embedder of `preset`: `(dimension, one vector per input)`, or
+/// why it could not.
+pub(crate) fn embed_document_inputs(
+    preset: &str,
+    max_threads: usize,
+    batch_size: usize,
+    provider: crate::config::OnnxProvider,
+    inputs: &[&str],
+) -> Result<(u16, Vec<Vec<f32>>), String> {
+    #[cfg(feature = "test-support")]
+    if let Some(embed) = crate::embeddings::test_document_embedder::get() {
+        let dim = crate::embeddings::preset_dimension(preset).map_err(|error| format!("{error:#}"))?;
+        return embed(inputs, dim).map(|vectors| (dim, vectors));
+    }
+    let embedder = crate::embeddings::SharedEmbedder::load_with_provider(preset, max_threads, batch_size, provider)
+        .map_err(|error| format!("loading dense embedder: {error:#}"))?;
+    let vectors = embedder
+        .embed_batch(inputs)
+        .map_err(|error| format!("embedding document chunks: {error:#}"))?;
+    Ok((embedder.dim(), vectors))
+}
+
+/// Whether the document embedder of `preset` embeds now: one probe text through
+/// [`embed_document_inputs`]. A document whose embedding failed owes its vectors, and is
+/// re-extracted to pay them only once this holds.
+pub(crate) fn document_embedder_ready(
+    preset: &str,
+    max_threads: usize,
+    batch_size: usize,
+    provider: crate::config::OnnxProvider,
+) -> bool {
+    match embed_document_inputs(preset, max_threads, batch_size, provider, &["embedder probe"]) {
+        Ok(_) => true,
+        Err(reason) => {
+            tracing::info!(%reason, "document embedder unavailable; documents owing vectors wait for it");
+            false
+        }
+    }
+}
+
 /// The text of `path` when it is a text source small enough to look lines up in.
 pub(crate) fn read_text_source(path: &std::path::Path, mime: &str) -> Option<String> {
     let group = crate::lance::docs::mime_group(mime);

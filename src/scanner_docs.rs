@@ -363,8 +363,9 @@ pub(crate) fn pending_from_doc(
         emit_rows,
         embedded: !embed || embedding_dim > 0 || chunk_count == 0,
         // Only a fresh extraction (`!reused`) ran an attempt; a reused blob already carries vectors ~keep
-        // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. ~keep
-        embed_attempted: embed && !reused,
+        // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. A ~keep
+        // failed attempt is not one: the document owes its vectors until the embedder works. ~keep
+        embed_attempted: embed && !reused && !doc.embed_failed,
         reused,
         degraded: crate::extract::doc_guard::is_degraded_chunking(
             &doc.mime_type,

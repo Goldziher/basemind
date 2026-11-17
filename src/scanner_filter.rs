@@ -229,6 +229,9 @@ pub(crate) struct Filters {
     /// drive. Shared with extraction through [`crate::extract::doc::DocConfig::phase`].
     #[cfg(feature = "documents")]
     pub(crate) doc_phase: std::sync::Arc<crate::backpressure::DocPhase>,
+    /// Whether the document embedder works, probed on the first document that owes vectors.
+    #[cfg(feature = "documents")]
+    doc_embedder_ready: std::sync::OnceLock<bool>,
     /// [`crate::config::DocumentsConfig::effective_phase_budget_secs`], to re-arm [`Self::doc_phase`].
     #[cfg_attr(not(feature = "documents"), allow(dead_code))]
     pub(crate) doc_phase_budget_secs: u64,
@@ -318,6 +321,8 @@ impl Filters {
             doc_guard_digest,
             #[cfg(feature = "documents")]
             doc_phase: std::sync::Arc::default(),
+            #[cfg(feature = "documents")]
+            doc_embedder_ready: std::sync::OnceLock::new(),
             doc_phase_budget_secs: config.documents.effective_phase_budget_secs(),
             submodule_prefixes,
             eager_l2: config.scan.eager_l2,
@@ -353,6 +358,21 @@ impl Filters {
 
     /// `[documents] include/exclude`: may `rel` be indexed as a document.
     #[cfg_attr(not(feature = "documents"), allow(dead_code))]
+    /// Whether the document embedder embeds now; probed once per scan.
+    #[cfg(feature = "documents")]
+    pub(crate) fn doc_embedder_ready(&self, config: &crate::config::Config) -> bool {
+        *self.doc_embedder_ready.get_or_init(|| {
+            crate::extract::doc::text::document_embedder_ready(
+                &config.documents.embedding_preset,
+                config
+                    .resources
+                    .effective_embed_threads(config.documents.embed_max_threads),
+                config.resources.embed_batch_size,
+                config.resources.onnx_provider,
+            )
+        })
+    }
+
     pub(crate) fn doc_allowed(&self, rel: &str) -> bool {
         self.doc_scope.allows(self.scoped(rel))
     }

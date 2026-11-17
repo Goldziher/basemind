@@ -16,6 +16,7 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
         config_digest: String::new(),
         linear_chunked: false,
         text_fallback: false,
+        embed_failed: false,
         schema_ver: 0,
         mime_type: "application/pdf".to_string(),
         content: "hello".to_string(),
@@ -58,7 +59,6 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
         cached_doc_is_reusable(&doc, &switched, false, "d"),
         "embedding off: cached doc is always reusable"
     );
-}
 
     let remapped = FileMapDoc {
         embedding_model: "balanced@000000000000".to_string(),
@@ -68,6 +68,7 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
         !cached_doc_is_reusable(&remapped, &same, true, "d"),
         "another model under the preset name `balanced` must force recompute"
     );
+}
 
 /// Structural regression guard for the streaming-flush memory fix: the accumulated per-file
 /// descriptor must stay metadata-only. This exhaustive struct literal names EXACTLY the metadata
@@ -108,6 +109,7 @@ fn doc_fixture(chunk_count: usize, embedding_dim: u16) -> crate::extract::doc::F
         config_digest: String::new(),
         linear_chunked: false,
         text_fallback: false,
+        embed_failed: false,
         schema_ver: 0,
         mime_type: "application/pdf".to_string(),
         content: "body".to_string(),
@@ -128,9 +130,10 @@ fn doc_fixture(chunk_count: usize, embedding_dim: u16) -> crate::extract::doc::F
 }
 
 /// GAP-2 regression (#44 follow-up): a fresh extraction that asked to embed but got zero vectors
-/// back (an unembeddable body / missing ONNX) is recorded as *attempted* — so the fast path can
-/// stop re-extracting it every scan — while `embedded` stays false because no vectors exist. A
-/// successful embed sets both; an embed-off pass sets neither attempt nor a false `embedded`.
+/// back (an unembeddable body) is recorded as *attempted* — so the fast path can stop
+/// re-extracting it every scan — while `embedded` stays false because no vectors exist. An
+/// embedder that failed is not an attempt: the document owes its vectors. A successful embed sets
+/// both; an embed-off pass sets neither attempt nor a false `embedded`.
 #[test]
 fn pending_from_doc_marks_a_failed_embed_as_attempted_not_embedded() {
     let cfg = DocumentsConfig::default();
@@ -159,6 +162,16 @@ fn pending_from_doc_marks_a_failed_embed_as_attempted_not_embedded() {
     assert!(
         !reused.embed_attempted,
         "a reused blob ran no fresh attempt (already embedded)"
+    );
+
+    let owed = FileMapDoc {
+        embed_failed: true,
+        ..doc_fixture(3, 0)
+    };
+    let batch = pending_from_doc(&owed, "docs/a.pdf", &cfg, true, false);
+    assert!(
+        !batch.embedded && !batch.embed_attempted,
+        "a failed embedder leaves the vectors owed"
     );
 }
 

@@ -78,6 +78,29 @@ impl DocumentSink for DocumentLane {
     }
 }
 
+/// A document whose embedding failed owes its vectors: it is settled except for them. It is
+/// re-extracted to pay them only once the embedder works (probed once per scan), so an offline
+/// machine does not re-extract it on every scan.
+fn owes_vectors_to_an_unavailable_embedder(
+    existing: &crate::store::DocEntry,
+    hash_hex: &str,
+    embed_requested: bool,
+    filters: &Filters,
+    config: &Config,
+) -> bool {
+    embed_requested
+        && !filters.reflush_embeds
+        && doc_entry_settled(
+            existing,
+            hash_hex,
+            &config.documents.embedding_preset,
+            false,
+            &filters.doc_digest,
+            false,
+        )
+        && !filters.doc_embedder_ready(config)
+}
+
 /// Document-tier branch: file had no tree-sitter language; check `[documents]` config and
 /// route through xberg. Always returns a `FileResult` — falls back to `SkippedNoLang`
 /// when documents are disabled or the MIME type is filtered out.
@@ -105,15 +128,16 @@ fn process_doc(
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
+    let embed_requested = doc_embed_requested(rel, &config.documents, embed, filters);
     if let Some(existing) = store.lookup_doc(rel)
-        && doc_entry_settled(
+        && (doc_entry_settled(
             existing,
             hash_hex,
             &config.documents.embedding_preset,
-            doc_embed_requested(rel, &config.documents, embed, filters),
+            embed_requested,
             &filters.doc_digest,
             filters.reflush_embeds,
-        )
+        ) || owes_vectors_to_an_unavailable_embedder(existing, hash_hex, embed_requested, filters, config))
         && if filters.verify_blobs {
             store.doc_blob_is_intact(hash_hex)
         } else {

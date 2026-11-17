@@ -101,6 +101,10 @@ pub struct FileMapDoc {
     /// blobs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text_fallback: bool,
+    /// True when vectors were asked for and the embedder could not produce them: the document owes
+    /// its vectors and is re-extracted once the embedder works. Tail field, absent in older blobs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub embed_failed: bool,
 }
 
 #[path = "doc_blobs.rs"]
@@ -636,23 +640,21 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     }
     // An embedder that cannot load or run leaves the document indexed without vectors: it is still
     // found by the lexical lane, and the vector lane says it has none (review M1).
+    let mut embed_failed = false;
     let embedding_dim = if embed_requested && !dense_inputs.is_empty() {
         let preset = config.embedding_preset.as_deref().unwrap_or("balanced");
         let embedded = text::embed_chunks(&dense_inputs, &mut chunks, |inputs| {
-            let embedder = crate::embeddings::SharedEmbedder::load_with_provider(
+            text::embed_document_inputs(
                 preset,
                 config.embed_max_threads,
                 config.embed_batch_size,
                 config.onnx_provider,
+                inputs,
             )
-            .map_err(|error| format!("loading dense embedder: {error:#}"))?;
-            let vectors = embedder
-                .embed_batch(inputs)
-                .map_err(|error| format!("embedding document chunks: {error:#}"))?;
-            Ok((embedder.dim(), vectors))
         });
         embedded.unwrap_or_else(|reason| {
             tracing::warn!(path = %path.display(), %reason, "document indexed without vectors");
+            embed_failed = true;
             0
         })
     } else {
@@ -718,6 +720,7 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         language_confidences,
         linear_chunked: linear,
         text_fallback,
+        embed_failed,
     })
 }
 

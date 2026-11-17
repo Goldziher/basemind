@@ -7,6 +7,7 @@ fn blob(text: &str, vectors: bool) -> FileMapDoc {
         config_digest: "digest".to_string(),
         linear_chunked: false,
         text_fallback: false,
+        embed_failed: false,
         schema_ver: crate::extract::SCHEMA_VER,
         mime_type: "text/markdown".to_string(),
         content: format!("{text} one\n{text} two\n"),

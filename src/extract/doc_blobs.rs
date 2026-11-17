@@ -49,6 +49,7 @@ mod tests {
             config_digest: String::new(),
             linear_chunked: false,
             text_fallback: false,
+            embed_failed: false,
             schema_ver: SCHEMA_VER,
             mime_type: "text/plain".to_string(),
             content: "hello".to_string(),

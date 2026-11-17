@@ -32,6 +32,7 @@ fn doc(chunks: usize, dim: u16) -> FileMapDoc {
         config_digest: String::new(),
         linear_chunked: false,
         text_fallback: false,
+        embed_failed: false,
         schema_ver: crate::extract::SCHEMA_VER,
         mime_type: "text/plain".to_string(),
         content: "body".to_string(),

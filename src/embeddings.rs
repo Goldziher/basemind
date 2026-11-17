@@ -159,7 +159,7 @@ pub(crate) type FakeEmbed = fn(&str) -> Result<Vec<f32>>;
 
 /// Vector length of `preset`, or the error [`SharedEmbedder::load`] gives for it: the preset table
 /// lookup alone, with no model or config built.
-fn preset_dimension(preset: &str) -> Result<u16> {
+pub(crate) fn preset_dimension(preset: &str) -> Result<u16> {
     let meta = EMBEDDING_PRESETS.iter().find(|p| p.name == preset).ok_or_else(|| {
         anyhow!(
             "unknown embedding preset '{preset}'; \
@@ -381,6 +381,28 @@ pub fn with_query_prefix(prefix: Option<&str>, query: &str) -> String {
 
 /// A model that could not be loaded (offline, a failed download, no ONNX runtime) is not tried
 /// again by every call for a while: each attempt can take as long as the download timeout.
+/// A stand-in for the document embedder, settable by integration tests (the `test-support`
+/// feature): `Some(f)` makes every document embedding call answer with `f(texts, dim)`, so a test
+/// can make the embedder fail, then work, without a model.
+#[cfg(feature = "test-support")]
+pub mod test_document_embedder {
+    use std::sync::RwLock;
+
+    /// Embeds `texts` at `dim`, or fails with a reason.
+    pub type Embed = fn(&[&str], u16) -> Result<Vec<Vec<f32>>, String>;
+
+    static OVERRIDE: RwLock<Option<Embed>> = RwLock::new(None);
+
+    /// Install (or with `None` remove) the stand-in.
+    pub fn set(embed: Option<Embed>) {
+        *OVERRIDE.write().unwrap_or_else(std::sync::PoisonError::into_inner) = embed;
+    }
+
+    pub(crate) fn get() -> Option<Embed> {
+        *OVERRIDE.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 mod load_failure {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
