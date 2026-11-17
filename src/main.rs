@@ -283,7 +283,7 @@ fn main() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Error: {error:?}");
+            eprintln!("Error: {}", basemind::cli::exit::render(&error));
             std::process::ExitCode::from(basemind::cli::exit::exit_code_for(&error))
         }
     }
