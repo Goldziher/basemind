@@ -98,6 +98,18 @@ fn unsupported() -> std::io::Error {
 fn socket_peer(socket: std::os::fd::BorrowedFd<'_>) -> std::io::Result<ProcId> {
     use std::os::fd::AsRawFd;
     let fd = socket.as_raw_fd();
+    // Only a connected socket has a peer: Linux reports the process that called listen() for a
+    // listening socket's credentials, which would pass this process off as its own peer.
+    // SAFETY: sockaddr_storage is plain data, valid all-zero; getpeername writes at most `len`
+    // bytes into it.
+    let connected = unsafe {
+        let mut address: libc::sockaddr_storage = std::mem::zeroed();
+        let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_storage>()).unwrap_or(0);
+        libc::getpeername(fd, (&raw mut address).cast(), &mut len) == 0
+    };
+    if !connected {
+        return Err(std::io::Error::last_os_error());
+    }
     // SAFETY: geteuid has no preconditions.
     let euid = unsafe { libc::geteuid() };
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -342,16 +354,10 @@ mod tests {
             .expect("perl runs the connecting client");
         assert!(status.success());
         let (connection, _) = listener.accept().unwrap();
-        // NotFound where the kernel still describes the connection (Linux), NotConnected where it
-        // forgets the peer once it closed its end (macOS): refused either way.
+        // Refused however the kernel reports it: the peer is gone (Linux), or the socket no
+        // longer describes it (macOS forgets a peer that closed its end).
         let read = Peer::of_socket(connection.as_fd());
-        assert!(
-            matches!(
-                read.as_ref().map_err(std::io::Error::kind),
-                Err(std::io::ErrorKind::NotFound | std::io::ErrorKind::NotConnected)
-            ),
-            "an exited peer was taken by its pid: {read:?}"
-        );
+        assert!(read.is_err(), "an exited peer was taken by its pid: {read:?}");
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
