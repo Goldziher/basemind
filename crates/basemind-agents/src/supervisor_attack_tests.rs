@@ -927,3 +927,28 @@ cat > /dev/null
         "a session ran on after an allow it could not record: {state:?}"
     );
 }
+
+#[test]
+fn the_peer_of_a_connection_from_another_process_is_that_process() {
+    use std::os::fd::AsFd;
+    let Some(perl) = perl() else {
+        return;
+    };
+    let scratch = Scratch::new();
+    let path = scratch.path.join("agents.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let client = std::process::Command::new(&perl)
+        .arg("-MIO::Socket::UNIX")
+        .arg("-e")
+        .arg(format!(
+            "my $s = IO::Socket::UNIX->new(Peer => q{{{}}}) or die; sleep 30",
+            path.display()
+        ))
+        .spawn()
+        .unwrap();
+    let client = Stand(client);
+    let (connection, _) = listener.accept().unwrap();
+    let peer = Peer::of_socket(connection.as_fd()).unwrap();
+    assert_eq!(peer.pid(), client.0.id());
+    assert_eq!(peer, client.peer());
+}

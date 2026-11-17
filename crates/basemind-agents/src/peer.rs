@@ -14,10 +14,12 @@ pub struct Peer {
 }
 
 impl Peer {
-    /// The process on the other end of the connected Unix-domain socket `socket`: `SO_PEERCRED`
-    /// on Linux, `LOCAL_PEERPID` on macOS. Call it on the accepted connection before reading
-    /// from it: the kernel reports the process that connected, and the start time read here
-    /// pins that process only while it is still the one holding the pid.
+    /// The process on the other end of the connected Unix-domain socket `socket`, pinned to the
+    /// process that connected: on macOS by the pid version in its audit token
+    /// (`LOCAL_PEERTOKEN`), on Linux 6.5 and later by a pidfd (`SO_PEERPIDFD`). On an older
+    /// Linux kernel only the pid is known (`SO_PEERCRED`), and the start time read here pins
+    /// the process that holds it then: a pid freed and reused since the connect would be taken
+    /// for the peer. Call it on the accepted connection before reading from it.
     ///
     /// # Errors
     ///
@@ -27,8 +29,10 @@ impl Peer {
     /// [`std::io::ErrorKind::NotFound`] when the peer is already gone.
     #[cfg(unix)]
     pub fn of_socket(socket: std::os::fd::BorrowedFd<'_>) -> std::io::Result<Self> {
-        let pid = socket_peer(socket)?;
-        Self::of_process(pid)
+        if !procinfo::SUPPORTED {
+            return Err(unsupported());
+        }
+        socket_peer(socket).map(|id| Self { id })
     }
 
     /// This process, for an embedding that calls the supervisor from its own code (its own user
@@ -73,9 +77,9 @@ fn unsupported() -> std::io::Error {
     )
 }
 
-/// The pid of the peer of `socket`, refusing a peer of another user.
+/// The peer of `socket`, pinned to the process that connected, refusing a peer of another user.
 #[cfg(unix)]
-fn socket_peer(socket: std::os::fd::BorrowedFd<'_>) -> std::io::Result<i32> {
+fn socket_peer(socket: std::os::fd::BorrowedFd<'_>) -> std::io::Result<ProcId> {
     use std::os::fd::AsRawFd;
     let fd = socket.as_raw_fd();
     // SAFETY: geteuid has no preconditions.
@@ -83,62 +87,170 @@ fn socket_peer(socket: std::os::fd::BorrowedFd<'_>) -> std::io::Result<i32> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
-        let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(|_| unsupported())?;
-        // SAFETY: getsockopt writes at most `len` bytes into `cred`, a plain struct.
-        let status = unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&raw mut cred).cast(),
-                &mut len,
-            )
-        };
-        if status != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+        getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred)?;
         if cred.uid != euid {
             return Err(other_user());
         }
         if cred.pid <= 0 {
             return Err(unsupported());
         }
-        Ok(cred.pid)
+        linux::pinned(fd, cred.pid)
     }
     #[cfg(target_os = "macos")]
     {
-        let (mut uid, mut gid) = (0, 0);
-        // SAFETY: getpeereid writes the two ids it is given.
-        if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if uid != euid {
+        // An audit token: val[1] the effective uid, val[5] the pid, val[7] the pid version,
+        // which no later process holding the pid shares.
+        let mut token = [0_u32; 8];
+        getsockopt(fd, libc::SOL_LOCAL, libc::LOCAL_PEERTOKEN, &mut token)?;
+        if token[1] != euid {
             return Err(other_user());
         }
-        let mut pid: libc::pid_t = 0;
-        let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>()).map_err(|_| unsupported())?;
-        // SAFETY: getsockopt writes at most `len` bytes into `pid`.
-        let status = unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_LOCAL,
-                libc::LOCAL_PEERPID,
-                (&raw mut pid).cast(),
-                &mut len,
-            )
-        };
-        if status != 0 {
-            return Err(std::io::Error::last_os_error());
+        let pid = i32::try_from(token[5]).map_err(|_| unsupported())?;
+        let version = i32::from_ne_bytes(token[7].to_ne_bytes());
+        // The start time belongs to the peer only if the pid still has the peer's version
+        // after it was read.
+        let peer = live(pid)?;
+        if macos::pid_version(pid) != Some(version) || live(pid)?.start != peer.start {
+            return Err(gone());
         }
-        if pid <= 0 {
-            return Err(unsupported());
-        }
-        Ok(pid)
+        Ok(peer.id())
     }
     #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
     {
         let _ = (fd, euid);
         Err(unsupported())
+    }
+}
+
+/// Reads the socket option `name` into `value`, which it must fill exactly.
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn getsockopt<T>(fd: i32, level: i32, name: i32, value: &mut T) -> std::io::Result<()> {
+    let size = std::mem::size_of::<T>();
+    let mut len = libc::socklen_t::try_from(size).map_err(|_| unsupported())?;
+    // SAFETY: getsockopt writes at most `len` bytes into `value`, a plain value of that size.
+    let status = unsafe { libc::getsockopt(fd, level, name, std::ptr::from_mut(value).cast(), &mut len) };
+    if status != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if usize::try_from(len).ok() != Some(size) {
+        return Err(unsupported());
+    }
+    Ok(())
+}
+
+/// Process `pid` as it is now, when it runs.
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn live(pid: i32) -> std::io::Result<procinfo::ProcInfo> {
+    procinfo::info(pid).filter(|info| !info.zombie).ok_or_else(gone)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn gone() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::NotFound, "the peer process is gone")
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    /// `struct proc_uniqidentifierinfo` of XNU's `sys/proc_info_private.h`.
+    #[repr(C)]
+    struct UniqIdentifierInfo {
+        uuid: [u8; 16],
+        unique_id: u64,
+        parent_unique_id: u64,
+        id_version: i32,
+        orig_ppid_version: i32,
+        reserved: [u64; 2],
+    }
+
+    /// `PROC_PIDUNIQIDENTIFIERINFO`.
+    const UNIQ_IDENTIFIER_INFO: libc::c_int = 17;
+
+    /// The pid version of process `pid` now: the value its audit token carries.
+    pub fn pid_version(pid: i32) -> Option<i32> {
+        let size = libc::c_int::try_from(std::mem::size_of::<UniqIdentifierInfo>()).ok()?;
+        // SAFETY: the struct is plain data, valid all-zero, and proc_pidinfo writes at most
+        // `size` bytes into it.
+        let (written, info) = unsafe {
+            let mut info: UniqIdentifierInfo = std::mem::zeroed();
+            let written = libc::proc_pidinfo(pid, UNIQ_IDENTIFIER_INFO, 0, (&raw mut info).cast(), size);
+            (written, info)
+        };
+        (written == size).then_some(info.id_version)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod linux {
+    use super::{ProcId, gone, live};
+
+    /// `SO_PEERPIDFD` (Linux 6.5), where its value is the generic one.
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "x86",
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "riscv64"
+    ))]
+    const SO_PEERPIDFD: Option<libc::c_int> = Some(77);
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "x86",
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "riscv64"
+    )))]
+    const SO_PEERPIDFD: Option<libc::c_int> = None;
+
+    /// Peer `pid` of socket `fd`, pinned through a pidfd of the process that connected where
+    /// the kernel gives one: while that process lives no other can hold its pid, so the start
+    /// time read before the pidfd is checked belongs to it.
+    pub fn pinned(fd: i32, pid: i32) -> std::io::Result<ProcId> {
+        let Some(option) = SO_PEERPIDFD else {
+            return Ok(live(pid)?.id());
+        };
+        let mut pidfd: libc::c_int = -1;
+        match super::getsockopt(fd, libc::SOL_SOCKET, option, &mut pidfd) {
+            Ok(()) => {}
+            // A kernel before 6.5: only the pid is known.
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOPROTOOPT | libc::EINVAL)) => {
+                return Ok(live(pid)?.id());
+            }
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Err(gone()),
+            Err(error) => return Err(error),
+        }
+        // SAFETY: the kernel just returned this descriptor, owned here from now on.
+        let pidfd = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(pidfd) };
+        let raw = std::os::fd::AsRawFd::as_raw_fd(&pidfd);
+        let peer = live(pid)?;
+        if pidfd_pid(raw) != Some(pid) {
+            return Err(gone());
+        }
+        // SAFETY: pidfd_send_signal takes the pidfd, signal 0 (a check only) and a null siginfo.
+        let alive = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                raw,
+                0,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } == 0;
+        if !alive {
+            return Err(gone());
+        }
+        Ok(peer.id())
+    }
+
+    /// The pid a pidfd refers to, from `/proc/self/fdinfo`; `None` once it has exited.
+    fn pidfd_pid(fd: i32) -> Option<i32> {
+        let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).ok()?;
+        let pid: i32 = info
+            .lines()
+            .find_map(|line| line.strip_prefix("Pid:"))?
+            .trim()
+            .parse()
+            .ok()?;
+        (pid > 0).then_some(pid)
     }
 }
 
@@ -161,6 +273,21 @@ mod tests {
         let peer = Peer::of_socket(ours.as_fd()).unwrap();
         assert_eq!(peer.pid(), std::process::id());
         assert_eq!(peer, Peer::this_process().unwrap());
+        drop(theirs);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_audit_token_carries_the_pid_version_this_crate_reads() {
+        use std::os::fd::AsRawFd;
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut token = [0_u32; 8];
+        getsockopt(ours.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERTOKEN, &mut token).unwrap();
+        let me = i32::try_from(std::process::id()).unwrap();
+        assert_eq!(i32::try_from(token[5]).ok(), Some(me));
+        let version = macos::pid_version(me).unwrap();
+        assert_ne!(version, 0);
+        assert_eq!(i32::from_ne_bytes(token[7].to_ne_bytes()), version);
         drop(theirs);
     }
 
