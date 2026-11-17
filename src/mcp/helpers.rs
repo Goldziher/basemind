@@ -12,14 +12,11 @@ use super::ServerState;
 pub(super) use super::helpers_calls::{RefsSource, run_find_callers, run_find_references};
 #[cfg(all(feature = "documents", feature = "code-search"))]
 pub(super) use super::helpers_documents::format_response;
-pub(super) use super::helpers_files::{run_find_files, run_list_files};
 pub(super) use super::helpers_grep::run_workspace_grep;
 pub(super) use super::helpers_impls::run_find_implementations;
 pub(super) use super::helpers_telemetry::record_call;
 
 pub(super) use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
-pub(super) const LIST_LIMIT_DEFAULT: u32 = 200;
-pub(super) const LIST_LIMIT_MAX: u32 = 5000;
 
 /// Wrap a tool-shim body with telemetry instrumentation.
 ///

@@ -158,7 +158,7 @@ where
 
 /// Refuse `limit: 0`, replace a bound cursor with the tool's own one, and return the query's id.
 fn unbind_params<T: Paged>(params: &mut T) -> Result<u32, McpError> {
-    super::helpers_filters::reject_zero_limit(T::TOOL, params.limit())?;
+    crate::engine::cursor::reject_zero_limit(T::TOOL, params.limit())?;
     let id = query_id(&*params);
     let slot = params.cursor_mut();
     if let Some(cursor) = slot.as_ref() {

@@ -453,14 +453,17 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         } => (
             "find_files",
             server
-                .find_files_call(FindFilesToolParams {
-                    query,
-                    path_prefix,
-                    language,
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+                .op(
+                    FindFilesToolParams {
+                        query,
+                        path_prefix,
+                        language,
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    Workspace::find_files,
+                )
                 .await,
         ),
         CodeCmd::Files {
@@ -472,14 +475,17 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         } => (
             "find_files",
             server
-                .find_files_call(FindFilesToolParams {
-                    query: None,
-                    path_prefix,
-                    language,
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+                .op(
+                    FindFilesToolParams {
+                        query: None,
+                        path_prefix,
+                        language,
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    Workspace::find_files,
+                )
                 .await,
         ),
         CodeCmd::Chunk {

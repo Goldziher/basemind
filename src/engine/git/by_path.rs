@@ -1,6 +1,6 @@
 //! The `by_path` operation behind `git_log` with a directory `path` and `basemind git by-path`: a
 //! cheap pickaxe that pages through the history a window of commits at a time. Split from
-//! `helpers_git.rs` for the 1000-line per-file cap.
+//! `log.rs` for the 1000-line per-file cap.
 
 use super::common::{commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id, require_git_repo};
 use super::show::budget_commits;

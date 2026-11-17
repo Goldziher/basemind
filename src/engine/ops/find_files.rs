@@ -1,33 +1,78 @@
-//! `run_list_files` + `run_find_files` — kept in their own file so `tools.rs` and `helpers.rs`
-//! stay under the 1000-line cap as the MCP surface grows. Both enumerate the workspace's files (the
-//! code map, the document tier, and the files git tracks that neither holds) and share the same
-//! limit/cursor/token-budget pagination shape; `find_files` additionally scores each candidate with
-//! `nucleo-matcher`, and with [`within_one_edit`] for a query that names nothing as typed, before
-//! paginating.
+//! `find_files`: `run_list_files` without a query, `run_find_files` with one. Both enumerate the
+//! workspace's files (the code map, the document tier, and the files git tracks that neither holds)
+//! and share the same limit/cursor/token-budget pagination shape; `run_find_files` additionally
+//! scores each candidate with `nucleo-matcher`, and with [`within_one_edit`] for a query that names
+//! nothing as typed, before paginating.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
 
-use super::ServerState;
-use super::helpers_filters::{Filters, PathFilter, Tally};
-use super::types::{FilesResponse, FindFilesParams, ListFilesParams};
+use crate::engine::MapCache;
+use crate::engine::budget::{apply_budget, budget};
+use crate::engine::cursor::Cursor;
+use crate::engine::error::EngineError;
+use crate::engine::filters::{Filters, PathFilter, Tally, language_of_doc, selects_no_file};
+use crate::engine::types::files::{FilesResponse, FindFilesParams, FindFilesToolParams, ListFilesParams};
+use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
+/// Files one `find_files` page holds when the caller passes no `limit`.
+pub(crate) const LIST_LIMIT_DEFAULT: u32 = 200;
+/// Upper bound on a `find_files` `limit`; a larger one is clamped and flagged `limit_clamped`.
+pub(crate) const LIST_LIMIT_MAX: u32 = 5000;
+
+/// Resolve the effective `find_files` page limit and report whether the caller's requested limit
+/// was clamped to [`LIST_LIMIT_MAX`]: surfaced to the client rather than silently truncating
+/// (bug #17).
+fn effective_list_limit(requested: Option<u32>) -> (usize, bool) {
+    let asked = requested.unwrap_or(LIST_LIMIT_DEFAULT);
+    let clamped = asked > LIST_LIMIT_MAX;
+    (asked.min(LIST_LIMIT_MAX) as usize, clamped)
+}
+
+impl Workspace {
+    /// `find_files`: a fuzzy file-name search, or a listing without `query`; code and documents.
+    pub(crate) fn find_files(&self, p: FindFilesToolParams) -> Result<FilesResponse, EngineError> {
+        match p.query.filter(|query| !query.trim().is_empty()) {
+            Some(query) => run_find_files(
+                self,
+                FindFilesParams {
+                    query,
+                    path_prefix: p.path_prefix,
+                    language: p.language,
+                    limit: p.limit,
+                    max_tokens: budget(p.max_tokens),
+                    cursor: p.cursor,
+                },
+            ),
+            None => run_list_files(
+                self,
+                ListFilesParams {
+                    path_contains: None,
+                    path_prefix: p.path_prefix,
+                    language: p.language,
+                    limit: p.limit,
+                    max_tokens: budget(p.max_tokens),
+                    cursor: p.cursor,
+                },
+            ),
+        }
+    }
+}
+
 /// The response for a cursor minted on another in-RAM snapshot: restart from the top.
-fn invalidated(state: &ServerState, limit_clamped: bool) -> Result<CallToolResult, McpError> {
-    super::helpers::json_result(&FilesResponse {
+fn invalidated(ws: &Workspace, limit_clamped: bool) -> Result<FilesResponse, EngineError> {
+    Ok(FilesResponse {
         total: 0,
         limit_clamped,
         budgeted: false,
         files: Vec::new(),
         next_cursor: None,
         cursor_invalidated: true,
-        notice: state.lifecycle_notice(),
+        notice: ws.lifecycle_notice(),
     })
 }
 
@@ -48,19 +93,15 @@ pub(crate) struct TrackedCache {
 ///
 /// The stamp joins the cursor's snapshot ([`snapshot`]), so a page asked for after `git add` or
 /// `git rm` changed the listing is refused as stale instead of skipping or repeating rows.
-fn unindexed_tracked(state: &ServerState, cache: &super::MapCache, generation: u32) -> (Arc<Vec<RelPath>>, u32) {
-    let Some(repo) = state.shared.repo.as_ref() else {
+fn unindexed_tracked(ws: &Workspace, cache: &MapCache, generation: u32) -> (Arc<Vec<RelPath>>, u32) {
+    let Some(repo) = ws.repo.as_ref() else {
         return (Arc::default(), 0);
     };
     if !repo.origin_is_workdir() {
         return (Arc::default(), 0);
     }
-    let mut held = state
-        .shared
-        .tracked
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let fresh = super::index_route::blocking(|| repo.tracked_files_since(held.tracked.checksum.as_ref()));
+    let mut held = ws.tracked.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fresh = repo.tracked_files_since(held.tracked.checksum.as_ref());
     match fresh {
         Ok(Some(tracked)) => held.tracked = tracked,
         Ok(None) if held.generation == generation => return (Arc::clone(&held.unindexed), stamp(&held.tracked)),
@@ -95,14 +136,14 @@ fn snapshot(generation: u32, stamp: u32) -> u32 {
 /// Body of `find_files` without a query: enumerate the workspace's files with optional substring
 /// (`path_contains`), prefix and `language` filters, then paginate. A file git tracks that is not
 /// indexed has no language, so a `language` filter leaves it out.
-pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams) -> Result<CallToolResult, McpError> {
-    state.await_cache_ready().await;
-    let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
+fn run_list_files(ws: &Workspace, params: ListFilesParams) -> Result<FilesResponse, EngineError> {
+    ws.wait_map_ready();
+    let (limit, limit_clamped) = effective_list_limit(params.limit);
     let lang_filter = params.language.as_deref();
-    let cache = state.shared.cache.load_full();
-    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
+    let cache = ws.cache.load_full();
+    let generation = ws.cache_generation.load(Ordering::Relaxed);
     let (tracked, stamp) = if lang_filter.is_none() {
-        unindexed_tracked(state, &cache, generation)
+        unindexed_tracked(ws, &cache, generation)
     } else {
         (Arc::default(), 0)
     };
@@ -112,13 +153,13 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return invalidated(state, limit_clamped);
+                return invalidated(ws, limit_clamped);
             }
             offset as usize
         }
         None => 0,
     };
-    let store = state.store_read().await;
+    let store = ws.store_read();
 
     let path_finder = params
         .path_contains
@@ -172,35 +213,34 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
             }
             tally
         };
-        if let Some(refusal) = selects_no_file(state, &filters, listed, None) {
+        if let Some(refusal) = selects_no_file(ws, &filters, listed, None) {
             return Err(refusal);
         }
     }
-    respond(state, files, total, skip, limit_clamped, generation, params.max_tokens)
+    respond(ws, files, total, skip, limit_clamped, generation, params.max_tokens)
 }
 
 /// The page of `files` (`total` of them from `skip` on), held to `max_tokens`.
 fn respond(
-    state: &ServerState,
+    ws: &Workspace,
     files: Vec<RelPath>,
     total: usize,
     skip: usize,
     limit_clamped: bool,
     generation: u32,
     max_tokens: Option<u32>,
-) -> Result<CallToolResult, McpError> {
-    let budget = super::budget::apply_budget(files, max_tokens);
+) -> Result<FilesResponse, EngineError> {
+    let budget = apply_budget(files, max_tokens);
     let files = budget.items;
-    let next_cursor =
-        (total > files.len()).then(|| super::cursor::Cursor::encode_in_memory((skip + files.len()) as u64, generation));
-    super::helpers::json_result(&FilesResponse {
+    let next_cursor = (total > files.len()).then(|| Cursor::encode_in_memory((skip + files.len()) as u64, generation));
+    Ok(FilesResponse {
         total,
         limit_clamped,
         budgeted: budget.budgeted,
         files,
         next_cursor,
         cursor_invalidated: false,
-        notice: state.lifecycle_notice(),
+        notice: ws.lifecycle_notice(),
     })
 }
 
@@ -210,17 +250,17 @@ fn respond(
 /// ([`within_one_edit`]) rank first.
 ///
 /// Sourced from the `MapCache` file view (already sorted, in-RAM, no store lock needed) — the
-/// `await_cache_ready()` call above guarantees it is populated before this runs. Paths that
+/// `wait_map_ready()` call above guarantees it is populated before this runs. Paths that
 /// aren't valid UTF-8 are skipped — `nucleo-matcher` scores `str`, not raw bytes.
-pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams) -> Result<CallToolResult, McpError> {
-    state.await_cache_ready().await;
-    let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
+fn run_find_files(ws: &Workspace, params: FindFilesParams) -> Result<FilesResponse, EngineError> {
+    ws.wait_map_ready();
+    let (limit, limit_clamped) = effective_list_limit(params.limit);
     let prefix_filter = params.path_prefix.as_deref();
     let lang_filter = params.language.as_deref();
-    let cache = state.shared.cache.load_full();
-    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
+    let cache = ws.cache.load_full();
+    let generation = ws.cache_generation.load(Ordering::Relaxed);
     let (tracked, stamp) = if lang_filter.is_none() {
-        unindexed_tracked(state, &cache, generation)
+        unindexed_tracked(ws, &cache, generation)
     } else {
         (Arc::default(), 0)
     };
@@ -230,7 +270,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return invalidated(state, limit_clamped);
+                return invalidated(ws, limit_clamped);
             }
             offset as usize
         }
@@ -270,7 +310,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
             }
             tally
         };
-        if let Some(refusal) = selects_no_file(state, &filters, listed, None) {
+        if let Some(refusal) = selects_no_file(ws, &filters, listed, None) {
             return Err(refusal);
         }
     }
@@ -287,7 +327,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         .take(limit)
         .map(|(_, path)| path.clone())
         .collect();
-    respond(state, page, total, skip, limit_clamped, generation, params.max_tokens)
+    respond(ws, page, total, skip, limit_clamped, generation, params.max_tokens)
 }
 
 /// Every candidate `query` matches, with its score. A fuzzy subsequence match scores what nucleo
@@ -406,91 +446,36 @@ fn rank_and_cut(scored: &mut Vec<(u32, &RelPath)>) {
     }
 }
 
-/// [`doc_language`] of an indexed document path; `document` for one that is not UTF-8.
-fn language_of_doc(path: &crate::path::RelPath) -> String {
-    path.as_str().map_or_else(|| "document".to_string(), doc_language)
-}
-
-/// Whether `notice` says files may be missing from the listing, so that "no file passes the
-/// filter" proves nothing yet: an index that is warming, building, rebuilding or empty. Those are
-/// the notices that ask for a retry. A rescan in progress and capped reference projections leave
-/// the file listing whole, and the second lasts for the session.
-fn listing_incomplete(notice: &super::types::LifecycleNotice) -> bool {
-    notice.retry
-}
-
-/// The refusal for filters that selected none of the files a tool lists, or `None` when there is
-/// nothing to refuse: no filter, an empty index, or an index still being built, whose page carries
-/// the lifecycle `notice` instead. `listed` tallies the files the tool lists, from the source it
-/// lists them from; it runs only on this path, after the listing itself came back empty.
-pub(super) fn selects_no_file(
-    state: &ServerState,
-    filters: &Filters<'_>,
-    listed: impl FnOnce() -> Tally,
-    unlisted_documents: Option<&dyn Fn() -> Tally>,
-) -> Option<McpError> {
-    if filters.is_empty() || state.lifecycle_notice().as_ref().is_some_and(listing_incomplete) {
-        return None;
-    }
-    let documents = unlisted_documents.map(|tally| tally());
-    filters.refusal(&listed(), documents.as_ref())
-}
-
-/// [`selects_no_file`] for `code_grep`, which searches the code map and not the document tier.
-pub(super) fn grep_selects_no_file(
-    state: &ServerState,
-    cache: &super::MapCache,
-    filters: &Filters<'_>,
-) -> Option<McpError> {
-    let listed = || {
-        let mut tally = Tally::default();
-        for (path, meta) in cache.file_metas() {
-            tally.see(filters, path.as_bytes(), &meta.language);
-        }
-        tally
-    };
-    let documents = || {
-        let mut tally = Tally::default();
-        for path in cache.doc_paths.iter() {
-            tally.see(filters, path.as_bytes(), &language_of_doc(path));
-        }
-        tally
-    };
-    selects_no_file(state, filters, listed, Some(&documents))
-}
-
-/// Language label for a document-tier path: the grammar name when one resolves (`markdown`,
-/// `json`, `yaml` ...), else the lowercased extension (`pdf`, `docx`), else `document`.
-pub(super) fn doc_language(path: &str) -> String {
-    if let Some(l) = crate::lang::detect(std::path::Path::new(path)) {
-        return l.to_string();
-    }
-    std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map_or_else(|| "document".to_string(), str::to_ascii_lowercase)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Lifecycle;
-    use crate::mcp::types::LifecycleNotice;
 
     #[test]
-    fn a_filter_refusal_is_held_back_only_while_files_may_be_missing() {
-        let of = |state| LifecycleNotice::for_state(state).expect("notice");
-        for incomplete in [
-            of(Lifecycle::WarmingUp),
-            of(Lifecycle::BuildingIndex),
-            LifecycleNotice::index_rebuilding(),
-            LifecycleNotice::empty_index(),
-        ] {
-            assert!(listing_incomplete(&incomplete), "{}", incomplete.state);
-        }
-        for whole in [of(Lifecycle::Rescanning), LifecycleNotice::projections_capped()] {
-            assert!(!listing_incomplete(&whole), "{}", whole.state);
-        }
+    fn list_limit_under_cap_is_not_clamped() {
+        let (limit, clamped) = effective_list_limit(Some(100));
+        assert_eq!(limit, 100);
+        assert!(!clamped, "a request under the cap must not be flagged clamped");
+    }
+
+    #[test]
+    fn list_limit_at_cap_is_not_clamped() {
+        let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX));
+        assert_eq!(limit, LIST_LIMIT_MAX as usize);
+        assert!(!clamped, "a request exactly at the cap is honored, not clamped");
+    }
+
+    #[test]
+    fn list_limit_over_cap_is_clamped_and_signalled() {
+        let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX + 1));
+        assert_eq!(limit, LIST_LIMIT_MAX as usize, "limit is clamped to the cap");
+        assert!(clamped, "exceeding the cap must set the clamp flag (bug #17)");
+    }
+
+    #[test]
+    fn list_limit_default_when_absent() {
+        let (limit, clamped) = effective_list_limit(None);
+        assert_eq!(limit, LIST_LIMIT_DEFAULT as usize);
+        assert!(!clamped);
     }
 
     #[test]
@@ -599,12 +584,5 @@ mod tests {
             found("^test")
         );
         assert!(!found("conf$").contains(&"conf.rs".to_string()), "{:?}", found("conf$"));
-    }
-
-    #[test]
-    fn doc_language_labels() {
-        assert_eq!(doc_language("docs/README.md"), "markdown");
-        assert_eq!(doc_language("a/b.pdf"), "pdf");
-        assert_eq!(doc_language("LICENSEFILE"), "document");
     }
 }

@@ -1,7 +1,7 @@
 //! The five git operations scoped to a single path — `diff`, `diff_outline`, `blame`, `blame_symbol`,
 //! `symbol_history`.
 //!
-//! Split out of `helpers_git.rs`, which owns the `git_log` / `git_blame` / `git_diff` bodies and the
+//! Split out of `log.rs`, which owns the `git_log` / `git_blame` / `git_diff` bodies and the
 //! commit-log family, purely to keep both files under the 1000-line cap. Nothing here is reachable
 //! except through those three bodies.
 

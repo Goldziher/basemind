@@ -60,6 +60,7 @@ tool_args! {
 }
 
 pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymbolsParams};
+pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
 
 /// Arguments of `code_grep`.
@@ -144,30 +145,6 @@ pub struct CodeRefsParams {
     #[serde(default)]
     pub cursor: Option<Cursor>,
     /// Token budget for the list (default 6000). Not with `definition`.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
-
-/// Arguments of `find_files`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FindFilesToolParams {
-    /// Fuzzy fragment of a file name or path; omit to list.
-    #[serde(default)]
-    pub query: Option<String>,
-    /// Only paths starting with this, e.g. `src/mcp/`.
-    #[serde(default)]
-    pub path_prefix: Option<String>,
-    /// Language filter, e.g. `rust`, `markdown`.
-    #[serde(default)]
-    pub language: Option<String>,
-    /// Max files (default 200).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }

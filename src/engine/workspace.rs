@@ -157,8 +157,8 @@ pub(crate) struct Workspace {
     pub(crate) history_syncing: Arc<AtomicBool>,
     /// The host's git-history sync ([`OpenOptions::history_sync`]).
     pub(crate) history_sync: Option<fn(&Workspace)>,
-    /// The git index's file list as `find_files` last read it ([`crate::mcp::helpers_files`]).
-    pub(crate) tracked: std::sync::Mutex<crate::mcp::helpers_files::TrackedCache>,
+    /// The git index's file list as `find_files` last read it ([`crate::engine::ops::find_files`]).
+    pub(crate) tracked: std::sync::Mutex<crate::engine::ops::find_files::TrackedCache>,
 }
 
 /// Whether the workspace's `status.json` records a partial or unresolved last scan. A missing or
