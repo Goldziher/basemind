@@ -277,6 +277,10 @@ pub enum SupervisorError {
     /// write requests into its stdio through `/proc`; it is not bound in-process.
     #[error("this process could not be made non-dumpable and may not be registered in-process")]
     HostDumpable,
+    /// Only the operator may allow an approval request of this flavor; a launcher may deny it
+    /// ([`FlavorPolicy::launcher_may_allow`](crate::FlavorPolicy::launcher_may_allow)).
+    #[error("only the operator may allow this approval request")]
+    LauncherMayNotAllow,
 }
 
 impl SupervisorError {
@@ -307,6 +311,7 @@ impl SupervisorError {
             Self::AuditExhausted => "audit_exhausted",
             Self::NestedHost => "nested_host",
             Self::HostDumpable => "host_dumpable",
+            Self::LauncherMayNotAllow => "launcher_may_not_allow",
         }
     }
 }

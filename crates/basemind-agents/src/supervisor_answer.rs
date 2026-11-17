@@ -3,7 +3,7 @@
 
 use crate::audit::{AuditApproval, AuditEvent, AuditRecord};
 use crate::error::LaunchError;
-use crate::supervisor::{SessionId, Supervisor, SupervisorError};
+use crate::supervisor::{Resolved, SessionId, Supervisor, SupervisorError};
 use crate::supervisor_admit::{Asker, owned, refuse};
 use crate::supervisor_identity::resolve;
 use crate::supervisor_types::Caller;
@@ -14,7 +14,10 @@ impl Supervisor {
     /// # Errors
     ///
     /// [`SupervisorError::UnknownSession`], [`SupervisorError::NotOwner`] unless `caller` is
-    /// the operator or launched the session, [`SupervisorError::Audit`] for an allow whose
+    /// the operator or launched the session, [`SupervisorError::LauncherMayNotAllow`] for an
+    /// allow by anyone but the operator unless the flavor's
+    /// [`launcher_may_allow`](crate::FlavorPolicy::launcher_may_allow) is set,
+    /// [`SupervisorError::Audit`] for an allow whose
     /// record could not be written (it is then not delivered), and the session's own errors (a
     /// finished session, a full control queue) as [`SupervisorError::Launch`].
     pub fn answer(&self, caller: &Caller, id: SessionId, approval: &str, allow: bool) -> Result<(), SupervisorError> {
@@ -22,7 +25,22 @@ impl Supervisor {
         let mut table = inner.table();
         let resolved = resolve(&inner.policy, &table, caller);
         let asker = Asker::new(&table, caller, resolved.as_ref().ok());
-        let entry = match owned(&mut table, resolved, id) {
+        let operator = matches!(resolved, Ok(Resolved::Operator));
+        let owned = owned(&mut table, resolved, id).and_then(|entry| {
+            // An allow is the operator's, unless the flavor lets its launchers give one too.
+            let launcher_may_allow = || {
+                inner
+                    .policy
+                    .flavor(entry.flavor)
+                    .is_some_and(|rule| rule.launcher_may_allow)
+            };
+            if allow && !operator && !launcher_may_allow() {
+                Err(SupervisorError::LauncherMayNotAllow)
+            } else {
+                Ok(entry)
+            }
+        });
+        let entry = match owned {
             Ok(entry) => entry,
             Err(error) => {
                 drop(table);

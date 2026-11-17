@@ -186,7 +186,12 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   it; rotating it is the operator's job.
 - **Sessions.** `status`, `list`, `wait`, `stop` (the launcher or the operator; it reaches every
   session below the one stopped), `answer` for a pending approval, `stop_all`, and `reap` to forget
-  finished sessions. Dropping the supervisor stops every session within its stop grace and kills
+  finished sessions. Only the operator allows an approval request; a launcher (the lead model, or
+  a launched agent over its children) may deny one, and an allow from it is refused with
+  `launcher_may_not_allow`. A model that allows launders what the launched agent asks for past the
+  human, who sees an id, not the command; a launched agent that allows its children's requests
+  bypasses its own harness's permission mode. `FlavorPolicy::launcher_may_allow` opts a flavor out
+  of that, and is refused with a `max_depth` above 1. Dropping the supervisor stops every session within its stop grace and kills
   what is left. A `SessionObserver` receives every event on the session's own thread; one that
   panics is dropped for that session and the session is stopped.
 - **Caveats** (`caveats(kind)`, reported on each launch and status). `DetachedServer` (OpenCode):

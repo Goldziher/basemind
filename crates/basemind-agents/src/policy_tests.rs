@@ -216,3 +216,24 @@ fn opencode_reports_its_detached_server_and_user_mcp_servers() {
     assert!(caveats(HarnessKind::ClaudeCode).is_empty());
     assert_eq!(Caveat::DetachedServer.id(), "detached_server");
 }
+
+#[test]
+fn a_launcher_may_allow_only_in_a_tree_one_level_deep() {
+    let lenient = FlavorPolicy {
+        launcher_may_allow: true,
+        ..FlavorPolicy::supervised(HarnessKind::Codex)
+    };
+    assert!(LaunchPolicy::new(allowing(vec![lenient.clone()])).is_ok());
+    let deep = PolicySpec {
+        max_depth: 2,
+        ..allowing(vec![lenient])
+    };
+    assert_eq!(LaunchPolicy::new(deep), Err(PolicyError::LauncherMayAllowDeep("codex")));
+    // Without the opt-in a deeper tree is fine: its launchers may only deny.
+    let strict = PolicySpec {
+        max_depth: 2,
+        ..allowing(vec![FlavorPolicy::supervised(HarnessKind::Codex)])
+    };
+    assert!(LaunchPolicy::new(strict).is_ok());
+    assert!(!FlavorPolicy::supervised(HarnessKind::Codex).launcher_may_allow);
+}

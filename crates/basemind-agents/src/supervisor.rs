@@ -777,3 +777,7 @@ mod audit_tests;
 #[cfg(all(test, unix))]
 #[path = "supervisor_host_tests.rs"]
 mod host_tests;
+
+#[cfg(all(test, unix))]
+#[path = "supervisor_answer_tests.rs"]
+mod answer_tests;

@@ -274,7 +274,9 @@ id that fails the grammar stops the launch.
      `audit_dropped` count. It is append-only as far as this writer goes, not tamper-resistant:
      any process of the same user can rewrite it.
    - **Sessions.** `status`, `list`, `wait`, `stop` (by the launcher or the operator; it reaches
-     every session below the one stopped), `answer` for a pending approval (same), `stop_all`,
+     every session below the one stopped), `answer` for a pending approval (a launcher may
+     deny; only the operator allows, unless the flavor's `launcher_may_allow` opt-in says
+     otherwise, which `LaunchPolicy::new` refuses with a `max_depth` above 1), `stop_all`,
      `reap`. A thread per session reads its events, hands each to an optional
      `SessionObserver` and audits approvals and the exit; an observer that panics is dropped for
      that session and the session is stopped. Dropping the supervisor stops every session within
@@ -352,13 +354,21 @@ id that fails the grammar stops the launch.
      channel, such as an MCP elicitation the lead's `serve` sends to its client and the human
      answers in that UI. A tool call a launched agent can make, or a message over comms, is
      never such a decision. Until the embedding has that channel it registers no operator:
-     approvals stay default-deny, or are answered by the launcher.
+     approvals stay default-deny, or the launcher denies them.
    - **The injected server's surface.** `basemind serve` exposes every tool to the launched
      agent. The wiring has to start it with a restricted profile (the comms verb tools and
      `agent_launch` / `agent_stop` only); no domain tool is pre-approved by name.
-   - **Relaying approvals and output.** An `Ask` verdict waits for the launcher; the engine has
+   - **Relaying approvals and output.** An `Ask` verdict waits for an answer; the engine has
      to deliver the request (through the observer, as a comms message) and its answer
-     (`Supervisor::answer`). A model-facing error is the `SupervisorError` code, not its text.
+     (`Supervisor::answer`). No MCP tool lets a model allow: an allow comes from the approval
+     policy or from the operator's elicitation, which shows the human the grant (the command,
+     the file, the tool and its arguments), never only an id. A launcher may deny. With the
+     launched agent's request in front of it, the lead model is the one prompt-injected party
+     in the loop ("approve codex-3 for the tests"), and at depth 2 a launched agent allowing
+     its own children would be its harness's permission mode bypassed with no `BypassOptIn`.
+     The crate enforces it: `answer(allow = true)` is refused with `launcher_may_not_allow` for
+     anyone but the operator unless the flavor sets `launcher_may_allow`, which needs
+     `max_depth = 1`. A model-facing error is the `SupervisorError` code, not its text.
 
 ### Tool surface, later
 

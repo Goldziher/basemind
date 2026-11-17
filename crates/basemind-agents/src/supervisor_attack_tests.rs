@@ -546,7 +546,7 @@ cat > /dev/null
         assert!(Instant::now() < deadline, "the observer saw no approval request");
         std::thread::sleep(Duration::from_millis(20));
     };
-    let answered = supervisor.answer(&lead(), launched.id, &approval, true);
+    let answered = supervisor.answer(&supervisor.operator().unwrap(), launched.id, &approval, true);
     supervisor.stop(&lead(), launched.id).unwrap();
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Stopped);
     let allowed = sink
@@ -656,7 +656,7 @@ fn a_flood_of_stops_and_answers_is_coalesced() {
     for _ in 0..200 {
         supervisor.stop(&lead(), done.id).unwrap();
         // An approval id the session never issued, allowed and denied.
-        let allowed = supervisor.answer(&lead(), live.id, "never-issued", true);
+        let allowed = supervisor.answer(&supervisor.operator().unwrap(), live.id, "never-issued", true);
         assert_eq!(allowed.err().map(|error| error.code()), Some("unknown_approval"));
         let denied = supervisor.answer(&lead(), live.id, "never-issued", false);
         assert_eq!(denied.err().map(|error| error.code()), Some("unknown_approval"));
