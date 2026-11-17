@@ -1,14 +1,17 @@
-//! Auto-approving basemind's own MCP tools in Claude Code's `permissions.allow`.
+//! Auto-approving basemind's read-only MCP tools in Claude Code's `permissions.allow`.
 //!
-//! `basemind init` can optionally add one glob entry to `.claude/settings.local.json` (recommended)
-//! or the committed `.claude/settings.json` so Claude Code stops prompting for approval on
-//! basemind's own read-only MCP tools. This is opt-in, not default-on: broadening auto-approved
-//! permissions is a decision the user should make explicitly, so a non-interactive run skips it
-//! unless `--settings-target` is passed.
+//! `basemind init` can optionally add one entry per read-only tool to `.claude/settings.local.json`
+//! (recommended) or the committed `.claude/settings.json` so Claude Code stops prompting for
+//! approval on them. This is opt-in, not default-on: broadening auto-approved permissions is a
+//! decision the user should make explicitly, so a non-interactive run skips it unless
+//! `--settings-target` is passed. Tools that write (`memory_save`, `index_rescan`, the agent tools)
+//! are never listed, so a host still asks before running them.
 //!
 //! The merge is deliberately narrow: it reads the existing JSON (if any), touches only
-//! `permissions.allow` (creating the path if absent, appending the entry once, never duplicating
+//! `permissions.allow` (creating the path if absent, appending each entry once, never duplicating
 //! it), and leaves every other top-level key — including its position in the file — untouched.
+//! It drops only entries basemind itself made obsolete: the `__*` wildcard older releases wrote,
+//! which also approved the tools that write, and the retired tools (`__code`, `__git`, …).
 //! `serde_json`'s `preserve_order` feature (enabled on the crate in `Cargo.toml`) is load-bearing
 //! here: without it, `serde_json::Map` is `BTreeMap`-backed and would alphabetically re-sort a
 //! hand-ordered settings file on every write.
@@ -23,12 +26,31 @@ use serde_json::{Map, Value};
 use super::init::{Change, InitArgs};
 use super::init_verb::Verb;
 
-/// Permission glob covering every basemind MCP tool exposed through the Claude Code plugin.
-/// Claude Code names plugin MCP tools `mcp__plugin_<pluginName>_<serverName>__<toolName>`; both
-/// halves are `"basemind"` here per `.claude-plugin/plugin.json` (`"name": "basemind"`,
-/// `mcpServers.basemind`), confirmed against this plugin's own live tool names
-/// (`mcp__plugin_basemind_basemind__code_outline`, `__git_log`, `__memory_search`, …).
-const PERMISSION_ENTRY: &str = "mcp__plugin_basemind_basemind__*";
+/// Claude Code names an MCP tool `mcp__<server>__<tool>`, and a plugin's
+/// `mcp__plugin_<plugin>_<server>__<tool>`: the plugin install, then a `claude mcp add basemind`.
+const TOOL_PREFIXES: [&str; 2] = ["mcp__plugin_basemind_basemind__", "mcp__basemind__"];
+
+/// The wildcard releases up to 0.33 wrote, which also approved the tools that write.
+const LEGACY_WILDCARD: &str = "mcp__plugin_basemind_basemind__*";
+
+/// The `permissions.allow` entries `init` adds: every read-only verb tool, under each prefix.
+fn permission_entries() -> Vec<String> {
+    let tools = crate::mcp::offline::read_only_verb_tools();
+    TOOL_PREFIXES
+        .iter()
+        .flat_map(|prefix| tools.iter().map(move |tool| format!("{prefix}{tool}")))
+        .collect()
+}
+
+/// True for an entry `init` removes: the legacy wildcard, or a tool this binary no longer serves.
+fn is_obsolete(entry: &str) -> bool {
+    entry == LEGACY_WILDCARD
+        || TOOL_PREFIXES.iter().any(|prefix| {
+            entry
+                .strip_prefix(prefix)
+                .is_some_and(|tool| crate::mcp::params::RETIRED_TOOLS.contains(&tool))
+        })
+}
 
 /// Where (if anywhere) to add basemind's MCP-tool permission entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -121,17 +143,18 @@ pub(crate) fn plan_settings_change(plan: &SettingsPlan) -> Result<Option<Change>
     Ok(Some(Change::Write {
         path: path.clone(),
         verb: Verb::Add,
-        what: "basemind's MCP tools to permissions.allow",
+        what: "basemind's read-only MCP tools to permissions.allow",
         contents,
     }))
 }
 
-/// Merge [`PERMISSION_ENTRY`] into `existing`'s `permissions.allow` array, returning the
-/// pretty-printed (2-space indent) result and whether anything actually changed. Every other
-/// top-level key — and its position — is preserved verbatim; only `permissions` (and, under it,
-/// `allow`) is created or touched. Errors rather than clobbers when an existing `permissions` or
-/// `permissions.allow` value is not the shape basemind expects (e.g. a string instead of an array),
-/// since silently overwriting it would lose whatever the user already had there.
+/// Merge [`permission_entries`] into `existing`'s `permissions.allow` array and drop the
+/// [`is_obsolete`] entries, returning the pretty-printed (2-space indent) result and whether
+/// anything actually changed. Every other top-level key — and its position — is preserved verbatim;
+/// only `permissions` (and, under it, `allow`) is created or touched. Errors rather than clobbers
+/// when an existing `permissions` or `permissions.allow` value is not the shape basemind expects
+/// (e.g. a string instead of an array), since silently overwriting it would lose whatever the user
+/// already had there.
 fn merged_settings_contents(existing: Option<&str>) -> Result<(String, bool)> {
     let mut root: Value = match existing {
         Some(s) if !s.trim().is_empty() => serde_json::from_str(s).context("parse existing settings JSON")?,
@@ -153,14 +176,19 @@ fn merged_settings_contents(existing: Option<&str>) -> Result<(String, bool)> {
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("existing `permissions.allow` is not a JSON array"))?;
 
-    let already_present = allow_arr.iter().any(|v| v.as_str() == Some(PERMISSION_ENTRY));
-    if !already_present {
-        allow_arr.push(Value::String(PERMISSION_ENTRY.to_string()));
+    let before = allow_arr.len();
+    allow_arr.retain(|v| !v.as_str().is_some_and(is_obsolete));
+    let mut changed = allow_arr.len() != before;
+    for entry in permission_entries() {
+        if !allow_arr.iter().any(|v| v.as_str() == Some(entry.as_str())) {
+            allow_arr.push(Value::String(entry));
+            changed = true;
+        }
     }
 
     let mut rendered = serde_json::to_string_pretty(&root).context("render settings JSON")?;
     rendered.push('\n');
-    Ok((rendered, !already_present))
+    Ok((rendered, changed))
 }
 
 #[cfg(test)]
@@ -184,14 +212,67 @@ mod tests {
         ));
     }
 
+    fn allow_list(contents: &str) -> Vec<String> {
+        let parsed: Value = serde_json::from_str(contents).expect("valid JSON");
+        parsed["permissions"]["allow"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|v| v.as_str().expect("string").to_string())
+            .collect()
+    }
+
     #[test]
-    fn merge_creates_permissions_allow_from_nothing() {
+    fn merge_lists_the_read_only_tools_and_no_tool_that_writes() {
         let (contents, changed) = merged_settings_contents(None).expect("merge into empty file");
         assert!(changed);
-        let parsed: Value = serde_json::from_str(&contents).expect("valid JSON");
+        let allow = allow_list(&contents);
+        assert_eq!(allow, permission_entries());
+        for prefix in TOOL_PREFIXES {
+            for tool in ["code_outline", "git_log", "docs_search", "index_status"] {
+                assert!(allow.contains(&format!("{prefix}{tool}")), "{prefix}{tool}: {allow:?}");
+            }
+        }
+        for entry in &allow {
+            assert!(!entry.ends_with('*'), "no wildcard: {entry}");
+            for writer in [
+                "memory_save",
+                "index_rescan",
+                "agent_post",
+                "agent_inbox",
+                "agent_threads",
+            ] {
+                assert!(
+                    !entry.ends_with(&format!("__{writer}")),
+                    "{entry} must not be auto-approved"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn merge_drops_the_legacy_wildcard_and_retired_tools_and_keeps_the_rest() {
+        let existing = format!(
+            r#"{{"permissions": {{"allow": ["{LEGACY_WILDCARD}", "mcp__plugin_basemind_basemind__code",
+            "mcp__basemind__git", "mcp__plugin_basemind_basemind__memory_save", "Bash(ls:*)"]}}}}"#
+        );
+        let (contents, changed) = merged_settings_contents(Some(&existing)).expect("merge");
+        assert!(changed);
+        let allow = allow_list(&contents);
+        for gone in [
+            LEGACY_WILDCARD,
+            "mcp__plugin_basemind_basemind__code",
+            "mcp__basemind__git",
+        ] {
+            assert!(!allow.iter().any(|e| e == gone), "{gone} survived: {allow:?}");
+        }
         assert_eq!(
-            parsed["permissions"]["allow"],
-            Value::Array(vec![Value::String(PERMISSION_ENTRY.to_string())])
+            allow[..2],
+            [
+                "mcp__plugin_basemind_basemind__memory_save".to_string(),
+                "Bash(ls:*)".to_string()
+            ],
+            "an entry the user wrote is kept, in place"
         );
     }
 
@@ -211,10 +292,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&contents).expect("valid JSON");
         assert_eq!(parsed["skillOverrides"]["init"], "off", "unrelated key preserved");
         assert_eq!(parsed["otherKey"], Value::Array(vec![1.into(), 2.into(), 3.into()]));
-        assert_eq!(
-            parsed["permissions"]["allow"],
-            Value::Array(vec![Value::String(PERMISSION_ENTRY.to_string())])
-        );
+        assert_eq!(allow_list(&contents), permission_entries());
 
         // ~keep Order, not just presence: `skillOverrides` was first in the source file and must
         // ~keep still be first in the output — preserve_order is what makes this true; a plain
@@ -231,26 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn merge_is_idempotent_when_the_entry_is_already_present() {
-        let existing = format!(
-            r#"{{
-  "permissions": {{
-    "allow": ["{PERMISSION_ENTRY}", "some/other/tool"]
-  }}
-}}"#
-        );
-        let (_, changed) = merged_settings_contents(Some(&existing)).expect("merge");
+    fn merge_is_idempotent_and_never_duplicates_an_entry() {
+        let (first, _) = merged_settings_contents(None).expect("first merge");
+        let (second, changed) = merged_settings_contents(Some(&first)).expect("second merge");
         assert!(!changed, "already present — no rewrite needed");
-    }
-
-    #[test]
-    fn merge_dedupes_rather_than_appending_a_second_copy() {
-        let existing = format!(r#"{{"permissions": {{"allow": ["{PERMISSION_ENTRY}"]}}}}"#);
-        let (contents, changed) = merged_settings_contents(Some(&existing)).expect("merge");
-        assert!(!changed);
-        let parsed: Value = serde_json::from_str(&contents).expect("valid JSON");
-        let allow = parsed["permissions"]["allow"].as_array().expect("array");
-        assert_eq!(allow.len(), 1, "must not duplicate the entry");
+        assert_eq!(second, first);
     }
 
     #[test]
@@ -273,7 +336,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(written, path);
-                assert!(contents.contains(PERMISSION_ENTRY));
+                assert!(contents.contains("mcp__plugin_basemind_basemind__code_outline"));
             }
             Change::NoOp { note } => panic!("expected a write, got no-op: {note}"),
         }

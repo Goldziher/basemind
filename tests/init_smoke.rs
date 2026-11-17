@@ -337,7 +337,7 @@ fn print_uses_imperative_verbs() {
     assert!(out.contains("would write ai-rulez rule"), "got:\n{out}");
     assert!(out.contains("would write basemind.toml scaffold"), "got:\n{out}");
     assert!(
-        out.contains("would add basemind's MCP tools to permissions.allow"),
+        out.contains("would add basemind's read-only MCP tools to permissions.allow"),
         "got:\n{out}"
     );
     assert!(

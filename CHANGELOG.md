@@ -281,6 +281,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING: `basemind init` without a terminal writes only with `--yes`.** It used to append to
   `.gitignore` and write `basemind.toml` whenever stdin was not a TTY; it now prints what it would
   change. `/bm-init` passes `--yes` once the user has chosen.
+- `basemind init --settings-target` lists each read-only tool in `permissions.allow`, under
+  `mcp__plugin_basemind_basemind__` and `mcp__basemind__`, instead of the
+  `mcp__plugin_basemind_basemind__*` wildcard, which also approved `memory_save`, `index_rescan` and
+  the agent tools. It removes that wildcard and entries for retired tools.
 
 ### Removed
 

@@ -58,6 +58,23 @@ fn tool_list_for(lean: bool) -> ListToolsResult {
     ListToolsResult::with_all_items(tools)
 }
 
+/// The always-loaded verb tools this binary annotates `readOnlyHint: true`, in `VERB_TOOLS` order.
+/// Read from the router's annotations, so a tool that writes is never listed, whatever its name.
+pub fn read_only_verb_tools() -> Vec<&'static str> {
+    let router = router_cache::cached_tool_router();
+    super::params::VERB_TOOLS
+        .iter()
+        .copied()
+        .filter(|name| {
+            router
+                .get(name)
+                .and_then(|tool| tool.annotations.as_ref())
+                .and_then(|annotations| annotations.read_only_hint)
+                == Some(true)
+        })
+        .collect()
+}
+
 fn as_json(value: &impl serde::Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
@@ -113,5 +130,22 @@ mod tests {
         assert_ne!(full, lean, "the switch selects between two surfaces");
         let sent = tools_list();
         assert!(sent == full || sent == lean, "the list sent is one of them: {sent}");
+    }
+
+    #[test]
+    fn the_read_only_tools_leave_out_every_tool_that_writes() {
+        let read_only = read_only_verb_tools();
+        for writer in ["memory_save", "index_rescan"] {
+            assert!(!read_only.contains(&writer), "`{writer}` writes: {read_only:?}");
+        }
+        assert!(
+            !read_only.iter().any(|name| name.starts_with("agent_")),
+            "{read_only:?}"
+        );
+        assert_eq!(
+            read_only.len(),
+            crate::mcp::params::VERB_TOOLS.len() - 2,
+            "{read_only:?}"
+        );
     }
 }
