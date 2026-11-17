@@ -254,7 +254,13 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         "tools/list must expose the full tool surface, got {}",
         tools.len()
     );
-    for agent_tool in ["agent_post", "agent_inbox", "agent_threads"] {
+    for agent_tool in [
+        "agent_post",
+        "agent_inbox",
+        "agent_threads",
+        "agent_launch",
+        "agent_stop",
+    ] {
         assert!(
             !tools.iter().any(|tool| tool["name"] == agent_tool),
             "agent messaging is not served over HTTP (ADR-0021 rule 17), so `{agent_tool}` is not listed: {parsed}"
@@ -262,9 +268,17 @@ async fn streamable_http_serves_initialize_and_tools_list() {
     }
 
     // --- the CLI-only commands are not on the HTTP surface: only a CLI's relay hello reaches them ---
-    for (id, name) in ["memory_delete", "git_churn", "git_by_path", "code_chunk"]
-        .into_iter()
-        .enumerate()
+    // --- nor the lead tools, which only `serve --lead` answers, on its own stdio (ADR-0040) ---
+    for (id, name) in [
+        "memory_delete",
+        "git_churn",
+        "git_by_path",
+        "code_chunk",
+        "agent_launch",
+        "agent_stop",
+    ]
+    .into_iter()
+    .enumerate()
     {
         let call = json!({
             "jsonrpc": "2.0",

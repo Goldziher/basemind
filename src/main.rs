@@ -22,6 +22,8 @@ mod doctor_cli;
 mod lang_cli;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod relay_refusal;
+#[cfg(all(feature = "comms", unix))]
+mod serve_lead;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod serve_relay;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -119,7 +121,13 @@ enum Cmd {
     /// Run an MCP server for a stdio client: ensure the daemon (the real server) is up, then relay
     /// this process's stdin/stdout to it. HTTP-native clients skip this and dial the daemon URL
     /// directly (see `daemon ensure`).
-    Serve,
+    Serve {
+        /// Host the agent-launch supervisor in this process (ADR-0040): answer `agent_launch` and
+        /// `agent_stop` on this stdio, as the operator's user-level agents.toml allows. Without
+        /// that file launching stays off and the tools are not listed. Unix only.
+        #[arg(long)]
+        lead: bool,
+    },
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
     Statusline,
@@ -280,6 +288,10 @@ static GLOBAL: basemind::allocator::MiMalloc = basemind::allocator::MiMalloc;
 
 /// Exit-code contract: see [`basemind::cli::exit`].
 fn main() -> std::process::ExitCode {
+    // First, before argument parsing, logging or the runtime: a lead seals itself so no process of
+    // the same user can write requests into its stdin through /proc in the meantime.
+    #[cfg(all(feature = "comms", unix))]
+    serve_lead::seal_if_lead();
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
@@ -381,7 +393,7 @@ fn run() -> Result<()> {
             LangCmd::Install => lang_cli::cmd_lang_install(&root, verbosity, no_color),
             LangCmd::Clean => lang_cli::cmd_lang_clean(),
         },
-        Cmd::Serve => cmd_serve(&root, &view),
+        Cmd::Serve { lead } => cmd_serve(&root, &view, lead),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         // An explicit `--root` selects the per-repo line for that (resolved) workspace; bare
         // `basemind statusline` keeps the daemon hot-workspace summary.
@@ -412,7 +424,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
             cmd,
             Cmd::Comms { .. } | Cmd::Agent { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. }
         );
-    let consumes_view = consumes_json || matches!(cmd, Cmd::Serve);
+    let consumes_view = consumes_json || matches!(cmd, Cmd::Serve { .. });
 
     if json && !consumes_json {
         tracing::warn!("--json has no effect on this subcommand; ignoring");
@@ -769,7 +781,13 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
 /// server, whose lifetime was bound to the pipe, was the "drops and never returns" bug). HTTP-native
 /// clients skip `serve` entirely and dial the daemon URL directly (see `basemind daemon ensure`).
 /// Without the `comms` feature there is no daemon to relay to, so it errors with guidance.
-fn cmd_serve(root: &std::path::Path, view: &str) -> Result<()> {
+fn cmd_serve(root: &std::path::Path, view: &str, lead: bool) -> Result<()> {
+    if lead && !cfg!(unix) {
+        anyhow::bail!(
+            "`basemind serve --lead` is not supported on this platform: launching agents needs a Unix \
+             process tree to contain them (ADR-0040)"
+        );
+    }
     // Bug #18 guard (transport-independent): a named view that was never scanned must fail fast with
     // actionable guidance instead of implying a server for an index that does not exist. The working
     // view is exempt (it auto-scans on first daemon touch).
@@ -795,14 +813,22 @@ fn cmd_serve(root: &std::path::Path, view: &str) -> Result<()> {
     {
         // No in-process fallback: relaying is the only path. If it fails the client sees a clear
         // error rather than silently degrading to a fragile pipe-bound server.
-        serve_relay::try_serve_relay(root, view).context(
+        #[cfg(unix)]
+        let served = if lead {
+            serve_relay::try_serve_lead(root, view)
+        } else {
+            serve_relay::try_serve_relay(root, view)
+        };
+        #[cfg(not(unix))]
+        let served = serve_relay::try_serve_relay(root, view);
+        served.context(
             "relay to the basemind daemon failed; run `basemind daemon ensure` to check the daemon, \
              then retry",
         )
     }
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     {
-        let _ = root;
+        let _ = (root, lead);
         anyhow::bail!(
             "`basemind serve` needs the comms daemon to host the MCP server; rebuild with \
              `--features comms` (the stdio MCP server is served by relaying to that daemon)."
