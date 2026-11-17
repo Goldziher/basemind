@@ -480,7 +480,7 @@ def main() -> int:  # noqa: PLR0915
         log(f"cli {o.status:4} {case.name} {o.detail[:160]}")
 
     tools_called = {c.tool for c in all_cases}
-    uncovered = sorted(set(sess.tools) - tools_called - {"agents"})
+    uncovered = sorted(set(sess.tools) - tools_called - {"agent_post", "agent_inbox", "agent_threads"})
     sess.close()
     procs = owned_processes(iso.root)
 
