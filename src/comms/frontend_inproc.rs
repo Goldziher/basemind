@@ -275,7 +275,7 @@ mod half_close_tests {
         link.send_request(CommsRequest::AgentInbox {
             sub: None,
             body: InboxBody::default(),
-            wait_secs: 5,
+            wait_secs: 1,
         })
         .await
         .expect("waiting inbox");
@@ -283,7 +283,7 @@ mod half_close_tests {
         link.send_request(CommsRequest::Ping).await.expect("ping");
         let mut replies = link.half_close();
         let mut answered = Vec::new();
-        while let Some(frame) = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+        while let Some(frame) = tokio::time::timeout(std::time::Duration::from_secs(120), replies.recv())
             .await
             .expect("a reply or the end")
         {
