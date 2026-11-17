@@ -587,6 +587,7 @@ mod code {
         CodeChunkBlob {
             config_digest: String::new(),
             schema_ver: crate::extract::SCHEMA_VER,
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
             embedding_dim: dim,
             embedding_model: if dim > 0 { PRESET.to_string() } else { String::new() },
             chunks: (0..chunks)

@@ -99,6 +99,11 @@ pub struct CodeChunkBlob {
     /// blobs written before the field existed; those are adopted (and stamped) on first reuse.
     #[serde(default)]
     pub config_digest: String,
+    /// The [`crate::extract::EXTRACT_EPOCH`] of the outline the chunks were cut from. Symbol ranges
+    /// move when the extractor changes, so a blob below the current epoch is re-chunked. `0` on
+    /// blobs written before the field existed, which therefore always read as stale.
+    #[serde(default)]
+    pub extract_epoch: u16,
 }
 
 /// A cheap partial decode of a [`CodeChunkBlob`] sidecar: only what `embed_state_satisfied` needs to
@@ -125,6 +130,9 @@ pub struct CodeChunkBlobPeek {
     /// See [`CodeChunkBlob::config_digest`]; `""` for a blob that predates it.
     #[serde(default)]
     pub config_digest: String,
+    /// See [`CodeChunkBlob::extract_epoch`]; `0` for a blob that predates it.
+    #[serde(default)]
+    pub extract_epoch: u16,
 }
 
 /// A chunk before line numbers / ids / searchable_text are finalized.
@@ -533,6 +541,7 @@ mod tests {
             embedding_model: "balanced".to_string(),
             chunks: Vec::new(),
             embeddings: Vec::new(),
+            extract_epoch: crate::extract::EXTRACT_EPOCH,
         };
         let bytes = rmp_serde::to_vec_named(&blob).expect("serialize blob");
         let decoded: CodeChunkBlob = rmp_serde::from_slice(&bytes).expect("deserialize blob");
@@ -572,6 +581,10 @@ mod tests {
         assert_ne!(
             decoded.embedding_model, "balanced",
             "empty model must not match a named preset — forces re-embed"
+        );
+        assert_eq!(
+            decoded.extract_epoch, 0,
+            "a pre-epoch blob reads as cut from a stale outline"
         );
     }
 }
