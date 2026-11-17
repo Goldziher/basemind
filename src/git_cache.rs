@@ -208,7 +208,7 @@ impl GitCache {
             ensure_subdir(&root, "commit_files")?;
             ensure_subdir(&root, "log")?;
             ensure_subdir(&root, "blame")?;
-            evict_log_cache(&root, log_cache_max_bytes_from_env());
+            evict_disk_cache(&root, log_cache_max_bytes_from_env());
             Some(root)
         } else {
             None
@@ -548,9 +548,16 @@ fn count_files(dir: &Path) -> usize {
     count
 }
 
-/// Default disk budget for the HEAD-keyed log subdirectory (256 MiB). Tuneable via
-/// `BASEMIND_GIT_CACHE_LOG_MAX_BYTES`; setting it to 0 disables eviction.
+/// Default disk budget for each subdirectory of the cache (256 MiB). Tuneable via
+/// `BASEMIND_GIT_CACHE_LOG_MAX_BYTES`, which despite its name sets every subdirectory's budget;
+/// setting it to 0 disables eviction.
 const LOG_CACHE_DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// A `*.tmp` file older than this was left by a writer that died between its write and its rename.
+const STALE_TMP_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// The cache's subdirectories, each one flat directory of payload files.
+const DISK_SUBDIRS: [&str; 3] = ["log", "blame", "commit_files"];
 
 fn log_cache_max_bytes_from_env() -> u64 {
     std::env::var("BASEMIND_GIT_CACHE_LOG_MAX_BYTES")
@@ -559,18 +566,23 @@ fn log_cache_max_bytes_from_env() -> u64 {
         .unwrap_or(LOG_CACHE_DEFAULT_MAX_BYTES)
 }
 
-/// Mtime-LRU sweep of `<git-cache>/log/`. Cheap one-shot pass at process start: stat every
-/// file, sum sizes, and if over budget delete the oldest until under. The log subdir is the
-/// only one with HEAD-derived keys (commit_files + blame are sha-derived and immortal).
-/// Errors during traversal/removal are swallowed — cache size is best-effort, not load-bearing.
-pub(crate) fn evict_log_cache(cache_root: &Path, max_bytes: u64) {
-    if max_bytes == 0 {
-        return;
+/// Mtime-LRU sweep of every cache subdirectory, a cheap one-shot pass at process start: stat every
+/// file, sum sizes, and if over budget delete the oldest until under. None of them is immortal:
+/// `log/` keys on HEAD, `blame/` on the HEAD a blame was asked at, so every HEAD move mints new
+/// entries in both, and a payload of an older schema is never read again in any of them. A `*.tmp`
+/// file past [`STALE_TMP_AGE`] is removed whatever the budget. Errors during traversal and removal
+/// are swallowed: cache size is best-effort, not load-bearing.
+pub(crate) fn evict_disk_cache(cache_root: &Path, max_bytes: u64) {
+    for sub in DISK_SUBDIRS {
+        evict_disk_subdir(&cache_root.join(sub), max_bytes);
     }
-    let log_dir = cache_root.join("log");
+}
+
+fn evict_disk_subdir(dir: &Path, max_bytes: u64) {
+    let now = std::time::SystemTime::now();
     let mut entries: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
     let mut total: u64 = 0;
-    if let Ok(rd) = fs::read_dir(&log_dir) {
+    if let Ok(rd) = fs::read_dir(dir) {
         for entry in rd.flatten() {
             let path = entry.path();
             let Ok(md) = entry.metadata() else { continue };
@@ -579,11 +591,17 @@ pub(crate) fn evict_log_cache(cache_root: &Path, max_bytes: u64) {
             }
             let size = md.len();
             let mtime = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if path.extension().is_some_and(|ext| ext == "tmp") {
+                if now.duration_since(mtime).is_ok_and(|age| age > STALE_TMP_AGE) {
+                    let _ = fs::remove_file(&path);
+                }
+                continue;
+            }
             total = total.saturating_add(size);
             entries.push((path, size, mtime));
         }
     }
-    if total <= max_bytes {
+    if max_bytes == 0 || total <= max_bytes {
         return;
     }
     entries.sort_by_key(|(_, _, mtime)| *mtime);
@@ -804,5 +822,48 @@ mod tests {
             .filter(|e| e.path().extension().is_some_and(|x| x == "tmp"))
             .collect();
         assert!(leftovers.is_empty(), "temp files must be renamed away, not orphaned");
+    }
+
+    /// Only `log/` was capped. `blame/` keys on the HEAD a blame was asked at and grew with every
+    /// HEAD move, and a writer killed between write and rename left its temp file for good.
+    #[test]
+    fn every_subdirectory_is_capped_and_stale_temp_files_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 3600);
+        let age = |path: &Path| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .and_then(|file| file.set_modified(old))
+                .unwrap();
+        };
+        for sub in DISK_SUBDIRS {
+            ensure_subdir(root, sub).unwrap();
+            let oldest = root.join(sub).join("old.msgpack");
+            std::fs::write(&oldest, vec![0u8; 600]).unwrap();
+            age(&oldest);
+            std::fs::write(root.join(sub).join("new.msgpack"), vec![0u8; 600]).unwrap();
+            let stale_tmp = root.join(sub).join("x.msgpack.1.0.tmp");
+            std::fs::write(&stale_tmp, b"torn").unwrap();
+            age(&stale_tmp);
+            std::fs::write(root.join(sub).join("y.msgpack.1.1.tmp"), b"in flight").unwrap();
+        }
+
+        evict_disk_cache(root, 1000);
+
+        for sub in DISK_SUBDIRS {
+            let dir = root.join(sub);
+            assert!(
+                !dir.join("old.msgpack").exists(),
+                "{sub}: the oldest payload is evicted"
+            );
+            assert!(dir.join("new.msgpack").exists(), "{sub}: the newest stays");
+            assert!(!dir.join("x.msgpack.1.0.tmp").exists(), "{sub}: a stale temp file goes");
+            assert!(
+                dir.join("y.msgpack.1.1.tmp").exists(),
+                "{sub}: a fresh one may be in flight"
+            );
+        }
     }
 }
