@@ -199,6 +199,50 @@ pub enum GitHistoryError {
     ForeignHistory { root: PathBuf, workdir: PathBuf },
 }
 
+/// Name prefix of a git-history directory set aside by [`discard_dir`] and not yet deleted.
+const DISCARD_PREFIX: &str = "git-history.fjall.discard-";
+
+/// Delete the database directory `dir` so a crash at any point leaves the whole database or none of
+/// it at `dir`. A half-deleted one fails every later open, which left the history tools on the live
+/// walk for good. Renamed aside first, the rename made durable, then deleted; a deletion that does
+/// not finish is completed by [`sweep_discarded`] on a later open.
+fn discard_dir(dir: &Path) -> Result<(), GitHistoryError> {
+    static SEQUENCE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let aside = dir.with_file_name(format!(
+        "{DISCARD_PREFIX}{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::rename(dir, &aside).map_err(|source| GitHistoryError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    if let Some(parent) = dir.parent()
+        && let Err(error) = crate::store_base::sync_directory(parent)
+    {
+        tracing::warn!(%error, "could not fsync the workspace directory after setting git history aside");
+    }
+    if let Err(error) = std::fs::remove_dir_all(&aside) {
+        tracing::warn!(%error, path = %aside.display(), "git history not fully deleted; the next open retries");
+    }
+    Ok(())
+}
+
+/// Delete what an interrupted [`discard_dir`] left under `basemind_dir`. Best-effort: a leftover
+/// costs disk space only.
+fn sweep_discarded(basemind_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(basemind_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(DISCARD_PREFIX)
+            && let Err(error) = std::fs::remove_dir_all(entry.path())
+        {
+            tracing::warn!(%error, path = %entry.path().display(), "could not delete discarded git history");
+        }
+    }
+}
+
 /// Per-commit metadata stored in `gh_commit_by_ord`. File paths are interned to `path_id` (u32) so
 /// the change edges are not duplicated as full path strings (the key size control on a monorepo).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -277,6 +321,7 @@ impl GitHistoryIndex {
     /// [`GitHistoryError::NewerSchema`]. Returns `Err` if another process holds the Fjall lock —
     /// read-only callers swallow that to `None`.
     pub fn open(basemind_dir: &Path) -> Result<Self, GitHistoryError> {
+        sweep_discarded(basemind_dir);
         let dir = basemind_dir.join(GIT_HISTORY_DIR);
         let mut attempt = 0;
         loop {
@@ -348,10 +393,7 @@ impl GitHistoryIndex {
         if matches!(on_disk_ver, Some(ver) if ver != GIT_HISTORY_SCHEMA) {
             drop(meta);
             drop(db);
-            std::fs::remove_dir_all(dir).map_err(|source| GitHistoryError::Io {
-                path: dir.to_path_buf(),
-                source,
-            })?;
+            discard_dir(dir)?;
             std::fs::create_dir_all(dir).map_err(|source| GitHistoryError::Io {
                 path: dir.to_path_buf(),
                 source,
@@ -385,8 +427,8 @@ impl GitHistoryIndex {
     /// Drop all data and reset to an empty index at the current schema. Used by `revalidate` when a
     /// history rewrite is detected and by the manual force-rebuild path. Safe because only the
     /// `.basemind/.lock` holder ever opens this DB, so no other process holds a handle.
-    pub fn clear(&self, basemind_dir: &Path) -> Result<(), GitHistoryError> {
-        self.require_local()?.clear(basemind_dir)
+    pub fn clear(&self, _basemind_dir: &Path) -> Result<(), GitHistoryError> {
+        self.require_local()?.clear()
     }
 
     /// A batched writer over the underlying Fjall database. Only a local index has one.
@@ -467,10 +509,13 @@ impl GitHistoryIndex {
 }
 
 impl LocalDb {
-    /// Drop all data and reset to an empty index at the current schema.
-    fn clear(&self, basemind_dir: &Path) -> Result<(), GitHistoryError> {
-        let dir = basemind_dir.join(GIT_HISTORY_DIR);
+    /// Drop all data and reset to an empty index at the current schema. `gh_meta` goes first: the
+    /// journal replays in order, so a crash part-way leaves an index with no head, which the next
+    /// sync rebuilds, never a head over emptied postings. Each keyspace is one journaled clear, not a
+    /// delete per key, so the cost does not grow with the index.
+    fn clear(&self) -> Result<(), GitHistoryError> {
         for ks in [
+            &self.meta,
             &self.commit_by_ord,
             &self.ord_by_sha,
             &self.path_id_by_path,
@@ -478,14 +523,9 @@ impl LocalDb {
             &self.path_to_ords,
             &self.commit_text_by_ord,
             &self.term_to_ords,
-            &self.meta,
         ] {
-            let keys: Vec<_> = ks.iter().filter_map(|g| g.into_inner().ok().map(|(k, _)| k)).collect();
-            for k in keys {
-                ks.remove(k)?;
-            }
+            ks.clear()?;
         }
-        let _ = dir;
         self.meta
             .insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(())
@@ -784,6 +824,51 @@ mod tests {
     }
 
     #[test]
+    fn open_sweeps_a_directory_an_interrupted_wipe_set_aside() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let aside = dir.path().join(format!("{DISCARD_PREFIX}1-0"));
+        std::fs::create_dir_all(aside.join("journals")).expect("a half-deleted leftover");
+
+        drop(GitHistoryIndex::open(dir.path()).expect("open"));
+
+        assert!(!aside.exists(), "the leftover is deleted on the next open");
+    }
+
+    #[test]
+    fn clear_drops_the_head_with_every_row_and_keeps_the_stamp() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = GitHistoryIndex::open(dir.path()).expect("open");
+        let sha = "11".repeat(20);
+        let sha20 = keys::sha_hex_to_raw(&sha).expect("a valid sha");
+        let mut writer = index.writer().expect("writer");
+        writer.begin().expect("mark the build");
+        let meta = CommitMeta {
+            sha,
+            summary: "c1".to_owned(),
+            author: "t".to_owned(),
+            author_email: "t@e.x".to_owned(),
+            author_time_unix: 0,
+            files: Vec::new(),
+        };
+        writer.put_commit_meta(0, &meta).expect("commit row");
+        writer.put_ord_for_sha(&sha20, 0).expect("sha row");
+        writer.finish_meta(&sha20, &sha20, 1, 0, 1).expect("stamp the head");
+        assert_eq!(index.last_indexed_head(), Some(sha20));
+
+        index.clear(dir.path()).expect("clear");
+
+        assert_eq!(index.last_indexed_head(), None);
+        assert!(!index.build_interrupted());
+        assert_eq!(index.ord_for_sha(&sha20), None);
+        assert_eq!(index.commit_count(), 0);
+        drop(index);
+        assert_eq!(
+            raw_meta(dir.path(), keys::META_SCHEMA_VER),
+            Some(GIT_HISTORY_SCHEMA.to_be_bytes().to_vec())
+        );
+    }
+
+    #[test]
     fn open_wipes_an_index_stamped_by_an_older_basemind() {
         let dir = tempfile::tempdir().expect("tempdir");
         stamp_schema_ver(dir.path(), GIT_HISTORY_SCHEMA - 1);
@@ -800,5 +885,11 @@ mod tests {
             None,
             "rows written under the older schema are gone"
         );
+        let leftovers = std::fs::read_dir(dir.path())
+            .expect("read the workspace dir")
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(DISCARD_PREFIX))
+            .count();
+        assert_eq!(leftovers, 0, "the wiped database was set aside and deleted");
     }
 }
