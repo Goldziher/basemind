@@ -494,7 +494,12 @@ pub(super) fn run_symbol_history(
                 Err(error) => return Err(error),
             }
         }
-        None => 0,
+        // No code outline (deleted, renamed, or a document when the documents tier holds it): the
+        // rule for a name the tree no longer defines.
+        None => {
+            absent_now = pick_symbol("git_log", &params.path, None, &[], None, &params.name, kind, None).err();
+            0
+        }
     };
 
     let head = head_sha(repo)?;
