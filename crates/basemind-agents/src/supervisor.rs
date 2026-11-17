@@ -429,27 +429,30 @@ impl Supervisor {
             flavor: Some(flavor.id()),
             ..AuditRecord::new(AuditEvent::Refusal, "")
         };
-        // The request is checked against the flavor's config before anything is reserved or
-        // recorded as accepted, and outside the lock: planning reads the file system.
-        let unplannable = inner
-            .configs
-            .iter()
-            .find(|config| config.harness.kind == flavor)
-            .and_then(|config| inner.registry.plan(config, request).err());
         // The table is locked from admission to the slot's reservation, so concurrent launches
         // cannot overshoot a limit; no audit record is written while it is held.
         let mut table = inner.table();
-        let admitted = admit(inner, &table, caller, flavor, &mut refusal);
+        let mut admitted = admit(inner, &table, caller, flavor, &mut refusal);
+        // An admitted caller's request is checked against the flavor's config before anything
+        // is reserved or recorded as accepted, outside the lock since planning reads the file
+        // system, and only for an admitted caller; admission is then checked again.
+        if let Ok(first) = &admitted {
+            let template = first.config;
+            drop(table);
+            let unplannable = inner.registry.plan(template, request).err();
+            table = inner.table();
+            admitted = match unplannable {
+                Some(error) => Err(SupervisorError::Launch(error)),
+                None => admit(inner, &table, caller, flavor, &mut refusal),
+            };
+        }
         let Admitted {
             launcher,
             lineage,
             launcher_name,
             depth,
             config,
-        } = match admitted.and_then(|admitted| match unplannable {
-            Some(error) => Err(SupervisorError::Launch(error)),
-            None => Ok(admitted),
-        }) {
+        } = match admitted {
             Ok(admitted) => admitted,
             Err(error) => {
                 let key = Asker::new(&table, caller, None).key;
