@@ -127,7 +127,14 @@ latencies.
 - **R2/R3 fail:** the detail shows the slope, its 2·SE band and the second-half slope. Plot the
   series to see whether it is linear (leak) or a late step (a cache filling: rerun with a longer
   `--warmup`; if it still fails, the cache is unbounded). For fds on macOS, `lsof -p <pid>` on a
-  kept run (`--keep-temp`) shows what accumulates.
+  kept run (`--keep-temp`) shows what accumulates. To name what holds the memory, soak a
+  `system-allocator` build through a wrapper that execs it with `MallocStackLogging=lite` (setting
+  it for `soak.py` itself crashes Python) and diff two `malloc_history <pid> -allBySize` snapshots
+  by stack. On a fast macOS host the daemon's index memtables are the usual climb: rescans rewrite
+  `refs_by_def` / `refs_by_path` rows at several MiB per minute, each keyspace's memtable rotates
+  at its `KEYSPACE_MEMTABLE_BYTES` size (8 MiB accounted, about twice that on the heap) and a
+  sealed memtable is freed one rotation later, so the footprint levels off only after the second
+  rotation, 5-8 minutes into load (a local comms soak at bbe14d7a: about 100 MiB from minute 5 of load on).
 - **R8 fails:** the R8b detail names the data-dir subtrees that grew most over load; `data_parts`
   in each `dir` record has the series.
 - **R6 fails:** the detail names the busiest process. `sample <pid> 5` (macOS) or
