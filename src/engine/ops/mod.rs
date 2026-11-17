@@ -5,3 +5,4 @@
 pub(crate) const SEARCH_LIMIT_MAX: u32 = 1000;
 
 mod code_outline;
+mod code_read;

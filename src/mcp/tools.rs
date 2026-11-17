@@ -3,7 +3,7 @@
 //!
 //! Each `#[tool]` is a thin shim: [`BasemindServer::answer`] rejects inexact arguments and reports
 //! failures as `isError` results, and the `*_call` method beside it (also what `basemind code …`
-//! runs) records telemetry around the body in `helpers_code.rs` / `helpers_expand.rs`.
+//! runs) records telemetry around the body in `helpers_code.rs` or an engine op.
 //!
 //! No tool declares an `output_schema`: the response structs nest, schemars emits nested structs
 //! as `$ref` into `$defs` (the construct that dropped the whole registry in GH #50), and inlining
@@ -20,12 +20,12 @@ use super::BasemindServer;
 use super::adapter::{self, Op};
 use super::cursor_bind::bound;
 use super::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
+use super::helpers_code;
 use super::strict::Strict;
 use super::types_tools::{
     CodeGrepParams, CodeOutlineParams, CodeReadParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams,
     FindFilesToolParams,
 };
-use super::{helpers_code, helpers_expand};
 use crate::engine::Workspace;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
@@ -234,14 +234,9 @@ impl BasemindServer {
         )
     }
 
-    /// Body of `code_read`, shared with `basemind code read`.
+    /// Body of the `code_read` tool.
     pub(crate) async fn code_read_call(&self, p: CodeReadParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_read",
-            p,
-            helpers_expand::code_read(&self.state, p).await
-        )
+        self.op_unpaged(p, Workspace::code_read).await
     }
 
     /// Body of `code_grep`, shared with `basemind code grep`.

@@ -298,13 +298,16 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
         } => (
             "code_read",
             server
-                .code_read_call(CodeReadParams {
-                    path: resolve_path(server, &path),
-                    symbol,
-                    kind,
-                    line,
-                    end_line,
-                })
+                .op_unpaged(
+                    CodeReadParams {
+                        path: resolve_path(server, &path),
+                        symbol,
+                        kind,
+                        line,
+                        end_line,
+                    },
+                    Workspace::code_read,
+                )
                 .await,
         ),
         CodeCmd::Grep {

@@ -5,7 +5,7 @@
 //! `basemind code …` command run. They translate the tool's wire arguments
 //! ([`super::types_tools`]) into the per-operation shapes the query bodies take; those bodies stay
 //! where they already lived: `helpers_files`, `helpers_grep`, `helpers_calls`, `helpers_impls`,
-//! `helpers_intel`, `helpers_code_search`. `code_read` is in `helpers_expand`.
+//! `helpers_intel`, `helpers_code_search`. `code_read` is an engine op (`engine/ops/code_read.rs`).
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;

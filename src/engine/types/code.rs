@@ -132,3 +132,111 @@ pub(crate) fn parse_kind(s: &str) -> Result<SymbolKind, EngineError> {
         }
     })
 }
+
+/// Arguments of `code_read`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CodeReadParams {
+    /// Repo-relative file path.
+    pub path: RelPath,
+    /// Symbol whose body to return (exact name).
+    #[serde(default)]
+    pub symbol: Option<String>,
+    /// With `symbol`: its kind, when several share the name.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// First line of a span, 1-based. With `symbol`: a line inside the definition meant.
+    #[serde(default)]
+    pub line: Option<u32>,
+    /// Last line of a span, inclusive (default: `line`). Not with `symbol`.
+    #[serde(default)]
+    pub end_line: Option<u32>,
+}
+
+/// Parameters for the `expand` MCP tool.
+///
+/// Resolves one symbol by `name` (and optionally `kind`) in the file's L1 outline, then
+/// reads the source file from disk and returns the raw bytes in `[start_byte..end_byte]`.
+/// When more than one symbol matches `name` (e.g. overloads), the tool returns an error
+/// listing the matches so the caller can disambiguate by supplying `kind`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ExpandParams {
+    /// Repo-relative path of the indexed source file.
+    pub path: RelPath,
+    /// Symbol name to expand. Matched exactly (case-sensitive) against the L1 outline.
+    pub name: String,
+    /// Optional kind filter to disambiguate when `name` matches multiple symbols
+    /// (e.g. `"function"`, `"method"`, `"struct"`, …). Same values as `search_symbols`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// 1-based line inside the definition meant, when several in the file share the name.
+    #[serde(default)]
+    pub line: Option<u32>,
+}
+
+/// Response from the `expand` MCP tool.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct ExpandResponse {
+    /// Repo-relative path of the file that was read.
+    pub path: String,
+    /// Resolved symbol name.
+    pub name: String,
+    /// Resolved symbol kind (e.g. `"function"`, `"struct"`).
+    pub kind: String,
+    /// 1-based first line of the symbol.
+    pub line: u32,
+    /// 1-based last line of the returned body, inclusive: the symbol's last line unless `truncated`.
+    pub end_line: u32,
+    /// Raw source text of the symbol body (`file_bytes[start_byte..end_byte]`).
+    pub body: String,
+    /// Byte length of the returned body (before any truncation).
+    pub bytes: usize,
+    /// `true` when the body was cut at the 128 KiB size cap, after its last whole line that fits;
+    /// absent otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    /// `size_cap` whenever `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
+    /// Bytes of the symbol left out of `body` (bytes, where `omitted` elsewhere counts items).
+    /// Read on with a line span from `end_line + 1`.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub omitted_bytes: usize,
+    /// The file changed since it was indexed, so the symbol was located by parsing the working-tree
+    /// file; the other tools describe the indexed content until `index_rescan`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+}
+
+/// Response of a `code_read` line-span read.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct ReadSpanResponse {
+    pub path: String,
+    /// 1-based first line returned.
+    pub line: u32,
+    /// 1-based last line returned, inclusive: clamped to the file, and to what fits when `truncated`.
+    pub end_line: u32,
+    pub total_lines: u32,
+    pub body: String,
+    /// Byte length of the span before any truncation.
+    pub bytes: usize,
+    /// `true` when the body was cut at the 128 KiB size cap, after its last whole line that fits;
+    /// absent otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    /// `size_cap` whenever `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
+    /// Bytes of the span left out of `body` (bytes, where `omitted` elsewhere counts items). Read
+    /// on from `end_line + 1`; one line longer than the cap cannot be read past it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub omitted_bytes: usize,
+}
+
+/// Answer of `code_read`: a symbol's body, or a line span.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum CodeReadResult {
+    Symbol(ExpandResponse),
+    Span(ReadSpanResponse),
+}

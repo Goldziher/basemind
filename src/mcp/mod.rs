@@ -41,7 +41,6 @@ mod helpers_code_search;
 mod helpers_daemon;
 #[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
-mod helpers_expand;
 pub(crate) mod helpers_files;
 mod helpers_filters;
 mod helpers_grep;
