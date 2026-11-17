@@ -137,3 +137,94 @@ fn a_caller_cannot_spread_its_refusals_over_outcomes() {
     let suppressed: u64 = audit.records().iter().filter_map(|record| record.suppressed).sum();
     assert_eq!(suppressed, 200 - u64::from(crate::refusals::BURST));
 }
+
+#[test]
+fn a_budget_whose_records_do_not_fit_the_reserve_is_refused() {
+    let scratch = Scratch::new();
+    let configs = || vec![scratch.config(HarnessKind::ClaudeCode, &scratch.long())];
+    let spec = policy(&[HarnessKind::ClaudeCode]);
+    let needed = crate::supervisor_reserve::demand(&LaunchPolicy::new(spec.clone()).unwrap(), &configs());
+    // A log whose reserve (a quarter of the cap) holds one supervisor's life, not two.
+    let sink = Arc::new(
+        crate::audit::FileAuditSink::open(scratch.path.join("audit.jsonl"))
+            .unwrap()
+            .with_max_bytes(4 * needed + 4 * needed / 2),
+    );
+    let first = Supervisor::new(
+        LaunchPolicy::new(spec.clone()).unwrap(),
+        configs(),
+        registry(),
+        sink.clone(),
+    );
+    assert!(first.is_ok(), "{:?}", first.err());
+    let second = Supervisor::new(LaunchPolicy::new(spec.clone()).unwrap(), configs(), registry(), sink);
+    assert_eq!(second.err(), Some(PolicyError::AuditReserve { needed }));
+    // A budget too large for a log of its own is refused the same way.
+    let small = Arc::new(
+        crate::audit::FileAuditSink::open(scratch.path.join("small.jsonl"))
+            .unwrap()
+            .with_max_bytes(needed),
+    );
+    let refused = Supervisor::new(LaunchPolicy::new(spec).unwrap(), configs(), registry(), small);
+    assert_eq!(refused.err(), Some(PolicyError::AuditReserve { needed }));
+}
+
+#[test]
+fn registrations_are_bounded_over_the_supervisors_life() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, _) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    // `start` registered three launchers and the operator.
+    let mut made = 4;
+    while made < crate::supervisor_reserve::MAX_REGISTRATIONS {
+        assert!(supervisor.unregister_launcher("lead"));
+        supervisor.register_launcher_in_process("lead").unwrap();
+        made += 2;
+    }
+    assert!(
+        supervisor.unregister_launcher("lead"),
+        "a release past the limit was not made"
+    );
+    assert_eq!(
+        supervisor
+            .register_launcher_in_process("lead")
+            .map_err(|error| error.code()),
+        Err("registration_limit")
+    );
+}
+
+#[test]
+fn a_launch_that_failed_after_its_record_spends_the_budget() {
+    let scratch = Scratch::new();
+    let codex = HarnessKind::Codex;
+    let mut registry = registry();
+    registry.register(super::attack_tests::Panics(codex));
+    let spec = PolicySpec {
+        budget: Budget {
+            max_launches: 1,
+            ..policy(&[]).budget
+        },
+        ..policy(&[HarnessKind::ClaudeCode, codex])
+    };
+    let audit = Arc::new(crate::audit::MemoryAuditSink::default());
+    let supervisor = registered(
+        Supervisor::new(
+            LaunchPolicy::new(spec).unwrap(),
+            vec![
+                scratch.config(HarnessKind::ClaudeCode, &scratch.long()),
+                scratch.config(codex, ""),
+            ],
+            registry,
+            audit.clone(),
+        )
+        .unwrap(),
+    );
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = supervisor.launch(&lead(), codex, &request());
+    }));
+    assert!(panicked.is_err());
+    // Its launch record went to the reserve, so the launch is not given back.
+    let refused = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request());
+    assert_eq!(refused.err().map(|error| error.code()), Some("budget_exhausted"));
+    assert_eq!(outcomes(&audit, AuditEvent::Launch), ["accepted"]);
+}

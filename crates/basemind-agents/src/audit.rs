@@ -204,6 +204,21 @@ pub trait AuditSink: Send + Sync {
     /// The I/O error that kept the record from being stored. A supervisor refuses a launch
     /// whose launch record could not be stored, and counts the other failures.
     fn record(&self, record: &AuditRecord) -> std::io::Result<()>;
+
+    /// Sets aside `bytes` of the room kept for the records that must not go unrecorded
+    /// (launches, exits, registrations, allows, the stop that stops a session), for one
+    /// supervisor's whole life. A supervisor claims its worst case when it is built and is
+    /// refused when the claim does not fit, so nothing it is allowed to do can exhaust the
+    /// reserve. A sink without a cap accepts every claim, as the default does.
+    ///
+    /// # Errors
+    ///
+    /// [`std::io::ErrorKind::StorageFull`] when what is left of the reserve, less what other
+    /// supervisors claimed, is smaller than `bytes`.
+    fn reserve(&self, bytes: u64) -> std::io::Result<()> {
+        let _ = bytes;
+        Ok(())
+    }
 }
 
 /// The size a [`FileAuditSink`] grows to by default before it drops records.
@@ -237,6 +252,8 @@ struct LogFile {
     file: std::fs::File,
     size: u64,
     dropped: u64,
+    /// The bytes of the reserve supervisors have claimed.
+    claimed: u64,
 }
 
 impl FileAuditSink {
@@ -249,6 +266,9 @@ impl FileAuditSink {
     /// blocking), belongs to another user, or is readable or writable by anyone but its owner:
     /// a log others can read leaks who launched what, one they can write can be forged, and a
     /// hard link would have the records appended to whatever file it names.
+    /// [`std::io::ErrorKind::WouldBlock`] when another sink, in this process or another, holds
+    /// the file: one writer per file, so the size and the reserve this sink counts are the
+    /// file's. Give each supervisor's process a file of its own.
     pub fn open(path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
         let mut options = std::fs::OpenOptions::new();
@@ -265,12 +285,19 @@ impl FileAuditSink {
         let file = options.open(&path)?;
         check_private(&file)?;
         #[cfg(unix)]
+        exclusive(&file)?;
+        #[cfg(unix)]
         blocking(&file)?;
         let size = file.metadata()?.len();
         Ok(Self {
             path,
             max_bytes: DEFAULT_AUDIT_MAX_BYTES,
-            file: Mutex::new(LogFile { file, size, dropped: 0 }),
+            file: Mutex::new(LogFile {
+                file,
+                size,
+                dropped: 0,
+                claimed: 0,
+            }),
         })
     }
 
@@ -325,6 +352,22 @@ impl LogFile {
 }
 
 impl AuditSink for FileAuditSink {
+    fn reserve(&self, bytes: u64) -> std::io::Result<()> {
+        let mut log = self.log();
+        // What kept records can still count on: past the share others may fill, and past what
+        // is already written.
+        let floor = log.size.max(self.max_bytes - self.max_bytes / 4);
+        let left = self.max_bytes.saturating_sub(floor).saturating_sub(log.claimed);
+        if bytes > left {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::StorageFull,
+                format!("the audit log's reserve has {left} bytes left, {bytes} are needed"),
+            ));
+        }
+        log.claimed += bytes;
+        Ok(())
+    }
+
     fn record(&self, record: &AuditRecord) -> std::io::Result<()> {
         let mut line = record.to_json_line();
         line.push('\n');
@@ -400,6 +443,25 @@ fn check_private(file: &std::fs::File) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Takes the file's exclusive lock, held as long as the file is open: a second writer, which
+/// would grow the file behind this one's count, is refused.
+#[cfg(unix)]
+fn exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: flock on a descriptor `file` owns, with plain flags.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "the audit log is open in another writer",
+        ));
+    }
+    Err(error)
 }
 
 /// Clears `O_NONBLOCK`, set only so the open could not block.

@@ -327,7 +327,7 @@ fn a_detached_process_cannot_join_the_launchers_group_and_is_still_reaped() {
 }
 
 /// An adapter whose launch panics, as a bug in an adapter would.
-struct Panics(HarnessKind);
+pub(super) struct Panics(pub(super) HarnessKind);
 
 impl Adapter for Panics {
     fn supports(&self, kind: HarnessKind) -> bool {

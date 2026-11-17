@@ -19,7 +19,7 @@ const MAX_REMEMBERED_APPROVALS: usize = 256;
 
 /// A session's slot in the table, taken at admission and not yet handed to its pump. Dropped
 /// before [`Reservation::disarm`] (an adapter error, a failed thread spawn, a panic in the
-/// adapter), it gives the slot and the launch back and records the refusal.
+/// adapter), it gives the slot back and records the refusal; the launch stays spent.
 pub(crate) struct Reservation<'a> {
     inner: &'a Inner,
     id: u64,
@@ -51,11 +51,8 @@ impl Drop for Reservation<'_> {
         if !self.armed {
             return;
         }
-        let mut table = self.inner.table();
-        if table.sessions.remove(&self.id).is_some() {
-            table.launches = table.launches.saturating_sub(1);
-        }
-        drop(table);
+        // The launch stays spent: its record, written to the reserve, is not taken back.
+        self.inner.table().sessions.remove(&self.id);
         self.inner.changed.notify_all();
         let key = self.refusal.caller.clone().unwrap_or_default();
         self.inner.refuse(

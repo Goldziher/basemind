@@ -255,6 +255,10 @@ pub enum SupervisorError {
     /// the allows it may be, so this one was not delivered.
     #[error("no allow is left in the session's or the supervisor's allowance")]
     AllowsExhausted,
+    /// The supervisor recorded its most registrations and releases
+    /// (64 over its life), which its share of the audit log's reserve was sized for.
+    #[error("the supervisor's registrations are spent")]
+    RegistrationLimit,
 }
 
 impl SupervisorError {
@@ -281,6 +285,7 @@ impl SupervisorError {
             Self::UnknownApproval => "unknown_approval",
             Self::RoleBound => "role_bound",
             Self::AllowsExhausted => "allows_exhausted",
+            Self::RegistrationLimit => "registration_limit",
         }
     }
 }

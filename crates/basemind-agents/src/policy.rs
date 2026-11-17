@@ -189,6 +189,13 @@ pub enum PolicyError {
     /// Two launch configs were given for one flavor.
     #[error("two launch configs are given for harness {0}")]
     DuplicateConfig(&'static str),
+    /// The audit sink cannot set aside what the supervisor may write into its reserve over its
+    /// life: lower the budget, or give the log more room.
+    #[error("the audit log cannot reserve the {needed} bytes the budget may need")]
+    AuditReserve {
+        /// The bytes the supervisor's budget may write into the reserve.
+        needed: u64,
+    },
     /// A launch config disagrees with the policy for its flavor.
     #[error("the launch config for harness {harness} disagrees with the policy on {field}")]
     ConfigMismatch {

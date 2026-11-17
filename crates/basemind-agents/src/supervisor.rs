@@ -114,7 +114,10 @@ pub(crate) struct Inner {
     pub(crate) observer: std::sync::OnceLock<Arc<dyn SessionObserver>>,
     table: Mutex<Table>,
     pub(crate) changed: Condvar,
-    audit_failures: AtomicU64,
+    pub(crate) audit_failures: AtomicU64,
+    /// The registrations and releases recorded, against
+    /// [`MAX_REGISTRATIONS`](crate::supervisor_reserve::MAX_REGISTRATIONS).
+    pub(crate) registrations: AtomicU32,
     /// The allows given over the supervisor's life, against the budget's `max_allows`.
     allows: Arc<AtomicU32>,
     refusals: Refusals,
@@ -248,7 +251,10 @@ impl Supervisor {
     /// flavor, and [`PolicyError::ConfigMismatch`] for a config that widens what the policy's
     /// rule for its flavor grants: another permission mode, bypass or unverified-mode opt-in, an
     /// approval policy the rule does not consent to, a pre-approved tool the rule does not
-    /// name, or a stop grace over [`MAX_STOP_GRACE_CEILING`](crate::MAX_STOP_GRACE_CEILING).
+    /// name, or a stop grace over [`MAX_STOP_GRACE_CEILING`](crate::MAX_STOP_GRACE_CEILING);
+    /// and [`PolicyError::AuditReserve`] when `audit` cannot set aside, for the supervisor's
+    /// life, the most its budget may write into the log's reserve (launches, exits, the stop of
+    /// each session, allows and registrations; see [`AuditSink::reserve`]).
     pub fn new(
         policy: LaunchPolicy,
         configs: Vec<LaunchConfig>,
@@ -265,6 +271,10 @@ impl Supervisor {
             }
             crate::policy::check_config(rule, config)?;
         }
+        let needed = crate::supervisor_reserve::demand(&policy, &configs);
+        audit
+            .reserve(needed)
+            .map_err(|_| PolicyError::AuditReserve { needed })?;
         Ok(Self {
             inner: Arc::new(Inner {
                 policy,
@@ -275,6 +285,7 @@ impl Supervisor {
                 table: Mutex::default(),
                 changed: Condvar::new(),
                 audit_failures: AtomicU64::new(0),
+                registrations: AtomicU32::new(0),
                 allows: Arc::default(),
                 refusals: Refusals::default(),
                 registering: Mutex::new(()),

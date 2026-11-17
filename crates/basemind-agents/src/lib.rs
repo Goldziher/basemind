@@ -146,6 +146,7 @@ mod supervisor_codes;
 mod supervisor_identity;
 mod supervisor_pump;
 mod supervisor_register;
+mod supervisor_reserve;
 mod supervisor_types;
 #[cfg(test)]
 mod test_support;

@@ -227,3 +227,33 @@ fn a_full_log_keeps_room_for_launches_exits_and_allows() {
         .is_err()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn the_file_sink_is_the_only_writer_of_its_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let sink = FileAuditSink::open(&path).unwrap();
+    let second = FileAuditSink::open(&path);
+    assert_eq!(
+        second.map(|_| ()).map_err(|error| error.kind()),
+        Err(std::io::ErrorKind::WouldBlock),
+        "a second writer opened the log"
+    );
+    drop(sink);
+    FileAuditSink::open(&path).unwrap();
+}
+
+#[test]
+fn the_reserve_is_claimed_once_across_claimants() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = FileAuditSink::open(dir.path().join("audit.jsonl"))
+        .unwrap()
+        .with_max_bytes(4000);
+    sink.reserve(600).unwrap();
+    sink.reserve(400).unwrap();
+    assert_eq!(
+        sink.reserve(1).map_err(|error| error.kind()),
+        Err(std::io::ErrorKind::StorageFull)
+    );
+}

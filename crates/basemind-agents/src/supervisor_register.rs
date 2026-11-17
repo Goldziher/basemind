@@ -1,11 +1,14 @@
 //! Binding launchers and the operator to processes: the in-process and held-child
 //! registrations, their release, and the in-process operator.
 
+use std::sync::atomic::Ordering;
+
 use crate::audit::{AuditEvent, AuditRecord};
 use crate::peer::Peer;
 use crate::supervisor::{Supervisor, SupervisorError};
 use crate::supervisor_admit::refuse;
 use crate::supervisor_identity::{Role, Source, mint_operator, register, role_name};
+use crate::supervisor_reserve::MAX_REGISTRATIONS;
 use crate::supervisor_types::Caller;
 
 impl Supervisor {
@@ -97,7 +100,11 @@ impl Supervisor {
         let caller = role_name(&role);
         let key = format!("register-{caller}");
         let mut table = inner.table();
-        let bound = register(&inner.policy, &mut table, role.clone(), source);
+        let bound = if inner.registrations.load(Ordering::SeqCst) >= MAX_REGISTRATIONS {
+            Err(SupervisorError::RegistrationLimit)
+        } else {
+            register(&inner.policy, &mut table, role.clone(), source)
+        };
         drop(table);
         let mut record = AuditRecord {
             caller: Some(caller),
@@ -111,6 +118,7 @@ impl Supervisor {
             }
         };
         record.peer = Some(id.pid.unsigned_abs());
+        inner.registrations.fetch_add(1, Ordering::SeqCst);
         if let Err(error) = inner.audit(&record) {
             inner.table().registered.retain(|entry| *entry != (role.clone(), id));
             return Err(SupervisorError::Audit(error));
@@ -135,6 +143,11 @@ impl Supervisor {
         let Some(id) = released else {
             return false;
         };
+        // A release is always made; past the limit it is only counted, not recorded.
+        if inner.registrations.fetch_add(1, Ordering::SeqCst) >= MAX_REGISTRATIONS {
+            inner.audit_failures.fetch_add(1, Ordering::SeqCst);
+            return true;
+        }
         let _ = inner.audit(&AuditRecord {
             caller: Some(role_name(role)),
             peer: Some(id.pid.unsigned_abs()),
