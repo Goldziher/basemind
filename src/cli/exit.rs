@@ -91,9 +91,54 @@ pub fn exit_code_for(error: &anyhow::Error) -> u8 {
     ERROR
 }
 
+/// The text a failed command prints after `Error: `: the error, then each cause under
+/// `Caused by:` (numbered when there are several), laid out as anyhow's `{:?}` lays it out but
+/// never with a backtrace. anyhow captures one whenever `RUST_BACKTRACE` / `RUST_LIB_BACKTRACE`
+/// is set, and a refusal is an answer to the caller, not a crash.
+pub fn render(error: &anyhow::Error) -> String {
+    let mut chain = error.chain();
+    let mut out = chain.next().map(ToString::to_string).unwrap_or_default();
+    let causes: Vec<String> = chain.map(ToString::to_string).collect();
+    if causes.is_empty() {
+        return out;
+    }
+    out.push_str("\n\nCaused by:");
+    let numbered = causes.len() > 1;
+    for (n, cause) in causes.iter().enumerate() {
+        out.push('\n');
+        for (i, line) in cause.split('\n').enumerate() {
+            match (i, numbered) {
+                (0, true) => out.push_str(&format!("{n: >5}: ")),
+                (_, true) => out.push_str("\n       "),
+                (0, false) => out.push_str("    "),
+                (_, false) => out.push_str("\n    "),
+            }
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_error_renders_its_chain_as_anyhow_lays_it_out_without_a_backtrace() {
+        assert_eq!(render(&anyhow::anyhow!("boom")), "boom");
+        assert_eq!(
+            render(&anyhow::anyhow!("disk gone").context("open store")),
+            "open store\n\nCaused by:\n    disk gone"
+        );
+        assert_eq!(
+            render(
+                &anyhow::anyhow!("line one\nline two")
+                    .context("open store")
+                    .context("scan")
+            ),
+            "scan\n\nCaused by:\n    0: open store\n    1: line one\n       line two"
+        );
+    }
 
     #[test]
     fn should_find_the_code_through_context_layers() {

@@ -244,3 +244,33 @@ fn cache_stats_reports_blob_accounting() {
     );
     assert_human_contains(root, &["cache", "stats"], "blob_count");
 }
+
+/// A refused command prints its message, never a backtrace, even with `RUST_BACKTRACE=1` set (as CI
+/// sets it): anyhow captures one then, and `{:?}` would print it after the error.
+#[test]
+fn a_refusal_prints_no_backtrace_under_rust_backtrace() {
+    let dir = build_and_scan();
+    let output = Command::new(bin())
+        .args([
+            "--root",
+            dir.path().to_str().unwrap(),
+            "git",
+            "by-path",
+            "a",
+            "--limit",
+            "0",
+        ])
+        .env("RUST_BACKTRACE", "1")
+        .env("RUST_LIB_BACKTRACE", "1")
+        .output()
+        .expect("run basemind");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "limit 0 is refused: {stderr}");
+    assert!(!stderr.contains("Stack backtrace"), "{stderr}");
+    assert!(
+        stderr.trim_end().ends_with(
+            "Error: git_by_path: `git_by_path`: `limit` must be at least 1; omit it for the default page size."
+        ),
+        "{stderr}"
+    );
+}
