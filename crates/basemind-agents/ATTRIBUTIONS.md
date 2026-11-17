@@ -51,7 +51,9 @@ types, and the per-agent dialect of the ACP adapter.
   - model and effort flags are built by the adapter from a request's checked values
     (`guard.rs`), with monocode's flag names;
   - Claude Code's `system/init` frame has to report the requested permission mode and only the
-    injected MCP server;
+    injected MCP server, and the brief waits for its `initialize` answer to report that mode and
+    only built-in commands;
+  - Claude Code gets `--disallowedTools` for the tools that start work outside the session;
   - an ACP agent's mode other than an authorized bypass needs an explicit opt-in, and OpenCode
     is not launched in its default mode;
   - a follow-up starts a new turn when the current one ends, where monocode steers the running turn;
@@ -61,6 +63,7 @@ types, and the per-agent dialect of the ACP adapter.
   of running children are removed. `retire` is blocking, bounded by a budget, and observes the exit
   with `waitid(WNOWAIT)`, so the process group is always signalled before its leader is reaped and
   the group id cannot have been reused. A launch is refused while SIGCHLD is ignored and off Unix.
+  A keeper process, which monocode does not have, kills the group when the launcher dies.
 - `agent.rs`: `AccessMode` becomes `PermissionMode` (`spec.rs`); its full-access variant needs an
   explicit opt-in naming the harness and the mode.
 - `provider/acp.rs`: Grok's arguments and `GROK_NO_AUTO_UPDATE`, the `yoloMode` `_meta`, and the
