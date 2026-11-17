@@ -63,7 +63,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
    basemind init --yes --rules-target claude-local --settings-target local --with code-search-navigation --with git-history
    ```
 
-   Preview without writing using `--print`.
+   Preview without writing using `--print`. Without `--yes` and without a terminal, init writes
+   nothing and only prints what it would change, so ask the user before passing `--yes`.
 
 5. **Report what changed** — which files were written or kept (`basemind.toml`, the chosen rules
    file, the settings file if opted into), whether the delimited block was created or updated in

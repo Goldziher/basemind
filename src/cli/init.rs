@@ -211,8 +211,9 @@ fn capability_slugs() -> clap::builder::PossibleValuesParser {
 /// Flags for `basemind init`. Flattened into the `Cmd::Init` clap variant in `main.rs`.
 #[derive(Args, Debug, Default)]
 pub struct InitArgs {
-    /// Accept defaults non-interactively: enable every capability unless narrowed by
-    /// `--with` / `--without`. Implied automatically when stdin is not a TTY.
+    /// Accept defaults non-interactively and write: enable every capability unless narrowed by
+    /// `--with` / `--without`. Without a TTY and without this flag, init only prints what it would
+    /// change.
     #[arg(long)]
     pub yes: bool,
 
@@ -303,7 +304,10 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
 
     let gitignore_targets = gitignore_targets(&rules_plan, &settings_plan);
 
-    if args.print {
+    // ~keep With no terminal there is no one to confirm a write to the repository (an agent's shell
+    // ~keep included), so only an explicit `--yes` writes; otherwise this run is a preview.
+    let unconfirmed = !args.yes && !std::io::stdin().is_terminal();
+    if args.print || unconfirmed {
         report_dry_run(&changes);
         for target in &gitignore_targets {
             if let Some(pattern) = init_gitignore::local_pattern(root, target)
@@ -314,6 +318,9 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
                     target.display()
                 );
             }
+        }
+        if unconfirmed && !args.print {
+            println!("basemind init: no terminal to confirm in, so nothing was written; re-run with --yes to apply.");
         }
         return Ok(());
     }

@@ -278,6 +278,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported `"threads"`. The plugin hooks' inbox announcements need `jq`. The agent tools are not
   listed over the HTTP front-end. The `PreToolUse` hook injects a session `as` only on Claude Code
   and Codex; on other hosts the hooks act as the principal, like the tool calls.
+- **BREAKING: `basemind init` without a terminal writes only with `--yes`.** It used to append to
+  `.gitignore` and write `basemind.toml` whenever stdin was not a TTY; it now prints what it would
+  change. `/bm-init` passes `--yes` once the user has chosen.
 
 ### Removed
 
