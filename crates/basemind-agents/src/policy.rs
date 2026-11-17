@@ -86,6 +86,13 @@ pub struct FlavorPolicy {
     /// The MCP tools the flavor's config may pre-approve; its server's
     /// [`allow_tools`](crate::McpServerSpec::allow_tools) has to be within them.
     pub allow_tools: Vec<String>,
+    /// Whether a launcher (a configured principal, which is the lead model) may allow this
+    /// flavor's approval requests through [`Supervisor::answer`](crate::Supervisor::answer).
+    /// Without it only the operator may, and a launcher may only deny: a model that allows
+    /// launders what the launched agent asks for past the human, and a launched agent that
+    /// allows its own children bypasses its harness's permission mode. Refused with a
+    /// `max_depth` above 1, where launchers are launched agents themselves.
+    pub launcher_may_allow: bool,
 }
 
 impl FlavorPolicy {
@@ -99,6 +106,7 @@ impl FlavorPolicy {
             unverified_mode: None,
             approval_policy: false,
             allow_tools: Vec::new(),
+            launcher_may_allow: false,
         }
     }
 
@@ -183,6 +191,10 @@ pub enum PolicyError {
     /// The policy names launchers and limits but no flavor, or flavors but no launcher.
     #[error("a launch policy that allows anything needs at least one flavor and one launcher")]
     Incomplete,
+    /// A flavor lets a launcher allow its approval requests while `max_depth` is above 1, where
+    /// a launched agent could allow its own children's.
+    #[error("harness {0} lets a launcher allow approval requests, which needs max_depth = 1")]
+    LauncherMayAllowDeep(&'static str),
     /// A launch config was given for a flavor the policy does not allow.
     #[error("a launch config is given for harness {0}, which the policy does not allow")]
     ConfigNotAllowed(&'static str),
@@ -196,6 +208,11 @@ pub enum PolicyError {
         /// The bytes the supervisor's budget may write into the reserve.
         needed: u64,
     },
+    /// This process runs inside a launched session, or below a process that runs the same
+    /// program (a `basemind serve` started by a launched agent's harness), so it may not host a
+    /// supervisor that launches: only the lead's own `serve` does.
+    #[error("this process runs inside a launched session and may not host a supervisor")]
+    NestedHost,
     /// A launch config disagrees with the policy for its flavor.
     #[error("the launch config for harness {harness} disagrees with the policy on {field}")]
     ConfigMismatch {
@@ -217,7 +234,8 @@ impl LaunchPolicy {
     ///
     /// An empty spec (no flavor, no launcher) is the disabled policy. Otherwise every flavor
     /// is named once, a bypass mode carries an opt-in naming its flavor and mode and any other
-    /// mode carries none, every launcher matches the principal grammar and does not start with
+    /// mode carries none, a flavor that lets a launcher allow comes with a `max_depth` of 1,
+    /// every launcher matches the principal grammar and does not start with
     /// [`LAUNCHED_PREFIX`], and every limit is above zero and at most its ceiling, with
     /// `max_children` at most `max_concurrent`; the budget is required, its `max_launches` and
     /// `max_turns` above zero.
@@ -237,6 +255,9 @@ impl LaunchPolicy {
                 return Err(PolicyError::DuplicateFlavor(flavor.kind.id()));
             }
             check_bypass(flavor)?;
+            if flavor.launcher_may_allow && spec.max_depth > 1 {
+                return Err(PolicyError::LauncherMayAllowDeep(flavor.kind.id()));
+            }
             if flavor
                 .unverified_mode
                 .is_some_and(|opt_in| opt_in.harness != flavor.kind || opt_in.mode != flavor.permission_mode)

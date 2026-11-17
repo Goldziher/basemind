@@ -23,6 +23,8 @@ mod cursors;
 mod grep;
 #[path = "verb_behaviour/history.rs"]
 mod history;
+#[path = "verb_behaviour/outline.rs"]
+mod outline;
 #[path = "verb_behaviour/refs.rs"]
 mod refs;
 #[path = "verb_behaviour/rescan.rs"]

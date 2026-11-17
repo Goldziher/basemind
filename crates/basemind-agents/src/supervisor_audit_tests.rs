@@ -79,8 +79,9 @@ fn a_caller_allow_spends_the_allow_budget() {
             std::thread::sleep(Duration::from_millis(20));
         }
     };
-    supervisor.answer(&lead(), launched.id, &pending(1), true).unwrap();
-    let refused = supervisor.answer(&lead(), launched.id, &pending(2), true);
+    let operator = supervisor.operator().unwrap();
+    supervisor.answer(&operator, launched.id, &pending(1), true).unwrap();
+    let refused = supervisor.answer(&operator, launched.id, &pending(2), true);
     assert_eq!(refused.err().map(|error| error.code()), Some("allows_exhausted"));
     supervisor.answer(&lead(), launched.id, &pending(2), false).unwrap();
     await_replies(&scratch, 2);

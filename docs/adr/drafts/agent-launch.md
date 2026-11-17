@@ -274,7 +274,9 @@ id that fails the grammar stops the launch.
      `audit_dropped` count. It is append-only as far as this writer goes, not tamper-resistant:
      any process of the same user can rewrite it.
    - **Sessions.** `status`, `list`, `wait`, `stop` (by the launcher or the operator; it reaches
-     every session below the one stopped), `answer` for a pending approval (same), `stop_all`,
+     every session below the one stopped), `answer` for a pending approval (a launcher may
+     deny; only the operator allows, unless the flavor's `launcher_may_allow` opt-in says
+     otherwise, which `LaunchPolicy::new` refuses with a `max_depth` above 1), `stop_all`,
      `reap`. A thread per session reads its events, hands each to an optional
      `SessionObserver` and audits approvals and the exit; an observer that panics is dropped for
      that session and the session is stopped. Dropping the supervisor stops every session within
@@ -318,6 +320,17 @@ id that fails the grammar stops the launch.
      below). Planted code a launched agent leaves for the lead (git hooks, build scripts, the
      lead's own project settings) runs as a descendant of the lead's harness, not of its
      `serve`, so it is a sibling outside the supervisor's tree and is refused.
+     Only a `serve` started with an explicit lead switch hosts a supervisor. The restricted
+     profile the injected `serve` runs forwards `agent_launch` / `agent_stop` to the parent's
+     socket and never constructs a `Supervisor`. The crate enforces the rest: `Supervisor::new`
+     refuses a launching policy (`NestedHost`) and every registration refuses (`nested_host`) in
+     a process that carries `BASEMIND_LAUNCH_TOKEN` or `BASEMIND_AGENT_DEPTH`, that has an
+     ancestor running the same program (by command name or executable file, since Codex filters
+     the environment of the MCP servers it starts), or whose ancestry cannot be read. Without
+     that, the injected `serve`, or the user's own basemind MCP server that Codex and OpenCode
+     load from user-level configuration, would host a supervisor of its own under the same
+     `[agents.launch]` configuration and make the launched agent a depth-0 launcher with a fresh
+     budget, one level further down each time.
    - **Limits are per lead.** `max_concurrent`, `max_children` and the budget bound one
      supervisor, so one lead's session; two leads each get their own. Global caps across leads
      would need daemon-side accounting, which this ADR does not add.
@@ -341,13 +354,21 @@ id that fails the grammar stops the launch.
      channel, such as an MCP elicitation the lead's `serve` sends to its client and the human
      answers in that UI. A tool call a launched agent can make, or a message over comms, is
      never such a decision. Until the embedding has that channel it registers no operator:
-     approvals stay default-deny, or are answered by the launcher.
+     approvals stay default-deny, or the launcher denies them.
    - **The injected server's surface.** `basemind serve` exposes every tool to the launched
      agent. The wiring has to start it with a restricted profile (the comms verb tools and
      `agent_launch` / `agent_stop` only); no domain tool is pre-approved by name.
-   - **Relaying approvals and output.** An `Ask` verdict waits for the launcher; the engine has
+   - **Relaying approvals and output.** An `Ask` verdict waits for an answer; the engine has
      to deliver the request (through the observer, as a comms message) and its answer
-     (`Supervisor::answer`). A model-facing error is the `SupervisorError` code, not its text.
+     (`Supervisor::answer`). No MCP tool lets a model allow: an allow comes from the approval
+     policy or from the operator's elicitation, which shows the human the grant (the command,
+     the file, the tool and its arguments), never only an id. A launcher may deny. With the
+     launched agent's request in front of it, the lead model is the one prompt-injected party
+     in the loop ("approve codex-3 for the tests"), and at depth 2 a launched agent allowing
+     its own children would be its harness's permission mode bypassed with no `BypassOptIn`.
+     The crate enforces it: `answer(allow = true)` is refused with `launcher_may_not_allow` for
+     anyone but the operator unless the flavor sets `launcher_may_allow`, which needs
+     `max_depth = 1`. A model-facing error is the `SupervisorError` code, not its text.
 
 ### Tool surface, later
 
@@ -423,6 +444,15 @@ peer is ever the operator. Operator approvals are elicitations in the lead's own
   - a process of the user that can trace the registered process (`ptrace`, a debugger), inject
     code into it, or type into it (`tmux send-keys`, `osascript` keystrokes, `TIOCSTI` on Linux
     before 6.2 or with `legacy_tiocsti`) acts as it, where the system allows that;
+  - the lead's tool calls are trusted because they arrive on the hosting `serve`'s stdio. On
+    Linux any process of the user can open `/proc/<pid>/fd/0` of a dumpable process
+    (`PTRACE_MODE_READ`, which Yama does not restrict) and append whole JSON-RPC lines to that
+    pipe, so `register_launcher_in_process` and `register_operator_in_process` first set
+    `PR_SET_DUMPABLE` to 0 and refuse (`host_dumpable`) if it does not hold: the process's
+    `/proc` entries become root's and `ptrace` needs `CAP_SYS_PTRACE`. The flag is reset on
+    `exec`, so the harnesses it starts are unaffected. macOS has no `/proc`; attaching to the
+    process (`task_for_pid`) is restricted by SIP and the hardened runtime, and an embedding can
+    add `PT_DENY_ATTACH`. Launching is refused on Windows;
   - an ancestry walk that stops at a process of another user (macOS does not describe root's
     processes) admits nothing past it, so a registered process has to be reachable without one;
   - on Linux before 6.5 a reported peer pid names the connecting process only while it lives:
@@ -508,8 +538,10 @@ should do next.
    `max_depth` allows, identified by its peer process (its session) and its launch token; the
    recommended default is `max_depth = 1`, which refuses every launch by a launched agent's
    processes, those that escaped its session included: they descend from no registered process,
-   since only the lead's own process is registered and it admits no descendant. It does not stop
-   a process of the same user that traces, injects into or types into the lead's process.
+   since only the lead's own process is registered and it admits no descendant, and on Linux
+   that process is non-dumpable, so no process of the user can write into its stdio through
+   `/proc`. It does not stop a process of the same user that traces (with `CAP_SYS_PTRACE`),
+   injects into or types into the lead's process.
 2. **Is the launched agent a sub-identity or a principal?** Recommended and implemented: a
    principal of its own, `launched-<flavor>-<id>-<hex>`, with its launcher recorded in the
    supervisor and the audit log, never taken from what the agent reports. The grammar's `.`

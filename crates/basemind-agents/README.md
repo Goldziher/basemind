@@ -105,7 +105,15 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   serve`, or an in-process embedding), never in the daemon. Launched agents are children of that
   process, and when it exits its sessions end. The lead's tool calls reach the supervisor in that
   process, as `Caller::principal(.., Peer::embedding()?)`; a launched agent's injected `basemind
-  serve` reaches it over a socket that process listens on.
+  serve` reaches it over a socket that process listens on. A process inside a launched session
+  never hosts one: `Supervisor::new` refuses a launching policy (`NestedHost`), and every
+  registration refuses (`nested_host`), in a process that carries `BASEMIND_LAUNCH_TOKEN` or
+  `BASEMIND_AGENT_DEPTH`, that has an ancestor running the same program (by command name or
+  executable file: a `serve` a launched agent's harness started, whose environment the harness
+  may filter, as Codex does), or whose ancestry cannot be read. Otherwise such a `serve`, sharing
+  the user's `[agents.launch]` configuration, would make the launched agent a depth-0 launcher
+  with a budget of its own. A lead started from a terminal basemind hosts (`shell`) is refused
+  the same way.
 - **Who launches.** Nothing is trusted by default. Every caller carries a `Peer`: the process the
   kernel reports for its connection (`Peer::of_socket`), pinned to the process that connected (by
   its audit token's pid version on macOS, a pidfd on Linux 6.5+; `Peer::pins_connections` says
@@ -178,7 +186,12 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   it; rotating it is the operator's job.
 - **Sessions.** `status`, `list`, `wait`, `stop` (the launcher or the operator; it reaches every
   session below the one stopped), `answer` for a pending approval, `stop_all`, and `reap` to forget
-  finished sessions. Dropping the supervisor stops every session within its stop grace and kills
+  finished sessions. Only the operator allows an approval request; a launcher (the lead model, or
+  a launched agent over its children) may deny one, and an allow from it is refused with
+  `launcher_may_not_allow`. A model that allows launders what the launched agent asks for past the
+  human, who sees an id, not the command; a launched agent that allows its children's requests
+  bypasses its own harness's permission mode. `FlavorPolicy::launcher_may_allow` opts a flavor out
+  of that, and is refused with a `max_depth` above 1. Dropping the supervisor stops every session within its stop grace and kills
   what is left. A `SessionObserver` receives every event on the session's own thread; one that
   panics is dropped for that session and the session is stopped.
 - **Caveats** (`caveats(kind)`, reported on each launch and status). `DetachedServer` (OpenCode):
@@ -301,6 +314,14 @@ Limits:
     (`ptrace`, a debugger) or injecting code into it, or by typing into it (`tmux send-keys`,
     `osascript` keystrokes, `TIOCSTI` on Linux before 6.2 or with `legacy_tiocsti`), where the
     system allows that; containing that needs a separate user or sandbox;
+  - the lead's tool calls arrive on the hosting process's stdio. On Linux any process of the
+    user could open `/proc/<pid>/fd/0` of a dumpable process and write whole requests into it,
+    so an in-process registration first makes the process non-dumpable (`PR_SET_DUMPABLE` 0,
+    refused with `host_dumpable` if that does not hold): its `/proc` entries become root's and
+    tracing it needs `CAP_SYS_PTRACE`. macOS has no such path to another process's
+    descriptors; what remains there is attaching to it (`task_for_pid`, which SIP and the
+    hardened runtime restrict), which an embedding can refuse further with `PT_DENY_ATTACH`.
+    Launching is off on Windows;
   - an ancestry walk that stops at a process of another user (macOS does not describe root's
     processes) admits nothing past it, so a registered process must be reachable without one;
   - on Linux before 6.5 only the pid of a connection's peer is known, so a pid freed and reused

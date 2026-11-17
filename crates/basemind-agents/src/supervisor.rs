@@ -11,9 +11,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::audit::{AuditApproval, AuditEvent, AuditLimits, AuditRecord, AuditSink};
+use crate::audit::{AuditEvent, AuditLimits, AuditRecord, AuditSink};
 use crate::detached::{self, Detached};
-use crate::error::LaunchError;
 use crate::harness::HarnessKind;
 use crate::identity::LaunchToken;
 use crate::policy::{LAUNCHED_PREFIX, LaunchPolicy, PolicyError};
@@ -68,10 +67,20 @@ pub(crate) struct Entry {
     root: PathBuf,
     pub(crate) handle: Option<SessionHandle>,
     pub(crate) detached: Arc<Detached>,
-    pub(crate) approvals: HashMap<String, &'static str>,
+    /// The approval requests the session has pending, by id, until it reports them settled.
+    pub(crate) approvals: HashMap<String, Pending>,
     /// What the session may still be allowed.
-    allowance: Allowance,
+    pub(crate) allowance: Allowance,
     pump: Option<JoinHandle<()>>,
+}
+
+/// An approval request a session has pending.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Pending {
+    pub(crate) kind: &'static str,
+    /// A caller's answer to it is on its way: another is refused, so one request cannot spend
+    /// the allowance, or be recorded as allowed, more than once.
+    pub(crate) answered: bool,
 }
 
 impl Entry {
@@ -264,7 +273,13 @@ impl Supervisor {
     /// name, or a stop grace over [`MAX_STOP_GRACE_CEILING`](crate::MAX_STOP_GRACE_CEILING);
     /// and [`PolicyError::AuditReserve`] when `audit` cannot set aside, for the supervisor's
     /// life, the most its budget may write into the log's reserve (launches, exits, the stop of
-    /// each session, allows and registrations; see [`AuditSink::reserve`]).
+    /// each session, allows and registrations; see [`AuditSink::reserve`]); and
+    /// [`PolicyError::NestedHost`] for a policy that allows launching in a process that may not
+    /// host it: one carrying [`ENV_LAUNCH_TOKEN`](crate::ENV_LAUNCH_TOKEN) or
+    /// [`ENV_AGENT_DEPTH`](crate::ENV_AGENT_DEPTH), one below a process that runs the same program
+    /// (a `serve` a launched agent's harness started, whose environment the harness filtered),
+    /// and one whose ancestry cannot be read. Only the lead's own `serve`, which no `basemind`
+    /// process started, hosts a supervisor.
     pub fn new(
         policy: LaunchPolicy,
         configs: Vec<LaunchConfig>,
@@ -280,6 +295,9 @@ impl Supervisor {
                 return Err(PolicyError::DuplicateConfig(kind.id()));
             }
             crate::policy::check_config(rule, config)?;
+        }
+        if policy.enabled() && crate::host::nested().is_some() {
+            return Err(PolicyError::NestedHost);
         }
         let needed = crate::supervisor_reserve::demand(&policy, &configs);
         audit
@@ -650,91 +668,6 @@ impl Supervisor {
         }
     }
 
-    /// Allows (`allow`) or denies the pending approval request `approval` of session `id`.
-    ///
-    /// # Errors
-    ///
-    /// [`SupervisorError::UnknownSession`], [`SupervisorError::NotOwner`] unless `caller` is
-    /// the operator or launched the session, [`SupervisorError::Audit`] for an allow whose
-    /// record could not be written (it is then not delivered), and the session's own errors (a
-    /// finished session, a full control queue) as [`SupervisorError::Launch`].
-    pub fn answer(&self, caller: &Caller, id: SessionId, approval: &str, allow: bool) -> Result<(), SupervisorError> {
-        let inner = &self.inner;
-        let mut table = inner.table();
-        let resolved = resolve(&inner.policy, &table, caller);
-        let asker = Asker::new(&table, caller, resolved.as_ref().ok());
-        let entry = match owned(&mut table, resolved, id) {
-            Ok(entry) => entry,
-            Err(error) => {
-                drop(table);
-                let mut record = AuditRecord {
-                    session: Some(id.0),
-                    ..AuditRecord::new(AuditEvent::ApprovalAnswer, error.code())
-                };
-                asker.stamp(&mut record);
-                inner.refuse(record, &asker.key);
-                return Err(error);
-            }
-        };
-        // An id the session did not issue is the caller's own text: it is neither recorded nor
-        // delivered.
-        let Some(kind) = entry.approvals.get(approval).copied() else {
-            let flavor = entry.flavor.id();
-            drop(table);
-            let mut record = AuditRecord {
-                session: Some(id.0),
-                flavor: Some(flavor),
-                ..AuditRecord::new(AuditEvent::ApprovalAnswer, "")
-            };
-            asker.stamp(&mut record);
-            return Err(refuse(inner, record, &asker.key, SupervisorError::UnknownApproval));
-        };
-        let recorded_id = approval.to_owned();
-        let handle = entry.handle.clone();
-        let flavor = entry.flavor.id();
-        let allowance = entry.allowance.clone();
-        drop(table);
-        let record = |outcome, allowed| {
-            let mut record = AuditRecord {
-                session: Some(id.0),
-                flavor: Some(flavor),
-                approval: Some(AuditApproval {
-                    id: recorded_id.clone(),
-                    kind,
-                    allowed,
-                    source: "caller",
-                }),
-                ..AuditRecord::new(AuditEvent::ApprovalAnswer, outcome)
-            };
-            asker.stamp(&mut record);
-            record
-        };
-        // An allow is on the record before it reaches the harness, or it does not reach it: the
-        // request stays pending and is denied when its turn or the session ends. A denial
-        // goes through whatever the log says.
-        if allow {
-            // An allow past the session's or the supervisor's allowance is refused, not
-            // delivered: the request stays pending for a denial.
-            if !allowance.take() {
-                let error = SupervisorError::AllowsExhausted;
-                inner.refuse(record(error.code(), false), &asker.key);
-                return Err(error);
-            }
-            inner.audit(&record("allowed", true)).map_err(SupervisorError::Audit)?;
-        }
-        let answered = handle
-            .ok_or(LaunchError::SessionClosed)
-            .and_then(|handle| handle.answer(approval, allow))
-            .map_err(SupervisorError::Launch);
-        // A denial or a failed answer could be looped on: coalesced like a refusal.
-        match (&answered, allow) {
-            (Err(error), _) => inner.refuse(record(error.code(), false), &asker.key),
-            (Ok(()), false) => inner.refuse(record("denied", false), &asker.key),
-            (Ok(()), true) => {}
-        }
-        answered
-    }
-
     /// Removes the finished sessions and returns their last snapshots.
     pub fn reap(&self) -> Vec<SessionStatus> {
         let mut table = self.inner.table();
@@ -850,3 +783,11 @@ mod identity_tests;
 #[cfg(all(test, unix))]
 #[path = "supervisor_audit_tests.rs"]
 mod audit_tests;
+
+#[cfg(all(test, unix))]
+#[path = "supervisor_host_tests.rs"]
+mod host_tests;
+
+#[cfg(all(test, unix))]
+#[path = "supervisor_answer_tests.rs"]
+mod answer_tests;
