@@ -110,6 +110,37 @@ fn chunks_cite_the_source_lines_they_came_from() {
 }
 
 #[test]
+fn a_reflowed_source_is_searched_in_linear_time() {
+    // The extractor joined every line of the log into one, so no chunk's line is in the source.
+    let source: String = (0..20_000)
+        .map(|i| format!("2021-01-27 host svc[{i}]: event ok\n"))
+        .collect();
+    let content = source.replace('\n', " ");
+    let chunks: Vec<&str> = content
+        .as_bytes()
+        .chunks(1000)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
+    let (lines, searched) = source_lines_counted(&source, chunks.iter().copied());
+    assert!(lines.iter().all(Option::is_none));
+    let bound = (SOURCE_LINES_SPILL_FACTOR + 1) * source.len() + chunks.len() * (8 * 1000 + 4096);
+    assert!(
+        searched <= bound,
+        "searched {searched} bytes of a {} byte source for {} chunks",
+        source.len(),
+        chunks.len()
+    );
+}
+
+#[test]
+fn a_chunk_past_a_large_stripped_region_still_finds_its_line() {
+    let filler = "x".repeat(200_000);
+    let source = format!("first line here\n<!--\n{filler}\n-->\nlast line here\n");
+    let lines = source_lines(&source, ["first line here", "last line here"]);
+    assert_eq!(lines, vec![Some((1, 1)), Some((5, 5))]);
+}
+
+#[test]
 fn an_embedder_that_fails_leaves_the_chunks_without_vectors() {
     let inputs = vec!["a".to_string(), "b".to_string()];
     let mut chunks = vec![super::super::DocChunk::default(), super::super::DocChunk::default()];

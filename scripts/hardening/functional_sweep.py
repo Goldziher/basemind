@@ -41,14 +41,28 @@ Check = Callable[[Any], str | None]
 
 
 def items(body: Any, *keys: str) -> list[Any]:
-    """The first list found under one of `keys`."""
+    """The rows found first under one of `keys`: a list, or a `{"<path>": [row, ...]}` map of rows
+    grouped by file (ADR-0034), flattened with each row's `path` put back."""
     if not isinstance(body, dict):
         return []
     for k in keys:
         v = body.get(k)
         if isinstance(v, list):
             return v
+        if isinstance(v, dict) and v and all(isinstance(rows, list) for rows in v.values()):
+            return [
+                {"path": path, **row} if isinstance(row, dict) else {"path": path, "row": row}
+                for path, rows in v.items()
+                for row in rows
+            ]
     return []
+
+
+def path_of(entry: Any) -> str | None:
+    """A listed file's path: `find_files` lists bare paths (ADR-0034), older builds objects."""
+    if isinstance(entry, str):
+        return entry
+    return entry.get("path") if isinstance(entry, dict) else None
 
 
 def blob(x: Any) -> str:
@@ -70,7 +84,7 @@ class Case:
 
 
 def file_listed(path: str) -> Check:
-    return lambda b: need(any(f.get("path") == path for f in items(b, "files")), f"{path} not in files")
+    return lambda b: need(any(path_of(f) == path for f in items(b, "files")), f"{path} not in files")
 
 
 def outline_has(name: str) -> Check:

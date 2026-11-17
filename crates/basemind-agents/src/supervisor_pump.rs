@@ -11,7 +11,7 @@ use crate::event::{Event, FinishStatus};
 use crate::harness::HarnessKind;
 use crate::policy::Caveat;
 use crate::session::Session;
-use crate::supervisor::{Inner, SessionId, SessionState};
+use crate::supervisor::{Inner, Pending, SessionId, SessionState};
 use crate::supervisor_codes::{approval_kind, approval_source, finish_code};
 
 /// The most approval requests whose kind a session remembers until they are settled.
@@ -146,7 +146,13 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
                 if let Some(entry) = table.sessions.get_mut(&id)
                     && entry.approvals.len() < MAX_REMEMBERED_APPROVALS
                 {
-                    entry.approvals.insert(request.id.clone(), approval_kind(request.kind));
+                    entry.approvals.insert(
+                        request.id.clone(),
+                        Pending {
+                            kind: approval_kind(request.kind),
+                            answered: false,
+                        },
+                    );
                 }
             }
             Event::ApprovalResolved {
@@ -159,7 +165,7 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
                     .sessions
                     .get_mut(&id)
                     .and_then(|entry| entry.approvals.remove(approval))
-                    .unwrap_or("unknown");
+                    .map_or("unknown", |pending| pending.kind);
                 let record = AuditRecord {
                     session: Some(id),
                     flavor: Some(flavor.id()),

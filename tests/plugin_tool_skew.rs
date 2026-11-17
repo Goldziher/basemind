@@ -118,7 +118,7 @@ fn minimal_call(tool: &str) -> Option<(Value, Option<&'static str>)> {
         "code_search" => (json!({"query": "increment a number"}), None),
         "code_refs" => (json!({"name": "alpha"}), Some("\"line\":6")),
         "find_files" => (json!({"query": "lib"}), Some("src/lib.rs")),
-        "docs_search" => (json!({"query": "widget"}), None),
+        "docs_search" => (json!({"query": "widget"}), Some("README.md")),
         "git_log" => (json!({}), Some("init")),
         "git_blame" => (json!({"path": "src/lib.rs"}), Some("src/lib.rs")),
         "git_diff" => (json!({}), Some("is_clean")),
@@ -140,15 +140,6 @@ fn feature_for(tool: &str) -> Option<(&'static str, bool)> {
         "code_search" => Some(("code-search", cfg!(feature = "code-search"))),
         "docs_search" => Some(("documents", cfg!(feature = "documents"))),
         "memory_save" | "memory_search" => Some(("memory", cfg!(feature = "memory"))),
-        _ => None,
-    }
-}
-
-/// The refusal a tool answers with because of how [`fixture`] configures the repository: its
-/// `basemind.toml` turns document embedding off, so `docs_search` has no vectors to search.
-fn fixture_refusal(tool: &str) -> Option<&'static str> {
-    match tool {
-        "docs_search" if cfg!(feature = "documents") => Some("`documents.embed` is false"),
         _ => None,
     }
 }
@@ -869,10 +860,6 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
                     Some((feature, false)) => failures.push(format!(
                         "{name}: built without `{feature}`, but the error does not name the feature: {text}"
                     )),
-                    _ if fixture_refusal(name).is_some_and(|reason| text.contains(reason)) => {
-                        answered += 1;
-                        let _ = writeln!(out, "plugin-skew: {name} refused as the fixture configures it: {text}");
-                    }
                     _ => failures.push(format!("{name}: isError result: {text}")),
                 }
             }

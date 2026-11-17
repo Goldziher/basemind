@@ -33,7 +33,8 @@ impl Supervisor {
     /// [`SupervisorError::PeerUnverified`] for a child that has exited or cannot be read;
     /// [`SupervisorError::RoleBound`] while the principal is bound;
     /// [`SupervisorError::Audit`] when the registration could not be recorded (it is then
-    /// undone). Each is audited.
+    /// undone); [`SupervisorError::NestedHost`] when this process may not host a supervisor (see
+    /// [`Supervisor::new`]). Each is audited.
     pub fn register_launcher_child(
         &self,
         principal: &str,
@@ -53,9 +54,14 @@ impl Supervisor {
     /// hosts the supervisor and calls it for the lead's tool calls. Only this process is the
     /// principal then, never what descends from it.
     ///
+    /// On Linux it first makes this process non-dumpable (`PR_SET_DUMPABLE` 0): otherwise any
+    /// process of the user could open `/proc/<pid>/fd/0` and write the lead's requests into its
+    /// stdio. Its core dumps are off from then on; the harnesses it starts are not affected.
+    ///
     /// # Errors
     ///
-    /// As [`Self::register_launcher_child`].
+    /// As [`Self::register_launcher_child`], and [`SupervisorError::HostDumpable`] when this
+    /// process could not be made non-dumpable.
     pub fn register_launcher_in_process(&self, principal: &str) -> Result<(), SupervisorError> {
         self.bind(Role::Launcher(principal.to_owned()), Source::InProcess)
     }
@@ -71,7 +77,7 @@ impl Supervisor {
     ///
     /// # Errors
     ///
-    /// As [`Self::register_launcher_child`], but for the operator.
+    /// As [`Self::register_launcher_in_process`], but for the operator.
     pub fn register_operator_in_process(&self) -> Result<(), SupervisorError> {
         self.bind(Role::Operator, Source::InProcess)
     }
@@ -99,9 +105,18 @@ impl Supervisor {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let caller = role_name(&role);
         let key = format!("register-{caller}");
+        // Read before the table is locked: it walks this process's ancestry.
+        let nested = crate::host::nested().is_some();
+        // A process bound in-process takes the role's requests on its stdio: on Linux it is made
+        // non-dumpable first, so no process of the user can write into it through /proc.
+        let sealed = !matches!(source, Source::InProcess) || nested || crate::host::seal();
         let mut table = inner.table();
         let bound = if inner.registrations.load(Ordering::SeqCst) >= MAX_REGISTRATIONS {
             Err(SupervisorError::RegistrationLimit)
+        } else if nested {
+            Err(SupervisorError::NestedHost)
+        } else if !sealed {
+            Err(SupervisorError::HostDumpable)
         } else {
             register(&inner.policy, &mut table, role.clone(), source)
         };

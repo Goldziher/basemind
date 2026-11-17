@@ -95,6 +95,15 @@ impl Worktree {
         }
     }
 
+    /// Flush every index keyspace's memtable to on-disk tables and wait. A scan flushes only once its
+    /// journal has grown past 64 MB, which one small worktree index never reaches and a group index
+    /// shared by several worktrees does; flushing every index before timing makes each layout read
+    /// from on-disk tables, so neither side is timed against rows still in its memtable.
+    pub fn flush(&self) {
+        let db = self.store.index_db.as_ref().expect("a writer store holds its index");
+        assert!(db.reclaim_journal(), "flush the index memtables");
+    }
+
     fn view(&self) -> impl IndexView + '_ {
         self.store.index_view().expect("a writer store holds its index")
     }
