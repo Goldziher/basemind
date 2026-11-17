@@ -1,28 +1,18 @@
-//! The serve-side half of the forwarded git-history path: a [`GitHistoryIndex`] backed by the
-//! daemon instead of by a local fjall database.
+//! The git-history index of a daemon-hosted session: a [`GitHistoryIndex`] whose reads run against
+//! the database the daemon holds, in the daemon's own process.
 //!
-//! ## Why serve cannot just open the index
-//!
-//! Fjall takes an exclusive advisory lock on the database directory — even a read-only open takes
-//! it. `git-history.fjall/` is therefore a single-holder resource. Under the daemon-as-sole-writer
-//! model the daemon must hold it (it is the process that builds it, and N concurrent serve sessions
-//! cannot each hold a lock only one of them can win). So a `daemon_writer` serve holds NO handle and
-//! forwards its history reads here, exactly as it already forwards scans
-//! ([`CommsRequest::Rescan`](crate::comms::protocol::CommsRequest::Rescan)) and precise
-//! resolved-reference reads ([`ResolvedRefs`](crate::comms::protocol::CommsRequest::ResolvedRefs)).
-//!
-//! ## Cost
-//!
-//! One UDS round trip per history tool call (plus one for the freshness check), against ~37 µs for a
-//! local indexed lookup and ~1.6–2.5 ms for the live walk it replaces. The ops are coarse — a whole
-//! result page per round trip — so the forwarded path stays O(1) IPC per tool call.
+//! Fjall takes an exclusive lock on the database directory, even for a read-only open, so
+//! `git-history.fjall/` has one holder: the daemon, which builds it. A session the daemon hosts reads
+//! it through [`HistoryHost`], in process. No other process reads it while the daemon is up: a CLI
+//! command forwards its whole call to the daemon, and one the daemon does not host (another view)
+//! live-walks.
 //!
 //! ## Blocking bridge
 //!
-//! The MCP history tools call the index from synchronous code inside their async bodies, so the
-//! forwarded call has to block. It does so via [`tokio::task::block_in_place`], which requires the
-//! multi-threaded runtime `basemind serve` runs on. Off a multi-thread runtime (a `current_thread`
-//! test, a rayon worker) the call degrades to `None` rather than panicking, and the caller live-walks.
+//! The history tools call the index from synchronous code, so a hosted read has to block. It does so
+//! via [`tokio::task::block_in_place`], which requires the multi-threaded runtime the daemon runs.
+//! Off a multi-thread runtime (a `current_thread` test, a rayon worker) the call degrades to `None`
+//! rather than panicking, and the caller live-walks.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -30,10 +20,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::runtime::{Handle, RuntimeFlavor};
-use tokio::sync::{Mutex, OnceCell};
 
-use super::proto::{GitHistoryOp, GitHistoryReply, SyncOutcome};
-use crate::comms::client::{ClientHello, CommsClient};
+use super::proto::{GitHistoryOp, GitHistoryReply};
 use crate::git::CommitInfo;
 use crate::git_history::{GitHistoryError, GitHistoryIndex, HistoryForwarder};
 
@@ -56,46 +44,25 @@ pub trait HistoryHost: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<GitHistoryReply, GitHistoryError>> + Send + '_>>;
 }
 
-/// A git-history index whose storage lives in the daemon. Cloneable; the lazily-established
-/// connection is shared between clones.
+/// A git-history index whose storage lives in the daemon, read in the daemon's own process.
 #[derive(Clone)]
 pub struct RemoteHistory {
     /// Canonical workspace root — selects the repo's index daemon-side.
     root: PathBuf,
-    /// The query connection, dialed on first use. Dedicated to git-history reads: sharing serve's
-    /// main comms client would serialize a history query behind a multi-minute forwarded scan (which
-    /// holds that client's lock for its whole duration). Unused (and never dialed) when `host` is set.
-    client: Arc<OnceCell<Arc<Mutex<CommsClient>>>>,
-    /// In-process host, set only for a daemon-hosted connection: reads run through it instead of the
-    /// socket, so the daemon does not loop back to itself.
-    host: Option<Arc<dyn HistoryHost>>,
+    /// The daemon itself, which holds the index.
+    host: Arc<dyn HistoryHost>,
 }
 
 impl RemoteHistory {
-    /// A daemon-backed handle for the repo at `root`. Connects lazily: the
-    /// constructor performs no IO, so a serve whose daemon is unreachable still starts (its history
-    /// tools live-walk).
-    pub fn new(root: PathBuf) -> Self {
-        Self {
-            root,
-            client: Arc::new(OnceCell::new()),
-            host: None,
-        }
-    }
-
     /// A daemon-backed handle whose daemon is *this process*: reads run in-process through `host`
     /// rather than over the socket. Used by a daemon-hosted connection.
     pub fn hosted(root: PathBuf, host: Arc<dyn HistoryHost>) -> Self {
-        Self {
-            root,
-            client: Arc::new(OnceCell::new()),
-            host: Some(host),
-        }
+        Self { root, host }
     }
 
-    /// The in-process host, if this is a hosted handle. Drives the startup sync in-process.
+    /// The in-process host. Drives the startup sync in-process.
     pub(crate) fn host(&self) -> Option<Arc<dyn HistoryHost>> {
-        self.host.clone()
+        Some(Arc::clone(&self.host))
     }
 
     /// Block the current task on one forwarded op. See the module docs for the runtime contract.
@@ -109,28 +76,10 @@ impl RemoteHistory {
     }
 
     async fn call_async(&self, op: GitHistoryOp) -> Option<GitHistoryReply> {
-        if let Some(host) = &self.host {
-            return host
-                .run_history(self.root.clone(), op)
-                .await
-                .inspect_err(|error| tracing::warn!(%error, "git-history: in-process query failed; tools live-walk"))
-                .ok();
-        }
-        let client = self
-            .client
-            .get_or_try_init(|| async {
-                let client =
-                    CommsClient::connect(&crate::comms::singleton::resolve_paths()?, ClientHello::anonymous()).await?;
-                Ok::<_, crate::comms::client::CommsClientError>(Arc::new(Mutex::new(client)))
-            })
+        self.host
+            .run_history(self.root.clone(), op)
             .await
-            .inspect_err(|error| tracing::warn!(%error, "git-history: daemon unreachable; tools live-walk"))
-            .ok()?;
-        let mut guard = client.lock().await;
-        guard
-            .git_history(self.root.clone(), op)
-            .await
-            .inspect_err(|error| tracing::warn!(%error, "git-history: forwarded query failed; tools live-walk"))
+            .inspect_err(|error| tracing::warn!(%error, "git-history: in-process query failed; tools live-walk"))
             .ok()
     }
 }
@@ -158,15 +107,8 @@ impl HistoryForwarder for RemoteHistory {
     }
 
     fn hosts_in_process(&self) -> bool {
-        self.host.is_some()
+        true
     }
-}
-
-/// A handle backed by the DAEMON's index for the repo at `root`. Takes no lock and performs no IO:
-/// this is what every front-end running under a live daemon holds — a `daemon_writer` serve, and the
-/// one-shot CLI — instead of opening the database the daemon has locked.
-pub fn remote_index(root: PathBuf) -> GitHistoryIndex {
-    GitHistoryIndex::forwarded(Arc::new(RemoteHistory::new(root)))
 }
 
 /// A DAEMON-BACKED handle whose daemon is *this process* — a daemon-hosted connection. Instead of
@@ -231,56 +173,6 @@ pub fn daemon_is_up() -> bool {
     crate::comms::singleton::probe_alive(&paths.socket_path)
 }
 
-/// Backoff schedule for the startup sync. The first session on a cold machine SPAWNS the daemon, and
-/// a daemon that is still coming up answers nothing — a one-shot sync would then leave that session's
-/// history tools live-walking for its entire life (the index would only get built by whoever came
-/// next). Retry a handful of times, doubling, then give up.
-const SYNC_RETRIES: u32 = 5;
-const SYNC_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// Ask the daemon to bring `root`'s git-history index up to date, on a connection of its own.
-///
-/// Serve calls this once at startup (off the MCP thread) instead of building the index itself. The
-/// dedicated connection matters: a first build on a deep repo runs for minutes, and it must not hold
-/// the lock on the client this session's history queries use.
-///
-/// The daemon serializes syncs per repo and `builder::sync` is freshness-checked, so N sessions
-/// asking at once produce ONE build; the losers of the race get [`SyncOutcome::Fresh`].
-pub async fn request_sync(root: PathBuf) -> Option<SyncOutcome> {
-    let mut backoff = SYNC_BACKOFF;
-    for attempt in 0..=SYNC_RETRIES {
-        match try_sync(&root, attempt == 0).await {
-            Ok(outcome) => return Some(outcome),
-            Err(error) if attempt == SYNC_RETRIES => {
-                tracing::warn!(%error, "git-history: daemon sync failed; history tools live-walk");
-            }
-            Err(error) => {
-                tracing::debug!(%error, ?backoff, "git-history: daemon sync failed; retrying");
-                tokio::time::sleep(backoff).await;
-                backoff *= 2;
-            }
-        }
-    }
-    None
-}
-
-async fn try_sync(
-    root: &std::path::Path,
-    may_spawn: bool,
-) -> Result<SyncOutcome, crate::comms::client::CommsClientError> {
-    let mut client = if may_spawn {
-        CommsClient::ensure_and_connect(ClientHello::anonymous()).await?
-    } else {
-        CommsClient::connect(&crate::comms::singleton::resolve_paths()?, ClientHello::anonymous()).await?
-    };
-    match client.git_history(root.to_path_buf(), GitHistoryOp::Sync).await? {
-        GitHistoryReply::Synced(outcome) => Ok(outcome),
-        _ => Err(crate::comms::client::CommsClientError::Unexpected {
-            request: "git_history sync",
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,13 +195,5 @@ mod tests {
         let forwarder = index.forwarder().expect("a hosted index is daemon-backed");
         assert!(forwarder.hosts_in_process());
         assert!(history_host(&index).is_some());
-    }
-
-    #[test]
-    fn a_remote_index_has_no_in_process_host() {
-        let index = remote_index(PathBuf::from("/repo"));
-        let forwarder = index.forwarder().expect("a remote index is daemon-backed");
-        assert!(!forwarder.hosts_in_process());
-        assert!(history_host(&index).is_none());
     }
 }

@@ -67,18 +67,6 @@ pub(super) fn request(shared: &Workspace) {
     if index.forwarder().is_some_and(|forwarder| forwarder.hosts_in_process()) {
         return;
     }
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if index.is_daemon_backed() {
-        let root = shared.root.clone();
-        runtime.spawn(async move {
-            let _syncing = syncing;
-            match crate::git_history::remote::request_sync(root).await {
-                Some(outcome) => tracing::info!(?outcome, "git-history index synced by the daemon"),
-                None => tracing::warn!("git-history index sync unavailable; history tools live-walk"),
-            }
-        });
-        return;
-    }
     let _ = index;
     let (Some(git_history), Some(repo)) = (shared.git_history.clone(), shared.repo.clone()) else {
         return;

@@ -553,13 +553,11 @@ impl BasemindServer {
     /// read-only open takes it — so `git-history.fjall/` has exactly one holder machine-wide, and the
     /// only question here is whether that holder is us or the daemon:
     ///
-    /// * **a daemon is up**: the DAEMON holds the database, so every session — a `daemon_writer`
-    ///   serve, and equally the one-shot CLI, which runs these same tool bodies in-process — takes a
-    ///   forwarding handle. It must not try to open the index: it cannot win the lock, so it would
-    ///   burn the retry ladder on every invocation and then silently live-walk, on the exact machine
-    ///   where the index is built and fresh. Serve knows a daemon is up by construction (it brings
-    ///   one up); the CLI has to ask, which is one `stat` when there is no daemon and one ping when
-    ///   there is (see [`crate::git_history::remote::daemon_is_up`]).
+    /// * **a daemon is up**: the DAEMON holds the database. A session it hosts reads it in process
+    ///   through the daemon's handle. Any other session (a CLI command on a view the daemon does not
+    ///   host) gets no handle and live-walks: it cannot win the lock, and trying would burn the retry
+    ///   ladder on every invocation. The CLI asks whether a daemon is up, which is one `stat` when
+    ///   there is none (see [`crate::git_history::remote::daemon_is_up`]).
     /// * **no daemon** (a standalone process, or a non-`comms` build): this process holds the
     ///   database and builds it in-process, as before. Nobody else can, and history tools would
     ///   otherwise permanently live-walk.
@@ -588,7 +586,9 @@ impl BasemindServer {
                     host,
                 )));
             }
-            return Some(Arc::new(crate::git_history::remote::remote_index(root.to_path_buf())));
+            // ~keep The daemon holds the database and fjall's lock is exclusive even to a reader
+            // ~keep (fjall `locked_file.rs` `try_lock`), so a session it does not host live-walks.
+            return None;
         }
         let _ = (root, agent_id);
         // ~keep A one-shot query never syncs, so an index it would open empty would stay empty.

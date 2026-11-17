@@ -94,6 +94,11 @@ ADR-0023 and ADR-0032 stand except where this record changes them.
      successes. A relay protocol bump would have made every older `serve` refuse a newer daemon of
      its generation, which ADR-0024 rule 2 has it use as it is.
    - A view other than the working tree runs in process, as the daemon hosts only the working view.
+     Its git-history tools live-walk while the daemon is up. Fjall locks the database directory
+     exclusively on every open, readers included (`try_lock` in fjall 3.1's `locked_file.rs`), and
+     the daemon holds `git-history.fjall/`. On this repository (2,349 commits), `git log --path
+     src/store.rs` (95 commits) takes a p50 of 180 ms that way, against 32 ms when the read was
+     forwarded over the daemon socket and 22 ms for the forwarded working-view call.
    - `admin telemetry` and `admin eval` are not tool calls and run in process.
 
 ## Consequences
