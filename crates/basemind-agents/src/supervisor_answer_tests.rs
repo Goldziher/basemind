@@ -238,3 +238,42 @@ fn the_top_of_a_tree_stops_a_grandchild_whose_parent_was_reaped() {
     supervisor.stop(&lead(), child.id).unwrap();
     assert_eq!(finished(&supervisor, child.id), FinishStatus::Stopped);
 }
+
+/// Holds the session's thread inside the observer on every approval request until it is opened,
+/// as an embedding that answers from the observer would.
+#[derive(Default)]
+struct HoldOnRequest {
+    gate: Gate,
+}
+
+impl SessionObserver for HoldOnRequest {
+    fn event(&self, session: SessionId, event: &crate::event::Event) {
+        self.gate.seen.event(session, event);
+        if matches!(event, crate::event::Event::ApprovalRequest(_)) {
+            let open = self.gate.open.lock().unwrap();
+            let _ = self
+                .gate
+                .opened
+                .wait_timeout_while(open, Duration::from_secs(20), |open| !*open)
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_request_is_pending_before_the_observer_hears_of_it() {
+    let scratch = Scratch::new();
+    let mut config = scratch.config(HarnessKind::ClaudeCode, &approvals_body(&scratch, 1));
+    config.approval_policy = crate::test_support::always(ApprovalVerdict::Ask);
+    let (supervisor, _audit) = start(consenting(), vec![config]);
+    let observer = Arc::new(HoldOnRequest::default());
+    let supervisor = supervisor.with_observer(observer.clone());
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    // The observer holds the request while it is answered: the supervisor already has it.
+    let id = pending(&observer.gate.seen, 1);
+    let answered = supervisor.answer(&lead(), launched.id, &id, false);
+    observer.gate.open();
+    answered.unwrap();
+    await_replies(&scratch, 1);
+    assert_eq!(replies(&scratch), (0, 1));
+}

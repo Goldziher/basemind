@@ -213,6 +213,17 @@ pub enum PolicyError {
     /// supervisor that launches: only the lead's own `serve` does.
     #[error("this process runs inside a launched session and may not host a supervisor")]
     NestedHost,
+    /// A launch config names its harness executable or its MCP server's command by a bare name or
+    /// a relative path. A supervised launch never searches `PATH`: a directory on it that the user
+    /// can write (`~/.local/bin`, an npm global bin) is one a launched agent can plant a
+    /// `claude` in, for the next launch to run with the config's credentials.
+    #[error("the launch config for harness {harness} names its {field} by a path that is not absolute")]
+    RelativeExecutable {
+        /// The flavor.
+        harness: &'static str,
+        /// `executable` or `mcp_server.command`.
+        field: &'static str,
+    },
     /// A launch config disagrees with the policy for its flavor.
     #[error("the launch config for harness {harness} disagrees with the policy on {field}")]
     ConfigMismatch {
@@ -359,6 +370,20 @@ pub(crate) fn check_config(rule: &FlavorPolicy, config: &crate::spec::LaunchConf
         harness: rule.kind.id(),
         field,
     };
+    let relative = |field| PolicyError::RelativeExecutable {
+        harness: rule.kind.id(),
+        field,
+    };
+    if !config.harness.executable.is_absolute() {
+        return Err(relative("executable"));
+    }
+    if config
+        .mcp_server
+        .as_ref()
+        .is_some_and(|server| !server.command.is_absolute())
+    {
+        return Err(relative("mcp_server.command"));
+    }
     if config.permission_mode != rule.permission_mode {
         return Err(mismatch("permission_mode"));
     }

@@ -168,7 +168,9 @@ pub struct Launched {
 }
 
 /// Receives every event of every session, on the thread that supervises that session. It must
-/// return quickly: the session's events wait for it.
+/// not block: the session's events wait for it, and an approval request the harness waits on
+/// stays unanswered meanwhile. An approval request is held by the supervisor before the observer
+/// hears of it, so an answer given from the observer finds it pending.
 pub trait SessionObserver: Send + Sync {
     /// `event` happened in `session`.
     fn event(&self, session: SessionId, event: &Event);
