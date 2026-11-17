@@ -675,8 +675,14 @@ const COMMIT_BATCH: usize = 4096;
 impl GitHistoryWriter {
     /// Mark the index in progress before the first row is staged. Written straight to the journal,
     /// so it precedes every batch this writer commits: no surviving row can outlive the mark.
+    ///
+    /// The head goes in the same batch: an older binary of the same minor shares this index and
+    /// knows no mark, and would otherwise append from the old head past the rows a cut-off run left.
     pub fn begin(&mut self) -> Result<(), GitHistoryError> {
-        self.db.meta.insert(keys::META_BUILD_IN_PROGRESS, [1u8])?;
+        let mut mark = self.db.db.batch();
+        mark.insert(&self.db.meta, keys::META_BUILD_IN_PROGRESS, [1u8]);
+        mark.remove(&self.db.meta, keys::META_LAST_HEAD);
+        mark.commit()?;
         Ok(())
     }
 
@@ -865,6 +871,29 @@ mod tests {
         assert_eq!(
             raw_meta(dir.path(), keys::META_SCHEMA_VER),
             Some(GIT_HISTORY_SCHEMA.to_be_bytes().to_vec())
+        );
+    }
+
+    /// An older patch binary of the same minor shares this index and knows no in-progress mark:
+    /// had the head survived a cut-off append, it would append past the rows the cut left.
+    #[test]
+    fn a_build_in_progress_leaves_no_head_on_disk_for_a_binary_that_ignores_the_mark() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = GitHistoryIndex::open(dir.path()).expect("open");
+        let sha20 = [0x22u8; 20];
+        index
+            .writer()
+            .expect("writer")
+            .finish_meta(&sha20, &sha20, 0, 0, 0)
+            .expect("stamp a head");
+        index.writer().expect("writer").begin().expect("mark an append");
+        drop(index);
+
+        assert_eq!(raw_meta(dir.path(), keys::META_BUILD_IN_PROGRESS), Some(vec![1u8]));
+        assert_eq!(
+            raw_meta(dir.path(), keys::META_LAST_HEAD),
+            None,
+            "no head to append from"
         );
     }
 
