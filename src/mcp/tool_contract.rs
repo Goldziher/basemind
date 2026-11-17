@@ -118,7 +118,7 @@ pub(super) fn finalize_router(mut router: ToolRouter<BasemindServer>) -> ToolRou
 
 /// Drop `$schema` / the root `title`, integer `format` / `minimum`, and the `null` alternative of an
 /// optional field. Optional fields are already absent from `required`, which is what a model reads.
-fn compact_schema(value: &mut Value, root: bool) {
+pub(super) fn compact_schema(value: &mut Value, root: bool) {
     let Value::Object(object) = value else {
         return;
     };

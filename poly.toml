@@ -36,6 +36,8 @@ exclude = [
   "schema/basemind-config-v1.schema.json",
   # The tools/list snapshot `tests/mcp_schema_wire.rs` compares byte for byte.
   "tests/fixtures/tools_list.json",
+  # The lead tools' snapshot `tests/lead_tools_surface.rs` compares byte for byte.
+  "tests/fixtures/lead_tools_list.json",
   # Written by benchmarks/eval/docs/gen_corpus.py; the eval scans these exact bytes.
   "benchmarks/eval/docs/corpus/**",
   "crates/*-ffi/include/*.h",
@@ -240,6 +242,7 @@ fmt = { exclude = [
   "vendor/**",
   "schema/basemind-config-v1.schema.json",
   "tests/fixtures/tools_list.json",
+  "tests/fixtures/lead_tools_list.json",
   "crates/*-ffi/include/*.h",
   "packages/go/include/*.h",
 ] }

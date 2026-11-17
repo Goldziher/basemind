@@ -34,6 +34,9 @@ pub mod intel;
 pub mod lance;
 pub mod lang;
 pub mod lang_rules;
+/// `basemind serve --lead`, the agent-launch host (ADR-0040). Unix only, like launching itself.
+#[cfg(all(feature = "comms", unix))]
+pub mod lead;
 pub mod mcp;
 mod once_map;
 pub mod path;
