@@ -69,7 +69,7 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
 }
 
 /// Open the vector store at `dir` for `embedder`'s dimension and model, off the async runtime.
-#[cfg(feature = "intelligence")]
+#[cfg(any(feature = "documents", feature = "code-search"))]
 async fn open_lance(
     dir: std::path::PathBuf,
     embedder: &crate::embeddings::SharedEmbedder,
@@ -82,7 +82,7 @@ async fn open_lance(
         .map_err(|e| format!("open LanceStore: {e}"))
 }
 
-#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+#[cfg(any(feature = "documents", feature = "code-search"))]
 pub(super) async fn lance_store(
     state: &ServerState,
 ) -> Result<Arc<crate::lance::LanceStore>, super::lance_cell::Unavailable> {
