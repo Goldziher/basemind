@@ -115,7 +115,9 @@ impl StoreError {
 }
 
 pub use crate::store_lock::{LOCK_CONTENTION_HELP, LockHolder, LockMeta, WriterProbe, probe_writer_lock};
-pub(crate) use crate::store_lock::{acquire_lock, acquire_lock_as, lock_contention_message, writer_lock_is_held};
+pub(crate) use crate::store_lock::{
+    acquire_lock, acquire_lock_as, lock_contention_message, try_acquire_lock_as, writer_lock_is_held,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Index {
@@ -420,10 +422,18 @@ impl Store {
 
     /// Open without taking the exclusive lock. Use for read-only consumers (CLI query, MCP).
     ///
-    /// Opens the Fjall index for reads when the writer lock is free; falls back to blob-only reads
-    /// when the index is held or unreadable.
+    /// Reads the group index only through a handle this process already holds (ADR-0036 rule 3);
+    /// otherwise, or when the index is held or unreadable, serves from blobs.
     pub fn open_read_only(root: &Path, view: &str) -> Result<Self, StoreError> {
-        Self::open_read_only_inner(root, view, true)
+        Self::open_read_only_inner(root, view, Some(group::ReadAccess::HeldHandle))
+    }
+
+    /// [`Store::open_read_only`] for one CLI command run with no daemon: when this process holds no
+    /// handle on the group index, it takes a free group lock without waiting and opens the index
+    /// for reading only, until the store is dropped. A held lock serves from blobs. Never use it for
+    /// a long-lived reader: every writer of the group waits on the lock while the store lives.
+    pub fn open_for_query(root: &Path, view: &str) -> Result<Self, StoreError> {
+        Self::open_read_only_inner(root, view, Some(group::ReadAccess::BriefLock))
     }
 
     /// Open read-only WITHOUT ever touching the Fjall index (`index_db` is always `None`, so reads
@@ -433,12 +443,16 @@ impl Store {
     /// read-only open, so a serve that opened the index would steal the lock its own machine daemon
     /// (the sole writer) needs. Skipping the index entirely leaves the daemon free to hold it.
     pub fn open_read_only_no_index(root: &Path, view: &str) -> Result<Self, StoreError> {
-        Self::open_read_only_inner(root, view, false)
+        Self::open_read_only_inner(root, view, None)
     }
 
-    /// Shared body for the read-only opens. `allow_index_db` gates whether the Fjall index is opened
-    /// (see [`Store::open_read_only`] vs [`Store::open_read_only_no_index`]).
-    fn open_read_only_inner(root: &Path, view: &str, allow_index_db: bool) -> Result<Self, StoreError> {
+    /// Shared body for the read-only opens. `index_access` says how the group index may be reached,
+    /// `None` for never (see [`Store::open_read_only`] vs [`Store::open_read_only_no_index`]).
+    fn open_read_only_inner(
+        root: &Path,
+        view: &str,
+        index_access: Option<group::ReadAccess>,
+    ) -> Result<Self, StoreError> {
         let basemind_dir = workspace_cache_dir(root);
         if basemind_dir.exists() {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
@@ -472,8 +486,8 @@ impl Store {
         // A stale layout leaves an index of the current schema over a map that is gone: the scan
         // that takes the lock replaces both ([`Store::open_index_owed_to_scan`]). ~keep
         let mut index_rebuild_needed = stale_layout;
-        let index_db = if allow_index_db && schema_ok && !writer_lock_is_held(&basemind_dir) {
-            let (db, rebuild) = group::open_index_read_only(root, view, &index)?;
+        let index_db = if let Some(access) = index_access.filter(|_| schema_ok && !writer_lock_is_held(&basemind_dir)) {
+            let (db, rebuild) = group::open_index_read_only(root, view, &index, access)?;
             index_rebuild_needed |= rebuild;
             db
         } else {

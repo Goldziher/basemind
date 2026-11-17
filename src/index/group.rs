@@ -119,35 +119,61 @@ impl GroupDb {
         Ok(opened)
     }
 
-    fn open(dir: &Path, lock: GroupLock) -> Result<Self, IndexError> {
-        let fresh = super::IndexDb::open_without_memory(dir)?;
-        let wiped_on_open = fresh.wiped_on_open();
-        let db = fresh.db.clone();
+    /// A handle for reading only, opened under `lock`, which the caller took for the group: the one
+    /// this process holds, or a new open that writes nothing. `None` when the database holds no
+    /// incarnation yet (no writer has opened it, so no view's rows are in it).
+    pub(crate) fn open_shared_for_reading(dir: &Path, lock: GroupLock) -> Result<Option<Arc<Self>>, IndexError> {
+        let mut registry = registry().lock().expect("group registry");
+        if let Some(held) = registry.get(dir).and_then(Weak::upgrade) {
+            return Ok(Some(held));
+        }
+        let fresh = super::IndexDb::open_group_for_reading(dir)?;
+        let Some(incarnation) = fresh
+            .keyspace(Part::Meta)
+            .raw()
+            .get(META_INCARNATION)?
+            .as_deref()
+            .and_then(read_u64)
+        else {
+            return Ok(None);
+        };
+        let opened = Arc::new(Self::from_open(dir, fresh, incarnation, lock));
+        registry.retain(|_, handle| handle.strong_count() > 0);
+        registry.insert(dir.to_path_buf(), Arc::downgrade(&opened));
+        Ok(Some(opened))
+    }
+
+    fn from_open(dir: &Path, fresh: IndexDb, incarnation: u64, lock: GroupLock) -> Self {
         let mut keyspaces = AHashMap::new();
         for part in Part::ALL {
             keyspaces.insert(part.name(), fresh.keyspace(part).raw().clone());
         }
-        let embeddings = fresh.embeddings.clone();
-        let meta = keyspaces[Part::Meta.name()].clone();
+        Self {
+            dir: dir.to_path_buf(),
+            db: fresh.db.clone(),
+            keyspaces,
+            embeddings: fresh.embeddings.clone(),
+            incarnation,
+            allocation: Mutex::new(()),
+            _lock: lock,
+        }
+    }
+
+    fn open(dir: &Path, lock: GroupLock) -> Result<Self, IndexError> {
+        let fresh = super::IndexDb::open_without_memory(dir)?;
+        let wiped_on_open = fresh.wiped_on_open();
+        let meta = fresh.keyspace(Part::Meta).raw().clone();
         let incarnation = match meta.get(META_INCARNATION)?.as_deref().and_then(read_u64) {
             Some(incarnation) if !wiped_on_open => incarnation,
             _ => {
                 let incarnation = new_incarnation(dir);
-                let mut batch = db.batch().durability(Some(PersistMode::SyncAll));
+                let mut batch = fresh.db.batch().durability(Some(PersistMode::SyncAll));
                 batch.insert(&meta, META_INCARNATION, incarnation.to_be_bytes());
                 batch.commit()?;
                 incarnation
             }
         };
-        Ok(Self {
-            dir: dir.to_path_buf(),
-            db,
-            keyspaces,
-            embeddings,
-            incarnation,
-            allocation: Mutex::new(()),
-            _lock: lock,
-        })
+        Ok(Self::from_open(dir, fresh, incarnation, lock))
     }
 
     /// The incarnation of the database: a new one after every wipe or replacement.

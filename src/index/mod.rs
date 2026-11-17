@@ -247,10 +247,7 @@ fn dir_size_bytes(dir: &Path) -> u64 {
 /// ceiling instead of trying to cache gigabytes. `INDEX_CACHE_BYTES_ENV` overrides this entirely
 /// for operators who want to tune past the heuristic.
 fn index_cache_bytes(dir: &Path) -> u64 {
-    if let Some(bytes) = std::env::var(INDEX_CACHE_BYTES_ENV)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
+    if let Some(bytes) = cache_bytes_override() {
         return bytes;
     }
     let disk_bytes = dir_size_bytes(dir);
@@ -261,6 +258,27 @@ fn index_cache_bytes(dir: &Path) -> u64 {
     )]
     let scaled_bytes = (disk_bytes as f64 * INDEX_CACHE_DISK_FRACTION) as u64;
     scaled_bytes.clamp(INDEX_CACHE_FLOOR_BYTES, INDEX_CACHE_CEILING_BYTES)
+}
+
+/// The Fjall block cache capacity, in bytes, of a group database ([`group::GroupDb`]): the ceiling.
+///
+/// The capacity is fixed when the database opens, but a group gains views while it is open, and
+/// every view's reads share the one cache. Sized from the disk at open, a group opened empty kept
+/// the 32 MiB floor however many worktrees then scanned into it, and round-robin reads over ten
+/// views missed it on nearly every block (`benches/index_read` at 10 versions: p95 of an exact name
+/// scan 3.3 ms against 0.4 ms with the ceiling). The per-worktree layout gave each view its own
+/// floor-sized cache instead. The cache allocates only the blocks it holds, so a small group uses
+/// no more than it reads; the bound stays explicit: one ceiling per open group, and a process holds
+/// one handle per group, so the daemon's pool of 16 workspaces is bounded by
+/// `16 * INDEX_CACHE_CEILING_BYTES` as before. `INDEX_CACHE_BYTES_ENV` overrides it.
+fn group_cache_bytes() -> u64 {
+    cache_bytes_override().unwrap_or(INDEX_CACHE_CEILING_BYTES)
+}
+
+fn cache_bytes_override() -> Option<u64> {
+    std::env::var(INDEX_CACHE_BYTES_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
 }
 
 /// `path` followed by each of its ancestor directories, innermost first.
@@ -519,14 +537,14 @@ impl IndexDb {
     /// in this view are merged into that store (last writer wins by timestamp) and removed from the
     /// view before any schema-mismatch wipe can destroy them.
     pub fn open_with_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
-        Self::open_inner(view_dir, Some(memory_dir), false)
+        Self::open_inner(view_dir, Some(memory_dir), false, None)
     }
 
     /// [`IndexDb::open_with_memory`] for read-only consumers: when another process holds the group
     /// memory store, the view index still opens and [`IndexDb::memory_detached`] reports `true`
     /// instead of the whole open failing with `Locked`. Only a lock on the view itself fails.
     pub fn open_tolerating_held_memory(view_dir: &Path, memory_dir: &Path) -> Result<Self, IndexError> {
-        Self::open_inner(view_dir, Some(memory_dir), true)
+        Self::open_inner(view_dir, Some(memory_dir), true, None)
     }
 
     /// Whether this handle holds no memory notes (see [`IndexDb::memory`]). Memory operations on
@@ -559,10 +577,21 @@ impl IndexDb {
     /// Open the database at `dir` (a group directory) with no memory store: [`group::GroupDb`] takes
     /// its keyspaces and gives each view its own memory handle.
     pub(crate) fn open_without_memory(dir: &Path) -> Result<Self, IndexError> {
-        Self::open_inner(dir, None, false)
+        Self::open_inner(dir, None, false, Some(group_cache_bytes()))
     }
 
-    fn open_inner(view_dir: &Path, memory_dir: Option<&Path>, tolerate_held_memory: bool) -> Result<Self, IndexError> {
+    /// Open the group database at `dir` to read it, writing nothing: no schema stamp, no flush, no
+    /// wipe. An index of another schema is [`IndexError::NeedsRescan`].
+    pub(crate) fn open_group_for_reading(dir: &Path) -> Result<Self, IndexError> {
+        Self::open_inner(dir, None, true, Some(group_cache_bytes()))
+    }
+
+    fn open_inner(
+        view_dir: &Path,
+        memory_dir: Option<&Path>,
+        tolerate_held_memory: bool,
+        cache_bytes: Option<u64>,
+    ) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
         // `tolerate_held_memory` is the read-only open: it deletes, migrates and wipes nothing. ~keep
         if !tolerate_held_memory {
@@ -572,7 +601,7 @@ impl IndexDb {
             path: dir.clone(),
             source,
         })?;
-        let cache_bytes = index_cache_bytes(&dir);
+        let cache_bytes = cache_bytes.unwrap_or_else(|| index_cache_bytes(&dir));
         let journal_bytes = if is_empty_dir(&dir) {
             FJALL_BULK_JOURNAL_BYTES
         } else {

@@ -145,19 +145,59 @@ pub(super) fn open_index_for_writer(
     Ok((db, rebuild))
 }
 
-/// The read-only open of a view. It uses the group index only through a handle this process already
-/// holds: opening the database writes (journal, schema stamp, incarnation), and an open without the
-/// workspace lock writes nothing (ADR-0030 rule 26), so a process without the handle serves from
-/// blobs. `Ok(None)` serves from blobs: no handle here, the view was never scanned into the group,
-/// or its file map does not match the group. The second value says whether a scan owes the view a
-/// rebuild.
+/// How a read-only open may reach the group database when its process holds no handle on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadAccess {
+    /// Only through a handle the process already holds: a long-lived reader (`serve` beside a
+    /// writer) must never hold the group lock, or every writer of the group would wait on it.
+    HeldHandle,
+    /// Also by taking a free group lock without waiting and opening the database for reading only,
+    /// for the length of one CLI command run with no daemon (ADR-0036 rule 3).
+    BriefLock,
+}
+
+/// The group database opened for a one-shot query: under the group lock taken without waiting, by
+/// an open that writes no row. `None` when the lock is held (the holder writes; serve from blobs),
+/// the database does not exist, or no writer has opened it yet.
+fn open_group_for_query(dir: &Path) -> Result<Option<Arc<GroupDb>>, StoreError> {
+    if !dir.join(crate::index::INDEX_DIR).is_dir() {
+        return Ok(None);
+    }
+    let lock = match super::try_acquire_lock_as(dir, LockHolder::Query) {
+        Ok(lock) => lock,
+        Err(StoreError::Locked { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match GroupDb::open_shared_for_reading(dir, Box::new(lock)) {
+        Ok(group) => Ok(group),
+        Err(IndexError::Fjall(fjall::Error::Locked)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The read-only open of a view. Opening the group database as a writer does (journal flush,
+/// schema stamp, incarnation, wipe) is never done here: an open without the workspace lock writes
+/// nothing (ADR-0030 rule 26). `access` says whether a process holding no handle may open the
+/// database for reading under a briefly held group lock. `Ok(None)` serves from blobs: no handle,
+/// the view was never scanned into the group, or its file map does not match the group. The second
+/// value says whether a scan owes the view a rebuild.
 pub(super) fn open_index_read_only(
     root: &Path,
     view: &str,
     index: &Index,
+    access: ReadAccess,
 ) -> Result<(Option<IndexDb>, bool), StoreError> {
-    let Some(group) = GroupDb::shared(&group_index_dir(root)) else {
-        return Ok((None, false));
+    let dir = group_index_dir(root);
+    let held = GroupDb::shared(&dir);
+    let group = match (held, access) {
+        (Some(group), _) => group,
+        (None, ReadAccess::HeldHandle) => return Ok((None, false)),
+        (None, ReadAccess::BriefLock) => match open_group_for_query(&dir) {
+            Ok(Some(group)) => group,
+            Ok(None) => return Ok((None, false)),
+            Err(StoreError::Index(IndexError::NeedsRescan { .. })) => return Ok((None, !index.files.is_empty())),
+            Err(error) => return Err(error),
+        },
     };
     let Some(view_id) = group.view_id(&workspace_key(root), view)? else {
         return Ok((None, !index.files.is_empty()));

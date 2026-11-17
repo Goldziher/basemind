@@ -106,6 +106,69 @@ fn a_read_only_open_shares_the_group_index_only_when_its_process_holds_it() {
     assert_eq!(alone.index.files.len(), 1, "the file map still serves");
 }
 
+/// A one-shot query with no handle in its process opens the group index for reading under a free
+/// group lock (ADR-0036 rule 3), writes no row doing so, and serves from blobs while another
+/// process holds the lock.
+#[test]
+fn a_query_open_reads_the_group_index_under_a_free_group_lock() {
+    use crate::index::view::IndexView as _;
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("a.rs"), b"pub fn query_open_fixture() {}\n").expect("write");
+    let mut writer = Store::open(tmp.path(), VIEW_WORKING).expect("writer");
+    crate::scanner::scan(
+        tmp.path(),
+        &mut writer,
+        &crate::config::ConfigV1::with_defaults(),
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Deferred,
+    )
+    .expect("scan");
+    drop(writer);
+    let group_dir = crate::store_layout::group_index_dir(tmp.path());
+    assert!(
+        crate::index::group::GroupDb::shared(&group_dir).is_none(),
+        "no handle is left"
+    );
+
+    let query = Store::open_for_query(tmp.path(), VIEW_WORKING).expect("query open");
+    let db = query
+        .index_db
+        .as_ref()
+        .expect("the free group lock lets the query read the index");
+    assert_eq!(db.view().symbols_by_name_lookup("query_open_fixture", 10).len(), 1);
+    assert!(!query.rescan_owed());
+    drop(query);
+    assert!(
+        crate::index::group::GroupDb::shared(&group_dir).is_none(),
+        "the query keeps no handle"
+    );
+
+    // A lock file description of its own contends with the query's, as another process's would. ~keep
+    let held = acquire_lock_as(&group_dir, LockHolder::Scan).expect("hold the group lock");
+    let blobs = Store::open_for_query(tmp.path(), VIEW_WORKING).expect("query open");
+    assert!(
+        blobs.index_db.is_none(),
+        "a held group lock serves from blobs, without waiting"
+    );
+    assert_eq!(blobs.index.files.len(), 1, "the file map still serves");
+    drop((blobs, held));
+}
+
+/// A query open of a group no writer opened yet writes nothing and serves from blobs.
+#[test]
+fn a_query_open_of_an_absent_group_index_creates_nothing() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("a.rs"), b"pub fn absent_group_fixture() {}\n").expect("write");
+    let query = Store::open_for_query(tmp.path(), VIEW_WORKING).expect("query open");
+    assert!(query.index_db.is_none());
+    assert!(
+        !crate::store_layout::group_index_dir(tmp.path()).exists(),
+        "a read created the group directory"
+    );
+}
+
 #[test]
 fn open_read_only_allows_unscanned_working_view() {
     init_isolated_cache();

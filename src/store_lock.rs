@@ -31,6 +31,8 @@ pub enum LockHolder {
     Daemon,
     /// GC / cache maintenance or any caller that did not specify a more precise identity.
     Maintenance,
+    /// A one-shot CLI query with no daemon, reading the group index for the length of one command.
+    Query,
 }
 
 impl LockHolder {
@@ -44,6 +46,7 @@ impl LockHolder {
             LockHolder::Rescan => "basemind rescan",
             LockHolder::Daemon => "basemind comms daemon",
             LockHolder::Maintenance => "a basemind cache/maintenance task",
+            LockHolder::Query => "a one-shot basemind query",
         }
     }
 }
@@ -173,8 +176,18 @@ pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<LockGuard, StoreError>
 /// Acquire the store lock, recording `holder` in the `.lock.meta` sidecar on success and
 /// reading the *existing* holder's sidecar on contention so the error names the live holder.
 pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
-    let path = basemind_dir.join(LOCK_FILE);
     const LOCK_ATTEMPTS: u32 = 25;
+    acquire_lock_within(basemind_dir, holder, LOCK_ATTEMPTS)
+}
+
+/// [`acquire_lock_as`] without waiting: one attempt, for a reader that answers from blobs when the
+/// lock is held rather than delay its caller or the holder.
+pub(crate) fn try_acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
+    acquire_lock_within(basemind_dir, holder, 1)
+}
+
+fn acquire_lock_within(basemind_dir: &Path, holder: LockHolder, attempts: u32) -> Result<LockGuard, StoreError> {
+    let path = basemind_dir.join(LOCK_FILE);
     const LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
     // A lock won on a file no longer at the path is not contention: the remover that held it is
     // gone, and the next open finds or creates the file that is there. Bounded apart from the
@@ -182,7 +195,7 @@ pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result
     // lock as held.
     const STALE_RETRIES: u32 = 100;
     let (mut contended, mut stale) = (0, 0);
-    while contended < LOCK_ATTEMPTS && stale < STALE_RETRIES {
+    while contended < attempts && stale < STALE_RETRIES {
         // Opened again on every attempt, and checked after the lock is won: a remover holds this
         // lock while it takes the whole directory away, and a lock won on the file it unlinked
         // would guard nothing against the next opener, who creates a new one.
@@ -197,7 +210,7 @@ pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result
             Ok(()) => stale += 1,
             Err(_) => {
                 contended += 1;
-                if contended < LOCK_ATTEMPTS {
+                if contended < attempts {
                     std::thread::sleep(LOCK_BACKOFF);
                 }
             }
