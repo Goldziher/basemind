@@ -21,8 +21,7 @@
 //! Both encodings are wrapped in a base64url-without-padding `String` so the wire shape
 //! is always a single opaque field on the response — clients never look inside.
 
-use rmcp::ErrorData as McpError;
-use rmcp::schemars;
+use crate::engine::error::EngineError;
 use serde::{Deserialize, Serialize};
 
 /// Opaque resume token. Pass `cursor` from the previous response's `next_cursor`
@@ -43,13 +42,13 @@ pub struct Cursor(pub String);
 
 impl Cursor {
     /// Encode the raw last-seen key bytes from a Fjall scan as an opaque cursor.
-    pub(super) fn encode_fjall(last_key: &[u8]) -> Self {
+    pub(crate) fn encode_fjall(last_key: &[u8]) -> Self {
         Cursor(base64url_encode(last_key))
     }
 
     /// Decode a Fjall cursor back into the raw key bytes.
-    pub(super) fn decode_fjall(&self) -> Result<Vec<u8>, McpError> {
-        base64url_decode(&self.0).map_err(|e| McpError::invalid_params(format!("invalid cursor: {e}"), None))
+    pub(crate) fn decode_fjall(&self) -> Result<Vec<u8>, EngineError> {
+        base64url_decode(&self.0).map_err(|e| EngineError::invalid_argument(format!("invalid cursor: {e}")))
     }
 
     /// Encode an in-memory (offset, snapshot_id) cursor. `pub(crate)` so the
@@ -65,11 +64,11 @@ impl Cursor {
     }
 
     /// Decode an in-memory cursor back into `(offset, snapshot_id)`.
-    pub(super) fn decode_in_memory(&self) -> Result<(u64, u32), McpError> {
+    pub(crate) fn decode_in_memory(&self) -> Result<(u64, u32), EngineError> {
         let bytes =
-            base64url_decode(&self.0).map_err(|e| McpError::invalid_params(format!("invalid cursor: {e}"), None))?;
+            base64url_decode(&self.0).map_err(|e| EngineError::invalid_argument(format!("invalid cursor: {e}")))?;
         let payload: InMemCursor = rmp_serde::from_slice(&bytes)
-            .map_err(|e| McpError::invalid_params(format!("invalid in-memory cursor payload: {e}"), None))?;
+            .map_err(|e| EngineError::invalid_argument(format!("invalid in-memory cursor payload: {e}")))?;
         Ok((payload.o, payload.s))
     }
 }
@@ -83,7 +82,7 @@ struct InMemCursor {
 /// Compute the exclusive upper bound for a prefix scan: increment the last byte that
 /// isn't `0xFF`, dropping trailing `0xFF` bytes. Returns `None` when the prefix is all
 /// `0xFF` (the upper bound is "past the end of the keyspace" — use unbounded then).
-pub(super) fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut out = prefix.to_vec();
     while let Some(last) = out.last_mut() {
         if *last == 0xFF {

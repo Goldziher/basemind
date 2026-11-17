@@ -1,5 +1,5 @@
 //! MCP server per-connection state: [`ServerState`] (identity + a shared read stack), its
-//! [`Lifecycle`] classifier, and the [`MapCache`] read stack over the indexed corpus.
+//! [`Lifecycle`](crate::engine::Lifecycle) classifier, and the [`MapCache`] read stack over the indexed corpus.
 //!
 //! The heavy, workspace-level read fields live on [`Workspace`](super::Workspace)
 //! (in `src/engine/workspace.rs`) so one stack can be shared — via an [`Arc`] — across many connections.
@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use super::{Workspace, l1_cache, types};
-use crate::engine::{Lifecycle, MapCache};
+use crate::engine::MapCache;
 use crate::store::Store;
 
 /// An owned read guard on a workspace's store, from [`ServerState::store_read`].
@@ -141,16 +141,6 @@ impl ServerState {
         false
     }
 
-    /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
-    pub(crate) fn lifecycle(&self) -> Lifecycle {
-        use std::sync::atomic::Ordering::Relaxed;
-        Lifecycle::from_flags(
-            self.shared.initial_scan_active.load(Relaxed),
-            self.shared.cache_warming.load(Relaxed),
-            self.shared.rescan_active.load(Relaxed),
-        )
-    }
-
     /// Barrier every cache-reading tool crosses before it touches [`ServerState::cache`].
     ///
     /// Two regimes:
@@ -161,8 +151,9 @@ impl ServerState {
     /// * **`serve`** — wait for the background preload to publish the full map, bounded by
     ///   [`CACHE_WARM_WAIT_CAP`](crate::engine::workspace::CACHE_WARM_WAIT_CAP). No-op once warm (the common path).
     ///
-    /// Neither regime waits on [`Lifecycle::BuildingIndex`] — a from-scratch scan can run for
-    /// minutes, so those tools return the partial index plus a
+    /// Neither regime waits on
+    /// [`Lifecycle::BuildingIndex`](crate::engine::Lifecycle::BuildingIndex) — a from-scratch scan
+    /// can run for minutes, so those tools return the partial index plus a
     /// [`lifecycle_notice`](Self::lifecycle_notice) telling the client to poll.
     pub(crate) async fn await_cache_ready(&self) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -235,39 +226,8 @@ impl ServerState {
         }
     }
 
-    /// The `index_rebuilding` notice while the workspace's `status.json` records a partial scan or an
-    /// uncommitted resolve pass. The daemon marks it when it opens a workspace whose fjall index was
-    /// wiped or is empty over a populated file map, and a session that does not hold the index
-    /// (`daemon_writer`, daemon-hosted) cannot see that any other way.
-    fn index_rebuilding_notice(&self) -> Option<types::LifecycleNotice> {
-        let status = crate::store::read_status_sidecar(&crate::store::workspace_cache_dir(&self.shared.root));
-        types::LifecycleNotice::for_scan_status(status.as_ref())
-    }
-
-    /// A [`LifecycleNotice`](types::LifecycleNotice) to attach to a tool response, or `None` when
-    /// [`Ready`](Lifecycle::Ready). Lets every read tool label a possibly-incomplete result with the
-    /// server state + an actionable message, so an agent knows to retry rather than concluding "empty".
-    /// The notice for a workspace nothing has been scanned into, so an empty answer is never read
-    /// as "no matches". Judged on the store's file map, not the in-RAM map, which is also empty
-    /// before a lazy build. `None` while another task holds the store lock.
-    fn empty_index_notice(&self) -> Option<types::LifecycleNotice> {
-        let store = self.shared.try_store_read().ok()?;
-        (store.index.files.is_empty() && store.index.doc_files.is_empty()).then(types::LifecycleNotice::empty_index)
-    }
-
+    /// The notice a read-tool response carries ([`Workspace::lifecycle_notice`]).
     pub(crate) fn lifecycle_notice(&self) -> Option<types::LifecycleNotice> {
-        types::LifecycleNotice::for_state(self.lifecycle())
-            .or_else(|| self.index_rebuilding_notice())
-            .or_else(|| self.empty_index_notice())
-            .or_else(|| {
-                // A read-only session whose projected call/impl indexes were capped answers reference
-                // queries from a truncated set. Reported through the same channel as the warming/
-                // rescanning states so a caller never reads an incomplete result as "no matches".
-                self.shared
-                    .cache
-                    .load()
-                    .projections_capped()
-                    .then(types::LifecycleNotice::projections_capped)
-            })
+        self.shared.lifecycle_notice()
     }
 }

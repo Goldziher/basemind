@@ -8,6 +8,7 @@
 //!
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
+mod adapter;
 pub(crate) mod admission;
 /// Who a daemon-hosted session is to the agent tools.
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -17,11 +18,11 @@ mod background;
 mod budget;
 mod by_path;
 mod completions;
-pub(crate) mod cursor;
+pub(crate) use crate::engine::cursor;
 mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
-mod freshness;
+use crate::engine::freshness;
 mod helpers;
 pub(crate) use helpers::BUSY_DATA;
 #[cfg(test)]
@@ -94,7 +95,7 @@ mod state;
 mod strict;
 mod tasks;
 pub(crate) mod telemetry;
-pub(crate) mod tokens;
+pub(crate) use crate::engine::tokens;
 mod tool_contract;
 mod tools;
 mod tools_admin;
@@ -120,8 +121,8 @@ use rmcp::task_manager::TaskManager;
 
 use crate::store::Store;
 
+pub(crate) use crate::engine::MapCache;
 pub(crate) use crate::engine::Workspace;
-pub(crate) use crate::engine::{Lifecycle, MapCache};
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub use agent_context::AgentContext;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -632,6 +633,7 @@ mod tool_contract_tests;
 #[cfg(test)]
 mod map_cache_tests {
     use super::*;
+    use crate::engine::Lifecycle;
     use std::fs;
 
     fn sym_names(cache: &MapCache, rel: &str) -> Vec<String> {

@@ -324,7 +324,7 @@ fn definition_location(
         return Ok(Some(located(query_source, def_path)));
     }
     let target = store.lookup(&def_path).and_then(|entry| {
-        let file = super::tool_contract::IndexedFiles::of(state).indexed_path(&def_path)?;
+        let file = super::tool_contract::IndexedFiles::of(&state.shared).indexed_path(&def_path)?;
         Some((file, entry))
     });
     let Some((file, entry)) = target else {

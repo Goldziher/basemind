@@ -59,22 +59,7 @@ tool_args! {
     IndexRescanParams => "index_rescan",
 }
 
-/// Arguments of `code_outline`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CodeOutlineParams {
-    /// Repo-relative file path.
-    pub path: RelPath,
-    /// Max symbols (default 500).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
+pub use crate::engine::types::code::CodeOutlineParams;
 
 /// Arguments of `code_symbols`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

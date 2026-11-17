@@ -25,17 +25,10 @@ pub struct SavingsRow {
     pub baseline: &'static str,
 }
 
-/// `bytes / 4` token estimate, saturating. The byte-only fallback used wherever the full text
-/// is NOT in hand — only a byte length. `pub(super)` so the budget helper ([`super::budget`])
-/// shares the exact same bytes→token factor for its per-item ranking heuristic.
-pub(super) fn bytes_to_tokens(bytes: u64) -> u64 {
-    bytes / 4
-}
-
 /// Real token count of `text`, routed through [`super::tokens::count_tokens`]: a true o200k
 /// (gpt-4o) tokenizer under the `documents` feature, `bytes / 4` otherwise. Use this — not
-/// [`bytes_to_tokens`] — wherever the full response text is available, so telemetry reports
-/// honest token figures when a tokenizer is compiled in.
+/// [`super::tokens::bytes_to_tokens`] — wherever the full response text is available, so telemetry
+/// reports honest token figures when a tokenizer is compiled in.
 fn tokens_for_text(text: &str) -> u64 {
     super::tokens::count_tokens(text)
 }
@@ -162,7 +155,8 @@ fn canonical_key(tool: &str) -> &str {
 /// The live telemetry entry point. The `actual` count routes through [`tokens_for_text`] — a
 /// real o200k tokenizer under the `documents` feature, the `bytes / 4` heuristic otherwise —
 /// so telemetry reports honest counts when a tokenizer is compiled in. The byte-only fallback
-/// ([`bytes_to_tokens`]) remains for paths that hold only a byte length, e.g. the budget loop.
+/// ([`super::tokens::bytes_to_tokens`]) remains for paths that hold only a byte length, e.g. the
+/// budget loop.
 ///
 /// `corpus_bytes` is the total byte count of every indexed file (held on `ServerState` and
 /// recomputed after each rescan). Retained for signature stability and potential future

@@ -10,100 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::cursor::Cursor;
 use crate::path::RelPath;
 
-/// Lifecycle label attached to a read-tool response when the server is not fully [`Ready`]. Lets an
-/// agent distinguish "index still loading — retry" from a genuine empty result, so a query issued during
-/// startup warmup or a from-scratch index build is never misread as "no matches".
-///
-/// [`Ready`]: super::Lifecycle::Ready
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
-pub(crate) struct LifecycleNotice {
-    /// Machine-readable state tag: `"warming_up"`, `"building_index"`, `"rescanning"`, or `"index_rebuilding"`.
-    pub state: &'static str,
-    /// Human/agent-readable explanation of what the server is doing and what it means for this result.
-    pub message: &'static str,
-    /// `true` when the caller should retry shortly for complete results (warming / building), `false`
-    /// when the current result is usable but may be a moment stale (rescanning).
-    pub retry: bool,
-}
-
-impl LifecycleNotice {
-    /// Build the notice for `state`, or `None` when [`Ready`](super::Lifecycle::Ready) (the common path,
-    /// so no notice field is serialized on a healthy response).
-    pub(crate) fn for_state(state: super::Lifecycle) -> Option<Self> {
-        use super::Lifecycle;
-        match state {
-            Lifecycle::Ready => None,
-            Lifecycle::WarmingUp => Some(Self {
-                state: "warming_up",
-                message: "Index is warming up (loading the code map into memory). Results may be \
-                          incomplete — retry in a moment for the full set.",
-                retry: true,
-            }),
-            Lifecycle::BuildingIndex => Some(Self {
-                state: "building_index",
-                message: "Index is building for the first time. Results are incomplete — call \
-                          `index_status {}` until `indexing` is false, then retry.",
-                retry: true,
-            }),
-            Lifecycle::Rescanning => Some(Self {
-                state: "rescanning",
-                message: "An incremental rescan is in progress after a file change. Results are usable \
-                          but may be a moment stale.",
-                retry: false,
-            }),
-        }
-    }
-
-    /// The notice for a read-only session whose projected call / implementation indexes hit their
-    /// byte cap. Such a session has no Fjall index to query, so those projections ARE the answer
-    /// source; once capped, reference-shaped results are truncated rather than merely stale.
-    /// `retry: false` because rerunning changes nothing — the fix is a larger
-    /// `[resources] max_map_cache_mb`, or a session that owns the index.
-    pub(crate) fn projections_capped() -> Self {
-        Self {
-            state: "projections_capped",
-            message: "No daemon was reachable, so this session answered from in-memory reference \
-                      projections that hit the `[resources] max_map_cache_mb` budget; reference / \
-                      implementation results are truncated. Start the daemon or raise the budget \
-                      for complete results.",
-            retry: false,
-        }
-    }
-
-    /// [`index_rebuilding`](Self::index_rebuilding) when `status` records a degraded scan, else `None`
-    /// (healthy, or no sidecar yet: the never-scanned case belongs to the building-index lifecycle).
-    pub(crate) fn for_scan_status(status: Option<&crate::store::StatusSidecar>) -> Option<Self> {
-        status
-            .is_some_and(crate::store::StatusSidecar::is_degraded)
-            .then(Self::index_rebuilding)
-    }
-
-    /// The notice attached when nothing has been scanned: every list is empty for that reason, not
-    /// because the query matched nothing.
-    pub(crate) fn empty_index() -> Self {
-        Self {
-            state: "empty_index",
-            message: "The index is empty: nothing has been scanned for this workspace, so this result \
-                      says nothing about the code. Run `index_rescan {}` (or `basemind scan` \
-                      in a shell) and retry.",
-            retry: true,
-        }
-    }
-
-    /// The notice for a workspace whose last scan is partial or whose resolve pass has not
-    /// committed, notably an index wiped by a schema revision bump and rebuilding. Reference-shaped
-    /// reads (`references` / `callers` / `implementations`) answer empty or short until it finishes.
-    pub(crate) fn index_rebuilding() -> Self {
-        Self {
-            state: "index_rebuilding",
-            message: "index rebuilding — results incomplete. A full scan is rebuilding the symbol / \
-                      reference index; an empty `references` / `callers` / `implementations` answer \
-                      does not mean there are none. Call `index_status {}` until `degraded` clears, then \
-                      retry.",
-            retry: true,
-        }
-    }
-}
+pub(crate) use crate::engine::types::LifecycleNotice;
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchSymbolsParams {
@@ -270,55 +177,7 @@ pub(super) fn default_true() -> bool {
     true
 }
 
-/// Response of `code_outline`.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct OutlineResponse {
-    pub path: RelPath,
-    pub language: String,
-    pub size_bytes: u64,
-    /// The parser reported syntax errors; the outline may be missing symbols.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub had_errors: bool,
-    /// Symbols in the file, across every page.
-    pub total: usize,
-    /// True when the token budget dropped trailing symbols; page them with `next_cursor`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    /// The file changed since it was indexed, so this outline was extracted from the file as it is
-    /// now; the other tools describe the indexed content until `index_rescan`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub stale: bool,
-    pub symbols: Vec<OutlineSymbol>,
-    /// Imported modules, on the first page only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub imports: Vec<String>,
-    /// True when `imports` was cut at its cap of 200: `truncated_reason` is `imports` and
-    /// `omitted` counts the imports left out. The symbol list is never cut this way; it pages.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub truncated_reason: Option<&'static str>,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub omitted: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Cursor>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice: Option<LifecycleNotice>,
-    #[serde(default)]
-    pub elapsed_us: u64,
-}
-
-/// One symbol of a `code_outline` page. `line` and `end_line` are 1-based and inclusive, the span
-/// `code_read` and `git_blame` take.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct OutlineSymbol {
-    pub name: String,
-    pub kind: &'static str,
-    pub line: u32,
-    pub end_line: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
-}
+pub(super) use crate::engine::types::code::{OutlineResponse, OutlineSymbol};
 
 /// One `code_symbols` row: where a definition is and what it is. Rows are ranked: the exact name,
 /// then names it prefixes, then names holding it, then (with `fuzzy`) fuzzy matches; which of those
@@ -726,10 +585,7 @@ pub struct WorkspaceGrepParams {
     pub cursor: Option<Cursor>,
 }
 
-/// `skip_serializing_if` for a count that is reported only when something was left out.
-pub(super) fn is_zero(count: &usize) -> bool {
-    *count == 0
-}
+pub(super) use crate::engine::types::is_zero;
 
 /// One `code_grep` hit, listed under its file ([`super::by_path`] writes it).
 #[derive(Debug, schemars::JsonSchema)]
