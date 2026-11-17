@@ -298,6 +298,22 @@ impl super::IndexDb {
     pub(crate) fn holds_legacy_memory(&self) -> bool {
         holds_legacy_rows(&self.db)
     }
+
+    /// Move the notes in the database a view kept under `view_dir` before the group index into
+    /// this handle's notes store ([`migrate_legacy`]). `false` when that database holds notes this
+    /// handle has no store to take: the caller must keep it. The caller holds the workspace lock.
+    pub(crate) fn adopt_legacy_view_notes(&self, view_dir: &Path) -> Result<bool, IndexError> {
+        let view_db = Database::builder(view_dir.join(super::INDEX_DIR))
+            .worker_threads(FJALL_WORKER_THREADS)
+            .open()?;
+        if !holds_legacy_rows(&view_db) {
+            return Ok(true);
+        }
+        match self.memory.as_deref() {
+            Ok(memory) => migrate_legacy(&view_db, memory).map(|()| true),
+            Err(_) => Ok(false),
+        }
+    }
 }
 
 /// The only fields the merge needs; a `MemoryRecord` is stored as a named msgpack map, so unknown

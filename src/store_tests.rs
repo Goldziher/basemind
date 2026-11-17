@@ -785,3 +785,40 @@ fn a_file_map_whose_version_cannot_be_read_is_set_aside_not_deleted() {
         "the unreadable map is kept aside, byte for byte"
     );
 }
+
+/// A view's own `index.fjall`, left by a build from before the group index, may hold the notes of
+/// that time: the writer open moves them into the group's notes store before it deletes the
+/// database, so an upgrade keeps them.
+#[test]
+fn the_writer_open_keeps_the_notes_of_an_older_view_index_it_deletes() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let view_dir = scanned_view(tmp.path());
+    {
+        let db = fjall::Database::builder(view_dir.join(crate::index::INDEX_DIR))
+            .open()
+            .expect("an older view index");
+        let notes = db
+            .keyspace("memory_by_key", fjall::KeyspaceCreateOptions::default)
+            .expect("its notes");
+        notes
+            .insert(b"older-note", b"kept across the upgrade")
+            .expect("write a note");
+        db.persist(fjall::PersistMode::SyncAll).expect("persist");
+    }
+
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("writer open");
+    assert!(
+        !view_dir.join(crate::index::INDEX_DIR).exists(),
+        "the older view index is deleted"
+    );
+    let memory = store.index_db.as_ref().expect("index").memory().expect("notes store");
+    let notes = memory
+        .notes()
+        .expect("open notes")
+        .expect("the group notes store exists");
+    assert_eq!(
+        notes.get(b"older-note").expect("read").as_deref(),
+        Some(&b"kept across the upgrade"[..])
+    );
+}

@@ -119,7 +119,8 @@ fn reconcile(index: &mut Index, group: &GroupDb, db: &IndexDb, view_id: u32, vie
 
 /// The writer open of a view in the group layout: the group database, the view's id (allocated on
 /// first use) and the reconciled file map. The view's database of its own, left by the per-view
-/// layout, is deleted: the group index replaces it.
+/// layout, is deleted: the group index replaces it. Notes an older build kept in it move to the
+/// group's notes store first; while that store cannot take them, the database is kept.
 pub(super) fn open_index_for_writer(
     root: &Path,
     view: &str,
@@ -127,12 +128,19 @@ pub(super) fn open_index_for_writer(
     index: &mut Index,
     holder: LockHolder,
 ) -> Result<(IndexDb, bool), StoreError> {
-    if view_dir.join(crate::index::INDEX_DIR).exists() {
-        crate::index::durability::discard_index(view_dir)?;
-    }
     let group = open_group_for_writer(root, holder)?;
     let view_id = group.allocate_view_id(&workspace_key(root), view)?;
     let db = group.open_view(view_id, &memory_store_dir(root), false)?;
+    if view_dir.join(crate::index::INDEX_DIR).exists() {
+        if db.adopt_legacy_view_notes(view_dir)? {
+            crate::index::durability::discard_index(view_dir)?;
+        } else {
+            tracing::warn!(
+                view,
+                "the notes store cannot take this view's notes yet; its old index is kept until it can"
+            );
+        }
+    }
     let rebuild = reconcile(index, &group, &db, view_id, view)?;
     Ok((db, rebuild))
 }
