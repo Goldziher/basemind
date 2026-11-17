@@ -284,8 +284,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: xberg-io/actions/setup-mise@v1
         with:
-          install-args: python uv
+          install-args: python uv node pnpm
       # ~keep The session-start tests skip themselves without `jq`, so its absence must fail the step.
+      # ~keep The registry archive tests pack the npm package with `pnpm`.
       # ~keep plugin:pytest covers the hooks, both launchers, the exports, the pip downloader and the
       # ~keep Hermes package.
       - name: pytest (plugin hooks, launchers, exports, pip and Hermes packages)
