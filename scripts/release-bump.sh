@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Atomically bump the basemind version across every shipped surface.
 # Usage: ./scripts/release-bump.sh <version>
-#   Cargo.toml                            [package] version
+#   Cargo.toml                            [package] version, and its basemind-agents requirement
+#   crates/basemind-agents/Cargo.toml     [package] version (published beside basemind, lock-step)
 #   npm-package/package.json              "version"
 
 set -euo pipefail
@@ -37,7 +38,13 @@ CURRENT_RELEASE_MINOR="$(grep -E 'pub const RELEASE_MINOR' src/version.rs | sed 
 
 echo "→ Cargo.toml         → $VERSION"
 sed -i.bak -E "s/^version = \"[^\"]+\"$/version = \"$VERSION\"/" Cargo.toml
+sed -i.bak -E "s/^(basemind-agents = \{ version = \")[^\"]+(\")/\1$VERSION\2/" Cargo.toml
 rm Cargo.toml.bak
+
+# basemind-agents is published to crates.io with basemind and moves with it (ADR-0040).
+echo "→ basemind-agents    → $VERSION"
+sed -i.bak -E "s/^version = \"[^\"]+\"$/version = \"$VERSION\"/" crates/basemind-agents/Cargo.toml
+rm crates/basemind-agents/Cargo.toml.bak
 
 # The config schema snapshot embeds the crate version in the default user agent;
 # tests/config_schema.rs asserts it byte-equal, so it must move with the version.
