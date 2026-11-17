@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:d40ee294a62f6353280fbb1a93df3d74ef311fbbb12e9b98eb1ab66002990671
-Source-Hash: blake3:4790ee5e237c434ff57929ff0428e9c5da0c4446ea6a6c82b509bbf114d292a7
+Content-Hash: blake3:45449a31ed6d3836a24655cfb181ccc87ad0a90328e3dbfc6ccc136e2437b768
+Source-Hash: blake3:f893b90330756fe7bd43b98966ed88c6e2116dfd9e8e37d995c2c64aaa745875
 Schema-Version: v1
 -->
 
@@ -190,7 +190,7 @@ stops a scan cleanly: work already committed is kept.
 - `basemind hook install` resolves the hooks dir through git (`core.hooksPath` and linked worktrees
   work), never overwrites a pre-commit hook it did not write unless `--force` (the old one is kept
   as `pre-commit.bak`), and the installed hook fails open: it can never block a commit.
-- Memory, `refs`/`callers`, the grep prefilter and `rescan` are forwarded to a running daemon
+- Memory, `refs`/`callers`, the grep prefilter, `scan` and `rescan` are forwarded to a running daemon
   when there is one, so they work alongside a live server.
 - All paths are repository-relative with forward-slash separators.
 - The CLI opens the index read-only; safe to run alongside a live `basemind serve` process.
