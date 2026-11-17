@@ -643,12 +643,31 @@ impl BasemindServer {
             return;
         };
         let _ = index;
+        // ~keep Cleared by whichever task below ends the sync, however it ends.
+        struct Syncing(Arc<ServerState>);
+        impl Drop for Syncing {
+            fn drop(&mut self) {
+                self.0
+                    .shared
+                    .history_syncing
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let begin = || {
+            state
+                .shared
+                .history_syncing
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Syncing(Arc::clone(state))
+        };
         // ~keep A daemon-hosted handle syncs in-process through the seam (the daemon's own build lock),
         // ~keep never over the socket back to itself.
         #[cfg(all(feature = "comms", any(unix, windows)))]
         if let Some(host) = crate::git_history::remote::history_host(index) {
             let root = state.shared.root.clone();
+            let syncing = begin();
             tokio::spawn(async move {
+                let _syncing = syncing;
                 match host
                     .run_history(root, crate::git_history::proto::GitHistoryOp::Sync)
                     .await
@@ -667,7 +686,9 @@ impl BasemindServer {
         if index.is_daemon_backed() {
             let root = state.shared.root.clone();
             let agent_id = state.agent_id.clone();
+            let syncing = begin();
             tokio::spawn(async move {
+                let _syncing = syncing;
                 let Ok(agent) = crate::comms::ids::AgentId::parse(agent_id) else {
                     return;
                 };
@@ -680,7 +701,9 @@ impl BasemindServer {
         }
         if let (Some(git_history), Some(repo)) = (state.shared.git_history.clone(), state.shared.repo.clone()) {
             let history_dir = history_dir.to_path_buf();
+            let syncing = begin();
             tokio::task::spawn_blocking(move || {
+                let _syncing = syncing;
                 match crate::git_history::builder::sync(&git_history, &repo, &history_dir) {
                     Ok(outcome) => tracing::info!(?outcome, "git-history index sync complete"),
                     Err(error) => tracing::warn!(%error, "git-history index sync failed; tools live-walk"),

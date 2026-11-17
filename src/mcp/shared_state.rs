@@ -114,6 +114,10 @@ pub(crate) struct SharedReadStack {
     /// that can be starved for minutes by other sessions' scans. Cache-reading tools await
     /// [`cache_ready`](Self::cache_ready) while this is set (see [`super::ServerState::await_cache_ready`]).
     pub(crate) cache_warming: AtomicBool,
+    /// True while this serve's boot-time git-history sync runs. A paged git walk that spans its end
+    /// is refused (the index orders commits differently from the live walk), so `index_status`
+    /// reports it for a caller that wants to page through history without that refusal.
+    pub(crate) history_syncing: AtomicBool,
     /// Wall-clock duration of the boot-time cache preload, in milliseconds, once it completes
     /// (`0` = still warming or no deferred preload this session). Surfaced on `status` as `warm_ms`.
     pub(crate) cache_warm_ms: AtomicU64,
@@ -264,6 +268,7 @@ impl SharedReadStack {
             initial_scan_active: AtomicBool::new(false),
             initial_scan_ms: AtomicU64::new(0),
             cache_warming: AtomicBool::new(defer_warm),
+            history_syncing: AtomicBool::new(false),
             cache_warm_ms: AtomicU64::new(0),
             cache_ready: Notify::new(),
             rescan_active: AtomicBool::new(false),
