@@ -159,8 +159,17 @@ fn a_budget_whose_records_do_not_fit_the_reserve_is_refused() {
         sink.clone(),
     );
     assert!(first.is_ok(), "{:?}", first.err());
-    let second = Supervisor::new(LaunchPolicy::new(spec.clone()).unwrap(), configs(), registry(), sink);
+    let second = Supervisor::new(
+        LaunchPolicy::new(spec.clone()).unwrap(),
+        configs(),
+        registry(),
+        sink.clone(),
+    );
     assert_eq!(second.err(), Some(PolicyError::AuditReserve { needed }));
+    // A supervisor that is gone gives its claim back: a rebuilt one fits again.
+    drop(first);
+    let rebuilt = Supervisor::new(LaunchPolicy::new(spec.clone()).unwrap(), configs(), registry(), sink);
+    assert!(rebuilt.is_ok(), "{:?}", rebuilt.err());
     // A budget too large for a log of its own is refused the same way.
     let small = Arc::new(
         crate::audit::FileAuditSink::open(scratch.path.join("small.jsonl"))

@@ -134,9 +134,19 @@ pub(crate) struct Inner {
     allows: Arc<AtomicU32>,
     /// Set once a record the reserve holds room for could not be written.
     pub(crate) exhausted: Arc<AtomicBool>,
+    /// The bytes of the log's reserve claimed for this supervisor's life.
+    reserved: u64,
     refusals: Refusals,
     /// Serializes registrations, each with its record.
     pub(crate) registering: Mutex<()>,
+}
+
+impl Drop for Inner {
+    /// Gives the reserve back once the supervisor and every session thread are gone: nothing
+    /// writes for it any more.
+    fn drop(&mut self) {
+        self.audit.release(self.reserved);
+    }
 }
 
 impl Inner {
@@ -321,6 +331,7 @@ impl Supervisor {
                 registrations: AtomicU32::new(0),
                 allows: Arc::default(),
                 exhausted: Arc::default(),
+                reserved: needed,
                 refusals: Refusals::default(),
                 registering: Mutex::new(()),
             }),

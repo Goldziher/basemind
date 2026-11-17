@@ -219,6 +219,13 @@ pub trait AuditSink: Send + Sync {
         let _ = bytes;
         Ok(())
     }
+
+    /// Gives back `bytes` a supervisor claimed with [`Self::reserve`], once it is gone and will
+    /// write nothing more, so an embedding that rebuilds its supervisor (on a configuration
+    /// reload, say) over one log is not refused after a few rebuilds. Does nothing by default.
+    fn release(&self, bytes: u64) {
+        let _ = bytes;
+    }
 }
 
 /// The size a [`FileAuditSink`] grows to by default before it drops records.
@@ -366,6 +373,11 @@ impl AuditSink for FileAuditSink {
         }
         log.claimed += bytes;
         Ok(())
+    }
+
+    fn release(&self, bytes: u64) {
+        let mut log = self.log();
+        log.claimed = log.claimed.saturating_sub(bytes);
     }
 
     fn record(&self, record: &AuditRecord) -> std::io::Result<()> {
