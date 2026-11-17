@@ -102,12 +102,17 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
     let done = Arc::new(AtomicBool::new(false));
     let tracker = tracks
         .then(|| {
-            let (detached, done) = (detached.clone(), done.clone());
+            let (detached, done, handle) = (detached.clone(), done.clone(), session.handle());
             std::thread::Builder::new()
                 .name(format!("basemind-detached-{id}"))
                 .spawn(move || {
                     // Once the leader is gone its pid may name another process: stop polling.
                     while !done.load(Ordering::SeqCst) && detached.poll() {
+                        // What is not recorded is not reaped: the session does not run on.
+                        if detached.overflowed() {
+                            handle.stop();
+                            break;
+                        }
                         std::thread::sleep(detached::POLL);
                     }
                 })

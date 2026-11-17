@@ -44,6 +44,8 @@ struct Record {
     /// Session ids led by a recorded process, the harness's own included, each with the start
     /// time of its leader: a process in one of them started at or after it.
     sessions: BTreeSet<ProcId>,
+    /// A process or session of the session's could not be recorded for want of room.
+    overflowed: bool,
 }
 
 /// The processes recorded for one session.
@@ -62,6 +64,12 @@ impl Detached {
         let mut record = self.record();
         record.leader = Some(leader);
         record.sessions.insert(leader);
+    }
+
+    /// Whether a process or session of the session's went unrecorded because the record was
+    /// full: what is not recorded is not reaped, so the session must not run on.
+    pub fn overflowed(&self) -> bool {
+        self.record().overflowed
     }
 
     /// Whether `id` was recorded as one of the session's processes.
@@ -168,9 +176,15 @@ fn in_sessions(sessions: &BTreeSet<ProcId>, listed: &BTreeSet<ProcId>, proc: &Pr
 fn remember(record: &mut Record, proc: &ProcInfo) {
     if record.procs.len() < MAX_PROCS {
         record.procs.insert(proc.id());
+    } else if !record.procs.contains(&proc.id()) {
+        record.overflowed = true;
     }
-    if proc.sid == proc.pid && record.sessions.len() < MAX_SESSIONS {
-        record.sessions.insert(proc.id());
+    if proc.sid == proc.pid {
+        if record.sessions.len() < MAX_SESSIONS {
+            record.sessions.insert(proc.id());
+        } else if !record.sessions.contains(&proc.id()) {
+            record.overflowed = true;
+        }
     }
 }
 
@@ -398,6 +412,20 @@ mod tests {
             !detached.contains(older.id()),
             "a process was taken for the child of a newer one"
         );
+    }
+
+    #[test]
+    fn a_session_with_more_processes_than_can_be_recorded_overflows() {
+        let detached = Detached::default();
+        detached.follow(leader());
+        let mut procs = vec![proc(500, 1, 500, 500)];
+        procs.extend((0..MAX_PROCS + 10).map(|at| proc(1000 + i32::try_from(at).unwrap(), 500, 500, 500)));
+        assert!(detached.observe(&procs));
+        assert!(detached.overflowed(), "processes went unrecorded without a sign");
+        let fits = Detached::default();
+        fits.follow(leader());
+        fits.observe(&procs[..10]);
+        assert!(!fits.overflowed());
     }
 
     #[test]
