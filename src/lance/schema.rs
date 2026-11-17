@@ -1,4 +1,4 @@
-//! Arrow schemas for the LanceDB-backed `documents` and `memory` tables.
+//! Arrow schemas for the LanceDB-backed `memory` and `code_chunks` tables.
 //!
 //! The vector dimension is fixed once at table-creation time; mismatched dims
 //! trigger a wipe-and-rebuild (see [`crate::lance::LanceStore::open`]).
@@ -6,34 +6,6 @@
 use std::sync::Arc;
 
 use lancedb::arrow::arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-
-/// Build the schema for the per-document-chunk `documents` table.
-///
-/// Columns:
-/// - `scope`     UTF-8     repo identity (normalised git remote URL or workdir path)
-/// - `path`      UTF-8     repo-relative path of the source file
-/// - `chunk_idx` UInt32    0-based index of this chunk within the file
-/// - `mime_type` UTF-8     IANA MIME type xberg detected
-/// - `text`      UTF-8     the chunk text (snippet returned by search results)
-/// - `byte_start` UInt32   chunk start byte offset in the original document
-/// - `byte_end`  UInt32    chunk end byte offset
-/// - `embedding` FixedSizeList<Float32, DIM>  the embedding vector
-pub fn documents_schema(dim: u16) -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        Field::new("scope", DataType::Utf8, false),
-        Field::new("path", DataType::Utf8, false),
-        Field::new("chunk_idx", DataType::UInt32, false),
-        Field::new("mime_type", DataType::Utf8, false),
-        Field::new("text", DataType::Utf8, false),
-        Field::new("byte_start", DataType::UInt32, false),
-        Field::new("byte_end", DataType::UInt32, false),
-        Field::new(
-            "embedding",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), i32::from(dim)),
-            false,
-        ),
-    ]))
-}
 
 /// Build the schema for the `memory` table.
 ///
@@ -107,60 +79,6 @@ pub fn code_chunks_schema(dim: u16) -> SchemaRef {
 
 /// Table names — small constants in one place so the `LanceStore` impl and any
 /// future migration code agree on what's where.
-pub const DOCUMENTS_TABLE: &str = "documents";
 pub const MEMORY_TABLE: &str = "memory";
 #[cfg(feature = "code-search")]
 pub const CODE_CHUNKS_TABLE: &str = "code_chunks";
-
-/// Schemas for the experimental shared directory. Existing workspace tables retain their schema.
-#[doc(hidden)]
-pub fn shared_documents_schema(dim: u16) -> SchemaRef {
-    content_keyed(&documents_schema(dim), "path", false)
-}
-
-#[cfg(feature = "code-search")]
-#[doc(hidden)]
-pub fn shared_code_chunks_schema(dim: u16) -> SchemaRef {
-    content_keyed(&code_chunks_schema(dim), "path", true)
-}
-
-fn content_keyed(source: &SchemaRef, path_column: &str, add_ordinal: bool) -> SchemaRef {
-    let fields = source
-        .fields()
-        .iter()
-        .map(|field| {
-            if field.name() == path_column {
-                Arc::new(Field::new("content_hash", DataType::Utf8, false))
-            } else {
-                Arc::clone(field)
-            }
-        })
-        .chain(add_ordinal.then(|| Arc::new(Field::new("chunk_idx", DataType::UInt32, false))))
-        .collect::<Vec<_>>();
-    Arc::new(Schema::new(fields))
-}
-
-#[cfg(test)]
-mod shared_tests {
-    use super::*;
-
-    #[test]
-    fn shared_documents_replace_paths_with_content_keys() {
-        let local = documents_schema(384);
-        let shared = shared_documents_schema(384);
-        assert!(local.field_with_name("path").is_ok());
-        assert!(shared.field_with_name("path").is_err());
-        assert_eq!(
-            shared.field_with_name("content_hash").unwrap().data_type(),
-            &DataType::Utf8
-        );
-        assert_eq!(
-            shared.field_with_name("chunk_idx").unwrap().data_type(),
-            &DataType::UInt32
-        );
-        assert_eq!(
-            local.field_with_name("embedding").unwrap(),
-            shared.field_with_name("embedding").unwrap()
-        );
-    }
-}

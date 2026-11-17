@@ -14,7 +14,9 @@ use lancedb::Table;
 use lancedb::table::optimize::Duration as ChronoDuration;
 use lancedb::table::{CompactionOptions, OptimizeAction};
 
-use super::{DOCUMENTS_TABLE, DocumentRow, LanceStore, build_documents_batch, escape_sql_literal};
+use super::LanceStore;
+#[cfg(feature = "code-search")]
+use super::escape_sql_literal;
 
 /// Documents folded into one delete+append commit pair.
 pub const BATCH_MAX_DOCS: usize = 256;
@@ -75,6 +77,7 @@ impl<R> PendingBatch<R> {
 }
 
 /// `(scope = 'a' AND key IN ('p1', 'p2')) OR (scope = 'b' AND ...)` for every distinct scope.
+#[cfg(feature = "code-search")]
 fn replace_predicate<R>(key_col: &str, items: &[(String, String, Vec<R>)]) -> String {
     let mut scopes: Vec<(&str, Vec<&str>)> = Vec::new();
     for (scope, path, _) in items {
@@ -98,15 +101,7 @@ fn replace_predicate<R>(key_col: &str, items: &[(String, String, Vec<R>)]) -> St
 }
 
 impl LanceStore {
-    /// Replace the rows of every `(scope, path, rows)` item with ONE delete and ONE append (two
-    /// commits total, however many documents). An item with no rows just deletes its path.
-    pub fn replace_documents_many(&self, items: Vec<(String, String, Vec<DocumentRow>)>) -> Result<()> {
-        self.replace_many(DOCUMENTS_TABLE, "path", items, |dim, rows| {
-            build_documents_batch(dim, rows)
-        })
-    }
-
-    /// [`Self::replace_documents_many`] for the `code_chunks` table.
+    /// Replace the `code_chunks` rows of many paths: one delete and one append per batch.
     #[cfg(feature = "code-search")]
     pub fn replace_code_chunks_many(&self, items: Vec<(String, String, Vec<super::CodeRow>)>) -> Result<()> {
         self.replace_many(super::schema::CODE_CHUNKS_TABLE, "path", items, |dim, rows| {
@@ -114,6 +109,7 @@ impl LanceStore {
         })
     }
 
+    #[cfg(feature = "code-search")]
     fn replace_many<R>(
         &self,
         table_name: &str,

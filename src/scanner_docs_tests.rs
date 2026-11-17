@@ -72,7 +72,7 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
 
 /// Structural regression guard for the streaming-flush memory fix: the accumulated per-file
 /// descriptor must stay metadata-only. This exhaustive struct literal names EXACTLY the metadata
-/// fields — re-introducing a `rows: Vec<DocumentRow>` (or any embedding payload) field would
+/// fields — re-introducing a `rows: Vec<DocRows>` (or any embedding payload) field would
 /// break this compile, catching a regression back to the corpus-wide accumulation that held
 /// multiple GB resident on a large repo.
 #[test]
