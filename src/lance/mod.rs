@@ -51,7 +51,7 @@ struct LanceMeta {
     dim: u16,
     embedding_model: String,
     /// Arrow schema version of the `memory` / `documents` tables (see
-    /// [`MEMORY_SCHEMA_VER`]). `#[serde(default)]` makes a pre-0.5 `meta.json` (which
+    /// [`VECTOR_STORE_VER`]). `#[serde(default)]` makes a pre-0.5 `meta.json` (which
     /// lacks this field) deserialize as `0`, forcing a wipe on upgrade rather than a
     /// parse error — the table column set changed, and a stale-arity table would fault
     /// at batch-build time, not at open.
@@ -126,11 +126,16 @@ fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::stor
     }
 }
 
-/// Schema version of the lance Arrow tables, bound to the release minor exactly like
-/// `INDEX_SCHEMA_VER` and the blob `SCHEMA_VER`. Bump `RELEASE_MINOR` whenever the
-/// `memory` or `documents` table column set changes; the resulting `LanceMeta` mismatch
-/// wipes and rebuilds the lance dir.
-pub const MEMORY_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32;
+/// Table-layout version of every LanceDB store (the memory vectors, the workspace vector store and
+/// the document retrieval store), recorded in `meta.json` beside the model and dimension.
+///
+/// Independent of the release minor (ADR-0035): a minor that changes no table leaves the stores,
+/// and the memory vectors in them, in place. Stale rows are kept out by the keys, not by a wipe: a
+/// store directory is named by its model and dimension, a document's `doc_key` hashes the blob
+/// schema, and a memory row is checked against its note's `updated_at`. Bump it when a table's
+/// columns change; an older store is then wiped and rebuilt, a newer one refused. It starts at
+/// 1000 so every store a minor-numbered binary wrote (`schema_ver` = the minor) reads as older.
+pub const VECTOR_STORE_VER: u32 = 1000;
 
 /// One row in the `documents` table.
 #[derive(Debug, Clone)]
@@ -300,7 +305,7 @@ impl LanceStore {
         let expected = LanceMeta {
             dim,
             embedding_model: embedding_model.to_string(),
-            schema_ver: MEMORY_SCHEMA_VER,
+            schema_ver: VECTOR_STORE_VER,
         };
         // Released when this function returns, tables created.
         let _opening = lock_open(dir, wait)?;

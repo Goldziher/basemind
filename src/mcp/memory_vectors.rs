@@ -15,8 +15,8 @@
 //! and by a save in any process that wrote none, which says so in a file of the repo group
 //! ([`owe_rows`]). A save that wrote its row wrote it in its own preset's table only, and says so
 //! to every other table's searches the same way ([`owe_rows_elsewhere`]).
-//! The table is empty after every release minor (its `schema_ver` follows the minor) and for every
-//! embedding preset opened for the first time.
+//! The table is empty after a change of its layout version (`lance::VECTOR_STORE_VER`, which no
+//! longer follows the release minor) and for every embedding preset opened for the first time.
 //!
 //! A row holds a note's vector and tags, never its text.
 //!
