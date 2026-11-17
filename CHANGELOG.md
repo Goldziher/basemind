@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A CLI or hook resolving its agent id no longer creates a workspace cache directory that holds only that id: the
+  id is derived from the workspace's cache path. A workspace whose id an older basemind persisted keeps it.
 - **BREAKING: the MCP tools are one per job.** The mode-dispatched `code`, `git`, `memory` and `admin`
   tools are replaced by 15 tools with exact schemas (ADR-0018, superseding ADR-0011): `code_outline`,
   `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,

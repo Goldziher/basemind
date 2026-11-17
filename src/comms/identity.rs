@@ -13,14 +13,15 @@
 //!
 //! 1. [`IdentitySource::Env`] — `BASEMIND_AGENT_ID`, the explicit per-process override.
 //! 2. [`IdentitySource::Config`] — `config.comms.agent_id`, the workspace's declared identity.
-//! 3. [`IdentitySource::Workspace`] — a generated id persisted at
-//!    `<workspace_cache_dir>/agent-id`. This is the tier that fixes the collision: the path is the
-//!    machine-global PER-WORKSPACE cache dir ([`crate::store::workspace_cache_dir`], keyed by a
-//!    hash of the canonical root), so a CLI call in a repo adopts the identity the `serve` session
-//!    in THAT repo persisted, while a different repo necessarily gets a different id.
-//! 4. [`IdentitySource::Generated`] — a process-unique id, used only when the workspace tier
-//!    cannot persist (unwritable cache). NEVER a shared constant: an unpersistable identity is
-//!    ephemeral, never one another process can accidentally adopt.
+//! 3. [`IdentitySource::Workspace`] — an id derived from the machine-global PER-WORKSPACE cache
+//!    dir ([`crate::store::workspace_cache_dir`], keyed by a hash of the canonical root), or the one
+//!    an older binary persisted at `<workspace_cache_dir>/agent-id`. This is the tier that fixes the
+//!    collision: a CLI call in a repo resolves the identity the `serve` session in THAT repo
+//!    resolves, while a different repo necessarily gets a different id. Deriving it writes nothing,
+//!    so resolving an identity never creates a workspace cache dir that holds only the id.
+//! 4. [`IdentitySource::Generated`] — a process-unique id, used only for a live MCP session without
+//!    an explicit id. NEVER a shared constant: an ephemeral identity is never one another process
+//!    can accidentally adopt.
 //!
 //! Inputs arrive as PARAMETERS ([`IdentityRequest`]), not ambient process env, so resolution is
 //! testable without mutating a process-global that other tests race on.
@@ -34,8 +35,9 @@ use crate::comms::ids::AgentId;
 /// The tier-1 environment override.
 pub const AGENT_ID_ENV: &str = "BASEMIND_AGENT_ID";
 
-/// File holding the generated-and-persisted per-workspace agent id, written under the workspace's
-/// machine-global cache dir the first time resolution reaches [`IdentitySource::Workspace`].
+/// File holding a per-workspace agent id an older binary persisted under the workspace's
+/// machine-global cache dir. Still read first, so a workspace keeps the id it already has; never
+/// written (see [`IdentitySource::Workspace`]).
 pub use crate::store_layout::AGENT_ID_FILE;
 
 /// Directory holding the claim ledger, one file per agent id, under the machine-global cache root.
@@ -51,9 +53,9 @@ pub enum IdentitySource {
     Env,
     /// Tier 2: `config.comms.agent_id`.
     Config,
-    /// Tier 3: generated once per workspace and persisted in that workspace's cache dir.
+    /// Tier 3: derived from the workspace's cache dir, or read from an id an older binary persisted.
     Workspace,
-    /// Tier 4: generated per process because the workspace tier could not persist. Ephemeral.
+    /// Tier 4: generated per process for a live MCP session. Ephemeral.
     Generated,
 }
 
@@ -265,37 +267,34 @@ fn resolve_id(request: &IdentityRequest<'_>) -> (AgentId, IdentitySource) {
     if let Some(id) = validated(request.config_agent_id.as_deref()) {
         return (id, IdentitySource::Config);
     }
-    if let Some(id) = load_or_create_workspace_id(&request.paths.workspace_cache_dir) {
-        return (id, IdentitySource::Workspace);
-    }
-    (generated_id("agent"), IdentitySource::Generated)
+    (
+        workspace_id(&request.paths.workspace_cache_dir),
+        IdentitySource::Workspace,
+    )
 }
 
-/// Read `<workspace_cache_dir>/agent-id`, generating and persisting one when absent.
+/// The workspace's agent id: the one an older binary persisted at `<workspace_cache_dir>/agent-id`,
+/// else one derived from the cache dir's path.
 ///
-/// The create is `create_new` (O_EXCL), so two processes racing to seed one workspace cannot end
-/// up with two ids: the loser observes `AlreadyExists` and reads the winner's id back. Returns
-/// `None` only when the id can be neither read nor written, which drops resolution to the
-/// ephemeral tier rather than erroring.
-fn load_or_create_workspace_id(workspace_cache_dir: &Path) -> Option<AgentId> {
+/// Derived, not generated and persisted: persisting needs the workspace cache dir, and creating it
+/// just to hold an id left a dir per directory an agent ever ran in, which the reaper then had to
+/// find. The derivation is a pure function of the canonical root (the dir is keyed by its hash), so
+/// every process in the workspace resolves the same id and two workspaces never share one.
+fn workspace_id(workspace_cache_dir: &Path) -> AgentId {
     let path = workspace_cache_dir.join(AGENT_ID_FILE);
     if let Some(id) = read_agent_id(&path) {
         refresh_agent_id_mtime(&path);
-        return Some(id);
+        return id;
     }
-    std::fs::create_dir_all(workspace_cache_dir).ok()?;
-
-    let candidate = generated_id("session");
-    match std::fs::File::options().write(true).create_new(true).open(&path) {
-        Ok(mut file) => {
-            use std::io::Write;
-            file.write_all(candidate.as_str().as_bytes()).ok()?;
-            Some(candidate)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_agent_id(&path),
-        Err(_) => None,
-    }
+    let digest = crate::hashing::hex(&crate::hashing::hash_bytes(
+        workspace_cache_dir.as_os_str().as_encoded_bytes(),
+    ));
+    AgentId::parse(format!("agent-{}", &digest[..WORKSPACE_ID_HEX_LEN])).expect("hex is within the AgentId alphabet")
 }
+
+/// Hex digits of the cache dir's hash in a derived workspace id: 64 bits, so two workspaces on one
+/// machine colliding is not a practical concern.
+const WORKSPACE_ID_HEX_LEN: usize = 16;
 
 /// How stale `agent-id`'s mtime may get before a resolution refreshes it.
 const AGENT_ID_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
@@ -464,8 +463,8 @@ mod tests {
     #[test]
     fn resolving_a_persisted_workspace_id_refreshes_a_stale_mtime() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let first = load_or_create_workspace_id(temp.path()).expect("create id");
         let path = temp.path().join(AGENT_ID_FILE);
+        std::fs::write(&path, "session-persisted").expect("persist an id as an older binary did");
         let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 60 * 60);
         std::fs::File::options()
             .write(true)
@@ -473,9 +472,13 @@ mod tests {
             .and_then(|file| file.set_modified(long_ago))
             .expect("age the id file");
 
-        let second = load_or_create_workspace_id(temp.path()).expect("read id");
+        let id = workspace_id(temp.path());
 
-        assert_eq!(second, first, "the id itself is unchanged");
+        assert_eq!(
+            id.as_str(),
+            "session-persisted",
+            "a persisted id wins over the derived one"
+        );
         let age = std::fs::metadata(&path)
             .and_then(|meta| meta.modified())
             .expect("mtime")
@@ -484,6 +487,23 @@ mod tests {
         assert!(
             age < AGENT_ID_REFRESH_INTERVAL,
             "a use refreshes the mtime, got {age:?}"
+        );
+    }
+
+    #[test]
+    fn resolving_a_workspace_id_creates_no_cache_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_cache_dir = temp.path().join("workspaces").join("key");
+
+        let first = workspace_id(&workspace_cache_dir);
+        let second = workspace_id(&workspace_cache_dir);
+
+        assert_eq!(first, second, "the derived id is stable");
+        assert!(!workspace_cache_dir.exists(), "resolving an id writes nothing");
+        assert_ne!(
+            first,
+            workspace_id(&temp.path().join("workspaces").join("other")),
+            "another workspace derives another id"
         );
     }
 
