@@ -49,11 +49,16 @@ impl Detached {
         self.groups().keys().copied().collect()
     }
 
-    /// Records the groups other than the leader's that the leader's descendants in `procs` are in.
-    pub fn observe(&self, leader: u32, procs: &[Proc]) {
+    /// Records the groups other than the leader's that the leader's descendants in `procs` are
+    /// in. Returns `false`, recording nothing, once the leader is not listed: it was reaped, and
+    /// its pid may already name another process, whose children are not the session's.
+    pub fn observe(&self, leader: u32, procs: &[Proc]) -> bool {
         let Ok(leader) = i32::try_from(leader) else {
-            return;
+            return false;
         };
+        if !procs.iter().any(|proc| proc.pid == leader) {
+            return false;
+        }
         let mut children: BTreeMap<i32, Vec<&Proc>> = BTreeMap::new();
         for proc in procs {
             children.entry(proc.ppid).or_default().push(proc);
@@ -79,25 +84,35 @@ impl Detached {
                 }
             }
         }
+        true
     }
 
-    /// Lists the processes now and records what [`Self::observe`] finds among them.
-    pub fn poll(&self, leader: u32) {
-        if let Some(procs) = list() {
-            self.observe(leader, &procs);
-        }
+    /// Lists the processes now and records what [`Self::observe`] finds among them. Returns
+    /// `false` once the leader is gone, after which the session's tracker stops; a failed
+    /// listing concludes nothing.
+    pub fn poll(&self, leader: u32) -> bool {
+        list().is_none_or(|procs| self.observe(leader, &procs))
     }
 
     /// Waits up to `grace` for every recorded group to empty, then kills each group that still
-    /// holds a recorded process. Returns how many groups were killed.
+    /// holds a recorded process. Returns how many groups were killed. Nothing is killed without
+    /// a listing: when none could be made by the end of `grace`, nothing is.
     pub fn reap(&self, grace: Duration) -> usize {
-        let deadline = Instant::now() + grace;
+        let deadline = Instant::now().checked_add(grace);
         loop {
-            let live = self.live(list().as_deref());
+            let past = deadline.is_none_or(|deadline| Instant::now() >= deadline);
+            let Some(procs) = list() else {
+                if past {
+                    return 0;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            };
+            let live = self.live(Some(&procs));
             if live.is_empty() {
                 return 0;
             }
-            if Instant::now() >= deadline {
+            if past {
                 for pgid in &live {
                     kill(*pgid);
                 }
@@ -107,8 +122,7 @@ impl Detached {
         }
     }
 
-    /// The recorded groups that still hold a recorded process. Without a listing, every group
-    /// still signalable counts.
+    /// The recorded groups that still hold a recorded process. Without a listing, none.
     fn live(&self, procs: Option<&[Proc]>) -> Vec<i32> {
         let groups = self.groups();
         groups
@@ -117,7 +131,7 @@ impl Detached {
                 Some(procs) => procs
                     .iter()
                     .any(|proc| proc.pgid == **pgid && members.contains(&proc.pid)),
-                None => exists(**pgid),
+                None => false,
             })
             .map(|(pgid, _)| *pgid)
             .collect()
@@ -139,19 +153,6 @@ fn killable(pgid: i32) -> bool {
     }
 }
 
-fn exists(pgid: i32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: signal 0 only checks that the group exists and may be signalled.
-        killable(pgid) && unsafe { libc::kill(-pgid, 0) } == 0
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pgid;
-        false
-    }
-}
-
 fn kill(pgid: i32) {
     #[cfg(unix)]
     if killable(pgid) {
@@ -163,7 +164,8 @@ fn kill(pgid: i32) {
     let _ = pgid;
 }
 
-/// Every process, from `ps`. `None` when no `ps` ran.
+/// Every process, from `ps`. `None` when no `ps` ran, or it listed nothing: this process at
+/// least is always running, so an empty listing is a failed one.
 fn list() -> Option<Vec<Proc>> {
     let ps = ["/bin/ps", "/usr/bin/ps"]
         .into_iter()
@@ -175,10 +177,11 @@ fn list() -> Option<Vec<Proc>> {
         .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
-    output
+    let procs = output
         .status
         .success()
-        .then(|| parse(&String::from_utf8_lossy(&output.stdout)))
+        .then(|| parse(&String::from_utf8_lossy(&output.stdout)))?;
+    (!procs.is_empty()).then_some(procs)
 }
 
 /// The lines of `ps -o pid=,ppid=,pgid=` that parse.
@@ -199,6 +202,7 @@ pub(crate) fn parse(text: &str) -> Vec<Proc> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
 
     #[test]
     fn ps_output_parses_and_malformed_lines_are_skipped() {
@@ -277,5 +281,43 @@ mod tests {
         let own = unsafe { libc::getpgrp() };
         assert!(!killable(own));
         assert!(!killable(1));
+    }
+
+    #[test]
+    fn a_leader_missing_from_the_listing_stops_the_tracker_and_records_nothing() {
+        // The leader 500 was reaped; whatever lists 500 as its parent now is another process's
+        // child, the pid having been reused.
+        let procs = [Proc {
+            pid: 600,
+            ppid: 500,
+            pgid: 600,
+        }];
+        let detached = Detached::default();
+        let tracking = detached.observe(500, &procs);
+        assert!(detached.group_ids().is_empty(), "a reused pid's child was recorded");
+        assert!(!tracking, "the tracker kept polling a dead leader");
+    }
+
+    #[test]
+    fn nothing_is_reaped_without_a_listing() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        let detached = Detached::default();
+        detached.observe(
+            1,
+            &[Proc {
+                pid,
+                ppid: 1,
+                pgid: pid,
+            }],
+        );
+        let live = detached.live(None);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(live.is_empty(), "a group was counted live without a listing: {live:?}");
     }
 }

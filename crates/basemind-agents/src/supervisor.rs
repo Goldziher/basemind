@@ -776,8 +776,8 @@ fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc<Detached>,
     let tracker = tracks.then(|| {
         let (detached, done, pid) = (detached.clone(), done.clone(), session.pid());
         std::thread::spawn(move || {
-            while !done.load(Ordering::SeqCst) {
-                detached.poll(pid);
+            // Once the leader is gone its pid may name another process: stop polling it.
+            while !done.load(Ordering::SeqCst) && detached.poll(pid) {
                 std::thread::sleep(detached::POLL);
             }
         })
