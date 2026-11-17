@@ -4,8 +4,9 @@ Launch a coding agent in another harness: Claude Code, Codex, or any agent that 
 Client Protocol (Cursor, Gemini CLI, Grok Build, Hermes Agent, OpenCode). The launcher hands the
 agent a brief and an identity and reads a stream of typed events back.
 
-This crate is the provider layer of basemind's cross-harness agent launch. It has no MCP tool, no
-CLI and no daemon wiring; those belong to the layers above it.
+This crate is the provider layer of basemind's cross-harness agent launch, and the launch policy
+and session supervisor an engine launches through. It has no MCP tool, no CLI and no daemon
+wiring; those belong to the layers above it.
 
 ## Use
 
@@ -39,6 +40,77 @@ for event in session.events() {
 # Ok(())
 # }
 ```
+
+## Launch policy
+
+An engine launches through a `Supervisor`, never the `Registry` directly. The `Supervisor` takes a
+`LaunchPolicy`, one `LaunchConfig` per allowed flavor, the registry and an `AuditSink`:
+
+```rust,no_run
+use std::sync::Arc;
+use std::time::Duration;
+
+use basemind_agents::{
+    AgentIdentity, Caller, FileAuditSink, FlavorPolicy, Harness, HarnessKind, LaunchConfig, LaunchPolicy,
+    LaunchRequest, PolicySpec, Registry, Supervisor,
+};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut spec = PolicySpec::default();
+spec.flavors = vec![FlavorPolicy::supervised(HarnessKind::Codex)];
+spec.launchers = vec!["lead".to_owned()];
+spec.max_depth = 1;
+spec.max_concurrent = 4;
+spec.max_children = 2;
+spec.wall_time = Duration::from_secs(30 * 60);
+let config = LaunchConfig::new(
+    Harness::new(HarnessKind::Codex),
+    "/work/repo",
+    AgentIdentity::new("codex-reviewer")?,
+);
+let audit = Arc::new(FileAuditSink::open("/var/lib/basemind/agent-launch.jsonl")?);
+let supervisor = Supervisor::new(LaunchPolicy::new(spec)?, vec![config], Registry::with_defaults(), audit)?;
+let launched = supervisor.launch(&Caller::principal("lead")?, HarnessKind::Codex, &LaunchRequest::new("Review the diff."))?;
+println!("{} runs as {}", launched.id, launched.agent);
+# Ok(())
+# }
+```
+
+- **Off by default.** `LaunchPolicy::default()` allows nothing, and a `Supervisor` refuses a config
+  for a flavor its policy does not allow. A policy is validated when built: every flavor once, a
+  bypass mode only with a `BypassOptIn` naming that flavor and its mode (and no opt-in on any other
+  mode), launchers in the principal grammar and not starting with `launched-`, every limit above
+  zero and within its ceiling (depth 8, 32 live sessions, 24 h). A config must name its flavor's
+  permission mode and opt-in exactly.
+- **Who launches.** A principal the policy names, at depth 0, or a launched session, by the token
+  it was given in `BASEMIND_LAUNCH_TOKEN`. With the peer's process id (`Caller::with_peer_pid`), a
+  caller inside a live session's process group, or a group the supervisor saw its harness move
+  descendants into, is that session whatever it claims. The operator (`Caller::operator`) stops and
+  answers any session and launches none.
+- **Depth and fan-out.** A launched agent gets its own principal (`launched-<flavor>-<id>-<hex>`),
+  `BASEMIND_AGENT_DEPTH` and a fresh 256-bit token; its depth comes from the supervisor's record,
+  never the environment. A launch deeper than `max_depth`, beyond `max_concurrent` live sessions,
+  beyond `max_children` live sessions of one launcher, or past the budget's `max_launches` is
+  refused with a `SupervisorError` naming the limit. A session's wall time is the least of the
+  request's, the config's and the policy's; the budget's `max_turns` caps its turns.
+- **Audit.** Every launch (written before the harness starts; a launch whose record cannot be
+  written is refused), refusal, stop, exit and approval decision is one record: when, the event,
+  the caller and its depth, the session, the launched principal, flavor, root, depth, limits,
+  caveats and a fixed outcome code. No brief, approval command or detail, environment value, token
+  or harness error text. `FileAuditSink` appends one JSON object per line to a file it creates
+  with mode 0600, and refuses a link, a non-regular file, another user's file or one others can
+  read or write.
+- **Sessions.** `status`, `list`, `wait`, `stop` (the launcher or the operator), `answer` for a
+  pending approval, `stop_all`, and `reap` to forget finished sessions. Dropping the supervisor
+  stops every session within its stop grace and kills what is left. A `SessionObserver` receives
+  every event on the session's own thread.
+- **Caveats** (`caveats(kind)`, reported on each launch and status). `DetachedServer` (OpenCode):
+  `opencode serve --stdio` runs in a process group of its own, which outlived a kill of the
+  session's group by about 1.7 to 3 s; the supervisor lists the harness's descendants with `ps`
+  while the session runs, waits up to 2 s for their groups once it ends, kills what is left, and
+  only then reports the session finished. `UserMcpServers` (OpenCode, Codex): the harness starts the
+  user's own MCP servers and plugins from its user-level configuration even when the launch names
+  none (OpenCode with an empty `mcpServers`); nothing here can switch that off.
 
 ## Safety defaults
 
@@ -129,12 +201,17 @@ Limits:
   injected one. Claude Code's managed settings and user `CLAUDE.md` were not checked.
 - What Cursor's, Gemini's, Grok's, Hermes's and a generic agent's modes ask for, and what
   OpenCode's plan mode blocks, were not run against a live harness.
-- `BASEMIND_AGENT_ID` is self-asserted: a launched agent with a shell can post as anyone.
-- A descendant that leaves the process group survives the session. `opencode acp` starts its
+- `BASEMIND_AGENT_ID` is self-asserted: a launched agent with a shell can post as anyone, and can
+  claim a configured launcher's principal to the supervisor unless the engine passes the peer's
+  process id. The launch token is readable by any process of the same user (`/proc/<pid>/environ`
+  on Linux), so it separates cooperating agents, not users.
+- A descendant that leaves the process group survives a `Session`. `opencode acp` starts its
   server (`opencode serve --stdio`) in a process group of its own, with the MCP servers and plugins
   under it; it exits once its input closes, not when the group is killed (in a live probe about
-  1.7 s after the group with its input closed, about 3 s with it open). OpenCode's global
-  configuration started its own MCP servers although `session/new` named none.
+  1.7 s after the group with its input closed, about 3 s with it open). The `Supervisor` kills such
+  groups for a flavor with `Caveat::DetachedServer` when it saw them; one that left before the
+  first listing, or between two listings 200 ms apart, is missed. OpenCode's global configuration
+  started its own MCP servers although `session/new` named none.
 - A project file written during a session is only seen by the next launch.
 - The launcher must not ignore SIGCHLD or reap children it did not start, and must ignore SIGPIPE.
 - Nothing is launched off Unix. On Windows a plan already refuses a batch file (an npm `.cmd`
