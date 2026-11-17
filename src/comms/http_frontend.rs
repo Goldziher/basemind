@@ -63,6 +63,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use super::accept_gate;
 use super::daemon::Broker;
 use super::http_auth::{self, HttpToken};
 use super::ids::AgentId;
@@ -524,19 +525,34 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
         token,
     });
 
+    let slots = accept_gate::connection_slots();
+    let mut backoff = accept_gate::AcceptBackoff::new("http");
     loop {
-        tokio::select! {
+        let slot = tokio::select! {
             changed = shutdown.changed() => {
                 // A drain sends `true`; a dropped sender ends the daemon too. Either stops accepts.
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            slot = accept_gate::next_slot(&slots) => slot,
+        };
+        tokio::select! {
+            changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     break;
                 }
             }
             accepted = listener.accept() => {
                 let (stream, _peer) = match accepted {
-                    Ok(pair) => pair,
+                    Ok(pair) => {
+                        backoff.succeeded();
+                        pair
+                    }
                     Err(error) => {
-                        tracing::warn!(%error, "http: accept failed");
+                        drop(slot);
+                        backoff.failed(&error).await;
                         continue;
                     }
                 };
@@ -553,6 +569,7 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
                 };
                 tokio::spawn(async move {
                     let _conn_activity = conn_activity;
+                    let _slot = slot;
                     let builder = auto::Builder::new(TokioExecutor::new());
                     tokio::select! {
                         result = builder.serve_connection(io, service) => {

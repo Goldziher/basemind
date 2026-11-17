@@ -112,6 +112,8 @@ pub fn run() -> Result<()> {
         .max_blocking_threads(DAEMON_MAX_BLOCKING_THREADS)
         .thread_keep_alive(std::time::Duration::from_secs(5))
         .enable_all()
+    crate::comms::fd_budget::raise_to_budget();
+
         .build()
         .context("build tokio runtime")?;
 

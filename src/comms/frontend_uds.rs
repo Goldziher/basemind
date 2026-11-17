@@ -24,10 +24,11 @@ mod imp {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{UnixListener, UnixStream};
-    use tokio::sync::watch;
+    use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
     use tokio_util::bytes::{Bytes, BytesMut};
     use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
+    use crate::comms::accept_gate::{self, AcceptBackoff};
     use crate::comms::daemon::Broker;
     use crate::comms::protocol::{CommsOut, CommsRequest, CommsResponse};
     use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link};
@@ -100,6 +101,7 @@ mod imp {
     pub struct UdsFrontend {
         listener: UnixListener,
         socket_path: PathBuf,
+        slots: Arc<Semaphore>,
     }
 
     impl UdsFrontend {
@@ -107,8 +109,68 @@ mod imp {
         /// `singleton::bind_listener`), so this constructor takes the listener rather than a
         /// path to avoid a TOCTOU window.
         pub fn from_listener(listener: UnixListener, socket_path: PathBuf) -> Self {
-            Self { listener, socket_path }
+            Self::with_slots(listener, socket_path, accept_gate::connection_slots())
         }
+
+        fn with_slots(listener: UnixListener, socket_path: PathBuf, slots: Arc<Semaphore>) -> Self {
+            Self {
+                listener,
+                socket_path,
+                slots,
+            }
+        }
+    }
+
+    /// Accept the next same-user connection once a slot is free: `None` when `stopped` resolves
+    /// first. A failed accept backs off ([`AcceptBackoff`]) instead of spinning.
+    async fn next_connection(
+        listener: &UnixListener,
+        slots: &Arc<Semaphore>,
+        backoff: &mut AcceptBackoff,
+        stopped: impl std::future::Future<Output = ()>,
+    ) -> Option<(UnixStream, PeerCred, OwnedSemaphorePermit)> {
+        let my_uid = super::daemon_uid();
+        tokio::pin!(stopped);
+        loop {
+            let slot = tokio::select! {
+                slot = accept_gate::next_slot(slots) => slot,
+                () = &mut stopped => return None,
+            };
+            let accepted = tokio::select! {
+                accepted = listener.accept() => accepted,
+                () = &mut stopped => return None,
+            };
+            let stream = match accepted {
+                Ok((stream, _addr)) => {
+                    backoff.succeeded();
+                    stream
+                }
+                Err(error) => {
+                    drop(slot);
+                    tokio::select! {
+                        () = backoff.failed(&error) => continue,
+                        () = &mut stopped => return None,
+                    }
+                }
+            };
+            let peer = peer_cred_of(&stream);
+            if let Some(uid) = peer.uid
+                && uid != my_uid
+            {
+                tracing::warn!(
+                    peer_uid = uid,
+                    daemon_uid = my_uid,
+                    "comms: rejecting cross-user connection"
+                );
+                continue;
+            }
+            return Some((stream, peer, slot));
+        }
+    }
+
+    /// Resolves once `shutdown` reads `true` or its sender is gone.
+    async fn shut_down(shutdown: &mut watch::Receiver<bool>) {
+        let _ = shutdown.wait_for(|stop| *stop).await;
     }
 
     impl CommsFrontend for UdsFrontend {
@@ -118,58 +180,40 @@ mod imp {
             mut shutdown: watch::Receiver<bool>,
         ) -> std::io::Result<()> {
             broker.mark_active().await;
-            let my_uid = super::daemon_uid();
-            loop {
-                tokio::select! {
-                    accepted = self.listener.accept() => {
-                        let (stream, _addr) = match accepted {
-                            Ok(pair) => pair,
-                            Err(e) => {
-                                tracing::warn!(error = %e, "comms: accept failed");
-                                continue;
-                            }
-                        };
-                        let peer = peer_cred_of(&stream);
-                        if let Some(uid) = peer.uid && uid != my_uid {
-                            tracing::warn!(
-                                peer_uid = uid,
-                                daemon_uid = my_uid,
-                                "comms: rejecting cross-user connection"
-                            );
-                            continue;
-                        }
-                        let guard = broker.register_link();
-                        let broker = broker.clone();
-                        // ~keep Peek the first byte INSIDE the spawned task, never in the accept loop.
-                        // ~keep `peek_first_byte` awaits the client's first byte; doing it inline here
-                        // ~keep would park the whole accept loop on one slow/silent connection, leaving
-                        // ~keep every other client unaccepted in the backlog — including ensure_daemon's
-                        // ~keep readiness probe, whose timeout then reports a healthy daemon as unreachable
-                        // ~keep (the SpawnTimeout flake). The Windows named-pipe front-end reads its first
-                        // ~keep byte in-task for the same reason.
-                        //
-                        // ~keep Route a RELAY (rmcp) connection apart from a legacy comms link. A relay
-                        // ~keep client writes RELAY_MAGIC first, whose first byte (0x42) is disjoint from a
-                        // ~keep legacy length-delimited frame's first byte (0x00 for any body < 16 MiB), so
-                        // ~keep peeking one byte discriminates without consuming it. A relay session is
-                        // ~keep hosted by the broker (shared read stack + rmcp router); everything else is a
-                        // ~keep legacy comms link, byte-for-byte the existing path.
-                        tokio::spawn(async move {
-                            let is_relay =
-                                peek_first_byte(&stream).await == Some(crate::comms::relay::RELAY_MAGIC[0]);
-                            if is_relay {
-                                broker.serve_relay_connection(stream, guard).await;
-                            } else {
-                                serve_link(broker, UdsLink::new(stream, peer), guard).await;
-                            }
-                        });
+            let mut backoff = AcceptBackoff::new("socket");
+            while let Some((stream, peer, slot)) =
+                next_connection(&self.listener, &self.slots, &mut backoff, shut_down(&mut shutdown)).await
+            {
+                let guard = broker.register_link();
+                let broker = broker.clone();
+                // ~keep Peek the first byte INSIDE the spawned task, never in the accept loop.
+                // ~keep `peek_first_byte` awaits the client's first byte; doing it inline here
+                // ~keep would park the whole accept loop on one slow/silent connection, leaving
+                // ~keep every other client unaccepted in the backlog — including ensure_daemon's
+                // ~keep readiness probe, whose timeout then reports a healthy daemon as unreachable
+                // ~keep (the SpawnTimeout flake). The Windows named-pipe front-end reads its first
+                // ~keep byte in-task for the same reason.
+                //
+                // ~keep Route a RELAY (rmcp) connection apart from a legacy comms link. A relay
+                // ~keep client writes RELAY_MAGIC first, whose first byte (0x42) is disjoint from a
+                // ~keep legacy length-delimited frame's first byte (0x00 for any body < 16 MiB), so
+                // ~keep peeking one byte discriminates without consuming it. A relay session is
+                // ~keep hosted by the broker (shared read stack + rmcp router); everything else is a
+                // ~keep legacy comms link, byte-for-byte the existing path.
+                tokio::spawn(async move {
+                    let _slot = slot;
+                    // A peer that never writes would hold its link, and so the daemon, forever. ~keep
+                    let Ok(first) =
+                        tokio::time::timeout(accept_gate::FIRST_BYTE_TIMEOUT, peek_first_byte(&stream)).await
+                    else {
+                        return;
+                    };
+                    if first == Some(crate::comms::relay::RELAY_MAGIC[0]) {
+                        broker.serve_relay_connection(stream, guard).await;
+                    } else {
+                        serve_link(broker, UdsLink::new(stream, peer), guard).await;
                     }
-                    _ = shutdown.changed() => {
-                        if *shutdown.borrow() {
-                            break;
-                        }
-                    }
-                }
+                });
             }
             let _ = std::fs::remove_file(&self.socket_path);
             broker.drain_links(crate::comms::daemon::DRAIN_GRACE).await;
@@ -211,28 +255,30 @@ mod imp {
         stop_tx: tokio::sync::oneshot::Sender<()>,
         task: tokio::task::JoinHandle<UnixListener>,
         socket_path: PathBuf,
+        slots: Arc<Semaphore>,
     }
 
     impl EarlyAccept {
         /// Start accepting on `listener` immediately.
         pub fn start(listener: UnixListener, socket_path: PathBuf) -> Self {
             let (broker_tx, broker_rx) = watch::channel(None);
-            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let slots = accept_gate::connection_slots();
+            let task_slots = Arc::clone(&slots);
             let task = tokio::spawn(async move {
-                let my_uid = super::daemon_uid();
-                loop {
-                    tokio::select! {
-                        accepted = listener.accept() => {
-                            let Ok((stream, _addr)) = accepted else { continue };
-                            let peer = peer_cred_of(&stream);
-                            if let Some(uid) = peer.uid && uid != my_uid {
-                                tracing::warn!(peer_uid = uid, daemon_uid = my_uid, "comms: rejecting cross-user connection");
-                                continue;
-                            }
-                            tokio::spawn(serve_while_starting(stream, peer, broker_rx.clone()));
-                        }
-                        _ = &mut stop_rx => break,
-                    }
+                let mut backoff = AcceptBackoff::new("socket");
+                let stopped = async {
+                    let _ = stop_rx.await;
+                };
+                tokio::pin!(stopped);
+                while let Some((stream, peer, slot)) =
+                    next_connection(&listener, &task_slots, &mut backoff, &mut stopped).await
+                {
+                    let broker_rx = broker_rx.clone();
+                    tokio::spawn(async move {
+                        let _slot = slot;
+                        serve_while_starting(stream, peer, broker_rx).await;
+                    });
                 }
                 listener
             });
@@ -241,6 +287,7 @@ mod imp {
                 stop_tx,
                 task,
                 socket_path,
+                slots,
             }
         }
 
@@ -250,7 +297,7 @@ mod imp {
             let _ = self.stop_tx.send(());
             let listener = self.task.await.map_err(std::io::Error::other)?;
             let _ = self.broker_tx.send(Some(broker));
-            Ok(UdsFrontend::from_listener(listener, self.socket_path))
+            Ok(UdsFrontend::with_slots(listener, self.socket_path, self.slots))
         }
     }
 
@@ -260,8 +307,10 @@ mod imp {
         peer: PeerCred,
         mut broker_rx: watch::Receiver<Option<Arc<Broker>>>,
     ) {
-        let is_relay = peek_first_byte(&stream).await == Some(crate::comms::relay::RELAY_MAGIC[0]);
-        if is_relay {
+        let Ok(first) = tokio::time::timeout(accept_gate::FIRST_BYTE_TIMEOUT, peek_first_byte(&stream)).await else {
+            return;
+        };
+        if first == Some(crate::comms::relay::RELAY_MAGIC[0]) {
             let Some(broker) = wait_for_broker(&mut broker_rx).await else {
                 return;
             };
