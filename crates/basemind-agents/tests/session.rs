@@ -170,6 +170,10 @@ cat > /dev/null
     );
     assert!(env.lines().any(|line| line == "BASEMIND_HOST=claude"), "{env}");
     assert!(env.lines().any(|line| line == "EXTRA_API_KEY=yes"), "{env}");
+    assert!(
+        env.lines().any(|line| line == "GIT_CONFIG_KEY_0=core.fsmonitor"),
+        "{env}"
+    );
     let leaked: Vec<_> = names
         .iter()
         .filter(|name| {
@@ -177,6 +181,7 @@ cat > /dev/null
             !matches!(**name, "PWD" | "SHLVL" | "_" | "OLDPWD")
                 && !basemind_agents::ENV_ALLOWLIST.contains(name)
                 && !matches!(**name, "BASEMIND_AGENT_ID" | "BASEMIND_HOST" | "EXTRA_API_KEY")
+                && !name.starts_with("GIT_CONFIG_")
         })
         .collect();
     assert!(
@@ -408,6 +413,38 @@ sleep 0.3
         );
         assert!(withdrawn.is_some_and(|at| Some(at) < finished), "{kind}: {events:?}");
     }
+}
+
+#[test]
+fn git_run_by_the_harness_does_not_start_the_repositorys_fsmonitor() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let git = |args: &[&str]| {
+        let status = Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+        assert!(status.status.success(), "git {args:?}: {status:?}");
+    };
+    git(&["init", "-q"]);
+    let marker = dir.path().join("fsmonitor-ran");
+    let hook = dir.path().join("fsmonitor-hook");
+    std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
+    std::fs::write(root.join("untracked"), "").unwrap();
+    // The control: git run outside the launch starts the hook.
+    git(&["status", "--porcelain"]);
+    assert!(marker.exists(), "the fixture's fsmonitor hook never ran");
+    std::fs::remove_file(&marker).unwrap();
+
+    let body = format!(
+        "{HANDSHAKE}git status --porcelain > \"{dir}/status\" 2>&1\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"done\"}}'\ncat > /dev/null\n",
+        dir = dir.path().display()
+    );
+    let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), &body));
+    assert_eq!(session.wait(), FinishStatus::Completed);
+    let status = std::fs::read_to_string(dir.path().join("status")).unwrap();
+    assert!(status.contains("untracked"), "git did not run: {status}");
+    assert!(!marker.exists(), "the harness's git ran the repository's fsmonitor");
 }
 
 #[test]

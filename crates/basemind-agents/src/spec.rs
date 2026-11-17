@@ -447,6 +447,9 @@ impl LaunchSpec {
         for (name, value) in extra_env {
             env.entry((*name).to_owned()).or_insert_with(|| value.into());
         }
+        for (name, value) in GIT_OVERRIDES {
+            env.insert((*name).to_owned(), value.into());
+        }
         Ok(CommandPlan {
             program: prepared.program.clone(),
             args,
@@ -550,6 +553,17 @@ pub const ENV_ALLOWLIST: &[&str] = &[
     "ComSpec",
     "BASEMIND_DATA_HOME",
     "BASEMIND_COMMS_DIR",
+];
+
+/// Git configuration given to every child through the environment, where it outranks the
+/// repository's own `.git/config`: a `core.fsmonitor` there names a program that git runs on
+/// `git status`, which a harness may run at startup outside any sandbox it applies to the
+/// agent. Claude Code 2.1.326, Codex 0.169 and OpenCode 2.3.0 were each seen to switch it off
+/// on their own git calls; this covers the ones they do not.
+const GIT_OVERRIDES: &[(&str, &str)] = &[
+    ("GIT_CONFIG_COUNT", "1"),
+    ("GIT_CONFIG_KEY_0", "core.fsmonitor"),
+    ("GIT_CONFIG_VALUE_0", "false"),
 ];
 
 /// Where basemind keeps its store and its comms rendezvous. A launched agent has to see the
