@@ -37,6 +37,8 @@ mod rescan;
 mod safety;
 #[path = "verb_behaviour/stale.rs"]
 mod stale;
+#[path = "verb_behaviour/symbols.rs"]
+mod symbols;
 
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")

@@ -52,7 +52,6 @@ mod helpers_memory;
 mod helpers_page;
 mod helpers_refs_match;
 mod helpers_stale;
-mod helpers_symbols;
 mod helpers_telemetry;
 mod history_sync;
 #[cfg(all(feature = "comms", any(unix, windows)))]

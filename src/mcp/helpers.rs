@@ -17,8 +17,7 @@ pub(super) use super::helpers_grep::run_workspace_grep;
 pub(super) use super::helpers_impls::run_find_implementations;
 pub(super) use super::helpers_telemetry::record_call;
 
-pub(super) const SEARCH_LIMIT_DEFAULT: u32 = 100;
-pub(super) use crate::engine::ops::SEARCH_LIMIT_MAX;
+pub(super) use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 pub(super) const LIST_LIMIT_DEFAULT: u32 = 200;
 pub(super) const LIST_LIMIT_MAX: u32 = 5000;
 

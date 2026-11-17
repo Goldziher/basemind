@@ -224,14 +224,9 @@ impl BasemindServer {
         self.op(p, Workspace::code_outline).await
     }
 
-    /// Body of `code_symbols`, shared with `basemind code symbols`.
+    /// Body of the `code_symbols` tool.
     pub(crate) async fn code_symbols_call(&self, p: CodeSymbolsParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_symbols",
-            p,
-            bound(p, |p| helpers_code::code_symbols(&self.state, p)).await
-        )
+        self.op(p, Workspace::code_symbols).await
     }
 
     /// Body of the `code_read` tool.

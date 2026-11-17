@@ -13,35 +13,6 @@ use crate::path::RelPath;
 pub(crate) use crate::engine::types::LifecycleNotice;
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct SearchSymbolsParams {
-    /// Substring matched against symbol name (case-sensitive).
-    pub needle: String,
-    /// Optional kind filter: function, method, struct, enum, class, interface,
-    /// trait, type, const, module, macro.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Also match names the needle is a fuzzy subsequence of, ranked below every literal match.
-    #[serde(default)]
-    pub fuzzy: bool,
-    /// Cap the number of results returned. Default 100, max 1000.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Optional token budget bounding the returned result list (not the whole envelope).
-    /// Items are kept best-first until the budget is hit; the rest are dropped and the
-    /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `results` list — far fewer tokens than JSON for large hit sets.
-    #[serde(default)]
-    pub format: Option<String>,
-    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
-    /// the in-RAM index snapshot and invalidate on rescan.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ListFilesParams {
     /// Optional substring matched against the path. Cheaper than reading a glob crate.
     #[serde(default)]
@@ -174,53 +145,6 @@ pub struct GotoDefinitionParams {
 }
 
 pub(super) use crate::engine::types::default_true;
-
-/// One `code_symbols` row: where a definition is and what it is. Rows are ranked: the exact name,
-/// then names it prefixes, then names holding it, then (with `fuzzy`) fuzzy matches; which of those
-/// a row is shows by comparing `name` with the query.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct SearchHitView {
-    pub path: RelPath,
-    /// 1-based line of the definition.
-    pub line: u32,
-    pub kind: &'static str,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
-    /// The file changed since it was indexed: `line` is where the definition is now, or where it
-    /// was when it can no longer be found. Absent when false.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub stale: bool,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct SearchResponse {
-    /// Matching symbols in the corpus, across every page.
-    pub total: usize,
-    /// True when a fuzzy sweep stopped at its candidate cap, so `total` is a lower bound. Never
-    /// true because `limit` cut the page: that is paging, and `next_cursor` says it. Absent when false.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
-    /// `scan_cap` whenever `truncated` is true.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub truncated_reason: Option<&'static str>,
-    /// True when a `max_tokens` budget dropped trailing results. The kept prefix is
-    /// best-first; page the rest with `next_cursor`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    pub results: Vec<SearchHitView>,
-    /// Opaque cursor to pass back on the next call when more results are available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Cursor>,
-    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
-    /// (a rescan happened between calls). The caller must restart pagination from the top.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub cursor_invalidated: bool,
-    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
-    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice: Option<LifecycleNotice>,
-}
 
 /// Response of `find_files`: a fuzzy search ranked best first, or a listing in path order.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
