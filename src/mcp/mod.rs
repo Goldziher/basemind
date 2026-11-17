@@ -581,9 +581,7 @@ impl BasemindServer {
                     host,
                 )));
             }
-            return Some(Arc::new(crate::git_history::remote::remote_index(
-                root.to_path_buf(),
-            )));
+            return Some(Arc::new(crate::git_history::remote::remote_index(root.to_path_buf())));
         }
         let _ = (root, agent_id);
         if options.read_only {

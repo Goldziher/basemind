@@ -297,7 +297,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn a_hosted_index_syncs_in_process_and_never_over_the_socket() {
         let index = hosted_index(PathBuf::from("/repo"), Arc::new(DecliningHost));
