@@ -14,6 +14,10 @@ pub const META_NEXT_ORD: &[u8] = b"next_commit_ord";
 pub const META_NEXT_PATH_ID: &[u8] = b"next_path_id";
 pub const META_ROOT_SHA: &[u8] = b"root_sha";
 pub const META_COMMIT_COUNT: &[u8] = b"commit_count";
+/// Present from the start of a build or append until the meta batch that stamps its head. Rows
+/// written by a run cut off in between are not covered by any posting list, so while this row
+/// exists the index has no indexed head and the next sync rebuilds it.
+pub const META_BUILD_IN_PROGRESS: &[u8] = b"build_in_progress";
 
 /// `u16:len ‖ bytes`. Returns `None` past the 64 KiB ceiling so a pathological path is skipped
 /// (and falls back to the live walk) rather than panicking inside a rayon worker.

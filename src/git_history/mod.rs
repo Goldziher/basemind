@@ -29,7 +29,11 @@
 //!
 //! A process that can reach neither keeps `git_history: None` and falls back to the live walk. The
 //! index is a pure accelerator — tools use it only when `last_indexed_head == HEAD` and otherwise
-//! live-walk (reporting `partial: true`), so it can never serve stale or incorrect results.
+//! live-walk (reporting `partial: true`), so it can never serve stale or incorrect results. A build
+//! or append marks the index in progress before it writes a row and clears the mark in the batch
+//! that stamps the new head; while the mark stands the index reports no head, so a run cut off
+//! between two batch commits is rebuilt by the next sync instead of being served with commits
+//! missing from its posting lists.
 //!
 //! ## Partitions
 //!
@@ -399,7 +403,12 @@ impl GitHistoryIndex {
     /// the raw form is a builder-side detail; the forwarded path uses
     /// [`last_indexed_head_hex`](Self::last_indexed_head_hex).
     pub fn last_indexed_head(&self) -> Option<[u8; 20]> {
-        self.local()?.meta_sha(keys::META_LAST_HEAD)
+        self.local()?.indexed_head()
+    }
+
+    /// Whether a build or append started and never stamped its head. Local only.
+    pub fn build_interrupted(&self) -> bool {
+        self.local().is_some_and(LocalDb::build_in_progress)
     }
 
     /// Last indexed HEAD as a 40-char hex string — the freshness key the MCP tools compare HEAD to.
@@ -407,7 +416,7 @@ impl GitHistoryIndex {
     /// `None`, which fails the freshness check closed (the caller live-walks).
     pub fn last_indexed_head_hex(&self) -> Option<String> {
         match &self.backend {
-            Backend::Local(db) => db.meta_sha(keys::META_LAST_HEAD).map(|s| keys::sha_raw_to_hex(&s)),
+            Backend::Local(db) => db.indexed_head().map(|s| keys::sha_raw_to_hex(&s)),
             Backend::Remote(remote) => remote.indexed_head(),
         }
     }
@@ -432,7 +441,7 @@ impl GitHistoryIndex {
         self.local().map(|db| db.meta_u32(keys::META_COMMIT_COUNT)).unwrap_or(0)
     }
 
-    /// True when nothing has been indexed yet.
+    /// True when nothing has been indexed yet, or a build or append was cut off.
     pub fn is_empty(&self) -> bool {
         self.last_indexed_head_hex().is_none()
     }
@@ -510,6 +519,19 @@ impl LocalDb {
             .flatten()
             .and_then(|b| keys::parse_u32(&b))
             .unwrap_or(0)
+    }
+
+    /// The stamped head, or `None` while a build or append is in progress or was cut off.
+    fn indexed_head(&self) -> Option<[u8; 20]> {
+        if self.build_in_progress() {
+            return None;
+        }
+        self.meta_sha(keys::META_LAST_HEAD)
+    }
+
+    /// A read error counts as in progress, so the index fails closed.
+    fn build_in_progress(&self) -> bool {
+        self.meta.contains_key(keys::META_BUILD_IN_PROGRESS).unwrap_or(true)
     }
 
     fn meta_sha(&self, key: &[u8]) -> Option<[u8; 20]> {
@@ -611,6 +633,13 @@ pub struct GitHistoryWriter {
 const COMMIT_BATCH: usize = 4096;
 
 impl GitHistoryWriter {
+    /// Mark the index in progress before the first row is staged. Written straight to the journal,
+    /// so it precedes every batch this writer commits: no surviving row can outlive the mark.
+    pub fn begin(&mut self) -> Result<(), GitHistoryError> {
+        self.db.meta.insert(keys::META_BUILD_IN_PROGRESS, [1u8])?;
+        Ok(())
+    }
+
     pub fn put_commit_meta(&mut self, ord: u32, meta: &CommitMeta) -> Result<(), GitHistoryError> {
         let sha20 = keys::sha_hex_to_raw(&meta.sha).unwrap_or([0u8; 20]);
         let value = encoding::encode_commit_meta(
@@ -692,6 +721,7 @@ impl GitHistoryWriter {
         meta.insert(&self.db.meta, keys::META_COMMIT_COUNT, commit_count.to_be_bytes());
         meta.insert(&self.db.meta, keys::META_ROOT_SHA, root.to_vec());
         meta.insert(&self.db.meta, keys::META_LAST_HEAD, head.to_vec());
+        meta.remove(&self.db.meta, keys::META_BUILD_IN_PROGRESS);
         meta.commit()?;
         self.db.compact()?;
         Ok(())

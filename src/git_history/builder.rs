@@ -107,7 +107,13 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Resu
         });
     }
 
-    let reason = if index.is_empty() { "initial" } else { "history-rewrite" };
+    let reason = if index.build_interrupted() {
+        "interrupted"
+    } else if index.is_empty() {
+        "initial"
+    } else {
+        "history-rewrite"
+    };
     index.clear(basemind_dir)?;
     rebuild(index, repo, reason)
 }
@@ -143,6 +149,7 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
     let mut writer = index.writer()?;
+    writer.begin()?;
 
     let written = fold_chunked(
         index,
@@ -193,6 +200,7 @@ fn append_since(
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
     let mut writer = index.writer()?;
+    writer.begin()?;
 
     let added = fold_chunked(
         index,
@@ -246,7 +254,8 @@ const RECORD_CHUNK: usize = 8192;
 /// absolute position in `chrono` (`start_ord` plus the global offset) so a `None`/unparsable record
 /// still consumes its slot, preserving the positional ordinal contract the non-chunked fold had.
 /// Returns the number of commits actually written. `dedup` skips commits already present in
-/// `gh_ord_by_sha` (the incremental append's defensive guard).
+/// `gh_ord_by_sha` (the incremental append's defensive guard). It never meets a row a cut-off run
+/// left, because such a run leaves the index marked in progress and the next sync rebuilds it.
 #[allow(clippy::too_many_arguments)]
 fn fold_chunked(
     index: &GitHistoryIndex,
@@ -367,5 +376,102 @@ impl<'a> PathInterner<'a> {
         self.cache.insert(rel.clone(), id);
         writer.put_path(rel, id)?;
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e.x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e.x")
+            .output()
+            .expect("git in PATH");
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8(out.stdout).expect("utf8")
+    }
+
+    fn commit(root: &Path, path: &str, content: &str, msg: &str) {
+        std::fs::write(root.join(path), content).expect("write the file");
+        git(root, &["add", path]);
+        git(root, &["commit", "-qm", msg]);
+    }
+
+    fn touching(index: &GitHistoryIndex, path: &str) -> Vec<String> {
+        index
+            .commits_touching(&RelPath::from(path.as_bytes()), 0, 100)
+            .into_iter()
+            .map(|c| c.sha)
+            .collect()
+    }
+
+    /// A sync killed after the writer's first batch commit leaves the new commits' rows durable and
+    /// their postings and head not. The retry used to skip every commit it found a row for, so they
+    /// never reached a posting list and the index then claimed to be fresh.
+    #[test]
+    fn an_append_cut_off_after_a_batch_commit_is_rebuilt_not_skipped() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        let repo = Repo::discover(root).expect("discover");
+        sync(&index, &repo, cache.path()).expect("first build");
+
+        commit(root, "a.rs", "2", "c2");
+        commit(root, "a.rs", "3", "c3");
+        let repo = Repo::discover(root).expect("rediscover");
+        let last = index.last_indexed_head_hex().expect("an indexed head");
+        let new_shas = repo.new_commit_shas(&last).expect("new commits");
+        assert_eq!(new_shas.len(), 2);
+        let chrono: Vec<&String> = new_shas.iter().rev().collect();
+        {
+            let mut writer = index.writer().expect("writer");
+            writer.begin().expect("mark the append");
+            let mut interner = PathInterner::new(&index, index.next_path_id());
+            let mut postings = AHashMap::new();
+            let mut term_postings = AHashMap::new();
+            fold_chunked(
+                &index,
+                &repo,
+                &chrono,
+                index.next_ord(),
+                true,
+                &mut interner,
+                &mut postings,
+                &mut term_postings,
+                &mut writer,
+            )
+            .expect("fold the new commits");
+            writer.flush().expect("commit the batch");
+        }
+        assert_eq!(index.last_indexed_head_hex(), None, "a cut-off append is never served as fresh");
+
+        let outcome = sync(&index, &repo, cache.path()).expect("resync");
+        assert_eq!(
+            outcome,
+            RebuildOutcome::FullRebuild {
+                reason: "interrupted",
+                commits: 3
+            }
+        );
+        let head = git(root, &["rev-parse", "HEAD"]);
+        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(head.trim()));
+        let expected: Vec<String> = git(root, &["log", "--full-history", "--format=%H", "--", "a.rs"])
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(expected.len(), 3);
+        assert_eq!(touching(&index, "a.rs"), expected, "every commit is in the posting list");
     }
 }
