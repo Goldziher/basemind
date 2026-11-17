@@ -274,26 +274,121 @@ pub(crate) fn source_lines<'a>(source: &str, chunks: impl IntoIterator<Item = &'
 /// Bytes of source a lookup may search past its window, as a multiple of the source's length.
 const SOURCE_LINES_SPILL_FACTOR: usize = 4;
 
+/// Chunk lines tried, from each end, to find where a chunk starts and where it ends.
+const LOOKUP_LINES: usize = 2;
+
+/// A shorter run of plain text than this does not locate a line: it recurs too often.
+const MIN_FRAGMENT: usize = 12;
+
+/// The longest run of plain text a fragment lookup searches for.
+const MAX_FRAGMENT: usize = 64;
+
+/// `source` with every run of whitespace written as one space, and the offset in it at which each
+/// source line starts. The extractor rewraps text (a soft-wrapped Markdown paragraph becomes one
+/// line), so lines are matched with their whitespace collapsed.
+struct Collapsed {
+    text: Vec<u8>,
+    line_marks: Vec<usize>,
+}
+
+impl Collapsed {
+    fn of(source: &str) -> Self {
+        let mut text = Vec::with_capacity(source.len());
+        let mut line_marks = vec![0];
+        let mut in_space = false;
+        for &byte in source.as_bytes() {
+            if byte.is_ascii_whitespace() {
+                if !in_space {
+                    text.push(b' ');
+                    in_space = true;
+                }
+                if byte == b'\n' {
+                    line_marks.push(text.len());
+                }
+            } else {
+                text.push(byte);
+                in_space = false;
+            }
+        }
+        Self { text, line_marks }
+    }
+
+    /// The 1-based source line of the byte at `offset` of the collapsed text.
+    fn line_of(&self, offset: usize) -> u32 {
+        u32::try_from(self.line_marks.partition_point(|&mark| mark <= offset)).unwrap_or(u32::MAX)
+    }
+}
+
+/// `text` with its whitespace collapsed as [`Collapsed`] does, and trimmed.
+fn collapse(text: &str) -> String {
+    text.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A run of plain text in `line` that the extractor's rewriting leaves alone: the line without its
+/// list, quote, heading or table marker, cut at the first (or, `from_end`, the last) markup
+/// character, whitespace collapsed, at most [`MAX_FRAGMENT`] bytes. `None` when no such run is long
+/// enough to locate the line.
+fn plain_fragment(line: &str, from_end: bool) -> Option<String> {
+    let line = line.trim_start_matches(['#', '>', '*', '-', '+', '|', ' ', '\t']);
+    let digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
+    let line = if digits.len() < line.len() {
+        digits.strip_prefix(['.', ')']).unwrap_or(line)
+    } else {
+        line
+    };
+    let markup = |c: char| {
+        matches!(
+            c,
+            '*' | '_' | '`' | '[' | ']' | '(' | ')' | '|' | '<' | '>' | '&' | '\\' | '~'
+        )
+    };
+    let mut runs = line.split(markup).map(collapse).filter(|run| run.len() >= MIN_FRAGMENT);
+    let run = if from_end { runs.next_back()? } else { runs.next()? };
+    if run.len() <= MAX_FRAGMENT {
+        return Some(run);
+    }
+    let cut = if from_end {
+        let mut at = run.len() - MAX_FRAGMENT;
+        while !run.is_char_boundary(at) {
+            at += 1;
+        }
+        run[at..].to_string()
+    } else {
+        let mut at = MAX_FRAGMENT;
+        while !run.is_char_boundary(at) {
+            at -= 1;
+        }
+        run[..at].to_string()
+    };
+    Some(cut)
+}
+
+/// What to search for to find `line`: the line itself, whitespace collapsed, then a plain fragment
+/// of it.
+fn needles(line: &str, from_end: bool) -> impl Iterator<Item = String> {
+    std::iter::once(collapse(line)).chain(plain_fragment(line, from_end))
+}
+
 /// [`source_lines`], plus the bytes of source searched. A chunk's line is looked for in a window
 /// after the previous match sized by the chunk; past the window only while a whole-run budget of
 /// [`SOURCE_LINES_SPILL_FACTOR`] times the source lasts. Without the bound a chunk whose line is
 /// absent searched to the end of the source, once per chunk: an extractor that reflows a
 /// multi-megabyte log into one line made the lookup quadratic and the scan minutes long.
+///
+/// A chunk starts at the first of its first [`LOOKUP_LINES`] lines found and ends at the last of
+/// its last ones, each tried whole and then by a plain fragment, whitespace collapsed on both sides.
 pub(crate) fn source_lines_counted<'a>(
     source: &str,
     chunks: impl IntoIterator<Item = &'a str>,
 ) -> (Vec<Option<(u32, u32)>>, usize) {
-    let line_starts: Vec<usize> = std::iter::once(0)
-        .chain(memchr::memchr_iter(b'\n', source.as_bytes()).map(|i| i + 1))
-        .collect();
-    let line_of = |offset: usize| -> u32 {
-        let index = line_starts.partition_point(|&start| start <= offset);
-        u32::try_from(index).unwrap_or(u32::MAX)
-    };
-    let bytes = source.as_bytes();
+    let collapsed = Collapsed::of(source);
+    let bytes = collapsed.text.as_slice();
     let mut spill_left = source.len().saturating_mul(SOURCE_LINES_SPILL_FACTOR);
     let mut searched = 0usize;
     let mut find = |from: usize, needle: &str, window: usize, spill: bool| -> Option<usize> {
+        if needle.is_empty() || from >= bytes.len() {
+            return None;
+        }
         let near_end = from.saturating_add(window).min(bytes.len());
         searched += near_end - from;
         if let Some(i) = memchr::memmem::find(&bytes[from..near_end], needle.as_bytes()) {
@@ -314,25 +409,40 @@ pub(crate) fn source_lines_counted<'a>(
         .into_iter()
         .map(|chunk| {
             let window = chunk.len().saturating_mul(8).saturating_add(4096);
-            let mut lines = chunk.lines().map(str::trim).filter(|line| is_distinctive(line));
-            let first = lines.next()?;
-            let last = lines.next_back().unwrap_or(first);
-            let start = find(cursor, first, window, true)?;
-            let end = find(start, last, window, false).map_or(start + first.len(), |i| i + last.len());
+            let distinctive: Vec<&str> = chunk
+                .lines()
+                .map(str::trim)
+                .filter(|line| is_distinctive(line))
+                .collect();
+            let start = distinctive
+                .iter()
+                .take(LOOKUP_LINES)
+                .find_map(|line| needles(line, false).find_map(|needle| find(cursor, &needle, window, true)))?;
+            let end = distinctive
+                .iter()
+                .rev()
+                .take(LOOKUP_LINES)
+                .find_map(|line| {
+                    needles(line, true).find_map(|needle| find(start, &needle, window, false).map(|i| i + needle.len()))
+                })
+                .unwrap_or(start + 1);
             cursor = start;
-            Some((line_of(start), line_of(end.saturating_sub(1).max(start))))
+            Some((
+                collapsed.line_of(start),
+                collapsed.line_of(end.saturating_sub(1).max(start)),
+            ))
         })
         .collect();
     (lines, searched)
 }
 
-/// Whether `line` can locate a chunk in its source: long enough, and not a fence or a rule, which
-/// repeat throughout a document.
+/// Whether `line` can locate a chunk in its source: long enough, and not a fence, a rule or a
+/// table's delimiter row, which repeat throughout a document.
 fn is_distinctive(line: &str) -> bool {
     line.len() >= 3
         && !line
             .chars()
-            .all(|c| matches!(c, '`' | '~' | '-' | '*' | '_' | '=' | '#' | ' '))
+            .all(|c| matches!(c, '`' | '~' | '-' | '*' | '_' | '=' | '#' | '|' | ':' | ' '))
 }
 
 /// Source lines are looked up only in a text source no larger than this.
