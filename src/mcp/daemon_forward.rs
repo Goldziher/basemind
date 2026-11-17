@@ -87,8 +87,9 @@ pub(super) async fn writer_rescan_and_refresh(
 }
 
 /// Refresh serve's read-only view from the current (daemon-written) `index.msgpack`: reopen the
-/// store and rebuild the in-RAM [`MapCache`]. Runs the reopen + `MapCache::build` (a rayon
-/// `par_iter`) on a blocking thread so the reactor is never stalled.
+/// store and derive the in-RAM [`MapCache`] from the current one ([`MapCache::refreshed`]: only
+/// the paths the scan changed are re-projected, and unchanged outlines stay decoded). Runs on a
+/// blocking thread so the reactor is never stalled.
 ///
 /// Swaps BOTH the store and the cache. The daemon just rewrote `index.msgpack`, so serve's in-memory
 /// [`crate::store::Index`] is stale. Cache-reading tools (`search_symbols`, `outline`) pick up the
@@ -98,7 +99,7 @@ pub(super) async fn writer_rescan_and_refresh(
 async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpError> {
     let view = state.shared.store.read().await.view.clone();
     let root = state.shared.root.clone();
-    let current_fingerprint = state.shared.cache.load().fingerprint;
+    let current = state.shared.cache.load_full();
     let config = Arc::clone(&state.shared.config);
     let (store, cache) = tokio::task::spawn_blocking(move || {
         let mut store = Store::open_read_only_no_index(&root, &view)?;
@@ -107,8 +108,7 @@ async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpErr
         {
             tracing::debug!(%error, "refresh shared worktree manifest failed");
         }
-        let cache = (super::map_fingerprint::index_fingerprint(&store) != current_fingerprint)
-            .then(|| MapCache::build(&store, super::l1_cache::budget_bytes_from(&config.resources)));
+        let cache = current.refreshed(&store, super::l1_cache::budget_bytes_from(&config.resources));
         Ok::<(Store, Option<MapCache>), crate::store::StoreError>((store, cache))
     })
     .await

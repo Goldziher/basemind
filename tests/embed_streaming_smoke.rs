@@ -153,7 +153,10 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
             "every doc chunk carries a full-width embedding"
         );
     } else {
-        eprintln!("SKIP vector-landing assertions: embedder unavailable (offline / cold model)");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            "no vectors landed (embedder offline or model cold?)",
+        );
     }
 }
 
@@ -200,7 +203,10 @@ fn embed_pass_footprint_does_not_ratchet_across_rescans() {
         warm.stats.updated, warm.stats.docs_indexed
     );
     if !embedder_produced_vectors(&store, code_files) {
-        eprintln!("SKIP: embedder produced no vectors (offline / cold model) — nothing to ratchet");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            "the embedder produced no vectors (offline / cold model), nothing to ratchet",
+        );
         return;
     }
 

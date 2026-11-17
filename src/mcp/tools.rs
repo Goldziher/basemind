@@ -52,9 +52,10 @@ impl BasemindServer {
     #[tool(
         title = "Find a definition",
         description = "Use for \"where is X defined\" when you know (part of) the name: finds \
-        functions, types, constants and other symbols by name across the repository and returns \
-        path, line and signature. Ranked: the exact name first, then prefix, then substring, then \
-        (with `fuzzy`) fuzzy matches. Definitions only: for any text use `code_grep`. \
+        functions, types, constants and other symbols by name across the repository; a row is \
+        `path`, `line`, `kind`, `name`, `signature`. Ranked: the exact name first, then prefix, \
+        then substring, then (with `fuzzy`) fuzzy matches; `stale`: file edited since the scan, \
+        `line` is current. Definitions only: for any text use `code_grep`. \
         Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
         annotations(
             read_only_hint = true,
@@ -93,13 +94,13 @@ impl BasemindServer {
     }
 
     #[tool(
-        title = "Search code text",
+        title = "Search code and text files",
         description = "Use instead of `rg`/`grep` to find exact text (a string, identifier or \
-        comment) anywhere in the indexed code. `pattern` is literal unless `regex` is true. Each \
-        hit is its line plus the symbol it sits in; a hit in a file edited since it was indexed \
-        has `stale` and no symbol. `skipped_files` counts files that could not be searched. A \
-        `path` or `language` no indexed file has is an error. Code files only: search documents \
-        with `docs_search`. \
+        comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is \
+        literal unless `regex` is true. `hits` maps each file to its hits: `line`, `text` and the \
+        `symbol` it sits in; a hit in a file edited since it was indexed has `stale` and no symbol. \
+        `skipped_files` counts files that could not be searched. A `path` or `language` no indexed \
+        file has is an error. \
         Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
         annotations(
             read_only_hint = true,
@@ -111,8 +112,11 @@ impl BasemindServer {
     pub(crate) async fn code_grep(
         &self,
         Parameters(args): Parameters<Strict<CodeGrepParams>>,
+        ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.answer(args, |p| self.code_grep_call(p)).await
+        super::helpers_grep::GREP_CANCEL
+            .scope(ctx.ct, self.answer(args, |p| self.code_grep_call(p)))
+            .await
     }
 
     #[tool(
@@ -138,13 +142,14 @@ impl BasemindServer {
     }
 
     #[tool(
-        title = "Find usages",
-        description = "Use for \"what calls X\", \"what implements X\", \"what imports X\" and \
-        \"which definition does this reference bind to\". `relation` picks the question; the name \
-        is matched exactly. `path` pins the definition in that file; a hit then has `resolved` \
-        true (proven to bind to it), false (checked, not proven) or absent (not checked: \
-        `resolution` says why). A pinned file edited since it was indexed is an error naming \
-        `index_rescan`. \
+        title = "Find call sites, implementations and importers",
+        description = "Use for \"what calls X\", \"what implements X\", \"what imports X\", \"which \
+        definition does this bind to\" (`relation`). Callers are call sites only, not type uses or \
+        `use` lines (`code_grep`). `match` `exact`: the name or a path ending in it; `substring`: \
+        any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` \
+        if edited since the scan. Without `path` hits match by name only; \
+        `path` pins the definition there and sets `resolved` true (proven), false (not proven) or \
+        absent (`resolution` says why). \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,
@@ -163,9 +168,9 @@ impl BasemindServer {
     #[tool(
         title = "Find files",
         description = "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of \
-        its name or path, or to list indexed files when `query` is omitted. Covers code and \
-        documents (markdown, config, PDFs). A `path_prefix` or `language` no indexed file has is \
-        an error. \
+        its name or path, or to list files when `query` is omitted; `files` holds paths. Covers \
+        code, documents and every other file git tracks; a query with one typo still finds its \
+        file. A `path_prefix` or `language` no listed file has is an error. \
         Example: {\"query\":\"readme\"}",
         annotations(
             read_only_hint = true,

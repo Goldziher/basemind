@@ -251,11 +251,8 @@ async fn grep_is_literal_unless_regex_is_set() {
             .await
             .expect("a literal `(` is not a regex error"),
     );
-    assert_eq!(hits["total_matches"], 2, "{hits}");
-    assert_eq!(
-        hits["pattern"], "cache_root(",
-        "the response echoes what the caller typed"
-    );
+    assert_eq!(hits["total"], 2, "{hits}");
+    assert!(hits.get("pattern").is_none(), "the call is not echoed back: {hits}");
 
     let as_regex: CodeGrepParams =
         parse_args(serde_json::json!({ "pattern": "cache_root(", "regex": true })).expect("valid arguments");
@@ -266,14 +263,11 @@ async fn grep_is_literal_unless_regex_is_set() {
     let regex: CodeGrepParams =
         parse_args(serde_json::json!({ "pattern": "fn c\\w+r\\b", "regex": true })).expect("valid arguments");
     let matched = json_of(&server.code_grep_call(regex).await.expect("regex grep"));
-    assert_eq!(matched["total_matches"], 1, "{matched}");
+    assert_eq!(matched["total"], 1, "{matched}");
 
     let dotted: CodeGrepParams = parse_args(serde_json::json!({ "pattern": "c.che_root" })).expect("valid arguments");
     let none = json_of(&server.code_grep_call(dotted).await.expect("literal grep"));
-    assert_eq!(
-        none["total_matches"], 0,
-        "a literal `.` must not match any character: {none}"
-    );
+    assert_eq!(none["total"], 0, "a literal `.` must not match any character: {none}");
 
     let glob: CodeGrepParams =
         parse_args(serde_json::json!({ "pattern": "cache_root", "path": "*.rs" })).expect("valid arguments");
@@ -310,8 +304,8 @@ async fn a_followed_symlink_the_scan_indexed_is_readable_by_every_tool() {
 
     let grep: CodeGrepParams = parse_args(serde_json::json!({ "pattern": "linked_needle" })).expect("valid arguments");
     let hits = json_of(&server.code_grep_call(grep).await.expect("code_grep"));
-    assert_eq!(
-        hits["hits"][0]["path"], "linked.rs",
+    assert!(
+        hits["hits"]["linked.rs"].is_array(),
         "the scan indexed the link: {hits}"
     );
 

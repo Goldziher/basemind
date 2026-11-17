@@ -228,45 +228,100 @@ def _extract(archive: Path, ext: str, destination: Path) -> None:
             zf.extractall(destination)
     else:
         with tarfile.open(archive, "r:gz") as tar:
-            tar.extractall(destination)
+            # The "data" filter refuses absolute paths, links out of the tree and device files.
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(destination, filter="data")
+            else:
+                tar.extractall(destination)  # noqa: S202 -- Python before 3.11.4 has no filters
 
 
 def _binary_name() -> str:
     return "basemind.exe" if platform.system().lower() == "windows" else "basemind"
 
 
+# Days a cached version must go unused before another version's wrapper may remove it.
+PRUNE_AFTER_DAYS = 14
+# Seconds a waiter waits for another process's install, and the age at which a lock is abandoned.
+INSTALL_WAIT_SECONDS = 600
+STALE_LOCK_SECONDS = 600
+LAST_USED = ".last-used"
+
+
+def _cache_root() -> Path:
+    return Path.home() / ".cache" / "basemind"
+
+
 def _cache_dir(version: str) -> Path:
-    """Directory holding the extracted binary plus its bundled lib/ tree."""
-    cache_dir = Path.home() / ".cache" / "basemind" / version
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
+    """Directory holding the extracted binary plus its bundled lib/ tree (not created here)."""
+    return _cache_root() / version
+
+
+def _mark_used(cache_dir: Path) -> None:
+    with contextlib.suppress(OSError):
+        (cache_dir / LAST_USED).touch()
 
 
 def _prune_stale_versions(keep_version: str) -> None:
-    """Remove old per-version cache dirs so binaries don't accrue across upgrades.
+    """Remove other versions' cache dirs once nothing has used them for ``PRUNE_AFTER_DAYS``.
 
-    Only ever runs once the ``keep_version`` binary is confirmed present, so a
-    user's only working copy is never deleted before a replacement exists. Any dir
-    whose name isn't ``keep_version`` is dead weight (this wrapper only runs its own
-    version). Best-effort: a dir in use by another process is skipped on error.
+    Two environments may run different versions side by side, and a running daemon re-executes
+    its binary, so a version is removed only when its last-use marker (or, without one, the
+    directory itself) is older than the window, and never while its install lock exists.
     """
-    root = Path.home() / ".cache" / "basemind"
+    root = _cache_root()
     if not root.is_dir():
         return
+    cutoff = time.time() - PRUNE_AFTER_DAYS * 86400
     for entry in root.iterdir():
-        if entry.name == keep_version or not entry.is_dir():
+        if entry.name == keep_version or not entry.is_dir() or entry.is_symlink():
             continue
         if not entry.name[:1].isdigit():
             continue
-        shutil.rmtree(entry, ignore_errors=True)
+        if (root / f".lock-{entry.name}").exists():
+            continue
+        marker = entry / LAST_USED
+        try:
+            last_used = (marker if marker.exists() else entry).stat().st_mtime
+        except OSError:
+            continue
+        if last_used < cutoff:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
+def _installed(binary_path: Path) -> bool:
+    return binary_path.exists() and os.access(binary_path, os.X_OK)
+
+
+def _acquire_lock(lock_path: Path, binary_path: Path) -> bool:
+    """Take the install lock, or wait for the holder's install. Returns False when the binary
+    appeared while waiting. A lock older than ``STALE_LOCK_SECONDS`` was left by a crashed
+    install and is broken."""
+    deadline = time.monotonic() + INSTALL_WAIT_SECONDS
+    while True:
+        try:
+            os.close(os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+            return True
+        except FileExistsError:
+            pass
+        if _installed(binary_path):
+            return False
+        with contextlib.suppress(FileNotFoundError):
+            if time.time() - lock_path.stat().st_mtime > STALE_LOCK_SECONDS:
+                lock_path.unlink()
+                continue
+        if time.monotonic() > deadline:
+            raise RuntimeError(
+                f"Timed out after {INSTALL_WAIT_SECONDS}s waiting for another process to install "
+                f"basemind into {binary_path.parent}. If no install is running, remove {lock_path}."
+            )
+        time.sleep(0.2)
 
 
 def ensure_binary() -> str:
     """Ensure the binary is available, downloading if necessary.
 
-    Handles concurrent invocations via atomic rename: download+extract into a
-    temp dir, then atomically move into the cache to prevent corruption from
-    parallel installs.
+    Concurrent invocations serialize on a lock file beside the version directory, and the
+    download is extracted into a staging directory that is renamed into place in one step.
     """
     from . import __version__
 
@@ -276,39 +331,28 @@ def ensure_binary() -> str:
 
     cache_dir = _cache_dir(__version__)
     binary_path = cache_dir / _binary_name()
-    if binary_path.exists() and os.access(binary_path, os.X_OK):
+    if _installed(binary_path):
+        _mark_used(cache_dir)
         _prune_stale_versions(__version__)
         return str(binary_path)
 
     archive_url, ext, asset_name, checksums_url = _asset(__version__)
-    print(f"Downloading basemind binary v{__version__}...", file=sys.stderr)
-
-    lock_path = cache_dir / ".lock"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    lock_acquired = False
-    try:
-        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        lock_acquired = True
-        os.close(lock_fd)
-    except FileExistsError:
-        for _ in range(30):
-            time.sleep(0.1)
-            if binary_path.exists() and os.access(binary_path, os.X_OK):
-                return str(binary_path)
-        raise RuntimeError(
-            f"Timeout waiting for concurrent binary installation of {__version__}. "
-            f"If this persists, remove {cache_dir} and retry."
-        ) from None
+    root = _cache_root()
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / f".lock-{__version__}"
+    if not _acquire_lock(lock_path, binary_path):
+        _mark_used(cache_dir)
+        return str(binary_path)
 
     try:
-        if binary_path.exists() and os.access(binary_path, os.X_OK):
+        if _installed(binary_path):
             return str(binary_path)
+        print(f"Downloading basemind binary v{__version__}...", file=sys.stderr)
 
         # Stage under the cache root, not the system temp dir: the final ~keep
         # ``staging_dir.replace(cache_dir)`` is an atomic rename that fails with ~keep
         # EXDEV (cross-device link) when /tmp and $HOME are on different filesystems (#38). ~keep
-        with tempfile.TemporaryDirectory(dir=cache_dir.parent) as tmpdir:
+        with tempfile.TemporaryDirectory(dir=root) as tmpdir:
             archive_path = Path(tmpdir) / asset_name
             _download(archive_url, archive_path)
             _verify_checksum(archive_path, asset_name, checksums_url)
@@ -316,30 +360,25 @@ def ensure_binary() -> str:
             staging_dir = Path(tmpdir) / "staging"
             staging_dir.mkdir()
             _extract(archive_path, ext, staging_dir)
+            if not (staging_dir / _binary_name()).is_file():
+                raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}")
+            if platform.system().lower() != "windows":
+                (staging_dir / _binary_name()).chmod(0o755)
 
-            try:
-                staging_dir.replace(cache_dir)
-            except (OSError, FileExistsError) as exc:
-                if not (binary_path.exists() and os.access(binary_path, os.X_OK)):
-                    shutil.rmtree(cache_dir, ignore_errors=True)
-                    staging_dir.replace(cache_dir)
-                if not binary_path.exists():
-                    raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}") from exc
+            # Holding the lock, nothing else writes cache_dir: an incomplete one from a crashed
+            # install is removed, then the verified tree takes its place in one rename.
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+            staging_dir.replace(cache_dir)
 
-        if not binary_path.exists():
-            raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}")
-
-        if platform.system().lower() != "windows":
-            binary_path.chmod(0o755)
-
+        _mark_used(cache_dir)
         _prune_stale_versions(__version__)
 
         print("Binary downloaded successfully!", file=sys.stderr)
         return str(binary_path)
     finally:
-        if lock_acquired:
-            with contextlib.suppress(FileNotFoundError):
-                lock_path.unlink()
+        with contextlib.suppress(FileNotFoundError):
+            lock_path.unlink()
 
 
 def run_basemind(args: list[str]) -> None:

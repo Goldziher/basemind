@@ -43,6 +43,7 @@ runs:
           cd "$build_dir"
           curl -fsSL -o libheif.tar.gz \
             "https://github.com/strukturag/libheif/releases/download/v${LIBHEIF_VERSION}/libheif-${LIBHEIF_VERSION}.tar.gz"
+          echo "4c9182b18897617182eed12ab5eb9f9d855b3aa3a736d6bdb31abc034ec7d393  libheif.tar.gz" | sha256sum -c -
           tar xzf libheif.tar.gz
           cd "libheif-${LIBHEIF_VERSION}"
           mkdir build && cd build
@@ -87,8 +88,12 @@ runs:
           echo "/usr/local/sbin" >> "$GITHUB_PATH"
         fi
 
-        # Install all dependencies
-        brew install cmake tesseract tesseract-lang libheif libmagic pkg-config protobuf || true
+        # A failed install fails the job: a leg without tesseract would run the OCR tests against
+        # whatever the image happens to carry.
+        brew install cmake tesseract tesseract-lang libheif libmagic pkg-config protobuf
+        tesseract --version | head -n 1
+        protoc --version
+        pkg-config --modversion libheif
 
         echo "::endgroup::"
 
@@ -103,14 +108,17 @@ runs:
 
         # Install protoc via choco
         Write-Host "Installing protobuf..."
-        choco install -y protoc --no-progress || Write-Host "::warning::Failed to install protoc"
+        choco install -y protoc --no-progress
+        if ($LASTEXITCODE -ne 0) { throw "choco install protoc failed ($LASTEXITCODE)" }
 
         # Install tesseract
         Write-Host "Installing Tesseract..."
-        choco install -y tesseract --no-progress || Write-Host "::warning::Failed to install Tesseract"
+        choco install -y tesseract --no-progress
+        if ($LASTEXITCODE -ne 0) { throw "choco install tesseract failed ($LASTEXITCODE)" }
 
         # Download tessdata
         $tesseractPath = "C:\Program Files\Tesseract-OCR"
+        if (-not (Test-Path $tesseractPath)) { throw "Tesseract is not at $tesseractPath after install" }
         if (Test-Path $tesseractPath) {
           $tessdataPath = "$tesseractPath\tessdata"
           if (-not (Test-Path $tessdataPath)) {
@@ -121,16 +129,14 @@ runs:
           if (-not (Test-Path "$tessdataPath\eng.traineddata")) {
             Write-Host "Downloading English language data..."
             $engUrl = "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata"
-            Invoke-WebRequest -Uri $engUrl -OutFile "$tessdataPath\eng.traineddata" -ErrorAction SilentlyContinue || `
-              Write-Host "::warning::Failed to download eng.traineddata"
+            Invoke-WebRequest -Uri $engUrl -OutFile "$tessdataPath\eng.traineddata"
           }
 
           # Download OSD
           if (-not (Test-Path "$tessdataPath\osd.traineddata")) {
             Write-Host "Downloading OSD data..."
             $osdUrl = "https://github.com/tesseract-ocr/tessdata_fast/raw/main/osd.traineddata"
-            Invoke-WebRequest -Uri $osdUrl -OutFile "$tessdataPath\osd.traineddata" -ErrorAction SilentlyContinue || `
-              Write-Host "::warning::Failed to download osd.traineddata"
+            Invoke-WebRequest -Uri $osdUrl -OutFile "$tessdataPath\osd.traineddata"
           }
 
           $env:TESSDATA_PREFIX = $tessdataPath
@@ -146,8 +152,8 @@ runs:
         $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
         if (Test-Path $vcpkgExe) {
           Write-Host "Installing libheif via vcpkg..."
-          & $vcpkgExe install "libheif:x64-windows-static-md" --recurse || `
-            Write-Host "::warning::Failed to install libheif via vcpkg"
+          & $vcpkgExe install "libheif:x64-windows-static-md" --recurse
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install libheif failed ($LASTEXITCODE)" }
 
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
         }
@@ -182,6 +188,7 @@ runs:
           Write-Host "::error::Failed to build static zlib import libraries from source"
           Get-ChildItem -Path $zlibBuild -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Host "  $($_.FullName)" }
+          throw "no static zlib import library was built"
         }
 
         Write-Host "::endgroup::"

@@ -135,10 +135,10 @@ pub fn request_stop_within(socket_path: &Path, timeout: Duration) -> StopOutcome
 /// The documented recovery path (`comms stop`) asks the running daemon to drain — a request that a
 /// daemon with a broken store can refuse, which routes recovery through the exact subsystem that is
 /// down. This is the escalation: SIGTERM (which the daemon's signal handler turns into the same
-/// clean drain), then SIGKILL if it is still there after `grace`. Returns whether the process is
-/// gone by the time we return.
+/// clean drain), then SIGKILL if it is still there after `grace` and `before_kill` still holds.
+/// Returns whether the process is gone by the time we return.
 #[cfg(unix)]
-pub fn force_terminate(pid: u32, grace: Duration) -> bool {
+pub fn force_terminate(pid: u32, grace: Duration, before_kill: &dyn Fn() -> bool) -> bool {
     use crate::daemon_lock::pid_is_live;
 
     if !pid_is_live(pid) {
@@ -152,6 +152,9 @@ pub fn force_terminate(pid: u32, grace: Duration) -> bool {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    if !before_kill() {
+        return !pid_is_live(pid);
+    }
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
@@ -164,13 +167,16 @@ pub fn force_terminate(pid: u32, grace: Duration) -> bool {
 }
 
 /// [`force_terminate`] on Windows. There is no SIGTERM, so this goes straight to `taskkill /F`,
-/// which is the platform's equivalent of the SIGKILL fallback.
+/// which is the platform's equivalent of the SIGKILL fallback, sent only while `before_kill` holds.
 #[cfg(windows)]
-pub fn force_terminate(pid: u32, _grace: Duration) -> bool {
+pub fn force_terminate(pid: u32, _grace: Duration, before_kill: &dyn Fn() -> bool) -> bool {
     use crate::daemon_lock::pid_is_live;
 
     if !pid_is_live(pid) {
         return true;
+    }
+    if !before_kill() {
+        return false;
     }
     let _ = std::process::Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/F"])

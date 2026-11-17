@@ -1,5 +1,5 @@
-# Versions follow the xberg-io/toolchains baseline named in toolchains.toml. Rust has no
-# rust-toolchain.toml here and follows the stable channel. ~keep
+# Versions follow the xberg-io/toolchains baseline named in toolchains.toml. Rust is pinned in
+# rust-toolchain.toml, which the baseline's `rust` entry is checked against. ~keep
 [settings]
 lockfile = true
 lockfile_platforms = ["linux-x64", "linux-arm64", "macos-arm64", "windows-x64"]
@@ -12,6 +12,7 @@ python = "3.15.2"
 uv = "0.13.6"
 node = "26.13.0"
 pnpm = "12.16.1"
+"github:taiki-e/cargo-hack" = "0.6.46"
 
 [tasks.setup]
 description = "Install all dependencies and initialize project. Idempotent."
@@ -28,6 +29,15 @@ run = ["cargo test --workspace --no-fail-fast", { task = "hermes:test" }]
 [tasks."test:verbose"]
 description = "Run tests with verbose output"
 run = "cargo test --workspace --no-fail-fast -- --nocapture"
+
+[tasks."check:features"]
+description = "Clippy every feature alone (lib and bins) and the documented combinations (all targets)"
+run = [
+  "cargo hack clippy --each-feature --no-dev-deps --keep-going -- -D warnings",
+  'cargo clippy --all-targets --features "comms memory" -- -D warnings',
+  'cargo clippy --all-targets --features "comms documents memory" -- -D warnings',
+  'cargo clippy --all-targets --features "documents documents-ocr documents-ner" -- -D warnings',
+]
 
 [tasks.check]
 description = "Run all checks (lint + test)"
@@ -49,12 +59,14 @@ run = ["cargo upgrade --incompatible", "cargo update"]
 description = "Generate native plugins and all public compatibility exports"
 run = ["python3 scripts/sync_plugin_version.py", "bash scripts/sync-plugin-skills.sh"]
 
+[tasks."plugin:pytest"]
+description = "Python tests of the plugin hooks, launchers, exports and the pip and Hermes packages"
+env = { PYTHONPATH = "pip-package" }
+run = "uv run --no-project --with pytest --with certifi --with build --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py tests/test_session_start_hook.py tests/test_agent_hooks.py tests/test_mcp_launch_prune.py tests/test_mcp_launch_download.py tests/test_pre_tool_guard_hook.py pip-package/tests pip-package-hermes/tests"
+
 [tasks."plugin:test"]
 description = "Exercise archive, public export, and actual CLI integration contracts"
-run = [
-  "uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py tests/test_session_start_hook.py tests/test_agent_hooks.py tests/test_mcp_launch_prune.py pip-package-hermes/tests",
-  "node tests/basemind_pi_cli_contract.mjs",
-]
+run = [{ task = "plugin:pytest" }, "node tests/basemind_pi_cli_contract.mjs"]
 
 [tasks."plugin:verify"]
 description = "Verify native plugin and public export freshness"

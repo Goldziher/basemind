@@ -125,6 +125,26 @@ fn decode_text(result: &CallToolResult) -> Value {
     serde_json::from_str(&raw).unwrap_or(Value::Null)
 }
 
+/// The hits of a response as rows, each with its `path`. `code_grep` and `code_refs` list hits under
+/// their file (`{"<path>": [hit, ...]}`); the path is put back on each. A plain list (`code_search`,
+/// `docs_search`) is returned as it is.
+fn hit_rows(body: &Value) -> Vec<Value> {
+    match body.get("hits") {
+        Some(Value::Object(files)) => files
+            .iter()
+            .flat_map(|(path, rows)| {
+                rows.as_array().expect("a file's hits").iter().map(move |row| {
+                    let mut row = row.clone();
+                    row["path"] = json!(path);
+                    row
+                })
+            })
+            .collect(),
+        Some(Value::Array(rows)) => rows.clone(),
+        _ => panic!("no hits: {body}"),
+    }
+}
+
 /// `forged` in place of the tool's own cursor inside `real`, a `next_cursor` the server issued. The
 /// result is still bound to the query that issued `real`, so the tool body sees `forged`.
 fn rebound(real: &str, forged: &str) -> String {
@@ -401,12 +421,11 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs"),
     );
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     assert_eq!(hits.len(), 3, "expected 3 alpha() call sites: {body}");
     assert!(
-        hits.iter()
-            .all(|h| h.get("callee").and_then(Value::as_str) == Some("alpha")),
-        "every hit should carry callee=\"alpha\""
+        hits.iter().all(|h| h.get("callee").is_none()),
+        "a callee that is the name asked for is not repeated on every hit: {body}"
     );
     assert!(
         hits.iter()
@@ -425,7 +444,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs page1"),
     );
-    let page1_hits = page1.get("hits").and_then(Value::as_array).expect("page1 hits");
+    let page1_hits = hit_rows(&page1);
     assert_eq!(page1_hits.len(), 2, "limit=2 → 2 hits on first page");
     let cursor1 = page1
         .get("next_cursor")
@@ -441,23 +460,29 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs page2"),
     );
-    let page2_hits = page2.get("hits").and_then(Value::as_array).expect("page2 hits");
+    let page2_hits = hit_rows(&page2);
     assert_eq!(page2_hits.len(), 1, "remaining single hit on second page");
     assert!(
         page2.get("next_cursor").is_none(),
         "second page must NOT carry a next_cursor: {page2}"
     );
-    let pos = |h: &Value| -> (u64, u64) {
+    // All three calls are on one line of c.rs. A call site writes its column when another call of the
+    // whole result shares its line, so every page tells its hits apart from the other pages' hits.
+    let pos = |h: &Value| -> (u64, Option<u64>) {
         (
             h.get("line").and_then(Value::as_u64).unwrap_or(0),
-            h.get("column").and_then(Value::as_u64).unwrap_or(0),
+            h.get("column").and_then(Value::as_u64),
         )
     };
-    let p1_pos: Vec<(u64, u64)> = page1_hits.iter().map(pos).collect();
-    let p2_pos: Vec<(u64, u64)> = page2_hits.iter().map(pos).collect();
+    let p1_pos: Vec<(u64, Option<u64>)> = page1_hits.iter().map(pos).collect();
     assert!(
-        p2_pos.iter().all(|p| !p1_pos.contains(p)),
-        "page2 must not overlap page1: {p1_pos:?} vs {p2_pos:?}"
+        p1_pos.iter().all(|(_, column)| column.is_some()) && p1_pos[0] != p1_pos[1],
+        "two hits on one line carry distinct columns: {page1}"
+    );
+    let p2_pos: Vec<(u64, Option<u64>)> = page2_hits.iter().map(pos).collect();
+    assert!(
+        p2_pos.len() == 1 && p2_pos[0].0 == p1_pos[0].0 && p2_pos[0].1.is_some() && !p1_pos.contains(&p2_pos[0]),
+        "the hit left for page 2 is the third on that line and keeps its own column: {page2}"
     );
 
     let body = decode_text(
@@ -472,7 +497,7 @@ async fn mcp_server_exercises_representative_tools() {
         Some("alpha"),
         "definition should resolve to alpha"
     );
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     assert_eq!(hits.len(), 3, "code_refs with `path` should see the same 3 sites");
 
     let page1 = decode_text(
@@ -484,7 +509,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs with `path` page1"),
     );
-    let page1_hits = page1.get("hits").and_then(Value::as_array).expect("page1 hits");
+    let page1_hits = hit_rows(&page1);
     assert_eq!(page1_hits.len(), 2, "code_refs with `path` limit=2 → 2 hits");
     let cursor1 = page1
         .get("next_cursor")
@@ -504,7 +529,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs with `path` page2"),
     );
-    let page2_hits = page2.get("hits").and_then(Value::as_array).expect("page2 hits");
+    let page2_hits = hit_rows(&page2);
     assert_eq!(page2_hits.len(), 1, "code_refs with `path` tail page → 1 hit");
     assert!(
         page2.get("next_cursor").is_none(),
@@ -648,14 +673,8 @@ async fn mcp_server_exercises_representative_tools() {
         page2.get("next_cursor").is_none(),
         "find_files page2 must NOT carry next_cursor"
     );
-    let p1_paths: Vec<&str> = page1_files
-        .iter()
-        .filter_map(|f| f.get("path").and_then(Value::as_str))
-        .collect();
-    let p2_paths: Vec<&str> = page2_files
-        .iter()
-        .filter_map(|f| f.get("path").and_then(Value::as_str))
-        .collect();
+    let p1_paths: Vec<&str> = page1_files.iter().filter_map(Value::as_str).collect();
+    let p2_paths: Vec<&str> = page2_files.iter().filter_map(Value::as_str).collect();
     assert!(
         p2_paths.iter().all(|p| !p1_paths.contains(p)),
         "find_files pages must not overlap: {p1_paths:?} vs {p2_paths:?}"
@@ -717,23 +736,14 @@ async fn mcp_server_exercises_representative_tools() {
     let files = body.get("files").and_then(Value::as_array).expect("find_files files");
     assert_eq!(files.len(), 1, "'cy1' is a subsequence of only cyc1.rs: {body}");
     assert_eq!(
-        files[0].get("path").and_then(Value::as_str),
+        files[0].as_str(),
         Some("cyc1.rs"),
-        "find_files('cy1') must rank cyc1.rs: {body}"
-    );
-    assert!(
-        files[0].get("score").and_then(Value::as_u64).is_some(),
-        "find_files entries must carry a numeric score: {body}"
+        "find_files('cy1') must rank cyc1.rs, listed by its path alone: {body}"
     );
     assert_eq!(
         body.get("total").and_then(Value::as_u64),
         Some(1),
         "find_files('cy1') total must be exactly 1: {body}"
-    );
-    assert_eq!(
-        body.get("returned").and_then(Value::as_u64),
-        Some(1),
-        "find_files('cy1') returned must be exactly 1: {body}"
     );
     assert!(
         body.get("truncated").is_none() && body.get("next_cursor").is_none(),
@@ -780,7 +790,7 @@ async fn mcp_server_exercises_representative_tools() {
     );
     let files = body.get("files").and_then(Value::as_array).expect("find_files files");
     assert_eq!(
-        files.first().and_then(|f| f.get("path")).and_then(Value::as_str),
+        files.first().and_then(Value::as_str),
         Some("d.py"),
         "find_files('d') should rank d.py first (only path starting with d): {body}"
     );
@@ -791,7 +801,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs(missing)"),
     );
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     assert!(hits.is_empty(), "unknown callee should yield no hits");
 
     let body = decode_text(
@@ -809,7 +819,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_grep"),
     );
-    let grep_hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let grep_hits = hit_rows(&body);
     assert!(
         !grep_hits.is_empty(),
         "code_grep for 'pub fn' should find hits in the fixture"
@@ -820,10 +830,7 @@ async fn mcp_server_exercises_representative_tools() {
             .all(|h| h.get("line").and_then(Value::as_u64).unwrap_or(0) >= 1),
         "every grep hit must carry a 1-based line"
     );
-    let total_matches = body
-        .get("total_matches")
-        .and_then(Value::as_u64)
-        .expect("total_matches");
+    let total_matches = body.get("total").and_then(Value::as_u64).expect("total");
     assert!(
         total_matches >= 3,
         "fixture has alpha + doit + caller = 3+ 'pub fn' occurrences, got {total_matches}"
@@ -835,7 +842,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_grep(limit=1)"),
     );
-    let hits_with_limit = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits_with_limit = hit_rows(&body);
     assert_eq!(hits_with_limit.len(), 1, "limit=1 should return exactly 1 hit");
     assert!(
         body.get("next_cursor").is_some_and(Value::is_string),
@@ -846,10 +853,7 @@ async fn mcp_server_exercises_representative_tools() {
         "a `limit` cut is paging, not truncation, and a false flag is left out: {body}"
     );
     assert!(body.get("truncated_reason").is_none(), "{body}");
-    let capped_total = body
-        .get("total_matches")
-        .and_then(Value::as_u64)
-        .expect("total_matches");
+    let capped_total = body.get("total").and_then(Value::as_u64).expect("total");
     assert_eq!(
         capped_total, total_matches,
         "`limit` caps hits, never the scan: the match count is the same as the unlimited call"
@@ -874,8 +878,8 @@ async fn mcp_server_exercises_representative_tools() {
             .expect("code_grep(literal)"),
     );
     assert_eq!(
-        literal.get("hits").and_then(Value::as_array).map(Vec::len),
-        Some(0),
+        literal.get("hits"),
+        Some(&json!({})),
         "without `regex` the same text is a literal search, not an error: {literal}"
     );
 
@@ -1012,6 +1016,11 @@ async fn mcp_server_exercises_representative_tools() {
             .and_then(Value::as_str)
             .expect("memory_search first page must carry next_cursor")
             .to_string();
+        assert!(
+            page1.get("truncated").is_none() && page1.get("truncated_reason").is_none(),
+            "a `limit` cut is paging, not truncation, and a false flag is left out: {page1}"
+        );
+        assert_eq!(page1.get("total").and_then(Value::as_u64), Some(3), "{page1}");
         let page2 = decode_text(
             &service
                 .call_tool(call_params(
@@ -1082,7 +1091,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs implementations(Drawable)"),
     );
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     let impl_types: Vec<&str> = hits
         .iter()
         .filter_map(|h| h.get("impl_type").and_then(Value::as_str))
@@ -1110,7 +1119,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs implementations(Foo)"),
     );
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     let impl_types: Vec<&str> = hits
         .iter()
         .filter_map(|h| h.get("impl_type").and_then(Value::as_str))
@@ -1129,10 +1138,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs implementations page1"),
     );
-    let impl_page1_hits = impl_page1
-        .get("hits")
-        .and_then(Value::as_array)
-        .expect("impl page1 hits");
+    let impl_page1_hits = hit_rows(&impl_page1);
     assert_eq!(
         impl_page1_hits.len(),
         1,
@@ -1152,10 +1158,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs implementations page2"),
     );
-    let impl_page2_hits = impl_page2
-        .get("hits")
-        .and_then(Value::as_array)
-        .expect("impl page2 hits");
+    let impl_page2_hits = hit_rows(&impl_page2);
     assert_eq!(
         impl_page2_hits.len(),
         1,
@@ -1182,7 +1185,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs(substring)"),
     );
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     assert_eq!(
         hits.len(),
         3,
@@ -1203,7 +1206,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_refs implementations(substring)"),
     );
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     let impl_types: Vec<&str> = hits
         .iter()
         .filter_map(|h| h.get("impl_type").and_then(Value::as_str))
@@ -1216,10 +1219,11 @@ async fn mcp_server_exercises_representative_tools() {
         impl_types.contains(&"Rectangle"),
         "code_refs implementations(\"raw\") must include Rectangle via substring on \"Drawable\": {impl_types:?}"
     );
-    assert_eq!(
-        body.get("trait_name").and_then(Value::as_str),
-        Some("raw"),
-        "trait_name in response must echo the search needle"
+    assert!(body.get("trait_name").is_none(), "the call is not echoed back: {body}");
+    assert!(
+        hits.iter()
+            .all(|h| h.get("trait_name").and_then(Value::as_str) == Some("Drawable")),
+        "a substring match names the trait each hit implements: {body}"
     );
 
     let body = decode_text(
@@ -1691,73 +1695,45 @@ async fn git_blame_symbol_paginates_by_start_line() {
 async fn reranks_search_results() {
     let dir = build_repo();
     let root = dir.path();
-    run_scan(root);
-    let transport = basemind::mcp::serve_in_memory(root, "working")
-        .await
-        .expect("in-memory serve");
-    let service = ().serve(transport).await.expect("rmcp handshake");
-
-    let no_rerank = service
-        .call_tool(call_params("docs_search", json!({ "query": "function" })))
-        .await;
-    if let Ok(ref resp) = no_rerank {
-        let body = decode_text(resp);
-        if let Some(hits) = body.get("hits").and_then(Value::as_array)
-            && !hits.is_empty()
-        {
-            for hit in hits {
-                assert!(
-                    hit.get("rerank_score").is_none(),
-                    "reranker off — hit must not carry rerank_score: {hit}"
-                );
-            }
-        }
-    }
-
-    let _ = service.cancel().await;
-
-    // Per-query reranker overrides are no longer part of the MCP surface; the reranker is driven
-    // by `[documents.reranker]` in basemind.toml.
     std::fs::write(
-        root.join("basemind.toml"),
-        "[documents.reranker]\nenabled = true\npreset = \"bge-reranker-base\"\n",
+        root.join("guide.md"),
+        "# Functions\n\nEvery function in this project returns a value and logs how long it took.\n",
     )
     .unwrap();
-    let transport = basemind::mcp::serve_in_memory(root, "working")
-        .await
-        .expect("in-memory serve");
-    let service = ().serve(transport).await.expect("rmcp handshake");
 
-    let reranked = service
-        .call_tool(call_params(
-            "docs_search",
-            json!({ "query": "function",
-            }),
-        ))
-        .await;
-    match &reranked {
-        Ok(resp) => {
-            let body = decode_text(resp);
-            if let Some(hits) = body.get("hits").and_then(Value::as_array) {
-                for hit in hits {
-                    assert!(
-                        hit.get("rerank_score").is_some(),
-                        "reranker on — every hit must carry rerank_score: {hit}"
-                    );
-                    let score = hit["rerank_score"].as_f64().expect("rerank_score is f64");
-                    assert!(
-                        (0.0..=1.0).contains(&score),
-                        "rerank_score must be in [0, 1], got {score}"
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            let _ = e;
-        }
+    async fn hits_for(root: &Path, config: &str) -> Vec<Value> {
+        std::fs::write(root.join("basemind.toml"), config).unwrap();
+        run_scan(root);
+        let transport = basemind::mcp::serve_in_memory(root, "working")
+            .await
+            .expect("in-memory serve");
+        let service = ().serve(transport).await.expect("rmcp handshake");
+        let response = service
+            .call_tool(call_params("docs_search", json!({ "query": "function" })))
+            .await
+            .expect("docs_search answers");
+        assert_ne!(response.is_error, Some(true), "{}", error_text(&response));
+        let hits = decode_text(&response)["hits"].as_array().cloned().unwrap_or_default();
+        let _ = service.cancel().await;
+        assert!(!hits.is_empty(), "the indexed guide must be found");
+        hits
     }
 
-    let _ = service.cancel().await;
+    let documents = "[documents]\nenabled = true\n";
+    for hit in hits_for(root, documents).await {
+        assert!(hit.get("rerank_score").is_none(), "reranker off: {hit}");
+    }
+    // The reranker is driven by `[documents.reranker]` in basemind.toml, not by the query.
+    let reranked = format!("{documents}\n[documents.reranker]\nenabled = true\npreset = \"bge-reranker-base\"\n");
+    for hit in hits_for(root, &reranked).await {
+        let score = hit["rerank_score"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("reranker on: {hit}"));
+        assert!(
+            (0.0..=1.0).contains(&score),
+            "rerank_score must be in [0, 1], got {score}"
+        );
+    }
 }
 
 // behind `#[ignore]`.
@@ -1981,7 +1957,7 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
         .expect("index_rescan(escaping path)");
     let message = error_text(&escaping);
     assert!(
-        message.contains("escapes the repository root"),
+        message.contains("outside the repository root"),
         "index_rescan must reject a path that escapes the repo root: {message}"
     );
 
@@ -2216,21 +2192,9 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .await
             .expect("lean invoke_tool"),
     );
-    let mut via_invoke = via_invoke;
-    let mut direct = direct;
-    for (label, body) in [("invoke_tool", &mut via_invoke), ("direct", &mut direct)] {
-        let removed = body
-            .as_object_mut()
-            .expect("response is a JSON object")
-            .remove("elapsed_us");
-        assert!(
-            removed.is_some_and(|v| v.as_u64().is_some()),
-            "{label} code_symbols response must carry an `elapsed_us` reading"
-        );
-    }
     assert_eq!(
         via_invoke, direct,
-        "invoke_tool result must match a direct code_symbols call (latency field aside)"
+        "invoke_tool result must match a direct code_symbols call"
     );
 
     let bad = lean
@@ -2453,8 +2417,12 @@ async fn rescan_emits_progress_and_no_logging() {
         "logging capability must not be advertised"
     );
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
+    // Progress notifications reach `on_progress` on the client's own task, which may run after the
+    // call's result is returned: wait for both instead of sleeping. The ceiling only stops a hang.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while progress.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     let captured_progress = progress.lock().unwrap().clone();
 
     assert!(
@@ -2521,8 +2489,9 @@ fn assert_stamped(tool: &str, body: &Value) {
     );
 }
 
-/// The timing contract: every latency-relevant tool reports its own server-side handler latency in
-/// microseconds, on both the code-map and the git surface.
+/// The timing contract: a tool whose answer replaces reading content reports its own server-side
+/// handler latency in microseconds. A locating tool leaves it out: its answer is a few rows, and the
+/// field cost as much as one (telemetry records the latency of every call).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn latency_tools_report_microsecond_elapsed_us() {
     let (_dir, service) = spawn_paging_server().await;
@@ -2537,7 +2506,7 @@ async fn latency_tools_report_microsecond_elapsed_us() {
         search.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1,
         "fixture should match the `paged` symbol: {search}"
     );
-    assert_sane_elapsed_us("code_symbols", &search);
+    assert!(search.get("elapsed_us").is_none(), "a locating tool: {search}");
 
     let recent = decode_text(
         &service
@@ -2546,7 +2515,7 @@ async fn latency_tools_report_microsecond_elapsed_us() {
             .expect("git_log"),
     );
     assert_eq!(commit_shas(&recent).len(), 2, "fixture has 5 commits; asked for 2");
-    assert_stamped("git_log", &recent);
+    assert!(recent.get("elapsed_us").is_none(), "a locating tool: {recent}");
 
     let outline = decode_text(
         &service
@@ -2566,14 +2535,11 @@ async fn latency_tools_report_microsecond_elapsed_us() {
     let _ = service.cancel().await;
 }
 
-/// `elapsed_us` is an ADDITIVE field: a client built against the previous response shape — one that
-/// has never heard of `elapsed_us` — must still deserialize the new response unchanged.
-///
-/// This is the compatibility guarantee the repo's schema convention requires (new response fields
-/// are additive). It holds because no response struct sets `deny_unknown_fields`, so serde skips
-/// keys the old client doesn't know.
+/// A client built against an earlier response shape still reads what it knows of the lean one: no
+/// response struct sets `deny_unknown_fields`, so serde skips keys the old client doesn't know, and
+/// the fields it reads are still there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn elapsed_us_is_additive_for_older_clients() {
+async fn older_clients_still_read_the_lean_responses() {
     /// A verbatim copy of the pre-`elapsed_us` `code_symbols` response shape.
     #[derive(serde::Deserialize)]
     struct LegacySearchResponse {
@@ -2597,10 +2563,6 @@ async fn elapsed_us_is_additive_for_older_clients() {
             .call_tool(call_params("code_symbols", json!({ "name": "paged" })))
             .await
             .expect("code_symbols"),
-    );
-    assert!(
-        search.get("elapsed_us").is_some(),
-        "precondition: the new response really does carry the new field"
     );
     let legacy: LegacySearchResponse =
         serde_json::from_value(search).expect("an older client must still deserialize the response");
@@ -2669,7 +2631,7 @@ async fn workspace_grep_finds_a_rare_token_past_the_old_scan_cap() {
             .expect("code_grep"),
     );
 
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     assert_eq!(
         hits.len(),
         1,
@@ -2681,14 +2643,9 @@ async fn workspace_grep_finds_a_rare_token_past_the_old_scan_cap() {
         "hit must point at the far file: {body}"
     );
     assert_eq!(
-        body.get("total_matches").and_then(Value::as_u64),
+        body.get("total").and_then(Value::as_u64),
         Some(1),
         "a full-corpus scan reports the exact match count: {body}"
-    );
-    assert_eq!(
-        body.get("total_files_matched").and_then(Value::as_u64),
-        Some(1),
-        "exactly one file contains the rare token: {body}"
     );
     assert!(
         body.get("truncated").is_none(),
@@ -2761,9 +2718,7 @@ async fn paging_a_grep_one_hit_at_a_time_reconstructs_the_whole_result() {
 
 /// `(path, line)` of every hit in a grep response, in response order.
 fn grep_keys(body: &Value) -> Vec<(String, u64)> {
-    body.get("hits")
-        .and_then(Value::as_array)
-        .expect("hits")
+    hit_rows(body)
         .iter()
         .map(|h| {
             (
@@ -2845,7 +2800,7 @@ async fn find_callers_never_reports_a_resolution_limited_subset_as_complete() {
         Some(reference_total),
         "code_refs with `path` must agree with the unpinned name scan — never a subset: {callers}"
     );
-    let hits = callers.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&callers);
     let paths: Vec<&str> = hits
         .iter()
         .filter_map(|h| h.get("path").and_then(Value::as_str))

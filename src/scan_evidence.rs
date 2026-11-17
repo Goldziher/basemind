@@ -19,7 +19,7 @@
 //! not have to enable the `comms` feature to get them.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -169,7 +169,35 @@ impl ScanBreadcrumb {
 
 impl Drop for ScanBreadcrumb {
     fn drop(&mut self) {
+        // The breadcrumb is the evidence that blobs written without an fsync may be torn: it goes
+        // only once they are on disk, or a power loss seconds after a finished scan tore blobs no
+        // record pointed at. A process holding a hosting marker leaves the sync to that marker's
+        // removal: its host holds the store's write lock here, and the sync can take seconds. ~keep
+        if !crate::scan_evidence_hosts::is_hosting() {
+            sync_blob_filesystem();
+        }
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Write back every dirty page of the filesystem holding the blob store, once per full pass. Linux
+/// only: there the delayed allocation of ext4 and XFS leaves a renamed blob empty after a power
+/// loss. Best-effort, logged on failure.
+pub(crate) fn sync_blob_filesystem() {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+
+        let blobs = crate::store_layout::global_blobs_dir();
+        let Ok(dir) = std::fs::File::open(&blobs) else {
+            return;
+        };
+        // SAFETY: `syncfs` takes an open file descriptor and touches no memory of ours; `dir` keeps
+        // the descriptor open for the duration of the call.
+        if unsafe { libc::syncfs(dir.as_raw_fd()) } != 0 {
+            let error = std::io::Error::last_os_error();
+            tracing::warn!(%error, path = %blobs.display(), "could not write the blob store back to disk");
+        }
     }
 }
 
@@ -320,80 +348,133 @@ impl PeakWindow {
 }
 
 /// Samples the footprint every [`MEMORY_SAMPLE_EVERY`] and writes a line every [`MEMORY_LOG_EVERY`]
-/// (or at once on a jump of [`MEMORY_SPIKE_STEP_BYTES`]) on its own thread until dropped.
+/// (or at once on a jump of [`MEMORY_SPIKE_STEP_BYTES`]) for one scan, until dropped.
 ///
-/// A plain thread rather than a tokio task because the thing worth watching is
-/// [`crate::scanner::scan`], which is synchronous by design — the scanner pipeline runs on rayon
+/// The sampling runs on a plain thread rather than a tokio task because the thing worth watching
+/// is [`crate::scanner::scan`], which is synchronous by design — the scanner pipeline runs on rayon
 /// with no reactor on the path (see `.ai-rulez/context/scanner-pipeline.md`). An async sampler
 /// could only be owned by an async caller, which the CLI scan is not, and the CLI is exactly where
 /// someone reproduces an out-of-memory report.
 ///
-/// Cancellation is a `Condvar` wait rather than a sleep so the thread joins promptly at the end of
-/// a scan instead of holding the process open for up to [`MEMORY_LOG_EVERY`].
+/// One process-wide thread serves every live log. A thread per scan was a thread created and
+/// destroyed for every rescan a long-lived daemon ran, a few per edit an agent made. The footprint
+/// is the process's, so one reading per tick serves every scan in flight. The thread waits without
+/// a timeout while no scan runs, so an idle process pays no wakeups for it.
 pub struct MemoryLog {
-    stop: Arc<(Mutex<bool>, Condvar)>,
-    handle: Option<std::thread::JoinHandle<()>>,
+    id: u64,
+}
+
+/// One scan's sampling state, kept by the shared sampler.
+struct MemorySession {
+    id: u64,
+    root: PathBuf,
+    peaks: crate::scan_phase_peaks::PhasePeaks,
+    started: std::time::Instant,
+    window: PeakWindow,
+    last_line: std::time::Instant,
+}
+
+impl MemorySession {
+    fn observe(&mut self, reading: &crate::sysres::MemoryReading) {
+        self.peaks.observe(reading.used_bytes);
+        let spike = self.window.observe(reading.used_bytes);
+        if spike || self.last_line.elapsed() >= MEMORY_LOG_EVERY {
+            let peak = self.window.written();
+            log_memory_reading(&self.root, self.started.elapsed(), reading, peak, spike);
+            self.last_line = std::time::Instant::now();
+        }
+    }
+}
+
+/// The live logs and the condvar their sampler waits on.
+struct MemorySampler {
+    sessions: Mutex<Vec<MemorySession>>,
+    wake: Condvar,
+}
+
+static SAMPLER: MemorySampler = MemorySampler {
+    sessions: Mutex::new(Vec::new()),
+    wake: Condvar::new(),
+};
+
+/// Sampler threads this process has started: one at most. A regression guard reads it.
+static SAMPLER_SPAWNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl MemorySampler {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<MemorySession>> {
+        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether the sampler thread runs, starting it on first use.
+    fn running() -> bool {
+        static RUNNING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *RUNNING.get_or_init(|| {
+            SAMPLER_SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::thread::Builder::new()
+                .name("basemind-memlog".to_string())
+                .spawn(|| SAMPLER.run())
+                .is_ok()
+        })
+    }
+
+    /// Sample every [`MEMORY_SAMPLE_EVERY`] while any log is live. Each log's lines are written
+    /// under the lock its [`Drop`] takes, so no line for a scan is written after its log is dropped.
+    fn run(&self) {
+        let mut sessions = self.lock();
+        loop {
+            if sessions.is_empty() {
+                sessions = self.wake.wait(sessions).unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            sessions = self
+                .wake
+                .wait_timeout(sessions, MEMORY_SAMPLE_EVERY)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+            if sessions.is_empty() {
+                continue;
+            }
+            drop(sessions);
+            let reading = crate::sysres::memory_reading();
+            sessions = self.lock();
+            if let Some(reading) = reading {
+                for session in sessions.iter_mut() {
+                    session.observe(&reading);
+                }
+            }
+        }
+    }
 }
 
 impl MemoryLog {
-    /// Start sampling for `root`. Returns `None` if the thread cannot be spawned — evidence
-    /// gathering must never be the reason a scan fails to run.
+    /// Start sampling for `root`. Returns `None` if the sampler thread cannot be spawned —
+    /// evidence gathering must never be the reason a scan fails to run.
     pub fn start(root: &Path, peaks: crate::scan_phase_peaks::PhasePeaks) -> Option<Self> {
-        let stop = Arc::new((Mutex::new(false), Condvar::new()));
-        let worker_stop = Arc::clone(&stop);
-        let root = root.to_path_buf();
-        let handle = std::thread::Builder::new()
-            .name("basemind-memlog".to_string())
-            .spawn(move || {
-                let started = std::time::Instant::now();
-                let mut window = PeakWindow::default();
-                let mut last_line = started;
-                let (lock, cvar) = &*worker_stop;
-                let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                loop {
-                    // Test the predicate BEFORE waiting, not only after. A `Drop` that runs before
-                    // this thread first reaches `wait_timeout` notifies an empty wait set, and a
-                    // condvar keeps no record of that -- so a wait entered afterwards would sleep
-                    // out the full interval on a stop that has already been requested. ~keep
-                    if *guard {
-                        return;
-                    }
-                    let (next, _) = cvar
-                        .wait_timeout(guard, MEMORY_SAMPLE_EVERY)
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard = next;
-                    if *guard {
-                        return;
-                    }
-                    drop(guard);
-                    if let Some(reading) = crate::sysres::memory_reading() {
-                        peaks.observe(reading.used_bytes);
-                        let spike = window.observe(reading.used_bytes);
-                        if spike || last_line.elapsed() >= MEMORY_LOG_EVERY {
-                            let peak = window.written();
-                            log_memory_reading(&root, started.elapsed(), &reading, peak, spike);
-                            last_line = std::time::Instant::now();
-                        }
-                    }
-                    guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                }
-            })
-            .ok()?;
-        Some(Self {
-            stop,
-            handle: Some(handle),
-        })
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        if !MemorySampler::running() {
+            return None;
+        }
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let now = std::time::Instant::now();
+        let mut sessions = SAMPLER.lock();
+        sessions.push(MemorySession {
+            id,
+            root: root.to_path_buf(),
+            peaks,
+            started: now,
+            window: PeakWindow::default(),
+            last_line: now,
+        });
+        if sessions.len() == 1 {
+            SAMPLER.wake.notify_all();
+        }
+        Some(Self { id })
     }
 }
 
 impl Drop for MemoryLog {
     fn drop(&mut self) {
-        let (lock, cvar) = &*self.stop;
-        *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        cvar.notify_all();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        SAMPLER.lock().retain(|session| session.id != self.id);
     }
 }
 
@@ -416,6 +497,21 @@ mod tests {
             elapsed < MEMORY_LOG_EVERY,
             "drop must join on the condvar, not wait out {MEMORY_LOG_EVERY:?} (took {elapsed:?})"
         );
+    }
+
+    /// Every scan shares one sampler thread: a daemon rescanning on every edit must not create and
+    /// destroy a thread per scan.
+    #[test]
+    fn every_memory_log_shares_one_sampler_thread() {
+        for _ in 0..16 {
+            let log = MemoryLog::start(Path::new("/repo/under/test"), Default::default()).expect("sampler runs");
+            drop(log);
+        }
+        let overlapping: Vec<MemoryLog> = (0..4)
+            .filter_map(|_| MemoryLog::start(Path::new("/repo/under/test"), Default::default()))
+            .collect();
+        assert_eq!(overlapping.len(), 4);
+        assert_eq!(SAMPLER_SPAWNS.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[test]

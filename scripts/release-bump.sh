@@ -95,129 +95,13 @@ else
   echo "→ RELEASE_MINOR      $CURRENT_RELEASE_MINOR (no change — patch bump)"
 fi
 
-cargo build --quiet 2>/dev/null || true
+# Rewrites the version of the basemind entry in Cargo.lock without compiling anything; a failure ~keep
+# here (an unresolvable manifest, no network for a missing index entry) stops the bump. ~keep
+cargo metadata --format-version 1 >/dev/null
 
 echo
 echo "Validating version consistency across all surfaces..."
-validation_failed=0
-
-cargo_version="$(grep -E '^version = "' Cargo.toml | head -1 | cut -d'"' -f2)"
-if [ "$cargo_version" != "$VERSION" ]; then
-  echo "✗ Cargo.toml: expected $VERSION, got $cargo_version"
-  validation_failed=1
-fi
-
-for crate_manifest in "${WORKSPACE_CRATES[@]}"; do
-  [[ -f "$crate_manifest" ]] || continue
-  crate_version="$(grep -E '^version = "' "$crate_manifest" | head -1 | cut -d'"' -f2)"
-  if [ "$crate_version" != "$VERSION" ]; then
-    echo "✗ ${crate_manifest}: expected $VERSION, got $crate_version"
-    validation_failed=1
-  fi
-done
-
-if [ -f npm-package/package.json ]; then
-  npm_version="$(jq -r '.version' npm-package/package.json 2>/dev/null || echo '')"
-  if [ "$npm_version" != "$VERSION" ]; then
-    echo "✗ npm-package/package.json: expected $VERSION, got $npm_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f pip-package/pyproject.toml ]; then
-  pypi_version="$(grep -E '^version = "' pip-package/pyproject.toml | head -1 | cut -d'"' -f2)"
-  if [ "$pypi_version" != "$PY_VERSION" ]; then
-    echo "✗ pip-package/pyproject.toml: expected $PY_VERSION, got $pypi_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f pip-package/basemind/__init__.py ]; then
-  init_version="$(grep -E '^__version__ = "' pip-package/basemind/__init__.py | cut -d'"' -f2)"
-  if [ "$init_version" != "$PY_VERSION" ]; then
-    echo "✗ pip-package/basemind/__init__.py: expected $PY_VERSION, got $init_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f plugin/.hermes/package/pyproject.toml ]; then
-  hermes_pypi_version="$(awk '/^version = / {value=$3; gsub(/[\"\047]/, "", value); print value; exit}' plugin/.hermes/package/pyproject.toml)"
-  if [ "$hermes_pypi_version" != "$PY_VERSION" ]; then
-    echo "✗ plugin/.hermes/package/pyproject.toml: expected $PY_VERSION, got $hermes_pypi_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f plugin/.hermes/package/src/basemind_hermes_plugin/plugin.yaml ]; then
-  hermes_plugin_version="$(grep -E '^version: ' plugin/.hermes/package/src/basemind_hermes_plugin/plugin.yaml | head -1 | sed -E 's/^version: "?([^"]+)"?/\1/')"
-  if [ "$hermes_plugin_version" != "$VERSION" ]; then
-    echo "✗ Hermes plugin.yaml: expected $VERSION, got $hermes_plugin_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f package.json ]; then
-  root_version="$(jq -r '.version' package.json 2>/dev/null || echo '')"
-  if [ "$root_version" != "$VERSION" ]; then
-    echo "✗ package.json (root): expected $VERSION, got $root_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f opencode-plugin/package.json ]; then
-  opencode_version="$(jq -r '.version' opencode-plugin/package.json 2>/dev/null || echo '')"
-  if [ "$opencode_version" != "$VERSION" ]; then
-    echo "✗ opencode-plugin/package.json: expected $VERSION, got $opencode_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f .claude-plugin/plugin.json ]; then
-  claude_version="$(jq -r '.version' .claude-plugin/plugin.json 2>/dev/null || echo '')"
-  if [ "$claude_version" != "$VERSION" ]; then
-    echo "✗ .claude-plugin/plugin.json: expected $VERSION, got $claude_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f .codex-plugin/plugin.json ]; then
-  codex_version="$(jq -r '.version' .codex-plugin/plugin.json 2>/dev/null || echo '')"
-  if [ "$codex_version" != "$VERSION" ]; then
-    echo "✗ .codex-plugin/plugin.json: expected $VERSION, got $codex_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f .cursor-plugin/plugin.json ]; then
-  cursor_version="$(jq -r '.version' .cursor-plugin/plugin.json 2>/dev/null || echo '')"
-  if [ "$cursor_version" != "$VERSION" ]; then
-    echo "✗ .cursor-plugin/plugin.json: expected $VERSION, got $cursor_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f gemini-extension.json ]; then
-  gemini_version="$(jq -r '.version' gemini-extension.json 2>/dev/null || echo '')"
-  if [ "$gemini_version" != "$VERSION" ]; then
-    echo "✗ gemini-extension.json: expected $VERSION, got $gemini_version"
-    validation_failed=1
-  fi
-fi
-
-if [ -f kimi.plugin.json ]; then
-  kimi_version="$(jq -r '.version' kimi.plugin.json 2>/dev/null || echo '')"
-  if [ "$kimi_version" != "$VERSION" ]; then
-    echo "✗ kimi.plugin.json: expected $VERSION, got $kimi_version"
-    validation_failed=1
-  fi
-fi
-
-if [ $validation_failed -eq 0 ]; then
-  echo "✓ All version surfaces are consistent: $VERSION"
-else
-  echo "error: version validation failed. Review the above and fix manually." >&2
-  exit 1
-fi
+python3 scripts/check_release_versions.py "$VERSION"
 
 echo
 echo "Done. Review with: git diff"

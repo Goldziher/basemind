@@ -14,7 +14,7 @@ keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
 tags = ["mcp", "code-intelligence", "rag", "tree-sitter", "git", "embeddings"]
 runtimes = ["claude", "cursor", "codex", "gemini", "kimi", "opencode", "factory", "hermes", "pi", "agent-plugins", "copilot"]
 spec = "1.0.0"
-include = ["assets/**", "hooks/**", "scripts/**"]
+include = ["assets/**", "hooks/**", "scripts/**", "LICENSE"]
 
 [plugin.author]
 name = "Na'aman Hirschfeld"

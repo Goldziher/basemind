@@ -90,6 +90,9 @@ mod tests {
             .open(group.join(BASE_LOCK_FILE))
             .unwrap();
         fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+        // Released by an unlock on drop: closing alone leaves the lock held while a child that
+        // another test thread forked still has a copy of the descriptor.
+        let lock = crate::store_lock::LockGuard::held(lock);
         assert!(matches!(prepare(root, &config).unwrap(), BaseBuild::Busy));
         drop(lock);
 

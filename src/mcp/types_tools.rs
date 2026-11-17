@@ -173,7 +173,7 @@ pub struct CodeSearchParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodeRefsParams {
-    /// Function, type, trait or module name; for `importers`, whole segments of the import path.
+    /// Name called, implemented or defined; for `importers`, whole segments of the import path.
     pub name: String,
     /// What to list (default `callers`).
     #[serde(default)]

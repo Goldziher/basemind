@@ -12,7 +12,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::cursor::Cursor;
-use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result};
+use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result};
 use super::helpers_calls_scan::SCAN_KEYS_EXAMINED_MAX;
 use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
@@ -60,7 +60,6 @@ pub(super) async fn run_find_implementations(
     params: FindImplementationsParams,
     cache: &super::MapCache,
     notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
-    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
@@ -88,7 +87,8 @@ pub(super) async fn run_find_implementations(
     } else {
         stopped_after.as_deref().map(Cursor::encode_fjall)
     };
-    let budget = super::budget::apply_budget(hits, params.max_tokens);
+    let hits: Vec<_> = hits.into_iter().map(|hit| hit.named(&params.trait_name)).collect();
+    let budget = super::budget::apply_budget_by_path(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
         let cursor = hit_keys.get(kept - 1).map(|k| Cursor::encode_fjall(k));
@@ -98,8 +98,6 @@ pub(super) async fn run_find_implementations(
     };
 
     json_result(&FindImplementationsResponse {
-        trait_name: params.trait_name,
-        matching: matching.as_str(),
         total,
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
@@ -107,7 +105,6 @@ pub(super) async fn run_find_implementations(
         hits,
         next_cursor,
         notice: notice(),
-        elapsed_us: elapsed_us(started),
     })
 }
 

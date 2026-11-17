@@ -312,6 +312,26 @@ async fn a_search_embeds_the_notes_it_finds_without_rows_and_answers_from_the_no
     );
 }
 
+/// A search lists previews, as a prefix listing does: a note of megabytes is read whole by `key`,
+/// never once per hit.
+#[tokio::test]
+async fn a_search_hit_carries_a_preview_of_a_long_note() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    let long = "word ".repeat(10_000);
+    save(&state, "long", &long).await;
+
+    let found = search_json(&state, "word", 10).await;
+
+    let value = found["hits"][0]["value"].as_str().expect("a hit");
+    assert_eq!(
+        value.chars().count(),
+        crate::mcp::memory_ops::MEMORY_PREVIEW_CHARS + 1,
+        "{found}"
+    );
+    assert!(value.ends_with('…'), "{value}");
+}
+
 /// Two worktrees of one clone configured with different presets share the group directory. Each
 /// model has its own store there: opening one must leave the other's rows alone.
 #[tokio::test]

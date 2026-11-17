@@ -162,11 +162,14 @@ pub struct Portfile {
 /// Publish the bound address and token, replacing any previous portfile.
 ///
 /// On Unix the file is *created* `0600` rather than chmod'd after the write: the content is a
-/// credential, so the permissive window a write-then-chmod leaves open is not acceptable.
+/// credential, so the permissive window a write-then-chmod leaves open is not acceptable. It is
+/// written beside the portfile and renamed over it, so a reader never sees the address without the
+/// token: written in place, a reader between the two lines found a transport it could not use.
 pub fn write_portfile(comms_dir: &Path, addr: &SocketAddr, token: &HttpToken) -> std::io::Result<()> {
     use std::io::Write;
 
     let path = portfile_path(comms_dir);
+    let staged = path.with_extension(format!("{}.tmp", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -174,10 +177,15 @@ pub fn write_portfile(comms_dir: &Path, addr: &SocketAddr, token: &HttpToken) ->
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(PORTFILE_MODE);
     }
-    let mut file = options.open(&path)?;
-    writeln!(file, "{addr}")?;
-    writeln!(file, "{}", token.as_str())?;
-    file.flush()
+    let written = options.open(&staged).and_then(|mut file| {
+        file.write_all(format!("{addr}\n{}\n", token.as_str()).as_bytes())?;
+        file.flush()
+    });
+    let published = written.and_then(|()| std::fs::rename(&staged, &path));
+    if published.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    published
 }
 
 /// Read the published address and token back, if the portfile is present and its address parses.
@@ -264,6 +272,45 @@ mod tests {
         assert!(read_portfile(dir.path()).is_none(), "removed portfile stops resolving");
         // Removing an absent portfile is a no-op, not a panic.
         remove_portfile(dir.path());
+    }
+
+    /// A reader racing a rewrite sees the old portfile or the new one, never a torn one.
+    #[test]
+    fn a_reader_never_sees_a_portfile_without_its_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr: SocketAddr = "127.0.0.1:4242".parse().expect("addr");
+        let token = HttpToken::generate().expect("generate");
+        write_portfile(dir.path(), &addr, &token).expect("first write");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (dir, stop) = (dir.path().to_path_buf(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    write_portfile(&dir, &addr, &HttpToken::generate().expect("generate")).expect("rewrite");
+                }
+            })
+        };
+        // ~keep A read that finds no portfile (Windows may refuse an open while the rename lands) is
+        // ~keep "not published yet", which every reader already waits out; only a torn one is a bug.
+        let mut parsed = 0;
+        for read in 0..20_000 {
+            if let Some(portfile) = read_portfile(dir.path()) {
+                assert!(
+                    portfile.token.is_some(),
+                    "read {read} saw the address without its token"
+                );
+                parsed += 1;
+            }
+        }
+        assert!(parsed > 0, "no read parsed a portfile");
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().expect("join");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(leftovers.len(), 1, "only the portfile is left: {leftovers:?}");
     }
 
     #[test]

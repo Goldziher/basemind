@@ -1,8 +1,11 @@
 name: docs
 
+# basemind.ai documents the released binary. A push to main only builds the site, so a broken build
+# shows up early; a release tag (or a dispatch from a tag) deploys it.
 on:
   push:
     branches: [main]
+    tags: ["v[0-9]+.*"]
     paths:
       - "website/**"
       - "mise.toml"
@@ -11,13 +14,11 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 jobs:
   build:
@@ -40,7 +41,11 @@ jobs:
 
   deploy:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use super::{SharedReadStack, helpers_calls, helpers_impls, l1_cache, map_fingerprint, types};
+use super::{SharedReadStack, helpers_calls, helpers_impls, l1_cache, types};
 use crate::extract::FileMapL1;
 use crate::store::Store;
 
@@ -230,12 +230,6 @@ pub(crate) struct MapCache {
     calls: std::sync::OnceLock<helpers_calls::InRamCallIndex>,
     /// In-RAM trait→impl index, same lazy last-resort role as `calls` for `find_implementations`.
     impls: std::sync::OnceLock<helpers_impls::InRamImplIndex>,
-    /// Fingerprint of the indexed file set this map was built from — see
-    /// [`map_fingerprint::index_fingerprint`]. The refresh paths compare it against a freshly
-    /// reopened store and SKIP the whole-corpus rebuild when it matches, which is what keeps a
-    /// no-op daemon scan from transiently doubling serve's resident memory. `0` on the
-    /// [`empty`](Self::empty) boot placeholder, which never matches a populated index.
-    pub(crate) fingerprint: u64,
     /// Searchable symbol-name / import text of every file, built on first use (or by the cache
     /// warm) and patched rather than rebuilt by [`with_delta`](Self::with_delta). Backs the
     /// substring sweeps of `symbols` and `dependents`.
@@ -267,7 +261,6 @@ impl MapCache {
         let files = l1_cache::FileIndexView::build(store);
         let l1 = Arc::new(l1_cache::L1Cache::from_store(store, budget_bytes));
         Self {
-            fingerprint: map_fingerprint::index_fingerprint(store),
             files,
             l1,
             calls: Default::default(),
@@ -284,7 +277,6 @@ impl MapCache {
     /// reading, so they observe the built map, never this placeholder.
     pub(crate) fn empty() -> Self {
         Self {
-            fingerprint: 0,
             files: l1_cache::FileIndexView::default(),
             l1: Arc::new(l1_cache::L1Cache::placeholder()),
             calls: Default::default(),
@@ -308,12 +300,12 @@ impl MapCache {
                 language: map.language.as_str().into(),
                 size_bytes: map.size_bytes,
                 mtime_ns: 0,
+                extract_epoch: map.extract_epoch,
             };
             l1.seed(&hash_hex, Arc::new(map));
             metas.push((path, meta));
         }
         Self {
-            fingerprint: 0,
             files: l1_cache::FileIndexView::from_pairs(metas),
             l1,
             calls: Default::default(),
@@ -362,7 +354,6 @@ impl MapCache {
 
     /// Whether `path` is one of the indexed files. Answered from the symbol-free view, so it costs
     /// no blob read.
-    #[cfg(test)]
     pub(crate) fn contains(&self, path: &crate::path::RelPath) -> bool {
         self.files.contains(path)
     }
@@ -370,6 +361,11 @@ impl MapCache {
     /// Whether `path` is a tracked document (non-code file in the document tier).
     pub(crate) fn contains_doc(&self, path: &crate::path::RelPath) -> bool {
         self.doc_paths.binary_search(path).is_ok()
+    }
+
+    /// What the index recorded about `path`'s content, without faulting in its outline.
+    pub(crate) fn meta(&self, path: &crate::path::RelPath) -> Option<&l1_cache::FileMeta> {
+        self.files.get(path)
     }
 
     /// The language recorded for `path` at scan time, without faulting in its outline.
@@ -392,14 +388,15 @@ impl MapCache {
     /// is one blob read, which is exactly what the old whole-corpus build paid per file up front.
     pub(crate) fn get(&self, path: &crate::path::RelPath) -> Option<Arc<FileMapL1>> {
         let meta = self.files.get(path)?;
-        self.l1.load(&meta.hash_hex)
+        self.l1.load(&meta.hash_hex, meta.extract_epoch)
     }
 
     /// The decoded outline of the content `hash_hex`, whichever path holds it. Outlines are keyed
     /// by content, so this is the outline of an index entry however old this snapshot's file view
-    /// is next to the store the entry came from.
-    pub(crate) fn outline_of_content(&self, hash_hex: &str) -> Option<Arc<FileMapL1>> {
-        self.l1.load(hash_hex)
+    /// is next to the store the entry came from. `extract_epoch` is that entry's epoch, so an
+    /// outline cached before a refresh rewrote the blob is not served for it.
+    pub(crate) fn outline_of_content(&self, hash_hex: &str, extract_epoch: u16) -> Option<Arc<FileMapL1>> {
+        self.l1.load(hash_hex, extract_epoch)
     }
 
     /// The term index, building it from one corpus stream on first use. Later calls (and the
@@ -460,18 +457,39 @@ impl MapCache {
     ///
     /// Sharing the L1 cache across the two snapshots is safe because it is keyed by CONTENT HASH:
     /// an updated path's new view entry names a new hash, so a reader still holding `self` keeps
-    /// resolving the old hash and cannot observe the newer content.
+    /// resolving the old hash and cannot observe the newer content. An extract-epoch refresh keeps
+    /// the hash and rewrites the blob; the new view entry names the newer epoch, which the cache
+    /// does not answer from an outline decoded under an older one.
     ///
     /// The lazy `calls`/`impls` projections start empty on the derived snapshot, so they are
     /// rebuilt from the post-rescan file view if ever needed and cannot drift out of sync.
+    ///
+    /// The outlines of the content `updated` and `removed` paths named before are dropped from the
+    /// shared L1 cache once no path of the new view names them (see
+    /// [`L1Cache::forget_superseded`](l1_cache::L1Cache::forget_superseded)).
     pub(crate) fn with_delta(
         &self,
         store: &Store,
         updated: &[crate::path::RelPath],
         removed: &[crate::path::RelPath],
     ) -> Self {
+        let superseded: ahash::AHashSet<&str> = updated
+            .iter()
+            .chain(removed)
+            .filter_map(|path| self.files.get(path))
+            .map(|meta| &*meta.hash_hex)
+            .collect();
+        // An extract-epoch refresh rewrote the blob under the same hash: the outline decoded from
+        // the replaced blob must not be served for it, whoever still names the hash.
+        for path in updated {
+            if let (Some(old), Some(entry)) = (self.files.get(path), store.index.files.get(path))
+                && *old.hash_hex == *entry.hash_hex
+                && old.extract_epoch != entry.extract_epoch
+            {
+                self.l1.forget(&old.hash_hex);
+            }
+        }
         let next = Self {
-            fingerprint: map_fingerprint::index_fingerprint(store),
             files: self.files.with_delta(store, updated, removed),
             l1: Arc::clone(&self.l1),
             // Fresh and empty: a derived snapshot rebuilds its projections lazily, so they can never
@@ -481,6 +499,7 @@ impl MapCache {
             terms: Default::default(),
             doc_paths: doc_paths_of(store),
         };
+        self.l1.forget_superseded(superseded, &next.files);
         if let Some(terms) = self.terms.get() {
             let _ = next
                 .terms
@@ -488,8 +507,50 @@ impl MapCache {
         }
         next
     }
+
+    /// The map of `store` derived from this one, or `None` when it would map `store` exactly as
+    /// this one does.
+    ///
+    /// A rescan publishes a new index; rebuilding the map over it started a fresh L1 cache, and the
+    /// term-index warm that follows a build then decoded every outline of the repository again,
+    /// however few files the scan changed. Instead the paths a [`build`](Self::build) would map
+    /// differently are found by comparing the whole index against this map's view
+    /// ([`FileIndexView::diff`](l1_cache::FileIndexView::diff)), and [`with_delta`](Self::with_delta)
+    /// applies exactly those, so the result is the map `build` would produce, while unchanged
+    /// outlines stay decoded. The diff is taken from the store, never from a scan's report of what it
+    /// touched, so a path a report missed cannot leave the map stale.
+    ///
+    /// `None` is what keeps a no-op daemon scan from transiently doubling the map's residency. The
+    /// boot placeholder, or a cache over other blob directories than `store` reads, is rebuilt.
+    pub(crate) fn refreshed(&self, store: &Store, budget_bytes: u64) -> Option<Self> {
+        if !self.l1.serves(store) {
+            return Some(Self::build(store, budget_bytes));
+        }
+        let (updated, removed) = self.files.diff(store);
+        let doc_paths = doc_paths_of(store);
+        // A path left out of the view for a missing blob is re-probed by every diff; while its
+        // blob is still missing the delta would map exactly what this map does.
+        let unchanged = removed.is_empty()
+            && doc_paths == self.doc_paths
+            && updated.iter().all(|path| {
+                !self.files.contains(path)
+                    && store
+                        .index
+                        .files
+                        .get(path)
+                        .is_none_or(|entry| !l1_cache::has_blob(store, entry))
+            });
+        if unchanged {
+            return None;
+        }
+        Some(self.with_delta(store, &updated, &removed))
+    }
 }
 
 #[cfg(test)]
 #[path = "map_cache_budget_tests.rs"]
 mod map_cache_budget_tests;
+
+#[cfg(test)]
+#[path = "map_cache_delta_tests.rs"]
+mod map_cache_delta_tests;

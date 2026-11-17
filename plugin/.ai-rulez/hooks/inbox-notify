@@ -78,7 +78,7 @@ if [ "$(printf '%s' "$INBOX_JSON" | jq -r '.more // false' 2>/dev/null)" = "true
   MORE=$'\n'"There is more unread than listed."
 fi
 
-CONTEXT="Unread basemind agent messages (announced once, not yet read):
+CONTEXT="Unread agent messages from basemind (announced once, not yet read):
 ${LINES}${MORE}
 Read them with agent_inbox (bodies inline; {\"id\":\"<id>\"} reads one whole message). The agent tools are deferred: find agent_post, agent_inbox and agent_threads by tool search. Reply with agent_post if warranted."
 

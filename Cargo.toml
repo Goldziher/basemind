@@ -218,7 +218,7 @@ schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_toon_format = { version = "0.2", optional = true }
-stack-graphs = { package = "basemind-stack-graphs", version = "0.14.1", path = "crates/stack-graphs", optional = true }
+stack-graphs = { package = "basemind-stack-graphs", version = "0.14.2", path = "crates/stack-graphs", optional = true }
 streaming-iterator = "0.1"
 tempfile = "3"
 thiserror = "2"
@@ -361,3 +361,147 @@ harness = false
 [[bench]]
 name = "index_read"
 harness = false
+
+# ~keep A test target that needs a feature is declared with it, so a build without that feature
+# ~keep skips the target instead of compiling an empty binary that reports a green `0 passed`.
+# ~keep The `#![cfg]` in each file stays for the platform part, which `required-features` cannot say.
+
+[[test]]
+name = "bug_20_cli"
+required-features = ["comms"]
+
+[[test]]
+name = "bug_44_reembed_loop"
+required-features = ["documents"]
+
+[[test]]
+name = "cli_daemon"
+required-features = ["comms"]
+
+[[test]]
+name = "code_intel_smoke"
+required-features = ["code-intel-js"]
+
+[[test]]
+name = "code_search_smoke"
+required-features = ["code-search"]
+
+[[test]]
+name = "comms_cli_smoke"
+required-features = ["comms"]
+
+[[test]]
+name = "comms_idle_reap"
+required-features = ["comms"]
+
+[[test]]
+name = "comms_no_autospawn"
+required-features = ["comms"]
+
+[[test]]
+name = "comms_smoke"
+required-features = ["comms"]
+
+[[test]]
+name = "daemon_coexistence"
+required-features = ["comms"]
+
+[[test]]
+name = "daemon_integration"
+required-features = ["comms"]
+
+[[test]]
+name = "daemon_singleton_smoke"
+required-features = ["comms"]
+
+[[test]]
+name = "doc_abandoned_cap"
+required-features = ["documents"]
+
+[[test]]
+name = "doc_chunk_guard"
+required-features = ["documents"]
+
+[[test]]
+name = "doc_extraction_bounds"
+required-features = ["documents"]
+
+[[test]]
+name = "doc_memory_bounds"
+required-features = ["documents"]
+
+[[test]]
+name = "doc_phase_budget"
+required-features = ["documents"]
+
+[[test]]
+name = "doc_text_fallback"
+required-features = ["documents"]
+
+[[test]]
+name = "doc_tiers"
+required-features = ["documents"]
+
+[[test]]
+name = "embed_streaming_smoke"
+required-features = ["documents", "code-search"]
+
+[[test]]
+name = "find_callers_resolved_smoke"
+required-features = ["code-intel-js"]
+
+[[test]]
+name = "git_history_daemon"
+required-features = ["comms"]
+
+[[test]]
+name = "goto_definition_xfile_smoke"
+required-features = ["code-intel-js"]
+
+[[test]]
+name = "http_frontend_disabled_smoke"
+required-features = ["comms"]
+
+[[test]]
+name = "http_frontend_smoke"
+required-features = ["comms"]
+
+[[test]]
+name = "incremental_resolve_smoke"
+required-features = ["code-intel-js"]
+
+[[test]]
+name = "incremental_scope_resolve_smoke"
+required-features = ["code-intel-js"]
+
+[[test]]
+name = "non_code_routing"
+required-features = ["documents"]
+
+[[test]]
+name = "plugin_tool_skew"
+required-features = ["comms"]
+
+[[test]]
+name = "precise_resolution_smoke"
+required-features = ["code-intel-stack"]
+
+[[test]]
+name = "registry_prune_smoke"
+required-features = ["comms"]
+
+[[test]]
+name = "serve_relay_smoke"
+required-features = ["comms"]
+
+[[test]]
+name = "stackgraph_smoke"
+required-features = ["code-intel-stack"]
+
+[[test]]
+name = "upgrade_cleanup"
+required-features = ["documents"]
+
+[[test]]
+name = "upgrade_from_release"
+required-features = ["documents"]

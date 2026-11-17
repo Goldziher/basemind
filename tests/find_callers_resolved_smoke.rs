@@ -85,6 +85,23 @@ fn decode_text(result: &CallToolResult) -> Value {
     serde_json::from_str(&raw).unwrap_or(Value::Null)
 }
 
+/// The hits of a `code_refs` response as rows, each with its `path`: the tool lists them under their
+/// file (`{"<path>": [hit, ...]}`).
+fn hit_rows(body: &Value) -> Vec<Value> {
+    body.get("hits")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("hits are grouped by file: {body}"))
+        .iter()
+        .flat_map(|(path, rows)| {
+            rows.as_array().expect("a file's hits").iter().map(move |row| {
+                let mut row = row.clone();
+                row["path"] = json!(path);
+                row
+            })
+        })
+        .collect()
+}
+
 fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     let mut params = CallToolRequestParams::new(name);
     if let Some(obj) = args.as_object() {
@@ -128,7 +145,7 @@ async fn find_callers_flags_scope_resolved_hits_without_dropping_same_named_ones
         Some(3),
         "the name scan is the floor: the other.ts site is reported too, never silently dropped: {body}"
     );
-    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let hits = hit_rows(&body);
     let proven: Vec<&str> = hits
         .iter()
         .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(true))

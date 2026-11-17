@@ -28,6 +28,11 @@
 //! changed paths point at new hashes, so a reader still holding the previous snapshot keeps
 //! resolving its own (older) hashes and can never observe the newer file. No invalidation pass, and
 //! two paths with identical content share one entry.
+//!
+//! The one write that keeps a hash is an extract-epoch refresh: a newer extractor rewrites the blob
+//! of unchanged content in place. [`FileMeta`] therefore carries the entry's epoch, and a cached
+//! outline decoded under an older epoch is a miss for it, so the refreshed blob is read again while
+//! a reader still holding the previous snapshot keeps its hit.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -51,6 +56,7 @@ const STREAM_CHUNK: usize = 256;
 ///
 /// Every field is already in `store.index.files`; they are copied into the view so a read tool can
 /// answer membership / language / size questions without taking the store lock.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FileMeta {
     /// Content hash of the source file — the [`L1Cache`] key and the blob name to read on a miss.
     pub(crate) hash_hex: Box<str>,
@@ -59,6 +65,9 @@ pub(crate) struct FileMeta {
     /// File mtime in nanoseconds as indexed (0 = unknown); with `size_bytes` the stamp grep holds the
     /// live file to before trusting the content's bloom.
     pub(crate) mtime_ns: i64,
+    /// The extract epoch the index entry names ([`crate::store::FileEntry::extract_epoch`]). A
+    /// cached outline older than it was decoded before a refresh rewrote the blob under this hash.
+    pub(crate) extract_epoch: u16,
 }
 
 /// Sorted view of every indexed file that has a readable L1 blob.
@@ -84,17 +93,33 @@ impl FileIndexView {
             .index
             .files
             .par_iter()
-            .filter_map(|(path, entry)| {
-                let blob = store.blob_path_fm_hex(&entry.hash_hex);
-                let exists = blob.is_file()
-                    || store
-                        .fallback_blobs_dir
-                        .as_ref()
-                        .is_some_and(|fallback| blob.file_name().is_some_and(|name| fallback.join(name).is_file()));
-                exists.then(|| (path.clone(), FileMeta::from(entry)))
-            })
+            .filter_map(|(path, entry)| has_blob(store, entry).then(|| (path.clone(), FileMeta::from(entry))))
             .collect();
         Self { files }
+    }
+
+    /// The paths a [`build`](Self::build) over `store` would map differently from this view:
+    /// `updated` are in `store`'s index and absent here or projected differently (a path left out
+    /// for a missing blob is re-probed), `removed` are here and no longer in the index.
+    ///
+    /// [`with_delta`](Self::with_delta) over exactly these paths yields the view `build` would. The
+    /// comparison allocates nothing for an unchanged path, so a refresh whose scan changed a
+    /// handful of files costs one pass over the index rather than a whole projection.
+    pub(crate) fn diff(&self, store: &crate::store::Store) -> (Vec<RelPath>, Vec<RelPath>) {
+        let updated = store
+            .index
+            .files
+            .iter()
+            .filter(|(path, entry)| !self.files.get(*path).is_some_and(|meta| meta.projects(entry)))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let removed = self
+            .files
+            .keys()
+            .filter(|path| !store.index.files.contains_key(*path))
+            .cloned()
+            .collect();
+        (updated, removed)
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -105,7 +130,6 @@ impl FileIndexView {
         self.files.get(path)
     }
 
-    #[cfg(test)]
     pub(crate) fn contains(&self, path: &RelPath) -> bool {
         self.files.contains_key(path)
     }
@@ -140,7 +164,7 @@ impl FileIndexView {
         }
         for path in updated {
             match store.index.files.get(path) {
-                Some(entry) if store.blob_path_fm_hex(&entry.hash_hex).is_file() => {
+                Some(entry) if has_blob(store, entry) => {
                     files.insert(path.clone(), FileMeta::from(entry));
                 }
                 _ => {
@@ -152,6 +176,28 @@ impl FileIndexView {
     }
 }
 
+/// Whether `entry`'s L1 blob is present in `store`'s blob directory or its fallback: the files a
+/// view maps, since the old whole-corpus build dropped a file whose blob failed to read.
+pub(crate) fn has_blob(store: &crate::store::Store, entry: &crate::store::FileEntry) -> bool {
+    let blob = store.blob_path_fm_hex(&entry.hash_hex);
+    blob.is_file()
+        || store
+            .fallback_blobs_dir
+            .as_ref()
+            .is_some_and(|fallback| blob.file_name().is_some_and(|name| fallback.join(name).is_file()))
+}
+
+impl FileMeta {
+    /// Whether `entry` projects to this meta. Field by field, so no meta is built to compare.
+    fn projects(&self, entry: &crate::store::FileEntry) -> bool {
+        *self.hash_hex == *entry.hash_hex
+            && *self.language == *entry.language
+            && self.size_bytes == entry.size_bytes
+            && self.mtime_ns == entry.mtime
+            && self.extract_epoch == entry.extract_epoch
+    }
+}
+
 impl From<&crate::store::FileEntry> for FileMeta {
     fn from(entry: &crate::store::FileEntry) -> Self {
         Self {
@@ -159,6 +205,7 @@ impl From<&crate::store::FileEntry> for FileMeta {
             language: entry.language.as_str().into(),
             size_bytes: entry.size_bytes,
             mtime_ns: entry.mtime,
+            extract_epoch: entry.extract_epoch,
         }
     }
 }
@@ -170,6 +217,7 @@ impl Clone for FileMeta {
             language: self.language.clone(),
             size_bytes: self.size_bytes,
             mtime_ns: self.mtime_ns,
+            extract_epoch: self.extract_epoch,
         }
     }
 }
@@ -248,10 +296,19 @@ impl L1Cache {
 
     /// The decoded L1 for `hash_hex`, from the cache or from the blob.
     ///
+    /// `min_epoch` is the extract epoch of the index entry naming `hash_hex`: a cached value decoded
+    /// under an older epoch predates the refresh that rewrote the blob, so it is read again.
+    ///
     /// `None` means the blob is gone or undecodable — the same outcome the old whole-corpus build
     /// produced by dropping the file from the map.
-    pub(crate) fn load(&self, hash_hex: &str) -> Option<Arc<FileMapL1>> {
-        if let Some(hit) = self.lock().lru.get(hash_hex).cloned() {
+    pub(crate) fn load(&self, hash_hex: &str, min_epoch: u16) -> Option<Arc<FileMapL1>> {
+        let hit = self
+            .lock()
+            .lru
+            .get(hash_hex)
+            .filter(|hit| hit.extract_epoch >= min_epoch)
+            .cloned();
+        if let Some(hit) = hit {
             return Some(hit);
         }
         let decoded = Arc::new(self.read_blob(hash_hex)?);
@@ -265,14 +322,18 @@ impl L1Cache {
     /// The hot case — a repo small enough to sit entirely inside the budget — never leaves the
     /// first lock, so streaming a warm corpus costs one mutex round trip per chunk rather than the
     /// per-file rayon fan-out an unconditional parallel decode would pay.
-    fn load_chunk(&self, hashes: &[&str]) -> Vec<Option<Arc<FileMapL1>>> {
+    fn load_chunk(&self, metas: &[&FileMeta]) -> Vec<Option<Arc<FileMapL1>>> {
         use rayon::prelude::*;
-        let mut slots: Vec<Option<Arc<FileMapL1>>> = vec![None; hashes.len()];
+        let mut slots: Vec<Option<Arc<FileMapL1>>> = vec![None; metas.len()];
         let mut misses: Vec<usize> = Vec::new();
         {
             let mut guard = self.lock();
-            for (i, hash) in hashes.iter().enumerate() {
-                match guard.lru.get(*hash) {
+            for (i, meta) in metas.iter().enumerate() {
+                let hit = guard
+                    .lru
+                    .get(&*meta.hash_hex)
+                    .filter(|hit| hit.extract_epoch >= meta.extract_epoch);
+                match hit {
                     Some(hit) => slots[i] = Some(Arc::clone(hit)),
                     None => misses.push(i),
                 }
@@ -283,11 +344,11 @@ impl L1Cache {
         }
         let decoded: Vec<(usize, Option<Arc<FileMapL1>>)> = misses
             .par_iter()
-            .map(|&i| (i, self.read_blob(hashes[i]).map(Arc::new)))
+            .map(|&i| (i, self.read_blob(&metas[i].hash_hex).map(Arc::new)))
             .collect();
         for (i, value) in decoded {
             if let Some(value) = value {
-                self.admit(hashes[i], &value);
+                self.admit(&metas[i].hash_hex, &value);
                 slots[i] = Some(value);
             }
         }
@@ -340,8 +401,36 @@ impl L1Cache {
         None
     }
 
-    /// Drop the cached value of `hash_hex`, if any.
-    fn forget(&self, hash_hex: &str) {
+    /// Whether this cache reads the blob directories `store` reads. A reopened store that names
+    /// others (a layered base published since) needs a cache of its own.
+    pub(crate) fn serves(&self, store: &crate::store::Store) -> bool {
+        self.blobs_dir == store.blobs_dir && self.fallback == store.fallback_blobs_dir
+    }
+
+    /// Drop the outlines of the `superseded` hashes no path of `next` still names: content a rescan
+    /// replaced or removed. Kept, they would hold the budget until evicted while no current path
+    /// can reach them. A reader still on the previous snapshot reads such a blob again on a miss,
+    /// which costs latency, never an answer.
+    pub(crate) fn forget_superseded(&self, mut superseded: ahash::AHashSet<&str>, next: &FileIndexView) {
+        for meta in next.files.values() {
+            if superseded.is_empty() {
+                return;
+            }
+            superseded.remove(&*meta.hash_hex);
+        }
+        for hash_hex in superseded {
+            self.forget(hash_hex);
+        }
+    }
+
+    /// Whether an outline of `hash_hex` is cached.
+    #[cfg(test)]
+    pub(crate) fn holds(&self, hash_hex: &str) -> bool {
+        self.lock().lru.contains(hash_hex)
+    }
+
+    /// Drop the cached value of `hash_hex`, if any, so the next read decodes its blob again.
+    pub(crate) fn forget(&self, hash_hex: &str) {
         let mut guard = self.lock();
         if let Some(previous) = guard.lru.pop(hash_hex) {
             guard.charged = guard.charged.saturating_sub(l1_heap_bytes(&previous));
@@ -427,22 +516,22 @@ where
     F: FnMut(&RelPath, &FileMapL1) -> bool,
 {
     let mut paths: Vec<&RelPath> = Vec::with_capacity(STREAM_CHUNK);
-    let mut hashes: Vec<&str> = Vec::with_capacity(STREAM_CHUNK);
+    let mut metas: Vec<&FileMeta> = Vec::with_capacity(STREAM_CHUNK);
     for (path, meta) in view.iter() {
         paths.push(path);
-        hashes.push(&meta.hash_hex);
-        if paths.len() == STREAM_CHUNK && !drain(cache, &mut paths, &mut hashes, &mut f) {
+        metas.push(meta);
+        if paths.len() == STREAM_CHUNK && !drain(cache, &mut paths, &mut metas, &mut f) {
             return;
         }
     }
-    drain(cache, &mut paths, &mut hashes, &mut f);
+    drain(cache, &mut paths, &mut metas, &mut f);
 }
 
-fn drain<F>(cache: &L1Cache, paths: &mut Vec<&RelPath>, hashes: &mut Vec<&str>, f: &mut F) -> bool
+fn drain<F>(cache: &L1Cache, paths: &mut Vec<&RelPath>, metas: &mut Vec<&FileMeta>, f: &mut F) -> bool
 where
     F: FnMut(&RelPath, &FileMapL1) -> bool,
 {
-    let loaded = cache.load_chunk(hashes);
+    let loaded = cache.load_chunk(metas);
     let mut keep_going = true;
     for (path, value) in paths.iter().zip(loaded) {
         if let Some(value) = value
@@ -453,43 +542,55 @@ where
         }
     }
     paths.clear();
-    hashes.clear();
+    metas.clear();
     keep_going
 }
 
-/// Approximate resident cost of one decoded L1, in bytes.
+/// Approximate resident cost of one decoded L1 held by the cache, in bytes.
 ///
-/// Approximate is the point: the budget shapes residency, and an exact `size_of_val` walk would
-/// cost more than the eviction it informs. It counts every heap allocation the value owns (each
-/// `Vec`'s element storage plus each owned `String`'s bytes), so it tracks the order-of-magnitude
-/// spread between a 40-line source file and a generated one — which is the whole reason the budget
-/// is in bytes rather than entries.
+/// Approximate is the point: the budget shapes residency, and an exact walk of the allocator's
+/// books would cost more than the eviction it informs. It counts every heap allocation the value
+/// owns at its capacity, rounded up to the allocator's size class, plus what the cache itself
+/// spends on the entry (the `Arc` header, the LRU node and its content-hash key). Counting lengths
+/// alone, as it once did, charged a short name or signature a few bytes for an allocation that
+/// occupies a whole size class, and charged nothing for the entry: the budget then admitted a heap
+/// noticeably larger than itself. It still tracks the order-of-magnitude spread between a 40-line
+/// source file and a generated one, which is why the budget is in bytes rather than entries.
 pub(crate) fn l1_heap_bytes(l1: &FileMapL1) -> u64 {
-    let mut total = std::mem::size_of::<FileMapL1>() as u64;
-    total += l1.language.len() as u64;
-    total += (l1.symbols.len() * std::mem::size_of::<crate::extract::Symbol>()) as u64;
+    use std::mem::size_of;
+    let strings = |items: &[String]| items.iter().map(|s| alloc_bytes(s.capacity())).sum::<u64>();
+    let mut total = ENTRY_OVERHEAD_BYTES + alloc_bytes(size_of::<FileMapL1>()) + alloc_bytes(l1.language.capacity());
+    total += alloc_bytes(l1.symbols.capacity() * size_of::<crate::extract::Symbol>());
     for sym in &l1.symbols {
-        total += sym.name.len() as u64;
-        total += sym.signature.as_ref().map_or(0, String::len) as u64;
-        total += (sym.decorators.len() * std::mem::size_of::<String>()) as u64;
-        total += sym.decorators.iter().map(|d| d.len() as u64).sum::<u64>();
+        total += alloc_bytes(sym.name.capacity());
+        total += sym.signature.as_ref().map_or(0, |sig| alloc_bytes(sig.capacity()));
+        total += alloc_bytes(sym.decorators.capacity() * size_of::<String>()) + strings(&sym.decorators);
     }
-    total += (l1.imports.len() * std::mem::size_of::<crate::extract::Import>()) as u64;
+    total += alloc_bytes(l1.imports.capacity() * size_of::<crate::extract::Import>());
     for imp in &l1.imports {
-        total += imp.module.as_ref().map_or(0, String::len) as u64;
-        total += imp.raw.len() as u64;
+        total += imp.module.as_ref().map_or(0, |module| alloc_bytes(module.capacity()));
+        total += alloc_bytes(imp.raw.capacity());
     }
-    total += (l1.implementations.len() * std::mem::size_of::<crate::extract::Implementation>()) as u64;
+    total += alloc_bytes(l1.implementations.capacity() * size_of::<crate::extract::Implementation>());
     for imp in &l1.implementations {
-        total += (imp.trait_name.len() + imp.impl_type.len()) as u64;
+        total += alloc_bytes(imp.trait_name.capacity()) + alloc_bytes(imp.impl_type.capacity());
     }
-    total += (l1.rationale.len() * std::mem::size_of::<crate::extract::RationaleRecord>()) as u64;
+    total += alloc_bytes(l1.rationale.capacity() * size_of::<crate::extract::RationaleRecord>());
     for rec in &l1.rationale {
-        total += rec.text.len() as u64;
-        total += (rec.citations.len() * std::mem::size_of::<String>()) as u64;
-        total += rec.citations.iter().map(|c| c.len() as u64).sum::<u64>();
+        total += alloc_bytes(rec.text.capacity());
+        total += alloc_bytes(rec.citations.capacity() * size_of::<String>()) + strings(&rec.citations);
     }
     total
+}
+
+/// What the cache spends on one entry besides the outline: the `Arc` header, the LRU's node and
+/// hash slot, and the boxed 64-hex content-hash key.
+const ENTRY_OVERHEAD_BYTES: u64 = 16 + 64 + 16 + 64;
+
+/// Bytes an allocation of `len` bytes occupies: the allocator serves it from a size class, at
+/// least 16-byte granular. Nothing for an empty (unallocated) buffer.
+fn alloc_bytes(len: usize) -> u64 {
+    if len == 0 { 0 } else { len.next_multiple_of(16) as u64 }
 }
 
 /// Resolve `[resources] max_map_cache_mb` to a byte budget. `0` stays `0` (unbounded).
@@ -541,6 +642,20 @@ mod tests {
         }
     }
 
+    /// A short string occupies a whole allocation, and every entry costs the cache its own node and
+    /// key: a one-symbol outline is charged for both, not for the few bytes of its name.
+    #[test]
+    fn heap_bytes_charges_size_classes_and_the_entry() {
+        let mut l1 = l1_with("a", 1);
+        l1.language = String::new();
+        let floor = ENTRY_OVERHEAD_BYTES
+            + alloc_bytes(std::mem::size_of::<FileMapL1>())
+            + alloc_bytes(std::mem::size_of::<Symbol>())
+            + 16
+            + 16;
+        assert_eq!(l1_heap_bytes(&l1), floor);
+    }
+
     /// The charge must scale with a value's own heap, not with the entry count — the exact reason
     /// the budget is in bytes. A 100 KB signature must charge ~100 KB more than a 1-byte one.
     #[test]
@@ -562,7 +677,7 @@ mod tests {
         assert!(cache.charged_bytes() <= 4096, "charged={}", cache.charged_bytes());
         let huge = Arc::new(l1_with("huge", 1_000_000));
         cache.admit("ff", &huge);
-        assert!(cache.load("ff").is_some(), "the newest entry is never evicted");
+        assert!(cache.load("ff", 0).is_some(), "the newest entry is never evicted");
     }
 
     /// A damaged blob must not stay where every later scan would trust it for existing.
@@ -578,8 +693,34 @@ mod tests {
         std::fs::write(&path, torn).unwrap();
         let cache = L1Cache::new(blobs, 0);
 
-        assert!(cache.load(&hash).is_none());
+        assert!(cache.load(&hash, 0).is_none());
         assert!(!path.exists(), "the damaged blob must be removed");
+    }
+
+    /// An extract-epoch refresh rewrites a blob under the same content hash. An entry naming the
+    /// newer epoch must get the rewritten outline, not the one decoded before the rewrite, while a
+    /// caller still at the older epoch keeps hitting the cache.
+    #[test]
+    fn an_outline_cached_before_an_epoch_refresh_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = "e".repeat(64);
+        let path = dir.path().join(format!("{hash}.fm.msgpack"));
+        let old_epoch = crate::extract::EXTRACT_EPOCH - 1;
+        let mut stale = l1_with("before", 1);
+        stale.extract_epoch = old_epoch;
+        std::fs::write(&path, crate::store_blob::frame_filemap(&stale, None).unwrap()).unwrap();
+        let cache = L1Cache::new(dir.path().to_path_buf(), 0);
+        assert_eq!(cache.load(&hash, old_epoch).unwrap().symbols[0].name, "before");
+
+        let refreshed = l1_with("after", 1);
+        std::fs::write(&path, crate::store_blob::frame_filemap(&refreshed, None).unwrap()).unwrap();
+        let misses = cache.misses();
+        assert_eq!(cache.load(&hash, old_epoch).unwrap().symbols[0].name, "before");
+        assert_eq!(cache.misses(), misses, "a caller at the older epoch still hits");
+
+        let newest = cache.load(&hash, crate::extract::EXTRACT_EPOCH).unwrap();
+        assert_eq!(newest.symbols[0].name, "after");
+        assert_eq!(newest.extract_epoch, crate::extract::EXTRACT_EPOCH);
     }
 
     /// A scan can rename a good blob over the damaged one between the failed read and the unlink.

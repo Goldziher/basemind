@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:8eec70ca41681fc176f9cc3f123ab15208ffd7b998fa8f13ed711ad3f9499076
-Source-Hash: blake3:e4ff4daab7f41eaf4e6661886df3e2f56820b2d7aeae1c2115689fc609e3edf4
+Content-Hash: blake3:5a0ffea4434ab9a215e763fc0b10d9adfe358dc3857da691b903d4256800e097
+Source-Hash: blake3:8810c8f2a8e5c32211d5bf3315335263823c073c88a236e840f2e4801e8daa06
 Schema-Version: v1
 -->
 
@@ -72,6 +72,11 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   they answer with an error result saying so.
 - History queries are indexed: commits touching a path resolve in tens of microseconds vs a live
   walk. The index auto-builds on first use and is a fraction of the size of `.git`.
+- A `git_log` list row is `sha` (its first 12 hex digits, which every tool taking a revision
+  resolves), `summary`, `author` and `author_time_unix`; a recent or directory list adds `files`,
+  each changed path with how (`{"src/a.rs":"modified"}`), where a merge lists only what it changed
+  against every parent. `rev` shows one commit with its full `sha`, message `body` and
+  `author_email`.
 - `git_log` with no arguments is a recency window; use `query` or `author` to find a commit
   arbitrarily far back. `symbol` needs `path`. `limit` defaults to 20 and caps at 100, and
   `limit: 0` is refused. A `path` that no commit reachable from HEAD touches and that is not on
@@ -97,13 +102,15 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   to `max_tokens` (default 6000), then sets `budgeted`. A hunk is `commit_sha`, `short_sha`, `line`, `end_line`, `source_line`, `author`,
   `author_time_unix` and `summary`; a symbol blame also carries the symbol's `line` / `end_line`.
 - `git_diff`: `path` alone is that file's working-tree diff against HEAD; `from` defaults to HEAD
-  and `to` to the working tree. The response has `from`, `to` (a sha, or `"working tree"`),
-  `present_at_from`, `present_at_to` and `hunks`. A diff is cut at 200 hunks or 128 KiB of hunk
+  and `to` to the working tree. The response has `from`, `to` (a sha, or `"working tree"`) and
+  `hunks`, plus `present_at_from: false` for a file added since `from` or `present_at_to: false`
+  for one deleted by `to`. A diff is cut at 200 hunks or 128 KiB of hunk
   text and then sets `truncated`, `truncated_reason` (`hunk_cap` or `byte_cap`) and `omitted` (the
   hunks left out); it has no cursor, so narrow it with a closer `from` / `to`. A structural diff
   compares `from` against the indexed working tree, takes no `to`, and returns `added`, `removed`
   and `common`, the count of unchanged symbols.
-- `git_diff {}` lists at most 200 paths per status list, in path order. A cut status sets
+- `git_diff {}` lists at most 200 paths per status list, in path order, and leaves an empty list
+  out. A cut status sets
   `truncated`, `truncated_reason: "path_cap"` and `omitted`; pass a directory `path` (one ending
   in `/`) for the status under that directory. That narrowed status lists every untracked file on
   its own and its `is_clean` is about the directory only. A directory that is not on disk and has

@@ -15,6 +15,7 @@ mod agent_context;
 pub mod agent_tools;
 mod background;
 mod budget;
+mod by_path;
 mod completions;
 pub(crate) mod cursor;
 mod cursor_bind;
@@ -22,6 +23,9 @@ mod cursor_bind;
 mod daemon_forward;
 mod freshness;
 mod helpers;
+pub(crate) use helpers::BUSY_DATA;
+#[cfg(test)]
+pub(crate) use helpers::rescan_error;
 mod helpers_admin;
 mod helpers_calls;
 #[cfg(test)]
@@ -55,8 +59,10 @@ mod helpers_memory;
 mod helpers_page;
 mod helpers_pick;
 mod helpers_refs_match;
+mod helpers_stale;
 mod helpers_symbols;
 mod helpers_telemetry;
+mod history_sync;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod host;
 mod identity;
@@ -73,7 +79,6 @@ mod l1_cache;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod lance_cell;
 mod lean;
-mod map_fingerprint;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod memory;
 #[cfg(feature = "memory")]
@@ -365,7 +370,7 @@ impl BasemindServer {
                 background::spawn_view_watcher(Arc::clone(&state))
             };
             watcher = Some(Arc::new(watcher_guard));
-            Self::spawn_git_history_sync(&state, &history_dir);
+            history_sync::request(&state);
             if needs_initial_scan {
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
@@ -529,7 +534,7 @@ impl BasemindServer {
         // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
         let warden = Arc::new(ServerState::for_connection(Arc::clone(&shared), agent_id));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
-        Self::spawn_git_history_sync(&warden, &history_dir);
+        history_sync::request(&warden);
         if needs_initial_scan {
             background::spawn_initial_scan(Arc::clone(&warden));
         } else if defer_warm {
@@ -584,7 +589,8 @@ impl BasemindServer {
             return Some(Arc::new(crate::git_history::remote::remote_index(root.to_path_buf())));
         }
         let _ = (root, agent_id);
-        if options.read_only {
+        // ~keep A one-shot query never syncs, so an index it would open empty would stay empty.
+        if options.read_only || (!options.background && !crate::git_history::GitHistoryIndex::exists(history_dir)) {
             return None;
         }
         match crate::git_history::GitHistoryIndex::open(history_dir) {
@@ -593,69 +599,6 @@ impl BasemindServer {
                 tracing::warn!(?error, "git-history index unavailable; tools will live-walk");
                 None
             }
-        }
-    }
-
-    /// Kick the git-history index up to date, off the MCP thread. A session whose handle is
-    /// daemon-backed ASKS the daemon to do it (which serializes the build per repo, so N sessions
-    /// cause one walk); a session that holds the database does it in-process, as it always has.
-    ///
-    /// Keyed off the handle the routing above actually produced, not off `daemon_writer`: a
-    /// non-`daemon_writer` session that found a live daemon also holds a forwarding handle, and
-    /// asking the builder to write through it is a guaranteed
-    /// [`NotLocal`](crate::git_history::GitHistoryError::NotLocal).
-    ///
-    /// Only ever reached with `background: true` (i.e. `serve`). The one-shot CLI requests no sync at
-    /// all: it exits in milliseconds, and a first build on a deep repo is a minutes-long walk.
-    fn spawn_git_history_sync(state: &Arc<ServerState>, history_dir: &std::path::Path) {
-        let Some(index) = state.shared.git_history.as_deref() else {
-            return;
-        };
-        let _ = index;
-        // ~keep A daemon-hosted handle syncs in-process through the seam (the daemon's own build lock),
-        // ~keep never over the socket back to itself.
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if let Some(host) = crate::git_history::remote::history_host(index) {
-            let root = state.shared.root.clone();
-            tokio::spawn(async move {
-                match host
-                    .run_history(root, crate::git_history::proto::GitHistoryOp::Sync)
-                    .await
-                {
-                    Ok(reply) => tracing::info!(?reply, "git-history index synced in-process (hosted)"),
-                    Err(error) => tracing::warn!(%error, "git-history in-process sync failed; history tools live-walk"),
-                }
-            });
-            return;
-        }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if index.forwarder().is_some_and(|forwarder| forwarder.hosts_in_process()) {
-            return;
-        }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if index.is_daemon_backed() {
-            let root = state.shared.root.clone();
-            tokio::spawn(async move {
-                match crate::git_history::remote::request_sync(root).await {
-                    Some(outcome) => tracing::info!(?outcome, "git-history index synced by the daemon"),
-                    None => tracing::warn!("git-history index sync unavailable; history tools live-walk"),
-                }
-            });
-            return;
-        }
-        if let (Some(git_history), Some(repo)) = (state.shared.git_history.clone(), state.shared.repo.clone()) {
-            let history_dir = history_dir.to_path_buf();
-            tokio::task::spawn_blocking(move || {
-                match crate::git_history::builder::sync(&git_history, &repo, &history_dir) {
-                    Ok(outcome) => tracing::info!(?outcome, "git-history index sync complete"),
-                    Err(error) => tracing::warn!(%error, "git-history index sync failed; tools live-walk"),
-                }
-                // Fjall 3.1 can deadlock while dropping its final database handle after a
-                // background sync (fjall-rs/fjall#260). This path is only used by a standalone
-                // MCP process; the daemon-backed path above owns and closes the shared database.
-                // Keep this clone alive until process exit so Tokio runtime shutdown cannot hang.
-                std::mem::forget(git_history);
-            });
         }
     }
 
@@ -826,6 +769,48 @@ mod map_cache_tests {
         assert!(
             sym_names(&after, "b.rs").is_empty(),
             "a removed path resolves to no outline"
+        );
+    }
+
+    /// An extract-epoch refresh rewrites a file's blob under its unchanged content hash. The L1
+    /// cache `with_delta` carries forward still holds the outline decoded from the replaced blob,
+    /// and the derived snapshot must not serve it.
+    #[test]
+    fn with_delta_serves_an_outline_refreshed_under_the_same_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Content no other test scans: the blob store is shared, and this test rewrites the blob.
+        fs::write(root.join("a.rs"), b"pub fn epoch_refresh_probe() {}\n").unwrap();
+        let cfg = crate::config::ConfigV1::with_defaults();
+        let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).unwrap();
+        crate::scanner::scan(
+            root,
+            &mut store,
+            &cfg,
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
+
+        let rel = crate::path::RelPath::from("a.rs");
+        let hash_hex = store.lookup(&rel).unwrap().hash_hex.clone();
+        let current = store.read_l1_by_hex(&hash_hex).unwrap().unwrap();
+        let mut stale = current.clone();
+        stale.extract_epoch = crate::extract::EXTRACT_EPOCH - 1;
+        stale.symbols[0].name = "before_refresh".to_string();
+        store.overwrite_filemap_hex(&hash_hex, &stale, None).unwrap();
+        store.index.files.get_mut(&rel).unwrap().extract_epoch = stale.extract_epoch;
+
+        let cache = MapCache::build(&store, 0);
+        assert_eq!(sym_names(&cache, "a.rs"), vec!["before_refresh".to_string()]);
+
+        store.overwrite_filemap_hex(&hash_hex, &current, None).unwrap();
+        store.index.files.get_mut(&rel).unwrap().extract_epoch = crate::extract::EXTRACT_EPOCH;
+        let next = cache.with_delta(&store, std::slice::from_ref(&rel), &[]);
+        assert_eq!(
+            sym_names(&next, "a.rs"),
+            vec!["epoch_refresh_probe".to_string()],
+            "the refreshed blob is read again"
         );
     }
 }

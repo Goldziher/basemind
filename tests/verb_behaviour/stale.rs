@@ -62,9 +62,9 @@ async fn an_edit_that_keeps_the_size_is_seen_by_every_tool_that_uses_indexed_off
         json!({ "pattern": "    2", "path": "src/swap.rs" }),
     )
     .await;
-    assert_eq!(grep["total_matches"], 1, "{grep}");
+    assert_eq!(grep["total"], 1, "{grep}");
     assert!(
-        grep["hits"][0].get("symbol").is_none(),
+        super::rows(&grep["hits"])[0].get("symbol").is_none(),
         "the indexed spans name `b`, which the file no longer has: {grep}"
     );
 }
@@ -122,7 +122,36 @@ async fn code_refs_refuses_positions_in_a_file_edited_after_the_scan() {
     );
 
     let unpinned = call(&client, "code_refs", json!({ "name": "file_outline" })).await;
-    assert_eq!(unpinned["total"], 2, "the name scan reads no file: {unpinned}");
+    assert_eq!(unpinned["total"], 2, "{unpinned}");
+    for hit in super::rows(&unpinned["hits"]) {
+        let edited = hit["path"] == "src/outline.rs";
+        assert_eq!(
+            hit.get("stale").is_some(),
+            edited,
+            "only the edited file's hit is stale: {unpinned}"
+        );
+    }
+}
+
+/// A definition listed from the index in a file edited since the scan is reported where it is now,
+/// and flagged `stale`; one in an unedited file is not flagged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_symbols_follows_a_definition_through_an_edit_made_after_the_scan() {
+    let (dir, client) = started().await;
+    prepend(&dir.path().join("src/outline.rs"), "// one\n// two\n");
+
+    let moved = call(&client, "code_symbols", json!({ "name": "file_outline_l2" })).await;
+    let row = &moved["results"][0];
+    assert_eq!(
+        (row["line"].as_u64(), row["stale"].as_bool()),
+        (Some(9), Some(true)),
+        "{moved}"
+    );
+
+    let unedited = call(&client, "code_symbols", json!({ "name": "first" })).await;
+    let row = &unedited["results"][0];
+    assert_eq!(row["path"], "src/callers.rs", "{unedited}");
+    assert!(row.get("stale").is_none(), "{unedited}");
 }
 
 #[cfg(feature = "code-intel-js")]
@@ -183,12 +212,12 @@ async fn an_edited_file_is_outlined_and_read_as_it_is_and_flagged_stale() {
     );
 
     let grep = call(&client, "code_grep", json!({ "pattern": "file_outline() +" })).await;
-    let hit = &grep["hits"][0];
+    let hit = &super::rows(&grep["hits"])[0];
     assert_eq!(hit["line"], 21, "{grep}");
     assert_eq!(hit["stale"], true, "{grep}");
     assert!(hit.get("symbol").is_none(), "{grep}");
     let fresh = call(&client, "code_grep", json!({ "pattern": "def helper" })).await;
-    assert!(fresh["hits"][0].get("stale").is_none(), "{fresh}");
+    assert!(super::rows(&fresh["hits"])[0].get("stale").is_none(), "{fresh}");
 }
 
 /// A file deleted after the scan is still in the index. Every tool that needs its content says so
@@ -227,7 +256,13 @@ async fn a_file_deleted_after_the_scan_gets_one_answer_naming_index_rescan() {
 
     let grep = call(&client, "code_grep", json!({ "pattern": "file_outline" })).await;
     assert_eq!(grep["skipped_files"], 1, "{grep}");
-    assert_eq!(grep["total_files_matched"], 1, "src/callers.rs: {grep}");
+    assert_eq!(
+        grep["hits"]
+            .as_object()
+            .map(|files| files.keys().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["src/callers.rs"]),
+        "{grep}"
+    );
 }
 
 /// The scan indexes no file over `scan.max_file_bytes`. One that has grown past it since is not
@@ -270,7 +305,7 @@ async fn a_file_grown_past_the_scan_limit_is_not_read_whole() {
     assert_eq!(span["body"], "pub fn file_outline() -> u32 {\n    1\n}", "{span}");
     let grep = call(&client, "code_grep", json!({ "pattern": "padding to outgrow" })).await;
     assert_eq!(
-        (grep["total_matches"].as_u64(), grep["skipped_files"].as_u64()),
+        (grep["total"].as_u64(), grep["skipped_files"].as_u64()),
         (Some(0), Some(1)),
         "{grep}"
     );

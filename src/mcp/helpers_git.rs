@@ -15,7 +15,7 @@ use super::helpers::{
     head_snapshot_id, json_result, require_git_repo,
 };
 use super::helpers_git_by_path::{LIVE_WALK, by_path};
-use super::helpers_git_show::{budget_commits, commit_to_hit, resolve_body_chars, run_show};
+use super::helpers_git_show::{budget_commits, run_show};
 use super::index_route::blocking;
 use super::tool_contract::budget;
 use super::types::{
@@ -97,12 +97,11 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 limit: p.limit,
                 cursor: p.cursor,
                 max_tokens,
-                body_chars: None,
                 author,
             },
         );
     }
-    match p.path {
+    match p.path.map(|path| as_directory(state, path)) {
         Some(path) if path.as_bytes().ends_with(b"/") => {
             let mut page = by_path(
                 state,
@@ -151,6 +150,25 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
             },
         ),
     }
+}
+
+/// `path` with a trailing slash when it names a directory on disk or at HEAD. A commit's file list
+/// holds files, never directories, so a directory's history is the commits that change a file under
+/// it whether or not the caller wrote the slash.
+fn as_directory(state: &ServerState, path: RelPath) -> RelPath {
+    if path.as_bytes().ends_with(b"/") || path.as_bytes().is_empty() {
+        return path;
+    }
+    let Ok(repo) = require_git_repo(state) else {
+        return path;
+    };
+    let on_disk = crate::path::contained_file(repo.workdir(), &path).is_ok_and(|file| file.is_dir());
+    if !on_disk && !repo.is_directory_at("HEAD", path.as_ref()) {
+        return path;
+    }
+    let mut slashed = path.as_bytes().to_vec();
+    slashed.push(b'/');
+    RelPath::from(slashed.as_slice())
 }
 
 /// `git_blame`: who last changed each line of a file, a line span, or one symbol.
@@ -315,7 +333,6 @@ const STATUS_PATHS_MAX: usize = 200;
 /// The `status` operation: the working tree's staged / unstaged / untracked buckets, for the whole
 /// tree or for the paths under the directory `within`.
 fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     // A narrowed status lists every untracked file: a wholly untracked directory collapsed into one
     // entry is an ancestor of the paths asked about, or hides them behind its own name.
@@ -367,7 +384,6 @@ fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolRe
         truncated_reason: (omitted > 0).then_some("path_cap"),
         omitted,
         is_clean: !any,
-        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -389,9 +405,11 @@ pub(super) fn walk_cursor(
 ///
 /// The index answers with an empty list both when no commit matches and when the lookup failed (a
 /// forward to the daemon that did not come back), so an empty answer is checked against the
-/// repository itself. A cursor `issued` on the other list is refused: the index appends the commits
-/// a sync finds after the ones it holds, where the live walk interleaves them by commit time, so an
-/// offset into one is not an offset into the other.
+/// repository itself. A cursor `issued` on the index is refused once the index stops answering: the
+/// index appends the commits a sync finds after the ones it holds, where the live walk interleaves
+/// them by commit time, so an offset into one is not an offset into the other. A cursor issued on
+/// the live walk keeps paging the live walk, which still lists the same HEAD: an index that catches
+/// up between two pages does not cut the walk off.
 pub(super) fn history_page(
     tool: &str,
     head: &str,
@@ -399,7 +417,8 @@ pub(super) fn history_page(
     indexed: Option<Vec<CommitInfo>>,
     live: impl FnOnce() -> Result<Vec<CommitInfo>, McpError>,
 ) -> Result<(Vec<CommitInfo>, u32), McpError> {
-    let indexed = indexed.filter(|commits| !commits.is_empty());
+    let live_cursor = issued.is_some_and(|issued| issued & LIVE_WALK != 0);
+    let indexed = indexed.filter(|commits| !live_cursor && !commits.is_empty());
     let snapshot = (head_snapshot_id(head) & !LIVE_WALK) | u32::from(indexed.is_none());
     if issued.is_some_and(|issued| issued != snapshot) {
         return Err(super::cursor_bind::walk_switched(tool));
@@ -434,7 +453,6 @@ fn on_disk(repo: &crate::git::Repo, path: &RelPath) -> bool {
 
 /// The `recent` operation: HEAD's ancestry, newest first, one page at a time.
 fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
@@ -446,7 +464,6 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
             next_cursor: None,
             budgeted: false,
             cursor_invalidated: true,
-            elapsed_us: elapsed_us(started),
         });
     };
     let skip = usize::try_from(skip).unwrap_or(usize::MAX);
@@ -481,26 +498,22 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
         truncated_reason: truncated.then_some("shallow_clone"),
         next_cursor,
         cursor_invalidated: false,
-        elapsed_us: elapsed_us(started),
     })
 }
 
 /// The `touching` operation: commits whose tree differs from the parent's at `path`, a page at a time.
 fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
     let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
         return json_result(&CommitsTouchingResponse {
-            path: params.path,
             commits: Vec::new(),
             truncated: false,
             truncated_reason: None,
             next_cursor: None,
             budgeted: false,
             cursor_invalidated: true,
-            elapsed_us: elapsed_us(started),
         });
     };
     let skip = usize::try_from(skip).unwrap_or(usize::MAX);
@@ -529,14 +542,12 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
         (more || budgeted).then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
     json_result(&CommitsTouchingResponse {
-        path: params.path,
         commits: page,
         budgeted,
         truncated,
         truncated_reason: truncated.then_some("shallow_clone"),
         next_cursor,
         cursor_invalidated: false,
-        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -638,7 +649,6 @@ fn by_author(
 /// full body; otherwise degrades to a bounded live walk over the recent window, flagged
 /// `truncated` with reason `live_walk` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
 fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let scope = FtsScope::parse(params.field.as_deref());
@@ -656,7 +666,6 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
                     next_cursor: None,
                     budgeted: false,
                     cursor_invalidated: true,
-                    elapsed_us: elapsed_us(started),
                 });
             }
             offset as usize
@@ -711,8 +720,7 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
     let has_more = hits.len() > limit;
     hits.truncate(limit);
 
-    let body_chars = resolve_body_chars(params.body_chars);
-    let commits = hits.into_iter().map(|c| commit_to_hit(c, body_chars)).collect();
+    let commits = hits.into_iter().map(|c| commit_to_view(c, false)).collect();
     let (commits, budgeted) = budget_commits(commits, params.max_tokens);
     let has_more = has_more || budgeted;
     let kept = commits.len();
@@ -724,7 +732,6 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
         truncated_reason,
         next_cursor,
         cursor_invalidated: false,
-        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -780,6 +787,20 @@ mod tests {
         assert_eq!(no_index[0].author, "alice");
         let (truly_empty, _) = history_page("git_log", head, None, Some(Vec::new()), || Ok(Vec::new())).expect("live");
         assert!(truly_empty.is_empty());
+    }
+
+    #[test]
+    fn a_live_walk_cursor_keeps_the_live_walk_once_the_index_answers() {
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        let live = (head_snapshot_id(head) & !LIVE_WALK) | LIVE_WALK;
+        let walked = || Ok(vec![commit(1, "alice")]);
+        let (page, snapshot) =
+            history_page("git_log", head, Some(live), Some(vec![commit(7, "bob")]), walked).expect("page");
+        assert_eq!(page[0].author, "alice", "the walk the cursor was cut from");
+        assert_eq!(snapshot, live);
+        let indexed = live & !LIVE_WALK;
+        let refused = history_page("git_log", head, Some(indexed), None, walked).expect_err("index gone");
+        assert!(refused.message.contains("git-history index"), "{}", refused.message);
     }
 
     #[test]

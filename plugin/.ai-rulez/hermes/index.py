@@ -178,7 +178,7 @@ def _delta_context(cwd: str) -> str | None:
     if not messages:
         return None
     return (
-        "Unread basemind agent messages (announced once, not yet read):\n"
+        "Unread agent messages from basemind (announced once, not yet read):\n"
         f"{_format_lines(messages)}\n"
         "Read them with agent_inbox (bodies inline; id reads one whole message). Reply with agent_post if warranted."
     )

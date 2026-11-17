@@ -47,33 +47,64 @@ fn scaled(actual: u64, pct: u64) -> u64 {
     actual.saturating_mul(pct) / 100
 }
 
-// Baseline multipliers, in percent. Each is the MEDIAN token ratio (baseline tokens / basemind
-// response tokens) measured by `basemind admin eval` (benchmarks/eval) on a ~63k-file Python/TS
-// monorepo, over the tasks where basemind's answer was correct (recall >= 0.8), rounded down. A tool
-// whose measured median is below 1 claims 100: basemind did not beat its baseline there, so it
-// claims no saving. The baseline each figure is measured against is the disclosed `baseline` field
-// of the row; re-run the eval and update these when a response shape changes.
+// Baseline multipliers, in percent. Each is the LOWEST per-corpus median token ratio (baseline
+// tokens / basemind response tokens) the committed value gate measured for the tool over every task
+// kind it answers (`benchmarks/eval/results/gate.json`), rounded down to a tenth. One telemetry key
+// covers every kind of a tool, so the weakest kind sets the figure. A tool whose measured median is
+// below 1, or that the gate did not run, claims 100: no saving. Re-run the gate and update these when
+// a response shape changes; `multipliers_never_exceed_the_committed_gate` holds them to it.
 
-/// `code_outline` vs reading the whole file. Measured median 1.24x (p90 2.6x) over files with 3-60
-/// symbols: a short file costs about as much to outline (symbols plus every import line) as to read.
-const OUTLINE_PCT: u64 = 120;
+/// `code_outline` vs reading the whole file: 3.49x on basemind, 1.69x on tokio.
+const OUTLINE_PCT: u64 = 160;
 
-/// `code_symbols` vs `git grep` plus whole-file reads of the (up to three) files holding the hits.
-/// Measured median 27.9x (p25 12x, p90 89x); large source files dominate the baseline.
-const SYMBOLS_PCT: u64 = 2500;
+/// `code_read` vs reading the whole file the span is in: 32.7x on basemind, 25.9x on tokio.
+const READ_PCT: u64 = 2580;
 
-/// `code_refs` vs the `git grep -n -w` line listing. Its shapes measured 1.22x (call sites of a
-/// name), 0.76x (callers of one definition) and 0.64x (importers); one telemetry key covers all
-/// of them, so the tool claims no saving rather than the best shape's figure.
-const REFS_PCT: u64 = 100;
+/// `git_blame` vs `git blame -L`: its weakest kind (a symbol's blame on tokio) measured 1.11x.
+const BLAME_PCT: u64 = 110;
 
-/// `find_files` vs `git ls-files | grep`. Measured median 0.30x: the baseline is one path line,
-/// basemind's value is the fuzzy/typo-tolerant match, not fewer tokens. No saving is claimed.
-const FIND_PCT: u64 = 100;
+/// Tools the gate measured below 1x against their baseline, or did not run: `code_symbols` (0.29x vs
+/// `git grep`), `code_refs`, `find_files`, `code_grep`, `git_log`, `git_diff` (1.00x for a file diff),
+/// `code_search` and `docs_search`. They keep their disclosed baseline and claim no saving.
+const NO_SAVING_PCT: u64 = 100;
 
-/// `docs_search` vs `git grep` of a keyword plus opening the document it points at. Measured
-/// median 2.54x (p90 7.5x) on the docs eval, where grep alone returns only bare lines.
-const DOCUMENT_READ_PCT: u64 = 250;
+/// The multiplier and disclosed baseline of each tool the gate measured.
+const MEASURED: &[(&str, u64, &str)] = &[
+    ("code_outline", OUTLINE_PCT, "full_file_read"),
+    ("code_read", READ_PCT, "full_file_read"),
+    ("git_blame", BLAME_PCT, "git_blame"),
+    ("code_symbols", NO_SAVING_PCT, "git_grep"),
+    ("code_refs", NO_SAVING_PCT, "grep_top_hits"),
+    ("find_files", NO_SAVING_PCT, "git_ls_files_grep"),
+];
+
+/// Whether a response answered with nothing: a `total` of 0, or every list and map it carries
+/// empty. An empty answer saved the agent nothing, whatever the tool's multiplier.
+fn returned_nothing(text: &str) -> bool {
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(text) else {
+        return text.trim().is_empty();
+    };
+    if fields.get("total").and_then(serde_json::Value::as_u64) == Some(0) {
+        return true;
+    }
+    let mut collections = fields.values().filter(|v| v.is_array() || v.is_object()).peekable();
+    collections.peek().is_some()
+        && collections
+            .all(|v| v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(serde_json::Map::is_empty))
+}
+
+/// Tools with no measured baseline: they book the response as its own baseline.
+const KNOWN_TOOLS: &[&str] = &[
+    "code_grep",
+    "code_search",
+    "docs_search",
+    "git_log",
+    "git_diff",
+    "memory_save",
+    "memory_search",
+    "index_status",
+    "index_rescan",
+];
 
 /// Telemetry keys written before ADR-0018, mapped to the tool that replaced them. Rows recorded
 /// by an older binary (`code:outline`) and tool names older clients still send (`code_references`)
@@ -139,21 +170,12 @@ fn canonical_key(tool: &str) -> &str {
 /// response payload), so this argument currently goes unused.
 pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> SavingsRow {
     let actual = tokens_for_text(resp_text);
-    let (baseline, baseline_name) = match canonical_key(tool) {
-        "code_outline" => (scaled(actual, OUTLINE_PCT), "full_file_read"),
-
-        "code_symbols" => (scaled(actual, SYMBOLS_PCT), "grep_plus_read_top_hits"),
-
-        "code_refs" => (scaled(actual, REFS_PCT), "grep_top_hits"),
-
-        "find_files" => (scaled(actual, FIND_PCT), "git_ls_files_grep"),
-
-        "docs_search" => (scaled(actual, DOCUMENT_READ_PCT), "grep_plus_document_read"),
-
-        "code_grep" | "code_read" | "code_search" | "git_log" | "git_blame" | "git_diff" | "memory_save"
-        | "memory_search" | "index_status" | "index_rescan" => (actual, "no_baseline"),
-
-        _ => (actual, "unclassified"),
+    let key = canonical_key(tool);
+    let (baseline, baseline_name) = match MEASURED.iter().find(|(name, _, _)| *name == key) {
+        Some((_, pct, name)) if *pct > NO_SAVING_PCT && !returned_nothing(resp_text) => (scaled(actual, *pct), *name),
+        Some((_, _, name)) => (actual, *name),
+        None if KNOWN_TOOLS.contains(&key) => (actual, "no_baseline"),
+        None => (actual, "unclassified"),
     };
 
     SavingsRow {
@@ -164,78 +186,120 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
     }
 }
 
+/// The row for an `isError` result: the agent got a refusal to act on, not an answer, so nothing
+/// was saved.
+pub fn refusal(resp_text: &str) -> SavingsRow {
+    let actual = tokens_for_text(resp_text);
+    SavingsRow {
+        baseline_tokens: actual,
+        actual_tokens: actual,
+        est_tokens_saved: 0,
+        baseline: "tool_error",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Baseline-model assertions that hold for both tiers: the per-tool multiplier and the
-    /// saturating-subtraction savings, expressed relative to whatever `actual` was counted.
-    /// Used by the structural tests so they pass under `documents` (real o200k) too.
-    fn assert_grep_model(s: &SavingsRow, expected_baseline: &str, pct: u64) {
-        assert_eq!(s.baseline, expected_baseline);
-        assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, pct));
-        assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
+    const ANSWER: &str = "{\"hits\":[{\"path\":\"src/a.rs\",\"line\":3}],\"total\":1}";
+
+    fn row(tool: &str, text: &str) -> SavingsRow {
+        estimate_from_text(tool, 1_000_000, text)
     }
 
     #[test]
-    fn outline_baseline_is_1_2x_response() {
-        let s = estimate_from_text("code_outline", 1_000_000, &"a".repeat(400));
-        assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, 120));
-        assert_eq!(s.baseline, "full_file_read");
-        #[cfg(not(feature = "tokenizer"))]
-        {
-            assert_eq!(s.actual_tokens, 100);
-            assert_eq!(s.baseline_tokens, 120);
-            assert_eq!(s.est_tokens_saved, 20);
+    fn outline_and_read_scale_the_response_by_their_measured_median() {
+        for (tool, pct) in [
+            ("code_outline", OUTLINE_PCT),
+            ("code_read", READ_PCT),
+            ("git_blame", BLAME_PCT),
+        ] {
+            let s = row(tool, ANSWER);
+            assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, pct), "{tool}");
+            assert_eq!(s.est_tokens_saved, s.baseline_tokens - s.actual_tokens, "{tool}");
+            assert!(s.est_tokens_saved > 0, "{tool}");
+        }
+    }
+
+    /// The gate measured `code_symbols` at 0.29x-0.32x against `git grep`: a lookup costs more than
+    /// the grep it replaces, so it books nothing, whatever it returned.
+    #[test]
+    fn tools_that_did_not_beat_their_baseline_claim_no_saving() {
+        for (tool, baseline) in [
+            ("code_symbols", "git_grep"),
+            ("code_refs", "grep_top_hits"),
+            ("find_files", "git_ls_files_grep"),
+        ] {
+            let s = row(tool, ANSWER);
+            assert_eq!(s.baseline, baseline, "{tool} baseline label");
+            assert_eq!(s.baseline_tokens, s.actual_tokens, "{tool} must model a 1x baseline");
+            assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
         }
     }
 
     #[test]
-    fn search_symbols_savings_independent_of_corpus() {
-        let text = "a".repeat(400);
-        let big = estimate_from_text("code_symbols", 1_000_000, &text);
-        let empty = estimate_from_text("code_symbols", 0, &text);
-        assert_eq!(big.est_tokens_saved, empty.est_tokens_saved);
-        assert_grep_model(&big, "grep_plus_read_top_hits", 2500);
-        #[cfg(not(feature = "tokenizer"))]
-        {
-            assert_eq!(big.actual_tokens, 100);
-            assert_eq!(big.baseline_tokens, 2_500);
-            assert_eq!(big.est_tokens_saved, 2_400);
+    fn an_empty_answer_saves_nothing() {
+        for text in [
+            "{\"hits\":[],\"total\":0}",
+            "{\"symbols\":[],\"imports\":[]}",
+            "{\"hits\":{},\"next_cursor\":null}",
+            "",
+        ] {
+            for tool in ["code_outline", "code_read", "git_blame"] {
+                assert_eq!(row(tool, text).est_tokens_saved, 0, "{tool} {text:?}");
+            }
         }
+        assert!(row("code_read", "{\"body\":\"fn a() {}\",\"line\":1}").est_tokens_saved > 0);
     }
 
     #[test]
-    fn grep_savings_scale_with_response_not_corpus() {
-        let small = estimate_from_text("code_symbols", 1_000_000, &"word ".repeat(80));
-        let large = estimate_from_text("code_symbols", 1_000_000, &"word ".repeat(800));
-        assert!(
-            large.est_tokens_saved > small.est_tokens_saved,
-            "bigger response must yield bigger savings: {} !> {}",
-            large.est_tokens_saved,
-            small.est_tokens_saved
-        );
-        #[cfg(not(feature = "tokenizer"))]
-        assert_eq!(large.est_tokens_saved, 24_000);
+    fn a_refusal_saves_nothing() {
+        let s = refusal("`code_read`: no symbol `x` in `src/a.rs`");
+        assert_eq!((s.est_tokens_saved, s.baseline), (0, "tool_error"));
     }
 
     #[test]
     fn no_baseline_tools_claim_zero_savings() {
-        for tool in [
-            "memory_search",
-            "memory_save",
-            "index_status",
-            "index_rescan",
-            "git_log",
-            "git_diff",
-            "git_blame",
-            "code_grep",
-            "code_read",
-            "code_search",
-        ] {
-            let s = estimate_from_text(tool, 1_000_000, &"a".repeat(500));
+        for tool in KNOWN_TOOLS {
+            let s = row(tool, ANSWER);
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
             assert_eq!(s.baseline, "no_baseline", "{tool} must label no_baseline");
+        }
+    }
+
+    /// Every median ratio the committed gate measured for `tool`, over its kinds and corpora.
+    fn gate_medians(gate: &serde_json::Value, tool: &str) -> Vec<f64> {
+        gate[tool]["kinds"]
+            .as_object()
+            .into_iter()
+            .flat_map(|kinds| kinds.values())
+            .flat_map(|corpora| corpora.as_object().into_iter().flat_map(|cells| cells.values()))
+            .filter_map(|cell| cell["median_ratio"].as_f64())
+            .collect()
+    }
+
+    /// Every multiplier is at most the lowest median ratio the committed gate measured for that tool,
+    /// and a tool the gate measured above the pass bar everywhere is not left without one.
+    #[test]
+    fn multipliers_never_exceed_the_committed_gate() {
+        let gate: serde_json::Value =
+            serde_json::from_str(include_str!("../../benchmarks/eval/results/gate.json")).expect("gate.json");
+        for (tool, pct, _) in MEASURED {
+            let lowest = gate_medians(&gate, tool).into_iter().fold(f64::INFINITY, f64::min);
+            assert!(lowest.is_finite(), "{tool} has no measured median in gate.json");
+            let ceiling = ((lowest * 100.0).floor() as u64).max(NO_SAVING_PCT);
+            assert!(
+                *pct <= ceiling,
+                "{tool} claims {pct}% but the gate measured {lowest:.2}x"
+            );
+        }
+        for tool in KNOWN_TOOLS {
+            let medians = gate_medians(&gate, tool);
+            assert!(
+                medians.is_empty() || medians.iter().any(|&ratio| ratio < 1.5),
+                "{tool} passed the gate everywhere; give it a multiplier"
+            );
         }
     }
 
@@ -244,10 +308,10 @@ mod tests {
     /// them, so a telemetry file spanning the upgrade still aggregates.
     #[test]
     fn legacy_keys_model_the_baseline_of_the_tool_that_replaced_them() {
-        let text = "a".repeat(400);
         for (legacy, current) in [
             ("code:outline", "code_outline"),
             ("code:symbols", "code_symbols"),
+            ("code:expand", "code_read"),
             ("code:references", "code_refs"),
             ("code_references", "code_refs"),
             ("code_callers", "code_refs"),
@@ -260,16 +324,9 @@ mod tests {
             ("git:status", "git_diff"),
             ("admin:status", "index_status"),
         ] {
-            let via_legacy = estimate_from_text(legacy, 1_000_000, &text);
-            let via_current = estimate_from_text(current, 1_000_000, &text);
-            assert_eq!(
-                via_legacy.baseline, via_current.baseline,
-                "{legacy} and {current} must share a baseline"
-            );
-            assert_eq!(
-                via_legacy.est_tokens_saved, via_current.est_tokens_saved,
-                "{legacy} and {current} must estimate the same savings"
-            );
+            let via_legacy = row(legacy, ANSWER);
+            let via_current = row(current, ANSWER);
+            assert_eq!(via_legacy, via_current, "{legacy} and {current} must share a baseline");
             assert_ne!(via_legacy.baseline, "unclassified", "{legacy} must still resolve");
         }
     }
@@ -285,53 +342,20 @@ mod tests {
             "room_broadcast",
             "git:churn",
         ] {
-            let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
+            let s = row(tool, ANSWER);
             assert_eq!(s.baseline, "unclassified", "{tool} must not claim a baseline");
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
         }
     }
 
-    #[test]
-    fn search_documents_models_grep_plus_document_read_at_2_5x() {
-        let s = estimate_from_text("docs_search", 1_000_000, &"a".repeat(400));
-        assert_eq!(s.baseline, "grep_plus_document_read");
-        assert_eq!(s.baseline_tokens, scaled(s.actual_tokens, 250));
-        assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
-        #[cfg(not(feature = "tokenizer"))]
-        {
-            assert_eq!(s.actual_tokens, 100);
-            assert_eq!(s.baseline_tokens, 250);
-            assert_eq!(s.est_tokens_saved, 150);
-        }
-    }
-
-    /// Tools whose eval-measured median ratio is below 1 (basemind's response costs more tokens than
-    /// the plain `rg` / `git ls-files` baseline) keep their disclosed baseline but claim no saving.
-    #[test]
-    fn tools_that_did_not_beat_their_baseline_claim_no_saving() {
-        for (tool, baseline) in [("code_refs", "grep_top_hits"), ("find_files", "git_ls_files_grep")] {
-            let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
-            assert_eq!(s.baseline, baseline, "{tool} baseline label");
-            assert_eq!(s.baseline_tokens, s.actual_tokens, "{tool} must model a 1x baseline");
-            assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
-        }
-    }
-
-    #[test]
-    fn unknown_tool_is_unclassified() {
-        let s = estimate_from_text("not_a_real_tool", 1_000_000, &"a".repeat(100));
-        assert_eq!(s.baseline, "unclassified");
-        assert_eq!(s.est_tokens_saved, 0);
-    }
-
-    /// Under the heuristic tier (no `documents`), counting the full text is byte-for-byte
-    /// `len / 4` — the telemetry numbers are identical to the old `bytes / 4` estimate.
+    /// Under the heuristic tier (no `tokenizer`), counting the full text is `len / 4`.
     #[cfg(not(feature = "tokenizer"))]
     #[test]
     fn estimate_from_text_is_bytes_over_four_under_heuristic() {
-        let s = estimate_from_text("code_outline", 0, &"x".repeat(800));
+        let text = format!("{{\"body\":\"{}\"}}", "x".repeat(790));
+        let s = row("code_outline", &text);
         assert_eq!(s.actual_tokens, 200);
-        assert_eq!(s.baseline_tokens, 240);
-        assert_eq!(s.est_tokens_saved, 40);
+        assert_eq!(s.baseline_tokens, 320);
+        assert_eq!(s.est_tokens_saved, 120);
     }
 }

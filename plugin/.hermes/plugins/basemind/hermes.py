@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:3bf9d0d94b8ead9ea6de1c37d363777ef53f11459d67829e674014d2ac58e346
-# Source-Hash: blake3:e4ff4daab7f41eaf4e6661886df3e2f56820b2d7aeae1c2115689fc609e3edf4
+# Content-Hash: blake3:1f79aead172fbb99d893b76628fe63d9a854e84d46604e8ee2415eef542f838c
+# Source-Hash: blake3:8810c8f2a8e5c32211d5bf3315335263823c073c88a236e840f2e4801e8daa06
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -183,7 +183,7 @@ def _delta_context(cwd: str) -> str | None:
     if not messages:
         return None
     return (
-        "Unread basemind agent messages (announced once, not yet read):\n"
+        "Unread agent messages from basemind (announced once, not yet read):\n"
         f"{_format_lines(messages)}\n"
         "Read them with agent_inbox (bodies inline; id reads one whole message). Reply with agent_post if warranted."
     )

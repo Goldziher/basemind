@@ -51,6 +51,10 @@ def expected_files(root: Path) -> dict[str, Path]:
         if path.is_file():
             files[f"hooks/{path.name}"] = path
     files["scripts/mcp-launch.sh"] = root / "plugin/.ai-rulez/scripts/mcp-launch.sh"
+    # Every package that ships on its own carries the licence; the plugin bundle copies it from its
+    # ai-rulez source tree (`include` in config.plugins.toml).
+    for package in ("npm-package", "pip-package", "opencode-plugin", "plugin/.ai-rulez"):
+        files[f"{package}/LICENSE"] = root / "LICENSE"
     files["opencode-plugin/.pi/extensions/basemind.ts"] = root / ".pi/extensions/basemind.ts"
     for tree in TREES[:2]:
         for name in ("session-start", "inbox-notify", "run-hook.cmd"):

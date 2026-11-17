@@ -4,7 +4,7 @@
  * OpenCode loads this entrypoint from the package's `./tui` export into the
  * terminal client. It restores the V1 plugin's proactive agent-comms
  * notifications: when a session starts and after each successful tool call it
- * asks the basemind daemon for an announcing read of the agent inbox and
+ * asks the daemon of basemind for an announcing read of the agent inbox and
  * surfaces any unread messages as a toast. The daemon records what it has
  * announced, so a message is announced once and stays unread until the agent
  * reads it with agent_inbox.

@@ -27,6 +27,9 @@ pub(crate) struct BlobStorePaths {
     pub schema: u16,
     /// `cache/gc-state.json`, written by [`crate::store_gc_budget::persist_gc_state`].
     pub gc_state: PathBuf,
+    /// `cache/repos/`: one directory per repository group, reported by [`cache_stats`] and never
+    /// collected.
+    pub repos: PathBuf,
 }
 
 impl BlobStorePaths {
@@ -36,6 +39,9 @@ impl BlobStorePaths {
             root: crate::store_layout::global_blobs_root(),
             schema: crate::extract::SCHEMA_VER,
             gc_state: crate::store_gc_budget::gc_state_path(),
+            repos: crate::store_layout::cache_root()
+                .join(crate::store_layout::CACHE_DIR)
+                .join(crate::store::REPOS_DIR),
         }
     }
 
@@ -49,6 +55,9 @@ impl BlobStorePaths {
 /// [`crate::mcp::telemetry::TELEMETRY_FILENAME`]; duplicated here to avoid a dependency on
 /// the MCP module from the cleanup layer.
 pub(crate) const TELEMETRY_FILENAME: &str = "telemetry.jsonl";
+/// The generation of the telemetry log kept after a rotation (at 8 MiB, `TELEMETRY_ROTATE_BYTES` in
+/// the MCP telemetry module).
+pub(crate) const TELEMETRY_ROTATED_FILENAME: &str = "telemetry.jsonl.1";
 
 /// A clearable component of the `.basemind/` cache directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +133,7 @@ pub struct CacheStats {
     /// which case live git-tool results are cached in RAM and legitimately leave no disk
     /// footprint. It is not, on its own, evidence that the git cache is unused.
     pub git_cache_bytes: u64,
-    /// Byte size of `telemetry.jsonl`.
+    /// Byte size of `telemetry.jsonl` and its rotated generation `telemetry.jsonl.1`.
     pub telemetry_bytes: u64,
     /// Recursive byte size of the precomputed git-history index (`git-history.fjall/`). Added in
     /// 0.16: before that this directory (a sibling of `views/`, often hundreds of MB on a
@@ -162,6 +171,15 @@ pub struct CacheStats {
     /// Outcome and health of the most recent destructive GC attempt (persisted to
     /// `gc-state.json` by the daemon). `None` means no attempt has been recorded on this machine.
     pub last_gc: Option<crate::store_gc_budget::GcState>,
+    /// Recursive byte size of every repository group directory on the machine (`cache/repos/`:
+    /// memory notes, their vector stores, shared base generations). Not part of
+    /// [`Self::total_bytes`], not counted against the cache budget, and never collected.
+    pub repo_groups_bytes: u64,
+    /// Repository group directories on the machine.
+    pub repo_groups: usize,
+    /// Of [`Self::repo_groups`], those no workspace marker names: likely left by a clone that is
+    /// gone, or named only by markers written before markers recorded their group. Report only.
+    pub repo_groups_unnamed: usize,
 }
 
 /// What a component clear left in place on purpose.
@@ -196,7 +214,10 @@ pub(crate) fn clear_component_in(
         CacheComponent::Views => remove_dir_if_exists(&basemind_dir.join(VIEWS_DIR))?,
         CacheComponent::Lance => clear_lance(basemind_dir)?,
         CacheComponent::GitCache => remove_dir_if_exists(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?,
-        CacheComponent::Telemetry => remove_file_if_exists(&basemind_dir.join(TELEMETRY_FILENAME))?,
+        CacheComponent::Telemetry => {
+            remove_file_if_exists(&basemind_dir.join(TELEMETRY_FILENAME))?;
+            remove_file_if_exists(&basemind_dir.join(TELEMETRY_ROTATED_FILENAME))?;
+        }
         CacheComponent::All => remove_dir_if_exists(basemind_dir)?,
     }
     Ok(report)
@@ -318,7 +339,8 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
     let views_bytes = dir_size(&basemind_dir.join(VIEWS_DIR))?;
     let lance_bytes = dir_size(&basemind_dir.join("lance"))?;
     let git_cache_bytes = dir_size(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?;
-    let telemetry_bytes = file_size(&basemind_dir.join(TELEMETRY_FILENAME))?;
+    let telemetry_bytes =
+        file_size(&basemind_dir.join(TELEMETRY_FILENAME))? + file_size(&basemind_dir.join(TELEMETRY_ROTATED_FILENAME))?;
     let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
 
     let total_bytes = dir_size(basemind_dir)? + blobs_bytes + memory_vectors_bytes;
@@ -332,6 +354,7 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
     let other_bytes = total_bytes.saturating_sub(accounted);
 
     let rss = crate::sysres::sample();
+    let groups = repo_group_report(&blobs.repos, basemind_dir.parent())?;
 
     Ok(CacheStats {
         blobs_bytes,
@@ -351,7 +374,49 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         rss_bytes: rss.current_bytes,
         peak_rss_bytes: rss.peak_bytes,
         last_gc: crate::store_gc_budget::read_gc_state_at(&blobs.gc_state),
+        repo_groups_bytes: groups.bytes,
+        repo_groups: groups.count,
+        repo_groups_unnamed: groups.unnamed,
     })
+}
+
+/// What [`cache_stats`] says about `repos/`.
+struct RepoGroups {
+    bytes: u64,
+    count: usize,
+    unnamed: usize,
+}
+
+/// Size and count the group directories under `repos`, and how many no workspace marker under
+/// `workspaces` names. Reads markers only; touches nothing.
+fn repo_group_report(repos: &Path, workspaces: Option<&Path>) -> Result<RepoGroups, GcError> {
+    let named: ahash::AHashSet<String> = workspaces
+        .and_then(|dir| std::fs::read_dir(dir).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|workspace| crate::store::read_workspace_marker(&workspace.path())?.group)
+        .collect();
+    let mut report = RepoGroups {
+        bytes: 0,
+        count: 0,
+        unnamed: 0,
+    };
+    if !repos.is_dir() {
+        return Ok(report);
+    }
+    for entry in read_dir(repos)?.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        report.bytes += dir_size(&path)?;
+        report.count += 1;
+        if !named.contains(entry.file_name().to_string_lossy().as_ref()) {
+            report.unnamed += 1;
+        }
+    }
+    Ok(report)
 }
 
 /// Per-view indexed file count. A view whose index is missing or unreadable contributes a

@@ -88,7 +88,7 @@ pub(crate) struct SharedReadStack {
     #[allow(dead_code)]
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
-    #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+    #[cfg(any(feature = "documents", feature = "code-search"))]
     pub(crate) lance: super::lance_cell::LanceCell,
     /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
@@ -142,6 +142,16 @@ pub(crate) struct SharedReadStack {
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
     /// without the lock.
     pub(crate) read_only: bool,
+    /// True on a long-lived serve, which keeps the git-history index caught up with HEAD: a history
+    /// call that finds the index behind asks for a sync. The one-shot CLI never syncs.
+    pub(crate) history_catch_up: bool,
+    /// True while a git-history sync this stack asked for is running, so a burst of history calls
+    /// behind a moved HEAD starts one sync, not one per call.
+    /// `index_status` reports it: a paged git walk that spans the end of a sync is refused,
+    /// because the index orders commits differently from the live walk.
+    pub(crate) history_syncing: Arc<AtomicBool>,
+    /// The git index's file list as `find_files` last read it ([`super::helpers_files`]).
+    pub(super) tracked: std::sync::Mutex<super::helpers_files::TrackedCache>,
     /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
     /// instead of writing locally. The store is opened read-only, but — unlike a plain
     /// [`read_only`](Self::read_only) fallback — the empty-index auto-scan, the filesystem
@@ -253,7 +263,7 @@ impl SharedReadStack {
             index_generation: AtomicU32::new(1),
             ranked: Default::default(),
             scope,
-            #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+            #[cfg(any(feature = "documents", feature = "code-search"))]
             lance: Default::default(),
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             embedder: tokio::sync::OnceCell::new(),
@@ -270,6 +280,9 @@ impl SharedReadStack {
             lazy_cache: options.lazy_cache,
             lazy_cache_built: tokio::sync::OnceCell::new(),
             read_only: options.read_only,
+            history_catch_up: options.background,
+            history_syncing: Arc::new(AtomicBool::new(false)),
+            tracked: std::sync::Mutex::default(),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             daemon_writer: options.daemon_writer,
             #[cfg(all(feature = "comms", any(unix, windows)))]

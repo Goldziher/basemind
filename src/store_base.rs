@@ -19,6 +19,7 @@ use crate::store_base_retention::{GenerationLease, highest_leased_generation};
 
 #[path = "store_base_fs.rs"]
 mod filesystem;
+pub use filesystem::WorktreeChanged;
 use filesystem::{Scratch, create_private_dir, sync_file};
 pub(crate) use filesystem::{sync_directory, sync_tree};
 
@@ -498,12 +499,9 @@ fn dirty_worktree(
             &mut delta,
         )?;
         ensure!(
-            repo.status_against(&commit)?.overlay_candidates() == candidates,
-            "worktree changed during delta scan"
-        );
-        ensure!(
-            candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)? == fingerprint,
-            "candidate contents changed during delta scan"
+            repo.status_against(&commit)?.overlay_candidates() == candidates
+                && candidate_fingerprint(root, &candidates, config.scan.max_file_bytes)? == fingerprint,
+            WorktreeChanged
         );
         if let Some(reference) = reference {
             let shadow = delta.shadow(&counts, |path| base_index.files.get(path));

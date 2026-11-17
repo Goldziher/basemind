@@ -206,11 +206,10 @@ Every cut is reported in the same words:
 A client that read `truncated` as "there is another page" must read `next_cursor` instead. A false
 `truncated` is left out on every tool, so a client that requires the field must default it to false.
 
-Four fields keep their own names because they say something else: `skipped_files` (`code_grep`:
+Three fields keep their own names because they say something else: `skipped_files` (`code_grep`:
 files that could not be searched), `limit_clamped` (`find_files`: an over-large `limit` was
 lowered), `body_truncated` (`git_log` search: one commit's message was shortened; read it with
-`rev`) and `too_large` (`git_diff`: a file over 4 MiB was not diffed). `memory_search` still sets a
-bare `truncated` on a listing.
+`rev`) and `too_large` (`git_diff`: a file over 4 MiB was not diffed).
 
 | Tool | Before | Now |
 | --- | --- | --- |
@@ -221,6 +220,7 @@ bare `truncated` on a listing.
 | `code_symbols` | `truncated` on a `limit` cut, `total_is_partial` | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when a fuzzy sweep stopped at its cap |
 | `code_refs` | `total_is_partial` | `truncated`, `truncated_reason: "scan_cap"` (`total` is a lower bound; `next_cursor` resumes the scan) |
 | `find_files` | `truncated` | removed: `next_cursor` says a listing goes on |
+| `memory_search` listing | `truncated` on a `limit` cut | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when `total` stopped counting (a lower bound) |
 | `code_search`, `docs_search` | none | `truncated`, `truncated_reason` (`depth`, `rerank_top_k`, `filter_depth`) |
 | `git_diff {}` | none | `truncated`, `truncated_reason: "path_cap"`, `omitted` (paths), `path` |
 | `git_diff {path}` | `truncated`, `total_hunks` | `truncated`, `truncated_reason` (`hunk_cap`, `byte_cap`), `omitted` (hunks) |
@@ -229,6 +229,29 @@ bare `truncated` on a listing.
 | `git_log {path, symbol}` | none | `budgeted`, `truncated_reason: "window"`, `next_cursor` past the window, `unmatched` |
 | `git_log {path: "dir/"}` | `truncated` at a fixed 200-commit window | `truncated_reason: "window"`, `next_cursor` past the window, `unmatched` |
 | `git_log {query}` | `partial` | `truncated`, `truncated_reason` (`live_walk`, `scan_cap`) |
+
+### Lean rows
+
+The tools that locate (`code_symbols`, `code_grep`, `code_refs`, `find_files`, `git_log`,
+`git_diff`) answer with what the shell would print and what they add to it, and nothing that
+repeats per row or echoes the call. None of them carries `elapsed_us`; the CLI times the call when
+the response has none. The CLI's `--json` output has the same shapes.
+
+| Tool | Removed or changed | Now |
+| --- | --- | --- |
+| `code_symbols` | a row's `column` and `match` | a row is `path`, `line`, `kind`, `name`, `signature`; the rank order says how the name matched |
+| `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, and its `column` unless its file has another match on its line or its `text` is clipped; `symbol.kind` | `total` (was `total_matches`); `hits` is `{"<path>": [hit, ...]}`; `symbol` is the enclosing symbol's name |
+| `code_refs` | `name` and `match` echoes; a hit's `path`, and its `column` unless another call of the same callee is on its line; `callee` equal to `name`; `trait_name` equal to `name` | `hits` is `{"<path>": [hit, ...]}`; `importers` drops its `module` echo |
+| `find_files` | `returned`; a file's `language`, `size_bytes`, `score` | `files` is a list of paths; files git tracks that are not indexed (images, fonts) are listed too |
+| `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes` | `sha` is the first 12 hex digits; `files` is `{"<path>": "<change>"}`; `rev` keeps the full `sha`, `body` and `author_email` |
+| `git_log {path, symbol}` | `path` and `name` echoes; an entry's `short_sha` | an entry's `sha` is the first 12 hex digits |
+| `git_diff {path}` | a hunk's `kind`; `present_at_from` / `present_at_to` when true | `present_at_from: false` (added) or `present_at_to: false` (deleted) only |
+| `git_diff {}` | empty status lists | a list is present only when it holds a path |
+
+A commit's file list no longer names directories, and a merge lists only the files it changed
+against every parent, as `git log --cc` does; so `git_log {path}` no longer lists a merge that took
+the path unchanged from one side. It still lists every other commit that changed the path: unlike
+`git log -- <path>`, it prunes no side of a merge.
 
 ## Upgrading to agent comms v2 (ADR-0021)
 

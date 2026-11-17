@@ -273,6 +273,26 @@ fn blame_file_uses_committed_blob_not_dirty_working_tree() {
     assert_eq!(first.commit_sha, head, "single-commit history blames to HEAD");
 }
 
+/// Git reads `core.eol` without regard to case, and Git for Windows ships `eol = LF` in its system
+/// config; blame used to fail on it with `Invalid configuration value` (GH #137). A repository-local
+/// scope carries the same value here so the machine's own config is never touched.
+#[test]
+fn blame_accepts_an_upper_case_core_eol() {
+    let (dir, _cfg) = init_repo();
+    let root = dir.path();
+    run(root, &["config", "core.eol", "LF"]);
+    fs::write(root.join("a.rs"), b"fn one() {}\nfn two() {}\n").unwrap();
+    run(root, &["add", "a.rs"]);
+    run(root, &["commit", "-q", "-m", "initial"]);
+
+    let repo = Repo::discover(root).expect("discover");
+    let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
+    let rel = basemind::path::RelPath::from("a.rs".as_bytes());
+    let result = repo.blame_file(&head, &rel, None).expect("blame with core.eol = LF");
+    assert_eq!(result.hunks.len(), 1, "one commit blames as one hunk");
+    assert_eq!(result.hunks[0].commit_sha, head);
+}
+
 /// I5: history is by exact path and stops at renames, while blame follows them. This test
 /// pins that documented asymmetry so a future change to either side is caught.
 #[test]

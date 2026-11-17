@@ -6,7 +6,8 @@
 //!
 //! The embedding model downloads on first use. When it is unavailable (offline CI, cold grammar),
 //! the scan still succeeds but produces no vectors, so `code semantic` yields no hits or errors —
-//! the test then SKIPS gracefully rather than failing, per the plan's cold-start contract.
+//! the test then fails unless `BASEMIND_TEST_ALLOW_NO_EMBEDDER` allows the skip
+//! (`basemind::testing::unavailable`).
 //!
 //! These invocations were left on the removed `basemind query …` group by the nine-domain
 //! consolidation. Because the whole file is `code-search`-gated and that feature is in no default
@@ -69,9 +70,12 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
         .output()
         .expect("spawn search-code");
     if !out.status.success() {
-        eprintln!(
-            "SKIP: search-code errored (embedder unavailable / offline): {}",
-            String::from_utf8_lossy(&out.stderr)
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            &format!(
+                "search-code errored (embedder unavailable?): {}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
         );
         return;
     }
@@ -79,17 +83,26 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
     let value: serde_json::Value = match serde_json::from_str(&stdout) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("SKIP: search-code produced non-JSON output ({e}): {stdout}");
+            basemind::testing::unavailable(
+                "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+                &format!("search-code produced non-JSON output ({e}): {stdout}"),
+            );
             return;
         }
     };
     let hits = value.get("hits").and_then(|h| h.as_array());
     let Some(hits) = hits else {
-        eprintln!("SKIP: search-code response has no `hits` array: {value}");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            &format!("search-code response has no `hits` array: {value}"),
+        );
         return;
     };
     if hits.is_empty() {
-        eprintln!("SKIP: zero hits (grammar cold or embedder offline) — code-search path exercised without a corpus");
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            "search-code found nothing (grammar cold or embedder offline?)",
+        );
         return;
     }
 
@@ -158,9 +171,9 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
 
     let sidecar = find_chunk_sidecar(&stem);
     let Some(sidecar) = sidecar else {
-        eprintln!(
-            "SKIP: no .chunk.msgpack sidecar found after first scan \
-             (chunker may be disabled or model unavailable)"
+        basemind::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_EMBEDDER",
+            "no .chunk.msgpack sidecar after the first scan (chunker disabled or model unavailable?)",
         );
         return;
     };

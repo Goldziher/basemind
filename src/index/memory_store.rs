@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use fjall::{Database, Keyspace, PersistMode};
 use serde::Deserialize;
@@ -33,15 +33,24 @@ const MEMORY_BY_KEY: &str = "memory_by_key";
 pub(crate) enum Version {
     /// A writer: refuse a newer store, stamp one that carries no version.
     Stamp,
-    /// A reader: refuse a newer store and write no version. An absent store is still created,
-    /// empty, with its notes keyspace.
+    /// A reader: refuse a newer store and write no version.
     Check,
 }
 
-/// An open group memory database plus its keyspace.
-pub(crate) struct MemoryDb {
+/// The Fjall database behind a [`MemoryDb`] once the store exists on disk.
+struct Opened {
     db: Database,
-    pub(crate) memory_by_key: Keyspace,
+    memory_by_key: Keyspace,
+}
+
+/// The group memory store. An existing store is opened with the handle; an absent one is created
+/// by the first write ([`MemoryDb::notes_for_write`]) and reads of it answer empty until then, so a
+/// session that never saves a note leaves no database (and no 64 MiB preallocated journal) behind.
+pub(crate) struct MemoryDb {
+    dir: PathBuf,
+    opened: OnceLock<Opened>,
+    /// Serializes the open, so two threads never both take the Fjall lock on the directory.
+    opening: Mutex<()>,
     /// Whether a writer open has held this handle to its version.
     stamped: std::sync::atomic::AtomicBool,
     /// How many times [`MemoryDb::sync`] ran.
@@ -49,52 +58,118 @@ pub(crate) struct MemoryDb {
     pub(crate) syncs: std::sync::atomic::AtomicU32,
 }
 
+/// Whether a store exists at `dir`. A store is only ever created by a write, so an absent directory
+/// is an empty store.
+fn store_exists(dir: &Path) -> bool {
+    dir.is_dir()
+}
+
 impl MemoryDb {
     fn open(dir: &Path, version: Version) -> Result<Self, IndexError> {
-        std::fs::create_dir_all(dir).map_err(|source| IndexError::Io {
-            path: dir.to_path_buf(),
+        let handle = Self {
+            dir: dir.to_path_buf(),
+            opened: OnceLock::new(),
+            opening: Mutex::new(()),
+            stamped: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(all(test, feature = "memory"))]
+            syncs: std::sync::atomic::AtomicU32::new(0),
+        };
+        if store_exists(dir) {
+            handle.open_now(version)?;
+        }
+        Ok(handle)
+    }
+
+    /// Open the store, creating it when it does not exist yet.
+    fn open_now(&self, version: Version) -> Result<&Opened, IndexError> {
+        if let Some(opened) = self.opened.get() {
+            return Ok(opened);
+        }
+        let _opening = self.opening.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(opened) = self.opened.get() {
+            return Ok(opened);
+        }
+        std::fs::create_dir_all(&self.dir).map_err(|source| IndexError::Io {
+            path: self.dir.clone(),
             source,
         })?;
-        let db = Database::builder(dir)
+        let db = Database::builder(&self.dir)
             .cache_size(MEMORY_CACHE_BYTES)
             .worker_threads(FJALL_WORKER_THREADS)
             .max_journaling_size(FJALL_MAX_JOURNAL_BYTES)
             .open()?;
         check_version(&db, version)?;
         let memory_by_key = open_keyspace(&db, MEMORY_BY_KEY)?;
-        Ok(Self {
-            db,
-            memory_by_key,
-            stamped: std::sync::atomic::AtomicBool::new(version == Version::Stamp),
-            #[cfg(all(test, feature = "memory"))]
-            syncs: std::sync::atomic::AtomicU32::new(0),
-        })
+        self.stamped
+            .store(version == Version::Stamp, std::sync::atomic::Ordering::Release);
+        Ok(self.opened.get_or_init(|| Opened { db, memory_by_key }))
     }
 
-    /// Stamp a handle a reader opened first, for the writer now joining it.
+    /// The notes keyspace, or `None` while the store does not exist: nothing was ever saved, and a
+    /// read creates nothing. A store another process created since this handle was made is opened.
+    #[cfg(any(test, feature = "memory"))]
+    pub(crate) fn notes(&self) -> Result<Option<&Keyspace>, IndexError> {
+        if let Some(opened) = self.opened.get() {
+            return Ok(Some(&opened.memory_by_key));
+        }
+        if !store_exists(&self.dir) {
+            return Ok(None);
+        }
+        Ok(Some(&self.open_now(Version::Check)?.memory_by_key))
+    }
+
+    /// The notes keyspace for a write, creating the store (stamped with its version) when absent.
+    #[cfg(any(test, feature = "memory"))]
+    pub(crate) fn notes_for_write(&self) -> Result<&Keyspace, IndexError> {
+        Ok(&self.open_now(Version::Stamp)?.memory_by_key)
+    }
+
+    /// Stamp a handle a reader opened first, for the writer now joining it. A store that does not
+    /// exist yet is stamped by the write that creates it.
     fn hold_to_version(&self, version: Version) -> Result<(), IndexError> {
         use std::sync::atomic::Ordering;
+        let Some(opened) = self.opened.get() else {
+            return Ok(());
+        };
         if version == Version::Stamp && !self.stamped.load(Ordering::Acquire) {
-            check_version(&self.db, Version::Stamp)?;
+            check_version(&opened.db, Version::Stamp)?;
             self.stamped.store(true, Ordering::Release);
         }
         Ok(())
     }
 
     /// Fsync the journal. A note exists nowhere else, so unlike the code index (rebuilt from
-    /// source by a scan) a write that only reached the OS is lost for good by a power failure.
+    /// source by a scan) a write that only reached the OS is lost for good by a power failure. A
+    /// store that does not exist holds nothing to sync.
     #[cfg(feature = "memory")]
     pub(crate) fn sync(&self) -> Result<(), IndexError> {
         #[cfg(test)]
         self.syncs.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        Ok(self.db.persist(PersistMode::SyncAll)?)
+        match self.opened.get() {
+            Some(opened) => Ok(opened.db.persist(PersistMode::SyncAll)?),
+            None => Ok(()),
+        }
+    }
+
+    /// Persist the store, when it exists, whatever the build's features.
+    #[cfg(test)]
+    pub(crate) fn sync_for_test(&self) {
+        if let Some(opened) = self.opened.get() {
+            opened.db.persist(PersistMode::SyncAll).expect("persist");
+        }
+    }
+
+    /// The open database, creating the store if needed.
+    #[cfg(test)]
+    pub(crate) fn db_for_test(&self) -> &Database {
+        &self.open_now(Version::Stamp).expect("open the store").db
     }
 
     /// Names of the keyspaces this database holds, the one for its version aside: that one is not
     /// sized by the index table.
     #[cfg(test)]
     pub(crate) fn keyspace_names(&self) -> Vec<String> {
-        self.db
+        self.db_for_test()
             .list_keyspace_names()
             .iter()
             .map(ToString::to_string)
@@ -156,14 +231,7 @@ static OPEN_STORES: Mutex<Option<HashMap<PathBuf, Weak<MemoryDb>>>> = Mutex::new
 /// directory gets the same handle, so several worktrees of one repo group never fight over the
 /// Fjall lock.
 pub(crate) fn open_shared(dir: &Path, version: Version) -> Result<Arc<MemoryDb>, IndexError> {
-    // Create the directory before canonicalising: a path that does not exist yet canonicalises to
-    // itself, and to its resolved form (`/var` → `/private/var` on macOS) once it does, which would
-    // register one store under two keys and make the second open hit the Fjall lock.
-    std::fs::create_dir_all(dir).map_err(|source| IndexError::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let key = registry_key(dir);
     let mut guard = OPEN_STORES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let stores = guard.get_or_insert_with(HashMap::new);
     stores.retain(|_, weak| weak.strong_count() > 0);
@@ -174,6 +242,27 @@ pub(crate) fn open_shared(dir: &Path, version: Version) -> Result<Arc<MemoryDb>,
     let opened = Arc::new(MemoryDb::open(dir, version)?);
     stores.insert(key, Arc::downgrade(&opened));
     Ok(opened)
+}
+
+/// The key `dir` is registered under: its canonical form, or for a store not created yet its nearest
+/// existing ancestor's canonical form plus the rest. Both resolve the same (`/var` → `/private/var`
+/// on macOS) before and after the store is created, so one store never sits under two keys and a
+/// second open never hits the Fjall lock.
+fn registry_key(dir: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut existing = dir;
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            return missing.iter().rev().fold(canonical, |path, name| path.join(name));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return dir.to_path_buf(),
+        }
+    }
 }
 
 /// Directory under a view where builds before this one kept an empty stand-in store for a handle
@@ -191,6 +280,24 @@ pub(crate) fn remove_retired_placeholder(view_dir: &Path) {
 /// Whether `view_db` still holds memory rows of the layout from before the group store.
 pub(crate) fn holds_legacy_rows(view_db: &Database) -> bool {
     view_db.keyspace_exists(MEMORY_BY_KEY)
+}
+
+/// [`holds_legacy_rows`] for the index under `view_dir`, opened on its own without a notes store.
+/// For a collector that must not remove the notes with the view; the caller holds the workspace
+/// lock.
+pub(crate) fn view_holds_legacy_rows(view_dir: &Path) -> Result<bool, IndexError> {
+    let db = Database::builder(view_dir.join(super::INDEX_DIR))
+        .worker_threads(FJALL_WORKER_THREADS)
+        .open()?;
+    Ok(holds_legacy_rows(&db))
+}
+
+impl super::IndexDb {
+    /// Whether this index still holds notes of the layout from before the group store: a writer
+    /// open that met a newer notes store leaves them where they are.
+    pub(crate) fn holds_legacy_memory(&self) -> bool {
+        holds_legacy_rows(&self.db)
+    }
 }
 
 /// The only fields the merge needs; a `MemoryRecord` is stored as a named msgpack map, so unknown
@@ -239,8 +346,9 @@ pub(crate) fn migrate_legacy(view_db: &Database, memory: &MemoryDb) -> Result<()
         return Ok(());
     }
     let legacy = open_keyspace(view_db, MEMORY_BY_KEY)?;
-    merge_keyspace(&legacy, &memory.memory_by_key)?;
-    memory.db.persist(PersistMode::SyncAll)?;
+    let opened = memory.open_now(Version::Stamp)?;
+    merge_keyspace(&legacy, &opened.memory_by_key)?;
+    opened.db.persist(PersistMode::SyncAll)?;
     view_db.delete_keyspace(legacy)?;
     Ok(())
 }

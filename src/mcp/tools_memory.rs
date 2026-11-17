@@ -63,6 +63,7 @@ impl BasemindServer {
         title = "Recall notes",
         description = "Use to recall what was saved with `memory_save`: `query` searches notes by \
         meaning, `key` reads one, `prefix` lists by key prefix, and no arguments lists everything. \
+        Lists show 200 characters of a value; `key` reads it whole. \
         Example: {\"query\":\"token rotation\"}",
         annotations(
             read_only_hint = true,
