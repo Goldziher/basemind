@@ -68,9 +68,8 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
         .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
 }
 
-/// Open the vector store at `dir` for `embedder`'s dimension and model, off the async runtime. Only
-/// a `writer` (a process holding the workspace lock) may create or rebuild it; any other open reads
-/// a store that matches, or reports why it cannot ([`crate::lance::LanceStore::open_existing`]).
+/// Open the vector store at `dir` off the async runtime. Only a `writer` (holding the workspace lock)
+/// creates or rebuilds it; any other open reads a matching one ([`crate::lance::LanceStore::open_existing`]).
 #[cfg(feature = "intelligence")]
 async fn open_lance(
     dir: std::path::PathBuf,
