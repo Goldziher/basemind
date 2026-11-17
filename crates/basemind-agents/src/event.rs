@@ -183,6 +183,24 @@ pub(crate) fn approval_detail(grant: &str, reason: Option<&str>) -> String {
     }
 }
 
+/// The longest [`Event::Error`] text.
+const ERROR_BYTES: usize = 512;
+
+/// `text` as an [`Event::Error`] carries it: on one line, with control characters replaced,
+/// cut to its first [`ERROR_BYTES`].
+pub(crate) fn error_line(text: &str) -> String {
+    let mut line = one_line(text);
+    if line.len() > ERROR_BYTES {
+        let mut end = ERROR_BYTES - '…'.len_utf8();
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+        line.push('…');
+    }
+    line
+}
+
 /// `text` on one line, with control characters replaced, for an approval title.
 pub(crate) fn one_line(text: &str) -> String {
     text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
@@ -256,8 +274,15 @@ pub enum Event {
         /// Which turn ended.
         turn: u32,
     },
-    /// The session failed, or a follow-up could not be delivered.
+    /// The session failed, or a control could not be delivered. One line of at most 512 bytes
+    /// with control characters replaced, and without what the harness printed on stderr: fit
+    /// to show the model that launched the session. A failure is preceded by
+    /// [`Event::Diagnostics`] with the full text.
     Error(String),
+    /// The full text of the failure the next [`Event::Error`] reports, and the last 8 KiB the
+    /// harness wrote to stderr. For the launcher's own logs: it may carry paths, account
+    /// details or anything else the harness printed, and is not for a model.
+    Diagnostics(String),
     /// The session is over and its process group is gone. Always the last event.
     Finished(FinishStatus),
 }

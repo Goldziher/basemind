@@ -63,6 +63,9 @@ config is trusted.
   after a grammar check; its wall time and turns are clamped to the config's caps, and its brief is
   at most 1 MiB and may not start with `/` (a harness runs that as its own slash command). Errors
   about a request's fields do not repeat the root or a whole value.
+- A failed session reports `Event::Diagnostics`, the full error and the last 8 KiB of the
+  harness's stderr, for the launcher's logs only, then `Event::Error`: one line of at most 512
+  bytes with control characters replaced and no stderr, which is what a model may be shown.
 - Claude Code is asked for no setting sources, hooks disabled and only the config's MCP server, and
   the session fails unless Claude Code's init frame reports the requested permission mode, exactly
   that server as loaded from `--mcp-config` (`source: "dynamic"`) and only built-in plugins.

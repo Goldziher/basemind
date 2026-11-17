@@ -424,7 +424,7 @@ cat > /dev/null
     let session = launch(&spec);
     let leader = session.pid().to_string();
     let events: Vec<_> = session.events().collect();
-    let [Event::Error(error), Event::Finished(FinishStatus::Failed)] = events.as_slice() else {
+    let [.., Event::Error(error), Event::Finished(FinishStatus::Failed)] = events.as_slice() else {
         panic!("unexpected events {events:?}");
     };
     assert!(error.contains("panicked"), "{error}");
@@ -437,11 +437,50 @@ fn a_truncated_frame_fails_the_session_with_the_stderr_tail() {
     let body = format!("{HANDSHAKE}echo 'fatal: out of memory' >&2\nprintf '%s' '{{\"type\":\"assistant\",\"mess'\n");
     let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), &body));
     let events: Vec<_> = session.events().collect();
-    let [Event::Error(error), Event::Finished(FinishStatus::Failed)] = events.as_slice() else {
+    let [
+        Event::Diagnostics(diagnostics),
+        Event::Error(error),
+        Event::Finished(FinishStatus::Failed),
+    ] = events.as_slice()
+    else {
         panic!("unexpected events {events:?}");
     };
+    assert!(diagnostics.contains("invalid JSON"), "{diagnostics}");
+    assert!(diagnostics.contains("fatal: out of memory"), "{diagnostics}");
+    // The stderr tail is the launcher's: the error a model may be shown leaves it out.
     assert!(error.contains("invalid JSON"), "{error}");
-    assert!(error.contains("fatal: out of memory"), "{error}");
+    assert!(!error.contains("out of memory"), "{error}");
+}
+
+#[test]
+fn the_error_of_a_failed_session_is_one_bounded_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let long = "x".repeat(20_000);
+    let body = format!(
+        r#"read -r initialize
+printf '%s\n' '{{"id":1,"result":{{}}}}'
+read -r initialized
+read -r thread
+printf '%s\n' '{{"id":2,"error":{{"message":"no thread\nfor /home/user/secret\u001b[2J {long}"}}}}'
+cat > /dev/null
+"#
+    );
+    let events: Vec<_> = launch(&spec(HarnessKind::Codex, dir.path(), &body)).events().collect();
+    let [
+        Event::Diagnostics(diagnostics),
+        Event::Error(error),
+        Event::Finished(FinishStatus::Failed),
+    ] = events.as_slice()
+    else {
+        panic!("unexpected events {events:?}");
+    };
+    assert!(diagnostics.contains(&long), "the launcher lost the full text");
+    assert!(
+        error.starts_with("harness protocol error: Codex reported: no thread"),
+        "{error:.200}"
+    );
+    assert!(error.len() <= 512, "{} bytes", error.len());
+    assert!(!error.chars().any(char::is_control), "{error:.200}");
 }
 
 #[test]
@@ -451,7 +490,7 @@ fn a_frame_over_sixteen_mebibytes_fails_the_session() {
     let started = Instant::now();
     let session = launch(&spec(HarnessKind::ClaudeCode, dir.path(), &body));
     let events: Vec<_> = session.events().collect();
-    let [Event::Error(error), Event::Finished(FinishStatus::Failed)] = events.as_slice() else {
+    let [.., Event::Error(error), Event::Finished(FinishStatus::Failed)] = events.as_slice() else {
         panic!(
             "unexpected events {:?}",
             events.iter().map(|e| format!("{e:.80?}")).collect::<Vec<_>>()
@@ -507,7 +546,11 @@ fn a_harness_that_exits_mid_turn_fails_the_session() {
     assert!(
         matches!(
             events.as_slice(),
-            [Event::Error(_), Event::Finished(FinishStatus::Failed)]
+            [
+                Event::Diagnostics(_),
+                Event::Error(_),
+                Event::Finished(FinishStatus::Failed)
+            ]
         ),
         "{events:?}"
     );

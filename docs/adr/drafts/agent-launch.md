@@ -94,6 +94,9 @@ id that fails the grammar stops the launch.
      flags after a grammar check; a harness that takes neither at launch refuses them. A brief or
      follow-up may not start with `/`: Claude Code 2.1.325 ran a prompt of `/context` as its own
      slash command. Errors about a request's fields repeat neither the root nor a whole value.
+     A failed session's error is split: `Event::Diagnostics` carries the full text and the
+     harness's stderr tail for the launcher's logs, `Event::Error` one sanitised line of at most
+     512 bytes without the stderr, which is all the engine relays to a model.
    - **No project configuration.** Claude Code is asked for no setting sources, hooks disabled and
      only the injected MCP server, and the session fails unless its `system/init` frame reports the
      requested permission mode, exactly the injected MCP server as loaded from `--mcp-config`

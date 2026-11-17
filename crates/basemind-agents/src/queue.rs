@@ -53,7 +53,8 @@ fn size(event: &Event) -> usize {
         | Event::Text(text)
         | Event::Reasoning(text)
         | Event::Status(text)
-        | Event::Error(text) => text.len(),
+        | Event::Error(text)
+        | Event::Diagnostics(text) => text.len(),
         Event::ToolCall(call) => call.id.len() + call.name.len() + call.input.len() + call.output.len(),
         Event::ApprovalRequest(request) => {
             request.title.len() + request.detail.len() + crate::session::json_len(&request.params)
@@ -99,7 +100,8 @@ impl EventQueue {
         }
     }
 
-    /// Queues one of the session's last events, `Error` or `Finished`, past the bound.
+    /// Queues one of the session's last events (`Diagnostics`, `Error`, `Finished` and the
+    /// requests withdrawn at the end) past the bound.
     pub fn push_last(&self, event: Event) {
         let mut state = self.lock();
         if state.closed || state.finished {

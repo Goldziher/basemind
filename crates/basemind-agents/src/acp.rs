@@ -346,7 +346,9 @@ impl Pending {
             .remove(id);
         match answer.map(|answer| answer(allow)) {
             Some(Ok(allowed)) => sink.resolved(id.to_owned(), allowed, ApprovalSource::Caller),
-            Some(Err(error)) => sink.emit(Event::Error(format!("could not answer approval {id:?}: {error}"))),
+            Some(Err(error)) => sink.emit(Event::Error(crate::event::error_line(&format!(
+                "could not answer approval {id:?}: {error}"
+            )))),
             None => sink.emit(Event::Error(format!("no approval request {id:?} is pending"))),
         }
     }

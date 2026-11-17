@@ -563,11 +563,15 @@ pub(crate) fn start(
                 let tail = tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let tail = String::from_utf8_lossy(&tail);
                 let tail = tail.trim();
-                shared.events.push_last(Event::Error(if tail.is_empty() {
-                    error.to_string()
+                let message = error.to_string();
+                shared.events.push_last(Event::Diagnostics(if tail.is_empty() {
+                    message.clone()
                 } else {
-                    format!("{error}\n{tail}")
+                    format!("{message}\n{tail}")
                 }));
+                shared
+                    .events
+                    .push_last(Event::Error(crate::event::error_line(&message)));
             }
             shared.events.push_last(Event::Finished(status));
             shared.abandon.store(true, Ordering::SeqCst);
