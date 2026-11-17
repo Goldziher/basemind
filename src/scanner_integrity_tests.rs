@@ -610,3 +610,42 @@ fn a_scan_into_a_store_opened_beside_a_writer_is_refused_until_it_can_take_the_l
     let db = in_place.index_db.as_ref().expect("an index opened under the lock");
     assert_eq!(db.view().symbols_by_name_lookup("gamma", 10).len(), 1);
 }
+
+/// A pass killed after committing a new file's rows and before writing the file map that lists it
+/// left those rows for good once the file was deleted: no scan looks at a path the map does not
+/// list, so `references` and `symbols` kept answering for a file that does not exist. The next
+/// pass, a watcher batch included, removes them.
+#[test]
+fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let ghost = root.join("ghost.rs");
+    std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    let view_dir = store.view_dir.clone();
+    let db = store.index_db.clone().expect("index");
+    assert_eq!(db.view().symbols_by_name_lookup("ghost", 4).len(), 1);
+    // What the killed pass leaves: its start recorded at the seal it began from, the rows of a file
+    // it had just indexed, and a file map that never listed that file.
+    db.mark_rows_unlisted(db.scan_generation().expect("read")).expect("record the pass");
+    store.remove("ghost.rs");
+    let unlisted = store.index.clone();
+    drop(db);
+    drop(store);
+    let manifest = view_dir.join(crate::store::INDEX_FILE);
+    std::fs::write(&manifest, rmp_serde::to_vec_named(&unlisted).expect("encode")).expect("forge the file map");
+    std::fs::remove_file(&ghost).expect("delete");
+
+    let mut store = Store::open(root, VIEW_WORKING).expect("reopen");
+    let alpha = root.join("alpha.rs");
+    std::fs::write(&alpha, b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
+    let config = ConfigV1::with_defaults();
+    let scanned = crate::scanner::scan_paths(root, &mut store, &config, &[alpha], EmbedMode::Deferred);
+    scanned.expect("incremental scan");
+
+    let view = store.index_view().expect("index");
+    assert!(view.symbols_by_name_lookup("ghost", 4).is_empty(), "the unlisted rows are gone");
+    assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
+}

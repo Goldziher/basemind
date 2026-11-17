@@ -17,8 +17,12 @@ use fjall::{Keyspace, PersistMode};
 
 use super::view::Part;
 use super::{INDEX_DIR, INDEX_SCHEMA_VER, IndexDb, IndexError, META_SCHEMA_VER};
+use crate::path::RelPath;
 
 const META_SCAN_GENERATION: &[u8] = b"scan_generation";
+/// The generation sealed when the last scan that wrote rows began (see
+/// [`IndexDb::mark_rows_unlisted`]).
+const META_ROWS_UNLISTED_SINCE: &[u8] = b"rows_unlisted_since";
 /// Name prefix of an index directory renamed aside by [`discard_dir`] and not yet deleted.
 pub(crate) const DISCARD_PREFIX: &str = "index.fjall.discard-";
 
@@ -99,6 +103,54 @@ impl IndexDb {
         Ok(generation)
     }
 
+    /// The generation [`Self::mark_rows_unlisted`] last recorded, or `None` when no scan recorded one.
+    /// An unreadable record reads as `u64::MAX`, which no seal passes.
+    pub(crate) fn rows_unlisted_since(&self) -> Result<Option<u64>, IndexError> {
+        Ok(self
+            .meta
+            .get(META_ROWS_UNLISTED_SINCE)?
+            .map(|bytes| <[u8; 8]>::try_from(&bytes[..]).map_or(u64::MAX, u64::from_be_bytes)))
+    }
+
+    /// Record, before a scan commits its first row, the generation sealed when it began. Its rows are
+    /// listed by a file map only once a later seal and the file map carrying it are written, so a
+    /// later scan that finds the index sealed no further, or the file map behind the seal, knows rows
+    /// of paths no file map lists may be left. Written without a sync: the journal keeps it ahead of
+    /// every row committed after it.
+    pub(crate) fn mark_rows_unlisted(&self, sealed: u64) -> Result<(), IndexError> {
+        self.meta.insert(META_ROWS_UNLISTED_SINCE, sealed.to_be_bytes())?;
+        Ok(())
+    }
+
+    /// Every path holding a row in a partition keyed by path, each once: one seek per distinct path
+    /// and partition, not a read of every row.
+    pub(crate) fn indexed_paths(&self) -> Result<ahash::AHashSet<RelPath>, IndexError> {
+        let mut paths = ahash::AHashSet::new();
+        for keyspace in [
+            &self.symbols_by_path,
+            &self.calls_by_path,
+            &self.imports_by_path,
+            &self.implementations_by_path,
+            &self.refs_by_path,
+            &self.code_bm25_by_path,
+        ] {
+            let mut from = Vec::new();
+            while let Some(guard) = keyspace.range(from.as_slice()..).next() {
+                let key = guard.key()?;
+                let mut cursor = 0;
+                let Some(rel) = super::keys::read_len_prefixed_ref(&key, &mut cursor) else {
+                    break;
+                };
+                paths.insert(RelPath::from(rel));
+                match prefix_successor(&key[..cursor]) {
+                    Some(next) => from = next,
+                    None => break,
+                }
+            }
+        }
+        Ok(paths)
+    }
+
     /// Fsync the journal if anything was written since the last [`Self::seal_scan`] or call of this,
     /// and report whether it did. For the rows a scan writes after its seal (the resolve pass, BM25
     /// statistics): the file map already calls their files unchanged, so no later scan rewrites them.
@@ -173,6 +225,18 @@ impl IndexDb {
         self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
         Ok(())
     }
+}
+
+/// The least key above every key that starts with `prefix`, or `None` when there is none.
+fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut next = prefix.to_vec();
+    while let Some(last) = next.pop() {
+        if last < u8::MAX {
+            next.push(last + 1);
+            return Some(next);
+        }
+    }
+    None
 }
 
 /// Delete the index database under `view_dir`. The caller must have dropped every handle to it.

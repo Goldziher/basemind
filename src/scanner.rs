@@ -825,6 +825,7 @@ fn scan_paths_inner(
         .collect();
     #[cfg(feature = "code-search")]
     let bm25_candidates = crate::scanner_flush::bm25_posting_candidates(store, rels.iter().chain(&removed));
+    crate::scanner_integrity::begin_rows(store)?;
     let drive = ScanDrive {
         root,
         filters: filter.filters(),

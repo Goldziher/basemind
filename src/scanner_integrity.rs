@@ -8,7 +8,7 @@
 use crate::disk_space;
 use crate::index::IndexDb;
 use crate::scanner::ScanError;
-use crate::store::{ScanHealth, Store};
+use crate::store::{ScanHealth, Store, StoreError};
 
 /// Run before a full scan touches the index: take the writer's place ([`claim_writer`]), forget a
 /// full-disk latch from an earlier pass (the space check below decides whether it is cured), refuse
@@ -25,7 +25,45 @@ pub(crate) fn preflight(store: &mut Store) -> Result<(), ScanError> {
         }
     }
     store.rebuild_index_if_behind()?;
-    ensure_space(store)
+    ensure_space(store)?;
+    begin_rows(store)
+}
+
+/// Run before a pass commits its first index row: remove the rows an earlier pass may have left of
+/// paths no file map lists, then record this pass's start ([`IndexDb::mark_rows_unlisted`]). A pass
+/// killed between committing rows and writing the file map that lists them leaves rows that no scan
+/// ever revisits, since none looks at a path the map does not list; served by references, symbols
+/// and search for files that may no longer exist. The earlier pass finished when the index has
+/// sealed past its record and the file map carries that seal.
+pub(crate) fn begin_rows(store: &mut Store) -> Result<(), ScanError> {
+    let Some(db) = store.index_db.clone() else {
+        return Ok(());
+    };
+    let sealed = db.scan_generation().map_err(StoreError::from)?;
+    let since = db.rows_unlisted_since().map_err(StoreError::from)?;
+    if !since.is_none_or(|since| sealed > since && store.index.generation == sealed) {
+        purge_unlisted_rows(store, &db)?;
+    }
+    if since != Some(sealed) {
+        db.mark_rows_unlisted(sealed).map_err(StoreError::from)?;
+    }
+    Ok(())
+}
+
+/// Remove the index rows of every path the file map does not list.
+fn purge_unlisted_rows(store: &Store, db: &IndexDb) -> Result<(), ScanError> {
+    let mut unlisted = db.indexed_paths().map_err(StoreError::from)?;
+    unlisted.retain(|rel| store.lookup(rel).is_none());
+    if !unlisted.is_empty() {
+        tracing::info!(
+            paths = unlisted.len(),
+            "removing index rows an interrupted scan left of files no file map lists"
+        );
+    }
+    for rel in &unlisted {
+        purge_rows(db, rel)?;
+    }
+    Ok(())
 }
 
 /// Make this store the workspace's writer before a scan writes into it: a store opened without the
@@ -73,19 +111,21 @@ pub(crate) fn purge_files<'a>(store: &mut Store, rels: &'a [String]) -> (Vec<&'a
 /// never be revisited, because no scan looks at a path the map does not list.
 fn purge_file(store: &mut Store, rel: &str) -> Result<(), ScanError> {
     if let Some(idx) = store.index_db.as_ref() {
-        let path = crate::path::RelPath::from(rel);
-        let mut writer = idx.writer();
-        let staged = writer
-            .remove_file(&path)
-            .and_then(|()| writer.remove_resolved_file(&path));
-        #[cfg(feature = "code-search")]
-        let staged = staged.and_then(|()| writer.remove_bm25_file(&path));
-        staged
-            .and_then(|()| writer.commit())
-            .map_err(crate::store::StoreError::from)?;
+        purge_rows(idx, &crate::path::RelPath::from(rel))?;
     }
     store.remove(rel);
     Ok(())
+}
+
+/// Remove every index row of `path`, in one commit.
+fn purge_rows(db: &IndexDb, path: &crate::path::RelPath) -> Result<(), StoreError> {
+    let mut writer = db.writer();
+    let staged = writer
+        .remove_file(path)
+        .and_then(|()| writer.remove_resolved_file(path));
+    #[cfg(feature = "code-search")]
+    let staged = staged.and_then(|()| writer.remove_bm25_file(path));
+    staged.and_then(|()| writer.commit()).map_err(StoreError::from)
 }
 
 /// The free-space check alone, for the resolve pass: the file map is already durable by then, so a
