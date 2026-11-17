@@ -167,8 +167,13 @@ fn both_search_lanes_read_through_the_view() {
     assert!(!keyword.is_empty(), "the keyword lane finds the chunk");
     assert_eq!(
         log.entries(),
-        ["get:meta", "get:meta", "prefix:code_bm25_postings"],
-        "keyword lane: both corpus stats, then one posting scan for the one query term"
+        [
+            "get:meta",
+            "get:meta",
+            "prefix:code_bm25_postings",
+            "prefix:code_bm25_postings"
+        ],
+        "keyword lane: both corpus stats, the query term's document frequency, then its postings"
     );
 }
 

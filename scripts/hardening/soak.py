@@ -227,7 +227,14 @@ class Workload:
             body = out.body if out else None
             if not body:
                 continue
-            fns = [s for s in body.get("symbols", []) if s.get("kind") in ("function", "method") and s.get("name")]
+            symbols = body.get("symbols", [])
+            names = [s.get("name") for s in symbols]
+            # A name two definitions share is refused by the symbol-pinned tools until `line` picks one.
+            fns = [
+                s
+                for s in symbols
+                if s.get("kind") in ("function", "method") and s.get("name") and names.count(s["name"]) == 1
+            ]
             if len(fns) >= 2:  # noqa: PLR2004
                 self.targets["path"] = path
                 self.targets["symbol"] = fns[0]["name"]
@@ -274,13 +281,14 @@ class Workload:
             ("git_blame", {"path": path, "symbol": sym}),
             ("git_diff", {}),
             ("git_diff", {"path": path, "structural": True, "from": "HEAD"}),
-            ("git_diff", {"path": "hardening_soak/edited.py"}),
             ("code_search", {"query": "parse a configuration file and report errors", "limit": 5}),
             ("docs_search", {"query": "how is the project installed", "limit": 5}),
             ("memory_save", {"key": f"soak/note-{cycle % 5}", "value": f"soak note {cycle % 5}", "tags": ["soak"]}),
             ("memory_search", {"query": "soak note", "limit": 5}),
             ("memory_search", {"key": f"soak/note-{cycle % 5}"}),
         ]
+        if (self.soak_dir / "edited.py").exists():
+            calls.append(("git_diff", {"path": "hardening_soak/edited.py"}))
         if "trait" in t:
             calls.append(("code_refs", {"name": t["trait"], "relation": "implementations", "limit": 20}))
         if "module" in t:
@@ -301,9 +309,12 @@ class Workload:
         added = self.soak_dir / f"added_{slot_add}.py"
         added.write_text(_py_module(f"soak_added_{slot_add}_v{v}", v + 100))
         deleted = self.soak_dir / f"added_{slot_del}.py"
-        with contextlib.suppress(FileNotFoundError):
+        # A rescan refuses a path that neither exists nor is indexed, so a slot not yet added is left out.
+        touched = [edited, added]
+        if deleted.exists():
             deleted.unlink()
-        rel = [str(p.relative_to(self.repo)) for p in (edited, added, deleted)]
+            touched.append(deleted)
+        rel = [str(p.relative_to(self.repo)) for p in touched]
         self.call(sess, "index_rescan", {"paths": rel})
         res = self.call(sess, "code_symbols", {"name": f"soak_edit_v{v}", "limit": 5})
         found = bool(
