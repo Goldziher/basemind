@@ -38,13 +38,13 @@ pub(crate) fn flush_vector_lanes(
     requeue: usize,
 ) -> Result<(), crate::store::StoreError> {
     owe_rows_that_may_be_lost(store, filters)?;
+    let mut budget = requeue;
     if owes_beyond(store, &doc_batches, &code_batches) && vector_store_opens(store, config, filters) {
-        let mut budget = requeue;
         requeue_pending_docs(store, config, filters, scope, &mut doc_batches, &mut budget);
         requeue_pending_code(store, config, filters, &mut code_batches, &mut budget);
     }
     run_optional_lane(LANE_DOC_BATCHES, || {
-        flush_doc_batches_if_any(store, config, filters, doc_batches);
+        flush_doc_batches_if_any(store, config, filters, doc_batches, budget);
     });
     run_optional_lane(LANE_CODE_BATCHES, || {
         flush_code_batches_if_any(store, config, filters, scope, code_batches);
@@ -254,16 +254,20 @@ fn requeue_pending_code(
 ) {
 }
 
-/// Push the buffered document batches into LanceDB. No-op without the `documents` feature.
+/// Bring the document store in line with the view: this scan's documents and any an earlier scan,
+/// or a wiped store, left without rows. No-op without the `documents` feature.
 #[cfg(feature = "documents")]
-fn flush_doc_batches_if_any(store: &mut Store, config: &Config, filters: &Filters, batches: Vec<PendingDocBatchOpt>) {
-    if batches.is_empty() {
-        return;
-    }
+fn flush_doc_batches_if_any(
+    store: &mut Store,
+    config: &Config,
+    filters: &Filters,
+    batches: Vec<PendingDocBatchOpt>,
+    budget: usize,
+) {
     let _ = filters
         .retrieval
         .documents
-        .flush(store, batches, &config.documents.embedding_preset);
+        .flush(store, config, filters, batches, budget);
 }
 
 #[cfg(not(feature = "documents"))]
@@ -272,6 +276,7 @@ fn flush_doc_batches_if_any(
     _config: &Config,
     _filters: &Filters,
     _batches: Vec<PendingDocBatchOpt>,
+    _budget: usize,
 ) {
 }
 
@@ -285,7 +290,8 @@ pub(crate) fn flush_doc_removals_if_any(
     scope: &str,
     stale: &[String],
 ) {
-    filters.retrieval.documents.remove(store, config, scope, stale);
+    let _ = scope;
+    filters.retrieval.documents.remove(store, config, filters, stale);
 }
 
 /// Push the buffered code-chunk batches into LanceDB. No-op without the `code-search` feature.

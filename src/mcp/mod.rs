@@ -28,12 +28,16 @@ mod helpers_calls_scan;
 pub(crate) use helpers_calls_scan::scan_calls_by_name;
 #[cfg(test)]
 pub(crate) use helpers_refs_match::Matching;
+#[cfg(feature = "documents")]
+mod docs_page;
+#[cfg(feature = "documents")]
+mod docs_pipeline;
 mod helpers_code;
 #[cfg(feature = "code-search")]
 mod helpers_code_search;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_comms;
-#[cfg(feature = "documents")]
+#[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
 mod helpers_expand;
 mod helpers_files;

@@ -1835,12 +1835,13 @@ fn skip_without_embedder(what: &str) {
     eprintln!("SKIP (BASEMIND_TEST_ALLOW_NO_EMBEDDER): {what}");
 }
 
-/// `docs_search` hits carry their document's keywords, and the `keywords` filter keeps the documents
-/// that have one, including a document ranked past `limit`. The metadata is looked up in the
-/// document map: a document is not in the code file map.
+/// `docs_search` runs two lanes under one filter applied before ranking (ADR-0029): the lexical
+/// lane answers without an embedding model, identical content at several paths is one hit naming
+/// the others, every hit carries a citation, and a filter no document passes is an empty answer,
+/// not a cut.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(feature = "documents")]
-async fn docs_search_attaches_keywords_and_filters_on_them() {
+async fn docs_search_filters_before_ranking_and_cites_its_hits() {
     let dir = build_repo();
     let root = dir.path();
     for name in ["one", "two", "three", "four"] {
@@ -1879,66 +1880,85 @@ async fn docs_search_attaches_keywords_and_filters_on_them() {
         .await
         .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
+    let call = |arguments: Value| service.call_tool(call_params("docs_search", arguments));
 
-    let unfiltered = service
-        .call_tool(call_params("docs_search", json!({ "query": "harbour", "limit": 10 })))
+    let unfiltered = call(json!({ "query": "harbour pilots", "limit": 10 }))
         .await
         .expect("docs_search");
-    if unfiltered.is_error == Some(true) {
-        skip_without_embedder(&format!(
-            "docs_search could not run (no embedding model?): {}",
-            error_text(&unfiltered)
-        ));
-        let _ = service.cancel().await;
-        return;
-    }
+    assert_ne!(unfiltered.is_error, Some(true), "{}", error_text(&unfiltered));
     let body = decode_text(&unfiltered);
-    let hits = body["hits"].as_array().expect("hits");
-    if hits.is_empty() {
-        skip_without_embedder(&format!("the scan produced no document vectors: {body}"));
-        let _ = service.cancel().await;
-        return;
-    }
-    assert_eq!(hits.len(), 5, "one chunk per document: {body}");
-    for hit in hits {
+    let lanes_ran = body["lanes_ran"].as_array().expect("lanes_ran");
+    assert!(
+        lanes_ran.contains(&json!("lexical")),
+        "the lexical lane needs no model: {body}"
+    );
+    for unavailable in body["lanes_unavailable"].as_array().expect("lanes_unavailable") {
         assert!(
-            hit["keywords"].as_array().is_some_and(|keywords| !keywords.is_empty()),
-            "every hit carries its document's keywords: {hit}"
+            unavailable["reason"].as_str().is_some_and(|r| !r.is_empty()),
+            "{unavailable}"
         );
     }
+    let hits = body["hits"].as_array().expect("hits");
+    assert_eq!(hits.len(), 2, "four copies of one content are one hit: {body}");
+    let harbour = &hits[0];
+    assert_eq!(harbour["path"], "four.md", "the first path in order: {harbour}");
+    assert_eq!(harbour["also_at"], json!(["one.md", "three.md", "two.md"]), "{harbour}");
+    assert_eq!(harbour["cite"]["line_start"], 1, "{harbour}");
+    assert!(
+        harbour["cite"]["page_start"].is_null(),
+        "a Markdown file has no pages: {harbour}"
+    );
+    assert!(
+        harbour["chunk"]["doc"].as_str().is_some_and(|doc| doc.len() == 32),
+        "{harbour}"
+    );
+    assert!(
+        harbour.get("keywords").is_none(),
+        "per-hit document metadata is gone: {harbour}"
+    );
 
-    let filtered = decode_text(
-        &service
-            .call_tool(call_params(
-                "docs_search",
-                json!({ "query": "harbour", "limit": 1, "keywords": "zeppelin" }),
-            ))
+    let by_path = decode_text(
+        &call(json!({ "query": "harbour", "path": "air*.md" }))
             .await
             .expect("docs_search"),
     );
-    let paths: Vec<&str> = filtered["hits"]
+    let paths: Vec<&str> = by_path["hits"]
         .as_array()
         .expect("hits")
         .iter()
         .map(|hit| hit["path"].as_str().unwrap_or_default())
         .collect();
-    assert_eq!(
-        paths,
-        ["airship.md"],
-        "the one document with that keyword, whatever its rank for the query: {filtered}"
-    );
+    assert_eq!(paths, ["airship.md"], "the filter runs before the cut: {by_path}");
 
-    let unmatched = decode_text(
-        &service
-            .call_tool(call_params(
-                "docs_search",
-                json!({ "query": "harbour", "keywords": "no-document-has-this-keyword" }),
-            ))
-            .await
-            .expect("docs_search"),
-    );
-    assert_eq!(unmatched["hits"], json!([]), "{unmatched}");
+    for empty in [
+        json!({ "query": "harbour", "keywords": "no-document-has-this-keyword" }),
+        json!({ "query": "harbour", "kind": "pdf" }),
+        json!({ "query": "harbour", "mime_type": "application/pdf" }),
+    ] {
+        let answer = decode_text(&call(empty.clone()).await.expect("docs_search"));
+        assert_eq!(answer["hits"], json!([]), "{empty}: {answer}");
+        assert!(
+            answer.get("truncated").is_none(),
+            "an empty filter is not a cut: {answer}"
+        );
+    }
 
+    let bad_kind = call(json!({ "query": "harbour", "kind": "slides" }))
+        .await
+        .expect("docs_search");
+    assert_eq!(bad_kind.is_error, Some(true));
+    assert!(error_text(&bad_kind).contains("markdown"), "{}", error_text(&bad_kind));
+    let scope = call(json!({ "query": "harbour", "scope": "repo" }))
+        .await
+        .expect("docs_search");
+    assert_eq!(scope.is_error, Some(true), "`scope` is gone");
+
+    if lanes_ran.contains(&json!("vector")) {
+        assert_eq!(body["vector_mode"], "exact", "{body}");
+        assert!(harbour["lanes"]["vector"].as_u64().is_some(), "{harbour}");
+    } else {
+        skip_without_embedder(&format!("the vector lane did not run: {}", body["lanes_unavailable"]));
+    }
     let _ = service.cancel().await;
 }
 

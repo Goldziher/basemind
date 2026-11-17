@@ -99,13 +99,6 @@ pub(crate) struct PendingDocBatch {
     /// Repository-relative path, forward-slash separated. Becomes the `path`
     /// column in LanceDB.
     pub rel_path: String,
-    /// Content hash (hex) of the source document — the key under which the `.doc.msgpack` blob is
-    /// content-addressed. The flush re-reads that blob to rebuild rows on demand.
-    pub blob_hash: String,
-    /// LanceDB scope for this file's rows (the repo scope, or `path:<extra_root>` for an
-    /// external-root document). Both the delete predicate and the inserted rows use it, so
-    /// re-flushing an external-root document replaces its rows instead of leaving stale duplicates.
-    pub doc_scope: String,
     /// Number of chunks indexed (zero is valid — xberg may yield no chunks
     /// when the file body is empty or below the chunk threshold).
     pub chunk_count: usize,
@@ -174,11 +167,19 @@ pub trait DocumentSink: Sync {
         budget: &mut usize,
     );
 
-    /// Write the rows of every batch, one document at a time. Returns the number written.
-    fn flush(&self, store: &mut Store, batches: Vec<PendingDocBatch>, model: &str) -> usize;
+    /// Bring the document store in line with the view's document map: write this scan's documents
+    /// (`batches`) and up to `budget` others the store lacks. Returns the number of documents written.
+    fn flush(
+        &self,
+        store: &mut Store,
+        config: &Config,
+        filters: &Filters,
+        batches: Vec<PendingDocBatch>,
+        budget: usize,
+    ) -> usize;
 
     /// Drop the entries and rows of documents removed since the last scan.
-    fn remove(&self, store: &mut Store, config: &Config, scope: &str, stale: &[String]);
+    fn remove(&self, store: &mut Store, config: &Config, filters: &Filters, stale: &[String]);
 
     /// Delete the vectors of documents that are no longer embed-eligible. `false` when rows that
     /// exist could not be deleted.

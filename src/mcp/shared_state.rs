@@ -88,7 +88,7 @@ pub(crate) struct SharedReadStack {
     #[allow(dead_code)]
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
-    #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+    #[cfg(feature = "code-search")]
     pub(crate) lance: super::lance_cell::LanceCell,
     /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
@@ -253,7 +253,7 @@ impl SharedReadStack {
             index_generation: AtomicU32::new(1),
             ranked: Default::default(),
             scope,
-            #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+            #[cfg(feature = "code-search")]
             lance: Default::default(),
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             embedder: tokio::sync::OnceCell::new(),

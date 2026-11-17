@@ -3,25 +3,19 @@
 use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
-#[cfg(any(feature = "memory", feature = "documents"))]
+#[cfg(feature = "memory")]
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
-#[cfg(any(feature = "memory", feature = "documents"))]
+#[cfg(feature = "memory")]
 use super::helpers::elapsed_us;
-#[cfg(feature = "documents")]
-use super::helpers::format_response;
 #[cfg(feature = "memory")]
 use super::helpers::json_result;
-#[cfg(feature = "documents")]
-use super::types::{DocumentSearchHit, SearchDocumentsParams, SearchDocumentsResponse};
 #[cfg(feature = "memory")]
 use super::types_memory::{
     MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams, MemoryListResponse,
     MemoryPutParams, MemoryPutResponse, MemorySearchParams, Visibility,
 };
-#[cfg(feature = "documents")]
-use crate::extract::doc::{DocBlobs, DocEntity, DocKeyword, DocSummary};
 
 /// The shared embedding engine, loaded on first use. Loading reads the model from disk (or
 /// downloads it), so it runs on a blocking thread and never stalls the async runtime.
@@ -69,7 +63,7 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
 }
 
 /// Open the vector store at `dir` for `embedder`'s dimension and model, off the async runtime.
-#[cfg(feature = "intelligence")]
+#[cfg(feature = "code-search")]
 async fn open_lance(
     dir: std::path::PathBuf,
     embedder: &crate::embeddings::SharedEmbedder,
@@ -82,7 +76,7 @@ async fn open_lance(
         .map_err(|e| format!("open LanceStore: {e}"))
 }
 
-#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+#[cfg(feature = "code-search")]
 pub(super) async fn lance_store(
     state: &ServerState,
 ) -> Result<Arc<crate::lance::LanceStore>, super::lance_cell::Unavailable> {
@@ -593,17 +587,7 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
     })?)
 }
 
-/// Pick the ingestion scope to search: the caller's if they named one, else this repo's.
-///
-/// Documents are partitioned by ingestion scope. The scanner writes under the repo scope; rows an
-/// older version ingested from the web sit under `web:<host>` and are no longer refreshed, so
-/// naming that scope is the only way to reach them.
-#[cfg(feature = "documents")]
-fn resolve_doc_scope(requested: Option<&str>, repo_scope: &str) -> String {
-    requested.unwrap_or(repo_scope).to_string()
-}
-
-#[cfg(any(feature = "documents", feature = "code-search"))]
+#[cfg(feature = "code-search")]
 pub(super) async fn shared_lance_route(
     state: &ServerState,
     lane: crate::lance::shared_store::SharedLane,
@@ -616,7 +600,7 @@ pub(super) async fn shared_lance_route(
     Some((crate::store::repo_group_dir(&store.root), generation))
 }
 
-#[cfg(any(feature = "documents", feature = "code-search"))]
+#[cfg(feature = "code-search")]
 pub(super) fn observe_semantic_route<T>(
     tier: &str,
     requested_shared: bool,
@@ -636,271 +620,6 @@ pub(super) fn observe_semantic_route<T>(
     );
     Ok(hits)
 }
-
-#[cfg(feature = "documents")]
-pub(super) async fn run_search_documents(
-    state: &ServerState,
-    params: SearchDocumentsParams,
-) -> Result<CallToolResult, McpError> {
-    let __body = std::time::Instant::now();
-    if params.entity_category.is_some()
-        && let Some(reason) = crate::extract::doc_tiers::entity_filter_unavailable()
-    {
-        return Err(McpError::invalid_request(reason, None));
-    }
-    let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = {
-        let r = &state.shared.config.documents.reranker;
-        (
-            state.shared.config.documents.output.format,
-            r.enabled,
-            r.preset.clone(),
-            r.top_k,
-        )
-    };
-
-    let limit = params.limit.unwrap_or(10).min(super::helpers_page::RANKED_FETCH) as usize;
-    // The keyword / entity filters run on the retrieved hits, so retrieval goes deeper than the
-    // page: a matching document ranked past `limit` would otherwise never be seen.
-    let filtered = params.entity_category.is_some() || params.keywords_contains.is_some();
-    let fetch = if filtered {
-        super::helpers_page::filtered_fetch(limit)
-    } else {
-        limit
-    };
-    let embedding = embed_query(state, &params.query).await?;
-    let lance = lance_store(state)
-        .await
-        .map_err(|unavailable| unavailable.refusal("docs_search", None))?;
-    let scope = resolve_doc_scope(params.scope.as_deref(), &state.shared.scope);
-    let mime = params.mime_type.clone();
-    let lane = crate::lance::shared_store::SharedLane::Documents;
-    let routing = shared_lance_route(state, lane).await;
-    let mut hits_raw = tokio::task::spawn_blocking(move || {
-        let requested_shared = crate::lance::shared_snapshot::enabled();
-        let shared = routing.and_then(|(group, generation)| {
-            crate::lance::shared_snapshot::read(&lance, &group, lane, &scope, &generation, |shared, paths| {
-                shared.search_documents(&scope, embedding.clone(), mime.as_deref(), paths, fetch)
-            })
-        });
-        observe_semantic_route("documents", requested_shared, shared, || {
-            lance.search_documents(&scope, embedding, fetch, mime.as_deref())
-        })
-    })
-    .await
-    .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("search_documents: {e}"), None))?;
-    // A filter whose ranking goes on past the depth it was handed has not seen all of it: a
-    // matching document below that depth was never looked at, so the result is not "no match".
-    let filter_depth_used = filtered && super::helpers_page::cut_at_filter_depth(&mut hits_raw, fetch);
-    let mut hits: Vec<DocumentSearchHit> = hits_raw
-        .into_iter()
-        .map(|h| DocumentSearchHit {
-            path: h.path,
-            chunk_idx: h.chunk_idx,
-            text: h.text,
-            mime_type: h.mime_type,
-            byte_start: h.byte_start,
-            byte_end: h.byte_end,
-            distance: h.distance,
-            rerank_score: None,
-            keywords: Vec::new(),
-            entities: Vec::new(),
-            summary: None,
-        })
-        .collect();
-
-    attach_doc_metadata(
-        state,
-        &mut hits,
-        params.entity_category.as_deref(),
-        params.keywords_contains.as_deref(),
-    )
-    .await?;
-    hits.truncate(limit);
-
-    let candidates = hits.len();
-    if reranker_enabled && !hits.is_empty() {
-        if xberg::get_reranker_preset(&reranker_preset).is_none() {
-            return Err(McpError::invalid_params(
-                format!("unknown reranker preset: {reranker_preset:?}"),
-                None,
-            ));
-        }
-        let krz_config = xberg::core::config::RerankerConfig {
-            model: xberg::core::config::RerankerModelType::Preset { name: reranker_preset },
-            top_k: Some(reranker_top_k),
-            acceleration: crate::embeddings::acceleration(state.shared.config.resources.onnx_provider),
-            ..Default::default()
-        };
-        let documents: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();
-        let reranked = xberg::rerank_async(params.query.clone(), documents, &krz_config)
-            .await
-            .map_err(|e| {
-                let msg = e.to_string();
-                let kind = if msg.contains("download") || msg.contains("HuggingFace") || msg.contains("model") {
-                    "rerank model load"
-                } else {
-                    "rerank inference"
-                };
-                McpError::internal_error(format!("{kind}: {msg}"), None)
-            })?;
-        let original_hits = std::mem::take(&mut hits);
-        hits = reranked
-            .into_iter()
-            .map(|r| {
-                original_hits
-                    .get(r.index)
-                    .cloned()
-                    .map(|mut hit| {
-                        hit.rerank_score = Some(r.score);
-                        hit
-                    })
-                    .ok_or_else(|| {
-                        McpError::internal_error(
-                            format!(
-                                "reranker returned out-of-range index {} (got {} hits)",
-                                r.index,
-                                original_hits.len()
-                            ),
-                            None,
-                        )
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-    }
-
-    let output_format = match params.format.as_deref().map(str::trim) {
-        Some(f) if f.eq_ignore_ascii_case("toon") => crate::config::OutputFormat::Toon,
-        Some(f) if f.eq_ignore_ascii_case("json") => crate::config::OutputFormat::Json,
-        _ => output_format,
-    };
-
-    let truncated_reason = super::helpers_page::retrieval_cut(filter_depth_used, hits.len() < candidates);
-    let budget = super::budget::apply_budget(hits, params.max_tokens);
-    format_response(
-        &SearchDocumentsResponse {
-            query: params.query,
-            budgeted: budget.budgeted,
-            truncated: truncated_reason.is_some(),
-            truncated_reason: truncated_reason.map(str::to_string),
-            hits: budget.items,
-            elapsed_us: elapsed_us(__body),
-        },
-        output_format,
-    )
-}
-
-/// Keywords, entities and summary of one document.
-#[cfg(feature = "documents")]
-type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
-
-/// Documents whose blobs are read under one hold of the store lock. A filtered search attaches
-/// metadata to up to [`FILTER_DEPTH`](super::helpers_page::FILTER_DEPTH) hits; read in one go that
-/// is hundreds of blob reads with every writer queued behind them and no point at which a cancelled
-/// call stops.
-#[cfg(feature = "documents")]
-const DOC_METADATA_BATCH: usize = 16;
-
-/// Attach each hit's document metadata (keywords, entities, summary), looked up through the
-/// document map (a document is not in the code file map), and drop the hits whose document fails
-/// the `entity_category` / `keywords_contains` filter.
-///
-/// Runs BEFORE the reranker so the cross-encoder only rescores survivors. One blob is read per
-/// distinct path, [`DOC_METADATA_BATCH`] at a time: the store lock is taken for each batch and
-/// released after it, and every re-acquisition is a point where a cancelled call ends. A path no
-/// longer in the document index (deleted between scan and query) has no metadata, which is not an
-/// error.
-#[cfg(feature = "documents")]
-async fn attach_doc_metadata(
-    state: &ServerState,
-    hits: &mut Vec<DocumentSearchHit>,
-    entity_category: Option<&str>,
-    keywords_contains: Option<&str>,
-) -> Result<(), McpError> {
-    if hits.is_empty() {
-        return Ok(());
-    }
-    let mut unique_paths: Vec<&str> = Vec::with_capacity(hits.len());
-    {
-        let mut seen: ahash::AHashSet<&str> = ahash::AHashSet::new();
-        for hit in hits.iter() {
-            if seen.insert(hit.path.as_str()) {
-                unique_paths.push(hit.path.as_str());
-            }
-        }
-    }
-
-    let mut meta: ahash::AHashMap<String, Arc<DocMeta>> = ahash::AHashMap::with_capacity(unique_paths.len());
-    for batch in unique_paths.chunks(DOC_METADATA_BATCH) {
-        let store = state.shared.store.read().await;
-        meta.extend(super::index_route::blocking(|| read_doc_metadata(&store, batch)));
-    }
-
-    apply_doc_metadata(hits, &meta, entity_category, keywords_contains);
-    Ok(())
-}
-
-/// The metadata of each of `paths` that the document map still holds. Blocking: one blob read per
-/// path.
-#[cfg(feature = "documents")]
-fn read_doc_metadata(store: &crate::store::Store, paths: &[&str]) -> Vec<(String, Arc<DocMeta>)> {
-    paths
-        .iter()
-        .filter_map(|path| {
-            let entry = store.lookup_doc(path)?;
-            match store.read_doc_by_hex(&entry.hash_hex) {
-                Ok(doc) => doc.map(|doc| ((*path).to_string(), Arc::new((doc.keywords, doc.entities, doc.summary)))),
-                Err(error) => {
-                    tracing::warn!(path = %path, %error, "read doc blob for metadata attach failed");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-/// Copy each hit's document metadata onto it, and keep only the hits whose document names an
-/// entity of a category containing `entity_category` and a keyword containing `keywords_contains`
-/// (each case-insensitive, each applied only when given). A document with no metadata fails every
-/// filter that is set.
-#[cfg(feature = "documents")]
-fn apply_doc_metadata(
-    hits: &mut Vec<DocumentSearchHit>,
-    meta: &ahash::AHashMap<String, Arc<DocMeta>>,
-    entity_category: Option<&str>,
-    keywords_contains: Option<&str>,
-) {
-    let cat_needle = entity_category.map(str::to_lowercase);
-    let kw_needle = keywords_contains.map(str::to_lowercase);
-
-    hits.retain_mut(|hit| {
-        let document = meta.get(&hit.path);
-
-        if let Some(needle) = cat_needle.as_deref() {
-            let entities = document.map(|m| m.1.as_slice()).unwrap_or(&[]);
-            if !entities.iter().any(|e| e.category.to_lowercase().contains(needle)) {
-                return false;
-            }
-        }
-        if let Some(needle) = kw_needle.as_deref() {
-            let keywords = document.map(|m| m.0.as_slice()).unwrap_or(&[]);
-            if !keywords.iter().any(|k| k.text.to_lowercase().contains(needle)) {
-                return false;
-            }
-        }
-
-        if let Some(m) = document {
-            hit.keywords = m.0.clone();
-            hit.entities = m.1.clone();
-            hit.summary = m.2.clone();
-        }
-        true
-    });
-}
-
-#[cfg(all(test, feature = "documents"))]
-#[path = "memory_docs_tests.rs"]
-mod docs_tests;
 
 #[cfg(all(test, feature = "memory"))]
 mod embed_report_tests {
@@ -923,26 +642,7 @@ mod embed_report_tests {
     }
 }
 
-#[cfg(all(test, feature = "documents"))]
-mod scope_tests {
-    use super::resolve_doc_scope;
-
-    #[test]
-    fn defaults_to_the_repo_scope_when_the_caller_names_none() {
-        assert_eq!(resolve_doc_scope(None, "repo-abc123"), "repo-abc123");
-    }
-
-    #[test]
-    fn a_legacy_web_scope_is_reachable_only_by_naming_it() {
-        let legacy_scope = "web:example.com";
-        let repo_scope = "repo-abc123";
-        assert_ne!(resolve_doc_scope(None, repo_scope), legacy_scope);
-
-        assert_eq!(resolve_doc_scope(Some(legacy_scope), repo_scope), legacy_scope);
-    }
-}
-
-#[cfg(all(test, any(feature = "documents", feature = "code-search")))]
+#[cfg(all(test, feature = "code-search"))]
 #[test]
 fn successful_semantic_routes_emit_observed_provenance() {
     use std::io::{self, Write};

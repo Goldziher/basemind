@@ -939,10 +939,6 @@ pub(super) struct RecentCallView {
     pub est_tokens_saved: u64,
 }
 
-#[cfg(feature = "documents")]
-pub use super::types_documents::SearchDocumentsParams;
-#[cfg(feature = "documents")]
-pub(super) use super::types_documents::{DocumentSearchHit, SearchDocumentsResponse};
 pub use super::types_git::{
     BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DiffFileParams, DiffOutlineParams,
     FindCommitsByPathParams, HotFilesParams, RecentChangesParams, SearchGitHistoryParams, SymbolHistoryParams,

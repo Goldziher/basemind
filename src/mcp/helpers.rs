@@ -13,7 +13,7 @@ use crate::extract::SymbolKind;
 use crate::lang::LangId;
 
 pub(super) use super::helpers_calls::{RefsSource, run_find_callers, run_find_references};
-#[cfg(feature = "documents")]
+#[cfg(all(feature = "documents", feature = "code-search"))]
 pub(super) use super::helpers_documents::format_response;
 pub(super) use super::helpers_files::{run_find_files, run_list_files};
 pub(super) use super::helpers_fingerprint::{HashMode, outline_entry_for_blob, parse_hash_mode, symbol_fingerprint};

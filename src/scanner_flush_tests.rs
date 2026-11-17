@@ -43,6 +43,7 @@ fn doc(chunks: usize, dim: u16) -> FileMapDoc {
                 byte_end: i as u32 + 1,
                 text: format!("chunk {i}"),
                 embedding: vec![0.25_f32; usize::from(dim)],
+                ..DocChunk::default()
             })
             .collect(),
         embedding_model: if dim > 0 { PRESET.to_string() } else { String::new() },
@@ -76,13 +77,25 @@ fn owe_doc(store: &mut Store, rel: &str, blob: Option<&FileMapDoc>) {
     store.pending_vectors.owe_doc(rel);
 }
 
-fn doc_rows(store: &mut Store, scope: &str) -> Vec<String> {
-    let lance = store.lance_or_open(DIM, PRESET).expect("open lance").clone();
-    let mut paths: Vec<String> = lance
-        .search_documents(scope, vec![0.25; usize::from(DIM)], 500, None)
-        .expect("search")
+/// The paths whose document rows are in the store with their vectors.
+fn doc_rows(store: &mut Store, _scope: &str) -> Vec<String> {
+    let Some(docs) = crate::scanner_docs::open_doc_store(store, &config(), false).expect("open") else {
+        return Vec::new();
+    };
+    let keys = docs.keys().expect("keys");
+    let embedded: ahash::AHashSet<String> = docs
+        .documents(&keys)
+        .expect("documents")
         .into_iter()
-        .map(|hit| hit.path)
+        .filter(|meta| meta.embedded && meta.n_chunks > 0)
+        .map(|meta| meta.doc_key)
+        .collect();
+    let mut paths: Vec<String> = store
+        .index
+        .doc_files
+        .iter()
+        .filter(|(_, entry)| embedded.contains(&crate::lance::docs::doc_key(&entry.hash_hex, &entry.config_digest)))
+        .map(|(path, _)| path.to_str_lossy().into_owned())
         .collect();
     paths.sort();
     paths.dedup();
@@ -106,6 +119,14 @@ fn open_store(root: &Path) -> Store {
 
 /// A file where the vector store's directory belongs: every open of the store fails.
 fn block_vector_store(store: &Store) -> std::path::PathBuf {
+    let dir = store.basemind_dir.join(crate::store_layout::RETRIEVAL_DIR);
+    std::fs::write(&dir, b"not a directory").unwrap();
+    dir
+}
+
+/// A file where the code-chunk vector store's directory belongs: every open of it fails.
+#[cfg(feature = "code-search")]
+fn block_code_store(store: &Store) -> std::path::PathBuf {
     let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
     std::fs::write(&lance_dir, b"not a directory").unwrap();
     lance_dir
@@ -285,8 +306,6 @@ fn a_batch_whose_blob_holds_other_vectors_is_settled_not_written() {
     owe_doc(&mut store, "docs/other-dim.txt", Some(&doc(2, 384)));
     let batch = |rel: &str| crate::scan_retrieval::PendingDocBatch {
         rel_path: rel.to_string(),
-        blob_hash: crate::hashing::hex(&crate::hashing::hash_bytes(rel.as_bytes())),
-        doc_scope: SCOPE.to_string(),
         chunk_count: 2,
         embedding_dim: DIM,
         emit_rows: true,
@@ -337,7 +356,7 @@ fn nothing_is_requeued_while_the_vector_store_cannot_be_opened() {
     assert!(store.pending_vectors.is_empty());
 }
 
-/// A write that fails once the store is open leaves the document owed, on disk, for the next pass.
+/// A document whose rows could not be written stays owed, on disk, and the next pass writes it.
 #[test]
 fn rows_whose_write_failed_stay_owed_and_the_next_pass_writes_them() {
     let tmp = tempfile::tempdir().unwrap();
@@ -345,35 +364,35 @@ fn rows_whose_write_failed_stay_owed_and_the_next_pass_writes_them() {
     let config = config();
     owe_doc(&mut store, "docs/good.txt", Some(&doc(2, DIM)));
     store.flush().unwrap();
-    let lance = store.lance_or_open(DIM, PRESET).unwrap().clone();
-    std::fs::remove_dir_all(lance.dir().join("documents.lance")).unwrap();
+    let blocker = block_vector_store(&store);
 
     lanes(&mut store, &config, usize::MAX);
-
     assert_eq!(
         owed_on_disk(&store),
         ["docs/good.txt"],
         "the failed write must stay owed"
     );
-    assert_eq!(store.pending_vectors.docs().len(), 1);
 
-    drop(lance);
-    store.lance = None;
+    std::fs::remove_file(&blocker).unwrap();
     lanes(&mut store, &config, usize::MAX);
     assert_eq!(doc_rows(&mut store, SCOPE), ["docs/good.txt"]);
     assert!(owed_on_disk(&store).is_empty());
 }
 
-/// An incremental scan re-queues a bounded number of owed paths and leaves the rest owed.
+/// The store is asked which documents it lacks (ADR-0029 rule 11) and a blob is read only for
+/// those; an incremental pass writes a bounded number of them and leaves the rest owed.
 #[test]
-fn an_incremental_scan_requeues_a_bounded_number_of_owed_paths() {
+fn an_incremental_scan_writes_a_bounded_number_of_absent_documents() {
     let tmp = tempfile::tempdir().unwrap();
     let mut store = open_store(tmp.path());
     let config = config();
-    let blob = doc(1, DIM);
     let total = REQUEUE_PER_INCREMENTAL + 6;
     for index in 0..total {
-        owe_doc(&mut store, &format!("docs/{index:03}.txt"), Some(&blob));
+        owe_doc(
+            &mut store,
+            &format!("docs/{index:03}.txt"),
+            Some(&doc(1 + index % 2, DIM)),
+        );
     }
 
     lanes(&mut store, &config, REQUEUE_PER_INCREMENTAL);
@@ -381,15 +400,19 @@ fn an_incremental_scan_requeues_a_bounded_number_of_owed_paths() {
     assert_eq!(doc_rows(&mut store, SCOPE).len(), REQUEUE_PER_INCREMENTAL);
     assert_eq!(store.pending_vectors.docs().len(), 6);
     assert_eq!(owed_on_disk(&store).len(), 6);
+
+    lanes(&mut store, &config, usize::MAX);
+    assert_eq!(doc_rows(&mut store, SCOPE).len(), total, "a full pass writes the rest");
+    assert!(owed_on_disk(&store).is_empty());
 }
 
 fn inline_scan(root: &Path, store: &mut Store, config: &Config) {
     scan(root, store, config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
 }
 
-/// The vector store can be wiped or deleted on its own (another model opened it, `cache clear`,
-/// an unreadable `meta.json`), while the file map and the blobs still say every file is embedded.
-/// The scan that finds another store where the one it wrote to was puts the rows back.
+/// The document store can be wiped or deleted on its own (`cache clear`, a new table version),
+/// while the file map and the blobs still say every file is embedded. The next scan finds the
+/// documents absent and writes them back from the blobs.
 #[test]
 fn a_vector_store_that_was_removed_gets_its_rows_back_from_the_next_scan() {
     let tmp = tempfile::tempdir().unwrap();
@@ -398,16 +421,8 @@ fn a_vector_store_that_was_removed_gets_its_rows_back_from_the_next_scan() {
     let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
     inline_scan(tmp.path(), &mut store, &config);
     assert_eq!(doc_rows(&mut store, &scope), [rel]);
-    let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
-    let first = crate::lance::store_id(&lance_dir).expect("the store has an id");
-    assert_eq!(
-        crate::store_pending::recorded_store(&store.view_dir).as_deref(),
-        Some(first.as_str()),
-        "the scan recorded the store its rows went to"
-    );
 
-    store.lance = None;
-    std::fs::remove_dir_all(&lance_dir).unwrap();
+    std::fs::remove_dir_all(store.basemind_dir.join(crate::store_layout::RETRIEVAL_DIR)).unwrap();
     inline_scan(tmp.path(), &mut store, &config);
 
     assert_eq!(
@@ -416,12 +431,6 @@ fn a_vector_store_that_was_removed_gets_its_rows_back_from_the_next_scan() {
         "the unchanged file's rows are rewritten"
     );
     assert!(owed_on_disk(&store).is_empty());
-    let second = crate::lance::store_id(&lance_dir).expect("the new store has an id");
-    assert_ne!(first, second);
-    assert_eq!(
-        crate::store_pending::recorded_store(&store.view_dir).as_deref(),
-        Some(second.as_str())
-    );
 }
 
 /// The same loss found by an incremental scan of some other path.
@@ -432,8 +441,7 @@ fn an_incremental_scan_also_finds_the_vector_store_gone() {
     let config = config();
     let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
     inline_scan(tmp.path(), &mut store, &config);
-    store.lance = None;
-    std::fs::remove_dir_all(store.basemind_dir.join(crate::store::LANCE_DIR)).unwrap();
+    std::fs::remove_dir_all(store.basemind_dir.join(crate::store_layout::RETRIEVAL_DIR)).unwrap();
 
     let other = tmp.path().join("lib.rs");
     std::fs::write(&other, "fn other() {}\n").unwrap();
@@ -466,50 +474,21 @@ fn a_view_that_never_wrote_rows_owes_nothing_for_a_store_that_is_not_there() {
     assert!(!store.basemind_dir.join(crate::store::LANCE_DIR).exists());
 }
 
-/// LanceDB commits are not fsynced by basemind, and a path's debt is settled once its commit
-/// returns. After the machine went down those rows may be gone with nothing owed. The pass that
-/// verifies blobs owes every path its rows again; an ordinary pass does not look.
+/// LanceDB commits are not fsynced by basemind. Rows lost with the machine are absent from the
+/// store, and any later pass finds them absent and writes them again.
 #[test]
-fn the_pass_that_verifies_blobs_rewrites_vector_rows_lost_with_the_machine() {
+fn rows_lost_with_the_machine_are_rewritten_by_the_next_pass() {
     let tmp = tempfile::tempdir().unwrap();
     let mut store = open_store(tmp.path());
     let config = config();
     let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
     inline_scan(tmp.path(), &mut store, &config);
-    let lance = store.lance_or_open(DIM, PRESET).unwrap().clone();
-    lance.replace_document(&scope, rel, Vec::new()).unwrap();
-    drop(lance);
+    let docs = crate::scanner_docs::open_doc_store(&store, &config, false)
+        .unwrap()
+        .unwrap();
+    docs.delete_keys(&docs.keys().unwrap()).unwrap();
     assert!(doc_rows(&mut store, &scope).is_empty(), "the rows are lost");
 
-    inline_scan(tmp.path(), &mut store, &config);
-    assert!(
-        doc_rows(&mut store, &scope).is_empty(),
-        "an ordinary pass trusts the file map"
-    );
-
-    std::mem::forget(crate::scan_evidence::ScanBreadcrumb::begin_in(&store.basemind_dir, tmp.path()).unwrap());
-    inline_scan(tmp.path(), &mut store, &config);
-
-    assert_eq!(doc_rows(&mut store, &scope), [rel]);
-    assert!(owed_on_disk(&store).is_empty());
-}
-
-/// A view an earlier build last scanned records no vector store. The pass that verifies blobs owes
-/// its rows all the same: they were written with no fsync either way.
-#[test]
-fn the_verifying_pass_rewrites_lost_rows_of_a_view_that_records_no_store() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut store = open_store(tmp.path());
-    let config = config();
-    let (rel, scope) = workspace_with_a_cached_document(tmp.path(), &store);
-    inline_scan(tmp.path(), &mut store, &config);
-    let lance = store.lance_or_open(DIM, PRESET).unwrap().clone();
-    lance.replace_document(&scope, rel, Vec::new()).unwrap();
-    drop(lance);
-    std::fs::remove_file(store.view_dir.join(crate::store_pending::STORE_ID_FILE)).unwrap();
-    assert!(doc_rows(&mut store, &scope).is_empty(), "the rows are lost");
-
-    std::mem::forget(crate::scan_evidence::ScanBreadcrumb::begin_in(&store.basemind_dir, tmp.path()).unwrap());
     inline_scan(tmp.path(), &mut store, &config);
 
     assert_eq!(doc_rows(&mut store, &scope), [rel]);
@@ -757,7 +736,7 @@ mod code {
             bm25: Vec::new(),
         };
         store.flush().unwrap();
-        let blocker = block_vector_store(&store);
+        let blocker = block_code_store(&store);
 
         flush_vector_lanes(
             &mut store,

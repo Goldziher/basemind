@@ -57,6 +57,10 @@ pub const VIEWS_DIR: &str = "views";
 /// Lazy-opened LanceDB store directory under `.basemind/`. Created on first use.
 #[cfg(feature = "intelligence")]
 pub const LANCE_DIR: &str = "lance";
+/// Document retrieval store directories under `.basemind/`, one per embedding model and dimension
+/// (`crate::lance::docs::store_dir`). Created by the first scan that writes document rows.
+#[cfg(feature = "documents")]
+pub const RETRIEVAL_DIR: &str = "retrieval";
 
 /// View name used for the working-tree index. Also the default for `basemind serve`.
 pub const VIEW_WORKING: &str = "working";

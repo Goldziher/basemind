@@ -12,6 +12,10 @@
 //! runtime context.
 
 mod batch;
+#[cfg(feature = "documents")]
+pub mod docs;
+#[cfg(feature = "documents")]
+pub mod docs_schema;
 mod memory;
 pub mod schema;
 #[doc(hidden)]
@@ -263,6 +267,34 @@ impl LanceStore {
 
     /// [`Self::open`] waiting at most `wait` for another open of the store.
     fn open_waiting(dir: &Path, dim: u16, embedding_model: &str, wait: std::time::Duration) -> Result<Self> {
+        let tables = [
+            (DOCUMENTS_TABLE, documents_schema(dim)),
+            (MEMORY_TABLE, memory_schema(dim)),
+            #[cfg(feature = "code-search")]
+            (schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)),
+        ];
+        Self::open_with(dir, dim, embedding_model, wait, &tables)
+    }
+
+    /// Open the store at `dir` holding exactly `tables`, under the same version, wipe and lock
+    /// rules as [`Self::open`].
+    #[cfg(feature = "documents")]
+    pub(crate) fn open_tables(
+        dir: &Path,
+        dim: u16,
+        embedding_model: &str,
+        tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
+    ) -> Result<Self> {
+        Self::open_with(dir, dim, embedding_model, OPEN_LOCK_WAIT, tables)
+    }
+
+    fn open_with(
+        dir: &Path,
+        dim: u16,
+        embedding_model: &str,
+        wait: std::time::Duration,
+        tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
+    ) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let meta_path = dir.join(META_FILE);
         let expected = LanceMeta {
@@ -291,10 +323,9 @@ impl LanceStore {
             .with_context(|| format!("open lancedb at {uri}"))?;
 
         runtime.block_on(async {
-            ensure_table(&connection, DOCUMENTS_TABLE, documents_schema(dim)).await?;
-            ensure_table(&connection, MEMORY_TABLE, memory_schema(dim)).await?;
-            #[cfg(feature = "code-search")]
-            ensure_table(&connection, schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)).await?;
+            for (name, schema) in tables {
+                ensure_table(&connection, name, schema.clone()).await?;
+            }
             anyhow::Ok(())
         })?;
 

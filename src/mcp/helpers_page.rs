@@ -42,47 +42,13 @@ pub(super) const RANKED_FETCH: u32 = RANKED_DEPTH + 1;
 /// `truncated_reason` of a ranking that goes on past [`RANKED_DEPTH`].
 const REASON_DEPTH: &str = "depth";
 
-/// Chunks a `docs_search` with a `keywords` / `entity` filter lets the filter see.
-#[cfg_attr(
-    not(feature = "documents"),
-    allow(dead_code, reason = "compiled for its tests when `docs_search` is not in the build")
-)]
-pub(super) const FILTER_DEPTH: usize = 400;
-
-/// What a filtered retrieval asks for: the page or [`FILTER_DEPTH`], whichever is deeper, and one
-/// chunk that only says whether the ranking continues past it.
-#[cfg_attr(
-    not(feature = "documents"),
-    allow(dead_code, reason = "compiled for its tests when `docs_search` is not in the build")
-)]
-pub(super) fn filtered_fetch(limit: usize) -> usize {
-    limit.max(FILTER_DEPTH) + 1
-}
-
-/// Drop the probe chunk of a retrieval of `fetch` (see [`filtered_fetch`]) and say whether it was
-/// there: only then did the filter not see the whole ranking. A vector search returns as many
-/// chunks as it is asked for whenever the corpus has them, so "it returned the depth" alone would
-/// flag every filtered search over a corpus that large.
-#[cfg_attr(
-    not(feature = "documents"),
-    allow(dead_code, reason = "compiled for its tests when `docs_search` is not in the build")
-)]
-pub(super) fn cut_at_filter_depth<T>(retrieved: &mut Vec<T>, fetch: usize) -> bool {
-    let goes_on = retrieved.len() >= fetch;
-    retrieved.truncate(fetch.saturating_sub(1));
-    goes_on
-}
-
 /// The cut a retrieval names on its own response, before [`page_ranked`] adds `depth` to one that
 /// names none. One reason is reported, the one that hides the most: `filter_depth` (documents the
 /// filter never saw, which no cursor reaches), then `rerank_top_k` (candidates the reranker
 /// dropped), then `depth` (the ranking goes on past what can be paged).
 #[cfg_attr(
-    not(any(feature = "code-search", feature = "documents")),
-    allow(
-        dead_code,
-        reason = "compiled for its tests when neither ranked tool is in the build"
-    )
+    not(feature = "code-search"),
+    allow(dead_code, reason = "compiled for its tests when `code_search` is not in the build")
 )]
 pub(super) fn retrieval_cut(past_filter_depth: bool, reranker_dropped: bool) -> Option<&'static str> {
     if past_filter_depth {
@@ -98,11 +64,8 @@ pub(super) fn retrieval_cut(past_filter_depth: bool, reranker_dropped: bool) -> 
 /// `retrieve` returns, kept for the pages and repeats that follow. A degraded or empty answer is
 /// not kept: it is the one most likely to be different a moment later.
 #[cfg_attr(
-    not(any(feature = "code-search", feature = "documents")),
-    allow(
-        dead_code,
-        reason = "compiled for its tests when neither ranked tool is in the build"
-    )
+    not(feature = "code-search"),
+    allow(dead_code, reason = "compiled for its tests when `code_search` is not in the build")
 )]
 pub(super) async fn ranked_retrieval<F>(
     cache: &super::ranked_cache::RankedCache,
@@ -157,6 +120,10 @@ pub(super) fn ranked_offset(tool: &str, cursor: Option<&Cursor>, generation: u32
 ///
 /// A response with no structured content (a TOON-encoded one) is returned untouched: it is page
 /// one and carries no cursor.
+#[cfg_attr(
+    not(feature = "code-search"),
+    allow(dead_code, reason = "compiled for its tests when `code_search` is not in the build")
+)]
 pub(super) fn page_ranked(
     mut result: CallToolResult,
     list_key: &str,
@@ -268,33 +235,6 @@ mod tests {
         assert_eq!(body(&last)["truncated_reason"], json!("depth"));
     }
 
-    #[test]
-    fn a_filter_is_flagged_only_when_the_ranking_goes_on_past_its_depth() {
-        assert_eq!(filtered_fetch(10), FILTER_DEPTH + 1);
-        assert_eq!(filtered_fetch(FILTER_DEPTH + 50), FILTER_DEPTH + 51);
-        let fetch = filtered_fetch(10);
-
-        let mut exactly_the_depth: Vec<usize> = (0..FILTER_DEPTH).collect();
-        assert!(
-            !cut_at_filter_depth(&mut exactly_the_depth, fetch),
-            "a corpus of exactly the depth was seen whole"
-        );
-        assert_eq!(exactly_the_depth.len(), FILTER_DEPTH);
-
-        let mut deeper: Vec<usize> = (0..fetch).collect();
-        assert!(cut_at_filter_depth(&mut deeper, fetch));
-        assert_eq!(
-            deeper.len(),
-            FILTER_DEPTH,
-            "the probe chunk is never filtered or returned"
-        );
-
-        let mut small: Vec<usize> = (0..3).collect();
-        assert!(!cut_at_filter_depth(&mut small, fetch));
-        assert_eq!(small.len(), 3);
-    }
-
-    /// Which of `filter_depth`, `rerank_top_k` and `depth` a response names.
     #[test]
     fn one_cut_is_named_and_it_is_the_one_that_hides_the_most() {
         let named = |past_filter_depth, reranker_dropped, hits: usize| {

@@ -121,10 +121,12 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig) -> String 
     // re-extract every document on upgrade.
     let defaults = DocumentsConfig::default();
     let cutovers = (cfg.markdown_chunk_max_bytes, cfg.plain_text_chunk_max_bytes);
+    // `doc/2`: Markdown output, repeated table headers, chunk metadata and snapped chunk starts
+    // (ADR-0029 rule 10) change every document's chunks.
     let mut tag = if cutovers == (defaults.markdown_chunk_max_bytes, defaults.plain_text_chunk_max_bytes) {
-        "doc/1".to_string()
+        "doc/2".to_string()
     } else {
-        format!("doc/1/cutover={},{}", cutovers.0, cutovers.1)
+        format!("doc/2/cutover={},{}", cutovers.0, cutovers.1)
     };
     // `extract::doc_tiers` is compiled only with `documents`, and this function is not.
     tag.push_str(missing_tier_suffix(

@@ -1,107 +1,173 @@
-//! Documents-tier parameter + response shapes for `search_documents` and friends.
+//! Response shapes of `docs_search` (ADR-0029 rules 8 and 9).
 //!
-//! Extracted from `src/mcp/types.rs` so the parent module stays under the per-file line
-//! cap as more documents-tier types are added in later iters. Re-exported wholesale via
-//! `pub use types_documents::*;` in `types.rs`.
+//! A search ranks chunks once per query ([`RankedChunk`], kept for the pages that follow), then
+//! each page turns its slice of that ranking into [`DocHit`]s: adjacent chunks of one document
+//! merged, the neighbours on either side added while the token budget allows, and every path
+//! holding the same content named.
 
 #[cfg(feature = "documents")]
 use rmcp::schemars;
 #[cfg(feature = "documents")]
 use serde::{Deserialize, Serialize};
 
+/// Where a hit's text sits in its document. A field the format has no notion of is `null`:
+/// pages for a Markdown file, lines for a PDF.
 #[cfg(feature = "documents")]
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct SearchDocumentsParams {
-    pub query: String,
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Optional token budget bounding the returned `hits` list (not the whole envelope).
-    /// Hits are kept best-first until the budget is hit; the rest are dropped and the
-    /// response carries `budgeted: true`.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `hits` list — far fewer tokens than JSON for large hit sets.
-    /// Overrides the `[documents.output] format` config knob for this call.
-    #[serde(default)]
-    pub format: Option<String>,
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    /// Which ingestion scope to search. Defaults to this repo's scope — the one the
-    /// scanner's document lane writes under. Rows an older version ingested from the web
-    /// sit under a **different** scope (`web:<host>`) and are no longer refreshed; reaching
-    /// them requires naming it here.
-    #[serde(default)]
-    pub scope: Option<String>,
-    /// Optional case-insensitive substring match against `DocEntity.category`.
-    /// When set, only hits whose parent document carries at least one entity
-    /// in that category are returned. Combined with `keywords_contains` via
-    /// AND semantics (both must match when both are set). Errors on a build without the
-    /// `documents-ner` feature, where no document carries entities.
-    #[serde(default)]
-    pub entity_category: Option<String>,
-    /// Optional case-insensitive substring match against `DocKeyword.text`.
-    /// When set, only hits whose parent document carries at least one keyword
-    /// containing the substring are returned.
-    #[serde(default)]
-    pub keywords_contains: Option<String>,
-}
-
-#[cfg(feature = "documents")]
-pub(crate) use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
-
-#[cfg(feature = "documents")]
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub(crate) struct DocumentSearchHit {
-    pub path: String,
-    pub chunk_idx: u32,
-    pub text: String,
-    pub mime_type: String,
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct DocCite {
+    /// First page (slide, for a presentation), 1-based.
+    pub page_start: Option<u32>,
+    pub page_end: Option<u32>,
+    /// Heading trail, outermost first.
+    pub section: Option<Vec<String>>,
+    /// First source line, 1-based; text sources only.
+    pub line_start: Option<u32>,
+    pub line_end: Option<u32>,
+    /// Byte range in the extracted text of the document.
     pub byte_start: u32,
     pub byte_end: u32,
-    pub distance: f32,
-    /// Cross-encoder relevance score in `[0, 1]`. Present only when the reranker is
-    /// enabled on the call; absent (`null` / omitted) when reranker is off.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rerank_score: Option<f32>,
-    /// Keywords from the parent document, when keyword extraction was enabled
-    /// at scan time. Empty otherwise.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub keywords: Vec<DocKeyword>,
-    /// Named entities from the parent document, when NER was enabled at scan time.
-    /// Empty otherwise.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub entities: Vec<DocEntity>,
-    /// Document-level summary from the parent doc blob, when summarisation was
-    /// enabled at scan time. `None` otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<DocSummary>,
 }
 
+/// Which chunks of which document a hit is.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct DocChunkRef {
+    /// The document's content key (hex).
+    pub doc: String,
+    /// First and last chunk ordinal of the hit, before context was added.
+    pub ord: u32,
+    pub ord_end: u32,
+    /// Chunks in the document, when known.
+    pub of: Option<u32>,
+}
+
+/// The rank a hit held in each lane that ranked it, 1-based.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct LaneRanks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lexical: Option<u32>,
+}
+
+/// How many neighbouring chunks a hit's `text` carries on each side.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct DocContext {
+    pub before: u32,
+    pub after: u32,
+}
+
+/// One answer of `docs_search`.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct DocHit {
+    /// The first live path holding this content.
+    pub path: String,
+    /// Other live paths holding the same content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_at: Vec<String>,
+    pub mime_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub chunk: DocChunkRef,
+    pub cite: DocCite,
+    /// The hit's chunks, stitched, with its context chunks around them.
+    pub text: String,
+    pub context: DocContext,
+    /// Fused score (reciprocal rank).
+    pub score: f32,
+    pub lanes: LaneRanks,
+    /// Cross-encoder score, when the reranker scored this hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score: Option<f32>,
+}
+
+/// One chunk of a ranking, as kept between the pages of one query.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct RankedChunk {
+    pub doc: String,
+    pub ord: u32,
+    /// Live paths holding this document, sorted.
+    pub paths: Vec<String>,
+    pub mime_type: String,
+    pub kind: String,
+    pub cite: DocCite,
+    pub text: String,
+    pub score: f32,
+    pub lanes: LaneRanks,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score: Option<f32>,
+}
+
+/// A lane that could not run for a query, and why.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct DocLaneUnavailable {
+    pub lane: String,
+    pub reason: String,
+}
+
+/// Whether the reranker reordered the head of the ranking.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct RerankReport {
+    pub ran: bool,
+    /// Hits the cross-encoder scored; the rest keep their fused order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<u32>,
+    /// Why it did not run, when it was asked to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The ranking of one query: what [`super::docs_pipeline`] computes once and pages from.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct DocsRanking {
+    pub query: String,
+    pub hits: Vec<RankedChunk>,
+    pub lanes_ran: Vec<String>,
+    pub lanes_unavailable: Vec<DocLaneUnavailable>,
+    pub lexical_fuzzy: bool,
+    pub vector_mode: Option<String>,
+    pub rerank: RerankReport,
+    pub notice: Option<String>,
+    /// Set when the liveness projection reached its cap with too few live hits.
+    pub truncated_reason: Option<String>,
+}
+
+/// The response of `docs_search`.
 #[cfg(feature = "documents")]
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-pub(crate) struct SearchDocumentsResponse {
+pub(crate) struct DocsSearchResponse {
     pub query: String,
-    /// True when a `max_tokens` budget dropped trailing `hits`. `search_documents` has no
-    /// cursor; raise `max_tokens` (or omit it) to retrieve more hits.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    /// True when the ranking was cut by a hard bound, so better-matching hits may exist than the
-    /// ones that can be paged to. Narrow the query or the filters.
+    pub hits: Vec<DocHit>,
+    /// Lanes that produced a ranking: `vector`, `lexical`.
+    pub lanes_ran: Vec<String>,
+    /// Lanes that could not run, each with its reason; the answer is the other lane's alone.
+    pub lanes_unavailable: Vec<DocLaneUnavailable>,
+    /// The lexical lane was rerun allowing one edit per term, having found less than a page.
+    pub lexical_fuzzy: bool,
+    /// `exact` when the vector lane ran: every candidate vector was compared.
+    pub vector_mode: Option<String>,
+    pub rerank: RerankReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+    /// The ranking was cut by a hard bound: `depth` (it goes on past the 100 hits that can be
+    /// paged) or `liveness_depth` (the live documents are too many to filter on before ranking, and
+    /// the widened search still found too few of them).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// What cut it: `depth` (the ranking goes on past the 100 hits that can be paged),
-    /// `rerank_top_k` (the reranker kept its `top_k` best) or
-    /// `filter_depth` (a `keywords` / `entity` filter saw only the 400 best-ranked chunks, and all
-    /// 400 were retrieved, so matching documents ranked below them were never looked at).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<String>,
-    pub hits: Vec<DocumentSearchHit>,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
-    /// search + response construction), excluding MCP transport, argument
-    /// deserialization, and response serialization. A first call against a cold server also
-    /// includes index warm-up; such responses carry a `notice`. See
-    /// [`crate::mcp::helpers::timing`] for the full contract.
+    /// The token budget ended the page early; `next_cursor` continues.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<super::cursor::Cursor>,
     #[serde(default)]
     pub elapsed_us: u64,
 }

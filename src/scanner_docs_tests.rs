@@ -26,6 +26,7 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
             byte_end: 5,
             text: "hello".to_string(),
             embedding: vec![0.0_f32; 768],
+            ..DocChunk::default()
         }],
         embedding_model: "balanced".to_string(),
         embedding_dim: 768,
@@ -68,8 +69,6 @@ fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
 fn pending_doc_batch_is_metadata_only() {
     let batch = PendingDocBatch {
         rel_path: "docs/manual.pdf".to_string(),
-        blob_hash: "deadbeef".to_string(),
-        doc_scope: "repo:origin".to_string(),
         chunk_count: 3,
         embedding_dim: 768,
         emit_rows: true,
@@ -93,6 +92,7 @@ fn doc_fixture(chunk_count: usize, embedding_dim: u16) -> crate::extract::doc::F
             byte_end: i as u32 + 1,
             text: format!("chunk {i}"),
             embedding: vec![0.0_f32; embedding_dim as usize],
+            ..DocChunk::default()
         })
         .collect();
     FileMapDoc {
@@ -127,7 +127,7 @@ fn pending_from_doc_marks_a_failed_embed_as_attempted_not_embedded() {
     let cfg = DocumentsConfig::default();
 
     let failed = doc_fixture(3, 0);
-    let batch = pending_from_doc(&failed, "docs/a.pdf", "hash", "repo:x", &cfg, true, false);
+    let batch = pending_from_doc(&failed, "docs/a.pdf", &cfg, true, false);
     assert!(!batch.embedded, "no vectors => not embedded");
     assert!(
         batch.embed_attempted,
@@ -136,17 +136,17 @@ fn pending_from_doc_marks_a_failed_embed_as_attempted_not_embedded() {
     assert!(!batch.emit_rows, "a vectorless doc emits no LanceDB rows");
 
     let ok = doc_fixture(3, 768);
-    let batch = pending_from_doc(&ok, "docs/a.pdf", "hash", "repo:x", &cfg, true, false);
+    let batch = pending_from_doc(&ok, "docs/a.pdf", &cfg, true, false);
     assert!(
         batch.embedded && batch.embed_attempted,
         "a successful embed sets both flags"
     );
 
-    let off = pending_from_doc(&failed, "docs/a.pdf", "hash", "repo:x", &cfg, false, false);
+    let off = pending_from_doc(&failed, "docs/a.pdf", &cfg, false, false);
     assert!(off.embedded, "embed off leaves the requirement trivially satisfied");
     assert!(!off.embed_attempted, "embed off ran no attempt");
 
-    let reused = pending_from_doc(&ok, "docs/a.pdf", "hash", "repo:x", &cfg, true, true);
+    let reused = pending_from_doc(&ok, "docs/a.pdf", &cfg, true, true);
     assert!(
         !reused.embed_attempted,
         "a reused blob ran no fresh attempt (already embedded)"
@@ -523,154 +523,4 @@ fn images_are_denied_without_the_ocr_tier_but_svg_is_text() {
         should_extract_document(Path::new("assets/photo.png"), &allowlisted).is_none(),
         "the allowlist cannot route an image to an extractor that is not compiled in"
     );
-}
-
-#[test]
-fn doc_scope_keeps_default_for_repo_relative_paths() {
-    let cfg = crate::config::ConfigV1::with_defaults();
-    let scope = doc_scope_for("docs/manual.pdf", "repo:origin", &cfg);
-    assert_eq!(scope, "repo:origin");
-    assert!(matches!(scope, std::borrow::Cow::Borrowed(_)));
-}
-
-#[test]
-fn doc_scope_namespaces_external_files_under_their_extra_root() {
-    let ext = tempfile::tempdir().expect("tempdir");
-    let ext_canonical = std::fs::canonicalize(ext.path()).unwrap();
-    let mut cfg = crate::config::ConfigV1::with_defaults();
-    cfg.scan.extra_roots = vec![ext.path().to_path_buf()];
-
-    let file_key = ext_canonical.join("pkg/notes.pdf");
-    let scope = doc_scope_for(file_key.to_str().unwrap(), "repo:origin", &cfg);
-    assert_eq!(scope, format!("path:{}", ext_canonical.to_str().unwrap()));
-}
-
-#[test]
-fn doc_scope_prefers_the_longest_root_and_respects_segment_boundaries() {
-    let base = tempfile::tempdir().expect("tempdir");
-    let base = std::fs::canonicalize(base.path()).unwrap();
-    for dir in ["foo", "foo/inner", "foobar"] {
-        std::fs::create_dir_all(base.join(dir)).unwrap();
-    }
-    let mut cfg = crate::config::ConfigV1::with_defaults();
-    cfg.scan.extra_roots = vec![base.join("foo"), base.join("foo/inner"), base.join("foobar")];
-    let scope_of = |rel: &str| doc_scope_for(base.join(rel).to_str().unwrap(), "repo:origin", &cfg).into_owned();
-
-    assert_eq!(scope_of("foo/a.pdf"), format!("path:{}", base.join("foo").display()));
-    assert_eq!(
-        scope_of("foo/inner/a.pdf"),
-        format!("path:{}", base.join("foo/inner").display()),
-        "nested root wins over its parent"
-    );
-    assert_eq!(
-        scope_of("foobar/a.pdf"),
-        format!("path:{}", base.join("foobar").display()),
-        "/foo must not claim /foobar"
-    );
-}
-
-fn seeded_doc_lance(store: &mut Store, paths: &[&str]) -> crate::lance::LanceStore {
-    let lance = store.lance_or_open(768, "balanced").expect("open lance").clone();
-    for path in paths {
-        let row = DocumentRow {
-            scope: "repo:s".to_string(),
-            path: (*path).to_string(),
-            chunk_idx: 0,
-            mime_type: "text/plain".to_string(),
-            text: "body".to_string(),
-            byte_start: 0,
-            byte_end: 4,
-            embedding: vec![0.25; 768],
-        };
-        lance.replace_document("repo:s", path, vec![row]).expect("seed row");
-        store.upsert_doc(
-            *path,
-            crate::store::DocEntry {
-                config_digest: String::new(),
-                hash_hex: "h".to_string(),
-                embedding_preset: "balanced".to_string(),
-                size_bytes: 1,
-                mtime: 0,
-                embedded: true,
-                embed_attempted: true,
-            },
-        );
-    }
-    lance
-}
-
-fn doc_rows(lance: &crate::lance::LanceStore) -> Vec<String> {
-    let mut paths: Vec<String> = lance
-        .search_documents("repo:s", vec![0.25; 768], 50, None)
-        .expect("search")
-        .into_iter()
-        .map(|hit| hit.path)
-        .collect();
-    paths.sort();
-    paths
-}
-
-/// The embed-policy purge is what makes `embed_exclude` / `embed_include` / `embed = false`
-/// retroactive: rows of newly ineligible documents disappear, eligible ones stay. Exercised against
-/// a real LanceDB table (no embedding model involved).
-#[test]
-fn embed_policy_purge_deletes_vectors_of_newly_ineligible_documents_only() {
-    crate::store::init_isolated_cache();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
-    let lance = seeded_doc_lance(&mut store, &["docs/a.pdf", "docs/b.pdf", "notes/c.pdf"]);
-    assert_eq!(doc_rows(&lance).len(), 3);
-
-    let mut config = crate::config::default_for_root(Path::new("."));
-    config.documents.embed = true;
-    config.documents.embed_exclude = vec!["docs/b.pdf".to_string()];
-    let filters = Filters::build(&config, Vec::new()).unwrap();
-    purge_unembedded_documents(&mut store, &config, &filters, "repo:s");
-    assert_eq!(
-        doc_rows(&lance),
-        vec!["docs/a.pdf".to_string(), "notes/c.pdf".to_string()]
-    );
-    assert!(
-        store.lookup_doc("docs/b.pdf").is_some(),
-        "the document stays indexed, only its vectors go"
-    );
-
-    config.documents.embed_exclude = Vec::new();
-    config.documents.embed_include = vec!["notes/**".to_string()];
-    let filters = Filters::build(&config, Vec::new()).unwrap();
-    purge_unembedded_documents(&mut store, &config, &filters, "repo:s");
-    assert_eq!(
-        doc_rows(&lance),
-        vec!["notes/c.pdf".to_string()],
-        "embed_include narrows retroactively"
-    );
-
-    config.documents.embed = false;
-    let filters = Filters::build(&config, Vec::new()).unwrap();
-    purge_unembedded_documents(&mut store, &config, &filters, "repo:s");
-    assert!(doc_rows(&lance).is_empty(), "embed = false removes every vector row");
-}
-
-#[test]
-fn embed_policy_purge_never_creates_the_vector_store() {
-    crate::store::init_isolated_cache();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
-    store.upsert_doc(
-        "docs/a.pdf",
-        crate::store::DocEntry {
-            config_digest: String::new(),
-            hash_hex: "h".to_string(),
-            embedding_preset: "balanced".to_string(),
-            size_bytes: 1,
-            mtime: 0,
-            embedded: true,
-            embed_attempted: true,
-        },
-    );
-    let mut config = crate::config::default_for_root(Path::new("."));
-    config.documents.embed = false;
-    let filters = Filters::build(&config, Vec::new()).unwrap();
-    purge_unembedded_documents(&mut store, &config, &filters, "repo:s");
-    assert!(store.lance.is_none() && !store.lance_dir_exists());
 }

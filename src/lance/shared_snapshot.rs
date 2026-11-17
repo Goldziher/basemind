@@ -9,6 +9,7 @@ use lancedb::arrow::arrow_array::{RecordBatch, StringArray, UInt32Array};
 use lancedb::query::{ExecutableQuery, QueryBase};
 
 use super::LanceStore;
+#[cfg(feature = "code-search")]
 use super::shared::LivePaths;
 use super::shared_store::{SharedLane, SharedStore};
 
@@ -22,6 +23,7 @@ pub(crate) struct Snapshot {
     paths: BTreeSet<(String, u32, String)>,
 }
 
+#[cfg(feature = "code-search")]
 impl Snapshot {
     pub(crate) fn paths(&self) -> LivePaths<'_> {
         LivePaths::from_exact(
@@ -121,6 +123,7 @@ fn save(snapshot: &Snapshot, source: &LanceStore, lane: SharedLane, scope: &str)
     Ok(())
 }
 
+#[cfg(feature = "code-search")]
 fn load(source: &LanceStore, lane: SharedLane, scope: &str) -> Result<Snapshot> {
     Ok(rmp_serde::from_read(std::fs::File::open(snapshot_path(
         source, lane, scope,
@@ -183,6 +186,7 @@ pub(crate) fn enabled() -> bool {
     std::env::var_os("BASEMIND_INDEX_LAYERED").is_some_and(|value| value == "1")
 }
 
+#[cfg(feature = "code-search")]
 pub(crate) fn read<T>(
     source: &LanceStore,
     group: &Path,
@@ -317,7 +321,7 @@ fn code_ordinal(id: &str) -> Result<u32> {
     Ok(id.rsplit_once(':').context("invalid chunk ID")?.1.parse()?)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "code-search"))]
 mod tests {
     use super::*;
     use crate::lance::DocumentRow;
