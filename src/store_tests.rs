@@ -658,3 +658,24 @@ fn a_writer_open_rebuilds_a_view_whose_file_map_does_not_decode() {
     rescan(root, &mut store).expect("scan");
     assert_eq!(store.index.files.len(), 1);
 }
+
+/// The status sidecar counted the machine-wide blob namespace with a directory listing on every
+/// watcher batch, so its number was every workspace's. It counts this workspace's contents.
+#[test]
+fn the_status_sidecar_counts_this_workspaces_distinct_contents() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::write(root.join("a.rs"), b"pub fn same() {}\n").expect("write");
+    std::fs::write(root.join("b.rs"), b"pub fn same() {}\n").expect("write");
+    std::fs::write(root.join("c.rs"), b"pub fn other() {}\n").expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    std::fs::create_dir_all(&store.blobs_dir).expect("mk blobs");
+    std::fs::write(store.blobs_dir.join(format!("{}.fm.msgpack", "f".repeat(64))), b"x")
+        .expect("another workspace's blob");
+
+    rescan(root, &mut store).expect("scan");
+
+    let sidecar = read_status_sidecar(&store.basemind_dir).expect("sidecar");
+    assert_eq!((sidecar.file_count, sidecar.blob_count), (3, 2));
+}

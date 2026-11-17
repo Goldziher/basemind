@@ -812,7 +812,9 @@ impl Store {
             return;
         }
         let file_count = self.index.files.len();
-        let blob_count = count_fm_blobs(&self.blobs_dir);
+        // This workspace's distinct contents, not a directory listing of the machine-wide blob
+        // namespace, which every watcher batch paid for and which counted every workspace's blobs. ~keep
+        let blob_count = self.hash_refs.distinct();
         write_status_sidecar(&self.basemind_dir, file_count, blob_count, health);
     }
 

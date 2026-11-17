@@ -234,8 +234,8 @@ pub struct StatusSidecar {
     /// Number of code files in the working view's index (`Index::files.len()` — the same population
     /// the MCP `status` tool reports as `file_count`).
     pub file_count: usize,
-    /// Number of content-addressed filemap blobs on disk (`*.fm.msgpack` in the global blob store),
-    /// counted consistently with the MCP `status` tool's `blob_count`.
+    /// Number of distinct file contents the working view's file map holds, one filemap blob each.
+    /// Unlike the MCP `status` tool's `blob_count`, it counts this workspace's blobs only.
     pub blob_count: usize,
     /// Unix-epoch seconds when the sidecar was written (i.e. when the scan that produced it finished).
     pub scanned_unix: i64,
