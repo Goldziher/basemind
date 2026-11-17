@@ -863,6 +863,48 @@ mod map_cache_tests {
             "a removed path resolves to no outline"
         );
     }
+
+    /// An extract-epoch refresh rewrites a file's blob under its unchanged content hash. The L1
+    /// cache `with_delta` carries forward still holds the outline decoded from the replaced blob,
+    /// and the derived snapshot must not serve it.
+    #[test]
+    fn with_delta_serves_an_outline_refreshed_under_the_same_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Content no other test scans: the blob store is shared, and this test rewrites the blob.
+        fs::write(root.join("a.rs"), b"pub fn epoch_refresh_probe() {}\n").unwrap();
+        let cfg = crate::config::ConfigV1::with_defaults();
+        let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).unwrap();
+        crate::scanner::scan(
+            root,
+            &mut store,
+            &cfg,
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
+
+        let rel = crate::path::RelPath::from("a.rs");
+        let hash_hex = store.lookup(&rel).unwrap().hash_hex.clone();
+        let current = store.read_l1_by_hex(&hash_hex).unwrap().unwrap();
+        let mut stale = current.clone();
+        stale.extract_epoch = crate::extract::EXTRACT_EPOCH - 1;
+        stale.symbols[0].name = "before_refresh".to_string();
+        store.overwrite_filemap_hex(&hash_hex, &stale, None).unwrap();
+        store.index.files.get_mut(&rel).unwrap().extract_epoch = stale.extract_epoch;
+
+        let cache = MapCache::build(&store, 0);
+        assert_eq!(sym_names(&cache, "a.rs"), vec!["before_refresh".to_string()]);
+
+        store.overwrite_filemap_hex(&hash_hex, &current, None).unwrap();
+        store.index.files.get_mut(&rel).unwrap().extract_epoch = crate::extract::EXTRACT_EPOCH;
+        let next = cache.with_delta(&store, std::slice::from_ref(&rel), &[]);
+        assert_eq!(
+            sym_names(&next, "a.rs"),
+            vec!["epoch_refresh_probe".to_string()],
+            "the refreshed blob is read again"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "documents"))]
