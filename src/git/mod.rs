@@ -10,6 +10,7 @@ pub(crate) use commit::FILE_LISTINGS;
 mod diff;
 mod export;
 mod remote;
+mod status;
 mod worktree;
 use commit::{build_commit_info, commit_files, commit_touches_path, decode_path};
 pub use diff::FileDiff;
@@ -537,10 +538,7 @@ impl Repo {
         let local = self.local();
         let mut out = WorkingTreeStatus::default();
 
-        let platform = local.status(gix::progress::Discard).map_err(|e| GitError::Read {
-            what: "status".to_string(),
-            msg: e.to_string(),
-        })?;
+        let platform = status::platform(&local, "status")?;
         let platform = match untracked {
             Some(untracked) => platform.untracked_files(untracked),
             None => platform,
@@ -571,9 +569,7 @@ impl Repo {
         let tree = local
             .rev_parse_single(format!("{base}^{{tree}}").as_str())
             .map_err(|error| read_error(error.to_string()))?;
-        let platform = local
-            .status(gix::progress::Discard)
-            .map_err(|error| read_error(error.to_string()))?
+        let platform = status::platform(&local, &format!("status against {base}"))?
             .head_tree(tree.detach())
             .untracked_files(UntrackedFiles::Files)
             .tree_index_track_renames(TrackRenames::Disabled)
