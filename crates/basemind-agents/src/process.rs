@@ -87,6 +87,104 @@ pub(crate) fn verify_cwd(command: &mut Command, expected: &std::path::Path) {
     }
 }
 
+/// The launcher's end of the pipe a harness's keeper waits on. Dropping it, or the launcher
+/// dying, which closes it, makes the keeper kill the harness's whole process group.
+#[cfg(unix)]
+pub(crate) struct Keeper {
+    /// Held, never written: its closing is the signal.
+    _write: std::os::fd::OwnedFd,
+    /// The keeper's end, open in the launcher only until the harness is spawned.
+    read: Option<std::os::fd::OwnedFd>,
+}
+
+#[cfg(unix)]
+impl Keeper {
+    /// Closes the launcher's copy of the keeper's end once the spawn has forked.
+    pub(crate) fn spawned(&mut self) {
+        self.read = None;
+    }
+}
+
+/// The most file descriptors a keeper closes by number where the platform cannot close a
+/// range at once.
+#[cfg(unix)]
+const KEEPER_CLOSES: libc::rlim_t = 1 << 16;
+
+/// Arranges for a keeper process in the harness's group that kills the group once the launcher
+/// is gone, so a launcher killed outright (SIGKILL, a crash) leaves no harness behind.
+///
+/// Between fork and exec the child forks the keeper, which closes every descriptor but the
+/// read end of a pipe whose only write end is the returned [`Keeper`], blocks reading it, and on
+/// end of file sends SIGKILL to its own process group (the harness's, which it is a member of,
+/// so the id cannot have been reused) and exits. `PR_SET_PDEATHSIG` is not used on Linux: it
+/// fires when the thread that spawned the child exits, not the launcher, and signals only the
+/// leader. macOS has no equivalent; the pipe works the same on both.
+#[cfg(unix)]
+pub(crate) fn keep_group(command: &mut Command) -> std::io::Result<Keeper> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    let mut ends = [0; 2];
+    // SAFETY: pipe writes two descriptors into the array it is given.
+    if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: both descriptors were just created and are owned by nothing else.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+    for fd in [&read, &write] {
+        // SAFETY: fcntl on a descriptor this function owns. Another thread forking before this
+        // runs could carry the write end into its child, which only delays the keeper.
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit fills in the struct it is given.
+    let open_max = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+        limit.rlim_cur.min(KEEPER_CLOSES)
+    } else {
+        KEEPER_CLOSES
+    } as libc::c_int;
+    let read_fd = read.as_raw_fd();
+    // SAFETY: the closure runs between fork and exec and only makes async-signal-safe calls
+    // (fork, dup2, close, read, kill, _exit); it neither allocates nor takes a lock.
+    unsafe {
+        command.pre_exec(move || {
+            match libc::fork() {
+                -1 => Err(std::io::Error::last_os_error()),
+                0 => {
+                    // The keeper: holding any of the harness's pipes would keep them open past
+                    // its exit, and holding the write end would keep it from ever waking.
+                    libc::dup2(read_fd, 0);
+                    #[cfg(target_os = "linux")]
+                    let closed = libc::syscall(libc::SYS_close_range, 1, libc::c_uint::MAX, 0) == 0;
+                    #[cfg(not(target_os = "linux"))]
+                    let closed = false;
+                    if !closed {
+                        for fd in 1..open_max {
+                            libc::close(fd);
+                        }
+                    }
+                    let mut byte = 0_u8;
+                    while libc::read(0, (&raw mut byte).cast(), 1) < 0
+                        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                    {
+                    }
+                    libc::kill(0, libc::SIGKILL);
+                    libc::_exit(0)
+                }
+                _ => Ok(()),
+            }
+        });
+    }
+    Ok(Keeper {
+        _write: write,
+        read: Some(read),
+    })
+}
+
 /// Whether the kernel reaps this process's children by itself: SIGCHLD is ignored or
 /// `SA_NOCLDWAIT` is set. Then a leader can be reaped before its group is signalled, and the
 /// group id may belong to someone else by the time it is, so no harness is started.

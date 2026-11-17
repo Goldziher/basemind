@@ -151,7 +151,13 @@ id that fails the grammar stops the launch.
      and a session that failed, get the stop grace. Frames (16 MiB and 256 Ki JSON values),
      events, channels and tables are bounded. An ACP agent that stops reading while the client has
      16 lines queued for it fails the session. Dropping a session waits at most 2 s for its
-     supervisor; the group is killed either way.
+     supervisor; the group is killed either way. A launcher that dies outright still takes the group with it:
+     a keeper process forked into the group between fork and exec waits on a pipe whose only write
+     end the launcher holds, and kills its own group when that end closes, on Linux and macOS
+     alike. `PR_SET_PDEATHSIG` was rejected: it fires when the spawning thread exits, which a
+     launcher on a thread pool does routinely, and it signals only the leader. A descendant that
+     left the group still survives; the engine may record the sessions' process group ids and
+     check them at start, but nothing here requires it.
 
    Left to the engine and the configuration:
    - **Off by default.** Launching is disabled until `[agents.launch] enabled = true`.

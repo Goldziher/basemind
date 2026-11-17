@@ -113,6 +113,11 @@ config is trusted.
 - Frames (16 MiB and 256 Ki JSON values each), the event queue, channels and tables are bounded;
   an ACP agent that leaves 16 of the client's lines unread fails the session. Dropping a session
   waits at most 2 s for its supervisor, and kills the group either way.
+- A launcher that dies without ending its sessions (SIGKILL, a crash) takes their groups with it:
+  each harness group holds a keeper process, forked between fork and exec, that waits on a pipe
+  only the launcher holds open and kills its group when that pipe closes. The same mechanism
+  serves Linux and macOS; `PR_SET_PDEATHSIG` is not used, as it fires when the spawning thread
+  exits and reaches only the leader.
 
 Limits:
 

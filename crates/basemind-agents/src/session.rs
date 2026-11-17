@@ -466,7 +466,12 @@ pub(crate) fn start(
     process::isolate(&mut command);
     #[cfg(unix)]
     process::verify_cwd(&mut command, &plan.cwd);
-    let mut child = spawn(&mut command).map_err(|source| {
+    #[cfg(unix)]
+    let mut keeper = process::keep_group(&mut command)?;
+    let spawned = spawn(&mut command);
+    #[cfg(unix)]
+    keeper.spawned();
+    let mut child = spawned.map_err(|source| {
         #[cfg(unix)]
         if source.raw_os_error() == Some(process::CWD_CHANGED) {
             return LaunchError::WorkingDirChanged(plan.cwd.clone());
@@ -554,6 +559,10 @@ pub(crate) fn start(
             } else {
                 process::terminate(&mut child);
             }
+            // The group is gone; the keeper's own kill now finds at most a descendant that a
+            // foreign reaper left behind.
+            #[cfg(unix)]
+            drop(keeper);
             // A request the adapter did not settle (a harness that failed or exited mid-turn,
             // a panic) is moot once the group is gone.
             for id in std::mem::take(&mut *shared.pending()) {

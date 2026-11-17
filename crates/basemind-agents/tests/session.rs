@@ -631,6 +631,47 @@ fn stop_interrupts_the_harness_and_ends_its_group() {
 }
 
 #[test]
+fn the_group_dies_with_a_launcher_that_is_killed() {
+    const HELPER: &str = "BASEMIND_AGENTS_DYING_LAUNCHER";
+    if let Some(dir) = std::env::var_os(HELPER) {
+        let dir = PathBuf::from(dir);
+        let pidfile = dir.join("grandchild");
+        // Ignores the end of its input, as a harness may.
+        let body = format!("{}{HANDSHAKE}while :; do sleep 1; done\n", spawn_grandchild(&pidfile));
+        let session = launch(&spec(HarnessKind::ClaudeCode, &dir, &body));
+        std::fs::write(dir.join("leader"), session.pid().to_string()).unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut launcher = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "the_group_dies_with_a_launcher_that_is_killed",
+            "--nocapture",
+        ])
+        .env(HELPER, dir.path())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let grandchild = grandchild(&dir.path().join("grandchild"));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let leader = loop {
+        if let Ok(leader) = std::fs::read_to_string(dir.path().join("leader")) {
+            break leader;
+        }
+        assert!(Instant::now() < deadline, "the launcher never started the session");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(alive(&leader) && alive(&grandchild));
+    launcher.kill().unwrap();
+    launcher.wait().unwrap();
+    assert_gone(&grandchild);
+    assert_gone(&leader);
+}
+
+#[test]
 fn dropping_the_session_ends_the_group() {
     let dir = tempfile::tempdir().unwrap();
     let pidfile = dir.path().join("grandchild");
