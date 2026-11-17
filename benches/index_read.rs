@@ -156,6 +156,9 @@ impl Group {
         let started = Instant::now();
         let worktrees: Vec<Worktree> = specs.iter().map(|spec| Worktree::index(&spec.root)).collect();
         let index_secs = started.elapsed().as_secs_f64();
+        for worktree in &worktrees {
+            worktree.flush();
+        }
         let hot_path = corpus::core_path(Lang::Rust);
         let hot_definitions = worktrees
             .iter()
