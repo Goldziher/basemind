@@ -409,3 +409,27 @@ fn a_sweep_never_deletes_rows_a_sibling_writes_after_liveness_was_read() {
         "the sibling's rows survive the sweep"
     );
 }
+
+/// A view whose embed policy excludes a document strips the vectors only of rows no other view of
+/// the group names: a sibling that wants them keeps them.
+#[test]
+fn stripping_vectors_leaves_the_rows_a_sibling_names() {
+    let (_tmp, mut a, mut b, mut config, filters) = worktrees();
+    let shared = blob("strip-shared", true);
+    let shared_key = doc_key(&track(&mut a, &shared, &["docs/shared.md"]), "digest");
+    track(&mut b, &shared, &["docs/shared.md"]);
+    let own_key = doc_key(&track(&mut a, &blob("strip-own", true), &["docs/own.md"]), "digest");
+    sync_document_rows(&mut a, &config, &filters, &AHashSet::new(), usize::MAX);
+    a.flush().unwrap();
+    b.flush().unwrap();
+
+    config.documents.embed_exclude = vec!["docs/**".to_string()];
+    let excluding = Filters::build(&config, Vec::new()).unwrap();
+    assert!(strip_unwanted_vectors(&a, &config, &excluding));
+
+    let present = doc_store(&a, &config)
+        .present(&[shared_key.clone(), own_key.clone()])
+        .unwrap();
+    assert_eq!(present.get(&shared_key), Some(&true), "b names it: its vectors stay");
+    assert_eq!(present.get(&own_key), Some(&false), "only a names it: stripped");
+}
