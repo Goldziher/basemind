@@ -12,6 +12,7 @@ use crate::audit::{FileAuditSink, MemoryAuditSink};
 use crate::claude::ClaudeCodeAdapter;
 use crate::event::{Event, FinishStatus};
 use crate::harness::{AcpFlavor, Harness};
+use crate::identity::AgentIdentity;
 use crate::peer::Peer;
 use crate::policy::{Budget, Caveat, FlavorPolicy, PolicySpec};
 use crate::registry::Adapter;

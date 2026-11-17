@@ -15,19 +15,19 @@ use crate::audit::{AuditApproval, AuditEvent, AuditLimits, AuditRecord, AuditSin
 use crate::detached::{self, Detached};
 use crate::error::LaunchError;
 use crate::harness::HarnessKind;
-use crate::identity::{AgentIdentity, LaunchToken};
+use crate::identity::LaunchToken;
 use crate::policy::{LAUNCHED_PREFIX, LaunchPolicy, PolicyError};
 use crate::procinfo::{self, ProcId};
 use crate::refusals::Refusals;
 use crate::registry::Registry;
 use crate::session::SessionHandle;
 use crate::spec::{LaunchConfig, LaunchRequest};
+use crate::supervisor_admit::{Admitted, admit, launched_config, name_of, owned, refuse};
 use crate::supervisor_pump::{Reservation, supervise};
 
 use crate::peer::Peer;
 pub use crate::supervisor_codes::launch_error_code;
 use crate::supervisor_identity::{Role, mint_operator, register, resolve};
-use crate::supervisor_types::CallerKind;
 pub use crate::supervisor_types::{
     Caller, Launched, SessionId, SessionObserver, SessionState, SessionStatus, SupervisorError,
 };
@@ -38,7 +38,7 @@ const DROP_SLACK: Duration = Duration::from_secs(2);
 
 /// Who launched a session.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Launcher {
+pub(crate) enum Launcher {
     Principal(String),
     Session(u64),
 }
@@ -54,9 +54,9 @@ pub(crate) enum Resolved {
 pub(crate) struct Entry {
     pub(crate) flavor: HarnessKind,
     pub(crate) agent: String,
-    launcher: Launcher,
+    pub(crate) launcher: Launcher,
     /// The sessions above this one, outermost first: a stop of any of them stops this one.
-    lineage: Vec<u64>,
+    pub(crate) lineage: Vec<u64>,
     launcher_name: String,
     pub(crate) depth: u32,
     pub(crate) token: LaunchToken,
@@ -105,8 +105,8 @@ impl Table {
 }
 
 pub(crate) struct Inner {
-    policy: LaunchPolicy,
-    configs: Vec<LaunchConfig>,
+    pub(crate) policy: LaunchPolicy,
+    pub(crate) configs: Vec<LaunchConfig>,
     registry: Registry,
     audit: Arc<dyn AuditSink>,
     pub(crate) observer: std::sync::OnceLock<Arc<dyn SessionObserver>>,
@@ -758,157 +758,6 @@ impl Supervisor {
                 None => return false,
             };
         }
-    }
-}
-
-/// Records `error` as the refusal's outcome, writes it (coalesced), and returns the error.
-fn refuse(inner: &Inner, mut refusal: AuditRecord, error: SupervisorError) -> SupervisorError {
-    refusal.outcome = error.code();
-    inner.refuse(refusal);
-    error
-}
-
-/// Every check a launch passes before anything is started: the policy is on, the caller is
-/// admitted, the flavor is allowed and configured, and depth, budget, concurrency and fan-out
-/// are within their limits. Fills in what the refusal record learns on the way.
-fn admit<'a>(
-    inner: &'a Inner,
-    table: &Table,
-    caller: &Caller,
-    flavor: HarnessKind,
-    refusal: &mut AuditRecord,
-) -> Result<Admitted<'a>, SupervisorError> {
-    let policy = &inner.policy;
-    if !policy.enabled() {
-        return Err(SupervisorError::Disabled);
-    }
-    // Until the caller resolves, a refusal names whom it claimed to be; never a token.
-    refusal.caller = match &caller.kind {
-        CallerKind::Operator => Some("operator".to_owned()),
-        CallerKind::Principal(principal) => Some(principal.clone()),
-        CallerKind::Token(_) => None,
-    };
-    let resolved = resolve(policy, table, caller)?;
-    refusal.caller = Some(name_of(table, &resolved));
-    let (launcher, caller_depth, lineage) = match resolved {
-        Resolved::Operator => return Err(SupervisorError::CallerNotAdmitted),
-        Resolved::Top(principal) => (Launcher::Principal(principal), 0, Vec::new()),
-        Resolved::Session(id) => {
-            let parent = &table.sessions[&id];
-            // A session told to stop, or not yet running, starts nothing.
-            if parent.state != SessionState::Running {
-                return Err(SupervisorError::CallerNotAdmitted);
-            }
-            let mut lineage = parent.lineage.clone();
-            lineage.push(id);
-            (Launcher::Session(id), parent.depth, lineage)
-        }
-    };
-    refusal.caller_depth = Some(caller_depth);
-    let launcher_name = refusal.caller.clone().unwrap_or_default();
-    let config = policy
-        .flavor(flavor)
-        .and_then(|_| inner.configs.iter().find(|config| config.harness.kind == flavor))
-        .ok_or(SupervisorError::FlavorNotAllowed(flavor.id()))?;
-    let depth = caller_depth + 1;
-    refusal.depth = Some(depth);
-    if depth > policy.max_depth() {
-        return Err(SupervisorError::DepthExceeded {
-            depth,
-            max_depth: policy.max_depth(),
-        });
-    }
-    if let Some(budget) = policy.budget().filter(|budget| table.launches >= budget.max_launches) {
-        return Err(SupervisorError::BudgetExhausted {
-            max_launches: budget.max_launches,
-        });
-    }
-    let live = table.live().count();
-    if live >= usize::try_from(policy.max_concurrent()).unwrap_or(usize::MAX) {
-        return Err(SupervisorError::ConcurrencyExceeded {
-            max_concurrent: policy.max_concurrent(),
-        });
-    }
-    let children = table.live().filter(|(_, entry)| entry.launcher == launcher).count();
-    if children >= usize::try_from(policy.max_children()).unwrap_or(usize::MAX) {
-        return Err(SupervisorError::FanOutExceeded {
-            max_children: policy.max_children(),
-        });
-    }
-    Ok(Admitted {
-        launcher,
-        lineage,
-        launcher_name,
-        depth,
-        config,
-    })
-}
-
-/// What [`admit`] decided about a launch.
-struct Admitted<'a> {
-    launcher: Launcher,
-    lineage: Vec<u64>,
-    launcher_name: String,
-    depth: u32,
-    config: &'a LaunchConfig,
-}
-
-/// The flavor's config as the launched agent runs it: its own principal (keeping the config's
-/// host), its depth and token, and limits lowered to the policy's wall time and budget.
-fn launched_config(
-    inner: &Inner,
-    template: &LaunchConfig,
-    agent: &str,
-    depth: u32,
-    token: LaunchToken,
-) -> Result<LaunchConfig, LaunchError> {
-    let mut identity = AgentIdentity::new(agent)?;
-    if let Some(host) = template.identity.host() {
-        identity = identity.with_host(host)?;
-    }
-    let mut config = template.clone();
-    config.identity = identity.with_lineage(depth, token);
-    config.limits.wall_time = config.limits.wall_time.min(inner.policy.wall_time());
-    if let Some(budget) = inner.policy.budget() {
-        config.limits.max_turns = config.limits.max_turns.min(budget.max_turns);
-    }
-    Ok(config)
-}
-
-/// The name a resolved caller is recorded under.
-fn name_of(table: &Table, resolved: &Resolved) -> String {
-    match resolved {
-        Resolved::Operator => "operator".to_owned(),
-        Resolved::Top(principal) => principal.clone(),
-        Resolved::Session(id) => table
-            .sessions
-            .get(id)
-            .map_or_else(|| format!("session-{id}"), |entry| entry.agent.clone()),
-    }
-}
-
-/// Session `id`, when `resolved` may control it: the operator any, a launcher those it launched.
-/// A stop of a launcher reaches the sessions below it (see [`Supervisor::stop`]).
-fn owned(
-    table: &mut Table,
-    resolved: Result<Resolved, SupervisorError>,
-    id: SessionId,
-) -> Result<&mut Entry, SupervisorError> {
-    let resolved = resolved?;
-    let entry = table
-        .sessions
-        .get_mut(&id.0)
-        .ok_or(SupervisorError::UnknownSession(id))?;
-    let allowed = match (&resolved, &entry.launcher) {
-        (Resolved::Operator, _) => true,
-        (Resolved::Top(principal), Launcher::Principal(launcher)) => principal == launcher,
-        (Resolved::Session(caller), Launcher::Session(launcher)) => caller == launcher,
-        _ => false,
-    };
-    if allowed {
-        Ok(entry)
-    } else {
-        Err(SupervisorError::NotOwner(id))
     }
 }
 
