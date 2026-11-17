@@ -215,11 +215,19 @@ impl Group {
         (one, sum, distinct.len())
     }
 
+    /// Bytes of every worktree's cache directory plus the group index they share.
     fn index_bytes(&self) -> u64 {
-        self.worktrees
+        let workspaces: u64 = self
+            .worktrees
             .iter()
             .map(|worktree| dir_bytes(&worktree.cache_dir()))
-            .sum()
+            .sum();
+        let groups: BTreeSet<PathBuf> = self
+            .worktrees
+            .iter()
+            .map(|worktree| basemind::store_layout::group_index_dir(&worktree.root))
+            .collect();
+        workspaces + groups.iter().map(|dir| dir_bytes(dir)).sum::<u64>()
     }
 }
 
@@ -605,7 +613,7 @@ fn main() {
     let report = json!({
         "bench": "index_read",
         "schema": 1,
-        "layout": "one index per worktree",
+        "layout": "one group index, rows under a view id",
         "mode": mode.name,
         "unix_time": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
