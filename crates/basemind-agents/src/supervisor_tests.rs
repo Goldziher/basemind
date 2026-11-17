@@ -873,3 +873,16 @@ fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
     unsafe { libc::kill(server, libc::SIGKILL) };
     assert!(survived, "the untracked process died with its group");
 }
+
+#[test]
+fn waiting_without_a_bound_does_not_overflow() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, _) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
+    supervisor.stop(&lead(), launched.id).unwrap();
+    assert_eq!(
+        supervisor.wait(launched.id, Duration::MAX),
+        Some(SessionState::Finished(FinishStatus::Stopped))
+    );
+}

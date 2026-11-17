@@ -119,6 +119,26 @@ impl Inner {
         self.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Waits on `table` for a change until `deadline` (forever without one). `None` once the
+    /// deadline has passed.
+    fn until<'a>(&self, table: MutexGuard<'a, Table>, deadline: Option<Instant>) -> Option<MutexGuard<'a, Table>> {
+        Some(match deadline {
+            Some(deadline) => {
+                let left = deadline
+                    .checked_duration_since(Instant::now())
+                    .filter(|left| !left.is_zero())?;
+                self.changed
+                    .wait_timeout(table, left)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0
+            }
+            None => self
+                .changed
+                .wait(table)
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        })
+    }
+
     /// Appends `record`, counting a failure.
     pub(crate) fn audit(&self, record: &AuditRecord) -> std::io::Result<()> {
         let written = self.audit.record(record);
@@ -456,20 +476,18 @@ impl Supervisor {
     /// Waits up to `timeout` for session `id` to finish, and returns its state then.
     #[must_use]
     pub fn wait(&self, id: SessionId, timeout: Duration) -> Option<SessionState> {
-        let deadline = Instant::now() + timeout;
+        // A timeout too large for the clock waits without a deadline.
+        let deadline = Instant::now().checked_add(timeout);
         let mut table = self.inner.table();
         loop {
             let state = table.sessions.get(&id.0)?.state;
-            let now = Instant::now();
-            if !state.live() || now >= deadline {
+            if !state.live() {
                 return Some(state);
             }
-            table = self
-                .inner
-                .changed
-                .wait_timeout(table, deadline - now)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+            table = match self.inner.until(table, deadline) {
+                Some(table) => table,
+                None => return Some(state),
+            };
         }
     }
 
@@ -687,22 +705,16 @@ impl Drop for Supervisor {
 impl Supervisor {
     /// Waits up to `timeout` for every session to finish; whether they all did.
     fn wait_all(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now().checked_add(timeout);
         let mut table = self.inner.table();
         loop {
             if table.live().next().is_none() {
                 return true;
             }
-            let now = Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            table = self
-                .inner
-                .changed
-                .wait_timeout(table, deadline - now)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+            table = match self.inner.until(table, deadline) {
+                Some(table) => table,
+                None => return false,
+            };
         }
     }
 }
