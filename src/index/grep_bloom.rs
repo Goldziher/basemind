@@ -184,29 +184,33 @@ impl IndexDb {
             .is_some_and(|row| parse_row(&row).is_some())
     }
 
-    /// Delete every row whose hash is not in `live`, returning how many were dropped. Rows are shared
+    /// Delete every row whose hash `is_live` rejects, returning how many were dropped. Rows are shared
     /// by every path holding the content, so only a hash no indexed file references may go. Path-keyed
-    /// rows from before the content-hash re-key are never in `live`, so they leave here too.
+    /// rows from before the content-hash re-key are never live, so they leave here too.
     ///
     /// Row values are read only until the keyspace has been swept once under the current
     /// [`ROW_VERSION`] (recorded in `meta`): that pass also drops rows whose layout is older, which
     /// are unreadable. Afterwards every row is current, so the sweep is key-only and a large index
     /// is not read back in full on each scan.
-    pub fn sweep_grep_bloom(&self, live: &ahash::AHashSet<&str>) -> Result<usize, super::IndexError> {
+    pub fn sweep_grep_bloom(&self, is_live: impl Fn(&str) -> bool) -> Result<usize, super::IndexError> {
         let versioned = self
             .meta
             .get(META_ROW_SWEPT_VER)?
             .is_some_and(|v| v.first() == Some(&ROW_VERSION));
         let mut writer = self.writer();
         let mut dropped = 0;
-        for guard in self.grep_bloom.iter() {
-            let (key, current) = if versioned {
-                (guard.key()?, true)
-            } else {
-                let (key, row) = guard.into_inner()?;
-                (key, parse_row(&row).is_some())
-            };
-            if current && std::str::from_utf8(&key).is_ok_and(|hash| live.contains(hash)) {
+        let rows: Box<dyn Iterator<Item = Result<(IndexBytes, bool), super::IndexError>>> = if versioned {
+            Box::new(self.grep_bloom.keys().map(|key| key.map(|key| (key, true))))
+        } else {
+            Box::new(
+                self.grep_bloom
+                    .iter()
+                    .map(|row| row.map(|(key, row)| (key, parse_row(&row).is_some()))),
+            )
+        };
+        for row in rows {
+            let (key, current) = row?;
+            if current && std::str::from_utf8(&key).is_ok_and(&is_live) {
                 continue;
             }
             writer.remove_grep_bloom(&key);

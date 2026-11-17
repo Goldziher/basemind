@@ -113,6 +113,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("store_gc_namespaces", Core),
     ("store_gc_protect", Core),
     ("store_gc_workspace", Core),
+    ("store_group_live", Core),
     ("store_hash_refs", Core),
     ("store_layout", Core),
     ("store_lock", Core),

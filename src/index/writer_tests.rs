@@ -132,7 +132,7 @@ fn upsert_and_query_symbols_by_name() {
 
     let prefix = keys::symbols_by_name_prefix("alpha");
     let mut hits = 0;
-    for guard in db.symbols_by_name.prefix(prefix) {
+    for guard in db.symbols_by_name.raw().prefix(prefix) {
         let (k, _) = guard.into_inner().unwrap();
         let (name, _, _, _) = keys::parse_symbol_by_name(&k).unwrap();
         assert_eq!(name, "alpha");
@@ -203,7 +203,7 @@ fn calls_index_round_trip() {
 
     let prefix = keys::calls_by_callee_prefix("spawn");
     let mut spawn_hits = 0;
-    for guard in db.calls_by_callee.prefix(prefix) {
+    for guard in db.calls_by_callee.raw().prefix(prefix) {
         let (k, _) = guard.into_inner().unwrap();
         let (callee, _, _) = keys::parse_call_by_callee(&k).unwrap();
         assert_eq!(callee, "spawn", "prefix scan must not bleed into spawn_blocking");
@@ -237,7 +237,7 @@ fn imports_by_module_round_trip() {
 
     let prefix = keys::imports_by_module_prefix("os");
     let mut os_hits = 0;
-    for guard in db.imports_by_module.prefix(prefix) {
+    for guard in db.imports_by_module.raw().prefix(prefix) {
         let (k, _) = guard.into_inner().unwrap();
         let (module, _, _) = keys::parse_import_by_module(&k).unwrap();
         assert_eq!(module, "os");
@@ -284,7 +284,7 @@ fn implementations_dual_partition_consistency() {
 
     let prefix = keys::impls_by_trait_prefix("Display");
     let mut display_hits = 0;
-    for guard in db.implementations_by_trait.prefix(prefix) {
+    for guard in db.implementations_by_trait.raw().prefix(prefix) {
         let (k, _) = guard.into_inner().unwrap();
         let (trait_name, impl_type, back_rel, _) = keys::parse_impl_by_trait(&k).unwrap();
         assert_eq!(trait_name, "Display");
@@ -338,7 +338,7 @@ fn imports_by_path_roundtrip_and_dual_partition_consistency() {
 
     let prefix = keys::imports_by_path_prefix(&rel);
     let mut path_hits = 0;
-    for guard in db.imports_by_path.prefix(prefix) {
+    for guard in db.imports_by_path.raw().prefix(prefix) {
         let (k, _) = guard.into_inner().unwrap();
         let (back_rel, _, _) = keys::parse_import_by_path(&k).unwrap();
         assert_eq!(back_rel, rel);
@@ -397,6 +397,7 @@ fn oversized_identifier_skipped_gracefully() {
     let prefix = keys::symbols_by_name_prefix("normal_fn");
     let hits: Vec<_> = db
         .symbols_by_name
+        .raw()
         .prefix(prefix)
         .map(|g| g.into_inner().unwrap())
         .collect();
@@ -433,6 +434,7 @@ fn resolved_edges_dual_partition_consistency() {
 
     let mut uses: Vec<u32> = db
         .refs_by_def
+        .raw()
         .prefix(keys::refs_by_def_prefix(&rel, 4))
         .map(|g| {
             let (k, _) = g.into_inner().unwrap();
@@ -446,6 +448,7 @@ fn resolved_edges_dual_partition_consistency() {
 
     let defs: Vec<u32> = db
         .refs_by_path
+        .raw()
         .prefix(keys::refs_by_use_prefix(&rel, 100))
         .map(|g| {
             let (k, _) = g.into_inner().unwrap();
@@ -521,6 +524,7 @@ fn bm25_dual_partition_consistency() {
 
     let mut spawn_docs: Vec<(String, u32, u32)> = db
         .code_bm25_postings
+        .raw()
         .prefix(keys::code_bm25_postings_prefix("spawn"))
         .map(|g| {
             let (k, v) = g.into_inner().unwrap();

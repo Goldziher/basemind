@@ -89,7 +89,8 @@ impl IndexDb {
         // The batch takes one sequence number, so any other write leaves the two unequal. ~keep
         let synced_seqno = self.db.seqno() + 1;
         let mut batch = self.db.batch().durability(Some(PersistMode::SyncAll));
-        batch.insert(&self.meta, META_SCAN_GENERATION, generation.to_be_bytes());
+        self.meta
+            .stage_insert(&mut batch, META_SCAN_GENERATION, generation.to_be_bytes().into());
         let sealed = batch.commit().map_err(IndexError::from);
         if let Err(error) = &sealed {
             self.record_commit_error(error);
@@ -144,7 +145,7 @@ impl IndexDb {
         }
         let keyspaces = Part::ALL
             .into_iter()
-            .map(|part| self.keyspace(part))
+            .map(|part| self.keyspace(part).raw())
             .chain(std::iter::once(&self.embeddings));
         rotate_memtables(keyspaces)
             .inspect_err(|error| tracing::warn!(%error, "index journal reclaim failed; the journal stays on disk"))
@@ -166,11 +167,21 @@ impl IndexDb {
 
     /// Empty every keyspace in place, leaving a current-schema index no scan has sealed. The
     /// in-place form of [`discard_index`], for a store that cannot drop every clone of its handle.
+    ///
+    /// In a group index only this view's rows go: the rows the group shares by content, and the
+    /// group's schema stamp, belong to every view.
     pub(crate) fn clear_for_rebuild(&self) -> Result<(), IndexError> {
+        let shared = self.group.is_some();
         for part in Part::ALL {
-            self.keyspace(part).clear()?;
+            let keyspace = self.keyspace(part);
+            if shared && !keyspace.is_view_scoped() {
+                continue;
+            }
+            keyspace.clear(&self.db)?;
         }
-        self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
+        if !shared {
+            self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
+        }
         Ok(())
     }
 }
@@ -278,7 +289,9 @@ mod tests {
     fn clear_for_rebuild_empties_the_index_and_its_generation_but_keeps_the_schema() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = IndexDb::open(dir.path()).expect("open");
-        db.keyspace(Part::SymbolsByPath).insert("row", "value").expect("insert");
+        db.keyspace(Part::SymbolsByPath)
+            .insert(b"row", "value")
+            .expect("insert");
         db.seal_scan(0).expect("seal");
 
         db.clear_for_rebuild().expect("clear");
@@ -362,7 +375,7 @@ mod tests {
     /// unflushed: the straggler that keeps a sealed journal alive. Returns once the journal is
     /// sealed.
     fn seal_a_journal_with_a_straggler(db: &IndexDb) {
-        let rows = db.keyspace(Part::SymbolsByPath);
+        let rows = db.keyspace(Part::SymbolsByPath).raw();
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
         for row in 0..70u32 {
             // Incompressible, or the journal's LZ4 shrinks 70 MB of writes below the seal threshold.

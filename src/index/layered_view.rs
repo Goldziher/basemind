@@ -25,16 +25,16 @@ impl IndexView for Reader {
     fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
         Ok(self
             .snapshot
-            .get(self.db.keyspace(part), key)?
+            .get(self.db.keyspace(part).raw(), key)?
             .map(IndexBytes::from_fjall))
     }
     fn prefix(&self, part: Part, prefix: &[u8]) -> KvIter<'_> {
-        Box::new(self.snapshot.prefix(self.db.keyspace(part), prefix).map(kv))
+        Box::new(self.snapshot.prefix(self.db.keyspace(part).raw(), prefix).map(kv))
     }
     fn range(&self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'_> {
         Box::new(
             self.snapshot
-                .range::<&[u8], _>(self.db.keyspace(part), (lower, upper))
+                .range::<&[u8], _>(self.db.keyspace(part).raw(), (lower, upper))
                 .map(kv),
         )
     }
@@ -252,7 +252,7 @@ pub(crate) fn pinned_overlay_fixture() -> PinnedOverlay {
     let mut delta = DeltaManifest::empty(1, "commit".into(), 1);
     delta.delete(removed.clone());
     base.code_bm25_by_path
-        .insert(keys::code_bm25_by_path(&removed, "old:0"), 2u32.to_be_bytes())
+        .insert(&keys::code_bm25_by_path(&removed, "old:0"), 2u32.to_be_bytes())
         .unwrap();
     for db in [&base, &overlay, &reference] {
         db.callee_names.always_use_dictionary();

@@ -14,7 +14,7 @@ use std::borrow::Borrow;
 use std::ops::{Bound, Deref};
 use std::path::Path;
 
-use fjall::Keyspace;
+use super::scoped::Scoped;
 
 use super::grep_bloom::{GrepEntry, Needle};
 use super::{
@@ -34,7 +34,8 @@ pub struct IndexBytes(Repr);
 
 #[derive(Clone)]
 enum Repr {
-    Fjall(fjall::Slice),
+    /// A fjall slice read from `offset` on: a view of a group index strips its key prefix this way.
+    Fjall(fjall::Slice, usize),
     Mapped(std::sync::Arc<super::sorted_run::Mapping>, std::ops::Range<usize>),
 }
 
@@ -47,7 +48,13 @@ impl IndexBytes {
     }
 
     pub(super) fn from_fjall(slice: fjall::Slice) -> Self {
-        Self(Repr::Fjall(slice))
+        Self(Repr::Fjall(slice, 0))
+    }
+
+    /// `slice` without its first `offset` bytes.
+    pub(super) fn from_fjall_at(slice: fjall::Slice, offset: usize) -> Self {
+        debug_assert!(offset <= slice.len(), "a scoped key is at least its prefix");
+        Self(Repr::Fjall(slice, offset))
     }
 }
 
@@ -56,7 +63,7 @@ impl Deref for IndexBytes {
 
     fn deref(&self) -> &[u8] {
         match &self.0 {
-            Repr::Fjall(slice) => slice,
+            Repr::Fjall(slice, offset) => &slice[*offset..],
             Repr::Mapped(mapping, bounds) => &mapping.mmap[bounds.clone()],
         }
     }
@@ -156,7 +163,7 @@ impl Part {
 }
 
 impl IndexDb {
-    pub(super) fn keyspace(&self, part: Part) -> &Keyspace {
+    pub(super) fn keyspace(&self, part: Part) -> &Scoped {
         match part {
             Part::Meta => &self.meta,
             Part::SymbolsByPath => &self.symbols_by_path,
@@ -179,7 +186,13 @@ impl IndexDb {
 
     /// Raw keyspace access for tests that assert on stored rows or drive the name dictionaries.
     #[cfg(test)]
-    pub(crate) fn keyspace_for_test(&self, part: Part) -> &Keyspace {
+    pub(crate) fn keyspace_for_test(&self, part: Part) -> &fjall::Keyspace {
+        self.keyspace(part).raw()
+    }
+
+    /// The keyspace as this view reads it, for tests that drive the name dictionaries.
+    #[cfg(test)]
+    pub(crate) fn scoped_for_test(&self, part: Part) -> &Scoped {
         self.keyspace(part)
     }
 
@@ -389,19 +402,19 @@ impl<T: Borrow<IndexDb>> StandaloneView<T> {
 
 impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
     fn get(&self, part: Part, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
-        Ok(self.db().keyspace(part).get(key)?.map(IndexBytes::from_fjall))
+        self.db().keyspace(part).get(key)
     }
 
     fn prefix<'a>(&'a self, part: Part, prefix: &[u8]) -> KvIter<'a> {
-        Box::new(self.db().keyspace(part).prefix(prefix).map(kv))
+        self.db().keyspace(part).prefix(prefix)
     }
 
     fn range<'a>(&'a self, part: Part, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> KvIter<'a> {
-        Box::new(self.db().keyspace(part).range::<&[u8], _>((lower, upper)).map(kv))
+        self.db().keyspace(part).range(lower, upper)
     }
 
     fn iter<'a>(&'a self, part: Part) -> KvIter<'a> {
-        Box::new(self.db().keyspace(part).iter().map(kv))
+        self.db().keyspace(part).iter()
     }
 
     fn callee_keys_matching<'a>(

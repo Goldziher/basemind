@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use std::ops::Bound;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use fjall::Keyspace;
+use super::scoped::Scoped as Keyspace;
 
 /// Terminates every name in the blob. `0xFF` never occurs in UTF-8, so neither a name nor a needle
 /// can contain it and a sweep cannot match across two names.
@@ -286,13 +286,13 @@ impl NameDict {
 
 /// Every distinct leading name of `keyspace`, in key order. Keys sharing a name are adjacent, so a
 /// long run is skipped with one seek past the name's range instead of stepping through it.
-fn distinct_names(keyspace: &Keyspace) -> Result<Vec<Vec<u8>>, fjall::Error> {
+fn distinct_names(keyspace: &Keyspace) -> Result<Vec<Vec<u8>>, super::IndexError> {
     let mut names: Vec<Vec<u8>> = Vec::new();
     let mut lower: Bound<Vec<u8>> = Bound::Unbounded;
     'seek: loop {
         let mut run = 0usize;
-        for guard in keyspace.range::<Vec<u8>, _>((lower.clone(), Bound::Unbounded)) {
-            let (key, _) = guard.into_inner()?;
+        for key in keyspace.range(as_ref(&lower), Bound::Unbounded) {
+            let (key, _) = key?;
             let Some(prefix_len) = key.get(..2).map(|b| 2 + usize::from(u16::from_be_bytes([b[0], b[1]]))) else {
                 continue;
             };
@@ -323,6 +323,15 @@ fn distinct_names(keyspace: &Keyspace) -> Result<Vec<Vec<u8>>, fjall::Error> {
         break;
     }
     Ok(names)
+}
+
+/// `bound` borrowed.
+fn as_ref(bound: &Bound<Vec<u8>>) -> Bound<&[u8]> {
+    match bound {
+        Bound::Included(key) => Bound::Included(key),
+        Bound::Excluded(key) => Bound::Excluded(key),
+        Bound::Unbounded => Bound::Unbounded,
+    }
 }
 
 /// Smallest key greater than every key starting with `prefix`; `None` when there is none.
@@ -358,10 +367,9 @@ pub(crate) fn scan_prefixes(
             None => Bound::Unbounded,
         };
         lower
-            .map(|lower| keyspace.range::<Vec<u8>, _>((lower, upper)))
+            .map(|lower| keyspace.range(as_ref(&lower), as_ref(&upper)))
             .into_iter()
             .flatten()
-            .map(super::view::kv)
     })
 }
 
@@ -377,10 +385,6 @@ pub(crate) fn name_ordered_keys<'a>(
 ) -> super::view::KvIter<'a> {
     match dict.matching_prefixes(keyspace, needle) {
         Some(prefixes) => Box::new(scan_prefixes(keyspace, prefixes, cursor_after.map(<[u8]>::to_vec))),
-        None => Box::new(
-            keyspace
-                .range::<Vec<u8>, _>((lower, Bound::Unbounded))
-                .map(super::view::kv),
-        ),
+        None => keyspace.range(as_ref(&lower), Bound::Unbounded),
     }
 }

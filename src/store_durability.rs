@@ -149,7 +149,13 @@ impl Store {
         ) {
             discard_view_of_a_stale_layout(&self.view_dir)?;
         }
-        let (index_db, _) = open_index_for_writer(&self.root, &self.view, &self.view_dir, &mut self.index)?;
+        let (index_db, _) = super::open_index_for_writer(
+            &self.root,
+            &self.view,
+            &self.view_dir,
+            &mut self.index,
+            super::LockHolder::Rescan,
+        )?;
         self.hash_refs = HashRefs::of(&self.index.files);
         self.index_db = Some(index_db);
         self.flush()

@@ -1049,6 +1049,7 @@ A cap variable must be a positive integer; anything else falls back to the defau
 | `BASEMIND_NO_AUTOSPAWN=1` | Connect to a running daemon but never start one. |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on live daemons per machine before a spawn is refused; default 8. |
 | `BASEMIND_NO_SEED=1` | Do not seed a new worktree's index from a sibling checkout. |
+| `BASEMIND_INDEX_GROUP=1` | Experimental (ADR-0028): every worktree of a repository shares one index under `cache/groups/<group>/`, each view keeping its rows under its own id. Off by default; switching it either way rebuilds the index on the next scan. |
 | `BASEMIND_BIN`, `BASEMIND_FORCE_VERSION` | Plugin launcher: run a local build / pin a release (see [Installation](#1-as-a-plugin-recommended)). |
 
 **Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes

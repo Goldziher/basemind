@@ -241,9 +241,9 @@ fn build_dicts(db: &IndexDb) {
     db.callee_dict().always_use_dictionary();
     db.trait_dict().always_use_dictionary();
     db.callee_dict()
-        .build_blocking(db.keyspace_for_test(crate::index::view::Part::CallsByCallee));
+        .build_blocking(db.scoped_for_test(crate::index::view::Part::CallsByCallee));
     db.trait_dict()
-        .build_blocking(db.keyspace_for_test(crate::index::view::Part::ImplementationsByTrait));
+        .build_blocking(db.scoped_for_test(crate::index::view::Part::ImplementationsByTrait));
 }
 
 #[test]
@@ -287,9 +287,9 @@ fn dictionary_scans_match_the_full_walk() {
 
     // A fold merges the new names into the snapshot without changing any answer.
     db.callee_dict()
-        .build_blocking(db.keyspace_for_test(crate::index::view::Part::CallsByCallee));
+        .build_blocking(db.scoped_for_test(crate::index::view::Part::CallsByCallee));
     db.trait_dict()
-        .build_blocking(db.keyspace_for_test(crate::index::view::Part::ImplementationsByTrait));
+        .build_blocking(db.scoped_for_test(crate::index::view::Part::ImplementationsByTrait));
     assert_equivalent(&db, "after rebuild");
 }
 
@@ -341,7 +341,7 @@ fn time_name_scans() {
     let db = IndexDb::open(std::path::Path::new(&view)).unwrap();
     let t = Instant::now();
     db.callee_dict()
-        .build_blocking(db.keyspace_for_test(crate::index::view::Part::CallsByCallee));
+        .build_blocking(db.scoped_for_test(crate::index::view::Part::CallsByCallee));
     eprintln!(
         "callee dictionary: {} names, {} KiB resident, built in {:?}",
         db.callee_dict().len(),
@@ -350,7 +350,7 @@ fn time_name_scans() {
     );
     let t = Instant::now();
     db.trait_dict()
-        .build_blocking(db.keyspace_for_test(crate::index::view::Part::ImplementationsByTrait));
+        .build_blocking(db.scoped_for_test(crate::index::view::Part::ImplementationsByTrait));
     eprintln!(
         "trait dictionary: {} names, {} KiB resident, built in {:?}",
         db.trait_dict().len(),

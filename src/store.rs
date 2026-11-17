@@ -17,6 +17,9 @@ mod base_open;
 #[path = "store_durability.rs"]
 mod durability;
 pub use durability::RESCAN_OWED;
+#[path = "store_group.rs"]
+mod group;
+pub use group::{INDEX_GROUP_ENV, group_layout};
 
 /// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
 /// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like
@@ -159,6 +162,13 @@ pub struct Index {
     /// schema it carries, so its files are not called unchanged over blobs that are elsewhere.
     #[serde(default)]
     pub blob_layout: u8,
+    /// The incarnation of the group index this map was written against (ADR-0028); `0` for a view
+    /// with an index database of its own. A map naming another incarnation is emptied on open.
+    #[serde(default)]
+    pub group_incarnation: u64,
+    /// The id the group index gave this view; `0` for a view with a database of its own.
+    #[serde(default)]
+    pub view_id: u32,
 }
 
 impl Index {
@@ -173,6 +183,8 @@ impl Index {
             rebuild_pending: false,
             rebuild_pins: Vec::new(),
             blob_layout: crate::store_layout::BLOB_LAYOUT,
+            group_incarnation: 0,
+            view_id: 0,
         }
     }
 }
@@ -487,7 +499,9 @@ impl Store {
         if view == VIEW_WORKING {
             crate::store_migration::Migration::recover_for_writer(&basemind_dir.join(VIEWS_DIR))
                 .map_err(StoreError::Migration)?;
-            crate::store_seed::seed_working_view(root, &basemind_dir, &view_dir);
+            if !group_layout() {
+                crate::store_seed::seed_working_view(root, &basemind_dir, &view_dir);
+            }
         }
         ensure_dir(&view_dir)?;
         ensure_workspace_marker(&basemind_dir, root);
@@ -514,7 +528,7 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let (index_db, index_rebuild_needed) = durability::open_index_for_writer(root, view, &view_dir, &mut index)?;
+        let (index_db, index_rebuild_needed) = open_index_for_writer(root, view, &view_dir, &mut index, holder)?;
         let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);
         let mut store = Self {
             root: root.to_path_buf(),
@@ -615,7 +629,15 @@ impl Store {
         // A stale layout leaves an index of the current schema over a map that is gone: the scan
         // that takes the lock replaces both ([`Store::open_index_owed_to_scan`]). ~keep
         let mut index_rebuild_needed = stale_layout;
-        let index_db = if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
+        let index_db = if group_layout() {
+            if allow_index_db && schema_ok && !writer_lock_is_held(&basemind_dir) {
+                let (db, rebuild) = group::open_index_read_only(root, view, &index)?;
+                index_rebuild_needed |= rebuild;
+                db
+            } else {
+                None
+            }
+        } else if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
             match IndexDb::open_tolerating_held_memory(&view_dir, &memory_store_dir(root)) {
                 Ok(db) => Some(db),
                 Err(IndexError::Fjall(fjall::Error::Locked)) => None,
@@ -814,7 +836,11 @@ impl Store {
     /// store.
     pub fn reopen_index_db(&mut self) -> Result<(), IndexError> {
         if self.index_db.take().is_some() {
-            self.index_db = Some(open_index_with_retry(&self.root, &self.view_dir)?);
+            self.index_db = Some(if group_layout() {
+                group::reopen_view(&self.root, &self.view)?
+            } else {
+                open_index_with_retry(&self.root, &self.view_dir)?
+            });
         }
         Ok(())
     }
@@ -940,6 +966,31 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
 /// `.lock` retry budget (`acquire_lock_as`).
 const INDEX_OPEN_RETRIES: u32 = 10;
 const INDEX_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Open the index of `view` for a writer in the layout this process uses (see [`group_layout`]),
+/// reconciling the file map `index` with it. Returns the handle and whether a full scan must rebuild
+/// the view, in which case `index` lists no files any more.
+pub(crate) fn open_index_for_writer(
+    root: &Path,
+    view: &str,
+    view_dir: &Path,
+    index: &mut Index,
+    holder: LockHolder,
+) -> Result<(IndexDb, bool), StoreError> {
+    if group_layout() {
+        return group::open_index_for_writer(root, view, view_dir, index, holder);
+    }
+    // A map written against a group index vouches for none of this view's own rows. ~keep
+    if index.group_incarnation != 0 {
+        if view_dir.join(crate::index::INDEX_DIR).exists() {
+            crate::index::durability::discard_index(view_dir)?;
+        }
+        index.generation = 0;
+        index.group_incarnation = 0;
+        index.view_id = 0;
+    }
+    durability::open_index_for_writer(root, view, view_dir, index)
+}
 
 /// Open the Fjall [`IndexDb`], retrying a transient fjall `Locked` (see [`INDEX_OPEN_RETRIES`]).
 /// ONLY correct for a caller that already holds `.basemind/.lock`; such a caller is the sole

@@ -2,7 +2,9 @@
 //! scanner commits each file's work atomically so a crash mid-scan leaves the index in
 //! a consistent (just slightly stale) state.
 
-use fjall::{Keyspace, OwnedWriteBatch, Slice};
+use fjall::{OwnedWriteBatch, Slice};
+
+use super::scoped::Scoped;
 
 use super::keys;
 use super::{IndexDb, IndexError};
@@ -80,25 +82,24 @@ fn staged_entry_bytes(key_len: usize, value_len: usize) -> u64 {
 /// Free-standing rather than a `&mut self` method so a caller can hold disjoint borrows of the
 /// writer's fields — `&db.<partition>` alongside `&mut batch` — which a method taking `&mut self`
 /// plus `&self.db.<partition>` would reject.
-fn stage_insert<K: Into<Slice>, V: Into<Slice>>(
+fn stage_insert<K: Into<Vec<u8>>, V: Into<Slice>>(
     batch: &mut OwnedWriteBatch,
     staged_bytes: &mut u64,
-    partition: &Keyspace,
+    partition: &Scoped,
     key: K,
     value: V,
 ) {
-    let key = key.into();
     let value = value.into();
-    *staged_bytes += staged_entry_bytes(key.len(), value.len());
-    batch.insert(partition, key, value);
+    let value_len = value.len();
+    let key_len = partition.stage_insert(batch, key, value);
+    *staged_bytes += staged_entry_bytes(key_len, value_len);
 }
 
 /// Stage one delete. `WriteBatch::remove` stages a full `Item` carrying an empty value, so a
 /// tombstone costs everything an insert does bar the value payload.
-fn stage_remove<K: Into<Slice>>(batch: &mut OwnedWriteBatch, staged_bytes: &mut u64, partition: &Keyspace, key: K) {
-    let key = key.into();
-    *staged_bytes += staged_entry_bytes(key.len(), 0);
-    batch.remove(partition, key);
+fn stage_remove<K: Into<Vec<u8>>>(batch: &mut OwnedWriteBatch, staged_bytes: &mut u64, partition: &Scoped, key: K) {
+    let key_len = partition.stage_remove(batch, key);
+    *staged_bytes += staged_entry_bytes(key_len, 0);
 }
 
 impl IndexWriter {
@@ -316,7 +317,9 @@ impl IndexWriter {
 
     #[cfg(test)]
     pub(super) fn commit_overlay(mut self, sequence_key: &[u8], sequence: u64) -> Result<(), IndexError> {
-        self.batch.insert(&self.db.meta, sequence_key, sequence.to_be_bytes());
+        self.db
+            .meta
+            .stage_insert(&mut self.batch, sequence_key, sequence.to_be_bytes().into());
         self.batch = self.batch.durability(Some(fjall::PersistMode::SyncAll));
         self.commit()
     }
@@ -325,8 +328,8 @@ impl IndexWriter {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let path_prefix = keys::symbols_by_path_prefix(rel);
         let mut found_symbols: Vec<(Vec<u8>, Symbol)> = Vec::new();
-        for guard in db.symbols_by_path.prefix(path_prefix) {
-            let (k, v) = guard.into_inner()?;
+        for row in db.symbols_by_path.prefix(&path_prefix) {
+            let (k, v) = row?;
             match rmp_serde::from_slice::<Symbol>(&v) {
                 Ok(sym) => found_symbols.push(((*k).to_vec(), sym)),
                 Err(e) => {
@@ -347,8 +350,8 @@ impl IndexWriter {
 
         let call_path_prefix = keys::calls_by_path_prefix(rel);
         let mut found_calls: Vec<(Vec<u8>, crate::extract::Call)> = Vec::new();
-        for guard in db.calls_by_path.prefix(call_path_prefix) {
-            let (k, v) = guard.into_inner()?;
+        for row in db.calls_by_path.prefix(&call_path_prefix) {
+            let (k, v) = row?;
             match rmp_serde::from_slice::<crate::extract::Call>(&v) {
                 Ok(call) => found_calls.push(((*k).to_vec(), call)),
                 Err(e) => {
@@ -369,8 +372,8 @@ impl IndexWriter {
 
         let imp_path_prefix = keys::imports_by_path_prefix(rel);
         let mut found_imports: Vec<(Vec<u8>, String, u32)> = Vec::new();
-        for guard in db.imports_by_path.prefix(imp_path_prefix) {
-            let (k, _) = guard.into_inner()?;
+        for row in db.imports_by_path.prefix(&imp_path_prefix) {
+            let (k, _) = row?;
             if let Some((_, module, start_byte)) = keys::parse_import_by_path(&k) {
                 found_imports.push(((*k).to_vec(), module, start_byte));
             }
@@ -384,8 +387,8 @@ impl IndexWriter {
 
         let impl_path_prefix = keys::impls_by_path_prefix(rel);
         let mut found_impls: Vec<(Vec<u8>, String, String, u32)> = Vec::new();
-        for guard in db.implementations_by_path.prefix(impl_path_prefix) {
-            let (k, _) = guard.into_inner()?;
+        for row in db.implementations_by_path.prefix(&impl_path_prefix) {
+            let (k, _) = row?;
             if let Some((_, trait_name, impl_type, start_byte)) = keys::parse_impl_by_path(&k) {
                 found_impls.push(((*k).to_vec(), trait_name, impl_type, start_byte));
             }
@@ -406,8 +409,8 @@ impl IndexWriter {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let prefix = keys::refs_by_path_prefix(use_rel);
         let mut found: Vec<(Vec<u8>, RelPath, u32, u32)> = Vec::new();
-        for guard in db.refs_by_path.prefix(prefix) {
-            let (k, _) = guard.into_inner()?;
+        for row in db.refs_by_path.prefix(&prefix) {
+            let (k, _) = row?;
             if let Some((_use_path, use_start, def_path, def_start)) = keys::parse_ref_by_path(&k) {
                 found.push(((*k).to_vec(), def_path, def_start, use_start));
             }
@@ -430,8 +433,8 @@ impl IndexWriter {
     fn stage_import_probe_deletes_for(&mut self, importer: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let manifest_key = keys::import_target(importer, keys::PROBE_MANIFEST_START);
-        for guard in db.import_targets.prefix(keys::import_targets_prefix(importer)) {
-            let (k, v) = guard.into_inner()?;
+        for row in db.import_targets.prefix(&keys::import_targets_prefix(importer)) {
+            let (k, v) = row?;
             if k.as_ref() == manifest_key.as_slice() {
                 for hash in keys::parse_probe_manifest(&v) {
                     let probe_key = keys::importer_by_probe(&hash, importer);
@@ -446,8 +449,13 @@ impl IndexWriter {
     #[cfg(feature = "code-search")]
     fn stage_bm25_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        for guard in db.code_bm25_by_path.prefix(keys::code_bm25_by_path_prefix(rel)) {
-            stage_remove(batch, staged_bytes, &db.code_bm25_by_path, guard.key()?.to_vec());
+        let keys: Vec<Vec<u8>> = db
+            .code_bm25_by_path
+            .prefix_keys(&keys::code_bm25_by_path_prefix(rel))
+            .map(|key| key.map(|key| key.to_vec()))
+            .collect::<Result<_, _>>()?;
+        for key in keys {
+            stage_remove(batch, staged_bytes, &db.code_bm25_by_path, key);
         }
         Ok(())
     }

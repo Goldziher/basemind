@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `code_search` and `docs_search` keep the ranked list of a query for up to two minutes (16 queries,
   4 MiB), so a later page or a repeated call does not run retrieval and the reranker again. A rescan
   drops the lists.
+- Experimental group index behind `BASEMIND_INDEX_GROUP=1` (ADR-0028, stage 3): every worktree and view of a
+  repository group shares one Fjall database at `cache/groups/<group>/index.fjall`, guarded by the group's
+  `.lock`. Rows describing a path stay path-keyed under a 4-byte view id; the grep bloom is shared by content,
+  and its sweeps keep any content another view's file map still names. A file map records the group index
+  incarnation and its view id, and one that does not match is emptied and its view rebuilt, leaving every
+  other view in place. Off by default; no released format.
 
 ### Changed
 

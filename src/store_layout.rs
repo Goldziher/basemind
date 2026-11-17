@@ -136,6 +136,15 @@ pub fn repo_group_dir(root: &Path) -> PathBuf {
     cache_root().join(CACHE_DIR).join(REPOS_DIR).join(repo_group_key(root))
 }
 
+/// Sub-directory of the cache holding the derived state of each repository group (ADR-0028), keyed
+/// by [`repo_group_key`]: the group index and its lock. Rebuildable, unlike [`REPOS_DIR`].
+pub const GROUPS_DIR: &str = "groups";
+
+/// `cache_root()/cache/groups/<repo_group_key>/`: the group index of `root`'s repository group.
+pub fn group_index_dir(root: &Path) -> PathBuf {
+    cache_root().join(CACHE_DIR).join(GROUPS_DIR).join(repo_group_key(root))
+}
+
 /// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every
 /// workspace in the group, so budget eviction and the orphan reaper never touch it.
 pub fn memory_store_dir(root: &Path) -> PathBuf {
