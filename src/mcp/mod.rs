@@ -19,6 +19,9 @@ mod cursor_bind;
 mod daemon_forward;
 mod freshness;
 mod helpers;
+pub(crate) use helpers::BUSY_DATA;
+#[cfg(test)]
+pub(crate) use helpers::rescan_error;
 mod helpers_admin;
 mod helpers_calls;
 #[cfg(test)]
