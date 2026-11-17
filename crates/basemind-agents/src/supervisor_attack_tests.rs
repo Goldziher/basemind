@@ -814,3 +814,36 @@ fn a_principal_is_its_registered_process_and_its_descendants_only() {
             .any(|record| record.event == AuditEvent::Registration && record.outcome == "registered")
     );
 }
+
+#[test]
+fn a_refusal_names_the_verified_caller_and_only_reports_the_claim() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    // A process below the supervisor, in no session, claims the configured launcher.
+    let stray = Stand::new();
+    let claim = Caller::principal("lead", stray.peer()).unwrap();
+    let refused = supervisor.launch(&claim, HarnessKind::ClaudeCode, &request());
+    assert!(refused.is_err());
+    let record = first(&audit, AuditEvent::Refusal);
+    assert_eq!(record.caller, None, "a refusal named the principal the caller claimed");
+    assert_eq!(record.claimed.as_deref(), Some("lead"));
+    assert_eq!(record.peer, Some(stray.peer().pid()));
+}
+
+#[test]
+fn a_flood_under_many_claimed_names_is_coalesced_as_one_caller() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    let stray = Stand::new();
+    for at in 0..300 {
+        let claim = Caller::principal(&format!("claimed-{at}"), stray.peer()).unwrap();
+        assert!(supervisor.launch(&claim, HarnessKind::ClaudeCode, &request()).is_err());
+    }
+    let written = outcomes(&audit, AuditEvent::Refusal).len();
+    assert!(
+        written <= crate::refusals::BURST as usize,
+        "{written} refusal records for one process under 300 names"
+    );
+}

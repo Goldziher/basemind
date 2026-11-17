@@ -22,12 +22,12 @@ use crate::refusals::Refusals;
 use crate::registry::Registry;
 use crate::session::SessionHandle;
 use crate::spec::{LaunchConfig, LaunchRequest};
-use crate::supervisor_admit::{Admitted, admit, launched_config, name_of, owned, refuse};
+use crate::supervisor_admit::{Admitted, Asker, admit, launched_config, owned, refuse};
 use crate::supervisor_pump::{Reservation, supervise};
 
 use crate::peer::Peer;
 pub use crate::supervisor_codes::launch_error_code;
-use crate::supervisor_identity::{Role, mint_operator, register, resolve};
+use crate::supervisor_identity::{Role, coalescing_key, mint_operator, register, resolve};
 pub use crate::supervisor_types::{
     Caller, Launched, SessionId, SessionObserver, SessionState, SessionStatus, SupervisorError,
 };
@@ -150,11 +150,11 @@ impl Inner {
         written
     }
 
-    /// Appends the refusal `record`, unless its caller has had a burst of the same refusal
-    /// written in this window (see [`crate::refusals`]). Never called with the table locked.
-    pub(crate) fn refuse(&self, mut record: AuditRecord) {
-        let caller = record.caller.as_deref().unwrap_or("-");
-        if let Some(suppressed) = self.refusals.admit(caller, record.outcome) {
+    /// Appends the refusal `record`, unless `key` (the verified caller, or where an unverified
+    /// one sits) has had a burst of the same refusal written in this window (see
+    /// [`crate::refusals`]). Never called with the table locked.
+    pub(crate) fn refuse(&self, mut record: AuditRecord, key: &str) {
+        if let Some(suppressed) = self.refusals.admit(key, record.outcome) {
             record.suppressed = Some(suppressed);
             let _ = self.audit(&record);
         }
@@ -288,6 +288,7 @@ impl Supervisor {
             Role::Launcher(principal) => principal.clone(),
             Role::Operator => "operator".to_owned(),
         };
+        let key = format!("register-{caller}");
         let mut table = inner.table();
         let bound = register(&inner.policy, &mut table, role.clone(), peer);
         drop(table);
@@ -297,7 +298,7 @@ impl Supervisor {
             ..AuditRecord::new(AuditEvent::Registration, "registered")
         };
         if let Err(error) = bound {
-            return Err(refuse(inner, record, error));
+            return Err(refuse(inner, record, &key, error));
         }
         if let Err(error) = inner.audit(&record) {
             inner
@@ -323,13 +324,19 @@ impl Supervisor {
     /// is gone or cannot be placed; [`SupervisorError::CallerNotAdmitted`] for one inside a
     /// session, below the supervisor, or registered for something else. Each refusal is audited.
     pub fn operator(&self, peer: Peer) -> Result<Caller, SupervisorError> {
-        let minted = mint_operator(&self.inner.table(), peer);
-        if let Err(error) = &minted {
-            self.inner.refuse(AuditRecord {
-                claimed: Some("operator".to_owned()),
-                peer: Some(peer.pid()),
-                ..AuditRecord::new(AuditEvent::Refusal, error.code())
-            });
+        let table = self.inner.table();
+        let minted = mint_operator(&table, peer);
+        let key = minted.is_err().then(|| coalescing_key(&table, &peer));
+        drop(table);
+        if let (Err(error), Some(key)) = (&minted, key) {
+            self.inner.refuse(
+                AuditRecord {
+                    claimed: Some("operator".to_owned()),
+                    peer: Some(peer.pid()),
+                    ..AuditRecord::new(AuditEvent::Refusal, error.code())
+                },
+                &key,
+            );
         }
         minted
     }
@@ -374,8 +381,10 @@ impl Supervisor {
         } = match admitted {
             Ok(admitted) => admitted,
             Err(error) => {
+                let key = Asker::new(&table, caller, None).key;
+                let key = refusal.caller.clone().unwrap_or(key);
                 drop(table);
-                return Err(refuse(inner, refusal, error));
+                return Err(refuse(inner, refusal, &key, error));
             }
         };
         let id = table.next;
@@ -391,7 +400,8 @@ impl Supervisor {
             Ok(prepared) => prepared,
             Err(error) => {
                 drop(table);
-                return Err(refuse(inner, refusal, error));
+                let key = refusal.caller.clone().unwrap_or_default();
+                return Err(refuse(inner, refusal, &key, error));
             }
         };
         let caveats = crate::policy::caveats(flavor);
@@ -543,17 +553,18 @@ impl Supervisor {
         let inner = &self.inner;
         let mut table = inner.table();
         let resolved = resolve(&inner.policy, &table, caller);
+        let asker = Asker::new(&table, caller, resolved.as_ref().ok());
         let mut record = AuditRecord {
             session: Some(id.0),
-            caller: resolved.as_ref().ok().map(|resolved| name_of(&table, resolved)),
             ..AuditRecord::new(AuditEvent::Stop, "requested")
         };
+        asker.stamp(&mut record);
         let entry = match owned(&mut table, resolved, id) {
             Ok(entry) => entry,
             Err(error) => {
                 record.outcome = error.code();
                 drop(table);
-                inner.refuse(record);
+                inner.refuse(record, &asker.key);
                 return Err(error);
             }
         };
@@ -622,16 +633,17 @@ impl Supervisor {
         let inner = &self.inner;
         let mut table = inner.table();
         let resolved = resolve(&inner.policy, &table, caller);
-        let caller_name = resolved.as_ref().ok().map(|resolved| name_of(&table, resolved));
+        let asker = Asker::new(&table, caller, resolved.as_ref().ok());
         let entry = match owned(&mut table, resolved, id) {
             Ok(entry) => entry,
             Err(error) => {
                 drop(table);
-                inner.refuse(AuditRecord {
-                    caller: caller_name,
+                let mut record = AuditRecord {
                     session: Some(id.0),
                     ..AuditRecord::new(AuditEvent::ApprovalAnswer, error.code())
-                });
+                };
+                asker.stamp(&mut record);
+                inner.refuse(record, &asker.key);
                 return Err(error);
             }
         };
@@ -643,17 +655,20 @@ impl Supervisor {
         let handle = entry.handle.clone();
         let flavor = entry.flavor.id();
         drop(table);
-        let record = |outcome, allowed| AuditRecord {
-            caller: caller_name.clone(),
-            session: Some(id.0),
-            flavor: Some(flavor),
-            approval: Some(AuditApproval {
-                id: recorded_id.clone(),
-                kind,
-                allowed,
-                source: "caller",
-            }),
-            ..AuditRecord::new(AuditEvent::ApprovalAnswer, outcome)
+        let record = |outcome, allowed| {
+            let mut record = AuditRecord {
+                session: Some(id.0),
+                flavor: Some(flavor),
+                approval: Some(AuditApproval {
+                    id: recorded_id.clone(),
+                    kind,
+                    allowed,
+                    source: "caller",
+                }),
+                ..AuditRecord::new(AuditEvent::ApprovalAnswer, outcome)
+            };
+            asker.stamp(&mut record);
+            record
         };
         // An allow is on the record before it reaches the harness, or it does not reach it: the
         // request stays pending and is denied when its turn or the session ends. A denial

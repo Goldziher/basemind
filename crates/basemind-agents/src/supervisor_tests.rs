@@ -339,15 +339,16 @@ fn only_an_admitted_caller_launches_an_allowed_flavor() {
         outcomes(&audit, AuditEvent::Refusal),
         cases.iter().map(|(_, _, code)| *code).collect::<Vec<_>>()
     );
-    let callers: Vec<Option<String>> = audit
+    let callers: Vec<(Option<String>, Option<String>)> = audit
         .records()
         .into_iter()
         .filter(|record| record.event == AuditEvent::Refusal)
-        .map(|record| record.caller)
+        .map(|record| (record.caller, record.claimed))
         .collect();
-    assert_eq!(callers[0].as_deref(), Some("stranger"));
-    assert_eq!(callers[1].as_deref(), Some("operator"));
-    assert_eq!(callers[3], None, "a token caller was named");
+    // A claim the supervisor did not verify is reported as claimed, never as the caller.
+    assert_eq!(callers[0], (None, Some("stranger".to_owned())));
+    assert_eq!(callers[1].0.as_deref(), Some("operator"));
+    assert_eq!(callers[3], (None, None), "a token caller was named");
     assert!(supervisor.list().is_empty(), "a refused launch left a session");
     assert!(Caller::principal("has space", outside()).is_err());
     assert!(!format!("{:?}", Caller::launched("secret-token", outside())).contains("secret-token"));

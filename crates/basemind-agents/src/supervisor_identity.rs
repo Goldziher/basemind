@@ -123,6 +123,18 @@ pub(crate) fn resolve(
     }
 }
 
+/// The key a refusal of an unverified caller on `peer` is coalesced under: where the peer
+/// sits, never what it claims, so one process cannot spread its refusals over many keys.
+pub(crate) fn coalescing_key(table: &Table, peer: &Peer) -> String {
+    match origin(table, peer) {
+        Origin::Session(id) => format!("session-{id}"),
+        Origin::Registered(ids) => format!("registered-{}", ids.first().map_or(0, |id| id.pid)),
+        Origin::Below => "below".to_owned(),
+        Origin::Supervisor => "supervisor".to_owned(),
+        Origin::Outside { .. } | Origin::Unknown => "unverified".to_owned(),
+    }
+}
+
 /// A token presented from a process outside its session was read from that session's
 /// environment; one that names no live session is simply not valid.
 fn token_refusal(table: &Table, token: &str) -> SupervisorError {

@@ -8,14 +8,59 @@ use crate::harness::HarnessKind;
 use crate::identity::{AgentIdentity, LaunchToken};
 use crate::spec::LaunchConfig;
 use crate::supervisor::{Entry, Inner, Launcher, Resolved, SessionId, SessionState, SupervisorError, Table};
-use crate::supervisor_identity::resolve;
+use crate::supervisor_identity::{coalescing_key, resolve};
 use crate::supervisor_types::{Caller, CallerKind};
 
-/// Records `error` as the refusal's outcome, writes it (coalesced), and returns the error.
-pub(crate) fn refuse(inner: &Inner, mut refusal: AuditRecord, error: SupervisorError) -> SupervisorError {
+/// Records `error` as the refusal's outcome, writes it coalesced under `key`, and returns the
+/// error.
+pub(crate) fn refuse(inner: &Inner, mut refusal: AuditRecord, key: &str, error: SupervisorError) -> SupervisorError {
     refusal.outcome = error.code();
-    inner.refuse(refusal);
+    inner.refuse(refusal, key);
     error
+}
+
+/// Who a record says asked: the verified name once the caller resolved; before that, nobody,
+/// with what it claimed (never a token) and its process kept apart.
+pub(crate) struct Asker {
+    caller: Option<String>,
+    claimed: Option<String>,
+    peer: u32,
+    /// The key the caller's refusals are coalesced under.
+    pub key: String,
+}
+
+impl Asker {
+    pub fn new(table: &Table, caller: &Caller, resolved: Option<&Resolved>) -> Self {
+        let peer = caller.peer.pid();
+        match resolved {
+            Some(resolved) => {
+                let name = name_of(table, resolved);
+                Self {
+                    caller: Some(name.clone()),
+                    claimed: None,
+                    peer,
+                    key: name,
+                }
+            }
+            None => Self {
+                caller: None,
+                claimed: match &caller.kind {
+                    CallerKind::Operator => Some("operator".to_owned()),
+                    CallerKind::Principal(principal) => Some(principal.clone()),
+                    CallerKind::Token(_) => None,
+                },
+                peer,
+                key: coalescing_key(table, &caller.peer),
+            },
+        }
+    }
+
+    /// Writes who asked into `record`.
+    pub fn stamp(&self, record: &mut AuditRecord) {
+        record.caller.clone_from(&self.caller);
+        record.claimed.clone_from(&self.claimed);
+        record.peer = Some(self.peer);
+    }
 }
 
 /// Every check a launch passes before anything is started: the policy is on, the caller is
@@ -32,14 +77,10 @@ pub(crate) fn admit<'a>(
     if !policy.enabled() {
         return Err(SupervisorError::Disabled);
     }
-    // Until the caller resolves, a refusal names whom it claimed to be; never a token.
-    refusal.caller = match &caller.kind {
-        CallerKind::Operator => Some("operator".to_owned()),
-        CallerKind::Principal(principal) => Some(principal.clone()),
-        CallerKind::Token(_) => None,
-    };
+    // Until the caller resolves, a refusal names nobody and reports what was claimed.
+    Asker::new(table, caller, None).stamp(refusal);
     let resolved = resolve(policy, table, caller)?;
-    refusal.caller = Some(name_of(table, &resolved));
+    Asker::new(table, caller, Some(&resolved)).stamp(refusal);
     let (launcher, caller_depth, lineage) = match resolved {
         Resolved::Operator => return Err(SupervisorError::CallerNotAdmitted),
         Resolved::Top(principal) => (Launcher::Principal(principal), 0, Vec::new()),
