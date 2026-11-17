@@ -298,6 +298,9 @@ struct SampleFile {
     path: basemind::path::RelPath,
     /// non-empty when the file has at least one indexed symbol
     sample_symbol: Option<String>,
+    /// 1-based line of `sample_symbol`'s definition: a name an impl block shares with its type
+    /// needs it to pick one definition.
+    sample_line: Option<u32>,
     /// non-empty when the file has at least one import with a resolved module
     sample_module: Option<String>,
 }
@@ -348,7 +351,9 @@ fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
             }
         }
         if sample.is_none() && !l1.symbols.is_empty() && l1.symbols.iter().any(|s| !s.name.is_empty()) {
-            let sym = l1.symbols.iter().find(|s| !s.name.is_empty()).map(|s| s.name.clone());
+            let picked = l1.symbols.iter().find(|s| !s.name.is_empty());
+            let sym = picked.map(|s| s.name.clone());
+            let line = picked.map(|s| s.start_row + 1);
             let module = l1
                 .imports
                 .iter()
@@ -357,6 +362,7 @@ fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
             sample = Some(SampleFile {
                 path: path.clone(),
                 sample_symbol: sym,
+                sample_line: line,
                 sample_module: module,
             });
         }
@@ -459,14 +465,14 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
                 svc,
                 &mut records,
                 "git_blame",
-                json!({ "path": &sample.path, "symbol": sym }),
+                json!({ "path": &sample.path, "symbol": sym, "line": sample.sample_line }),
             )
             .await;
             call(
                 svc,
                 &mut records,
                 "git_log",
-                json!({ "path": &sample.path, "symbol": sym, "limit": 20 }),
+                json!({ "path": &sample.path, "symbol": sym, "line": sample.sample_line, "limit": 20 }),
             )
             .await;
             call(svc, &mut records, "code_refs", json!({ "name": sym, "limit": 100 })).await;
@@ -488,7 +494,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             svc,
             &mut records,
             "code_read",
-            json!({ "path": &sample.path, "symbol": sym }),
+            json!({ "path": &sample.path, "symbol": sym, "line": sample.sample_line }),
         )
         .await;
     }
