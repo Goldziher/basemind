@@ -130,6 +130,7 @@ mod frames;
 mod gitconfig;
 mod guard;
 mod harness;
+mod host;
 mod identity;
 mod line;
 mod peer;

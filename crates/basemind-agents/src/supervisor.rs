@@ -264,7 +264,13 @@ impl Supervisor {
     /// name, or a stop grace over [`MAX_STOP_GRACE_CEILING`](crate::MAX_STOP_GRACE_CEILING);
     /// and [`PolicyError::AuditReserve`] when `audit` cannot set aside, for the supervisor's
     /// life, the most its budget may write into the log's reserve (launches, exits, the stop of
-    /// each session, allows and registrations; see [`AuditSink::reserve`]).
+    /// each session, allows and registrations; see [`AuditSink::reserve`]); and
+    /// [`PolicyError::NestedHost`] for a policy that allows launching in a process that may not
+    /// host it: one carrying [`ENV_LAUNCH_TOKEN`](crate::ENV_LAUNCH_TOKEN) or
+    /// [`ENV_AGENT_DEPTH`](crate::ENV_AGENT_DEPTH), one below a process that runs the same program
+    /// (a `serve` a launched agent's harness started, whose environment the harness filtered),
+    /// and one whose ancestry cannot be read. Only the lead's own `serve`, which no `basemind`
+    /// process started, hosts a supervisor.
     pub fn new(
         policy: LaunchPolicy,
         configs: Vec<LaunchConfig>,
@@ -280,6 +286,9 @@ impl Supervisor {
                 return Err(PolicyError::DuplicateConfig(kind.id()));
             }
             crate::policy::check_config(rule, config)?;
+        }
+        if policy.enabled() && crate::host::nested().is_some() {
+            return Err(PolicyError::NestedHost);
         }
         let needed = crate::supervisor_reserve::demand(&policy, &configs);
         audit
@@ -850,3 +859,7 @@ mod identity_tests;
 #[cfg(all(test, unix))]
 #[path = "supervisor_audit_tests.rs"]
 mod audit_tests;
+
+#[cfg(all(test, unix))]
+#[path = "supervisor_host_tests.rs"]
+mod host_tests;

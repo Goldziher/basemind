@@ -33,7 +33,8 @@ impl Supervisor {
     /// [`SupervisorError::PeerUnverified`] for a child that has exited or cannot be read;
     /// [`SupervisorError::RoleBound`] while the principal is bound;
     /// [`SupervisorError::Audit`] when the registration could not be recorded (it is then
-    /// undone). Each is audited.
+    /// undone); [`SupervisorError::NestedHost`] when this process may not host a supervisor (see
+    /// [`Supervisor::new`]). Each is audited.
     pub fn register_launcher_child(
         &self,
         principal: &str,
@@ -99,9 +100,13 @@ impl Supervisor {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let caller = role_name(&role);
         let key = format!("register-{caller}");
+        // Read before the table is locked: it walks this process's ancestry.
+        let nested = crate::host::nested().is_some();
         let mut table = inner.table();
         let bound = if inner.registrations.load(Ordering::SeqCst) >= MAX_REGISTRATIONS {
             Err(SupervisorError::RegistrationLimit)
+        } else if nested {
+            Err(SupervisorError::NestedHost)
         } else {
             register(&inner.policy, &mut table, role.clone(), source)
         };

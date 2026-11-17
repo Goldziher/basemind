@@ -196,6 +196,11 @@ pub enum PolicyError {
         /// The bytes the supervisor's budget may write into the reserve.
         needed: u64,
     },
+    /// This process runs inside a launched session, or below a process that runs the same
+    /// program (a `basemind serve` started by a launched agent's harness), so it may not host a
+    /// supervisor that launches: only the lead's own `serve` does.
+    #[error("this process runs inside a launched session and may not host a supervisor")]
+    NestedHost,
     /// A launch config disagrees with the policy for its flavor.
     #[error("the launch config for harness {harness} disagrees with the policy on {field}")]
     ConfigMismatch {

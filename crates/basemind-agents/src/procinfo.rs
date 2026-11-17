@@ -71,6 +71,44 @@ fn whole(listed: i32, room: usize) -> Option<usize> {
     usize::try_from(listed).ok().filter(|listed| *listed < room)
 }
 
+/// What a process runs, as far as it can be read: its command name (as the kernel truncates it)
+/// and the device and inode of its executable. Two processes run the same program when either
+/// matches.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Image {
+    pub comm: Option<Vec<u8>>,
+    pub file: Option<(u64, u64)>,
+}
+
+impl Image {
+    /// Whether `self` and `other` are the same program: the same executable file, or the same
+    /// command name. A name alone suffices, so a copy under the same name matches, and so does
+    /// the file alone, so a link under another name matches too.
+    pub fn same_program(&self, other: &Self) -> bool {
+        fn same<T: PartialEq>(a: Option<&T>, b: Option<&T>) -> bool {
+            a.is_some() && a == b
+        }
+        same(self.file.as_ref(), other.file.as_ref()) || same(self.comm.as_ref(), other.comm.as_ref())
+    }
+}
+
+/// What process `pid` runs, `None` when neither part can be read.
+pub(crate) fn image(pid: i32) -> Option<Image> {
+    if pid <= 0 {
+        return None;
+    }
+    let image = platform::image(pid);
+    (image.comm.is_some() || image.file.is_some()).then_some(image)
+}
+
+/// The device and inode of the file at `path`.
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn file_id(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.dev(), meta.ino()))
+}
+
 /// The ancestors of a process, nearest first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Chain {
@@ -134,6 +172,21 @@ mod platform {
         })
     }
 
+    /// The command name is readable for any process; the executable only for one this
+    /// process may trace (`PTRACE_MODE_READ`), so not for a non-dumpable one.
+    pub fn image(pid: i32) -> super::Image {
+        let comm = std::fs::read(format!("/proc/{pid}/comm")).ok().map(|mut comm| {
+            if comm.last() == Some(&b'\n') {
+                comm.pop();
+            }
+            comm
+        });
+        super::Image {
+            comm,
+            file: super::file_id(std::path::Path::new(&format!("/proc/{pid}/exe"))),
+        }
+    }
+
     pub fn pids() -> Option<Vec<i32>> {
         let entries = std::fs::read_dir("/proc").ok()?;
         Some(
@@ -146,6 +199,8 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use std::os::unix::ffi::OsStringExt;
+
     use super::ProcInfo;
 
     /// The process's BSD info, `None` when it cannot be read.
@@ -187,6 +242,29 @@ mod platform {
         })
     }
 
+    pub fn image(pid: i32) -> super::Image {
+        let comm = bsd_info(pid).map(|bsd| {
+            bsd.pbi_comm
+                .iter()
+                .take_while(|byte| **byte != 0)
+                .map(|byte| byte.to_ne_bytes()[0])
+                .collect()
+        });
+        let mut path = vec![0_u8; usize::try_from(libc::PROC_PIDPATHINFO_MAXSIZE).unwrap_or(4096)];
+        let room = u32::try_from(path.len()).unwrap_or(0);
+        // SAFETY: the buffer holds `room` bytes and proc_pidpath writes at most that many.
+        let written = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), room) };
+        let file = usize::try_from(written)
+            .ok()
+            .filter(|written| *written > 0)
+            .and_then(|written| {
+                path.truncate(written);
+                let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
+                super::file_id(&path)
+            });
+        super::Image { comm, file }
+    }
+
     pub fn pids() -> Option<Vec<i32>> {
         // SAFETY: with a null buffer proc_listallpids returns the number of processes.
         let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -214,6 +292,10 @@ mod platform {
 
     pub fn info(_pid: i32) -> Option<ProcInfo> {
         None
+    }
+
+    pub fn image(_pid: i32) -> super::Image {
+        super::Image::default()
     }
 
     pub fn pids() -> Option<Vec<i32>> {

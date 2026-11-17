@@ -269,6 +269,10 @@ pub enum SupervisorError {
     /// ([`Supervisor::audit_exhausted`](crate::Supervisor::audit_exhausted)).
     #[error("the audit log is exhausted; launching stays off until it is rotated")]
     AuditExhausted,
+    /// This process runs inside a launched session, or below a process that runs the same
+    /// program, so nothing is bound to it or to its children.
+    #[error("this process runs inside a launched session and may not be registered")]
+    NestedHost,
 }
 
 impl SupervisorError {
@@ -297,6 +301,7 @@ impl SupervisorError {
             Self::AllowsExhausted => "allows_exhausted",
             Self::RegistrationLimit => "registration_limit",
             Self::AuditExhausted => "audit_exhausted",
+            Self::NestedHost => "nested_host",
         }
     }
 }

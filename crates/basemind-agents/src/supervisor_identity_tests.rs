@@ -385,7 +385,9 @@ fn a_subreaper_ancestor_adopts_no_escapee_as_launcher() {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
             .args([NAME, "--exact", "--nocapture", "--test-threads=1"])
-            .env(SUBREAPER_ROLE, role);
+            .env(SUBREAPER_ROLE, role)
+            // The inner run's parent, the wrapper, runs this same test binary.
+            .env(crate::host::ALLOW_SAME_PROGRAM_ANCESTOR, "1");
         if let Some(marker) = marker {
             command.env(SUBREAPER_MARKER, marker);
         }

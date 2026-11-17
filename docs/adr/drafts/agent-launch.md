@@ -318,6 +318,17 @@ id that fails the grammar stops the launch.
      below). Planted code a launched agent leaves for the lead (git hooks, build scripts, the
      lead's own project settings) runs as a descendant of the lead's harness, not of its
      `serve`, so it is a sibling outside the supervisor's tree and is refused.
+     Only a `serve` started with an explicit lead switch hosts a supervisor. The restricted
+     profile the injected `serve` runs forwards `agent_launch` / `agent_stop` to the parent's
+     socket and never constructs a `Supervisor`. The crate enforces the rest: `Supervisor::new`
+     refuses a launching policy (`NestedHost`) and every registration refuses (`nested_host`) in
+     a process that carries `BASEMIND_LAUNCH_TOKEN` or `BASEMIND_AGENT_DEPTH`, that has an
+     ancestor running the same program (by command name or executable file, since Codex filters
+     the environment of the MCP servers it starts), or whose ancestry cannot be read. Without
+     that, the injected `serve`, or the user's own basemind MCP server that Codex and OpenCode
+     load from user-level configuration, would host a supervisor of its own under the same
+     `[agents.launch]` configuration and make the launched agent a depth-0 launcher with a fresh
+     budget, one level further down each time.
    - **Limits are per lead.** `max_concurrent`, `max_children` and the budget bound one
      supervisor, so one lead's session; two leads each get their own. Global caps across leads
      would need daemon-side accounting, which this ADR does not add.

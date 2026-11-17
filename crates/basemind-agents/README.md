@@ -105,7 +105,15 @@ assert!(refused.is_err(), "max_depth = 1: a launched agent launches nothing");
   serve`, or an in-process embedding), never in the daemon. Launched agents are children of that
   process, and when it exits its sessions end. The lead's tool calls reach the supervisor in that
   process, as `Caller::principal(.., Peer::embedding()?)`; a launched agent's injected `basemind
-  serve` reaches it over a socket that process listens on.
+  serve` reaches it over a socket that process listens on. A process inside a launched session
+  never hosts one: `Supervisor::new` refuses a launching policy (`NestedHost`), and every
+  registration refuses (`nested_host`), in a process that carries `BASEMIND_LAUNCH_TOKEN` or
+  `BASEMIND_AGENT_DEPTH`, that has an ancestor running the same program (by command name or
+  executable file: a `serve` a launched agent's harness started, whose environment the harness
+  may filter, as Codex does), or whose ancestry cannot be read. Otherwise such a `serve`, sharing
+  the user's `[agents.launch]` configuration, would make the launched agent a depth-0 launcher
+  with a budget of its own. A lead started from a terminal basemind hosts (`shell`) is refused
+  the same way.
 - **Who launches.** Nothing is trusted by default. Every caller carries a `Peer`: the process the
   kernel reports for its connection (`Peer::of_socket`), pinned to the process that connected (by
   its audit token's pid version on macOS, a pidfd on Linux 6.5+; `Peer::pins_connections` says
