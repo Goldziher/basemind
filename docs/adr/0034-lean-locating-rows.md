@@ -3,7 +3,7 @@ status: proposed
 date: 2026-11-16
 ---
 
-# ADR-0033: Lean rows for the locating tools
+# ADR-0034: Lean rows for the locating tools
 
 - **Deciders:** the repository owner
 - **Related:** ADR-0031 (value gate by job), ADR-0018, ADR-0022, ADR-0030
