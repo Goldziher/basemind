@@ -20,6 +20,7 @@ use super::types_code::{
 use crate::search::bm25::bm25_search;
 use crate::search::exact::exact_lane_chunk_ids;
 use crate::search::hydrate::ChunkHydrator;
+use crate::search::lanes::{Degraded, LaneCause, LaneOutcome};
 use crate::search::rrf::{
     DEFAULT_RRF_K, FusionLane, LANE_EXACT, LANE_KEYWORD, LANE_VECTOR, WEIGHT_EXACT, WEIGHT_KEYWORD, WEIGHT_VECTOR,
     rrf_fuse_detailed,
@@ -167,21 +168,20 @@ async fn hybrid_hits(
 
     let lanes = fjall_lanes(state, query, fuse_limit, true).await?;
     match &lanes.degraded {
-        Some(reason) => report.degrade(&["keyword", "exact"], reason.clone()),
+        Some(degraded) => report.degrade(&["keyword", "exact"], degraded.reason.clone()),
         None => report.ran.extend(["keyword", "exact"]),
     }
 
     // A degraded-lane notice attached to an EMPTY hit list is still a success response, and a
     // caller reads it as "no matches" — the very defect this forward removes. Partial results are
     // only honest when some lane actually ran. ~keep
-    if lanes.degraded.is_some() && !vector_ran {
+    if let Some(degraded) = lanes.degraded.as_ref().filter(|_| !vector_ran) {
         let reason = report.reason.clone().unwrap_or_default();
-        return Err(McpError::internal_error(
+        return Err(lane_refusal(
+            degraded.cause,
             format!(
-                "`code_search`: no lane could run — {reason}. Nothing was searched; this \
-                 is not an empty result set."
+                "`code_search`: no lane could run — {reason}. Nothing was searched; this is not an empty result set."
             ),
-            None,
         ));
     }
     let keyword_ids: Vec<String> = lanes.keyword.iter().map(|(id, _)| id.clone()).collect();
@@ -250,31 +250,29 @@ impl LaneReport {
     }
 }
 
-/// The two fjall-backed lanes' rankings, plus why they could not run.
-struct LaneOutcome {
-    /// BM25 `(chunk_id, score)`, best first.
-    keyword: Vec<(String, f32)>,
-    /// Exact symbol-name lane chunk ids, best first.
-    exact: Vec<String>,
-    /// `None` when the lanes ran. `Some(reason)` when they could not — never conflated with "ran and
-    /// matched nothing", which is what the pre-forward code returned.
-    degraded: Option<String>,
+/// The error for lanes that did not run, on a call that has no other lane to answer with.
+fn lane_refusal(cause: LaneCause, message: String) -> McpError {
+    match cause {
+        LaneCause::Held => McpError::invalid_request(message, Some(serde_json::json!({ super::BUSY_DATA: true }))),
+        LaneCause::RescanOwed => McpError::invalid_request(message, None),
+        LaneCause::Failed => McpError::internal_error(message, None),
+    }
 }
 
-/// Run the keyword (BM25) + exact (symbol-name) lanes, forwarding to the daemon when this session
-/// holds no `IndexDb`.
+/// Run the keyword (BM25) + exact (symbol-name) lanes over this session's index, or the daemon's
+/// pool for a daemon-hosted session.
 ///
-/// Both lanes read fjall, whose directory lock is exclusive, so only the daemon can serve them on a
-/// machine where it is running. A reader session forwards; a HOSTED session (running inside the
-/// daemon) must never forward, because that is the daemon dialling itself — the re-entrancy the
-/// hosted comms path had to remove. A hosted stack reaches the pool directly instead. ~keep
+/// Both lanes read fjall, whose directory lock is exclusive, so a session that holds no index and
+/// is not hosted (a CLI command or a second `serve` beside a writer, with no daemon) cannot run
+/// them: the outcome names why and the fix ([`Degraded::unreachable`]). A HOSTED session reaches the
+/// pool directly, never over the socket, which would be the daemon dialling itself. ~keep
 async fn fjall_lanes(
     state: &ServerState,
     query: &str,
     limit: usize,
     want_exact: bool,
 ) -> Result<LaneOutcome, McpError> {
-    {
+    let rescan_owed = {
         let store = state.store_read().await;
         if let Some(db) = store.read_index_view() {
             let keyword = bm25_search(&*db, query, limit)
@@ -292,19 +290,22 @@ async fn fjall_lanes(
                 degraded: None,
             });
         }
-    }
-    forward_fjall_lanes(state, query, limit, want_exact).await
+        store.rescan_owed()
+    };
+    Ok(hosted_fjall_lanes(state, query, limit, want_exact)
+        .await?
+        .unwrap_or_else(|| Degraded::unreachable(rescan_owed).into()))
 }
 
-/// The two lanes' rankings from the daemon's pool, for a daemon-hosted session. Ranking only: chunk
-/// bodies come from content-addressed blobs this session can already read.
+/// The two lanes' rankings from the daemon's pool, for a daemon-hosted session; `None` for any other
+/// session. Ranking only: chunk bodies come from content-addressed blobs this session can already read.
 #[cfg(all(feature = "comms", any(unix, windows)))]
-async fn forward_fjall_lanes(
+async fn hosted_fjall_lanes(
     state: &ServerState,
     query: &str,
     limit: usize,
     want_exact: bool,
-) -> Result<LaneOutcome, McpError> {
+) -> Result<Option<LaneOutcome>, McpError> {
     use crate::comms::code_search_proto::CodeSearchLaneQuery;
 
     let request = CodeSearchLaneQuery {
@@ -314,52 +315,34 @@ async fn forward_fjall_lanes(
     };
     let root = state.shared.root.clone();
 
-    // A DAEMON-HOSTED stack reaches the pool's read-write index directly through the host seam. It
-    // must never take the socket path below: that is the daemon dialling itself. Same branch order
-    // as the resolved-refs site, for the same reason. ~keep
-    if let Some(host) = state.host.as_ref() {
-        let host = std::sync::Arc::clone(host);
-        let hosted = tokio::task::spawn_blocking(move || host.host_code_search_lanes(&root, request))
-            .await
-            .map_err(|join| McpError::internal_error(format!("code_search_lanes host join: {join}"), None))?;
-        return match hosted {
-            Ok(result) => Ok(LaneOutcome {
-                keyword: result.keyword,
-                exact: result.exact,
-                degraded: None,
-            }),
-            Err(error) => Ok(LaneOutcome {
-                keyword: Vec::new(),
-                exact: Vec::new(),
-                degraded: Some(format!("the hosted index read failed ({error})")),
-            }),
-        };
-    }
-
-    // ~keep Only a daemon-hosted session reaches the index it does not hold; a CLI next to the daemon
-    // ~keep forwards its whole call, so whatever gets here reads another process's index.
-    Ok(LaneOutcome {
-        keyword: Vec::new(),
-        exact: Vec::new(),
-        degraded: Some("another process holds the index and this session is not hosted by the daemon".to_string()),
-    })
+    // ~keep Only a daemon-hosted session reaches the index it does not hold, through the host seam; a
+    // ~keep CLI next to the daemon forwards its whole call, so any other session cannot reach it.
+    let Some(host) = state.host.as_ref() else {
+        return Ok(None);
+    };
+    let host = std::sync::Arc::clone(host);
+    let hosted = tokio::task::spawn_blocking(move || host.host_code_search_lanes(&root, request))
+        .await
+        .map_err(|join| McpError::internal_error(format!("code_search_lanes host join: {join}"), None))?;
+    Ok(Some(match hosted {
+        Ok(result) => LaneOutcome {
+            keyword: result.keyword,
+            exact: result.exact,
+            degraded: None,
+        },
+        Err(error) => Degraded::new(LaneCause::Failed, format!("the hosted index read failed ({error})")).into(),
+    }))
 }
 
-/// Without `comms` there is no daemon to ask, so a reader session simply has no keyword lane. Still
-/// reported as degraded rather than empty — the caller turns that into an error or a labelled
-/// partial, never a bare `[]`.
+/// Without `comms` no session is hosted by a daemon.
 #[cfg(not(all(feature = "comms", any(unix, windows))))]
-async fn forward_fjall_lanes(
+async fn hosted_fjall_lanes(
     _state: &ServerState,
     _query: &str,
     _limit: usize,
     _want_exact: bool,
-) -> Result<LaneOutcome, McpError> {
-    Ok(LaneOutcome {
-        keyword: Vec::new(),
-        exact: Vec::new(),
-        degraded: Some("this build has no `comms` feature, so there is no daemon to read it".to_string()),
-    })
+) -> Result<Option<LaneOutcome>, McpError> {
+    Ok(None)
 }
 
 /// What a semantic-only `code_search` can do while the vector store is unavailable.
@@ -400,19 +383,19 @@ async fn semantic_hits(
 }
 
 /// Keyword lane: native BM25 over the Fjall index, hydrating each ranked `chunk_id` into a pointer.
-/// Each hit carries a BM25 `score` (higher = better) and no `distance`. Returns an empty vec when the
-/// index is read-only (no `IndexDb` handle) — there is no keyword lane on a reader session.
+/// Each hit carries a BM25 `score` (higher = better) and no `distance`. Refused, never an empty vec,
+/// when this session cannot read the index.
 async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Result<Vec<CodeSearchHit>, McpError> {
     let lanes = fjall_lanes(state, query, limit, false).await?;
     // `lane: "keyword"` has no other lane to fall back on, so a degraded read is a hard error. There
     // is no honest partial here — an empty list would claim the BM25 index was searched. ~keep
-    if let Some(reason) = lanes.degraded {
-        return Err(McpError::internal_error(
+    if let Some(Degraded { reason, cause }) = lanes.degraded {
+        return Err(lane_refusal(
+            cause,
             format!(
-                "`code_search` lane \"keyword\": the BM25 index lives in the daemon's \
-                 fjall store and {reason}. No search ran; this is not an empty result set."
+                "`code_search` lane \"keyword\": the BM25 index cannot be read here: {reason}. No search ran; this \
+             is not an empty result set."
             ),
-            None,
         ));
     }
     let mut hits = Vec::with_capacity(lanes.keyword.len());
