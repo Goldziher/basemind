@@ -233,8 +233,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
 
 /// Body of the `callers` mode. Resolves where the resolved-reference join runs before handing the
 /// scan to [`run_find_callers`]: a daemon-hosted connection resolves in-process through the pool's
-/// read-write index, a `daemon_writer` serve forwards to the daemon, and everything else reads its
-/// own store.
+/// read-write index, and everything else reads its own store.
 async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
     let route = IndexRoute::resolve(state).await;
@@ -246,12 +245,6 @@ async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<C
         // ~keep Seam-B degradation) instead of dialing the daemon over its own socket.
         RefsSource::Host {
             host: std::sync::Arc::clone(host),
-            root: state.shared.root.clone(),
-        }
-    } else if state.daemon_writer {
-        let client = super::helpers_daemon::daemon_client(state).await?;
-        RefsSource::Daemon {
-            client,
             root: state.shared.root.clone(),
         }
     } else {

@@ -1306,12 +1306,11 @@ async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value
 
 /// The bug this pins: a daemon-backed session used to answer `references` / `implementations` from
 /// an in-RAM projection capped at `max_map_cache_mb`, so on a big corpus the result was a silently
-/// truncated lower bound. Both daemon-backed shapes — a socket front-end and a daemon-hosted
-/// connection — must now return exactly what a writer session returns, cursor pagination included.
+/// truncated lower bound. Both daemon-backed shapes — a CLI call forwarded to the daemon and a
+/// daemon-hosted connection — must now return exactly what a writer session returns, cursor
+/// pagination included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn daemon_backed_references_and_implementations_equal_the_writer_session() {
-    use basemind::comms::index_read_proto::{IndexReadQuery, IndexReadResult};
-
     const FILES: usize = 150;
 
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1388,46 +1387,27 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
     );
 
     let daemon = Daemon::start(&comms_dir);
-    let socket = daemon.socket().to_path_buf();
 
-    // Socket front-end shape: the exact request a `daemon_writer` serve sends.
-    let mut client = connect(&socket, "refs-socket-client", &repo).await;
-    let reply = client
-        .index_read(
-            repo.clone(),
-            IndexReadQuery::CallScan {
-                name: "get_arg".to_string(),
-                exact: false,
-                limit: 1000,
-                cursor: None,
-            },
-        )
-        .await
-        .expect("forwarded call scan");
-    let IndexReadResult::CallScan(page) = reply else {
-        panic!("a call scan must be answered with a call-scan page");
-    };
-    assert_eq!(u64::from(page.total), truth_refs["total"].as_u64().unwrap());
-    assert!(!page.total_is_partial && !page.has_more);
-    let forwarded: Vec<(String, u64)> = page
-        .hits
-        .iter()
-        .map(|hit| (hit.path.to_string(), u64::from(hit.line)))
-        .collect();
-    let truth: Vec<(String, u64)> = hit_rows(&truth_refs)
-        .iter()
-        .map(|hit| {
-            (
-                hit["path"].as_str().expect("path").to_string(),
-                hit["line"].as_u64().expect("line"),
-            )
-        })
-        .collect();
-    assert_eq!(
-        forwarded, truth,
-        "the socket path must return the writer's hits, in order"
+    // A CLI next to the daemon: the whole call is forwarded over a relay session.
+    let forwarded = writer_truth(
+        &repo,
+        &comms_dir,
+        &[
+            "code",
+            "references",
+            "get_arg",
+            "--limit",
+            "1000",
+            "--max-tokens",
+            "1000000",
+        ],
     );
-    drop(client);
+    assert_eq!(forwarded["total"], truth_refs["total"], "{forwarded}");
+    assert_eq!(
+        hit_rows(&forwarded),
+        hit_rows(&truth_refs),
+        "a forwarded CLI call returns the writer's hits, in order"
+    );
 
     // Daemon-hosted shape: the real MCP tool, paginated.
     let addr = http_frontend::await_http_ready(&generation_dir(&comms_dir), HTTP_READY)

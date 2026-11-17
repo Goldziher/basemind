@@ -202,11 +202,11 @@ struct Resolved {
 /// `resolution` value when the daemon's edge came from another snapshot of the files involved.
 pub(super) const SNAPSHOT_REFUSED: &str = "the index is updating for the files involved; retry in a moment";
 
-/// The definition the use at `(use_path, use_start)` binds to. A `daemon_writer` serve has no open
-/// index, so the cross-file hop (`refs_by_path`) forwards to the machine daemon — the sole fjall
-/// writer, which holds it; every other serve reads its open index or the intra-file `.rref` blob
-/// locally. A daemon-forward failure degrades to `None`: goto then reports no binding for the
-/// position, exactly as a genuine unresolved use does, rather than erroring the tool.
+/// The definition the use at `(use_path, use_start)` binds to. A daemon-hosted session takes the
+/// cross-file hop (`refs_by_path`) through the daemon's pool, which holds the index; every other
+/// session reads its open index or the intra-file `.rref` blob locally. A host failure degrades to
+/// `None`: goto then reports no binding for the position, exactly as a genuine unresolved use does,
+/// rather than erroring the tool.
 async fn resolve_definition(
     state: &ServerState,
     store: &crate::store::Store,
@@ -236,34 +236,6 @@ async fn resolve_definition(
             }
             Err(join) => {
                 tracing::debug!(%join, "goto_definition: host resolved-refs task panicked; no cross-file binding");
-                Resolved::default()
-            }
-        };
-    }
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
-        use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
-        let client = match super::helpers_daemon::daemon_client(state).await {
-            Ok(client) => client,
-            Err(error) => {
-                tracing::debug!(%error, "goto_definition: daemon client unavailable; no cross-file binding");
-                return Resolved::default();
-            }
-        };
-        let query = ResolvedRefQuery::DefinitionOf {
-            use_path: use_path.clone(),
-            use_start,
-        };
-        return match client
-            .lock()
-            .await
-            .resolved_refs(state.shared.root.clone(), query)
-            .await
-        {
-            Ok(ResolvedRefResult::Definition(definition)) => in_snapshot(store, use_path, definition),
-            Ok(_) => Resolved::default(),
-            Err(error) => {
-                tracing::debug!(%error, "goto_definition: daemon resolved-refs forward failed; no cross-file binding");
                 Resolved::default()
             }
         };

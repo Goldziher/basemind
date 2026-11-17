@@ -1,6 +1,6 @@
 //! Daemon-forwarding half of [`CommsClient`](super::client::CommsClient): the write/read RPCs a
 //! `daemon_writer` serve ships to the daemon (the machine's sole fjall writer) rather than running
-//! in-process — rescan, CORE memory, precise resolved-refs, and git-history.
+//! in-process — rescan, CORE memory, and git-history.
 //!
 //! Split out of `client.rs` to keep it under the 1000-line `rust-max-lines` cap. These are a second
 //! `impl CommsClient` block; the request/response correlation core stays in `client.rs`.
@@ -86,50 +86,6 @@ impl CommsClient {
         match self.request(CommsRequest::Memory { root, scope, op }).await? {
             CommsResponse::Memory(outcome) => Ok(outcome),
             other => Err(self.shape_err(other, "memory_op")),
-        }
-    }
-
-    /// Forward a precise resolved-reference read to the daemon (the sole fjall writer, holding the
-    /// cross-file `refs_by_def` / `refs_by_path` index a `daemon_writer` serve cannot see). Backs
-    /// the precise cross-file `find_callers` / `goto_definition` path. A pure read, so the
-    /// transparent reconnect-and-retry is replay-safe.
-    pub async fn resolved_refs(
-        &mut self,
-        root: PathBuf,
-        query: crate::comms::resolved_proto::ResolvedRefQuery,
-    ) -> Result<crate::comms::resolved_proto::ResolvedRefResult, CommsClientError> {
-        match self.request(CommsRequest::ResolvedRefs { root, query }).await? {
-            CommsResponse::ResolvedRefs(result) => Ok(result),
-            other => Err(self.shape_err(other, "resolved_refs")),
-        }
-    }
-
-    /// Forward a fjall-backed reference scan to the daemon (the sole fjall writer). Backs
-    /// `references` / `callers` / `implementations` on a `daemon_writer` serve, which has no index
-    /// to scan. A pure read, so the transparent reconnect-and-retry is replay-safe.
-    pub async fn index_read(
-        &mut self,
-        root: PathBuf,
-        query: crate::comms::index_read_proto::IndexReadQuery,
-    ) -> Result<crate::comms::index_read_proto::IndexReadResult, CommsClientError> {
-        match self.request(CommsRequest::IndexRead { root, query }).await? {
-            CommsResponse::IndexRead(result) => Ok(result),
-            other => Err(self.shape_err(other, "index_read")),
-        }
-    }
-
-    /// Forward the code-search keyword (BM25) + exact (symbol-name) lanes to the daemon — the sole
-    /// fjall writer, and therefore the only process that can read the BM25 postings and
-    /// `symbols_by_name`. Backs `code_search` on a reader session, where both lanes would
-    /// otherwise return nothing. A pure read, so the transparent reconnect-and-retry is replay-safe.
-    pub async fn code_search_lanes(
-        &mut self,
-        root: PathBuf,
-        query: crate::comms::code_search_proto::CodeSearchLaneQuery,
-    ) -> Result<crate::comms::code_search_proto::CodeSearchLaneResult, CommsClientError> {
-        match self.request(CommsRequest::CodeSearchLanes { root, query }).await? {
-            CommsResponse::CodeSearchLanes(result) => Ok(result),
-            other => Err(self.shape_err(other, "code_search_lanes")),
         }
     }
 
