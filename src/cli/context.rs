@@ -97,7 +97,7 @@ const CLI_GIT_CACHE_MEM: usize = 256;
 ///
 /// Mirrors the construction `cmd_serve` performs (config load, repo discover,
 /// git cache open) but opens the store read-only and disables all background
-/// facilities. `documents` flows the `#[command(flatten)]` document overrides
+/// facilities. With the daemon up the daemon holds the index, so the store is blobs only. `documents` flows the `#[command(flatten)]` document overrides
 /// into the resolved config the same way `serve` does.
 pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -> Result<BasemindServer> {
     let daemon = super::rescan::daemon_is_up();
@@ -114,7 +114,8 @@ pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -
     let cfg = Arc::new(load_config(root, documents)?);
     let repo = Repo::discover(root).ok().map(Arc::new);
     let git_cache = Arc::new(GitCache::open(&basemind_dir, CLI_GIT_CACHE_MEM, false).context("open git cache")?);
-    #[cfg(all(feature = "comms", any(unix, windows)))]
+    // ~keep Next to the daemon only a command that is not forwarded gets here: a view the daemon does
+    // ~keep not host, or `admin telemetry` / `admin eval`. It reads the blobs and writes nothing.
     if daemon {
         return Ok(BasemindServer::new_with_options(
             store,
@@ -126,7 +127,7 @@ pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -
                 background: false,
                 watch: false,
                 read_only: true,
-                daemon_writer: true,
+                daemon_writer: false,
                 lazy_cache: true,
             },
         ));
