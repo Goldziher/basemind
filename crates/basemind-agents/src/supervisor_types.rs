@@ -1,0 +1,259 @@
+//! The public types of the [`Supervisor`](crate::Supervisor): session ids, callers, session
+//! snapshots, the observer hook and the refusal error.
+
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+use crate::error::LaunchError;
+use crate::event::{Event, FinishStatus};
+use crate::harness::HarnessKind;
+use crate::identity::AgentIdentity;
+use crate::policy::Caveat;
+use crate::supervisor_codes::launch_error_code;
+
+/// A session's id, unique within its supervisor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SessionId(pub(crate) u64);
+
+impl SessionId {
+    /// The id as a number.
+    #[must_use]
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    /// The id `value`, as an engine read it back from a tool call.
+    #[must_use]
+    pub fn from_raw(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Who is asking the supervisor for something.
+///
+/// A configured launcher names its principal; a launched agent presents the launch token it
+/// was given in [`ENV_LAUNCH_TOKEN`](crate::ENV_LAUNCH_TOKEN). When the engine knows the
+/// process on the other end of the connection, [`Caller::with_peer_pid`] lets the supervisor
+/// recognize a launched session's process (by its process group) whatever it claims. `Debug`
+/// never shows a token.
+#[derive(Clone)]
+pub struct Caller {
+    pub(crate) kind: CallerKind,
+    pub(crate) peer_pid: Option<u32>,
+}
+
+#[derive(Clone)]
+pub(crate) enum CallerKind {
+    Operator,
+    Principal(String),
+    Token(String),
+}
+
+impl std::fmt::Debug for Caller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match &self.kind {
+            CallerKind::Operator => "operator".to_owned(),
+            CallerKind::Principal(principal) => format!("principal {principal:?}"),
+            CallerKind::Token(_) => "launch token <redacted>".to_owned(),
+        };
+        f.debug_struct("Caller")
+            .field("kind", &kind)
+            .field("peer_pid", &self.peer_pid)
+            .finish()
+    }
+}
+
+impl Caller {
+    /// The human operator, through the CLI: may stop and answer any session, launches nothing.
+    #[must_use]
+    pub fn operator() -> Self {
+        Self {
+            kind: CallerKind::Operator,
+            peer_pid: None,
+        }
+    }
+
+    /// A principal of the comms identity model, admitted to launch when the policy names it.
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchError::InvalidIdentity`] when `principal` fails the principal grammar.
+    pub fn principal(principal: &str) -> Result<Self, LaunchError> {
+        AgentIdentity::new(principal)?;
+        Ok(Self {
+            kind: CallerKind::Principal(principal.to_owned()),
+            peer_pid: None,
+        })
+    }
+
+    /// A launched agent, by the token in its `BASEMIND_LAUNCH_TOKEN`.
+    #[must_use]
+    pub fn launched(token: impl Into<String>) -> Self {
+        Self {
+            kind: CallerKind::Token(token.into()),
+            peer_pid: None,
+        }
+    }
+
+    /// The same caller, with the process id of its end of the connection.
+    #[must_use]
+    pub fn with_peer_pid(mut self, pid: u32) -> Self {
+        self.peer_pid = Some(pid);
+        self
+    }
+}
+
+/// Where a session is in its life.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SessionState {
+    /// Admitted and being started.
+    Starting,
+    /// Running.
+    Running,
+    /// Told to stop, and winding down.
+    Stopping,
+    /// Over; the harness's process group is gone.
+    Finished(FinishStatus),
+}
+
+impl SessionState {
+    pub(crate) fn live(self) -> bool {
+        !matches!(self, Self::Finished(_))
+    }
+}
+
+/// A snapshot of one session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SessionStatus {
+    /// The session.
+    pub id: SessionId,
+    /// The harness flavor.
+    pub flavor: HarnessKind,
+    /// The launched agent's principal.
+    pub agent: String,
+    /// The principal that launched it: a configured launcher or a launched agent.
+    pub launcher: String,
+    /// The launched agent's depth: 1 below a configured launcher.
+    pub depth: u32,
+    /// Where it is in its life.
+    pub state: SessionState,
+    /// When it was admitted.
+    pub started: SystemTime,
+    /// The harness's process id, also its process group id, while it runs.
+    pub pid: Option<u32>,
+    /// The root it was launched in, as configured.
+    pub root: PathBuf,
+    /// The flavor's known caveats.
+    pub caveats: &'static [Caveat],
+}
+
+/// What a successful launch returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Launched {
+    /// The session.
+    pub id: SessionId,
+    /// The principal the launched agent acts as.
+    pub agent: String,
+    /// Its depth.
+    pub depth: u32,
+    /// The flavor's known caveats.
+    pub caveats: &'static [Caveat],
+}
+
+/// Receives every event of every session, on the thread that supervises that session. It must
+/// return quickly: the session's events wait for it.
+pub trait SessionObserver: Send + Sync {
+    /// `event` happened in `session`.
+    fn event(&self, session: SessionId, event: &Event);
+}
+
+/// Why the supervisor refused a request. Every variant has a stable [`code`](Self::code), the
+/// form the audit log and a model-facing reply use.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum SupervisorError {
+    /// The policy allows no launch at all.
+    #[error("agent launch is disabled")]
+    Disabled,
+    /// The policy does not allow this harness, or no launch config is given for it.
+    #[error("launching {0} is not allowed")]
+    FlavorNotAllowed(&'static str),
+    /// The caller is not a launcher the policy names, nor a live launched session.
+    #[error("the caller may not launch or control agents")]
+    CallerNotAdmitted,
+    /// The presented launch token belongs to no live session.
+    #[error("the launch token is not valid")]
+    UnknownToken,
+    /// The launch would sit deeper than the policy's `max_depth`.
+    #[error("depth {depth} is over the limit of max_depth = {max_depth}")]
+    DepthExceeded {
+        /// The depth the launched agent would have.
+        depth: u32,
+        /// The policy's limit.
+        max_depth: u32,
+    },
+    /// The supervisor already runs the policy's `max_concurrent` sessions.
+    #[error("{max_concurrent} sessions are running, the limit of max_concurrent")]
+    ConcurrencyExceeded {
+        /// The policy's limit.
+        max_concurrent: u32,
+    },
+    /// The launcher already runs the policy's `max_children` sessions.
+    #[error("the launcher runs {max_children} sessions, the limit of max_children")]
+    FanOutExceeded {
+        /// The policy's limit.
+        max_children: u32,
+    },
+    /// The budget's `max_launches` launches have been made.
+    #[error("the budget of max_launches = {max_launches} launches is spent")]
+    BudgetExhausted {
+        /// The budget's limit.
+        max_launches: u32,
+    },
+    /// The launch record could not be written, so nothing was launched.
+    #[error("the audit log could not be written: {0}")]
+    Audit(#[source] std::io::Error),
+    /// No launch token could be made, so nothing was launched.
+    #[error("no launch token could be made: {0}")]
+    Token(#[source] std::io::Error),
+    /// The adapter refused the launch or could not start it, or the session refused a control.
+    #[error(transparent)]
+    Launch(#[from] LaunchError),
+    /// No session of that id is known.
+    #[error("no session {0}")]
+    UnknownSession(SessionId),
+    /// The caller did not launch the session and is not the operator.
+    #[error("session {0} was not launched by the caller")]
+    NotOwner(SessionId),
+}
+
+impl SupervisorError {
+    /// A stable code naming the refusal, without paths or harness text.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::FlavorNotAllowed(_) => "flavor_not_allowed",
+            Self::CallerNotAdmitted => "caller_not_admitted",
+            Self::UnknownToken => "unknown_token",
+            Self::DepthExceeded { .. } => "depth_exceeded",
+            Self::ConcurrencyExceeded { .. } => "concurrency_exceeded",
+            Self::FanOutExceeded { .. } => "fan_out_exceeded",
+            Self::BudgetExhausted { .. } => "budget_exhausted",
+            Self::Audit(_) => "audit_failed",
+            Self::Token(_) => "token_failed",
+            Self::Launch(error) => launch_error_code(error),
+            Self::UnknownSession(_) => "unknown_session",
+            Self::NotOwner(_) => "not_owner",
+        }
+    }
+}

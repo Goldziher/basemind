@@ -14,6 +14,23 @@
 //! inside the root, the model and effort, and limits within the caps. A caller hands both to
 //! a [`Registry`] and reads [`Event`]s from the [`Session`].
 //!
+//! # Launch policy
+//!
+//! An engine does not call the [`Registry`] directly: it launches through a [`Supervisor`],
+//! which enforces a [`LaunchPolicy`] first. The policy is off by default
+//! ([`LaunchPolicy::default`] allows nothing) and names the harness flavors that may run and
+//! each one's permission mode (a bypass only with an opt-in naming the flavor and mode), the
+//! principals that may launch, the deepest a launched agent may sit, how many sessions may run
+//! at once and per launcher, the longest wall time, and an optional budget. A launched agent
+//! gets a principal of its own (`launched-<flavor>-<id>-<hex>`), its depth in
+//! [`ENV_AGENT_DEPTH`] and a secret in [`ENV_LAUNCH_TOKEN`]; it launches further only by
+//! presenting that token, at the depth the supervisor recorded, never one it asserts. Every
+//! launch, refusal, stop, exit and approval decision is appended to an [`AuditSink`]
+//! ([`FileAuditSink`]: mode 0600, one JSON object per line) with fixed outcome codes and no
+//! brief, command, environment value or token. The supervisor owns the sessions (status, stop,
+//! approvals, reaping), kills a flavor's known detached process groups ([`Caveat`]) after its
+//! session ends, and stops every session when dropped.
+//!
 //! # Safety defaults
 //!
 //! What the crate enforces, against hostile model-chosen fields (the request) and a hostile
@@ -65,9 +82,11 @@
 //! What it does not do: the config's executable, its MCP server's command and its
 //! environment values are used as given, so the configuration has to restrict them; the
 //! harnesses' user-level configuration still applies; a descendant that leaves the harness's
-//! process group survives the session (the session still ends on time), as OpenCode's own
-//! server does; a project file written during a session is only seen by the next launch;
-//! `BASEMIND_AGENT_ID` is self-asserted; what the ACP agents' modes other than OpenCode's
+//! process group survives the session (the session still ends on time), unless the flavor
+//! carries [`Caveat::DetachedServer`] and the [`Supervisor`] saw it, as it does OpenCode's own
+//! server; a project file written during a session is only seen by the next launch;
+//! `BASEMIND_AGENT_ID` is self-asserted, and so is a configured launcher's principal unless the
+//! engine passes the peer's process id; what the ACP agents' modes other than OpenCode's
 //! supervised one ask for was not run against a live harness; the launcher must not reap
 //! children it did not start and must ignore SIGPIPE; and nothing is launched off Unix. The
 //! README lists what was verified against which harness version.
@@ -82,8 +101,10 @@
 //! on `futures::executor::block_on` inside the session's own thread.
 
 mod acp;
+mod audit;
 mod claude;
 mod codex;
+mod detached;
 mod error;
 mod event;
 mod frames;
@@ -93,24 +114,37 @@ mod harness;
 mod identity;
 mod line;
 mod pipe;
+mod policy;
 mod process;
 mod queue;
 mod registry;
 mod session;
 mod spec;
+mod supervisor;
+mod supervisor_codes;
+mod supervisor_types;
 #[cfg(test)]
 mod test_support;
 
 pub use acp::AcpAdapter;
+pub use audit::{AuditApproval, AuditEvent, AuditLimits, AuditRecord, AuditSink, FileAuditSink, MemoryAuditSink};
 pub use claude::ClaudeCodeAdapter;
 pub use codex::CodexAdapter;
 pub use error::LaunchError;
 pub use event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, FinishStatus, ToolCall, ToolState};
 pub use harness::{AcpFlavor, Harness, HarnessKind};
-pub use identity::{AgentIdentity, ENV_AGENT_ID, ENV_HOST};
+pub use identity::{AgentIdentity, ENV_AGENT_DEPTH, ENV_AGENT_ID, ENV_HOST, ENV_LAUNCH_TOKEN};
+pub use policy::{
+    Budget, Caveat, FlavorPolicy, LAUNCHED_PREFIX, LaunchPolicy, MAX_CONCURRENT_CEILING, MAX_DEPTH_CEILING,
+    MAX_WALL_TIME_CEILING, PolicyError, PolicySpec, caveats,
+};
 pub use registry::{Adapter, Registry};
 pub use session::{CommandPlan, Session};
 pub use spec::{
     ApprovalPolicy, ApprovalVerdict, BypassOptIn, ENV_ALLOWLIST, LaunchConfig, LaunchRequest, Limits, McpServerSpec,
     PermissionMode, UnverifiedModeOptIn,
+};
+pub use supervisor::{
+    Caller, Launched, SessionId, SessionObserver, SessionState, SessionStatus, Supervisor, SupervisorError,
+    launch_error_code,
 };
