@@ -648,6 +648,12 @@ impl Fixture {
             .env("USERPROFILE", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("XDG_CACHE_HOME", self.tmp.path().join("xdg-cache"))
+            // ~keep Windows resolves the platform cache dir under %USERPROFILE%, the throwaway home,
+            // ~keep where it does not exist, so the grammar pack would find no cache dir at all.
+            .env(
+                "TREE_SITTER_LANGUAGE_PACK_CACHE_DIR",
+                self.tmp.path().join("xdg-cache").join("tree-sitter-language-pack"),
+            )
             .env("NO_COLOR", "1")
             .env_remove("BASEMIND_NO_AUTOSPAWN");
         cmd
