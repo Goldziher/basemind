@@ -113,6 +113,8 @@ pub(crate) enum Undelivered {
 
 /// How many control messages may wait for the driver.
 pub(crate) const CONTROL_QUEUE: usize = 64;
+/// The longest the watchdog waits before it looks at the wall clock again.
+const WATCH_SLICE: Duration = Duration::from_secs(1);
 /// How long dropping a session waits for its supervisor before leaving it to finish alone.
 const DROP_WAIT: Duration = Duration::from_secs(2);
 
@@ -630,10 +632,13 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
     command.spawn()
 }
 
-/// Kills the process group at the wall-time deadline, or once a stop has had its grace.
+/// Kills the process group at the wall-time deadline, or once a stop has had its grace. Wall
+/// time is measured on [`process::wall_clock`], which counts time the machine slept, and the
+/// wait is cut into slices so a wake from sleep is noticed.
 fn watchdog(shared: &Shared, started: Instant) {
     // `prepare` refused a wall time that overflows; without a deadline only a stop ends it.
     let wall = started.checked_add(shared.limits.wall_time);
+    let started_wall = process::wall_clock();
     let mut state = shared.state();
     loop {
         if state.finished {
@@ -641,7 +646,10 @@ fn watchdog(shared: &Shared, started: Instant) {
         }
         let now = Instant::now();
         let stop_due = state.stop_deadline.is_some_and(|at| now >= at);
-        let wall_due = wall.is_some_and(|at| now >= at);
+        let slept_through = started_wall
+            .zip(process::wall_clock())
+            .is_some_and(|(start, now)| now.saturating_sub(start) >= shared.limits.wall_time);
+        let wall_due = slept_through || wall.is_some_and(|at| now >= at);
         if wall_due || stop_due {
             if !stop_due {
                 state.forced.get_or_insert(FinishStatus::WallTimeExceeded);
@@ -665,7 +673,7 @@ fn watchdog(shared: &Shared, started: Instant) {
             Some(until) => {
                 shared
                     .wake
-                    .wait_timeout(state, until - now)
+                    .wait_timeout(state, (until - now).min(WATCH_SLICE))
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .0
             }

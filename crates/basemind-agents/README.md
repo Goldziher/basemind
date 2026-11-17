@@ -106,7 +106,7 @@ config is trusted.
   configuration, code loading, an endpoint or basemind. Credentials in the launcher's environment
   do not reach the child, and `Debug` output names variables without their values and counts the
   MCP server's arguments without printing them.
-- At the wall-time limit, or when the harness starts more turns than allowed, the process group is
+- Wall time is counted on a clock that runs while the machine sleeps. At the wall-time limit, or when the harness starts more turns than allowed, the process group is
   killed; a stop, and a session that failed, get the stop grace. The group is gone before
   `Event::Finished` is reported. Requests a stop declines are reported withdrawn, and so is
   every request still pending when the session ends any other way (a failed or exited harness).

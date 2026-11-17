@@ -185,6 +185,28 @@ pub(crate) fn keep_group(command: &mut Command) -> std::io::Result<Keeper> {
     })
 }
 
+/// Time since an arbitrary fixed point that keeps counting while the machine sleeps, for the
+/// wall-time limit: `Instant` does not (`CLOCK_UPTIME_RAW` on macOS, `CLOCK_MONOTONIC` on Linux),
+/// so a laptop that slept would extend every session by the time it slept. Linux reads
+/// `CLOCK_BOOTTIME`, macOS `CLOCK_MONOTONIC`, which there counts sleep; elsewhere `None`.
+pub(crate) fn wall_clock() -> Option<Duration> {
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    {
+        #[cfg(target_vendor = "apple")]
+        const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
+        #[cfg(not(target_vendor = "apple"))]
+        const CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
+        let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: clock_gettime fills in the timespec it is given.
+        if unsafe { libc::clock_gettime(CLOCK, &mut now) } == 0 {
+            return Some(Duration::new(now.tv_sec as u64, now.tv_nsec as u32));
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    None
+}
+
 /// Whether the kernel reaps this process's children by itself: SIGCHLD is ignored or
 /// `SA_NOCLDWAIT` is set. Then a leader can be reaped before its group is signalled, and the
 /// group id may belong to someone else by the time it is, so no harness is started.
@@ -389,6 +411,14 @@ mod tests {
         while group_alive(pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn the_wall_clock_runs() {
+        let before = wall_clock().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let after = wall_clock().unwrap();
+        assert!(after >= before + Duration::from_millis(20), "{before:?} {after:?}");
     }
 
     #[test]

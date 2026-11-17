@@ -147,7 +147,8 @@ id that fails the grammar stops the launch.
    - **Environment.** An allow-list plus config additions whose names must be provider credentials
      or a few provider settings, so the launcher's credentials do not leak and an addition cannot
      redirect configuration, code loading, executable search or the basemind daemon.
-   - **Limits.** Wall time and turns per session, enforced by killing the process group; a stop,
+   - **Limits.** Wall time (on a clock that counts sleep: `CLOCK_BOOTTIME` on Linux,
+     `CLOCK_MONOTONIC` on macOS) and turns per session, enforced by killing the process group; a stop,
      and a session that failed, get the stop grace. Frames (16 MiB and 256 Ki JSON values),
      events, channels and tables are bounded. An ACP agent that stops reading while the client has
      16 lines queued for it fails the session. Dropping a session waits at most 2 s for its
