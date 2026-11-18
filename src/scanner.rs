@@ -12,7 +12,7 @@ use crate::scan_evidence::{
 };
 #[cfg(feature = "documents")]
 use crate::scan_retrieval::PendingDocBatch;
-use crate::scanner_candidates::walk_candidates;
+use crate::scanner_candidates::candidates_for_source;
 #[cfg(feature = "code-search")]
 use crate::scanner_code::PendingCodeBatch;
 use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
@@ -969,29 +969,4 @@ fn scan_paths_inner(
     });
     crate::scanner_integrity::finish_index_writes(store);
     Ok(report)
-}
-
-fn candidates_for_source(
-    root: &Path,
-    config: &Config,
-    filters: &Filters,
-    source: &ScanSource<'_>,
-    cancel: &ScanCancel,
-) -> Result<Vec<String>, ScanError> {
-    let raw = match source {
-        ScanSource::WorkingTree => walk_candidates(root, config, filters, cancel)?,
-        ScanSource::Staged(repo) => repo.list_paths_staged()?,
-        ScanSource::Rev { repo, sha } => repo.list_paths_rev(sha)?,
-    };
-    let mut out: Vec<String> = match source {
-        ScanSource::WorkingTree => raw,
-        _ => raw
-            .into_iter()
-            .filter(|rel| filters.allows(rel))
-            .filter(|rel| !rel.starts_with(crate::config::BASEMIND_DIR))
-            .collect(),
-    };
-    out.sort();
-    out.dedup();
-    Ok(out)
 }

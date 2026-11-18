@@ -14,7 +14,7 @@ use ahash::AHashMap;
 
 use crate::config::Config;
 use crate::config::root_guard::{self, RootRefusal};
-use crate::scanner::{ScanCancel, ScanError};
+use crate::scanner::{ScanCancel, ScanError, ScanSource};
 use crate::scanner_filter::{Filters, ignore_walk_builder};
 
 /// Candidate-count threshold above which the walk emits a visibility warning. Pure observability —
@@ -572,6 +572,33 @@ fn vet_extra_root(raw_root: &Path, repo_root: &Path) -> Option<PathBuf> {
         return None;
     }
     Some(extra)
+}
+
+/// Every candidate path of `source`, sorted and deduplicated: the working tree's walk, or the
+/// staged or revision's paths filtered as the walk filters.
+pub(crate) fn candidates_for_source(
+    root: &Path,
+    config: &Config,
+    filters: &Filters,
+    source: &ScanSource<'_>,
+    cancel: &ScanCancel,
+) -> Result<Vec<String>, ScanError> {
+    let raw = match source {
+        ScanSource::WorkingTree => walk_candidates(root, config, filters, cancel)?,
+        ScanSource::Staged(repo) => repo.list_paths_staged()?,
+        ScanSource::Rev { repo, sha } => repo.list_paths_rev(sha)?,
+    };
+    let mut out: Vec<String> = match source {
+        ScanSource::WorkingTree => raw,
+        _ => raw
+            .into_iter()
+            .filter(|rel| filters.allows(rel))
+            .filter(|rel| !rel.starts_with(crate::config::BASEMIND_DIR))
+            .collect(),
+    };
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 #[cfg(test)]
