@@ -1,6 +1,8 @@
 //! The lead's supervisor: built once at `serve --lead` start-up from the operator's file, bound to
 //! this process, and called for the lead's own `agent_launch` / `agent_stop` calls.
 
+use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -31,6 +33,9 @@ pub struct Setup {
     pub policy_path: PathBuf,
     /// The directory the audit log is created in.
     pub audit_dir: PathBuf,
+    /// The directory of the worktree lock files every lead of this user shares, so two leads
+    /// never launch into the same or nested worktrees.
+    pub worktree_locks: PathBuf,
     /// The adapters launches go through.
     pub registry: Registry,
 }
@@ -40,9 +45,11 @@ impl Setup {
     pub fn from_user() -> Result<Self, LeadOff> {
         let policy_path = crate::config::agents_policy::policy_path()
             .ok_or_else(|| LeadOff("agent launching is off: no home directory to find agents.toml in".to_owned()))?;
+        let agents = crate::store::cache_root().join("agents");
         Ok(Self {
             policy_path,
-            audit_dir: crate::store::cache_root().join("agents"),
+            worktree_locks: agents.join("worktrees"),
+            audit_dir: agents,
             registry: Registry::with_defaults(),
         })
     }
@@ -59,6 +66,10 @@ pub struct LeadHost {
     /// Working directories of launches in progress (`None`) and of sessions, so two agents never
     /// share a worktree.
     worktrees: Mutex<Vec<(Option<SessionId>, PathBuf)>>,
+    /// The lock files this lead holds for each session's worktree, shared with the observer,
+    /// which drops them when the session finishes. A leaf lock: nothing else is taken under it.
+    held_locks: Arc<HeldLocks>,
+    worktree_locks: PathBuf,
     policy_path: PathBuf,
     audit_path: PathBuf,
 }
@@ -107,9 +118,12 @@ impl LeadHost {
         if let Some(max_bytes) = lead.audit_max_bytes {
             sink = sink.with_max_bytes(max_bytes);
         }
+        let held_locks = Arc::new(HeldLocks::default());
         let supervisor = Supervisor::new(lead.policy, lead.configs, setup.registry, Arc::new(sink))
             .map_err(|error| off(error.to_string()))?
-            .with_observer(Arc::new(LeadObserver));
+            .with_observer(Arc::new(LeadObserver {
+                held_locks: Arc::clone(&held_locks),
+            }));
         supervisor
             .register_launcher_in_process(principal.as_str())
             .map_err(|error| off(format!("this process cannot host a supervisor ({})", error.code())))?;
@@ -124,6 +138,8 @@ impl LeadHost {
             host,
             worktrees_root: lead.worktrees_root,
             worktrees: Mutex::default(),
+            held_locks,
+            worktree_locks: setup.worktree_locks,
             policy_path: setup.policy_path,
             audit_path,
         })
@@ -161,7 +177,7 @@ impl LeadHost {
     async fn launch(self: Arc<Self>, arguments: Value) -> Result<Value, String> {
         let params = lead_tools::parse_launch(arguments)?;
         let kind = harness_kind(&params.harness).ok_or("flavor_not_allowed")?;
-        let working_dir = self.claim_worktree(&params.working_dir)?;
+        let (working_dir, locks) = self.claim_worktree(&params.working_dir)?;
         let relative = working_dir
             .strip_prefix(&self.worktrees_root)
             .map(Path::to_path_buf)
@@ -185,6 +201,11 @@ impl LeadHost {
             }
         };
         self.bind_worktree(&working_dir, launched.id);
+        self.held_locks.hold(launched.id, locks);
+        if !self.live(launched.id) {
+            // It finished before the observer could see its locks held.
+            self.held_locks.release(launched.id);
+        }
         let caveats: Vec<&str> = launched.caveats.iter().map(|caveat| caveat.id()).collect();
         let mut body = json!({
             "session": launched.id.get(),
@@ -218,8 +239,9 @@ impl LeadHost {
 
     /// Resolve `working_dir` under the worktrees root and reserve it. Refused, with a code that
     /// names no path, when it is not an existing directory strictly inside the root, or overlaps a
-    /// directory another live session or launch holds.
-    fn claim_worktree(&self, working_dir: &str) -> Result<PathBuf, String> {
+    /// directory another live session or launch holds, of this lead or of another lead of this
+    /// user (through the shared lock files).
+    fn claim_worktree(&self, working_dir: &str) -> Result<(PathBuf, Vec<File>), String> {
         let relative = Path::new(working_dir);
         let plain = relative
             .components()
@@ -243,8 +265,9 @@ impl LeadHost {
         if held.iter().any(|(_, dir)| policy_file::overlaps(dir, &resolved)) {
             return Err("working_dir_in_use".to_owned());
         }
+        let locks = lock_worktree(&self.worktree_locks, &self.worktrees_root, &resolved)?;
         held.push((None, resolved.clone()));
-        Ok(resolved)
+        Ok((resolved, locks))
     }
 
     fn bind_worktree(&self, dir: &Path, id: SessionId) {
@@ -329,14 +352,74 @@ fn open_audit_dir(dir: &Path) -> std::io::Result<PathBuf> {
     Ok(dir.join(format!("launch-audit-{}-{started}.jsonl", std::process::id())))
 }
 
-/// Logs what the operator must see outside the audit log. Never blocks.
-struct LeadObserver;
+/// The worktree lock files of each live session.
+#[derive(Default)]
+struct HeldLocks(Mutex<HashMap<SessionId, Vec<File>>>);
+
+impl HeldLocks {
+    fn hold(&self, session: SessionId, locks: Vec<File>) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(session, locks);
+    }
+
+    fn release(&self, session: SessionId) {
+        let released = self.0.lock().unwrap_or_else(PoisonError::into_inner).remove(&session);
+        drop(released);
+    }
+}
+
+/// Take the lock files for `dir` under `root`, shared by every lead of this user: an exclusive
+/// lock on `dir`'s own file and a shared one on each directory between `root` and it, so a
+/// worktree is refused while another lead holds it, a directory inside it or one around it.
+/// The files are named by a hash of the canonical path and never deleted; the locks go with
+/// the returned files.
+fn lock_worktree(locks: &Path, root: &Path, dir: &Path) -> Result<Vec<File>, String> {
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    use std::os::unix::io::AsRawFd as _;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(locks)
+        .map_err(|_| "working_dir_lock_failed".to_owned())?;
+    let mut held = Vec::new();
+    let mut ancestors: Vec<&Path> = dir.ancestors().skip(1).take_while(|a| a.starts_with(root)).collect();
+    ancestors.reverse();
+    for (path, exclusive) in ancestors.into_iter().map(|a| (a, false)).chain([(dir, true)]) {
+        let name = blake3::hash(path.as_os_str().as_encoded_bytes()).to_hex();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(locks.join(format!("{name}.lock")))
+            .map_err(|_| "working_dir_lock_failed".to_owned())?;
+        let operation = if exclusive { libc::LOCK_EX } else { libc::LOCK_SH };
+        // SAFETY: flock on a descriptor this function owns; it does not block (LOCK_NB).
+        if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } != 0 {
+            return Err("working_dir_in_use".to_owned());
+        }
+        held.push(file);
+    }
+    Ok(held)
+}
+
+/// Logs what the operator must see outside the audit log, and lets go of a finished session's
+/// worktree locks. Never blocks.
+struct LeadObserver {
+    held_locks: Arc<HeldLocks>,
+}
 
 impl SessionObserver for LeadObserver {
     fn event(&self, session: SessionId, event: &Event) {
         match event {
             Event::Error(line) => tracing::warn!(%session, error = %line, "launched agent failed"),
-            Event::Finished(status) => tracing::info!(%session, ?status, "launched agent finished"),
+            Event::Finished(status) => {
+                tracing::info!(%session, ?status, "launched agent finished");
+                self.held_locks.release(session);
+            }
             _ => {}
         }
     }

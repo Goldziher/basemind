@@ -57,6 +57,7 @@ impl Fixture {
             Setup {
                 policy_path,
                 audit_dir,
+                worktree_locks: self.base.join("locks"),
                 registry: Registry::with_defaults(),
             },
         )
@@ -171,4 +172,49 @@ async fn the_lead_launches_into_its_own_worktree_and_stops_what_it_launched() {
     )
     .await;
     assert_eq!(again["isError"], false, "{again}");
+}
+
+/// Review 3 S1: two leads of one user share the worktree locks, so neither launches into a
+/// worktree the other holds, nor into one inside or around it; a finished session lets go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_leads_never_launch_into_the_same_or_nested_worktrees() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.worktrees.join("one/sub")).unwrap();
+    let first = Arc::new(fixture.start(fixture.policy(), fixture.base.join("audit-1")).unwrap());
+    let second = Arc::new(fixture.start(fixture.policy(), fixture.base.join("audit-2")).unwrap());
+    let launch = |host: &Arc<LeadHost>, dir: &str| {
+        Arc::clone(host).call(
+            AGENT_LAUNCH,
+            json!({ "harness": "claude", "brief": "Wait.", "working_dir": dir }),
+        )
+    };
+
+    let launched = launch(&first, "one/sub").await;
+    assert_eq!(launched["isError"], false, "{launched}");
+    for dir in ["one/sub", "one"] {
+        let refused = launch(&second, dir).await;
+        assert_eq!(body(&refused)["error"], "working_dir_in_use", "{dir}: {refused}");
+    }
+    let sibling = launch(&second, "two").await;
+    assert_eq!(sibling["isError"], false, "{sibling}");
+
+    let session = body(&launched)["session"].as_u64().unwrap();
+    let stopped = Arc::clone(&first).call(AGENT_STOP, json!({ "session": session })).await;
+    assert_eq!(stopped["isError"], false, "{stopped}");
+    let state = first
+        .supervisor
+        .wait(SessionId::from_raw(session), std::time::Duration::from_secs(10));
+    assert!(matches!(state, Some(SessionState::Finished(_))), "{state:?}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let again = launch(&second, "one").await;
+        if again["isError"] == false {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worktree stayed locked: {again}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
