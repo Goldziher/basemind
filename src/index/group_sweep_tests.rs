@@ -295,3 +295,108 @@ fn a_retirement_a_crash_cut_short_is_reported_when_finished() {
 
     assert_eq!(report.views_retired, 1);
 }
+
+/// Measures what a view's retirement costs the group's writers: the retirement's wall time and the
+/// longest a concurrent writer waited for the group gate meanwhile. Run with
+/// `cargo test --features code-search --lib retirement_gate_hold -- --ignored --nocapture`.
+#[cfg(feature = "code-search")]
+#[test]
+#[ignore = "timing harness"]
+fn retirement_gate_hold() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use crate::search::bm25::ChunkPosting;
+
+    let files: usize = std::env::var("RETIRE_FILES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(4000);
+    let terms: usize = 40;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let keep = open_view(&group, "ws-keep", &memory);
+    let gone_id = group.allocate_view_id("ws-gone", "working").expect("id");
+    let gone = group.open_view(gone_id, &memory, true).expect("open");
+    let write = |db: &IndexDb, prefix: &str| {
+        let mut writer = db.writer();
+        for i in 0..files {
+            let hash = format!("{prefix}{i:06}");
+            let posting = ChunkPosting {
+                chunk_id: format!("{hash}:0"),
+                doclen: u32::try_from(terms).expect("terms"),
+                terms: (0..terms).map(|t| (format!("term{}", (i * 7 + t) % 5000), 1)).collect(),
+            };
+            writer
+                .upsert_bm25_file(
+                    &RelPath::from(format!("src/f{i}.rs").as_str()),
+                    &keys::bm25_content_key(&hash, "rust", "d"),
+                    &[posting],
+                )
+                .expect("upsert");
+            if writer.staged_bytes() > 1 << 20 {
+                writer.commit().expect("commit");
+                writer = db.writer();
+            }
+        }
+        writer.commit().expect("commit");
+    };
+    write(&keep, "k");
+    write(&gone, "g");
+    let postings = keep.code_bm25_postings.iter().count();
+    drop(gone);
+
+    let done = AtomicBool::new(false);
+    let (retire, longest) = std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            let mut longest = Duration::ZERO;
+            while !done.load(Ordering::Acquire) {
+                let asked = Instant::now();
+                drop(keep.bm25_gate.read());
+                longest = longest.max(asked.elapsed());
+                std::thread::yield_now();
+            }
+            longest
+        });
+        let started = Instant::now();
+        let mut open = keep.begin_group_sweep().expect("begin").expect("sweep");
+        assert!(open.retire_view("ws-gone", "working", gone_id).expect("retire"));
+        open.finish(false).expect("finish");
+        let retire = started.elapsed();
+        done.store(true, Ordering::Release);
+        (retire, waiter.join().expect("waiter"))
+    });
+    let left = keep.code_bm25_postings.iter().count();
+    println!(
+        "retirement of {files} files x {terms} terms ({postings} posting rows, {left} left): \
+         {retire:?} wall, longest writer wait on the gate {longest:?}"
+    );
+}
+
+#[test]
+fn a_rebuilt_view_that_held_rows_owes_the_content_sweep() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let (a, b) = (open_view(&group, "ws-a", &memory), open_view(&group, "ws-b", &memory));
+    b.clear_for_rebuild().expect("clear an empty view");
+    assert!(
+        !a.content_sweep_owed_for_test(),
+        "a view that held nothing owes nothing"
+    );
+
+    write(&a, "x.rs", "only-a");
+    publish(&a, &[("x.rs", "only-a")]);
+    // The flush that wrote the file map sealed the view. ~keep
+    a.seal_scan(0).expect("seal");
+    sweep(&a, &["only-a"]);
+    assert!(!a.content_sweep_owed_for_test());
+
+    a.clear_for_rebuild().expect("clear");
+
+    assert!(
+        a.content_sweep_owed_for_test(),
+        "contents only the rebuilt view held are dead"
+    );
+}

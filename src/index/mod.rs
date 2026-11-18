@@ -86,7 +86,6 @@ const IMPORT_PROBE_VER: u8 = 1;
 const META_BM25_DOC_COUNT: &[u8] = b"code_bm25_n";
 const META_BM25_TOTAL_LEN: &[u8] = b"code_bm25_total_len";
 
-#[cfg(feature = "code-search")]
 const BM25_PRUNE_BATCH_BYTES: u64 = 1024 * 1024;
 pub(crate) const INDEX_DIR: &str = "index.fjall";
 

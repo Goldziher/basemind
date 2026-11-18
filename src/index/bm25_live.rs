@@ -210,26 +210,46 @@ impl super::IndexDb {
         Ok(live)
     }
 
-    /// Stage the removal of every holder row of view `view_id`, named by its forward rows `forward`:
-    /// before those rows are cleared wholesale.
-    pub(crate) fn remove_view_holders(&self, forward: &super::scoped::Scoped, view_id: u32) -> Result<(), IndexError> {
-        let mut batch = self.db.batch();
-        let mut last: Option<(RelPath, Bm25Key)> = None;
-        for key in forward.keys() {
-            let key = key?;
-            let Some((rel, content, _)) = parse_code_bm25_by_path(&key) else {
-                continue;
-            };
-            if last.as_ref().is_some_and(|(r, c)| *r == rel && *c == content) {
-                continue;
-            }
-            self.code_bm25_holders
-                .stage_remove(&mut batch, super::keys::code_bm25_holder(&content, view_id, &rel));
-            last = Some((rel, content));
+    /// Delete view `view_id`'s BM25 forward rows `forward` with its holder rows, and retire the
+    /// postings of every key no view holds any more: the view is rebuilt or retired.
+    ///
+    /// A path's forward rows and its holder row go in one commit, so no commit leaves a forward row
+    /// without its holder (another view's retirement would delete postings this view still scores)
+    /// or a holder without its forward row (a pin nothing finds again). Commits are bounded, and the
+    /// keys of each are retired right after it, with the gate held exclusively for that batch
+    /// alone: the group's writers wait for one batch, never for the whole view. The full posting
+    /// sweep is owed while this runs, so a crash between a commit and its retirement leaves no
+    /// posting nobody collects, and stays owed when a forward row did not decode (the postings it
+    /// names are known to that sweep only). Returns whether it stays owed.
+    pub(crate) fn drop_view_bm25(&self, forward: &super::scoped::Scoped, view_id: u32) -> Result<bool, IndexError> {
+        if forward.keys().next().transpose()?.is_none() {
+            return Ok(false);
         }
-        let _shared = self.bm25_gate.read();
-        batch.commit()?;
-        Ok(())
+        #[cfg(feature = "code-search")]
+        let owed = self.mark_bm25_sweep_owed()?;
+        let mut dropping = ViewBm25Drop::new(self, view_id);
+        let mut current: Option<(RelPath, Bm25Key)> = None;
+        for row in forward.iter() {
+            let (key, value) = row?;
+            let parsed = parse_code_bm25_by_path(&key).map(|(rel, content, _)| (rel, content));
+            if parsed != current {
+                dropping.end_path(current.take())?;
+                current = parsed;
+            }
+            dropping.stage_forward(
+                forward,
+                key.to_vec(),
+                &value,
+                current.as_ref().map(|(_, content)| content),
+            );
+        }
+        dropping.end_path(current)?;
+        let undecoded = dropping.finish()?;
+        #[cfg(feature = "code-search")]
+        if !undecoded {
+            self.clear_sweep_owed_if(owed)?;
+        }
+        Ok(undecoded)
     }
 
     /// This handle's view id in the holder rows: `0` for a database of its own.
@@ -308,6 +328,130 @@ impl super::IndexDb {
             }
         }
         writer.commit()
+    }
+}
+
+/// Posting keys retired per hold of the gate when a view's BM25 rows are dropped.
+#[cfg(feature = "code-search")]
+const DROP_RETIRE_POSTINGS: usize = 4096;
+
+/// A test's check, run after each commit of [`super::IndexDb::drop_view_bm25`].
+#[cfg(test)]
+pub(crate) type DropCommitHook = Box<dyn FnMut(&super::IndexDb)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Called after each commit of [`super::IndexDb::drop_view_bm25`], before its retirement.
+    pub(crate) static AFTER_DROP_COMMIT: std::cell::RefCell<Option<DropCommitHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The batch state of [`super::IndexDb::drop_view_bm25`].
+struct ViewBm25Drop<'a> {
+    db: &'a super::IndexDb,
+    view_id: u32,
+    batch: fjall::OwnedWriteBatch,
+    staged: u64,
+    undecoded: bool,
+    #[cfg(feature = "code-search")]
+    candidates: Bm25Candidates,
+    #[cfg(feature = "code-search")]
+    candidate_keys: usize,
+}
+
+impl<'a> ViewBm25Drop<'a> {
+    fn new(db: &'a super::IndexDb, view_id: u32) -> Self {
+        Self {
+            db,
+            view_id,
+            batch: db.db.batch(),
+            staged: 0,
+            undecoded: false,
+            #[cfg(feature = "code-search")]
+            candidates: Bm25Candidates::default(),
+            #[cfg(feature = "code-search")]
+            candidate_keys: 0,
+        }
+    }
+
+    /// Stage the delete of one forward row of `content`, and name its postings for retirement.
+    fn stage_forward(
+        &mut self,
+        forward: &super::scoped::Scoped,
+        key: Vec<u8>,
+        value: &[u8],
+        content: Option<&Bm25Key>,
+    ) {
+        self.staged += forward.stage_remove(&mut self.batch, key) as u64;
+        let terms = parse_code_bm25_by_path_value(value)
+            .and_then(|(_, _, terms)| rmp_serde::from_slice::<Vec<String>>(terms).ok());
+        let (Some(content), Some(terms)) = (content, terms) else {
+            self.undecoded = true;
+            return;
+        };
+        #[cfg(feature = "code-search")]
+        {
+            let postings = self.candidates.0.entry(*content).or_default();
+            for term in terms {
+                if let Some(posting) = super::keys::code_bm25_posting(&term, content) {
+                    postings.push(posting);
+                    self.candidate_keys += 1;
+                }
+            }
+        }
+        #[cfg(not(feature = "code-search"))]
+        let _ = (content, terms);
+    }
+
+    /// The forward rows of one path and key are staged: stage its holder row's delete with them,
+    /// then commit when the batch is full. Never commits between a path's rows and its holder.
+    fn end_path(&mut self, path: Option<(RelPath, Bm25Key)>) -> Result<(), IndexError> {
+        if let Some((rel, content)) = path {
+            let holder = super::keys::code_bm25_holder(&content, self.view_id, &rel);
+            self.staged += self.db.code_bm25_holders.stage_remove(&mut self.batch, holder) as u64;
+        }
+        #[cfg(feature = "code-search")]
+        let full = self.candidate_keys >= DROP_RETIRE_POSTINGS;
+        #[cfg(not(feature = "code-search"))]
+        let full = false;
+        if full || self.staged >= super::BM25_PRUNE_BATCH_BYTES {
+            self.commit()?;
+        }
+        Ok(())
+    }
+
+    /// Commit the staged deletes, then retire the postings of their keys no view holds any more.
+    fn commit(&mut self) -> Result<(), IndexError> {
+        let batch = std::mem::replace(&mut self.batch, self.db.db.batch());
+        {
+            let _shared = self.db.bm25_gate.read();
+            batch.commit()?;
+        }
+        self.db.bm25_live.invalidate();
+        self.staged = 0;
+        #[cfg(test)]
+        AFTER_DROP_COMMIT.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(self.db);
+            }
+        });
+        #[cfg(feature = "code-search")]
+        {
+            let mut candidates = std::mem::take(&mut self.candidates);
+            for postings in candidates.0.values_mut() {
+                postings.sort_unstable();
+                postings.dedup();
+            }
+            self.candidate_keys = 0;
+            self.db.retire_bm25_postings(candidates)?;
+        }
+        Ok(())
+    }
+
+    /// Commit what is left; whether a forward row did not decode.
+    fn finish(mut self) -> Result<bool, IndexError> {
+        self.commit()?;
+        Ok(self.undecoded)
     }
 }
 

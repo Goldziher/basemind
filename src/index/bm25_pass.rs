@@ -294,12 +294,12 @@ impl IndexDb {
     }
 
     /// Record that the shared posting list may hold garbage, for forward rows deleted without the
-    /// writer (a rebuild clearing a view's keyspaces).
-    pub(crate) fn mark_bm25_sweep_owed(&self) -> Result<(), IndexError> {
-        Ok(self
-            .meta
-            .raw()
-            .insert(META_BM25_SWEEP_OWED, fresh_token().to_be_bytes())?)
+    /// writer (a view's rebuild or retirement). Returns the token, for [`Self::clear_sweep_owed_if`]
+    /// once the postings those rows named are retired.
+    pub(crate) fn mark_bm25_sweep_owed(&self) -> Result<u64, IndexError> {
+        let token = fresh_token();
+        self.meta.raw().insert(META_BM25_SWEEP_OWED, token.to_be_bytes())?;
+        Ok(token)
     }
 
     pub(super) fn sweep_owed_token(&self) -> Result<Option<u64>, IndexError> {

@@ -140,7 +140,8 @@ pub struct GroupSweepReport {
     pub views_retired: usize,
     /// Contents whose symbol and call rows were deleted.
     pub contents_removed: usize,
-    /// The shared BM25 posting list was swept for the retired views' postings.
+    /// The whole shared BM25 posting list was swept: a retired view's forward row did not decode,
+    /// so the postings it named were not retired by key.
     pub postings_swept: bool,
 }
 
@@ -152,7 +153,7 @@ pub(crate) struct GroupSweep<'a> {
     /// The debt as the sweep found it.
     owed: Option<u64>,
     report: GroupSweepReport,
-    /// A retired view held BM25 forward rows, so the posting list owes a sweep.
+    /// A retired view held a BM25 forward row that did not decode, so the posting list owes a sweep.
     postings_owed: bool,
 }
 
@@ -269,17 +270,11 @@ impl GroupSweep<'_> {
         Ok(true)
     }
 
-    /// Delete every row under `view_id`'s prefix, then its tombstone. The postings its BM25 forward
-    /// rows named are owed a sweep from before the first delete.
+    /// Delete every row under `view_id`'s prefix, then its tombstone. Its BM25 rows go first, with
+    /// the postings only it held ([`IndexDb::drop_view_bm25`]).
     fn delete_view_rows(&mut self, view_id: u32) -> Result<(), IndexError> {
         let scoped = |part: Part| Scoped::view(self.group.keyspace(part).clone(), view_id);
-        let forward = scoped(Part::CodeBm25ByPath);
-        if forward.keys().next().transpose()?.is_some() {
-            #[cfg(feature = "code-search")]
-            self.db.mark_bm25_sweep_owed()?;
-            self.postings_owed = true;
-            self.db.remove_view_holders(&forward, view_id)?;
-        }
+        self.postings_owed |= self.db.drop_view_bm25(&scoped(Part::CodeBm25ByPath), view_id)?;
         let db = self.group.database();
         for part in Part::ALL.into_iter().filter(|part| !SHARED_PARTS.contains(part)) {
             scoped(part).clear(db)?;
@@ -318,7 +313,8 @@ impl GroupSweep<'_> {
         Ok(())
     }
 
-    /// Clear the debt this sweep paid, sweep the postings of retired views, and report.
+    /// Clear the debt this sweep paid, sweep the posting list when a retirement left it owed, and
+    /// report.
     pub(crate) fn finish(mut self, contents_swept: bool) -> Result<GroupSweepReport, IndexError> {
         if contents_swept && let Some(owed) = self.owed {
             let _exclusive = self.db.bm25_gate.write();
@@ -423,5 +419,17 @@ impl IndexDb {
             }
         }
         Ok(rows)
+    }
+}
+
+impl IndexDb {
+    /// Owe the group's content sweep outside a writer batch, under the gate a sweep clears the debt
+    /// under, so the clear cannot drop it.
+    pub(crate) fn owe_content_sweep(&self) -> Result<(), IndexError> {
+        let _shared = self.bm25_gate.read();
+        self.meta
+            .raw()
+            .insert(META_CONTENT_SWEEP_OWED, fresh_token().to_be_bytes())?;
+        Ok(())
     }
 }

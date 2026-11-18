@@ -544,21 +544,24 @@ fn the_group_end_state_equals_a_sweep_after_every_step() {
     assert_group_exact(&both, "a full scan of A after the watcher batch");
 }
 
-/// A rebuild that clears a view owes the group a sweep only when the view had forward rows whose
-/// postings it leaves behind: clearing an empty view (every new store's first open) must not cost
-/// the first full pass a walk of the posting list.
+/// A rebuild that clears a view retires the postings only it held, by key, and owes no full sweep;
+/// clearing an empty view (every new store's first open) costs nothing.
 #[test]
-fn clearing_a_view_owes_a_sweep_only_when_it_had_forward_rows() {
+fn clearing_a_view_retires_the_postings_only_it_held_and_owes_no_sweep() {
     let dir = tempfile::tempdir().unwrap();
     let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
     let (a, b) = (&views[0], &views[1]);
     b.clear_for_rebuild().unwrap();
     assert!(!pass(a, PassKind::Full, |db| upsert(db, "src/a.rs", "a1", &["alpha"])).swept);
 
-    pass(b, PassKind::Full, |db| upsert(db, "src/x.rs", "x1", &["xray"]));
+    pass(b, PassKind::Full, |db| {
+        upsert(db, "src/x.rs", "x1", &["xray"]);
+        upsert(db, "src/a.rs", "a1", &["alpha"]);
+    });
     b.clear_for_rebuild().unwrap();
-    assert!(pass(a, PassKind::Full, |_| {}).swept, "x1's postings were left behind");
-    assert_eq!(postings_of(a, "x1"), 0);
+    assert_eq!(postings_of(a, "x1"), 0, "no view holds x1");
+    assert_eq!(postings_of(a, "a1"), 1, "a still holds a1");
+    assert!(!pass(a, PassKind::Full, |_| {}).swept, "nothing is left for a sweep");
 }
 
 fn holders(db: &IndexDb) -> usize {
@@ -625,4 +628,119 @@ fn a_file_that_stages_no_forward_row_writes_no_holder_row() {
 
     assert_eq!(a.code_bm25_by_path.iter().count(), 0);
     assert_eq!(holders(a), 0);
+}
+
+fn hits(db: &IndexDb, query: &str) -> Vec<String> {
+    db.recompute_bm25_stats().unwrap();
+    crate::search::bm25::bm25_search(&db.view(), query, 10)
+        .into_iter()
+        .map(|hit| hit.chunk_id)
+        .collect()
+}
+
+/// The reverse of [`a_rebuilt_view_holds_no_key`]: the view that wrote a key's postings is cleared,
+/// and the second holder, which never wrote them, still scores them.
+#[test]
+fn clearing_the_view_that_wrote_a_key_keeps_its_postings_for_the_other_holder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
+    let (a, b) = (&views[0], &views[1]);
+    upsert(a, "src/a.rs", "a1", &["alpha"]);
+    upsert(b, "src/a.rs", "a1", &["alpha"]);
+
+    a.clear_for_rebuild().unwrap();
+    b.sweep_bm25_postings().unwrap();
+
+    assert_eq!(postings_of(b, "a1"), 1);
+    assert_eq!(hits(b, "alpha"), vec!["a1:0".to_string()]);
+}
+
+/// Every `(key, path)` of `view_id`, by its forward rows and by its holder rows.
+fn forward_and_holders(db: &IndexDb, view_id: u32) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let mut forward: Vec<Vec<u8>> = db
+        .code_bm25_by_path
+        .keys()
+        .filter_map(|key| {
+            let (rel, content, _) = keys::parse_code_bm25_by_path(&key.unwrap())?;
+            Some(keys::code_bm25_holder(&content, view_id, &rel))
+        })
+        .collect();
+    forward.dedup();
+    let holders: Vec<Vec<u8>> = db
+        .code_bm25_holders
+        .keys()
+        .map(|key| key.unwrap().to_vec())
+        .filter(|key| key[keys::BM25_KEY_LEN..keys::BM25_KEY_LEN + 4] == view_id.to_be_bytes())
+        .collect();
+    forward.sort();
+    (forward, holders)
+}
+
+/// A view's BM25 rows are dropped in bounded commits, each taking a path's forward rows and its
+/// holder row together: no commit leaves a forward row without its holder, whose postings another
+/// view's retirement could delete, or a holder no forward row names.
+#[test]
+fn a_view_s_forward_rows_and_holders_are_dropped_together_in_every_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
+    let (a, b) = (&views[0], &views[1]);
+    let terms: Vec<String> = (0..20).map(|t| format!("t{t}")).collect();
+    let terms: Vec<&str> = terms.iter().map(String::as_str).collect();
+    for i in 0..300 {
+        upsert(a, &format!("src/f{i}.rs"), &format!("h{i}"), &terms);
+        upsert(b, &format!("src/f{i}.rs"), &format!("h{i}"), &terms);
+    }
+    let a_id = a.holder_view_id();
+    let commits = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = std::rc::Rc::clone(&commits);
+    crate::index::bm25_live::AFTER_DROP_COMMIT.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |db: &IndexDb| {
+            seen.set(seen.get() + 1);
+            let (forward, holders) = forward_and_holders(db, a_id);
+            assert!(
+                forward == holders,
+                "after commit {}: {} paths with forward rows, {} holder rows",
+                seen.get(),
+                forward.len(),
+                holders.len()
+            );
+        }));
+    });
+
+    a.clear_for_rebuild().unwrap();
+    crate::index::bm25_live::AFTER_DROP_COMMIT.with(|hook| hook.borrow_mut().take());
+
+    assert!(commits.get() > 1, "the fixture must take several commits");
+    assert_eq!(postings_of(b, "h0"), 20, "b still holds every key");
+}
+
+/// A writer that found a key's postings stored writes none; when the only holder drops the key and
+/// retires it before that writer commits, the postings stay for it.
+#[test]
+fn a_key_in_flight_keeps_its_postings_through_a_retirement() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
+    let (a, b) = (&views[0], &views[1]);
+    upsert(a, "src/a.rs", "k1", &["alpha"]);
+    let mut b_writer = b.writer();
+    b_writer
+        .upsert_bm25_file(
+            &RelPath::from("src/a.rs"),
+            &keys::bm25_content_key("k1", "rust", "d"),
+            &postings("k1", &["alpha"]),
+        )
+        .unwrap();
+
+    let path = "src/a.rs".to_string();
+    let candidates = a.bm25_posting_candidates([&path]).unwrap();
+    let mut a_writer = a.writer();
+    a_writer.remove_bm25_file(&RelPath::from("src/a.rs")).unwrap();
+    a_writer.commit().unwrap();
+    a.retire_bm25_postings(candidates).unwrap();
+    assert_eq!(postings_of(a, "k1"), 1, "b has the key in flight");
+
+    b_writer.commit().unwrap();
+    a.sweep_bm25_postings().unwrap();
+    assert_eq!(postings_of(b, "k1"), 1, "b's holder row keeps them now");
+    assert_eq!(hits(b, "alpha"), vec!["k1:0".to_string()]);
 }
