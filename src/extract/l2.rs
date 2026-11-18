@@ -1,4 +1,3 @@
-use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryMatch};
 
 use super::rust_macro_items::MacroBodies;
@@ -59,14 +58,11 @@ fn run_calls(
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    crate::lang::with_query_cursor(|cursor| {
-        let mut iter = cursor.matches(&q, root, source);
-        while let Some(m) = iter.next() {
-            if let Some(call) = build_call(&q, m, source, skip_lexical) {
-                out.push(call);
-            }
+    super::query_walk::for_each_match(&q, root, source, |m| {
+        if let Some(call) = build_call(&q, m, source, skip_lexical) {
+            out.push(call);
         }
-    });
+    })?;
     Ok(out)
 }
 
@@ -75,14 +71,11 @@ fn run_docs(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    crate::lang::with_query_cursor(|cursor| {
-        let mut iter = cursor.matches(&q, root, source);
-        while let Some(m) = iter.next() {
-            if let Some(doc) = build_doc(&q, m, source) {
-                out.push(doc);
-            }
+    super::query_walk::for_each_match(&q, root, source, |m| {
+        if let Some(doc) = build_doc(&q, m, source) {
+            out.push(doc);
         }
-    });
+    })?;
     Ok(out)
 }
 

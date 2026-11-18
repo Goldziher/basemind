@@ -125,13 +125,19 @@ impl MacroBodies {
     }
 
     /// Append the symbols, imports and trait impls declared inside the bodies, in file coordinates.
-    pub(super) fn extend_l1(&self, lang: LangId, source: &[u8], out: &mut CombinedL1) -> Result<(), ExtractError> {
+    pub(super) fn extend_l1(
+        &self,
+        lang: LangId,
+        source: &[u8],
+        out: &mut CombinedL1,
+        partial: &mut bool,
+    ) -> Result<(), ExtractError> {
         if self.bodies.is_empty() {
             return Ok(());
         }
         let before = (out.0.len(), out.1.len(), out.2.len());
         for body in &self.bodies {
-            let (symbols, imports, impls) = run_combined(lang, body.tree.root_node(), body.text(source))?;
+            let (symbols, imports, impls) = run_combined(lang, body.tree.root_node(), body.text(source), partial)?;
             let o = body.origin;
             out.0.extend(symbols.into_iter().map(|s| shift_symbol(s, o)));
             out.1.extend(imports.into_iter().map(|i| shift_import(i, o)));
