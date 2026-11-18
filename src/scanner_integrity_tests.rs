@@ -732,8 +732,9 @@ fn a_blob_the_file_map_already_references_is_not_touched_on_reuse() {
     );
 }
 
-/// A file with rows of both kinds: content-keyed (its symbol) and keyed by its path (its import).
-const GHOST: &[u8] = b"use std::fmt;\npub fn ghost() -> u32 { 9 }\n";
+/// A file with rows of both kinds: content-keyed (its symbols) and keyed by its path (its trait
+/// implementation; a Rust `use` records no module, so it writes no import row).
+const GHOST: &[u8] = b"pub trait Spirit {}\npub struct Ghost;\nimpl Spirit for Ghost {}\npub fn ghost() -> u32 { 9 }\n";
 
 /// The `symbols_by_name` rows stored for `name`, whether or not a view reads them.
 fn stored_symbol_rows(db: &crate::index::IndexDb, name: &str) -> usize {
