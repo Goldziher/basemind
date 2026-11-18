@@ -254,11 +254,14 @@ pub(crate) fn sync_index_tail(store: &Store) -> bool {
 /// The last index step of a scan: [`sync_index_tail`], then release the sealed index journals now
 /// that every row is durable. A failed reclaim only logs: the rows are already durable in the
 /// journal. Runs for full and incremental scans alike, and costs nothing unless fjall holds a sealed
-/// journal (see [`IndexDb::reclaim_journal_if_grown`]).
+/// journal (see [`IndexDb::reclaim_journal_if_grown`]). Then flush the largest memtables when more
+/// than 8 MiB sits unflushed ([`IndexDb::settle_write_buffer`]), so a long-lived process
+/// that keeps rescanning does not hold every keyspace's memtable.
 pub(crate) fn finish_index_writes(store: &Store) {
     sync_index_tail(store);
     if let Some(db) = store.index_db.as_ref() {
         db.reclaim_journal_if_grown();
+        db.settle_write_buffer();
     }
 }
 
@@ -327,3 +330,7 @@ mod tests;
 #[cfg(test)]
 #[path = "scanner_integrity_blob_tests.rs"]
 mod blob_tests;
+
+#[cfg(test)]
+#[path = "scanner_integrity_settle_tests.rs"]
+mod settle_tests;
