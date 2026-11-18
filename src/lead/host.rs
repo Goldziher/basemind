@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use basemind_agents::{
     Caller, Event, FileAuditSink, HarnessKind, LaunchRequest, Peer, Registry, SessionId, SessionObserver, SessionState,
@@ -284,7 +284,7 @@ impl LeadHost {
     /// names no path, when it is not an existing directory strictly inside the root, or overlaps a
     /// directory another live session or launch holds, of this lead or of another lead of this
     /// user (through the shared lock files).
-    fn claim_worktree(&self, working_dir: &str) -> Result<(PathBuf, Vec<File>), String> {
+    fn claim_worktree(&self, working_dir: &str) -> Result<(PathBuf, WorktreeLocks), String> {
         let relative = Path::new(working_dir);
         let plain = relative
             .components()
@@ -308,7 +308,7 @@ impl LeadHost {
         if held.iter().any(|(_, dir)| policy_file::overlaps(dir, &resolved)) {
             return Err("working_dir_in_use".to_owned());
         }
-        let locks = lock_worktree(&self.worktree_locks, &self.worktrees_root, &resolved)?;
+        let locks = lock_worktree(&self.worktree_locks, &resolved)?;
         held.push((None, resolved.clone()));
         Ok((resolved, locks))
     }
@@ -440,10 +440,10 @@ fn open_audit_dir(dir: &Path) -> std::io::Result<PathBuf> {
 
 /// The worktree lock files of each live session.
 #[derive(Default)]
-struct HeldLocks(Mutex<HashMap<SessionId, Vec<File>>>);
+struct HeldLocks(Mutex<HashMap<SessionId, WorktreeLocks>>);
 
 impl HeldLocks {
-    fn hold(&self, session: SessionId, locks: Vec<File>) {
+    fn hold(&self, session: SessionId, locks: WorktreeLocks) {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -456,12 +456,31 @@ impl HeldLocks {
     }
 }
 
-/// Take the lock files for `dir` under `root`, shared by every lead of this user: an exclusive
-/// lock on `dir`'s own file and a shared one on each directory between `root` and it, so a
-/// worktree is refused while another lead holds it, a directory inside it or one around it.
-/// The files are named by a hash of the canonical path and never deleted; the locks go with
-/// the returned files.
-fn lock_worktree(locks: &Path, root: &Path, dir: &Path) -> Result<Vec<File>, String> {
+/// The worktree lock files this process has open, by path, with whether each is locked
+/// exclusively. A file is open at most once per process: where `flock` is emulated with `fcntl`
+/// locks (Linux NFS), closing any descriptor of a file releases every lock the process holds on
+/// it, so a second descriptor, closed by a refused claim or a finished session, would release a
+/// lock another session of this process still relies on. Taken after a host's own locks.
+static OPEN_LOCKS: Mutex<Vec<(PathBuf, bool, Weak<File>)>> = Mutex::new(Vec::new());
+
+/// The lock files one worktree claim holds. They are closed under [`OPEN_LOCKS`], so no claim
+/// opens a file again while its last descriptor is being closed.
+struct WorktreeLocks(Vec<Arc<File>>);
+
+impl Drop for WorktreeLocks {
+    fn drop(&mut self) {
+        let _open = OPEN_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        self.0.clear();
+    }
+}
+
+/// Take the lock files for `dir`, shared by every lead of this user that shares the data
+/// directory: an exclusive lock on `dir`'s own file and a shared one on each of its ancestors up
+/// to `/`, so a worktree is refused while another lead holds it, a directory inside it or one
+/// around it, whatever worktrees root each lead has. The files are named by a hash of the
+/// canonical path and are never deleted: deleting a lock file races with a lead opening it. The
+/// locks go with the returned files.
+fn lock_worktree(locks: &Path, dir: &Path) -> Result<WorktreeLocks, String> {
     use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
     use std::os::unix::io::AsRawFd as _;
     std::fs::DirBuilder::new()
@@ -469,27 +488,46 @@ fn lock_worktree(locks: &Path, root: &Path, dir: &Path) -> Result<Vec<File>, Str
         .mode(0o700)
         .create(locks)
         .map_err(|_| "working_dir_lock_failed".to_owned())?;
-    let mut held = Vec::new();
-    let mut ancestors: Vec<&Path> = dir.ancestors().skip(1).take_while(|a| a.starts_with(root)).collect();
+    let mut open = OPEN_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    open.retain(|(_, _, file)| file.strong_count() > 0);
+    // Declared after `open`, so a refused claim closes its files before the lock is let go.
+    let mut held: Vec<Arc<File>> = Vec::new();
+    let mut ancestors: Vec<&Path> = dir.ancestors().skip(1).collect();
     ancestors.reverse();
     for (path, exclusive) in ancestors.into_iter().map(|a| (a, false)).chain([(dir, true)]) {
         let name = blake3::hash(path.as_os_str().as_encoded_bytes()).to_hex();
+        let lock_path = locks.join(format!("{name}.lock"));
+        let known = open
+            .iter()
+            .find(|(known, _, _)| *known == lock_path)
+            .and_then(|(_, held_exclusively, file)| file.upgrade().map(|file| (*held_exclusively, file)));
+        match known {
+            Some((false, file)) if !exclusive => {
+                held.push(file);
+                continue;
+            }
+            Some(_) => return Err("working_dir_in_use".to_owned()),
+            None => {}
+        }
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(locks.join(format!("{name}.lock")))
+            .open(&lock_path)
             .map_err(|_| "working_dir_lock_failed".to_owned())?;
         let operation = if exclusive { libc::LOCK_EX } else { libc::LOCK_SH };
         // SAFETY: flock on a descriptor this function owns; it does not block (LOCK_NB).
         if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } != 0 {
             return Err("working_dir_in_use".to_owned());
         }
+        let file = Arc::new(file);
+        open.push((lock_path, exclusive, Arc::downgrade(&file)));
         held.push(file);
     }
-    Ok(held)
+    drop(open);
+    Ok(WorktreeLocks(held))
 }
 
 /// Logs what the operator must see outside the audit log, and lets go of a finished session's

@@ -34,13 +34,18 @@ impl Fixture {
     }
 
     fn policy(&self) -> PathBuf {
-        let path = self.base.join("config/agents.toml");
+        self.policy_at(&self.worktrees, "agents.toml")
+    }
+
+    /// A policy file `name` whose worktrees root is `root`.
+    fn policy_at(&self, root: &Path, name: &str) -> PathBuf {
+        let path = self.base.join("config").join(name);
         std::fs::write(
             &path,
             format!(
                 "[agents.launch]\nenabled = true\nworktrees_root = \"{}\"\nwall_time_secs = 60\n\
                  [agents.launch.harness.claude]\nexecutable = \"{}\"\nstop_grace_secs = 1\n",
-                self.worktrees.display(),
+                root.display(),
                 self.base.join("claude-stand-in").display()
             ),
         )
@@ -217,6 +222,79 @@ async fn two_leads_never_launch_into_the_same_or_nested_worktrees() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+}
+
+/// Two leads whose worktrees roots nest: the outer lead may not launch into a directory that
+/// holds the inner lead's live worktree, though that directory lies above the inner lead's root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn leads_with_nested_worktrees_roots_never_launch_around_each_others_worktrees() {
+    let fixture = Fixture::new();
+    let inner_root = fixture.worktrees.join("deep/inner");
+    std::fs::create_dir_all(inner_root.join("x")).unwrap();
+    let inner = Arc::new(
+        fixture
+            .start(
+                fixture.policy_at(&inner_root, "inner.toml"),
+                fixture.base.join("audit-1"),
+            )
+            .unwrap(),
+    );
+    let outer = Arc::new(fixture.start(fixture.policy(), fixture.base.join("audit-2")).unwrap());
+    let launch = |host: &Arc<LeadHost>, dir: &str| {
+        Arc::clone(host).call(
+            AGENT_LAUNCH,
+            json!({ "harness": "claude", "brief": "Wait.", "working_dir": dir }),
+        )
+    };
+    let launched = launch(&inner, "x").await;
+    assert_eq!(launched["isError"], false, "{launched}");
+    for dir in ["deep", "deep/inner", "deep/inner/x"] {
+        let refused = launch(&outer, dir).await;
+        assert_eq!(body(&refused)["error"], "working_dir_in_use", "{dir}: {refused}");
+    }
+    let sibling = launch(&outer, "two").await;
+    assert_eq!(sibling["isError"], false, "{sibling}");
+    for host in [&inner, &outer] {
+        host.shutdown();
+    }
+}
+
+/// Each lock file is open once in this process, however many sessions hold it, and a refused
+/// claim closes none that a session holds: where `flock` is emulated with `fcntl` locks, closing
+/// any descriptor of a file releases the process's lock on it.
+#[test]
+fn a_lock_file_is_open_once_per_process_and_a_refused_claim_keeps_the_others() {
+    let fixture = Fixture::new();
+    let locks = fixture.base.join("locks-once");
+    for dir in ["one/a", "one/b"] {
+        std::fs::create_dir_all(fixture.worktrees.join(dir)).unwrap();
+    }
+    let a = lock_worktree(&locks, &fixture.worktrees.join("one/a")).unwrap();
+    let b = lock_worktree(&locks, &fixture.worktrees.join("one/b")).unwrap();
+    // The ancestors' files, `/` first, are the same descriptors.
+    let shared = a.0.len() - 1;
+    for at in 0..shared {
+        assert!(Arc::ptr_eq(&a.0[at], &b.0[at]), "ancestor {at} opened twice");
+    }
+    assert_eq!(
+        lock_worktree(&locks, &fixture.worktrees.join("one")).err().as_deref(),
+        Some("working_dir_in_use")
+    );
+    assert_eq!(
+        lock_worktree(&locks, &fixture.worktrees.join("one/a")).err().as_deref(),
+        Some("working_dir_in_use")
+    );
+    // The refused claims closed nothing `a` and `b` hold.
+    for file in a.0.iter().chain(&b.0) {
+        assert!(Arc::strong_count(file) >= 1);
+        // SAFETY: fcntl F_GETFD only reads the descriptor's flags.
+        assert_ne!(
+            unsafe { libc::fcntl(std::os::unix::io::AsRawFd::as_raw_fd(&**file), libc::F_GETFD) },
+            -1
+        );
+    }
+    drop(a);
+    assert!(lock_worktree(&locks, &fixture.worktrees.join("one/a")).is_ok());
 }
 
 /// Review 3 N1: an old audit log of an ended lead is deleted when a lead starts; a recent one, and

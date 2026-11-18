@@ -673,7 +673,8 @@ denied ([ADR-0044](docs/adr/0044-launched-agent-comms-and-user-mcp-isolation.md)
 none of your own MCP servers but OpenCode's plugins and the servers of a managed or organisation
 OpenCode configuration; each `working_dir` is an existing directory
 under `worktrees_root` that no session of any lead of yours holds, and inside or around none that
-one holds (a human's session there is not detected); every
+one holds (leads see each other through lock files in their data directory, so leads run with
+different `BASEMIND_DATA_HOME`s do not; a human's session there is not detected); every
 launch, stop and refusal is written to `<data dir>/agents/launch-audit-*.jsonl`. Without the file,
 `serve --lead` serves exactly like `serve` and says why in its instructions. This bounds what a model
 can do through MCP; it is no sandbox against a process of the same user. See
