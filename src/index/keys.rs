@@ -28,7 +28,6 @@ pub use crate::index::keys_content::{
     CONTENT_KEY_LEN, ContentKey, NameRow, call_by_callee, call_by_callee_content, call_by_callee_hit, call_name_row,
     calls_by_callee_prefix, content_key, content_row, pack_starts, parse_call_by_callee, parse_content_row,
     parse_symbol_by_name, parse_symbol_row, split_hit, symbol_by_name, symbol_by_name_hit, symbols_by_name_prefix,
-    unpack_starts,
 };
 pub use crate::index::keys_memory::{
     MEMORY_VIS_GROUP, MEMORY_VIS_INDIVIDUAL, memory_by_key, memory_by_key_ns_prefix, parse_memory_by_key,

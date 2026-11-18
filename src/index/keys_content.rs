@@ -154,15 +154,6 @@ pub fn pack_starts(starts: impl IntoIterator<Item = u32>) -> Vec<u8> {
     starts.iter().flat_map(|start| start.to_be_bytes()).collect()
 }
 
-/// The starts of a packed name row's value; a trailing partial entry is ignored.
-pub fn unpack_starts(value: &[u8]) -> impl Iterator<Item = u32> + '_ {
-    value
-        .as_chunks::<START_LEN>()
-        .0
-        .iter()
-        .map(|start| u32::from_be_bytes(*start))
-}
-
 /// Prefix bytes for "every call of `callee`".
 pub fn calls_by_callee_prefix(callee: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + callee.len());
