@@ -22,6 +22,9 @@ fn a_repository_config_that_runs_commands_on_a_read_refuses_the_launch() {
         ("[include]\n\tpath = ../other.config\n", "include.path"),
         ("[includeIf \"gitdir:/x/\"]\n\tpath = x\n", "includeif.*.path"),
         ("[core] fsmonitor = ./a\n[filter.x] smudge = y\n", "filter.*.smudge"),
+        ("[gpg]\n\tprogram = ./sign\n", "gpg.program"),
+        ("[gpg \"ssh\"]\n\tprogram = ./sign\n", "gpg.*.program"),
+        ("[gpg.x509]\n\tprogram = ./sign\n", "gpg.*.program"),
     ] {
         let (_outer, root) = repo(config);
         let error = check_repository(&root.join("src")).unwrap_err();

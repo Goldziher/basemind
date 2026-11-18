@@ -277,8 +277,10 @@ config is trusted.
 - Git run by the harness itself, outside any sandbox it gives the agent, is kept from running
   the repository's programs: every child gets `core.fsmonitor=false` through `GIT_CONFIG_COUNT`,
   and a repository whose own `config` or `config.worktree` sets a filter, a diff driver, an
-  external diff or an include is refused (Codex 0.169 ran a clean filter by `git status` when a
-  turn started; a Git LFS repository with a local `filter.lfs` is refused too).
+  external diff, a signature verifier (`gpg.program`, `gpg.<format>.program`) or an include, or
+  holds a section header the check cannot parse, is refused (Codex 0.169 ran a clean filter by
+  `git status` when a turn started; a Git LFS repository with a local `filter.lfs` is refused
+  too).
 - The root may not contain the launcher's `HOME`, `XDG_CONFIG_HOME` or `XDG_DATA_HOME`, and may not
   be, contain or lie inside a harness's directory (`~/.claude`, `~/.codex`, `~/.gemini`, ...) or
   basemind's store and comms directories: a harness lets the agent work in its root.

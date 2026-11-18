@@ -8,8 +8,10 @@ use crate::error::LaunchError;
 
 /// Keys, as `section.key` with any subsection left out, through which a read-only git command
 /// runs a program: a filter's clean side runs on `git status` (seen with Codex 0.169), a diff
-/// driver or an external diff on `git diff`, and an include pulls in a file this check does not
-/// read. `core.fsmonitor` is not here: every child gets it switched off through the environment.
+/// driver or an external diff on `git diff`, a signature verifier (`gpg.program`,
+/// `gpg.<format>.program`) on `git log` of a signed commit under `log.showSignature`, and an
+/// include pulls in a file this check does not read. `core.fsmonitor` is not here: every child
+/// gets it switched off through the environment.
 const COMMAND_KEYS: &[(&str, &str)] = &[
     ("filter", "clean"),
     ("filter", "smudge"),
@@ -17,6 +19,7 @@ const COMMAND_KEYS: &[(&str, &str)] = &[
     ("diff", "textconv"),
     ("diff", "command"),
     ("diff", "external"),
+    ("gpg", "program"),
     ("include", "path"),
     ("includeif", "path"),
 ];
