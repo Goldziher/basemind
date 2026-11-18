@@ -4,7 +4,7 @@ date: 2026-11-18
 amends: ["0039"]
 ---
 
-# ADR-0041: Hosted workspaces share the writer's handles; no in-RAM reference fallback
+# ADR-0042: Hosted workspaces share the writer's handles; no in-RAM reference fallback
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0039 (the deletion of the in-process forwarding seams); ADR-0036 (the

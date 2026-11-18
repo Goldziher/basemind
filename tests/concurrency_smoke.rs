@@ -478,7 +478,7 @@ fn assert_refused_for_lack_of_an_index(result: &CallToolResult, what: &str) {
 
 /// Multi-SESSION: two `serve` processes against the SAME repo. fjall is single-holder, so the
 /// second process can't open the index and serves read-only (`index_db = None`). Its `code_refs`
-/// call sites are refused naming the fix (ADR-0041) rather than answered from a partial in-RAM
+/// call sites are refused naming the fix (ADR-0042) rather than answered from a partial in-RAM
 /// projection of the blobs; it still answers, and does not block, on everything else.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn second_session_refuses_references_without_an_index() {
