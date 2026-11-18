@@ -712,7 +712,7 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
   `..` component and a symlink pointing outside are refused.
 - **Annotations.** Exact per tool: everything is read-only except `memory_save` and `index_rescan`,
   and nothing is destructive. No `output_schema`.
-- **Size.** `tools/list` for the 15 tools is about 18 KB (about 4.5k tokens), down from about 25 KB
+- **Size.** `tools/list` for the 15 tools is about 20 KB (about 5k tokens), down from about 25 KB
   (about 6.3k tokens) for the four domain tools they replace. `tests/mcp_schema_wire.rs` enforces a
   20,000-byte ceiling; a description that pushes past it is shortened, the ceiling is not raised.
 - **Descriptions.** Each description says when to use the tool and carries one example call; field

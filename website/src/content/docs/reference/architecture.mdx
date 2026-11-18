@@ -269,7 +269,7 @@ The daemon manages the global cache; individual repos hold no `.basemind/` direc
 `git_log`, `git_blame`, `git_diff`, `memory_save`, `memory_search`, `index_status` and
 `index_rescan`. None takes a `mode`. `comms` builds add three deferred tools,
 `agent_post`, `agent_inbox` and `agent_threads`, with no `mode`. Every verb-tool definition carries `_meta["anthropic/alwaysLoad"]: true`,
-so the tools are always loaded; `tools/list` for the fifteen tools is about 17 KB (about 4.1k
+so the tools are always loaded; `tools/list` for the fifteen tools is about 20 KB (about 5k
 tokens), held under 20,000 bytes by a test. All paths are byte-precise repo-relative (`RelPath`).
 
 Tool conventions:

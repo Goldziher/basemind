@@ -39,8 +39,8 @@ no aliases: a call to an old tool name fails, and no tool takes a `mode` argumen
 release and the plugin downloads the matching binary, so update both together.
 
 The tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`): a host that defers MCP tools
-needs no tool-search round trip, so call them directly. `tools/list` for them is about 18 KB (about
-4.5k tokens), down from about 25 KB (about 6.3k tokens) for the four tools they replace.
+needs no tool-search round trip, so call them directly. `tools/list` for them is about 20 KB (about
+5k tokens), down from about 25 KB (about 6.3k tokens) for the four tools they replace.
 
 ### Tool mapping
 

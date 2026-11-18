@@ -130,7 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   - The 15 tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`), so a host that defers MCP
     tools needs no tool-search round trip; the agent tools are not marked and stay deferred
-    (ADR-0021). `tools/list` for the 15 is about 18 KB (about 4.5k tokens), down from about 25 KB (about
+    (ADR-0021). `tools/list` for the 15 is about 20 KB (about 5k tokens), down from about 25 KB (about
     6.3k tokens) for the four tools they replace; a test enforces a 20,000-byte ceiling. No tool declares
     an output schema.
   - Required arguments are required in the schema, and an unknown argument is rejected with a did-you-mean
