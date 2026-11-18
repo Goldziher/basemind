@@ -10,7 +10,11 @@ feature-depth = 1
 
 [advisories]
 ignore = [
+  # paste is unmaintained (archived, no advisory against its code); a proc-macro pulled in by
+  # arrow-flight and lance-bitpacking (lancedb) and biblatex (xberg). Drop it once they move off it.
   "RUSTSEC-2024-0436",
+  # fxhash is unmaintained; used by our stack-graphs fork (crates/stack-graphs). Replacing it there
+  # needs a new version of the fork on crates.io.
   "RUSTSEC-2025-0057",
   # unsafe-libyaml is unmaintained; pulled in only by serde_yaml_ng via lindera -> lance-tokenizer.
   "RUSTSEC-2024-0449",
