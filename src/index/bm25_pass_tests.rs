@@ -422,3 +422,52 @@ fn a_failed_retirement_still_writes_the_stats_and_owes_the_sweep() {
     );
     assert_eq!(postings_of(&db, "a1"), 0);
 }
+
+/// A pass the process never finished (killed between batches) leaves, on reopen, a view whose
+/// stats are not vouched for and a group that owes a sweep, so the next pass recomputes and sweeps.
+#[test]
+fn a_pass_killed_between_batches_is_recovered_by_the_next_pass_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let db = IndexDb::open(dir.path()).unwrap();
+        let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
+        upsert(&db, "src/a.rs", "a1", &["alpha"]);
+        pass.finish().unwrap();
+        let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
+        upsert(&db, "src/a.rs", "a2", &["beta", "gamma"]);
+        // Dropping the pass writes nothing, so the disk holds what a killed process leaves. ~keep
+        drop(pass);
+    }
+    let db = IndexDb::open(dir.path()).unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
+    assert!(!pass.is_exact(), "the killed pass's token is not vouched for");
+    let outcome = pass.finish().unwrap();
+    assert!(outcome.swept, "the killed pass's begin left the sweep owed");
+    assert_eq!(
+        postings_of(&db, "a1"),
+        0,
+        "the orphan the killed pass left is collected"
+    );
+    let stamped = db.view().bm25_stats();
+    assert_eq!(stamped, Some((1, 2)));
+    assert_eq!(swept(&db).1, stamped);
+}
+
+/// A pass whose retired keys outgrow the ceiling forgets them and sweeps, collecting both its own
+/// orphans and garbage it never named.
+#[test]
+fn an_overflowed_pass_sweeps_end_to_end() {
+    let (_dir, db) = exact_db_with(&[("src/a.rs", "a1", &["alpha"]), ("src/b.rs", "b1", &["beta"])]);
+    let orphan = plant_orphan(&db);
+    db.bm25_pass.set_ceiling_for_test(1);
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
+    upsert(&db, "src/a.rs", "a2", &["gamma"]);
+    let outcome = pass.finish().unwrap();
+    db.bm25_pass.set_ceiling_for_test(RETIRED_KEYS_CEILING_BYTES);
+    assert!(outcome.swept, "the overflowed tally cannot retire exactly");
+    assert!(outcome.stats_from_ledger, "the counts stay exact past the overflow");
+    assert!(db.code_bm25_postings.get(&orphan).unwrap().is_none());
+    assert_eq!(postings_of(&db, "a1"), 0);
+    let stamped = db.view().bm25_stats();
+    assert_eq!(swept(&db).1, stamped);
+}

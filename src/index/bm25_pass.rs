@@ -161,6 +161,8 @@ pub(crate) struct Bm25PassLedger {
     /// The open pass's generation; `0` while none is open.
     generation: AtomicU64,
     next_generation: AtomicU64,
+    /// [`RETIRED_KEYS_CEILING_BYTES`], lowered by a test to reach the overflow with a small pass.
+    ceiling: AtomicU64,
     full: AtomicBool,
     state: Mutex<PassState>,
 }
@@ -170,6 +172,7 @@ impl Default for Bm25PassLedger {
         Self {
             generation: AtomicU64::new(0),
             next_generation: AtomicU64::new(1),
+            ceiling: AtomicU64::new(RETIRED_KEYS_CEILING_BYTES),
             full: AtomicBool::new(false),
             state: Mutex::default(),
         }
@@ -218,7 +221,7 @@ impl Bm25PassLedger {
             return true;
         }
         state.retired_bytes += delta.retired_bytes;
-        if state.retired_bytes > RETIRED_KEYS_CEILING_BYTES {
+        if state.retired_bytes > self.ceiling.load(Ordering::Relaxed) {
             state.overflowed = true;
             state.retired = AHashMap::new();
             self.full.store(true, Ordering::Relaxed);
@@ -237,6 +240,11 @@ impl Bm25PassLedger {
         self.full.store(false, Ordering::Relaxed);
         self.generation.store(generation, Ordering::Release);
         generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_ceiling_for_test(&self, bytes: u64) {
+        self.ceiling.store(bytes, Ordering::Relaxed);
     }
 
     /// Close the pass of `generation` and hand back its tally; `None` when it is not the open one.
@@ -380,14 +388,11 @@ impl Bm25Pass {
         // A write that reached the view outside the ledger replaced the token: it is in neither ~keep
         // the base nor the tally, so the stats must be recomputed and not vouched for. ~keep
         let untouched = db.bm25_stat(META_BM25_DIRTY)? == Some(self.token);
-        let exact = self
-            .base
-            .filter(|_| untouched && !state.overflowed && !state.poisoned)
-            .and_then(|(n, len)| {
-                let n = i64::try_from(n).ok()?.checked_add(state.docs)?;
-                let len = i64::try_from(len).ok()?.checked_add(state.total_len)?;
-                Some((u64::try_from(n).ok()?, u64::try_from(len).ok()?))
-            });
+        let exact = self.base.filter(|_| untouched && !state.poisoned).and_then(|(n, len)| {
+            let n = i64::try_from(n).ok()?.checked_add(state.docs)?;
+            let len = i64::try_from(len).ok()?.checked_add(state.total_len)?;
+            Some((u64::try_from(n).ok()?, u64::try_from(len).ok()?))
+        });
         // Stats and postings fail over separately: inexact stats need only a recompute of this ~keep
         // view; the postings need the sweep only when a debt is owed or the tally is incomplete. ~keep
         let complete = !state.overflowed && !state.poisoned;
