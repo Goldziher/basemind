@@ -380,8 +380,10 @@ protocol captures. Recorded frames, redacted, are the fixtures in `tests/fixture
   `item/fileChange/requestApproval` carries `itemId` and no changes; the `fileChange` item
   announced before it carries them. `applyPatchApproval` requires `fileChanges` (generated schema).
   MCP tool calls ask through `mcpServer/elicitation/request`; `accept` with no `persist` ran the
-  tool once. The command approval's escalation fields (`additionalPermissions`,
-  `networkApprovalContext`, `kind: writeStdin`) are from the schema `codex app-server
+  tool once. They ask only when the server sets `default_tools_approval_mode = "prompt"`, which the
+  adapter does for the injected server: without it, a 2026-11-18 run under `untrusted` called
+  `agent_inbox` and `agent_post` (not read-only) through code mode's `exec` unasked. The command approval's escalation fields
+  (`additionalPermissions`, `networkApprovalContext`, `kind: writeStdin`) are from the schema `codex app-server
   generate-json-schema --experimental` printed; no live request carried them. Under approval policy `never` an MCP call failed instead of running. A project
   `.codex/config.toml` was not loaded in an untrusted project (skills still load); it is in a
   trusted one, so the check stays.

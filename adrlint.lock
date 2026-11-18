@@ -21,6 +21,11 @@ number = 14
 status = "accepted"
 blake3 = "f2fbca2c66398e5661550bba7f7ab55aec08005066520da75eaa5b7529278923"
 
+[adrs."docs/adr/0015-bounded-document-extraction.md"]
+number = 15
+status = "accepted"
+blake3 = "73b0d99c2fb3a89871a2e985d193bb07cfed9473eecf0a28b64448b46e989e2d"
+
 [adrs."docs/adr/0017-surface-reduction.md"]
 number = 17
 status = "accepted"
