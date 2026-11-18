@@ -325,6 +325,44 @@ async fn tools_list_stays_under_the_byte_ceiling() {
     }
 }
 
+/// An optional field is one absent from `required`; a `"default": null` beside it tells a model
+/// nothing and costs bytes under the ceiling on every field of every tool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_schema_carries_a_null_default() {
+    fn null_defaults(value: &serde_json::Value, at: &str, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if object.get("default").is_some_and(serde_json::Value::is_null) {
+                    found.push(at.to_string());
+                }
+                for (key, child) in object {
+                    null_defaults(child, &format!("{at}/{key}"), found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    null_defaults(child, &format!("{at}/{index}"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let (_dir, tools, _) = list_tools().await;
+    let mut found = Vec::new();
+    let mut properties = 0;
+    for tool in &tools {
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        properties += schema
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .map_or(0, |object| object.len());
+        null_defaults(&schema, &tool.name, &mut found);
+    }
+    assert!(properties > 0, "the schemas must carry properties to inspect");
+    assert!(found.is_empty(), "schemas carry `\"default\": null`: {found:?}");
+}
+
 /// Required arguments are required in the schema, so a host can validate a call before sending it,
 /// and nothing else is: an `Option` field must not leak into `required`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
