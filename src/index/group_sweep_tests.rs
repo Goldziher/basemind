@@ -250,3 +250,48 @@ fn a_view_claimed_for_an_open_is_not_retired_before_the_open_takes_it() {
         "once the open's handle is gone, the view can be retired"
     );
 }
+
+#[test]
+fn a_retirement_owes_the_content_sweep_until_one_runs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let a = open_view(&group, "ws-a", &memory);
+    let gone_id = group.allocate_view_id("ws-gone", "working").expect("id");
+    assert!(!a.content_sweep_owed_for_test());
+
+    let mut open = a.begin_group_sweep().expect("begin").expect("sweep");
+    assert!(open.retire_view("ws-gone", "working", gone_id).expect("retire"));
+    // The file maps could not be read, so no content sweep ran. ~keep
+    drop(open);
+    assert!(
+        a.content_sweep_owed_for_test(),
+        "the retired view's contents are owed a sweep"
+    );
+
+    let open = a.begin_group_sweep().expect("begin").expect("sweep");
+    assert!(open.owes_contents());
+    open.finish(true).expect("finish");
+    assert!(!a.content_sweep_owed_for_test(), "a content sweep paid it");
+}
+
+#[test]
+fn a_retirement_a_crash_cut_short_is_reported_when_finished() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let a = open_view(&group, "ws-a", &memory);
+    let half = group.allocate_view_id("ws-half", "working").expect("id");
+    let mut tombstone = b"\xffgroup/retired_view/".to_vec();
+    tombstone.extend_from_slice(&half.to_be_bytes());
+    group.meta().insert(&tombstone, []).expect("tombstone");
+
+    let report = a
+        .begin_group_sweep()
+        .expect("begin")
+        .expect("sweep")
+        .finish(false)
+        .expect("finish");
+
+    assert_eq!(report.views_retired, 1);
+}

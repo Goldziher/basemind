@@ -19,8 +19,9 @@
 //!   file map that drops one.
 //!
 //! A view is retired when its view directory is gone (the workspace reaper or the cache budget
-//! removed it) and no handle of this process has it open. Its record is replaced by a tombstone in
-//! one synced commit, so no open allocates its id again; its rows are deleted; then the tombstone
+//! removed it) and no handle of this process has it open or claimed. Its record is replaced by a
+//! tombstone in one synced commit that also owes the content sweep, so no open allocates its id
+//! again and its contents are swept even after a crash; its rows are deleted; then the tombstone
 //! goes. A sweep finishes the tombstones a crash left first.
 
 use std::sync::Arc;
@@ -135,7 +136,7 @@ impl Drop for SweepWindow {
 /// What one group sweep removed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GroupSweepReport {
-    /// Views whose record and rows were deleted.
+    /// Views whose record and rows were deleted, including retirements a crash cut short.
     pub views_retired: usize,
     /// Contents whose symbol and call rows were deleted.
     pub contents_removed: usize,
@@ -217,6 +218,7 @@ impl IndexDb {
         }
         for view_id in leftovers {
             sweep.delete_view_rows(view_id)?;
+            sweep.report.views_retired += 1;
         }
         Ok(Some(sweep))
     }
@@ -250,11 +252,17 @@ impl GroupSweep<'_> {
             {
                 return Ok(false);
             }
+            // The retired view's contents may be dead: the debt is owed in the same synced commit, ~keep
+            // so a crash, or a sweep whose liveness read fails, leaves it for the next one. ~keep
+            let token = fresh_token();
             let meta = self.group.meta();
             let mut batch = self.group.database().batch().durability(Some(PersistMode::SyncAll));
             batch.remove(meta, view_record(workspace_key, view));
             batch.insert(meta, retired_view_key(view_id), Vec::<u8>::new());
+            batch.insert(meta, META_CONTENT_SWEEP_OWED, token.to_be_bytes());
             batch.commit()?;
+            // This sweep reads the file maps after the retirement, so it may pay the debt. ~keep
+            self.owed = Some(token);
         }
         self.delete_view_rows(view_id)?;
         self.report.views_retired += 1;
