@@ -65,26 +65,6 @@ impl CallScanPage {
             hit_starts,
         }
     }
-
-    /// Drop the hits `keep` rejects, with their parallel entries. `total` shrinks by the same count:
-    /// it counted every hit the sender matched, of which only this page's share could be tested, so
-    /// what is left is an upper bound on the hits `keep` accepts. No scan cap was hit, so
-    /// `total_is_partial`, which the response reports as `truncated_reason: "scan_cap"`, is left as the
-    /// sender set it.
-    #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
-    pub(super) fn retain(&mut self, keep: impl Fn(&ReferenceHit) -> bool) {
-        let mut index = 0;
-        while index < self.hits.len() {
-            if keep(&self.hits[index]) {
-                index += 1;
-                continue;
-            }
-            self.hits.remove(index);
-            self.hit_keys.remove(index);
-            self.hit_starts.remove(index);
-            self.total = self.total.saturating_sub(1);
-        }
-    }
 }
 
 /// Result of applying a `max_tokens` budget to a call-scan page.

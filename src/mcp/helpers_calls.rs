@@ -14,63 +14,6 @@ use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, mark_sh
 use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
-use crate::path::RelPath;
-
-/// How `find_callers` fetches the cross-file resolved uses of a definition. The precise
-/// (`resolved: true`) path needs the fjall `refs_by_def` reverse index; under Seam B a
-/// `daemon_writer` serve has no open index, so it forwards the lookup to the machine daemon (the
-/// sole fjall writer, which holds it). Every other serve resolves locally from its open index — or,
-/// read-only without a daemon, the intra-file `.rref` blobs.
-pub(super) enum RefsSource<'a> {
-    /// Resolve against this serve's own store: the open fjall index, else intra-file `.rref` blobs.
-    Local(&'a crate::store::Store),
-    /// Resolve IN-PROCESS through the daemon's own workspace pool — the daemon-HOSTED path. The pool
-    /// holds the workspace's read-write fjall index (the sole writer), so this serves the cross-file
-    /// `refs_by_def` edges the hosted stack's index-less store cannot see, WITHOUT the daemon dialing
-    /// itself over the socket (which the `Daemon` arm would do).
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    Host {
-        /// The daemon's workspace pool, as the in-process host seam.
-        host: std::sync::Arc<dyn crate::mcp::HostBackend>,
-        /// Canonical workspace root, selecting the pool's hot workspace.
-        root: std::path::PathBuf,
-    },
-}
-
-impl RefsSource<'_> {
-    /// The resolved uses of the definition at `(def_path, def_start)`. On the daemon path a forward
-    /// failure degrades to empty — `find_callers` then falls back to the name-based scan, exactly as
-    /// a resolution miss does — so a transient daemon hiccup never errors the tool.
-    async fn references_to(&self, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
-        match self {
-            RefsSource::Local(store) => crate::query::resolved_references(store, def_path, def_start),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            RefsSource::Host { host, root } => {
-                use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
-                let host = std::sync::Arc::clone(host);
-                let root = root.clone();
-                let query = ResolvedRefQuery::ReferencesTo {
-                    def_path: def_path.clone(),
-                    def_start,
-                };
-                // ~keep The fjall prefix scan is blocking, so it runs off the reactor; a host error degrades
-                // ~keep to empty exactly like the `Daemon` arm, so `find_callers` still floors on the name scan.
-                match tokio::task::spawn_blocking(move || host.host_resolved_refs(&root, query)).await {
-                    Ok(Ok(ResolvedRefResult::References(uses))) => uses,
-                    Ok(Ok(_)) => Vec::new(),
-                    Ok(Err(error)) => {
-                        tracing::debug!(%error, "find_callers: host resolved-refs failed; name-based fallback");
-                        Vec::new()
-                    }
-                    Err(join) => {
-                        tracing::debug!(%join, "find_callers: host resolved-refs task panicked; name-based fallback");
-                        Vec::new()
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// Point-lookup a `Call` value in the index by `(content, start_byte)` and return its
 /// `(line, column)` as 1-based / 0-based respectively. The content key is the one the hit key
@@ -159,7 +102,6 @@ pub(super) async fn run_find_references(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_find_callers(
     store: &crate::store::Store,
-    refs: RefsSource<'_>,
     route: &IndexRoute,
     files: super::tool_contract::IndexedFiles<'_>,
     cache: &super::MapCache,
@@ -216,18 +158,7 @@ pub(super) async fn run_find_callers(
     // not finish, or this file bound nothing; `resolution` says which (`helpers_intel::resolution_gap`).
     let resolution_ran = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten().is_some();
     let resolved = if resolution_ran {
-        resolved_callers(
-            store,
-            &refs,
-            route,
-            cache,
-            &params.path,
-            &source,
-            symbol,
-            &params.name,
-            limit,
-        )
-        .await
+        resolved_callers(store, route, cache, &params.path, &source, symbol, &params.name, limit).await
     } else {
         None
     };
@@ -359,8 +290,8 @@ const CALL_SITE_BATCH: usize = 128;
 /// are `def_source`. `None` when resolution has nothing to say about that definition (its facts do
 /// not name it, or the call sites could not be fetched): no hit is then marked either way. A
 /// definition resolution knows and found no use of yields an empty refinement, which marks every
-/// hit unproven. Cross-file uses come from the index via [`RefsSource`]: read locally when it is
-/// open, else forwarded to the machine daemon on a `daemon_writer` serve.
+/// hit unproven. Cross-file uses come from the index when it is open, else the intra-file `.rref`
+/// blobs.
 ///
 /// Offset alignment (verified empirically, see the unit test): the resolver records `def_start` as
 /// the definition *identifier* byte, which is NOT the L1 `Symbol.start_byte` (the definition *node*
@@ -376,7 +307,6 @@ const CALL_SITE_BATCH: usize = 128;
 #[allow(clippy::too_many_arguments)]
 async fn resolved_callers(
     store: &crate::store::Store,
-    ref_source: &RefsSource<'_>,
     route: &IndexRoute,
     cache: &MapCache,
     def_path: &crate::path::RelPath,
@@ -411,7 +341,7 @@ async fn resolved_callers(
     let mut seen: ahash::AHashSet<(crate::path::RelPath, u32)> = ahash::AHashSet::new();
     let mut uses: Vec<(crate::path::RelPath, u32)> = Vec::new();
     for def_start in def_starts {
-        for use_ref in ref_source.references_to(def_path, def_start).await {
+        for use_ref in crate::query::resolved_references(store, def_path, def_start) {
             if seen.insert(use_ref.clone()) {
                 uses.push(use_ref);
             }

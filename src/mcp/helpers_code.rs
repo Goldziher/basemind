@@ -12,7 +12,7 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::{
-    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_implementations,
+    SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_implementations,
     run_find_references, run_workspace_grep,
 };
 use super::index_route::IndexRoute;
@@ -231,30 +231,15 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
     }
 }
 
-/// Body of the `callers` mode. Resolves where the resolved-reference join runs before handing the
-/// scan to [`run_find_callers`]: a daemon-hosted connection resolves in-process through the pool's
-/// read-write index, and everything else reads its own store.
+/// Body of the `callers` mode: the name scan and the resolved-reference join over this session's
+/// store ([`run_find_callers`]).
 async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
     let route = IndexRoute::resolve(state).await;
     let store = state.store_read().await;
     let cache = state.shared.cache.load_full();
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    let refs = if let Some(host) = &state.host {
-        // ~keep Daemon-hosted: resolve in-process through the pool's read-write index (fixes the
-        // ~keep Seam-B degradation) instead of dialing the daemon over its own socket.
-        RefsSource::Host {
-            host: std::sync::Arc::clone(host),
-            root: state.shared.root.clone(),
-        }
-    } else {
-        RefsSource::Local(&store)
-    };
-    #[cfg(not(all(feature = "comms", any(unix, windows))))]
-    let refs = RefsSource::Local(&store);
     run_find_callers(
         &store,
-        refs,
         &route,
         super::tool_contract::IndexedFiles::of(&state.shared),
         &cache,

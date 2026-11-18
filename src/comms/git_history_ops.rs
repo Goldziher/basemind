@@ -170,6 +170,22 @@ impl Broker {
     }
 }
 
+impl Broker {
+    /// The git-history index a hosted workspace reads, for
+    /// [`serve_conn`](super::workspace_pool::WorkspacePool::serve_conn).
+    pub(crate) fn hosted_history(
+        self: &Arc<Self>,
+    ) -> impl FnOnce(&std::path::Path) -> Option<Arc<GitHistoryIndex>> + Send + 'static {
+        let host = Arc::clone(self) as Arc<dyn crate::git_history::remote::HistoryHost>;
+        move |root| {
+            Some(Arc::new(crate::git_history::remote::hosted_index(
+                root.to_path_buf(),
+                host,
+            )))
+        }
+    }
+}
+
 /// The in-process git-history seam: a daemon-hosted connection runs its history ops directly against
 /// the daemon that hosts it, sharing the same single handle and build lock the forwarded path uses,
 /// instead of dialing the daemon over its own socket.

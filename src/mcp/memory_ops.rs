@@ -1,16 +1,12 @@
-//! Fjall-side cores for the CORE memory operations, shared by the local serve path and the daemon
-//! dispatch path (DRY).
+//! Fjall-side cores for the CORE memory operations, called by the `run_memory_*` helpers in
+//! [`super::memory`].
 //!
 //! These functions own the `memory_by_key` read-modify-write / range-scan logic and nothing else:
-//! no LanceDB, no embedder, no MCP response shaping. Both callers — the local `run_memory_*` helpers
-//! in [`super::memory`] and the daemon's `on_memory` dispatch — feed the same [`MemoryOp`] through
-//! [`run_memory_op`] so the fjall behavior is identical whether the write happens in-process or in
-//! the machine daemon.
+//! no LanceDB, no embedder, no MCP response shaping.
 //!
 //! The put core is a bare read-then-write: it does NOT take a per-key lock. Serialization is the
-//! caller's job — the local path holds `memory_put_lock`, and the daemon path is serialized by the
-//! workspace pool's per-workspace store `Mutex` (one writer per workspace), which makes the RMW
-//! atomic. That is why this module carries no synchronization of its own.
+//! caller's job: it holds `memory_put_lock`, which is process-wide, so the sessions a daemon hosts
+//! on one workspace share it. That is why this module carries no synchronization of its own.
 
 #![cfg(feature = "memory")]
 
@@ -20,12 +16,8 @@ use crate::index::IndexDb;
 
 use super::types_memory::{MemoryRecord, Provenance, VerifyState};
 
-/// One memory entry as the cores yield it (and as it crosses the daemon wire): the durable record
-/// fields, with `value` already preview-truncated for `List` results (never truncated for `Get`).
-///
-/// Defined here — rather than in `comms::memory_proto` — so the cores compile on a `memory`-only
-/// build (no `comms`). `comms::memory_proto` re-exports this type so the wire protocol reuses the
-/// exact same shape. Float-free, so `Eq` is derivable and the protocol enums keep their `Eq` bound.
+/// One memory entry as the cores yield it: the durable record fields, with `value` already
+/// preview-truncated for `List` results (never truncated for `Get`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireMemoryEntry {
     /// The memory key.
@@ -88,13 +80,6 @@ pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), 
 /// [`McpError`](rmcp::ErrorData) on the local path and a `CommsResponse::Error` on the daemon path.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MemoryOpError {
-    /// The read-write `memory_by_key` index was not available (should never happen daemon-side).
-    /// Constructed only when the daemon resolves a workspace whose store has no index, so it is
-    /// gated on the daemon build — under a `memory`-only (no-`comms`) build there is no daemon path
-    /// and the variant would be dead.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    #[error("memory_by_key index not available")]
-    IndexUnavailable,
     /// The group memory store is owned by another process (the daemon), so this handle holds no
     /// memory; the operation must go through that process.
     #[error("memory store is held by another process; use the basemind daemon for memory operations")]
@@ -510,69 +495,6 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
     })
 }
 
-/// Dispatch a wire [`MemoryOp`](crate::comms::memory_proto::MemoryOp) against a workspace's
-/// read-write index, returning the wire outcome. This is the entry point the daemon calls; the local
-/// serve path calls the per-op cores directly so it can interleave the LanceDB half without a second
-/// match. Gated on `comms` because the wire enums live in `comms::memory_proto`.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) fn run_memory_op(
-    idx: &IndexDb,
-    scope: &str,
-    op: &crate::comms::memory_proto::MemoryOp,
-) -> Result<crate::comms::memory_proto::MemoryOutcome, MemoryOpError> {
-    use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-
-    match op {
-        MemoryOp::Get { vis_byte, owner, key } => Ok(MemoryOutcome::Got(get_core(idx, scope, *vis_byte, owner, key)?)),
-        MemoryOp::GetMany { vis_byte, owner, keys } => Ok(MemoryOutcome::GotMany(get_many_core(
-            idx, scope, *vis_byte, owner, keys,
-        )?)),
-        MemoryOp::Stamps { vis_byte, owner, keys } => {
-            Ok(MemoryOutcome::Stamps(stamps_core(idx, scope, *vis_byte, owner, keys)?))
-        }
-        MemoryOp::Put {
-            vis_byte,
-            owner,
-            key,
-            value,
-            tags,
-        } => {
-            let (created_at, updated_at) = put_core(idx, scope, *vis_byte, owner, key, value, tags)?;
-            Ok(MemoryOutcome::Put { created_at, updated_at })
-        }
-        MemoryOp::List {
-            vis_byte,
-            owner,
-            prefix,
-            tag,
-            limit,
-            cursor,
-        } => {
-            let result = list_core(
-                idx,
-                scope,
-                &ListQuery {
-                    vis_byte: *vis_byte,
-                    owner,
-                    key_prefix: prefix,
-                    tag: tag.as_deref(),
-                    limit: *limit as usize,
-                    cursor: cursor.as_deref(),
-                },
-            )?;
-            Ok(MemoryOutcome::Listed {
-                entries: result.entries,
-                total: result.total,
-                truncated: result.total as usize > *limit as usize,
-                next_cursor: result.next_cursor,
-            })
-        }
-        MemoryOp::Delete { vis_byte, owner, key } => Ok(MemoryOutcome::Deleted {
-            deleted: delete_core(idx, scope, *vis_byte, owner, key)?,
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -612,28 +534,6 @@ mod tests {
         assert_eq!(values, [Some("two"), None, Some("one")]);
     }
 
-    /// The daemon answers the batched read through the same dispatch as every other memory op.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    #[test]
-    fn the_daemon_dispatch_serves_a_batched_read() {
-        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-
-        let dir = tempfile::tempdir().unwrap();
-        let idx = IndexDb::open(dir.path()).unwrap();
-        put_core(&idx, "scope", 0, "", "a", "one", &[]).unwrap();
-        let op = MemoryOp::GetMany {
-            vis_byte: 0,
-            owner: String::new(),
-            keys: vec!["a".into(), "missing".into()],
-        };
-
-        let MemoryOutcome::GotMany(read) = run_memory_op(&idx, "scope", &op).unwrap() else {
-            panic!("a batched read answers with GotMany");
-        };
-        assert_eq!(read.len(), 2);
-        assert!(read[0].as_ref().is_some_and(|note| note.value == "one") && read[1].is_none());
-    }
-
     /// A batched read is bounded where it is served: the reply carries every note whole, and a
     /// frame to the daemon's client has a size limit.
     #[test]
@@ -657,24 +557,6 @@ mod tests {
             message.contains("at most 256 keys") && message.contains("has 257"),
             "{message}"
         );
-    }
-
-    /// The daemon serves a forwarded batch through the same bound.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    #[test]
-    fn the_daemon_refuses_a_forwarded_batch_over_the_cap() {
-        use crate::comms::memory_proto::MemoryOp;
-
-        let dir = tempfile::tempdir().unwrap();
-        let idx = IndexDb::open(dir.path()).unwrap();
-        let op = MemoryOp::GetMany {
-            vis_byte: 0,
-            owner: String::new(),
-            keys: (0..=GET_MANY_MAX_KEYS).map(|index| format!("k{index}")).collect(),
-        };
-
-        let refused = run_memory_op(&idx, "scope", &op).unwrap_err();
-        assert!(matches!(refused, MemoryOpError::TooManyKeys { asked, .. } if asked == GET_MANY_MAX_KEYS + 1));
     }
 
     /// The notes of a reply fill it to its byte cap and no further: the first note always goes, and
@@ -718,20 +600,6 @@ mod tests {
                 ..
             })
         ));
-
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        {
-            use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-            let op = MemoryOp::Stamps {
-                vis_byte: 0,
-                owner: String::new(),
-                keys: keys.to_vec(),
-            };
-            assert_eq!(
-                run_memory_op(&idx, "scope", &op).unwrap(),
-                MemoryOutcome::Stamps(vec![None, Some(written)])
-            );
-        }
     }
 
     /// The notes of a newer basemind are refused by name, for a read and for a write.

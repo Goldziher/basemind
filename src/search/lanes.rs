@@ -31,8 +31,6 @@ pub(crate) enum LaneCause {
     Held,
     /// The index must be rebuilt before it can be read.
     RescanOwed,
-    /// The read itself failed.
-    Failed,
 }
 
 /// Why the lanes did not run, and the reason text `lanes_unavailable` carries.

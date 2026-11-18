@@ -144,13 +144,6 @@ impl MapCache {
             .get_or_init(|| helpers_impls::InRamImplIndex::build(&self.files, &self.l1, self.l1.budget_bytes()))
     }
 
-    /// Whether either projection has been built. Test seam for the memory bound: a daemon-backed
-    /// session must answer its reference reads without ever allocating one.
-    #[cfg(all(test, feature = "comms", any(unix, windows)))]
-    pub(crate) fn projections_built(&self) -> bool {
-        self.calls.get().is_some() || self.impls.get().is_some()
-    }
-
     /// True when a projection this session has ALREADY built hit its byte cap, so the answers it
     /// backed are incomplete. Surfaced through [`ServerState::lifecycle_notice`] rather than
     /// silently degrading a result to "no matches". `false` until a projection exists, which is why

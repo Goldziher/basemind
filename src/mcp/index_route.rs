@@ -4,17 +4,14 @@
 //! `implementations_by_trait`), and fjall's directory lock admits ONE process. So a session is in
 //! one of three situations, and [`IndexRoute`] names which:
 //!
-//! * [`Local`](IndexRoute::Local) — this session holds the index (a writer, or `scan`/CLI).
-//! * [`Host`](IndexRoute::Host) — a daemon-hosted connection; the daemon's own workspace pool
-//!   holds the index, reached in-process.
+//! * [`Local`](IndexRoute::Local) — this session holds the index (a writer, `scan`/CLI, or a
+//!   daemon-hosted connection, whose store shares the pool writer's index handle).
 //! * [`InRam`](IndexRoute::InRam) — nothing holds an index we can reach (a second plain `serve`
 //!   that lost the lock, or the daemon is down). The scan runs over a lazily built, byte-budgeted
 //!   in-RAM projection of the blobs, which can be truncated and says so via the
 //!   `projections_capped` notice.
 //!
-//! The first two answer from the same fjall index with the same scan code, so their results are
-//! identical; only the last is lossy. A forward that fails (daemon restarting, socket error) falls
-//! back to the projection rather than failing the tool.
+//! Only the last is lossy.
 
 use rmcp::ErrorData as McpError;
 
@@ -27,23 +24,10 @@ use crate::index::keys::ContentKey;
 use crate::index::view::{IndexView, StandaloneView};
 use crate::path::RelPath;
 
-#[cfg(all(feature = "comms", any(unix, windows)))]
-use {
-    crate::comms::index_read_proto::{IndexReadQuery, IndexReadResult},
-    std::path::PathBuf,
-    std::sync::Arc,
-};
-
 /// How a session reaches the fjall index its reference reads need.
 pub(super) enum IndexRoute {
     /// This session's own open index.
     Local(Box<dyn IndexView>),
-    /// The daemon's workspace pool, in-process (daemon-hosted connection).
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    Host {
-        host: Arc<dyn super::HostBackend>,
-        root: PathBuf,
-    },
     /// No reachable index: scan the lazily built in-RAM projection.
     InRam,
 }
@@ -54,36 +38,7 @@ impl IndexRoute {
         if let Some(idx) = state.store_read().await.index_db.clone() {
             return Self::Local(Box::new(StandaloneView(idx)));
         }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        {
-            if let Some(host) = &state.host {
-                return Self::Host {
-                    host: Arc::clone(host),
-                    root: state.shared.root.clone(),
-                };
-            }
-        }
         Self::InRam
-    }
-
-    /// Run `query` on the daemon, or `None` when this route does not forward. `Some(Err)` is a
-    /// transport or daemon-side failure the caller degrades past.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    async fn forward(&self, query: IndexReadQuery) -> Option<Result<IndexReadResult, String>> {
-        match self {
-            Self::Local(_) | Self::InRam => None,
-            Self::Host { host, root } => {
-                let host = Arc::clone(host);
-                let root = root.clone();
-                // ~keep The fjall scan is blocking, so it runs off the reactor.
-                Some(
-                    match tokio::task::spawn_blocking(move || host.host_index_read(&root, query)).await {
-                        Ok(result) => result,
-                        Err(join) => Err(format!("host index read panicked: {join}")),
-                    },
-                )
-            }
-        }
     }
 
     /// Which of `entries` provably cannot match the grep `pattern` (`true` = skip), per the per-file
@@ -99,32 +54,6 @@ impl IndexRoute {
             let needle = crate::index::grep_bloom::Needle::compile(pattern)?;
             return Some(blocking(|| idx.grep_skip_verdicts(root, entries, &needle)));
         }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        {
-            // Compiled here too so a pattern with no usable literal costs no round trip.
-            crate::index::grep_bloom::Needle::compile(pattern)?;
-            let mut skip = Vec::with_capacity(entries.len());
-            for chunk in entries.chunks(crate::comms::index_read_proto::MAX_GREP_BLOOM_PATHS) {
-                let query = IndexReadQuery::GrepBloom {
-                    pattern: pattern.to_owned(),
-                    entries: chunk.to_vec(),
-                };
-                match self.forward(query).await {
-                    Some(Ok(IndexReadResult::GrepSkip(part))) if part.len() == chunk.len() => skip.extend(part),
-                    Some(Ok(_)) => {
-                        tracing::warn!("daemon answered a grep bloom test with the wrong reply; sweeping every file");
-                        return None;
-                    }
-                    Some(Err(error)) => {
-                        tracing::warn!(%error, "forwarded grep bloom test failed; sweeping every file");
-                        return None;
-                    }
-                    None => return None,
-                }
-            }
-            Some(skip)
-        }
-        #[cfg(not(all(feature = "comms", any(unix, windows))))]
         None
     }
 
@@ -145,30 +74,6 @@ impl IndexRoute {
             let generation = idx.live_keys().fingerprint();
             let page = blocking(|| scan_calls_by_name(&**idx, name, matching, limit, cursor_after))?;
             return Ok((page, generation));
-        }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        match self
-            .forward(IndexReadQuery::CallScan {
-                name: name.to_owned(),
-                exact: matching == Matching::Exact,
-                limit: u32::try_from(limit).unwrap_or(u32::MAX),
-                cursor: cursor_after.map(<[u8]>::to_vec),
-            })
-            .await
-        {
-            Some(Ok(IndexReadResult::CallScan(page))) => {
-                let generation = page.generation;
-                let mut page = super::index_read::call_page_from_wire(page);
-                // A daemon that predates `exact` ignores it and answers with substring hits. Only
-                // this page's share of them can be dropped here, so `retain` marks the total partial.
-                page.retain(|hit| matching.accepts_callee(&hit.callee, name));
-                return Ok((page, generation));
-            }
-            Some(Ok(_)) => {
-                tracing::warn!("daemon answered a call scan with the wrong reply; using the in-RAM projection")
-            }
-            Some(Err(error)) => tracing::warn!(%error, "forwarded call scan failed; using the in-RAM projection"),
-            None => {}
         }
         let page = blocking(|| scan_calls_in_ram(cache.calls_projection(), name, matching, limit, cursor_after));
         Ok((page, cache.content_fingerprint()))
@@ -210,25 +115,6 @@ impl IndexRoute {
                 })
                 .collect();
         }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        match self
-            .forward(IndexReadQuery::CallsInFiles {
-                paths: files.iter().map(|(path, _)| path.clone()).collect(),
-            })
-            .await
-        {
-            Some(Ok(IndexReadResult::CallsInFiles(per_file))) if per_file.len() == files.len() => {
-                return Ok(per_file
-                    .into_iter()
-                    .map(super::index_read::file_calls_from_wire)
-                    .collect());
-            }
-            Some(Ok(_)) => tracing::warn!(
-                "daemon answered a calls-in-files read with the wrong reply; using the in-RAM projection"
-            ),
-            Some(Err(error)) => tracing::warn!(%error, "forwarded calls-in-files failed; using the in-RAM projection"),
-            None => {}
-        }
         Ok(blocking(|| {
             let projection = cache.calls_projection();
             files
@@ -250,28 +136,6 @@ impl IndexRoute {
     ) -> Result<ImplScanPage, McpError> {
         if let Self::Local(idx) = self {
             return scan_impls_session(&**idx, cache, trait_name, matching, language, limit, cursor_after);
-        }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        match self
-            .forward(IndexReadQuery::ImplScan {
-                trait_name: trait_name.to_owned(),
-                exact: matching == Matching::Exact,
-                language: language.map(str::to_owned),
-                limit: u32::try_from(limit).unwrap_or(u32::MAX),
-                cursor: cursor_after.map(<[u8]>::to_vec),
-            })
-            .await
-        {
-            Some(Ok(IndexReadResult::ImplScan(page))) => {
-                let mut page = super::index_read::impl_page_from_wire(page);
-                page.retain(|hit| matching.accepts_trait(&hit.trait_name, trait_name));
-                return Ok(page);
-            }
-            Some(Ok(_)) => {
-                tracing::warn!("daemon answered an impl scan with the wrong reply; using the in-RAM projection")
-            }
-            Some(Err(error)) => tracing::warn!(%error, "forwarded impl scan failed; using the in-RAM projection"),
-            None => {}
         }
         Ok(blocking(|| {
             scan_impls_in_ram(

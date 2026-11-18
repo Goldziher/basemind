@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::ServerState;
 
-pub(super) use super::helpers_calls::{RefsSource, run_find_callers, run_find_references};
+pub(super) use super::helpers_calls::{run_find_callers, run_find_references};
 #[cfg(all(feature = "documents", feature = "code-search"))]
 pub(super) use super::helpers_documents::format_response;
 pub(super) use super::helpers_grep::run_workspace_grep;

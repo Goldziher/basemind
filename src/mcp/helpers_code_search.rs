@@ -255,17 +255,15 @@ fn lane_refusal(cause: LaneCause, message: String) -> McpError {
     match cause {
         LaneCause::Held => McpError::invalid_request(message, Some(serde_json::json!({ super::BUSY_DATA: true }))),
         LaneCause::RescanOwed => McpError::invalid_request(message, None),
-        LaneCause::Failed => McpError::internal_error(message, None),
     }
 }
 
-/// Run the keyword (BM25) + exact (symbol-name) lanes over this session's index, or the daemon's
-/// pool for a daemon-hosted session.
+/// Run the keyword (BM25) + exact (symbol-name) lanes over this session's index.
 ///
-/// Both lanes read fjall, whose directory lock is exclusive, so a session that holds no index and
-/// is not hosted (a CLI command or a second `serve` beside a writer, with no daemon) cannot run
-/// them: the outcome names why and the fix ([`Degraded::unreachable`]). A HOSTED session reaches the
-/// pool directly, never over the socket, which would be the daemon dialling itself. ~keep
+/// Both lanes read fjall, whose directory lock is exclusive, so a session that holds no index (a CLI
+/// command or a second `serve` beside a writer, with no daemon) cannot run them: the outcome names
+/// why and the fix ([`Degraded::unreachable`]). A daemon-hosted session shares the pool writer's
+/// index handle, so it runs them like a writer. ~keep
 async fn fjall_lanes(
     state: &ServerState,
     query: &str,
@@ -292,57 +290,7 @@ async fn fjall_lanes(
         }
         store.rescan_owed()
     };
-    Ok(hosted_fjall_lanes(state, query, limit, want_exact)
-        .await?
-        .unwrap_or_else(|| Degraded::unreachable(rescan_owed).into()))
-}
-
-/// The two lanes' rankings from the daemon's pool, for a daemon-hosted session; `None` for any other
-/// session. Ranking only: chunk bodies come from content-addressed blobs this session can already read.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-async fn hosted_fjall_lanes(
-    state: &ServerState,
-    query: &str,
-    limit: usize,
-    want_exact: bool,
-) -> Result<Option<LaneOutcome>, McpError> {
-    use crate::comms::code_search_proto::CodeSearchLaneQuery;
-
-    let request = CodeSearchLaneQuery {
-        query: query.to_string(),
-        limit: limit as u32,
-        want_exact,
-    };
-    let root = state.shared.root.clone();
-
-    // ~keep Only a daemon-hosted session reaches the index it does not hold, through the host seam; a
-    // ~keep CLI next to the daemon forwards its whole call, so any other session cannot reach it.
-    let Some(host) = state.host.as_ref() else {
-        return Ok(None);
-    };
-    let host = std::sync::Arc::clone(host);
-    let hosted = tokio::task::spawn_blocking(move || host.host_code_search_lanes(&root, request))
-        .await
-        .map_err(|join| McpError::internal_error(format!("code_search_lanes host join: {join}"), None))?;
-    Ok(Some(match hosted {
-        Ok(result) => LaneOutcome {
-            keyword: result.keyword,
-            exact: result.exact,
-            degraded: None,
-        },
-        Err(error) => Degraded::new(LaneCause::Failed, format!("the hosted index read failed ({error})")).into(),
-    }))
-}
-
-/// Without `comms` no session is hosted by a daemon.
-#[cfg(not(all(feature = "comms", any(unix, windows))))]
-async fn hosted_fjall_lanes(
-    _state: &ServerState,
-    _query: &str,
-    _limit: usize,
-    _want_exact: bool,
-) -> Result<Option<LaneOutcome>, McpError> {
-    Ok(None)
+    Ok(Degraded::unreachable(rescan_owed).into())
 }
 
 /// What a semantic-only `code_search` can do while the vector store is unavailable.

@@ -34,24 +34,6 @@ pub(crate) struct ImplScanPage {
     pub stopped_after: Option<Vec<u8>>,
 }
 
-impl ImplScanPage {
-    /// Drop the hits `keep` rejects, with their keys; `total` shrinks by the same count and is then an
-    /// upper bound, as in `CallScanPage::retain`.
-    #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
-    pub(super) fn retain(&mut self, keep: impl Fn(&ImplementationHit) -> bool) {
-        let mut index = 0;
-        while index < self.hits.len() {
-            if keep(&self.hits[index]) {
-                index += 1;
-                continue;
-            }
-            self.hits.remove(index);
-            self.hit_keys.remove(index);
-            self.total = self.total.saturating_sub(1);
-        }
-    }
-}
-
 /// Body of the `code` tool's `implementations` mode. Scans `implementations_by_trait` with a
 /// case-sensitive substring filter on `trait_name`, returning up to `limit` hits with optional
 /// language filtering, then applies the token budget.

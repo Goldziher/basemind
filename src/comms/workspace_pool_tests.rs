@@ -8,28 +8,10 @@ use std::time::Duration;
 use super::*;
 use crate::index::view::IndexView;
 
-/// History host for the fixtures, which care about the read stack and not about git history.
-///
-/// It DECLINES rather than panicking: the fixture workspaces are `git init`ed (that is how they pass
-/// the root guard), so a hosted read stack really does spawn a git-history sync against this host.
-/// Panicking there only produced background-task noise that no assertion depended on.
-struct UnusedHistoryHost;
-
-impl crate::git_history::remote::HistoryHost for UnusedHistoryHost {
-    fn run_history(
-        &self,
-        _root: PathBuf,
-        _op: crate::git_history::proto::GitHistoryOp,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<crate::git_history::proto::GitHistoryReply, crate::git_history::GitHistoryError>,
-                > + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async { Err(crate::git_history::GitHistoryError::Disabled) })
-    }
+/// The git-history index for the fixtures, which care about the read stack and not about git
+/// history: none.
+fn no_history() -> impl FnOnce(&Path) -> Option<std::sync::Arc<crate::git_history::GitHistoryIndex>> + Send + 'static {
+    |_| None
 }
 
 /// Make `dir` a project root the workspace-root allow-list accepts (issue #62). `git init` rather
@@ -62,28 +44,28 @@ fn workspace_with_sources() -> tempfile::TempDir {
 }
 
 #[test]
-fn host_rescan_honors_the_pools_shared_drain_token() {
-    // Regression (issue #44 follow-up): the in-process host seam must scan under the broker's shared ~keep
+fn hosted_rescan_honors_the_pools_shared_drain_token() {
+    // Regression (issue #44 follow-up): a hosted session's scan must run under the broker's shared ~keep
     // drain token, NOT a throwaway `ScanCancel::default()`. The broker adopts the pool's token (see ~keep
     // `Broker::with_registry`), so tripping it — as `begin_drain` does on `comms stop` / SIGTERM — ~keep
     // must short-circuit a hosted rescan instead of pinning the runtime through a full, possibly ~keep
-    // embedding, scan pass. The old code passed `ScanCancel::default()` here, so a draining daemon ~keep
-    // could not interrupt a hosted mid-scan. ~keep
-    use crate::mcp::HostBackend;
+    // embedding, scan pass. ~keep
     store::init_isolated_cache();
 
     // Baseline: an un-drained pool runs the hosted scan normally.
     let live = WorkspacePool::new(DEFAULT_HOT_CAP);
     let ws = workspace_with_sources();
-    let stats = live.host_rescan(ws.path(), None, false, false).expect("hosted scan");
+    let stats = live
+        .hosted_rescan(ws.path(), None, false, false, false)
+        .expect("hosted scan");
     assert_eq!(stats.scanned, 2, "an un-drained hosted rescan scans both sources");
 
-    // Drained: tripping the pool's shared token short-circuits host_rescan before it scans anything.
+    // Drained: tripping the pool's shared token short-circuits hosted_rescan before it scans anything.
     let drained = WorkspacePool::new(DEFAULT_HOT_CAP);
     drained.scan_cancel().cancel();
     let ws2 = workspace_with_sources();
     let stats = drained
-        .host_rescan(ws2.path(), None, false, false)
+        .hosted_rescan(ws2.path(), None, false, false, false)
         .expect("drained hosted scan");
     assert_eq!(
         stats.scanned, 0,
@@ -338,11 +320,8 @@ async fn idle_eviction_stops_hosted_watcher_and_releases_read_stack() {
     pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
         .expect("scan workspace");
 
-    let host: std::sync::Arc<dyn crate::mcp::HostBackend> = pool.clone();
-    let history_host: std::sync::Arc<dyn crate::git_history::remote::HistoryHost> =
-        std::sync::Arc::new(UnusedHistoryHost);
     let shared = pool
-        .get_or_build_serve_state(workspace.path(), host, history_host)
+        .get_or_build_serve_state(workspace.path(), no_history())
         .await
         .expect("build hosted read stack");
     let weak = std::sync::Arc::downgrade(&shared.workspace);
@@ -557,14 +536,65 @@ fn a_path_that_resolves_to_the_filesystem_root_is_refused() {
     );
 }
 
-/// Build (or rebuild) `root`'s hosted read stack through `pool`, with the throwaway history host
-/// every plain-workspace fixture uses.
+/// Build (or rebuild) `root`'s hosted read stack through `pool`, with no git-history index, as every
+/// plain-workspace fixture uses.
 async fn hosted_stack(pool: &std::sync::Arc<WorkspacePool>, root: &std::path::Path) -> crate::mcp::ServedWorkspace {
-    let host: std::sync::Arc<dyn crate::mcp::HostBackend> = pool.clone();
-    let history: std::sync::Arc<dyn crate::git_history::remote::HistoryHost> = std::sync::Arc::new(UnusedHistoryHost);
-    pool.get_or_build_serve_state(root, host, history)
+    pool.get_or_build_serve_state(root, no_history())
         .await
         .expect("build hosted read stack")
+}
+
+/// A hosted stack reads the writer's index while a scan holds the writer store: its store shares the
+/// writer's index handle, so a reference read neither waits for the scan nor falls back to anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hosted_read_answers_from_the_index_while_a_scan_holds_the_writer() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let ws = workspace_with_sources();
+    std::fs::write(ws.path().join("gamma.rs"), "fn gamma() -> u32 { alpha() }\n").expect("write gamma");
+    pool.rescan(ws.path(), None, false, false, &ScanCancel::default())
+        .expect("scan");
+    let shared = hosted_stack(&pool, ws.path()).await;
+    assert!(
+        shared.workspace.store_read().index_db.is_some(),
+        "the hosted store shares the writer's index handle"
+    );
+
+    let entry = pool.get_or_open(ws.path()).expect("hot entry");
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let scan = std::thread::spawn(move || {
+        let _held = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
+        held_tx.send(()).expect("report the lock held");
+        let _ = release_rx.recv();
+    });
+    held_rx.recv().expect("the writer store is held");
+
+    let server = crate::mcp::BasemindServer::from_shared(
+        shared,
+        "reader".to_string(),
+        std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
+        None,
+    );
+    let refs = crate::mcp::params::CodeRefsParams {
+        name: "alpha".to_string(),
+        relation: None,
+        path: None,
+        line: None,
+        column: None,
+        match_mode: None,
+        limit: None,
+        cursor: None,
+        max_tokens: None,
+    };
+    let answered = tokio::time::timeout(Duration::from_secs(10), server.code_refs_call(refs)).await;
+    release_tx.send(()).expect("release the writer store");
+    scan.join().expect("the holder thread ends");
+    let result = answered
+        .expect("the read does not wait for the scan")
+        .expect("code_refs answers");
+    let body = serde_json::to_value(&result.structured_content).expect("structured content");
+    assert_eq!(body["total"], 1, "the call site in gamma.rs: {body}");
 }
 
 /// Drop the one field two runs of the same query may legitimately disagree on: handler latency.
@@ -850,27 +880,6 @@ fn in_flight_operation_blocks_lru_eviction_and_idle_sweep() {
         2,
         "both entries are sweepable once idle"
     );
-}
-
-#[test]
-fn store_access_waits_a_bounded_time_then_reports_busy() {
-    store::init_isolated_cache();
-    let pool = WorkspacePool::new(2);
-    let ws = workspace_with_sources();
-    let entry = pool.get_or_open(ws.path()).expect("open");
-
-    // A scan holds the store lock; a forwarded read must fail as busy instead of parking forever.
-    let held = entry.store.lock().expect("hold store lock as a scan would");
-    let started = Instant::now();
-    let result = entry.lock_store_bounded();
-    assert!(matches!(result, Err(WorkspacePoolError::Busy { .. })));
-    assert!(
-        started.elapsed() >= STORE_LOCK_WAIT,
-        "waited the full bound before giving up"
-    );
-    drop(result);
-    drop(held);
-    assert!(entry.lock_store_bounded().is_ok(), "free lock is acquired at once");
 }
 
 #[cfg(all(feature = "comms", any(unix, windows)))]

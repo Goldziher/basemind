@@ -25,21 +25,15 @@ pub mod client;
 /// The agent requests of a client, and the daemon's agent store as an `AgentOps` for the CLI.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod client_agents;
-/// Second `impl CommsClient` block: the daemon-forwarding rescan / memory /
-/// resolved-refs / git-history RPCs, split out of `client.rs` for the line cap.
+/// Second `impl CommsClient` block: the daemon-forwarding rescan and git-history RPCs, split out of
+/// `client.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod client_forward;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod code_search_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon;
 /// Second `impl Broker` block: `Hello` and the agent requests, split out of `daemon.rs`.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_agents;
-/// Second `impl Broker` block: the forwarded memory / resolved-refs handlers, split
-/// out of `daemon.rs` for the line cap.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod daemon_forward_handlers;
 /// RAII refcount guards (`LinkGuard` / `WorkGuard`) split out of `daemon.rs` for the line cap and
 /// re-exported from it so their historical `daemon::` path stays stable.
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -74,10 +68,6 @@ pub mod http_auth;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod http_frontend;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod index_read_proto;
-#[cfg(all(feature = "comms", feature = "memory"))]
-pub mod memory_proto;
-#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod protocol;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod relay;
@@ -87,7 +77,6 @@ pub mod relay_connect;
 /// The token and detail the daemon declines a relay session with.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod relay_decline;
-pub mod resolved_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod singleton;
 #[cfg(all(feature = "comms", any(unix, windows)))]

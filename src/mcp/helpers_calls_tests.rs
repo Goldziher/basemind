@@ -114,7 +114,6 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
         &runtime
             .block_on(super::run_find_callers(
                 &store,
-                super::RefsSource::Local(&store),
                 &local_route(&store),
                 crate::mcp::tool_contract::IndexedFiles::contained(root),
                 &cache,
@@ -202,7 +201,6 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
             .expect("runtime")
             .block_on(super::run_find_callers(
                 &store,
-                super::RefsSource::Local(&store),
                 &local_route(&store),
                 crate::mcp::tool_contract::IndexedFiles::contained(root),
                 &cache,
@@ -334,7 +332,6 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
             .expect("runtime")
             .block_on(super::run_find_callers(
                 &store,
-                super::RefsSource::Local(&store),
                 &local_route(&store),
                 crate::mcp::tool_contract::IndexedFiles::contained(root),
                 &cache,
@@ -473,7 +470,6 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
             &runtime
                 .block_on(super::run_find_callers(
                     &store,
-                    super::RefsSource::Local(&store),
                     &local_route(&store),
                     crate::mcp::tool_contract::IndexedFiles::contained(root),
                     cache,

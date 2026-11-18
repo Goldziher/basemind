@@ -4,16 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{DEFAULT_HOT_CAP, UnusedHistoryHost, WorkspacePool, workspace_with_sources};
-
-fn hosts(
-    pool: &Arc<WorkspacePool>,
-) -> (
-    Arc<dyn crate::mcp::HostBackend>,
-    Arc<dyn crate::git_history::remote::HistoryHost>,
-) {
-    (pool.clone(), Arc::new(UnusedHistoryHost))
-}
+use super::{DEFAULT_HOT_CAP, WorkspacePool, no_history, workspace_with_sources};
 
 /// A sweep that runs the moment a stack is handed out must find it pinned. When the pin was a
 /// second step, a trim or idle sweep in between dropped the stack under the session, which then
@@ -23,10 +14,9 @@ async fn a_stack_is_pinned_before_it_is_handed_out() {
     crate::store::init_isolated_cache();
     let pool = Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
     let workspace = workspace_with_sources();
-    let (host, history) = hosts(&pool);
 
     let (shared, conn) = pool
-        .serve_conn(workspace.path(), host, history)
+        .serve_conn(workspace.path(), no_history())
         .await
         .expect("build hosted read stack");
     assert_eq!(
@@ -45,17 +35,16 @@ async fn a_stack_is_pinned_before_it_is_handed_out() {
     );
 }
 
-/// A drain sheds every hosted stack, pinned or not. A stack holds the pool (its host) and the
-/// broker (its git-history host), so a stack left in its slot kept both alive, with the comms
+/// A drain sheds every hosted stack, pinned or not. A stack holds the pool (its writer) and the
+/// broker's git-history index, so a stack left in its slot kept both alive, with the comms
 /// store and every workspace store, after the daemon lock had been released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shedding_releases_every_stack_and_its_watcher() {
     crate::store::init_isolated_cache();
     let pool = Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
     let workspace = workspace_with_sources();
-    let (host, history) = hosts(&pool);
     let (shared, conn) = pool
-        .serve_conn(workspace.path(), host, history)
+        .serve_conn(workspace.path(), no_history())
         .await
         .expect("build hosted read stack");
     let weak = Arc::downgrade(&shared.workspace);

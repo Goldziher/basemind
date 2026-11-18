@@ -62,8 +62,6 @@ mod tests {
     /// sweep has it, that scan does not start.
     #[test]
     fn a_hosted_rescan_waits_for_a_running_sweep() {
-        use crate::mcp::HostBackend;
-
         crate::store::init_isolated_cache();
         let root = tempfile::tempdir().unwrap();
         let status = std::process::Command::new("git")
@@ -81,7 +79,7 @@ mod tests {
         let scan = {
             let (pool, root) = (std::sync::Arc::clone(&pool), root.path().to_path_buf());
             std::thread::spawn(move || {
-                let scanned = pool.host_rescan(&root, None, true, false);
+                let scanned = pool.hosted_rescan(&root, None, true, false, false);
                 let _ = done_tx.send(());
                 scanned
             })
@@ -102,8 +100,6 @@ mod tests {
     /// whatever the machine's speed.
     #[test]
     fn a_hosted_rescan_holds_the_gate_while_it_runs() {
-        use crate::mcp::HostBackend;
-
         crate::store::init_isolated_cache();
         let root = tempfile::tempdir().unwrap();
         let status = std::process::Command::new("git")
@@ -118,7 +114,7 @@ mod tests {
 
         let scan = {
             let (pool, root) = (std::sync::Arc::clone(&pool), root.path().to_path_buf());
-            std::thread::spawn(move || pool.host_rescan(&root, None, true, false))
+            std::thread::spawn(move || pool.hosted_rescan(&root, None, true, false, false))
         };
         let mut gate_taken = false;
         while !gate_taken && !scan.is_finished() {

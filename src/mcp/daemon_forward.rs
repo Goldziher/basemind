@@ -1,9 +1,9 @@
 //! Scans for a daemon-hosted workspace.
 //!
-//! The daemon's pool is the workspace's sole fjall writer and the hosted store is opened read-only,
-//! so a hosted scan runs through the pool ([`writer_rescan_and_refresh`]), then rebuilds the
-//! read-only in-RAM [`MapCache`] from the `index.msgpack` the pool wrote, so the caller sees fresh
-//! results without waiting on the passive view watcher.
+//! The daemon's pool holds the workspace's writer store and the hosted store is a read-only one
+//! sharing its index handle, so a hosted scan runs through the pool ([`writer_rescan_and_refresh`]),
+//! then reloads the file map the pool wrote and refreshes the in-RAM [`MapCache`](super::MapCache) from it, so the
+//! caller sees fresh results without waiting on the passive view watcher.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -12,12 +12,12 @@ use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
 
-use super::{MapCache, ServerState};
+use super::ServerState;
 use crate::comms::client::RescanReport;
-use crate::store::Store;
+use crate::comms::workspace_pool::WorkspacePool;
 
-/// Run a hosted workspace's scan through the daemon's pool (`host`), in process on a blocking
-/// thread, then refresh the in-RAM map from the index it wrote.
+/// Run a hosted workspace's scan through the daemon's pool, in process on a blocking thread, then
+/// refresh the in-RAM map from the index it wrote.
 ///
 /// `paths` (with `full == false`) drives an incremental rescan of just those files; `None`/empty or
 /// `full` scans the whole working tree. `embed` asks for an
@@ -27,22 +27,19 @@ use crate::store::Store;
 /// validates the blob of a named file it would skip.
 pub(super) async fn writer_rescan_and_refresh(
     state: &Arc<ServerState>,
-    host: &Arc<dyn super::HostBackend>,
+    pool: &Arc<WorkspacePool>,
     paths: Option<Vec<PathBuf>>,
     full: bool,
     embed: bool,
     verify: bool,
 ) -> Result<RescanReport, McpError> {
-    let host = Arc::clone(host);
+    let scan_pool = Arc::clone(pool);
     let root = state.shared.root.clone();
-    let stats = tokio::task::spawn_blocking(move || match paths {
-        Some(paths) if verify && !full && !paths.is_empty() => host.host_rescan_named(&root, paths, embed),
-        paths => host.host_rescan(&root, paths, full, embed),
-    })
-    .await
-    .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
-    .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
-    refresh_cache_after_scan(state).await?;
+    let stats = tokio::task::spawn_blocking(move || scan_pool.hosted_rescan(&root, paths, full, embed, verify))
+        .await
+        .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
+        .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
+    refresh_cache_after_scan(state, pool).await?;
     Ok(RescanReport {
         scanned: stats.scanned,
         updated: stats.updated,
@@ -56,24 +53,26 @@ pub(super) async fn writer_rescan_and_refresh(
 }
 
 /// Refresh the hosted read-only view from the current (pool-written) `index.msgpack`: reopen the
-/// store and derive the in-RAM [`MapCache`] from the current one ([`MapCache::refreshed`]: only
-/// the paths the scan changed are re-projected, and unchanged outlines stay decoded). Runs on a
-/// blocking thread so the reactor is never stalled.
+/// read store (sharing the writer's index handle) and derive the in-RAM
+/// [`MapCache`](super::MapCache) from the current one
+/// ([`MapCache::refreshed`](super::MapCache::refreshed): only the paths the scan changed are
+/// re-projected, and unchanged outlines stay decoded). Runs on a blocking thread so the reactor is
+/// never stalled.
 ///
 /// Swaps BOTH the store and the cache. The daemon just rewrote `index.msgpack`, so serve's in-memory
 /// [`crate::store::Index`] is stale. Cache-reading tools (`search_symbols`, `outline`) pick up the
 /// new cache, but store-reading tools (`status`'s `file_count`, corpus bytes) read `store.index`
 /// directly — without replacing the store they would report the pre-scan (often empty) index
 /// forever. This is the hosted counterpart to a local scan mutating the store in place.
-async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpError> {
-    let view = state.store_read().await.view.clone();
+async fn refresh_cache_after_scan(state: &Arc<ServerState>, pool: &Arc<WorkspacePool>) -> Result<(), McpError> {
     let root = state.shared.root.clone();
     let current = state.shared.cache.load_full();
     let config = Arc::clone(&state.shared.config);
+    let pool = Arc::clone(pool);
     let (store, cache) = tokio::task::spawn_blocking(move || {
-        let store = Store::open_read_only_no_index(&root, &view)?;
+        let store = pool.read_store(&root)?;
         let cache = current.refreshed(&store, super::l1_cache::budget_bytes_from(&config.resources));
-        Ok::<(Store, Option<MapCache>), crate::store::StoreError>((store, cache))
+        Ok::<_, crate::comms::workspace_pool::WorkspacePoolError>((store, cache))
     })
     .await
     .map_err(|error| McpError::internal_error(format!("refresh map task panicked: {error}"), None))?
