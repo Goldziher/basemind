@@ -357,3 +357,164 @@ fn a_lead_is_sealed_before_it_answers_and_a_plain_serve_is_not() {
         "a lead, sealed and named from its main thread"
     );
 }
+
+/// An ACP stand-in for OpenCode that answers `initialize` and `session/new`, then reads its input
+/// forever, after forking a process into a POSIX session of its own (as `opencode acp` does with
+/// its server) and writing that process's pid to `pidfile`.
+fn detaching_opencode(layout: &Layout, pidfile: &Path) -> PathBuf {
+    let path = layout.base.join("opencode-stand-in");
+    std::fs::write(
+        &path,
+        format!(
+            r#"#!/usr/bin/perl
+use strict;
+use POSIX ();
+$| = 1;
+my $pid = fork();
+if ($pid == 0) {{
+    POSIX::setsid();
+    open(STDIN, '<', '/dev/null');
+    open(STDOUT, '>', '/dev/null');
+    exec('sleep', '300');
+}}
+open(my $f, '>', '{}');
+print $f "$pid\n";
+close $f;
+while (my $line = <STDIN>) {{
+    my ($id) = $line =~ /"id":\s*(\d+)/;
+    if ($line =~ /"method":"initialize"/) {{
+        print qq({{"jsonrpc":"2.0","id":$id,"result":{{"protocolVersion":1}}}}\n);
+    }} elsif ($line =~ /"method":"session\/new"/) {{
+        print qq({{"jsonrpc":"2.0","id":$id,"result":{{"sessionId":"s-1"}}}}\n);
+    }}
+}}
+"#,
+            pidfile.display()
+        ),
+    )
+    .expect("stand-in");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path
+}
+
+fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Review 3 M1/S3: when a lead's input ends, or it is told to terminate, it stops its launched
+/// sessions and waits for them before it exits: the process the harness detached into a session
+/// of its own is gone, and the audit log has the session's exit.
+#[test]
+fn a_lead_that_ends_stops_its_sessions_and_records_their_exit() {
+    use std::io::{BufRead as _, Write as _};
+
+    for by_signal in [false, true] {
+        let layout = Layout::new();
+        let pidfile = layout.base.join("detached.pid");
+        let stand_in = detaching_opencode(&layout, &pidfile);
+        let dir = layout.config_dir();
+        std::fs::create_dir_all(&dir).expect("config dir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod dir");
+        let policy = dir.join("agents.toml");
+        std::fs::write(
+            &policy,
+            format!(
+                "[agents.launch]\nenabled = true\nworktrees_root = \"{}\"\nwall_time_secs = 120\n\
+                 [agents.launch.harness.opencode]\nexecutable = \"{}\"\nstop_grace_secs = 1\n",
+                layout.worktrees.display(),
+                stand_in.display()
+            ),
+        )
+        .expect("policy");
+        std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).expect("chmod policy");
+
+        let mut lead = Command::new(env!("CARGO_BIN_EXE_basemind"))
+            .arg("--root")
+            .arg(&layout.repo)
+            .args(["serve", "--lead"])
+            .env("HOME", &layout.home)
+            .env("XDG_CONFIG_HOME", &layout.xdg)
+            .env_remove("BASEMIND_AGENT_DEPTH")
+            .env_remove("BASEMIND_LAUNCH_TOKEN")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn lead");
+        let mut stdin = lead.stdin.take().expect("stdin");
+        let mut stdout = std::io::BufReader::new(lead.stdout.take().expect("stdout"));
+        let mut ask = |line: String, id: &str| {
+            writeln!(stdin, "{line}").expect("write");
+            loop {
+                let mut answer = String::new();
+                assert_ne!(stdout.read_line(&mut answer).expect("read"), 0, "the lead ended");
+                if answer.contains(&format!("\"id\":{id}")) {
+                    return answer;
+                }
+            }
+        };
+        ask(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#.to_owned(),
+            "1",
+        );
+        let launched = ask(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "agent_launch",
+                "arguments": {"harness": "opencode", "brief": "Wait.", "working_dir": "one"},
+            }})
+            .to_string(),
+            "2",
+        );
+        assert!(launched.contains("launched-opencode-"), "{launched}");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let detached = loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+            {
+                break pid;
+            }
+            assert!(std::time::Instant::now() < deadline, "the stand-in never detached");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        // Let the supervisor's 200 ms listing record it.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert!(alive(detached));
+
+        if by_signal {
+            // Its input stays open: only the signal ends it.
+            // SAFETY: the lead is our child and still running.
+            unsafe { libc::kill(lead.id() as i32, libc::SIGTERM) };
+        } else {
+            drop(stdin);
+        }
+        let status = lead.wait().expect("lead exit");
+        assert!(status.code().is_some(), "the lead was killed: {status:?}");
+
+        let gone_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive(detached) && std::time::Instant::now() < gone_by {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let survived = alive(detached);
+        if survived {
+            // SAFETY: the stand-in's sleeper, which this test started.
+            unsafe { libc::kill(detached, libc::SIGKILL) };
+        }
+        assert!(!survived, "signal {by_signal}: the detached process outlived the lead");
+
+        let audit_dir = basemind::store::cache_root().join("agents");
+        let prefix = format!("launch-audit-{}-", lead.id());
+        let log = std::fs::read_dir(&audit_dir)
+            .expect("audit dir")
+            .flatten()
+            .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .expect("this lead's audit log");
+        let records = std::fs::read_to_string(log.path()).expect("audit log");
+        assert!(
+            records.lines().any(|line| line.contains(r#""event":"exit""#)),
+            "signal {by_signal}: no exit record:\n{records}"
+        );
+    }
+}

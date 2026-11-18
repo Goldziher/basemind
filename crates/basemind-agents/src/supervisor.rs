@@ -713,9 +713,20 @@ impl Supervisor {
 }
 
 impl Drop for Supervisor {
-    /// Stops every live session, waits for them within their stop grace and the detached-group
-    /// grace, then kills the ones still running and waits briefly once more.
+    /// [`Supervisor::shutdown`].
     fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+impl Supervisor {
+    /// Stops every live session, writes the refusals still being coalesced, waits for the
+    /// sessions within their stop grace and the detached-group grace, then kills the ones still
+    /// running and waits briefly once more. Blocks for up to the longest stop grace plus a few
+    /// seconds; dropping the supervisor does the same. An embedding that ends its process
+    /// without waiting for the drop (a runtime shut down in the background, a signal) calls it
+    /// first, so detached processes are reaped and the exits are recorded.
+    pub fn shutdown(&self) {
         self.stop_all();
         for pending in self.inner.refusals.drain() {
             let _ = self.inner.audit(&AuditRecord {

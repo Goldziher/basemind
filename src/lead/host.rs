@@ -138,6 +138,13 @@ impl LeadHost {
         )
     }
 
+    /// Stop every launched session and wait for it, its detached processes and its exit record
+    /// ([`Supervisor::shutdown`]). Blocks; the `serve` calls it once its relay has ended, before
+    /// the process exits.
+    pub fn shutdown(&self) {
+        self.supervisor.shutdown();
+    }
+
     /// Answer a `tools/call` of `name`, one of the lead tools, as a `CallToolResult` value.
     pub async fn call(self: Arc<Self>, name: &str, arguments: Value) -> Value {
         let outcome = match name {

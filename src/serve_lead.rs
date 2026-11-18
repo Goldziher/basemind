@@ -43,11 +43,18 @@ const DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
 pub(crate) trait LeadCalls: Send + Sync + 'static {
     /// The `CallToolResult` for `name` called with `arguments`.
     fn call(self: Arc<Self>, name: String, arguments: Value) -> Pin<Box<dyn Future<Output = Value> + Send>>;
+
+    /// Stop what the calls started and wait for it; blocks.
+    fn shutdown(&self);
 }
 
 impl LeadCalls for basemind::lead::LeadHost {
     fn call(self: Arc<Self>, name: String, arguments: Value) -> Pin<Box<dyn Future<Output = Value> + Send>> {
         Box::pin(async move { basemind::lead::LeadHost::call(self, &name, arguments).await })
+    }
+
+    fn shutdown(&self) {
+        basemind::lead::LeadHost::shutdown(self);
     }
 }
 
@@ -99,6 +106,37 @@ pub(crate) fn mode(root: &std::path::Path, principal: basemind::comms::v2::Princ
                 notice: format!("{off}; agent_launch and agent_stop are not available in this session."),
             }
         }
+    }
+}
+
+impl Mode {
+    /// What answers the calls, when the lead host runs: the `serve` shuts it down once the
+    /// filter has returned.
+    pub(crate) fn calls(&self) -> Option<Arc<dyn LeadCalls>> {
+        match self {
+            Self::On { calls, .. } => Some(Arc::clone(calls)),
+            Self::Off { .. } => None,
+        }
+    }
+}
+
+/// Resolves once the process is asked to end by SIGTERM, SIGHUP or SIGINT. A lead treats that as
+/// the end of its input, so its sessions are stopped and recorded before it exits. Without a
+/// handler the signal would end the process at once, leaving detached processes behind.
+pub(crate) async fn termination() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut hup), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::hangup()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        tracing::warn!("basemind serve --lead: cannot handle termination signals");
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = hup.recv() => {}
+        _ = int.recv() => {}
     }
 }
 
