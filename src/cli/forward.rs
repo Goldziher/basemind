@@ -153,7 +153,8 @@ async fn send(stream: &mut BufReader<RelayStream>, message: &Value) -> Result<()
     stream.flush().await.context("write to the daemon")
 }
 
-/// The response to request `id`; anything else the daemon sends first (a notification) is skipped.
+/// The response to request `id`; anything else the daemon sends first (a notification or a request
+/// of its own) is skipped.
 async fn reply(stream: &mut BufReader<RelayStream>, id: u64) -> Result<Value> {
     let mut line = String::new();
     loop {
@@ -164,10 +165,16 @@ async fn reply(stream: &mut BufReader<RelayStream>, id: u64) -> Result<Value> {
         let Ok(message) = serde_json::from_str::<Value>(line.trim_end()) else {
             continue;
         };
-        if message.get("id").and_then(Value::as_u64) == Some(id) {
+        if is_reply_to(&message, id) {
             return Ok(message);
         }
     }
+}
+
+/// Whether `message` answers request `id`: a response, not a request of the daemon's own, whose id
+/// is drawn from the daemon's sequence and may equal the call's.
+fn is_reply_to(message: &Value, id: u64) -> bool {
+    message.get("method").is_none() && message.get("id").and_then(Value::as_u64) == Some(id)
 }
 
 #[cfg(test)]
@@ -183,6 +190,21 @@ mod tests {
             detail: None,
             cli,
         }
+    }
+
+    /// The daemon may send a request of its own (`roots/list`, `sampling/createMessage`) whose id
+    /// equals the call's: JSON-RPC ids are per sender. Only a response answers the call.
+    #[test]
+    fn a_server_request_with_the_calls_id_is_not_its_reply() {
+        let request = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "roots/list" });
+        assert!(!is_reply_to(&request, 1));
+        let result = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": {} });
+        assert!(is_reply_to(&result, 1));
+        let error = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32603, "message": "x" } });
+        assert!(is_reply_to(&error, 1));
+        assert!(!is_reply_to(&result, 2));
+        let notification = serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/progress" });
+        assert!(!is_reply_to(&notification, 1));
     }
 
     /// An older daemon accepts a CLI's hello as an agent session and does not acknowledge the kind;
