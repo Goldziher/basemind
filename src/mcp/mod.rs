@@ -495,7 +495,7 @@ impl BasemindServer {
     ///   through the daemon's handle. Any other session (a CLI command on a view the daemon does not
     ///   host) gets no handle and live-walks: it cannot win the lock, and trying would burn the retry
     ///   ladder on every invocation. The CLI asks whether a daemon is up, which is one `stat` when
-    ///   there is none (see [`crate::git_history::remote::daemon_is_up`]).
+    ///   there is none (see [`crate::comms::singleton::daemon_is_up`]).
     /// * **no daemon** (a standalone process, or a non-`comms` build): this process holds the
     ///   database and builds it in-process, as before. Nobody else can, and history tools would
     ///   otherwise permanently live-walk.
@@ -513,7 +513,7 @@ impl BasemindServer {
             return None;
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if crate::git_history::remote::daemon_is_up() {
+        if crate::comms::singleton::daemon_is_up() {
             // ~keep The daemon holds the database and fjall's lock is exclusive even to a reader
             // ~keep (fjall `locked_file.rs` `try_lock`), so a session it does not host live-walks.
             return None;

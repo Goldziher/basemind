@@ -85,7 +85,7 @@ pub use crate::comms::client::RescanReport;
 /// when there is no daemon); never spawns one.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub fn daemon_is_up() -> bool {
-    crate::git_history::remote::daemon_is_up()
+    crate::comms::singleton::daemon_is_up()
 }
 
 /// Without the `comms` feature there is no daemon to defer to.

@@ -402,8 +402,8 @@ impl Workspace {
 
     /// The `index_rebuilding` notice while the workspace's `status.json` records a partial scan or an
     /// uncommitted resolve pass. The daemon marks it when it opens a workspace whose fjall index was
-    /// wiped or is empty over a populated file map, and a session that does not hold the index
-    /// (`daemon_writer`, daemon-hosted) cannot see that any other way.
+    /// wiped or is empty over a populated file map, and a session that does not own the writer store
+    /// (daemon-hosted) cannot see that any other way.
     fn index_rebuilding_notice(&self) -> Option<LifecycleNotice> {
         let status = crate::store::read_status_sidecar(&crate::store::workspace_cache_dir(&self.root));
         LifecycleNotice::for_scan_status(status.as_ref())

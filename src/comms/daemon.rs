@@ -564,12 +564,14 @@ impl Broker {
     }
 
     /// Shed hot workspaces idle past `ttl` from RAM (their on-disk cache survives). Returns the
-    /// count evicted. The daemon's periodic sweep calls this so cold indexes free memory.
+    /// count evicted. The daemon's periodic sweep calls this so cold indexes free memory. A
+    /// git-history handle a hosted workspace still shares is kept: dropping it from the map would
+    /// leave its fjall lock held, and the next open of the database would fail on it.
     pub fn evict_idle_workspaces(&self, ttl: Duration) -> usize {
         self.git_history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|_, entry| entry.idle_for() < ttl);
+            .retain(|_, entry| entry.idle_for() < ttl || entry.shared());
         self.workspaces.evict_idle(ttl)
     }
 

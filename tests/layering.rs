@@ -70,7 +70,6 @@ const LAYERS: &[(&str, Layer)] = &[
     ("git", Core),
     ("git_cache", Core),
     ("git_history", Core),
-    ("git_history::remote", Root),
     ("hashing", Core),
     ("index", Core),
     ("intel", Core),
@@ -1158,4 +1157,50 @@ fn the_adapter_only_shrinks() {
     if found != ADAPTER_RATCHET {
         println!("src/mcp shrank to {found:?}: lower ADAPTER_RATCHET from {ADAPTER_RATCHET:?}.");
     }
+}
+
+/// The in-process forwarding seams the engine unification deleted (ADR-0039): a process that does
+/// not own the index forwards its whole call, a daemon-hosted session shares the pool writer's
+/// index and git-history handles, and a session holding no index refuses rather than reading an
+/// in-RAM projection. None of these names may come back anywhere under `src/`.
+const RETIRED_SYMBOLS: &[&str] = &[
+    "HostBackend",
+    "HistoryHost",
+    "HistoryForwarder",
+    "IndexRoute",
+    "daemon_writer",
+    "scan_calls_in_ram",
+    "scan_impls_in_ram",
+];
+
+/// Whether `text` names `symbol` as a whole identifier.
+fn names_symbol(text: &str, symbol: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(symbol).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + symbol.len()..].chars().next();
+        !before.is_some_and(ident) && !after.is_some_and(ident)
+    })
+}
+
+#[test]
+fn retired_symbols_stay_gone() {
+    assert!(names_symbol("use crate::mcp::HostBackend;", "HostBackend"));
+    assert!(names_symbol("a `daemon_writer` serve", "daemon_writer"));
+    assert!(!names_symbol("IndexRouteTable", "IndexRoute"));
+
+    let root = manifest_dir();
+    let mut files = BTreeSet::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    assert!(files.len() > 300, "scanned only {} files under src", files.len());
+    let mut found = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+        for symbol in RETIRED_SYMBOLS {
+            if names_symbol(&text, symbol) {
+                found.push(format!("{} names {symbol}", file.display()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "retired symbols are back:\n{}", found.join("\n"));
 }

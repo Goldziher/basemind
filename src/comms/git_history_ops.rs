@@ -5,15 +5,13 @@
 //! exactly ONE holder. Under the daemon-as-sole-writer model that holder is the daemon: it BUILDS
 //! each repo's index (the expensive history walk) and answers the front-ends' history reads from it,
 //! exactly as it already owns the code index behind
-//! [`WorkspacePool`](super::workspace_pool::WorkspacePool). A `daemon_writer` serve holds no handle
-//! and forwards both halves here.
+//! [`WorkspacePool`](super::workspace_pool::WorkspacePool). A session the daemon hosts shares the
+//! daemon's handle ([`Broker::hosted_history`]); a forwarded [`GitHistoryOp`] runs here.
 //!
 //! Split out of `daemon.rs` to keep that file within the module-size cap.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use tokio::sync::Mutex;
 
 use super::daemon::Broker;
 use super::protocol::CommsResponse;
@@ -24,10 +22,7 @@ use crate::git_history::{GitHistoryError, GitHistoryIndex};
 pub(crate) struct HistoryEntry {
     /// The open fjall database. Shared by every link; fjall's keyspaces are thread-safe, so reads
     /// run concurrently with each other and with an in-flight build.
-    index: Arc<GitHistoryIndex>,
-    /// Serializes SYNCS of this repo. This is the point of the daemon owning the build: N serve
-    /// sessions asking at once collapse to ONE history walk, and the rest observe `Fresh`.
-    build_lock: Arc<Mutex<()>>,
+    pub(super) index: Arc<GitHistoryIndex>,
     /// Drives the idle sweep, which drops the handle — and with it fjall's lock — for a cold repo.
     last_used: std::sync::Mutex<Instant>,
 }
@@ -35,6 +30,11 @@ pub(crate) struct HistoryEntry {
 impl HistoryEntry {
     fn touch(&self) {
         *self.last_used.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
+    }
+
+    /// Whether a hosted workspace still holds this handle.
+    pub(crate) fn shared(&self) -> bool {
+        Arc::strong_count(&self.index) > 1
     }
 
     /// How long this entry has sat unrequested. The daemon's periodic sweep sheds it past the TTL.
@@ -50,9 +50,9 @@ impl Broker {
     /// Run a forwarded git-history op against the repo's index — the BUILD and the reads, because the
     /// daemon is the only process that may hold the database.
     ///
-    /// A [`GitHistoryOp::Sync`] takes the repo's build lock, so N sessions asking at once produce ONE
-    /// build: the winner walks history; the rest wait, then see `Fresh` (`builder::sync` compares
-    /// `last_indexed_head` to HEAD and no-ops). The walk is heavy and blocking, so it — and every
+    /// A [`GitHistoryOp::Sync`] serializes on the index's build lock, so N callers asking at once
+    /// produce ONE build: the winner walks history; the rest wait, then see `Fresh` (`builder::sync`
+    /// compares `last_indexed_head` to HEAD and no-ops). The walk is heavy and blocking, so it — and every
     /// read — runs on a blocking thread while the reactor keeps serving other links.
     pub(crate) async fn on_git_history(&self, root: std::path::PathBuf, op: GitHistoryOp) -> CommsResponse {
         match self.run_git_history_inproc(root, op).await {
@@ -78,12 +78,8 @@ impl Broker {
 
     /// Run one git-history op against the repo's daemon-held index, in-process.
     ///
-    /// The single funnel for BOTH the forwarded socket path ([`on_git_history`](Self::on_git_history))
-    /// and a daemon-hosted connection (via [`HistoryHost`](crate::git_history::remote::HistoryHost)):
-    /// it opens (or reuses) the repo's one handle, serializes a [`Sync`](GitHistoryOp::Sync) on that
-    /// repo's build lock — so N callers arriving at once produce ONE history walk — and runs the op on
-    /// a blocking thread. Routing every caller here is what keeps the index single-holder and the
-    /// build single-flight no matter how the request arrived.
+    /// Opens (or reuses) the repo's one handle, the one the sessions the daemon hosts share, and runs
+    /// the op on a blocking thread.
     pub(crate) async fn run_git_history_inproc(
         &self,
         root: std::path::PathBuf,
@@ -109,10 +105,6 @@ impl Broker {
         let entry = self.history_entry(&dir).await?;
         entry.touch();
 
-        let _build_guard = match op {
-            GitHistoryOp::Sync => Some(entry.build_lock.clone().lock_owned().await),
-            _ => None,
-        };
         // ~keep A first-build `Sync` on a deep repo runs for minutes in `spawn_blocking`, and the hosted
         // ~keep path detaches it with no client link to keep the daemon busy. Pin it as in-flight work so
         // ~keep the idle reaper cannot tear the process down mid-write to `git-history.fjall/` — the same
@@ -149,19 +141,23 @@ impl Broker {
                 path: dir.to_path_buf(),
                 source: std::io::Error::other(join.to_string()),
             })??;
+        Ok(self.insert_history(dir, opened))
+    }
+
+    /// Record `opened` as the handle of `dir`.
+    fn insert_history(&self, dir: &std::path::Path, opened: GitHistoryIndex) -> Arc<HistoryEntry> {
         let entry = Arc::new(HistoryEntry {
             index: Arc::new(opened),
-            build_lock: Arc::new(Mutex::new(())),
             last_used: std::sync::Mutex::new(Instant::now()),
         });
         self.git_history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(dir.to_path_buf(), Arc::clone(&entry));
-        Ok(entry)
+        entry
     }
 
-    fn history_lookup(&self, dir: &std::path::Path) -> Option<Arc<HistoryEntry>> {
+    pub(super) fn history_lookup(&self, dir: &std::path::Path) -> Option<Arc<HistoryEntry>> {
         self.git_history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -171,32 +167,32 @@ impl Broker {
 }
 
 impl Broker {
-    /// The git-history index a hosted workspace reads, for
-    /// [`serve_conn`](super::workspace_pool::WorkspacePool::serve_conn).
+    /// The git-history index a hosted workspace reads: this daemon's handle on the repo's database,
+    /// opened on first use, for [`serve_conn`](super::workspace_pool::WorkspacePool::serve_conn). Runs
+    /// on the blocking thread that builds the hosted stack. `None` when the database cannot be opened;
+    /// history tools then live-walk.
     pub(crate) fn hosted_history(
         self: &Arc<Self>,
     ) -> impl FnOnce(&std::path::Path) -> Option<Arc<GitHistoryIndex>> + Send + 'static {
-        let host = Arc::clone(self) as Arc<dyn crate::git_history::remote::HistoryHost>;
+        let broker = Arc::clone(self);
         move |root| {
-            Some(Arc::new(crate::git_history::remote::hosted_index(
-                root.to_path_buf(),
-                host,
-            )))
+            let dir = crate::git_history::shared_history_basemind_dir(root);
+            if let Some(entry) = broker.history_lookup(&dir) {
+                entry.touch();
+                return Some(Arc::clone(&entry.index));
+            }
+            let _opening = broker.git_history_open_lock.blocking_lock();
+            if let Some(entry) = broker.history_lookup(&dir) {
+                return Some(Arc::clone(&entry.index));
+            }
+            match GitHistoryIndex::open(&dir) {
+                Ok(opened) => Some(Arc::clone(&broker.insert_history(&dir, opened).index)),
+                Err(error) => {
+                    tracing::warn!(%error, root = %root.display(), "git-history index unavailable to the hosted workspace");
+                    None
+                }
+            }
         }
-    }
-}
-
-/// The in-process git-history seam: a daemon-hosted connection runs its history ops directly against
-/// the daemon that hosts it, sharing the same single handle and build lock the forwarded path uses,
-/// instead of dialing the daemon over its own socket.
-impl crate::git_history::remote::HistoryHost for Broker {
-    fn run_history(
-        &self,
-        root: std::path::PathBuf,
-        op: GitHistoryOp,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<GitHistoryReply, GitHistoryError>> + Send + '_>>
-    {
-        Box::pin(self.run_git_history_inproc(root, op))
     }
 }
 

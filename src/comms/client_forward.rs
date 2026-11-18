@@ -1,6 +1,6 @@
 //! Daemon-forwarding half of [`CommsClient`](super::client::CommsClient): the write/read RPCs a
-//! `daemon_writer` serve ships to the daemon (the machine's sole fjall writer) rather than running
-//! in-process — rescan and git-history.
+//! client ships to the daemon (the machine's sole fjall writer) rather than running in-process —
+//! rescan and git-history.
 //!
 //! Split out of `client.rs` to keep it under the 1000-line `rust-max-lines` cap. These are a second
 //! `impl CommsClient` block; the request/response correlation core stays in `client.rs`.
@@ -73,10 +73,8 @@ impl CommsClient {
     }
 
     /// Forward a git-history operation to the daemon — the sole holder of `git-history.fjall/`
-    /// (fjall's directory lock is exclusive, so no front-end may open it). Backs both the index
-    /// BUILD a `daemon_writer` serve requests at startup instead of running it in-process, and the
-    /// history reads its `recent_changes` / `commits_touching` / `hot_files` / `search_git_history`
-    /// tools would otherwise have to degrade to a live walk.
+    /// (fjall's directory lock is exclusive, so no front-end may open it): the index BUILD a
+    /// `basemind scan` requests after its scan, and the history reads.
     ///
     /// Every op is idempotent — the reads are pure and `Sync` is freshness-checked (a replayed sync
     /// against an up-to-date index is a no-op) — so the transparent reconnect-and-retry is safe.

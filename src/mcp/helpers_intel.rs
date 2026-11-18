@@ -8,8 +8,8 @@
 //! a **cross-file** hop through the Fjall `refs_by_path` partition when the in-file definition is
 //! itself an import binding that resolves across modules. Blobs are concurrently readable, so the
 //! in-file path answers even in a read-only session that lost the single-holder Fjall lock; the
-//! cross-file hop reads the index — locally when open, else forwarded to the machine daemon (the
-//! sole fjall writer) on a `daemon_writer` serve, so precise cross-file resolution holds there too.
+//! cross-file hop reads the index when the session holds one (a writer, or a session the daemon
+//! hosts, which shares the daemon's handle).
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;

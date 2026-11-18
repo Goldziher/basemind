@@ -27,15 +27,12 @@ fn git(repo: &std::path::Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
-/// The daemon-hosted git-history seam: a hosted connection runs its history ops IN-PROCESS through
-/// [`Broker::run_git_history_inproc`] and the [`HistoryHost`](crate::git_history::remote::HistoryHost)
-/// trait, instead of dialing the daemon over its own socket. This asserts a `Sync` builds the index
-/// and a subsequent read returns the committed history — through the trait object the hosted stack
-/// actually holds, so the whole wiring (not just the inherent method) is covered.
+/// A hosted workspace shares the daemon's git-history handle: a `Sync` the daemon ran is visible to
+/// it, read straight from the database the daemon holds, through the handle the hosted stack is
+/// built with ([`Broker::hosted_history`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn hosted_git_history_runs_in_process() {
+async fn a_hosted_workspace_reads_the_daemons_git_history() {
     use crate::git_history::proto::{GitHistoryOp, GitHistoryReply};
-    use crate::git_history::remote::HistoryHost;
 
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
@@ -58,30 +55,25 @@ async fn hosted_git_history_runs_in_process() {
         other => panic!("expected Synced, got {other:?}"),
     }
 
-    // ~keep Read back through the HistoryHost trait object — exactly what a hosted stack holds.
-    let host: Arc<dyn HistoryHost> = Arc::clone(&broker) as Arc<dyn HistoryHost>;
-    let reply = host
-        .run_history(
-            root.to_path_buf(),
-            GitHistoryOp::RecentCommits {
-                skip: 0,
-                take: 10,
-                include_files: false,
-            },
-        )
+    let history = broker.hosted_history();
+    let hosted_root = root.to_path_buf();
+    let index = tokio::task::spawn_blocking(move || history(&hosted_root))
         .await
-        .expect("in-process recent-commits");
-    match reply {
-        GitHistoryReply::Commits(commits) => {
-            assert_eq!(
-                commits.len(),
-                1,
-                "the one seeded commit is indexed and read back in-process"
-            );
-            assert_eq!(commits[0].summary, "seed hosted history");
-        }
-        other => panic!("expected Commits, got {other:?}"),
-    }
+        .expect("join")
+        .expect("the hosted workspace gets the daemon's handle");
+    let commits = index.recent_commits(0, 10, false);
+    assert_eq!(
+        commits.len(),
+        1,
+        "the one seeded commit is indexed and read through the shared handle"
+    );
+    assert_eq!(commits[0].summary, "seed hosted history");
+    assert!(
+        broker
+            .history_lookup(&crate::git_history::shared_history_basemind_dir(root))
+            .is_some_and(|entry| std::sync::Arc::ptr_eq(&entry.index, &index)),
+        "the hosted workspace shares the daemon's handle, not a second open"
+    );
 }
 
 /// A draining daemon must REFUSE new scans, not run them as doomed partial passes: the drain

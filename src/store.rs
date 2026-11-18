@@ -456,9 +456,10 @@ impl Store {
     /// Open read-only WITHOUT ever touching the Fjall index (`index_db` is always `None`, so reads
     /// come purely from the shared blobs / in-RAM `MapCache`).
     ///
-    /// This is the `daemon_writer` serve path: Fjall's directory lock is exclusive even for a
-    /// read-only open, so a serve that opened the index would steal the lock its own machine daemon
-    /// (the sole writer) needs. Skipping the index entirely leaves the daemon free to hold it.
+    /// Fjall's directory lock is exclusive even for a read-only open, so a process that opened the
+    /// index would steal the lock its machine daemon (the sole writer) needs. Skipping the index
+    /// entirely leaves the daemon free to hold it; the daemon's own hosted read store attaches the
+    /// writer's handle to a store opened this way.
     pub fn open_read_only_no_index(root: &Path, view: &str) -> Result<Self, StoreError> {
         Self::open_read_only_inner(root, view, None)
     }
