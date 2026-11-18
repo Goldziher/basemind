@@ -493,6 +493,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of continuing at an offset into different symbols.
 - `git_blame` of a whole file the revision lacks says `no file … at <rev>`, as the span and symbol
   forms do, instead of an internal error; its only truncation reason is `shallow_clone`.
+- `resources/read` no longer waits for the in-RAM map to build; none of the resources reads it.
 - The daemon's memory no longer climbs under steady memory, document and code-search writes: every
   LanceDB store of a process caches through one session of 64 MiB (index) and 32 MiB (metadata)
   instead of Lance's default 6 GiB and 1 GiB per store, where each commit's manifest and file

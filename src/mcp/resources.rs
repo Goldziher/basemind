@@ -179,7 +179,7 @@ impl BasemindServer {
             .admit(WorkClass::Control)
             .await
             .map_err(McpError::from)?;
-        self.state.await_cache_ready().await;
+        // ~keep No map wait: status, an outline and a note read the store, as their tools do.
         let state = &self.state;
         let result = match parsed {
             ResourceUri::Status => {
