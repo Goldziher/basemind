@@ -202,6 +202,42 @@ fn postings_are_shared_by_content_and_retired_when_no_view_holds_them() {
     );
 }
 
+/// Retirement is exact per pass (ADR-0041): after incremental passes, before any full pass sweeps,
+/// every view of the group still scores like a standalone index of its tree.
+#[test]
+fn after_an_incremental_pass_every_view_scores_like_a_standalone_index() {
+    basemind::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let roots = group(tmp.path());
+    let config = config(None);
+    for root in &roots {
+        drop(scan_working(root, &config));
+    }
+
+    // The linked worktree edits a file and drops another; the main one edits a file the pruned ~keep
+    // worktree shares. ~keep
+    fs::write(roots[1].join("f1.rs"), source(1, "render_frame_again")).expect("write");
+    fs::remove_file(roots[1].join("extra.rs")).expect("remove");
+    fs::write(roots[0].join("f0.rs"), source(0, "spawn_task_queue")).expect("write");
+    let incremental = |root: &Path, changed: &[&str]| {
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        let paths: Vec<PathBuf> = changed.iter().map(|rel| root.join(rel)).collect();
+        basemind::scanner::scan_paths(root, &mut store, &config, &paths, EmbedMode::Inline).expect("incremental pass");
+        store
+    };
+    let linked = incremental(&roots[1], &["f1.rs", "extra.rs"]);
+    let main = incremental(&roots[0], &["f0.rs"]);
+    let pruned = Store::open(&roots[2], VIEW_WORKING).expect("open");
+
+    for (i, view) in [main, linked, pruned].iter().enumerate() {
+        let alone = scan_working(
+            &standalone_copy(&roots[i], &tmp.path().join(format!("incremental-{i}"))),
+            &config,
+        );
+        assert_equivalent(view, &alone, &format!("view {i} after incremental passes"));
+    }
+}
+
 /// Replace the source files of `to` with those of `from`.
 fn mirror_sources(from: &Path, to: &Path) {
     for entry in fs::read_dir(to).expect("read worktree") {

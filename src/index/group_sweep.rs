@@ -452,6 +452,10 @@ impl IndexDb {
     pub(crate) fn content_sweep_owed_for_test(&self) -> bool {
         self.content_sweep_owed().expect("read the debt").is_some()
     }
+
+    pub(crate) fn holds_content_rows_for_test(&self, content: &ContentKey) -> bool {
+        self.symbols_by_path.prefix(content).next().is_some()
+    }
 }
 
 /// Every `(key, value)` row of one keyspace, in key order.

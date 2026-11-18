@@ -493,3 +493,91 @@ fn a_short_row_does_not_end_the_sweep() {
 
     assert_eq!(sweep(&a, &[]).contents_removed, 1);
 }
+
+#[test]
+fn a_content_the_sweep_deleted_is_written_again_by_the_next_upsert() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let (a, b) = (open_view(&group, "ws-a", &memory), open_view(&group, "ws-b", &memory));
+    write(&b, "x.rs", "again");
+    publish(&b, &[]);
+    publish(&a, &[]);
+    assert_eq!(sweep(&a, &[]).contents_removed, 1);
+    assert!(stored(&a).0.is_empty());
+
+    write(&a, "x.rs", "again");
+
+    assert_eq!(
+        stored(&a),
+        (vec![key("again")], vec!["fn_again".to_string()]),
+        "the reconciling write read the rows after the delete"
+    );
+}
+
+/// Writers of several views upsert and publish while sweeps run back to back: no content a published
+/// file map names may lose its rows.
+#[test]
+fn concurrent_writers_never_lose_a_content_their_file_map_names() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    const WRITERS: usize = 4;
+    const FILES: usize = 150;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let sweeper = open_view(&group, "ws-sweeper", &memory);
+    publish(&sweeper, &[]);
+    let maps: Arc<Mutex<Vec<ContentKey>>> = Arc::default();
+    let done = Arc::new(AtomicBool::new(false));
+
+    std::thread::scope(|scope| {
+        let mut writers = Vec::new();
+        for w in 0..WRITERS {
+            let view = open_view(&group, &format!("ws-{w}"), &memory);
+            let maps = Arc::clone(&maps);
+            writers.push(scope.spawn(move || {
+                let mut named: Vec<(String, String)> = Vec::new();
+                for i in 0..FILES {
+                    let (path, hash) = (format!("f{i}.rs"), format!("w{w}-{i}"));
+                    write(&view, &path, &hash);
+                    // The file map is written, then published (as a flush does). ~keep
+                    maps.lock().expect("maps").push(key(&hash));
+                    named.push((path, hash));
+                    let entries: Vec<(&str, &str)> = named.iter().map(|(p, h)| (p.as_str(), h.as_str())).collect();
+                    publish(&view, &entries);
+                }
+                view
+            }));
+        }
+        let sweeping = scope.spawn(|| {
+            let mut sweeps = 0;
+            while !done.load(Ordering::Acquire) {
+                let Some(mut open) = sweeper.begin_group_sweep().expect("begin") else {
+                    continue;
+                };
+                let live = maps.lock().expect("maps").clone();
+                open.sweep_contents(|content| live.contains(content)).expect("sweep");
+                open.finish(true).expect("finish");
+                sweeps += 1;
+            }
+            sweeps
+        });
+        let views: Vec<IndexDb> = writers.into_iter().map(|w| w.join().expect("writer")).collect();
+        done.store(true, Ordering::Release);
+        assert!(sweeping.join().expect("sweeper") > 0, "the sweep must have run");
+        drop(views);
+    });
+
+    let named = maps.lock().expect("maps").clone();
+    assert_eq!(named.len(), WRITERS * FILES);
+    let (stored, _) = stored(&sweeper);
+    let lost: Vec<_> = named.iter().filter(|content| !stored.contains(content)).collect();
+    assert!(
+        lost.is_empty(),
+        "{} of {} named contents lost their rows",
+        lost.len(),
+        named.len()
+    );
+}

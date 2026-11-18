@@ -57,3 +57,7 @@ impl Store {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "store_group_sweep_tests.rs"]
+mod tests;
