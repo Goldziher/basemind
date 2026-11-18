@@ -49,16 +49,7 @@ pub(crate) const META_BM25_DIRTY: &[u8] = b"code_bm25_dirty";
 /// hold postings no view names.
 pub(crate) const META_BM25_SWEEP_OWED: &[u8] = b"\xffgroup/bm25_sweep_owed";
 
-/// A token no earlier one in this process equals and no other process plausibly picks, so a row
-/// holding it was set by this call.
-pub(crate) fn fresh_token() -> u64 {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos() as u64);
-    let mixed = nanos ^ u64::from(std::process::id()).rotate_left(40);
-    mixed.wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed)).max(1)
-}
+pub(crate) use super::group_sweep::fresh_token;
 
 /// Bytes of retired posting keys one pass may hold for an exact retirement. A pass that replaces
 /// more than this (a mass edit, a branch switch) forgets them and sweeps instead, so the ledger
@@ -311,7 +302,7 @@ impl IndexDb {
             .insert(META_BM25_SWEEP_OWED, fresh_token().to_be_bytes())?)
     }
 
-    fn sweep_owed_token(&self) -> Result<Option<u64>, IndexError> {
+    pub(super) fn sweep_owed_token(&self) -> Result<Option<u64>, IndexError> {
         Ok(self
             .meta
             .raw()
@@ -322,7 +313,7 @@ impl IndexDb {
 
     /// Clear the owed row if it still holds `token`. Under the gate every owed-setting commit holds
     /// shared, so a debt incurred after `token` was read is never cleared.
-    fn clear_sweep_owed_if(&self, token: u64) -> Result<(), IndexError> {
+    pub(super) fn clear_sweep_owed_if(&self, token: u64) -> Result<(), IndexError> {
         let _exclusive = self.bm25_gate.write();
         if self.sweep_owed_token()? == Some(token) {
             self.meta.raw().remove(META_BM25_SWEEP_OWED)?;

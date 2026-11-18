@@ -19,6 +19,7 @@ use ahash::AHashMap;
 use fjall::{Database, Keyspace, PersistMode};
 
 use super::bm25_live::{Bm25Gate, Bm25LiveCache};
+use super::group_sweep::PendingContents;
 use super::live_keys::LiveKeysCell;
 use super::name_dict::NameDict;
 use super::scoped::Scoped;
@@ -37,7 +38,7 @@ const META_VIEW_RECORD: &[u8] = b"\xffgroup/view/";
 const FIRST_VIEW_ID: u32 = 1;
 
 /// Keyspaces the group shares by content: no view prefix.
-const SHARED_PARTS: [Part; 6] = [
+pub(super) const SHARED_PARTS: [Part; 6] = [
     Part::SymbolsByPath,
     Part::SymbolsByName,
     Part::CallsByPath,
@@ -66,7 +67,8 @@ pub(crate) struct GroupDb {
     embeddings: Keyspace,
     incarnation: u64,
     /// Serialises view-id allocation within the process; the lock serialises it across processes.
-    allocation: Mutex<()>,
+    /// A view's retirement holds it too, so no open allocates the id being retired.
+    pub(super) allocation: Mutex<()>,
     /// Each view's BM25 live-key cache, shared by every handle on the view.
     bm25_live: Mutex<AHashMap<u32, Arc<Bm25LiveCache>>>,
     /// Each view's BM25 pass ledger, shared by every handle on the view as `bm25_live` is.
@@ -78,6 +80,9 @@ pub(crate) struct GroupDb {
     live: Mutex<AHashMap<u32, Weak<LiveKeysCell>>>,
     /// Distinct callee names of the shared `calls_by_callee`, shared by every view.
     callee_names: Arc<NameDict>,
+    /// Content keys each view's writer staged that no file map it wrote names yet: live for the
+    /// group sweep ([`super::group_sweep`]).
+    pub(super) pending: Mutex<PendingContents>,
     _lock: GroupLock,
 }
 
@@ -95,7 +100,7 @@ fn registry() -> &'static Mutex<AHashMap<PathBuf, Weak<GroupDb>>> {
 }
 
 /// A view's record key in group `meta`.
-fn view_record(workspace_key: &str, view: &str) -> Vec<u8> {
+pub(super) fn view_record(workspace_key: &str, view: &str) -> Vec<u8> {
     let mut key = META_VIEW_RECORD.to_vec();
     key.extend_from_slice(workspace_key.as_bytes());
     key.push(b'/');
@@ -191,6 +196,7 @@ impl GroupDb {
             bm25_gate: Bm25Gate::default(),
             live: Mutex::default(),
             callee_names: Arc::default(),
+            pending: Mutex::default(),
             _lock: lock,
         }
     }
@@ -227,8 +233,18 @@ impl GroupDb {
         self.incarnation
     }
 
-    fn meta(&self) -> &Keyspace {
+    pub(super) fn meta(&self) -> &Keyspace {
         &self.keyspaces[Part::Meta.name()]
+    }
+
+    /// The fjall keyspace of `part`, every view's rows.
+    pub(super) fn keyspace(&self, part: Part) -> &Keyspace {
+        &self.keyspaces[part.name()]
+    }
+
+    /// The database every keyspace lives in.
+    pub(super) fn database(&self) -> &Database {
+        &self.db
     }
 
     /// The id of `(workspace_key, view)`, if the group has allocated one.
@@ -367,11 +383,17 @@ impl GroupDb {
     }
 
     /// Views whose live-key cell is still held by an open handle.
-    #[cfg(test)]
     pub(crate) fn live_key_views(&self) -> Vec<u32> {
         let mut cells = self.live.lock().expect("live key cells");
         cells.retain(|_, cell| cell.strong_count() > 0);
         cells.keys().copied().collect()
+    }
+
+    /// Drop the per-view caches of a view whose rows are gone.
+    pub(super) fn forget_view(&self, view_id: u32) {
+        self.bm25_live.lock().expect("bm25 live caches").remove(&view_id);
+        #[cfg(feature = "code-search")]
+        self.bm25_pass.lock().expect("bm25 pass ledgers").remove(&view_id);
     }
 }
 

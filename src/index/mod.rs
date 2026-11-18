@@ -24,6 +24,9 @@ pub(crate) mod durability;
 pub mod fault;
 pub mod grep_bloom;
 pub(crate) mod group;
+pub mod group_sweep;
+#[cfg(test)]
+mod group_sweep_tests;
 pub mod keys;
 pub mod keys_bm25;
 pub mod keys_content;

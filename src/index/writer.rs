@@ -57,6 +57,9 @@ pub struct IndexWriter {
     /// The batch already stages the group's owed sweep.
     #[cfg(feature = "code-search")]
     bm25_sweep_owed: bool,
+    /// The batch already stages the group's owed content sweep, so its commit holds the group gate
+    /// shared (see [`super::group_sweep`]).
+    content_sweep_owed: bool,
     /// Test-only fault seam: make the next [`Self::upsert_file`] (or `upsert_bm25_file`) stage its
     /// deletes and inserts and *then* fail. The real failures have exactly that shape — a fjall read
     /// error inside `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and
@@ -159,6 +162,7 @@ impl IndexWriter {
             bm25_dirty_marked: false,
             #[cfg(feature = "code-search")]
             bm25_sweep_owed: false,
+            content_sweep_owed: false,
             #[cfg(test)]
             fail_after_staging: false,
             #[cfg(all(test, feature = "code-search"))]
@@ -187,6 +191,14 @@ impl IndexWriter {
         l1: &FileMapL1,
         l2: Option<&FileMapL2>,
     ) -> Result<(), IndexError> {
+        // The content is pending, and its stored rows are read, under the group gate: a sweep then ~keep
+        // either sees it pending or deleted the rows before this read (see `group_sweep`). ~keep
+        let gate = std::sync::Arc::clone(&self.db.bm25_gate);
+        let _shared = gate.read();
+        if let Some(own) = &self.db.group {
+            own.group.register_pending(own.view_id, *content);
+        }
+        self.owe_content_sweep();
         self.stage_deletes_for(rel)?;
         self.stage_inserts_for(rel, content, l1)?;
         if let Some(l2) = l2 {
@@ -205,7 +217,21 @@ impl IndexWriter {
     /// Drop the path-keyed rows of `rel`. Used when a file is removed from the scan set. Its content
     /// rows stay for the views that hold the content; the group sweep collects them.
     pub fn remove_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
+        self.owe_content_sweep();
         self.stage_deletes_for(rel)
+    }
+
+    /// A path write may leave a content no view names once the file map follows: stage the group's
+    /// owed content sweep into the same batch, once.
+    fn owe_content_sweep(&mut self) {
+        if self.content_sweep_owed || self.db.group.is_none() {
+            return;
+        }
+        let token = super::group_sweep::fresh_token().to_be_bytes();
+        let key = super::group_sweep::META_CONTENT_SWEEP_OWED;
+        self.batch.insert(self.db.meta.raw(), key.to_vec(), token.to_vec());
+        self.staged_bytes += staged_entry_bytes(key.len(), token.len());
+        self.content_sweep_owed = true;
     }
 
     /// Drop every symbol and call row of `content`, for every view that holds it. Only for a
@@ -402,7 +428,7 @@ impl IndexWriter {
                 source: std::io::Error::other("injected commit failure"),
             });
         }
-        let gate = self.writes_postings.then(|| self.db.bm25_gate.read());
+        let gate = (self.writes_postings || self.content_sweep_owed).then(|| self.db.bm25_gate.read());
         let result = self.batch.commit().map_err(IndexError::from);
         drop(gate);
         if let Err(error) = &result {
