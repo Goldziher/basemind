@@ -381,7 +381,6 @@ pub trait IndexView: Send + Sync {
         }
         let live = self.live_keys();
         let mut out = Vec::with_capacity(cap.min(256));
-        let mut hint = 0;
         // One row per symbol and content, one hit per live holder: no hit key is composed, and a
         // row no live path holds is skipped before anything is decoded. ~keep
         for row in self.prefix(Part::SymbolsByName, &prefix) {
@@ -391,7 +390,7 @@ pub trait IndexView: Send + Sync {
             let Some((kind, content, start)) = row.ok().and_then(|(key, _)| keys::parse_symbol_row(&key)) else {
                 continue;
             };
-            let holders = live.holders_from(&content, &mut hint);
+            let holders = live.holders(&content);
             let holders = &holders[..holders.len().min(cap - out.len())];
             if let Some(((_, last), rest)) = holders.split_last() {
                 // The length-prefixed name is the whole name: every row under it is named `name`. ~keep

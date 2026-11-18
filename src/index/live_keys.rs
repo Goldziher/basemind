@@ -25,8 +25,9 @@ use crate::path::RelPath;
 ///
 /// One copy of each path: `entries` holds every `(key, path)` sorted by key then path, so a key's
 /// holders are one run of it, and the two lookups index into it. The distinct keys are a sorted
-/// array, not a hash map: a name scan meets its rows' keys in ascending order and finds each by a
-/// short forward search from the last ([`ExpandHits`]).
+/// array indexed by their leading bits, not a hash map: content keys are uniform hashes, so a
+/// lookup reads one bucket bound and about one key, with no hashing ([`ExpandHits`] does one per
+/// row it reads).
 #[derive(Debug, Default)]
 pub struct LiveKeys {
     entries: Box<[(ContentKey, RelPath)]>,
@@ -34,6 +35,10 @@ pub struct LiveKeys {
     run_keys: Box<[u128]>,
     /// Where each key's run in `entries` ends; it starts where the previous one ends.
     run_ends: Box<[u32]>,
+    /// `buckets[b]` is the first index into `run_keys` whose leading `bucket_bits` bits are at
+    /// least `b`; one trailing entry holds the key count.
+    buckets: Box<[u32]>,
+    bucket_bits: u32,
     /// Indices into `entries`, sorted by path.
     by_path: Box<[u32]>,
     /// See [`Self::fingerprint`].
@@ -56,6 +61,7 @@ impl LiveKeys {
             run_keys.push(u128::from_be_bytes(run[0].0));
             run_ends.push(index(end));
         }
+        let (buckets, bucket_bits) = bucket_index(&run_keys);
         let mut by_path: Vec<u32> = (0..entries.len()).map(index).collect();
         by_path.sort_unstable_by(|a, b| entries[*a as usize].1.cmp(&entries[*b as usize].1));
         let fingerprint = fingerprint_of(by_path.iter().map(|at| {
@@ -66,6 +72,8 @@ impl LiveKeys {
             entries: entries.into_boxed_slice(),
             run_keys: run_keys.into_boxed_slice(),
             run_ends: run_ends.into_boxed_slice(),
+            buckets,
+            bucket_bits,
             by_path: by_path.into_boxed_slice(),
             fingerprint,
         }
@@ -73,20 +81,8 @@ impl LiveKeys {
 
     /// The view's paths holding `key`, sorted, each with the key; empty when the view holds none.
     pub fn holders(&self, key: &ContentKey) -> &[(ContentKey, RelPath)] {
-        self.run_keys
-            .binary_search(&u128::from_be_bytes(*key))
-            .map_or(&[], |at| {
-                let (start, end) = self.run(at);
-                &self.entries[start as usize..end as usize]
-            })
-    }
-
-    /// [`Self::holders`] for keys looked up in ascending order: `hint` carries where the last one
-    /// was found, so each lookup searches forward from it (any order still answers correctly).
-    pub fn holders_from(&self, key: &ContentKey, hint: &mut usize) -> &[(ContentKey, RelPath)] {
-        let (at, run) = self.find_run(u128::from_be_bytes(*key), *hint);
-        *hint = at;
-        run.map_or(&[], |(start, end)| &self.entries[start as usize..end as usize])
+        self.find_run(u128::from_be_bytes(*key))
+            .map_or(&[], |(start, end)| &self.entries[start as usize..end as usize])
     }
 
     /// Run `at` of the distinct keys as `(start, end)` in `entries`.
@@ -95,26 +91,16 @@ impl LiveKeys {
         (start, self.run_ends[at])
     }
 
-    /// The run of `key`, and the hint for the next lookup: the index after the keys at or below
-    /// `key`. Searched forward from `hint` (from such a lookup) when every key before it is lower.
-    fn find_run(&self, key: u128, hint: usize) -> (usize, Option<(u32, u32)>) {
-        let keys = &self.run_keys;
-        let hint = hint.min(keys.len());
-        let from = if hint > 0 && keys[hint - 1] >= key { 0 } else { hint };
-        if keys.get(from) == Some(&key) {
-            return (from + 1, Some(self.run(from)));
-        }
-        // Gallop: double the step until it passes `key`, then search the last step. ~keep
-        let (mut lo, mut step) = (from, 1);
-        while lo + step <= keys.len() && keys[lo + step - 1] < key {
-            lo += step;
-            step *= 2;
-        }
-        let hi = (lo + step).min(keys.len());
-        match keys[lo..hi].binary_search(&key) {
-            Ok(found) => (lo + found + 1, Some(self.run(lo + found))),
-            Err(at) => (lo + at, None),
-        }
+    /// The run of `key` in `entries`: searched within the bucket of its leading bits.
+    fn find_run(&self, key: u128) -> Option<(u32, u32)> {
+        let bucket = bucket_of(key, self.bucket_bits);
+        // A default (never published) set has no buckets. ~keep
+        let (from, to) = (
+            *self.buckets.get(bucket)? as usize,
+            *self.buckets.get(bucket + 1)? as usize,
+        );
+        let at = from + self.run_keys[from..to].iter().position(|held| *held >= key)?;
+        (self.run_keys[at] == key).then(|| self.run(at))
     }
 
     /// The content key the view holds at `rel`.
@@ -168,6 +154,25 @@ pub(crate) fn fingerprint_of<'a>(pairs: impl Iterator<Item = (&'a [u8], ContentK
 /// representable anyway: the file map's own counts are `u32`.
 fn index(at: usize) -> u32 {
     u32::try_from(at).unwrap_or(u32::MAX)
+}
+
+/// The bucket of `key` among `2^bits` buckets: its leading `bits` bits.
+fn bucket_of(key: u128, bits: u32) -> usize {
+    key.checked_shr(128 - bits).unwrap_or(0) as usize
+}
+
+/// The bucket bounds of sorted `keys`: about one key per bucket.
+fn bucket_index(keys: &[u128]) -> (Box<[u32]>, u32) {
+    let bits = usize::BITS - keys.len().leading_zeros();
+    let mut buckets = vec![0u32; (1usize << bits) + 1];
+    let mut at = 0;
+    for (bucket, bound) in buckets.iter_mut().enumerate() {
+        while at < keys.len() && bucket_of(keys[at], bits) < bucket {
+            at += 1;
+        }
+        *bound = index(at);
+    }
+    (buckets.into_boxed_slice(), bits)
 }
 
 /// [`LiveKeys`] of one view, shared by every handle on it.
@@ -282,10 +287,9 @@ pub(crate) struct ExpandHits<'a> {
     /// The cursor's site and path: holders of that site up to the path were on an earlier page.
     resume: Resume,
     row: Option<Row>,
-    /// The last content looked up, its run in the live keys, and where among the distinct keys it
-    /// was found: a name's rows are in content-key order, so the next lookup searches forward.
+    /// The last content looked up and its run in the live keys: a content's rows of one name are
+    /// consecutive.
     last: Option<(u128, Option<(u32, u32)>)>,
-    hint: usize,
     /// Two buffers hit keys are composed in. A reader that dropped the key it was handed leaves its
     /// buffer to be written again, so a scan allocates per hit only while its reader keeps keys.
     buffers: [Arc<Vec<u8>>; 2],
@@ -304,7 +308,6 @@ impl<'a> ExpandHits<'a> {
             resume,
             row: None,
             last: None,
-            hint: 0,
             buffers: [Arc::new(Vec::new()), Arc::new(Vec::new())],
             heads: [u64::MAX; 2],
             opened: 0,
@@ -319,8 +322,7 @@ impl<'a> ExpandHits<'a> {
         {
             return *run;
         }
-        let (hint, run) = self.live.find_run(content, self.hint);
-        self.hint = hint;
+        let run = self.live.find_run(content);
         self.last = Some((content, run));
         run
     }
@@ -571,20 +573,25 @@ mod tests {
     }
 
     #[test]
-    fn a_forward_search_from_any_hint_finds_what_a_binary_search_finds() {
-        let keys: Vec<ContentKey> = (0..40).map(|at| content_key(&format!("h{at}"), "rust", 1)).collect();
-        let live = LiveKeys::from_entries(
-            keys.iter()
-                .step_by(2)
-                .enumerate()
-                .map(|(at, key)| (RelPath::from(format!("f{at}.rs").as_str()), *key)),
-        );
-        for key in &keys {
-            let wanted = live.holders(key).first().map(|(found, _)| *found);
-            for hint in 0..=live.run_keys.len() + 1 {
-                let (_, run) = live.find_run(u128::from_be_bytes(*key), hint);
-                let got = run.map(|(start, _)| live.entries[start as usize].0);
-                assert_eq!(got, wanted, "hint {hint}");
+    fn a_bucketed_lookup_finds_exactly_the_live_keys() {
+        assert!(LiveKeys::default().holders(&content_key("a", "rust", 1)).is_empty());
+        for live_count in [0, 1, 2, 3, 7, 64, 100] {
+            let keys: Vec<ContentKey> = (0..live_count * 2)
+                .map(|at| content_key(&format!("h{at}"), "rust", 1))
+                .collect();
+            let live = LiveKeys::from_entries(
+                keys.iter()
+                    .step_by(2)
+                    .enumerate()
+                    .map(|(at, key)| (RelPath::from(format!("f{at}.rs").as_str()), *key)),
+            );
+            for (at, key) in keys.iter().enumerate() {
+                let held = live.holders(key);
+                assert_eq!(held.len(), usize::from(at % 2 == 0), "{live_count} live, key {at}");
+                assert!(held.iter().all(|(found, _)| found == key));
+            }
+            for edge in [[0u8; 16], [0xFF; 16]] {
+                assert!(live.holders(&edge).is_empty());
             }
         }
     }
