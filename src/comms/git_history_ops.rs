@@ -144,33 +144,42 @@ impl Broker {
                 path: dir.to_path_buf(),
                 source: std::io::Error::other(join.to_string()),
             })??;
-        Ok(self.insert_history(dir, opened))
+        let (entry, shed) = self.insert_history(dir, opened);
+        // Closing a database joins its fjall workers: off the reactor, and before the open lock is
+        // released, so a reopen of a closed directory never meets its lock still held.
+        if !shed.is_empty() {
+            let _closed = tokio::task::spawn_blocking(move || drop(shed)).await;
+        }
+        Ok(entry)
     }
 
-    /// Record `opened` as the handle of `dir`, then close the least recently used handles nothing
-    /// holds until at most [`MAX_OPEN_HISTORIES`] stay open. The handles are dropped after the map
-    /// lock is released: closing a database joins its fjall workers.
-    pub(super) fn insert_history(&self, dir: &std::path::Path, opened: GitHistoryIndex) -> Arc<HistoryEntry> {
+    /// Record `opened` as the handle of `dir`, and take out of the map the least recently used
+    /// handles nothing holds until at most [`MAX_OPEN_HISTORIES`] stay. Returns the new entry and
+    /// the removed ones, which the caller drops on a blocking thread while it still holds
+    /// `git_history_open_lock`: closing a database joins its fjall workers.
+    pub(super) fn insert_history(
+        &self,
+        dir: &std::path::Path,
+        opened: GitHistoryIndex,
+    ) -> (Arc<HistoryEntry>, Vec<Arc<HistoryEntry>>) {
         let entry = Arc::new(HistoryEntry {
             index: Arc::new(opened),
             last_used: std::sync::Mutex::new(Instant::now()),
         });
-        let shed = {
-            let mut map = self
-                .git_history
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            map.insert(dir.to_path_buf(), Arc::clone(&entry));
-            shed_over_cap(&mut map)
-        };
-        if !shed.is_empty() {
-            tracing::debug!(
-                closed = shed.len(),
-                "daemon: closed least recently used git-history handles"
+        let mut map = self
+            .git_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.insert(dir.to_path_buf(), Arc::clone(&entry));
+        let shed = shed_over_cap(&mut map);
+        if map.len() > MAX_OPEN_HISTORIES {
+            tracing::warn!(
+                open = map.len(),
+                cap = MAX_OPEN_HISTORIES,
+                "daemon: every open git-history database is in use; holding more than the cap"
             );
         }
-        drop(shed);
-        entry
+        (entry, shed)
     }
 
     pub(super) fn history_lookup(&self, dir: &std::path::Path) -> Option<Arc<HistoryEntry>> {
@@ -220,7 +229,11 @@ impl Broker {
             return Some(Arc::clone(&entry.index));
         }
         match GitHistoryIndex::open(&dir) {
-            Ok(opened) => Some(Arc::clone(&self.insert_history(&dir, opened).index)),
+            Ok(opened) => {
+                let (entry, shed) = self.insert_history(&dir, opened);
+                drop(shed);
+                Some(Arc::clone(&entry.index))
+            }
             Err(error) => {
                 tracing::warn!(%error, root = %root.display(), "git-history index unavailable to the hosted workspace");
                 None
@@ -232,7 +245,8 @@ impl Broker {
 /// Git-history databases the daemon keeps open at once. Each holds up to
 /// [`CACHED_FILES`](crate::git_history::CACHED_FILES) descriptors plus its memtables and block
 /// cache, so without a cap every repository asked about within the idle TTL stays resident; the
-/// descriptor budget ([`crate::comms::fd_budget`]) counts this many.
+/// descriptor budget ([`crate::comms::fd_budget`]) counts this many. A database in use is never
+/// closed, so while more than this many are in use at once the daemon holds them all and warns.
 pub(crate) const MAX_OPEN_HISTORIES: usize = 8;
 
 /// Remove the least recently used entries no one else holds until the map is within

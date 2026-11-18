@@ -23,7 +23,8 @@ fn the_history_pool_closes_the_least_recently_used_handle_past_its_cap() {
     let mut held = None;
     for (i, dir) in dirs.iter().enumerate() {
         let index = GitHistoryIndex::open(dir).expect("open history");
-        let entry = broker.insert_history(dir, index);
+        let (entry, shed) = broker.insert_history(dir, index);
+        drop(shed);
         if i == 0 {
             held = Some(entry);
         }
