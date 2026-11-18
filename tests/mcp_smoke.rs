@@ -1247,16 +1247,15 @@ async fn mcp_server_exercises_representative_tools() {
         "a substring match names the trait each hit implements: {body}"
     );
 
-    let body = decode_text(
+    let message = error_text(
         &service
             .call_tool(call_params("code_symbols", json!({ "name": "", "limit": 100 })))
             .await
             .expect("code_symbols(empty)"),
     );
-    let results = body.get("results").and_then(Value::as_array).expect("results");
     assert!(
-        results.is_empty(),
-        "code_symbols with empty needle must return 0 results, got {results:?}"
+        message.contains("`name` is empty"),
+        "code_symbols with an empty name is refused, as code_grep with an empty pattern is: {message}"
     );
 
     let body = decode_text(
