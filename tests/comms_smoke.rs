@@ -377,7 +377,9 @@ async fn machine_registry_auto_registers_a_connecting_repo() {
         "the connecting repo is the only registered workspace"
     );
     let ws = &workspaces[0];
-    assert_eq!(ws.root, repo, "the registered root is the repo root");
+    // The resolved root registers: on macOS a tempdir is reached through `/var` -> `/private/var`.
+    let resolved = repo.canonicalize().expect("canonicalize repo");
+    assert_eq!(ws.root, resolved, "the registered root is the resolved repo root");
     let repo_id = ws.repo_id.clone().expect("a git workspace has a repo id");
 
     let worktrees = alice.list_worktrees(repo_id.clone()).await.expect("list worktrees");
