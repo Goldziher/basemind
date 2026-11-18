@@ -417,16 +417,13 @@ impl Filters {
     /// set and not under a skipped submodule root. Include globs are irrelevant for directories
     /// (they match files), so only the exclude set + submodule pruning apply.
     ///
-    /// Used by the Linux watcher to decide which directories to register an inotify watch on, so
-    /// permission-denied or excluded trees are never handed to inotify. Matching against
-    /// `dir_exclude` rather than `exclude` is what makes it drop `node_modules` itself and not
-    /// merely `node_modules/react` — before this the watcher watched every excluded tree's root.
-    ///
-    /// Only the Linux watcher registers per-directory watches — macOS/Windows use one recursive
-    /// watch — so the method is dead code elsewhere; `test` keeps the unit test building on any
-    /// host. The scan walk shares the rule through [`DirPruner`], which needs an owned `'static`
-    /// gate and therefore calls [`dir_allowed`] directly.
-    #[cfg(any(target_os = "linux", test))]
+    /// Used by the watcher to decide which directories to register an inotify watch on (Linux), so
+    /// permission-denied or excluded trees are never handed to inotify, and which directory events
+    /// to forward for expansion (every host). Matching against `dir_exclude` rather than `exclude`
+    /// is what makes it drop `node_modules` itself and not merely `node_modules/react` — before
+    /// this the watcher watched every excluded tree's root. The scan walk shares the rule through
+    /// [`DirPruner`], which needs an owned `'static` gate and therefore calls [`dir_allowed`]
+    /// directly.
     pub(crate) fn allows_dir(&self, rel: &str) -> bool {
         dir_allowed(rel, &self.dir_exclude, &self.submodule_prefixes)
     }
@@ -658,11 +655,11 @@ impl IndexFilter {
         self.gitignore_allows(abs)
     }
 
-    /// Whether the Linux watcher should watch the directory `abs`: the directory a full scan would
-    /// descend into, by the same exclude globs, submodule roots and (when respected) `.gitignore`
-    /// rules. A directory created under `target/` or `node_modules/` is not; watching every one
-    /// cost an inotify watch and a debouncer root per directory ever created, none ever removed.
-    #[cfg(any(target_os = "linux", test))]
+    /// Whether the watcher should watch the directory `abs` (Linux) and forward it for expansion
+    /// when it appears under a new name: the directory a full scan would descend into, by the same
+    /// exclude globs, submodule roots and (when respected) `.gitignore` rules. A directory created
+    /// under `target/` or `node_modules/` is not; watching every one cost an inotify watch and a
+    /// debouncer root per directory ever created, none ever removed.
     pub(crate) fn is_watchable_dir(&self, abs: &Path) -> bool {
         let Some(rel) = self.rel_of(abs) else {
             return false;
@@ -676,6 +673,21 @@ impl IndexFilter {
             std::fs::symlink_metadata(abs).is_ok_and(|meta| meta.is_dir())
         };
         is_dir && (!self.respect_gitignore || self.gitignore_allows(abs))
+    }
+
+    /// `dir` and every directory beneath it that a full scan would descend into, walked with the
+    /// same gitignore and exclude rules. The Linux watcher arms each one: a directory renamed or
+    /// moved into the tree arrives with its subdirectories and no event names them.
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn subtree_dirs(&self, dir: &Path) -> Vec<PathBuf> {
+        let pruner = self.filters.dir_pruner(Some(&self.root));
+        ignore_walk_builder(dir, self.respect_gitignore, self.follow_links)
+            .filter_entry(move |dent| pruner.keep(dent))
+            .build()
+            .flatten()
+            .filter(|dent| dent.file_type().is_some_and(|kind| kind.is_dir()))
+            .map(ignore::DirEntry::into_path)
+            .collect()
     }
 
     /// The full scan only yields regular files (`dent.file_type().is_file()`), and never follows a
