@@ -124,5 +124,5 @@ them.
 | [0038](0038-comms-cutover-as-built.md) | Comms v2 cutover as built — agent tool replay and the closed open items | Accepted |
 | [0039](0039-engine-unification-and-two-crates.md) | Engine unification first, then two crates | Accepted (amended by ADR-0040, ADR-0042) |
 | [0040](0040-cross-harness-agent-launch.md) | Cross-harness agent launch — `basemind-agents` and `serve --lead` | Accepted |
-| [0041](0041-group-sweep-bm25-holders-and-group-reaping.md) | Group sweep, BM25 holders, packed postings and group reaping | Proposed |
+| [0041](0041-group-sweep-bm25-holders-and-group-reaping.md) | Group sweep, BM25 holders, packed postings and group reaping | Accepted |
 | [0042](0042-hosted-workspaces-share-the-writers-handles.md) | Hosted workspaces share the writer's handles; no in-RAM reference fallback | Accepted |

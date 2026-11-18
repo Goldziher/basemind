@@ -135,3 +135,13 @@ blake3 = "70322a40be20e795bb6f14f9edb69d8b14822cc66d86af646cbfe5feee752544"
 number = 40
 status = "accepted"
 blake3 = "4e2dba0abbdcd9573a8bb2aed221771c39449c25355ff1f653467f4a54be6e66"
+
+[adrs."docs/adr/0041-group-sweep-bm25-holders-and-group-reaping.md"]
+number = 41
+status = "accepted"
+blake3 = "fc392a058af49cb6f601d353182e574f3889fa583e58bff861b61f0fb781a40b"
+
+[adrs."docs/adr/0042-hosted-workspaces-share-the-writers-handles.md"]
+number = 42
+status = "accepted"
+blake3 = "6e6122c04170303ae7eb3d00ef063e0f39bc3cc66a6f9362c61da90339814bec"
