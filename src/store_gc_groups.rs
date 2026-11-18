@@ -85,15 +85,27 @@ pub(crate) fn reap_orphaned_group_stores_in(cache_dir: &Path) -> Result<GroupSto
             tracing::debug!(group = %group_dir.display(), "group is locked by another process; skipping");
             continue;
         };
-        let bytes = dir_size(&group_dir)?;
-        crate::store_lock::remove_dir_under_lock(&group_dir).map_err(|source| GcError::Io {
-            path: group_dir.clone(),
-            source,
-        })?;
+        // One group that cannot be removed (a file held open on Windows, a protected directory) ~keep
+        // is left for the next run; it must not keep the other groups, or the blob GC, from running. ~keep
+        let removed = dir_size(&group_dir).and_then(|bytes| {
+            crate::store_lock::remove_dir_under_lock(&group_dir)
+                .map(|()| bytes)
+                .map_err(|source| GcError::Io {
+                    path: group_dir.clone(),
+                    source,
+                })
+        });
         drop(lock);
-        report.reaped += 1;
-        report.bytes_freed += bytes;
-        tracing::info!(group = %group_dir.display(), bytes, "reaped a group no workspace names");
+        match removed {
+            Ok(bytes) => {
+                report.reaped += 1;
+                report.bytes_freed += bytes;
+                tracing::info!(group = %group_dir.display(), bytes, "reaped a group no workspace names");
+            }
+            Err(error) => {
+                tracing::warn!(group = %group_dir.display(), %error, "could not reap a group no workspace names; kept");
+            }
+        }
     }
     Ok(report)
 }
@@ -218,6 +230,40 @@ mod tests {
             assert!(!store_of(&cache, "g").exists(), "{component:?} removes the group store");
             assert!(index.exists(), "the group index stays");
         }
+    }
+
+    /// A group that cannot be removed (a held file on Windows, a protected directory) is logged and
+    /// left; the reaper goes on with the others and the caller's blob GC still runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_that_cannot_be_removed_does_not_stop_the_reaper() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, cache) = cache_with_groups(&["stuck", "gone"]);
+        let protected = store_of(&cache, "stuck").join("model-768-x");
+        fs::set_permissions(&protected, fs::Permissions::from_mode(0o555)).expect("chmod");
+
+        let report = reap_orphaned_group_stores_in(&cache);
+
+        for dir in dirs_under(tmp.path()) {
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
+        }
+        let report = report.expect("one group failing is not the reaper failing");
+        assert_eq!(report.reaped, 1);
+        assert!(!cache.join(GROUPS_DIR).join("gone").exists());
+    }
+
+    /// Every directory under `dir`, for restoring permissions before the tempdir is removed.
+    #[cfg(unix)]
+    fn dirs_under(dir: &Path) -> Vec<PathBuf> {
+        let mut out = vec![dir.to_path_buf()];
+        let mut at = 0;
+        while at < out.len() {
+            if let Ok(entries) = fs::read_dir(&out[at]) {
+                out.extend(entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()));
+            }
+            at += 1;
+        }
+        out
     }
 
     #[test]
