@@ -589,15 +589,20 @@ fn seed_group(workspaces: &Path, group: &str, bytes: usize) -> PathBuf {
     dir
 }
 
-/// Point `workspace`'s marker at `group`.
+/// Point `workspace`'s marker at `group`, keeping the marker's age. The marker's mtime is activity:
+/// rewritten now, every workspace would be as recently used as the newest, and on a kernel whose
+/// file clock ticks coarsely (Linux) the most recently used one would fall to directory order.
 fn name_group(workspace: &Path, group: &str) {
+    let path = workspace.join(WORKSPACE_MARKER_FILE);
+    let aged = fs::metadata(&path).and_then(|m| m.modified()).expect("marker mtime");
     let mut marker = read_workspace_marker(workspace).expect("marker");
     marker.group = Some(group.to_string());
-    fs::write(
-        workspace.join(WORKSPACE_MARKER_FILE),
-        serde_json::to_vec(&marker).expect("encode marker"),
-    )
-    .expect("write marker");
+    fs::write(&path, serde_json::to_vec(&marker).expect("encode marker")).expect("write marker");
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|f| f.set_modified(aged))
+        .expect("keep the marker's age");
 }
 
 /// The group directory (the code index and the retrieval stores, ADR-0028 and ADR-0037) counts
@@ -669,6 +674,7 @@ fn a_locked_idle_group_is_kept() {
 
     let report = enforce_cache_budget_in(&workspaces, &blobs, 0, DAY_AGO, Duration::ZERO).expect("enforce");
 
+    assert!(!cold.join(VIEWS_DIR).exists(), "the cold workspace is evicted");
     assert_eq!(report.groups_evicted, 0, "{report:?}");
     assert!(group.join(crate::index::INDEX_DIR).exists());
 }
