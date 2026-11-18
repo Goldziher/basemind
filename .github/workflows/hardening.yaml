@@ -107,9 +107,12 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-system-deps
 
+      # ~keep ort-sys links against libonnxruntime.a in its download dir and never reruns when that
+      # ~keep dir is gone, so the dir is cached with target/ (see ci.yaml).
       - uses: Swatinem/rust-cache@v2
         with:
           key: hardening-${{ matrix.os }}-${{ env.FEATURES }}
+          cache-directories: ${{ runner.os == 'Windows' && '~/AppData/Local/ort.pyke.io' || runner.os == 'macOS' && '~/Library/Caches/ort.pyke.io' || '~/.cache/ort.pyke.io' }}
 
       - uses: xberg-io/actions/setup-mise@v1
         with:
