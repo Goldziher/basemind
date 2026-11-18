@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8",
+  "source_hash": "blake3:020e00400901c88d82d3c9448bb2a0c2ddf8af7aa9204c2a6bf1a794bea85230",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -15,7 +15,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm-init.md": {
-      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
+      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm-scan.md": {
@@ -139,7 +139,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm-init.md": {
-      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
+      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm-scan.md": {
@@ -255,7 +255,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm-init.md": {
-      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
+      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm-scan.md": {
@@ -379,7 +379,7 @@
       "mode": "0644"
     },
     ".opencode/commands/bm-init.md": {
-      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
+      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
       "mode": "0644"
     },
     ".opencode/commands/bm-scan.md": {
@@ -487,7 +487,7 @@
       "mode": "0644"
     },
     ".pi/prompts/bm-init.md": {
-      "content_hash": "blake3:f79a8df7187f05437f2ec10ef1d0287c26da5f1a84587ec143f01aa15f8ac689",
+      "content_hash": "blake3:75997ac8e3582679a1cd37273b348a3341e40e18bdb934680e85b4401aedbdaf",
       "mode": "0644"
     },
     ".pi/prompts/bm-scan.md": {
@@ -603,11 +603,11 @@
       "mode": "0644"
     },
     "commands/bm-init.md": {
-      "content_hash": "blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1",
+      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
       "mode": "0644"
     },
     "commands/bm-init.toml": {
-      "content_hash": "blake3:155d31fc504765b33f73befc15e12eb59f1cf594dccb1ec036f22974e8c707dd",
+      "content_hash": "blake3:a178e2a47aee00686dbd5fd22c0bd86a05a2cbc951d98ddf68de477938285827",
       "mode": "0644"
     },
     "commands/bm-scan.md": {
@@ -659,15 +659,15 @@
       "mode": "0755"
     },
     "hooks/pre-tool-guard": {
-      "content_hash": "blake3:addc34e895b426ddc02210e3bbc7dfc04a9e3956e423cd4c5781ea47c611f1e1",
+      "content_hash": "blake3:2ae62b81ac9475b7f2fdb95915ffc7b7b7f6de76eb1ca197cbd5930ede246563",
       "mode": "0755"
     },
     "hooks/run-hook.cmd": {
-      "content_hash": "blake3:cba29b08bb274ae16f20b5c4e31cc96bd89d25094cc19c1e85b5f8d88806f90c",
+      "content_hash": "blake3:9eff86f3b3a8cdeac3458003343188af5555ea676b1820e744e4e266144a590c",
       "mode": "0755"
     },
     "hooks/session-start": {
-      "content_hash": "blake3:6e5bdca670392d5a058cdc26c770b901d011cfb3ea160d2fdecf18dbc6b82d4e",
+      "content_hash": "blake3:9343e1efbc37b7ad46b6a78020b95cd801f293d0ad3fca352bae6e3aeedcebda",
       "mode": "0755"
     },
     "kimi.plugin.json": {
@@ -687,7 +687,7 @@
       "mode": "0644"
     },
     "scripts/mcp-launch.sh": {
-      "content_hash": "blake3:da21d1b8e3b6582d172d6740a2694077f05141b8d2b55b39ff2a25feed4142ed",
+      "content_hash": "blake3:9a29d66ea592648d7d4162c7b007c936917f4028e434270b466ecddb20a6aac9",
       "mode": "0755"
     },
     "scripts/statusline.sh": {

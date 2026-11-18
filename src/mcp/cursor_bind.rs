@@ -12,8 +12,6 @@
 //! since the cursor was issued) is turned into the same kind of error as a foreign cursor, where
 //! some bodies used to return an empty page that read as "no more results".
 
-use std::future::Future;
-
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 use serde::Serialize;
@@ -132,22 +130,11 @@ fn unbind(tool: &str, cursor: &Cursor, id: u32) -> Result<Cursor, McpError> {
     Ok(Cursor(inner.to_string()))
 }
 
-/// Run a paginated tool body with its cursor bound to the query.
+/// Run a paginated tool body with its cursor bound to the query, where blocking is allowed.
 ///
 /// Every tool that takes `limit` pages through here, so this is also where `limit: 0` is refused,
 /// once and in the same words for all of them.
-pub(super) async fn bound<T, F, Fut>(mut params: T, body: F) -> Result<CallToolResult, McpError>
-where
-    T: Paged,
-    F: FnOnce(T) -> Fut,
-    Fut: Future<Output = Result<CallToolResult, McpError>>,
-{
-    let id = unbind_params(&mut params)?;
-    rebind(T::TOOL, body(params).await?, id)
-}
-
-/// [`bound`] for a synchronous body, run where blocking is allowed.
-pub(super) fn bound_blocking<T, F>(mut params: T, body: F) -> Result<CallToolResult, McpError>
+pub(super) fn bound<T, F>(mut params: T, body: F) -> Result<CallToolResult, McpError>
 where
     T: Paged,
     F: FnOnce(T) -> Result<CallToolResult, McpError>,
@@ -208,15 +195,14 @@ mod tests {
         }
     }
 
-    async fn page(params: CodeOutlineParams) -> Result<CallToolResult, McpError> {
-        bound(params, |inner| async move {
+    fn page(params: CodeOutlineParams) -> Result<CallToolResult, McpError> {
+        bound(params, |inner| {
             assert!(
                 inner.cursor.as_ref().is_none_or(|cursor| cursor.0 == "inner"),
                 "the body sees its own cursor, not the bound one"
             );
             Ok(CallToolResult::structured(json!({ "next_cursor": "inner" })))
         })
-        .await
     }
 
     fn next_cursor(result: &CallToolResult) -> Cursor {
@@ -335,12 +321,11 @@ mod tests {
         assert_ne!(query_id(&twin), query_id(&outline("a.rs", None, None)));
     }
 
-    #[tokio::test]
-    async fn a_zero_limit_is_refused_before_the_body_runs() {
-        let refused = bound(outline("a.rs", Some(0), None), |_| async {
+    #[test]
+    fn a_zero_limit_is_refused_before_the_body_runs() {
+        let refused = bound(outline("a.rs", Some(0), None), |_| {
             panic!("the body must not run for an empty page")
         })
-        .await
         .expect_err("limit 0");
         assert_eq!(
             refused.message,
@@ -348,17 +333,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_cursor_continues_its_own_query_and_no_other() {
-        let first = page(outline("a.rs", Some(1), None)).await.expect("first page");
+    #[test]
+    fn a_cursor_continues_its_own_query_and_no_other() {
+        let first = page(outline("a.rs", Some(1), None)).expect("first page");
         let cursor = next_cursor(&first);
         assert_ne!(cursor.0, "inner", "the cursor handed out is bound");
 
-        page(outline("a.rs", Some(50), Some(cursor.clone())))
-            .await
-            .expect("same query, another limit");
+        page(outline("a.rs", Some(50), Some(cursor.clone()))).expect("same query, another limit");
 
-        let error = page(outline("b.rs", Some(1), Some(cursor))).await.expect_err("foreign");
+        let error = page(outline("b.rs", Some(1), Some(cursor))).expect_err("foreign");
         assert!(
             error.message.contains("belongs to a different query"),
             "{}",
@@ -366,11 +349,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_unbound_cursor_is_refused() {
-        let error = page(outline("a.rs", None, Some(Cursor("inner".into()))))
-            .await
-            .expect_err("no binding");
+    #[test]
+    fn an_unbound_cursor_is_refused() {
+        let error = page(outline("a.rs", None, Some(Cursor("inner".into())))).expect_err("no binding");
         assert!(
             error.message.contains("belongs to a different query"),
             "{}",
@@ -378,14 +359,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_invalidated_page_becomes_the_stale_cursor_error() {
-        let result = bound(outline("a.rs", None, None), |_| async {
+    #[test]
+    fn an_invalidated_page_becomes_the_stale_cursor_error() {
+        let result = bound(outline("a.rs", None, None), |_| {
             Ok(CallToolResult::structured(
                 json!({ "hits": [], "cursor_invalidated": true }),
             ))
-        })
-        .await;
+        });
         let error = result.expect_err("stale");
         assert!(
             error.message.contains("changed since this cursor was issued"),
@@ -393,12 +373,11 @@ mod tests {
             error.message
         );
 
-        let fresh = bound(outline("a.rs", None, None), |_| async {
+        let fresh = bound(outline("a.rs", None, None), |_| {
             Ok(CallToolResult::structured(
                 json!({ "hits": [], "cursor_invalidated": false }),
             ))
         })
-        .await
         .expect("fresh");
         assert!(
             fresh

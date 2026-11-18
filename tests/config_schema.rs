@@ -114,10 +114,6 @@ fn defaults_layer_yields_default_provenance() {
         loaded.provenance.get("documents.reranker.preset"),
         Some(&ConfigSource::Default)
     );
-    assert_eq!(
-        loaded.provenance.get("documents.output.format"),
-        Some(&ConfigSource::Default)
-    );
 }
 
 #[test]

@@ -523,7 +523,7 @@ and NER but not PaddleOCR.
 
 basemind uses `RELEASE_MINOR` from `src/version.rs` as the single source of truth for both:
 
-- **`INDEX_SCHEMA_VER`** — Fjall keyspace format (`<cache>/workspaces/<key>/views/<view>/index.fjall/`)
+- **`INDEX_SCHEMA_VER`** — Fjall keyspace format (`<cache>/groups/<group>/index.fjall/`, one per repository group)
 - **`SCHEMA_VER`** — msgpack blob format (`<cache>/blobs/<hash>.{l1,l2,l3}.msgpack`, global + content-addressed)
 
 When either schema changes (a minor version bump), the next `basemind scan` automatically wipes the old caches and rebuilds from source. Patch releases are always cache-compatible: a change to what extraction should produce for an unchanged file bumps an internal extractor epoch instead, and only the files whose entry or blob predates it are re-extracted. See [Upgrading](/start/upgrading/).
@@ -543,11 +543,14 @@ Nothing basemind-owned is written into the repository. State lives in a machine-
 │   └── <hash>.{fm,chunk,rref,doc}.msgpack  # Frontmatter, code chunks, doc-link refs, documents
 ├── gc.lock                     # Machine-wide blob sweep lock
 ├── gc-state.json               # Last sweep result (shown as `last_gc` by `cache stats`)
+├── groups/<group>/             # one per repository: every worktree of a clone shares it
+│   ├── index.fjall/            # Fjall LSM index
+│   ├── lance/                  # Document retrieval stores, one per embedding model
+│   └── .lock, .lock.meta       # The group lock: one process writes the index
 └── workspaces/<workspace_key>/ # one per worktree root
     ├── views/<view>/           # `working`, `staged`, ...
-    │   ├── index.msgpack
-    │   └── index.fjall/        # Fjall LSM index
-    ├── lance/                  # Vector store (documents, memory, code search)
+    │   └── index.msgpack       # The view's file map
+    ├── lance/                  # Code-search vector store
     ├── git-history.fjall/      # Precomputed git-history index
     ├── git-cache/              # Cached git payloads
     ├── workspace.json          # Records the worktree root this key was derived from

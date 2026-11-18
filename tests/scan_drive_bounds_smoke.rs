@@ -87,6 +87,7 @@ fn the_drive_loop_never_holds_more_than_one_chunk_of_results_live() {
         EmbedMode::Deferred,
         &ScanCancel::new(),
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
 

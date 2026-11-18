@@ -106,6 +106,7 @@ fn run_scan(root: &Path) {
                 &cfg,
                 basemind::scanner::ScanSource::WorkingTree,
                 basemind::scanner::EmbedMode::Inline,
+                basemind::retrieval_wiring::backend(),
             )
             .expect("scan");
         });
@@ -1701,7 +1702,8 @@ async fn reranks_search_results() {
     )
     .unwrap();
 
-    async fn hits_for(root: &Path, config: &str) -> Vec<Value> {
+    /// The hits and the `rerank` report (`ran`, and the `reason` it did not) of one search.
+    async fn hits_for(root: &Path, config: &str) -> (Vec<Value>, Value) {
         std::fs::write(root.join("basemind.toml"), config).unwrap();
         run_scan(root);
         let transport = basemind::mcp::serve_in_memory(root, "working")
@@ -1713,19 +1715,26 @@ async fn reranks_search_results() {
             .await
             .expect("docs_search answers");
         assert_ne!(response.is_error, Some(true), "{}", error_text(&response));
-        let hits = decode_text(&response)["hits"].as_array().cloned().unwrap_or_default();
+        let body = decode_text(&response);
+        let hits = body["hits"].as_array().cloned().unwrap_or_default();
         let _ = service.cancel().await;
         assert!(!hits.is_empty(), "the indexed guide must be found");
-        hits
+        (hits, body["rerank"].clone())
     }
 
-    let documents = "[documents]\nenabled = true\n";
-    for hit in hits_for(root, documents).await {
+    // `$schema` is required: without it basemind.toml does not parse and the defaults (reranker
+    // off) apply with only a logged warning.
+    let documents = "\"$schema\" = \"v1\"\n\n[documents]\nenabled = true\n";
+    let (hits, rerank) = hits_for(root, documents).await;
+    assert_eq!(rerank["ran"], json!(false), "reranker off: {rerank}");
+    for hit in hits {
         assert!(hit.get("rerank_score").is_none(), "reranker off: {hit}");
     }
     // The reranker is driven by `[documents.reranker]` in basemind.toml, not by the query.
     let reranked = format!("{documents}\n[documents.reranker]\nenabled = true\npreset = \"bge-reranker-base\"\n");
-    for hit in hits_for(root, &reranked).await {
+    let (hits, rerank) = hits_for(root, &reranked).await;
+    assert_eq!(rerank["ran"], json!(true), "reranker on did not run: {rerank}");
+    for hit in hits {
         let score = hit["rerank_score"]
             .as_f64()
             .unwrap_or_else(|| panic!("reranker on: {hit}"));
@@ -1847,6 +1856,7 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
                 &cfg,
                 basemind::scanner::ScanSource::WorkingTree,
                 basemind::scanner::EmbedMode::Inline,
+                basemind::retrieval_wiring::backend(),
             )
             .expect("scan");
         });

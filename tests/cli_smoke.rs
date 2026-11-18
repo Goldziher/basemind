@@ -233,6 +233,7 @@ fn cache_stats_reports_blob_accounting() {
     let u = |k: &str| v[k].as_u64().unwrap_or_default();
     let component_sum = u("blobs_bytes")
         + u("views_bytes")
+        + u("group_index_bytes")
         + u("lance_bytes")
         + u("git_cache_bytes")
         + u("telemetry_bytes")

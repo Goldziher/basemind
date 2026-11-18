@@ -84,6 +84,7 @@ fn a_read_only_open_shares_the_group_index_only_when_its_process_holds_it() {
         &crate::config::ConfigV1::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
 
@@ -122,6 +123,7 @@ fn a_query_open_reads_the_group_index_under_a_free_group_lock() {
         &crate::config::ConfigV1::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     drop(writer);
@@ -402,6 +404,7 @@ fn a_sealed_index_without_symbols_is_not_rebuilt_on_every_open() {
             &crate::config::ConfigV1::with_defaults(),
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Deferred,
+            crate::scan_retrieval::Retrieval::inert(),
         )
         .expect("scan");
         assert_eq!(store.index.files.len(), 1, "the fixture file must be indexed");
@@ -452,6 +455,7 @@ fn a_writer_open_rebuilds_a_damaged_index_and_a_read_only_open_leaves_it() {
             &crate::config::ConfigV1::with_defaults(),
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Deferred,
+            crate::scan_retrieval::Retrieval::inert(),
         )
         .expect("scan");
         assert!(
@@ -500,6 +504,7 @@ fn rescan(root: &Path, store: &mut Store) -> Result<crate::scanner::ScanReport, 
         &crate::config::ConfigV1::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
 }
 
@@ -611,6 +616,7 @@ fn a_file_map_from_before_the_blob_namespaces_is_discarded_by_the_writer_open() 
             &crate::config::Config::with_defaults(),
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Deferred,
+            crate::scan_retrieval::Retrieval::inert(),
         )
         .expect("scan")
     };
@@ -666,6 +672,7 @@ fn a_file_map_from_before_the_blob_namespaces_reads_as_a_rescan_owed() {
         &crate::config::Config::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     let view_dir = store.view_dir.clone();
@@ -713,6 +720,7 @@ fn a_vector_store_that_would_not_open_is_tried_once_per_scan_pass() {
         &crate::config::Config::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     assert!(store.lance_or_open(4, "model").is_ok(), "the next pass opens it");
@@ -901,6 +909,7 @@ fn a_reopened_index_publishes_the_written_file_map_not_the_unflushed_one() {
         &crate::config::ConfigV1::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     let entry = store.lookup("a.rs").cloned().expect("indexed");
@@ -917,4 +926,35 @@ fn a_reopened_index_publishes_the_written_file_map_not_the_unflushed_one() {
         live.key_of(&RelPath::from("unflushed.rs")).is_none(),
         "an entry no written map lists is not"
     );
+}
+
+/// A view whose file map does not decode, over a per-view index that still holds the memory notes a
+/// release before 0.30 kept there: the writer open moves the notes to the group store before the
+/// per-view index goes. Discarding it with the map lost the only copy.
+#[test]
+fn a_torn_file_map_does_not_discard_the_notes_of_its_per_view_index() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let working = workspace_cache_dir(root).join(VIEWS_DIR).join(VIEW_WORKING);
+    std::fs::create_dir_all(&working).expect("mk view");
+    {
+        let db = fjall::Database::builder(working.join(crate::index::INDEX_DIR))
+            .open()
+            .expect("open the view's index");
+        let notes = db
+            .keyspace("memory_by_key", fjall::KeyspaceCreateOptions::default)
+            .expect("the notes keyspace of a 0.29 view");
+        notes
+            .insert(b"k".to_vec(), b"only copy".to_vec())
+            .expect("write a note");
+    }
+    std::fs::write(working.join(INDEX_FILE), b"\xff\xff torn \x00").expect("tear the file map");
+
+    let store = Store::open(root, VIEW_WORKING).expect("the writer open rebuilds the view");
+    drop(store);
+
+    let reader = dir.path().join("reader");
+    let db = crate::index::IndexDb::open_with_memory(&reader, &memory_store_dir(root)).expect("open the group store");
+    assert_eq!(db.notes().get(b"k").expect("read").as_deref(), Some(&b"only copy"[..]));
 }

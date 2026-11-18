@@ -22,16 +22,24 @@ struct Escaped {
 }
 
 /// Waits for `escaped.pid`, then for that process to be reparented out of this process's tree.
+///
+/// Out of the tree is not enough: while a double fork's intermediate is exiting, the escapee still
+/// names it as parent but it can no longer be read, so the walk stops there, short of init. The
+/// wait lasts until the reparenting is done and the ancestry reaches init (on macOS, launchd).
 fn escapee(dir: &Path) -> Peer {
     let pid = recorded_pid(&dir.join("escaped.pid"));
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        assert!(crate::procinfo::info(pid).is_some(), "the escaped process is gone");
+        let info = crate::procinfo::info(pid);
+        assert!(info.is_some(), "the escaped process is gone");
         let me = i32::try_from(std::process::id()).unwrap();
-        let away = crate::procinfo::info(pid)
-            .as_ref()
-            .and_then(crate::procinfo::ancestors)
-            .is_some_and(|chain| chain.procs.iter().all(|proc| proc.pid != me));
+        let away = info.as_ref().is_some_and(|info| {
+            crate::procinfo::ancestors(info).is_some_and(|chain| {
+                let top = chain.procs.last().unwrap_or(info);
+                chain.procs.iter().all(|proc| proc.pid != me)
+                    && (chain.complete || (cfg!(target_os = "macos") && top.ppid == 1))
+            })
+        });
         if away {
             return Peer::of_pid(u32::try_from(pid).unwrap());
         }

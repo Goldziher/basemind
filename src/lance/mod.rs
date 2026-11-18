@@ -25,6 +25,7 @@ pub mod docs_types;
 pub mod live;
 mod memory;
 pub mod schema;
+pub mod session;
 
 pub use batch::{BATCH_MAX_DOCS, BATCH_MAX_ROWS, PendingBatch, SCAN_RETENTION};
 pub use memory::MemoryStamps;
@@ -255,7 +256,7 @@ impl LanceStore {
             #[cfg(feature = "code-search")]
             (schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)),
         ];
-        Self::open_with(dir, dim, embedding_model, wait, &tables)
+        Self::open_with(dir, dim, embedding_model, wait, &tables, session::shared())
     }
 
     /// Open the store at `dir` holding exactly `tables`, under the same version, wipe and lock
@@ -267,7 +268,7 @@ impl LanceStore {
         embedding_model: &str,
         tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
     ) -> Result<Self> {
-        Self::open_with(dir, dim, embedding_model, OPEN_LOCK_WAIT, tables)
+        Self::open_with(dir, dim, embedding_model, OPEN_LOCK_WAIT, tables, session::shared())
     }
 
     fn open_with(
@@ -276,6 +277,7 @@ impl LanceStore {
         embedding_model: &str,
         wait: std::time::Duration,
         tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
+        session: Arc<lancedb::Session>,
     ) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let meta_path = dir.join(META_FILE);
@@ -294,7 +296,7 @@ impl LanceStore {
             write_meta(&meta_path, &expected)?;
         }
         ensure_store_id(dir)?;
-        Self::connect(dir, dim, &expected.embedding_model, tables)
+        Self::connect(dir, dim, &expected.embedding_model, tables, session)
     }
 
     /// Open the store at `dir` for reading only, for a caller that does not hold the workspace
@@ -336,15 +338,17 @@ impl LanceStore {
                 actual.schema_ver
             ));
         }
-        Self::connect(dir, dim, &model, &[])
+        Self::connect(dir, dim, &model, &[], session::shared())
     }
 
-    /// Connect to the store at `dir` of model `model_key`, creating those of `tables` it lacks.
+    /// Connect to the store at `dir` of model `model_key` through `session` (its caches), creating
+    /// those of `tables` it lacks.
     fn connect(
         dir: &Path,
         dim: u16,
         model_key: &str,
         tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
+        session: Arc<lancedb::Session>,
     ) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -352,7 +356,7 @@ impl LanceStore {
             .context("build tokio runtime for LanceStore")?;
         let uri = dir.to_string_lossy().into_owned();
         let connection = runtime
-            .block_on(async { lancedb::connect(&uri).execute().await })
+            .block_on(async { lancedb::connect(&uri).session(session).execute().await })
             .with_context(|| format!("open lancedb at {uri}"))?;
 
         runtime.block_on(async {

@@ -261,12 +261,47 @@ def _mark_used(cache_dir: Path) -> None:
         (cache_dir / LAST_USED).touch()
 
 
+def _process_args() -> list[str] | None:
+    """The command line of every running process, or ``None`` when they cannot be listed."""
+    if os.name == "nt":
+        return None
+    try:
+        # -ww: BSD and macOS ps otherwise cut each line at the terminal width.
+        listing = subprocess.run(  # noqa: S603 -- fixed argv, no shell
+            ["ps", "-A", "-ww", "-o", "args="],  # noqa: S607 -- ps from PATH, as the plugin launcher runs it
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return listing.splitlines()
+
+
+def _version_in_use(entry: Path) -> bool:
+    """Whether a running process may have been started from the cached version directory ``entry``.
+
+    The plugin launcher's test: a process whose command line starts with the directory, as given
+    or resolved. Yes when the processes cannot be listed (Windows, no ``ps``): an unused directory
+    costs disk, a deleted one in use costs a running daemon its binary.
+    """
+    lines = _process_args()
+    if lines is None:
+        return True
+    prefixes = {f"{entry}{os.sep}"}
+    with contextlib.suppress(OSError):
+        prefixes.add(f"{entry.resolve()}{os.sep}")
+    return any(line.startswith(prefix) for line in lines for prefix in prefixes)
+
+
 def _prune_stale_versions(keep_version: str) -> None:
     """Remove other versions' cache dirs once nothing has used them for ``PRUNE_AFTER_DAYS``.
 
     Two environments may run different versions side by side, and a running daemon re-executes
     its binary, so a version is removed only when its last-use marker (or, without one, the
-    directory itself) is older than the window, and never while its install lock exists.
+    directory itself) is older than the window, never while its install lock exists, and never
+    while a process runs from it: a daemon can outlive the window.
     """
     root = _cache_root()
     if not root.is_dir():
@@ -284,7 +319,7 @@ def _prune_stale_versions(keep_version: str) -> None:
             last_used = (marker if marker.exists() else entry).stat().st_mtime
         except OSError:
             continue
-        if last_used < cutoff:
+        if last_used < cutoff and not _version_in_use(entry):
             shutil.rmtree(entry, ignore_errors=True)
 
 
@@ -382,8 +417,18 @@ def ensure_binary() -> str:
 
 
 def run_basemind(args: list[str]) -> None:
-    """Run the basemind binary with the given arguments."""
+    """Run the basemind binary with the given arguments.
+
+    On Unix the binary replaces this process, so a signal reaches it directly and its exit status,
+    a death by signal included, is the command's. Windows has no ``exec``: the wrapper waits.
+    """
     binary_path = ensure_binary()
+
+    if os.name != "nt":
+        try:
+            os.execv(binary_path, [binary_path, *args])  # noqa: S606 -- the verified, cached binary
+        except OSError as exc:
+            raise RuntimeError(f"Failed to run basemind at {binary_path}: {exc}") from exc
 
     try:
         result = subprocess.run([binary_path, *args], check=False)

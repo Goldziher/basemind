@@ -69,14 +69,12 @@ pub(crate) fn scanner_pool(scan_threads: usize) -> &'static rayon::ThreadPool {
 }
 
 /// Drive the per-file pipeline across `candidates` on the rayon pool, batching index commits
-/// per worker. Order of the returned `FileResult`s is unspecified (the parallel fold
-/// concatenates per-worker slices) — every consumer keys by `path`, never by position.
+/// per worker. Order of the returned `FileResult`s is unspecified (each worker's slice is
+/// concatenated) — every consumer keys by `path`, never by position.
 ///
-/// `max_workers` caps how many of the pool's threads this call may spread across; `0` leaves
-/// rayon's own splitting alone, which is what the unthrottled path wants (finer splits balance a
-/// batch whose files differ by orders of magnitude in parse cost). A non-zero value is the drive
-/// loop's actuating response to sustained memory pressure — see [`crate::scanner_drive`] — and is
-/// applied as a minimum split length, so rayon cannot subdivide the chunk past that many jobs. The
+/// `max_workers` caps how many of the pool's threads this call may spread across; `0` uses the
+/// whole pool. A non-zero value is the drive loop's actuating response to sustained memory pressure,
+/// and the embedding pass's match to the embed pool's width — see [`crate::scanner_drive`]. The
 /// rayon pool itself is process-global and fixed at first use; this narrows a single call, not it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_candidates(
@@ -91,49 +89,89 @@ pub(crate) fn run_candidates(
     cancel: &ScanCancel,
     max_workers: usize,
 ) -> Vec<FileResult> {
-    let min_len = if max_workers == 0 {
-        1
-    } else {
-        candidates.len().div_ceil(max_workers).max(1)
+    let pool = scanner_pool(config.resources.scan_threads);
+    let workers = match max_workers {
+        0 => pool.current_num_threads(),
+        n => n.min(pool.current_num_threads()),
     };
-    scanner_pool(config.resources.scan_threads).install(|| {
-        candidates
-            .par_iter()
-            .with_min_len(min_len)
-            .fold(
-                || WorkerIndexBatch::new(store),
-                |mut batch, rel| {
-                    // Cooperative cancellation, per-file granularity: one relaxed load before each ~keep
-                    // candidate. A skipped file emits no FileResult, so the caller can tell a ~keep
-                    // partial pass apart from a complete one (and must skip its stale purge). ~keep
-                    // A fatal index commit failure stops the walk the same way: see `scan_drive`. ~keep
-                    if cancel.is_cancelled() || store.index_db.as_ref().is_some_and(IndexDb::has_fatal_fault) {
-                        return batch;
-                    }
-                    // One file whose extraction panics is reported failed and keeps its prior rows ~keep
-                    // (`keeps_prior_entry`); unwinding would fail this scan and every later one. ~keep
-                    let result = crate::scanner_lanes::contain_panic(|| {
-                        process_file(root, rel, filters, store, source, config, scope, &mut batch, embed)
-                    })
-                    .unwrap_or_else(|reason| {
-                        tracing::warn!(rel, %reason, "extraction panicked; the file is reported failed");
-                        FileResult::bare(
-                            rel.clone(),
-                            FileStatus::ExtractFailed {
-                                msg: format!("extraction panicked: {reason}"),
-                            },
-                        )
-                    });
-                    batch.push_result(result);
-                    batch
-                },
-            )
-            .map(WorkerIndexBatch::finish)
-            .reduce(Vec::new, |mut a, mut b| {
-                a.append(&mut b);
-                a
-            })
+    pool.install(|| {
+        claim_each(
+            candidates,
+            workers,
+            || WorkerIndexBatch::new(store),
+            |batch, rel| {
+                // Cooperative cancellation, per-file granularity: one relaxed load before each ~keep
+                // candidate. A skipped file emits no FileResult, so the caller can tell a ~keep
+                // partial pass apart from a complete one (and must skip its stale purge). ~keep
+                // A fatal index commit failure stops the walk the same way: see `scan_drive`. ~keep
+                if cancel.is_cancelled() || store.index_db.as_ref().is_some_and(IndexDb::has_fatal_fault) {
+                    return false;
+                }
+                // One file whose extraction panics is reported failed and keeps its prior rows ~keep
+                // (`keeps_prior_entry`); unwinding would fail this scan and every later one. ~keep
+                let result = crate::scanner_lanes::contain_panic(|| {
+                    process_file(root, rel, filters, store, source, config, scope, batch, embed)
+                })
+                .unwrap_or_else(|reason| {
+                    tracing::warn!(rel, %reason, "extraction panicked; the file is reported failed");
+                    FileResult::bare(
+                        rel.clone(),
+                        FileStatus::ExtractFailed {
+                            msg: format!("extraction panicked: {reason}"),
+                        },
+                    )
+                });
+                batch.push_result(result);
+                true
+            },
+        )
+        .into_iter()
+        .flat_map(WorkerIndexBatch::finish)
+        .collect()
     })
+}
+
+/// Run `step` over `items` with at most `workers` jobs on the current rayon pool. Each job owns one
+/// accumulator from `init` and claims the next unclaimed item until none is left, or until any
+/// `step` returns `false` (which stops every job before its next claim). Returns the accumulators.
+///
+/// Claiming one item at a time is what keeps a narrowed call parallel. Splitting `items` into
+/// `workers` contiguous ranges instead (a rayon minimum split length) pins each range to one
+/// thread: when the expensive items cluster — a directory of large documents, each embedded
+/// inline — one worker runs them all serially while the rest sit idle, and nothing can steal them.
+pub(crate) fn claim_each<T, A>(
+    items: &[T],
+    workers: usize,
+    init: impl Fn() -> A + Sync + Send,
+    step: impl Fn(&mut A, &T) -> bool + Sync + Send,
+) -> Vec<A>
+where
+    T: Sync,
+    A: Send,
+{
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let next = AtomicUsize::new(0);
+    let stopped = AtomicBool::new(false);
+    (0..workers.clamp(1, items.len()))
+        .into_par_iter()
+        .with_max_len(1)
+        .map(|_| {
+            let mut acc = init();
+            while !stopped.load(Ordering::Relaxed) {
+                let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                    break;
+                };
+                if !step(&mut acc, item) {
+                    stopped.store(true, Ordering::Relaxed);
+                }
+            }
+            acc
+        })
+        .collect()
 }
 
 /// Refresh the mtime of the blobs a scan reuses for a path the file map does not yet name them for.
@@ -418,7 +456,7 @@ fn process_file(
         match store.read_l1_by_hex(hash_hex_str) {
             Ok(Some(l1)) if l1.language == lang && l1.extract_epoch < extract::EXTRACT_EPOCH => {
                 stale_epoch = true;
-                stale_had_l2 = matches!(store.read_l2_by_hex(hash_hex_str), Ok(Some(_)));
+                stale_had_l2 = store.has_l2_by_hex(hash_hex_str);
                 None
             }
             Ok(Some(l1)) if l1.language == lang => {
@@ -576,7 +614,7 @@ pub fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
 const RACY_WINDOW_NANOS: u64 = 2_000_000_000;
 
 /// The wall clock as nanoseconds since the Unix epoch, saturating like [`mtime_nanos`].
-fn now_nanos() -> i64 {
+pub(crate) fn now_nanos() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
@@ -694,6 +732,78 @@ pub fn looks_binary(bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::scanner_lanes::run_optional_lane;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
+
+    fn pool(threads: usize) -> rayon::ThreadPool {
+        rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()
+    }
+
+    /// The embedding pass narrows the drive to two workers, and a repository's large documents sit
+    /// side by side in path order. Item 0 cannot finish until another worker is running item 1
+    /// beside it: with the candidates cut into two contiguous halves, items 0 and 1 share a half and
+    /// one worker, so the rendezvous never happens.
+    #[test]
+    fn claim_each_spreads_adjacent_slow_items_across_workers() {
+        let arrived = (Mutex::new(0_usize), Condvar::new());
+        let rendezvous = || {
+            let (count, cvar) = &arrived;
+            let mut count = count.lock().unwrap();
+            *count += 1;
+            cvar.notify_all();
+            let (count, timeout) = cvar
+                .wait_timeout_while(count, Duration::from_secs(10), |n| *n < 2)
+                .unwrap();
+            drop(count);
+            !timeout.timed_out()
+        };
+        let items: Vec<usize> = (0..8).collect();
+        let met: Vec<Vec<bool>> = pool(4).install(|| {
+            claim_each(&items, 2, Vec::new, |met, &i| {
+                if i < 2 {
+                    met.push(rendezvous());
+                }
+                true
+            })
+        });
+        let met: Vec<bool> = met.into_iter().flatten().collect();
+        assert_eq!(met, [true, true], "items 0 and 1 must run on two workers at once");
+    }
+
+    #[test]
+    fn claim_each_runs_every_item_once_within_the_worker_cap() {
+        let (live, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let items: Vec<usize> = (0..64).collect();
+        let accs: Vec<Vec<usize>> = pool(4).install(|| {
+            claim_each(&items, 2, Vec::new, |seen, &i| {
+                let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                live.fetch_sub(1, Ordering::SeqCst);
+                seen.push(i);
+                true
+            })
+        });
+        assert!(accs.len() <= 2, "{} accumulators for a cap of 2", accs.len());
+        assert!(peak.load(Ordering::SeqCst) <= 2, "peak {}", peak.load(Ordering::SeqCst));
+        let mut seen: Vec<usize> = accs.into_iter().flatten().collect();
+        seen.sort_unstable();
+        assert_eq!(seen, items);
+    }
+
+    #[test]
+    fn claim_each_stops_claiming_once_a_step_declines() {
+        let items: Vec<usize> = (0..16).collect();
+        let accs = pool(2).install(|| {
+            claim_each(&items, 1, Vec::new, |seen, &i| {
+                seen.push(i);
+                i != 3
+            })
+        });
+        assert_eq!(accs, [vec![0, 1, 2, 3]]);
+        assert!(claim_each(&[] as &[usize], 4, Vec::<usize>::new, |_, _| true).is_empty());
+    }
 
     #[cfg(unix)]
     #[test]

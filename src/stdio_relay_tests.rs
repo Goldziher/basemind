@@ -835,13 +835,6 @@ fn takeover_errors_decide_how_the_relay_reconnects() {
         pid: 1,
     });
     assert_eq!(stale.failure(), ReconnectFailure::Blocked);
-    let failing = through_context(SingletonError::FailingPredecessor {
-        version: "0.1.0".to_string(),
-        pid: 1,
-        store: "/tmp/store.fjall".into(),
-        message: "poisoned".to_string(),
-    });
-    assert_eq!(failing.failure(), ReconnectFailure::Blocked);
     let too_many = through_context(SingletonError::TooManyDaemons { count: 8, max: 8 });
     assert_eq!(too_many.failure(), ReconnectFailure::Blocked);
     assert!(

@@ -70,7 +70,15 @@ async fn serve(root: &Path) -> Server {
     tokio::task::spawn_blocking(move || {
         let mut store = Store::open(&owned, VIEW_WORKING).unwrap();
         let cfg = ConfigV1::with_defaults();
-        scan(&owned, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+        scan(
+            &owned,
+            &mut store,
+            &cfg,
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
+        )
+        .unwrap();
     })
     .await
     .expect("scan task");

@@ -35,6 +35,8 @@ pub use crate::scanner_file::looks_binary;
 /// so embedders reach it through the scanner's public surface.
 pub use crate::scanner_candidates::{ALLOW_EXTRA_ROOTS_ENV, allow_extra_roots};
 
+/// The retrieval stack a scan writes through; this build's is `crate::retrieval_wiring::backend`.
+pub use crate::scan_retrieval::Retrieval;
 /// Where a scan's per-file outcomes go. Replaced `ScanReport.results`, which every caller paid for
 /// and only two ever read; the chunked drive loop that keeps live results O(chunk) lives with it.
 pub use crate::scanner_drive::{CollectObserver, NullObserver, ScanObserver};
@@ -413,8 +415,9 @@ pub fn scan(
     config: &Config,
     source: ScanSource<'_>,
     embed: EmbedMode,
+    retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
-    scan_with_cancel(root, store, config, source, embed, &ScanCancel::new())
+    scan_with_cancel(root, store, config, source, embed, &ScanCancel::new(), retrieval)
 }
 
 /// [`scan`] with a cooperative [`ScanCancel`] token. A tripped token makes the pass return early
@@ -428,8 +431,9 @@ pub fn scan_with_cancel(
     source: ScanSource<'_>,
     embed: EmbedMode,
     cancel: &ScanCancel,
+    retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
-    scan_with_observer(root, store, config, source, embed, cancel, &mut NullObserver)
+    scan_with_observer(root, store, config, source, embed, cancel, &mut NullObserver, retrieval)
 }
 
 /// [`scan_with_cancel`] reporting each file's outcome to `observer` as it is absorbed.
@@ -447,6 +451,7 @@ pub fn scan_with_observer(
     embed: EmbedMode,
     cancel: &ScanCancel,
     observer: &mut dyn ScanObserver,
+    retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
     // Held for the whole pass and dropped on every exit — the two cancellation returns, the `?` on ~keep
     // a walk that hit the candidate ceiling, an unwinding panic. That is what makes a surviving ~keep
@@ -461,7 +466,7 @@ pub fn scan_with_observer(
     let unlisted = preflight(store)?;
 
     let submodule_roots = submodule_roots_for_source(root, &source);
-    let mut filters = Filters::build(config, submodule_roots)?;
+    let mut filters = Filters::build(config, submodule_roots, retrieval)?;
     let policy = matches!(source, ScanSource::WorkingTree)
         .then(|| crate::scanner_policy::detect(store, config))
         .filter(|p| matches!(embed, EmbedMode::Inline) && p.changed);
@@ -670,15 +675,18 @@ fn advance(
 ///
 /// Paths outside `root`, inside `.basemind/`, or not matching the include globs are
 /// silently dropped (the watcher pre-filters but we re-check defensively).
-/// Removed files (path no longer exists) are purged from the index.
+/// Removed files (path no longer exists) are purged from the index. A directory path is expanded
+/// into the files under it on disk and the keys the index holds under it, so a renamed or moved
+/// directory reported as one path re-indexes its new location and prunes its old one.
 pub fn scan_paths(
     root: &Path,
     store: &mut Store,
     config: &Config,
     paths: &[PathBuf],
     embed: EmbedMode,
+    retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
-    scan_paths_with_cancel(root, store, config, paths, embed, &ScanCancel::new())
+    scan_paths_with_cancel(root, store, config, paths, embed, &ScanCancel::new(), retrieval)
 }
 
 /// [`scan_paths`] with a cooperative [`ScanCancel`] token. Unlike [`scan_with_cancel`], the removal
@@ -692,8 +700,9 @@ pub fn scan_paths_with_cancel(
     paths: &[PathBuf],
     embed: EmbedMode,
     cancel: &ScanCancel,
+    retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
-    scan_paths_with_observer(root, store, config, paths, embed, cancel, &mut NullObserver)
+    scan_paths_with_observer(root, store, config, paths, embed, cancel, &mut NullObserver, retrieval)
 }
 
 /// [`scan_paths_with_cancel`] reporting each file's outcome to `observer`. The incremental
@@ -708,8 +717,9 @@ pub fn scan_paths_with_observer(
     embed: EmbedMode,
     cancel: &ScanCancel,
     observer: &mut dyn ScanObserver,
+    retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
-    scan_paths_inner(root, store, config, paths, embed, cancel, observer, false)
+    scan_paths_inner(root, store, config, paths, embed, cancel, observer, false, retrieval)
 }
 
 /// [`scan_paths_with_observer`] for paths a person or an agent named (`basemind rescan <paths>`,
@@ -726,8 +736,9 @@ pub fn scan_named_paths_with_observer(
     embed: EmbedMode,
     cancel: &ScanCancel,
     observer: &mut dyn ScanObserver,
+    retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
-    scan_paths_inner(root, store, config, paths, embed, cancel, observer, true)
+    scan_paths_inner(root, store, config, paths, embed, cancel, observer, true, retrieval)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -740,24 +751,23 @@ fn scan_paths_inner(
     cancel: &ScanCancel,
     observer: &mut dyn ScanObserver,
     verify_named: bool,
+    retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
     #[cfg(any(unix, windows))] // Blobs written without an fsync; free inside a hosting process. ~keep
     let _hosting = crate::scan_evidence::HostingMarker::begin();
     crate::scanner_integrity::claim_writer(store)?;
     if crate::scanner_integrity::needs_full_rebuild(store)? {
-        return scan_with_observer(root, store, config, source, embed, cancel, observer);
+        return scan_with_observer(root, store, config, source, embed, cancel, observer, retrieval);
     }
     store.retry_vector_store();
-    let mut filter = IndexFilter::new(root, config)?;
-    let expanded;
-    let paths = if verify_named {
+    let mut filter = IndexFilter::new(root, config, retrieval)?;
+    if verify_named {
         filter.verify_blobs();
-        expanded = crate::scanner_named::expand_named_dirs(root, &store.index, config, filter.filters(), paths);
-        expanded.as_slice()
-    } else {
-        paths
-    };
+    }
+    // Named and watched paths alike: a watcher reports a renamed or moved directory as one path.
+    let expanded = crate::scanner_named::expand_named_dirs(root, &store.index, config, filter.filters(), paths);
+    let paths = expanded.as_slice();
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();

@@ -82,11 +82,43 @@ use crate::path::RelPath;
 /// would disagree with the live walk.
 ///
 /// `+8` rebuilds them again: a root commit listed every directory of its tree as an added file.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 8;
+///
+/// `+9` recreates every keyspace at [`KEYSPACE_MEMTABLE_BYTES`]: fjall persists the memtable size
+/// at keyspace creation, so a store created at the 64 MiB default would keep it.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 9;
 
-/// LZ4 on data and index blocks at every level; see [`crate::index`]'s `index_keyspace_options`.
+/// Memtable ceiling of each keyspace, in bytes. At fjall's 64 MiB default, eight keyspaces with up
+/// to four sealed memtables queued behind each would let one database (the daemon keeps one per
+/// repository) hold gigabytes; 8 MiB is the floor of fjall's recommended band.
+const KEYSPACE_MEMTABLE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Block cache, in bytes, against fjall's 32 MiB default: an indexed query reads a few posting
+/// lists and commit heads.
+const CACHE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Ceiling of the journal on disk, in bytes: fjall's minimum, against a 512 MiB default.
+const JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Open-file cache of one database, against fjall's 150 (macOS) / 900 (Linux) default. Counted by
+/// the daemon's descriptor budget ([`crate::comms::fd_budget`]).
+pub(crate) const CACHED_FILES: usize = 64;
+
+/// The database at `dir` under this module's budgets.
+fn open_database(dir: &Path) -> Result<Database, fjall::Error> {
+    Database::builder(dir)
+        .worker_threads(1)
+        .cache_size(CACHE_BYTES)
+        .max_journaling_size(JOURNAL_BYTES)
+        .max_cached_files(Some(CACHED_FILES))
+        .open()
+}
+
+/// The memtable ceiling, then LZ4 on data and index blocks at every level; see [`crate::index`]'s
+/// `index_keyspace_options`. Fjall persists both when a keyspace is created, which is why the
+/// ceiling shipped with a [`GIT_HISTORY_SCHEMA`] bump.
 fn keyspace_options() -> KeyspaceCreateOptions {
     KeyspaceCreateOptions::default()
+        .max_memtable_size(KEYSPACE_MEMTABLE_BYTES)
         .data_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
         .index_block_compression_policy(CompressionPolicy::all(CompressionType::Lz4))
 }
@@ -346,7 +378,7 @@ impl GitHistoryIndex {
             path: dir.to_path_buf(),
             source,
         })?;
-        let mut db = Database::builder(dir).worker_threads(1).open()?;
+        let mut db = open_database(dir)?;
         let mut meta = db.keyspace("gh_meta", keyspace_options)?;
         let on_disk_ver = meta.get(keys::META_SCHEMA_VER)?.and_then(|b| keys::parse_u32(&b));
         if let Some(stored) = on_disk_ver.filter(|ver| *ver > GIT_HISTORY_SCHEMA) {
@@ -363,7 +395,7 @@ impl GitHistoryIndex {
                 path: dir.to_path_buf(),
                 source,
             })?;
-            db = Database::builder(dir).worker_threads(1).open()?;
+            db = open_database(dir)?;
             meta = db.keyspace("gh_meta", keyspace_options)?;
         }
         let commit_by_ord = db.keyspace("gh_commit_by_ord", keyspace_options)?;
@@ -772,6 +804,31 @@ mod tests {
             .expect("open raw index");
         let meta = db.keyspace("gh_meta", keyspace_options).expect("meta keyspace");
         meta.get(key).expect("read meta").map(|value| value.to_vec())
+    }
+
+    /// `max_memtable_size` has no getter and fjall persists it at keyspace creation, so this
+    /// observes it after a reopen: writing past the budget, but far below fjall's 64 MiB default,
+    /// must rotate and flush the memtable.
+    #[test]
+    fn a_reopened_keyspace_flushes_at_its_memtable_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        drop(GitHistoryIndex::open(dir.path()).expect("create index"));
+        let index = GitHistoryIndex::open(dir.path()).expect("reopen index");
+        let keyspace = &index.local().commit_text_by_ord;
+        let value = vec![0u8; 4_096];
+        let rows = 12 * 1024 * 1024 / value.len();
+        for row in 0..rows {
+            keyspace.insert(row.to_be_bytes(), value.as_slice()).expect("insert");
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while keyspace.disk_space() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            keyspace.disk_space() > 0,
+            "no flush after {} bytes: fjall kept its 64 MiB default memtable",
+            rows * value.len()
+        );
     }
 
     #[test]

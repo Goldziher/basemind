@@ -22,8 +22,7 @@ pub use code::CodeSearchConfig;
 pub use comms::CommsConfig;
 pub use documents::{
     ApiKey, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
-    OcrBackend, OcrConfig, OutputConfig, OutputFormat, RerankerConfig, SecretString, SummarizationConfig,
-    SummarizationStrategy,
+    OcrBackend, OcrConfig, RerankerConfig, SecretString, SummarizationConfig, SummarizationStrategy,
 };
 pub use layered::{ConfigLayers, LoadedConfig, NoOverrides, OverrideLayer, defaults_only, merge_layers};
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};

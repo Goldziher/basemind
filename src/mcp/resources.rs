@@ -182,13 +182,18 @@ impl BasemindServer {
         self.state.await_cache_ready().await;
         let state = &self.state;
         let result = match parsed {
-            ResourceUri::Status => super::helpers_admin::index_status(state).await?,
+            ResourceUri::Status => {
+                let params = super::types_tools::IndexStatusParams {};
+                super::adapter::run(&state.shared, params, crate::engine::Workspace::index_status).await?
+            }
             ResourceUri::Outline(path) => {
                 let params: super::types_tools::CodeOutlineParams = from_args(json!({ "path": path }))?;
                 super::adapter::run(&state.shared, params, crate::engine::Workspace::code_outline).await?
             }
             ResourceUri::Memory(key) => {
-                let result = super::helpers_memory::memory_search(state, from_args(json!({ "key": key }))?).await?;
+                let params: super::types_tools::MemorySearchToolParams = from_args(json!({ "key": key }))?;
+                let result =
+                    super::adapter::run(&state.shared, params, crate::engine::Workspace::memory_search).await?;
                 let text = tool_text(result, uri)?;
                 if text.trim() == "null" {
                     return Err(McpError::resource_not_found(

@@ -807,6 +807,35 @@ async fn an_active_connection_pins_its_warm_read_stack() {
     );
 }
 
+/// The idle clocks run from a workspace's last use, and a session uses it until it ends: a long
+/// session that drains must not leave its stack and store entry looking as old as its connect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drained_session_restarts_the_idle_clock() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+    drop(hosted_stack(&pool, workspace.path()).await);
+
+    let guard = pool.begin_conn(workspace.path()).expect("begin conn");
+    let session = Duration::from_millis(300);
+    std::thread::sleep(session);
+    drop(guard);
+
+    assert_eq!(
+        pool.evict_idle_read_stacks(session / 2),
+        0,
+        "the stack was used until the session ended"
+    );
+    assert_eq!(
+        pool.evict_idle(session / 2),
+        0,
+        "the store entry was used until the session ended"
+    );
+    assert_eq!(pool.len(), 1);
+}
+
 #[test]
 fn a_changed_basemind_toml_replaces_the_cached_config_and_a_broken_one_keeps_it() {
     store::init_isolated_cache();

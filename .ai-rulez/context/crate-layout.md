@@ -34,12 +34,12 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 - `mcp/` — MCP server: fifteen verb tools, one per job with an exact schema (ADR-0018), plus the three deferred agent tools (`agent_post`, `agent_inbox`, `agent_threads`) in a `comms` build (ADR-0021).
   - `mod.rs` — server bootstrap.
   - `types_tools.rs` — one `deny_unknown_fields` params struct per verb tool, and the `tool_args!` table that names each tool and builds `VERB_TOOLS`.
-  - `strict.rs`, `tool_contract.rs` — `Strict<T>` argument validation (unknown field → did-you-mean + accepted list), `answer` (failures become `isError` results), `not_indexed` / `feature_missing`, the default token budget, and `finalize_router` (always-load marker, schema compaction).
+  - `strict.rs`, `tool_contract.rs` — `Strict<T>` argument validation (unknown field → did-you-mean + accepted list), `answer` (failures become `isError` results), and `finalize_router` (always-load marker, schema compaction).
+  - `adapter.rs`, `cursor_bind.rs` — run an engine operation for a shim or a CLI command: a blocking thread, `EngineError` → `McpError`, the cursor bound to its query, the telemetry row.
   - `tools.rs` (`code_*`, `find_files`) + `tools_git.rs` (`git_*`) / `tools_memory.rs` (`docs_search`, `memory_*`) / `tools_admin.rs` (`index_*`) — one thin `#[tool]` shim per tool plus the `<tool>_call` method the CLI also runs (1000-line cap each). `tools_comms.rs` holds the agent tools.
-  - `helpers.rs` + `helpers_<area>.rs` (`helpers_calls.rs` / `helpers_code.rs` / `helpers_code_search.rs` / `helpers_documents.rs` / `helpers_expand.rs` / `helpers_git.rs` / `helpers_grep.rs` / `helpers_impls.rs` / `helpers_memory.rs` / `helpers_admin.rs`, and more) — the tool bodies.
-  - `memory.rs` — the `run_memory_*` and `run_search_documents` bodies behind `memory_save`, `memory_search` and `docs_search`, over LanceDB.
-  - `types.rs` + `types_<area>.rs` — response structs and the internal params the helpers take, `JsonSchema`-derived.
-  - `cursor.rs`, `savings.rs`, `telemetry.rs` — pagination cursors, token-savings heuristics (keyed by tool name, with the pre-ADR-0018 `code:outline`-style keys mapped onto them), telemetry sink.
+  - `helpers.rs`, `helpers_telemetry.rs` — what is left on the MCP side; every other tool body is in `engine/`.
+  - `savings.rs`, `telemetry.rs` — token-savings heuristics (keyed by tool name, with the pre-ADR-0018 `code:outline`-style keys mapped onto them), telemetry sink.
+- `engine/` — the engine API (ADR-0039), which names no rmcp type: `ops/<tool>.rs` (one synchronous `impl Workspace` method per verb tool, returning `Result<_, EngineError>`), `git/` (the git tools), `types/<area>.rs` (their responses), `memory/`, `refs/`, and the contract pieces every body uses (`budget.rs`, `cursor.rs`, `filters.rs`, `freshness.rs`, `pick.rs`, `files.rs`, `error.rs`).
 - `query.rs` — read-side helpers shared between MCP tools and the CLI.
 - `git.rs` + `git_cache.rs` — `gix`-backed history / blame / churn.
 - `path.rs` — `RelPath` byte-precise repo-relative paths.
@@ -57,7 +57,8 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 #### Global cache (`~/.local/share/basemind/`, created at scan time)
 
 - `cache/blobs/v<schema>/<hash>.{fm,chunk,rref,doc}.msgpack` — content-addressed extraction blobs (dedup across files / views), one namespace per blob schema so two installed versions never share a blob.
-- `cache/workspaces/<workspace_key>/views/<view>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs), beside `index.msgpack` (the file map) and `pending-vectors.msgpack` (paths owed vector rows).
+- `cache/groups/<group>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs), one per repository group (ADR-0028, ADR-0036): every worktree and view of a repository shares it, held by one process under the group's `.lock`. Beside it the group's document retrieval stores in `lance/`.
+- `cache/workspaces/<workspace_key>/views/<view>/` — per view, `index.msgpack` (the file map) and `pending-vectors.msgpack` (paths owed vector rows).
 
 #### Other
 

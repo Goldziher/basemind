@@ -12,7 +12,7 @@ use rmcp::model::CallToolResult;
 use serde::Serialize;
 
 use super::ServerState;
-use super::cursor_bind::{Paged, bound_blocking};
+use super::cursor_bind::{Paged, bound};
 use super::helpers::json_result;
 use super::strict::ToolArgs;
 use super::telemetry::Telemetry;
@@ -20,6 +20,9 @@ use crate::engine::{EngineError, Workspace};
 
 /// One engine operation: a verb tool's body over a [`Workspace`].
 pub(crate) type Op<P, R> = fn(&Workspace, P) -> Result<R, EngineError>;
+
+/// Key of the `data` field that marks a tool error as contention for the workspace writer lock.
+pub(crate) const BUSY_DATA: &str = "busy";
 
 /// Each variant keeps its message; the code is what the CLI turns into an exit status.
 impl From<EngineError> for McpError {
@@ -29,6 +32,10 @@ impl From<EngineError> for McpError {
             EngineError::Unavailable(message) | EngineError::IndexUnavailable(message) => {
                 McpError::invalid_request(message, None)
             }
+            EngineError::Busy(message) => {
+                McpError::invalid_request(message, Some(serde_json::json!({ BUSY_DATA: true })))
+            }
+            EngineError::Cancelled => super::tasks::request_cancelled(),
             other => McpError::internal_error(other.to_string(), None),
         }
     }
@@ -36,40 +43,57 @@ impl From<EngineError> for McpError {
 
 /// Run `body` on a blocking thread: an operation reads the store, the disk and the in-RAM map
 /// synchronously, which must not park a runtime worker. A panic in it resumes on the caller.
-async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+pub(super) async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
     match tokio::task::spawn_blocking(body).await {
         Ok(value) => value,
         Err(join) => std::panic::resume_unwind(join.into_panic()),
     }
 }
 
+/// [`blocking`] for a tool body: a panic in it, or a runtime shutting down under it, comes back as an
+/// internal error the shim reports as an `isError` result, rather than unwinding into the request
+/// handler and leaving the client waiting on a response that never comes.
+async fn blocking_answer(
+    body: impl FnOnce() -> Result<CallToolResult, McpError> + Send + 'static,
+) -> Result<CallToolResult, McpError> {
+    tokio::task::spawn_blocking(body)
+        .await
+        .unwrap_or_else(|join| Err(McpError::internal_error(format!("tool task failed: {join}"), None)))
+}
+
 /// `op`'s answer as a tool result.
-fn answer<P, R: Serialize>(ws: &Workspace, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError> {
+fn answer<P, R: Serialize>(
+    ws: &Workspace,
+    p: P,
+    op: impl FnOnce(&Workspace, P) -> Result<R, EngineError>,
+) -> Result<CallToolResult, McpError> {
     json_result(&op(ws, p)?)
 }
 
 /// A verb-tool call: refuse a zero `limit`, unbind the cursor, run `op`, bind the next cursor, and
 /// record the telemetry row under the tool's name. One `spawn_blocking` for the whole call.
-pub(super) async fn call<P, R>(state: &ServerState, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+pub(super) async fn call<P, R, O>(state: &ServerState, p: P, op: O) -> Result<CallToolResult, McpError>
 where
     P: Paged + Send + 'static,
     R: Serialize + 'static,
+    O: FnOnce(&Workspace, P) -> Result<R, EngineError> + Send + 'static,
 {
     let ws = Arc::clone(&state.shared);
     let telemetry = Arc::clone(&state.telemetry);
-    blocking(move || call_blocking(&ws, &telemetry, p, op)).await
+    blocking_answer(move || call_blocking(&ws, &telemetry, p, op)).await
 }
 
 /// [`call`] for a verb tool that pages nothing: no `limit` to refuse, no cursor to bind; the same
 /// telemetry row.
-pub(super) async fn call_unpaged<P, R>(state: &ServerState, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+pub(super) async fn call_unpaged<P, R, O>(state: &ServerState, p: P, op: O) -> Result<CallToolResult, McpError>
 where
     P: ToolArgs + Serialize + Send + 'static,
     R: Serialize + 'static,
+    O: FnOnce(&Workspace, P) -> Result<R, EngineError> + Send + 'static,
 {
     let ws = Arc::clone(&state.shared);
     let telemetry = Arc::clone(&state.telemetry);
-    blocking(move || {
+    blocking_answer(move || {
         let started = std::time::Instant::now();
         let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
         let result = answer(&ws, p, op);
@@ -96,11 +120,11 @@ fn call_blocking<P: Paged, R: Serialize>(
     ws: &Workspace,
     telemetry: &Telemetry,
     p: P,
-    op: Op<P, R>,
+    op: impl FnOnce(&Workspace, P) -> Result<R, EngineError>,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-    let result = bound_blocking(p, |p| answer(ws, p, op));
+    let result = bound(p, |p| answer(ws, p, op));
     record(ws, telemetry, P::TOOL, &params, started, &result);
     result
 }
@@ -113,7 +137,7 @@ where
     R: Serialize + 'static,
 {
     let ws = Arc::clone(ws);
-    blocking(move || answer(&ws, p, op)).await
+    blocking_answer(move || answer(&ws, p, op)).await
 }
 
 #[cfg(test)]
@@ -121,6 +145,22 @@ mod tests {
     use rmcp::model::ErrorCode;
 
     use super::*;
+
+    /// A panic in a tool body (the `index_rescan` scan, say) is an internal error the shim reports as
+    /// an `isError` result, not an unwind into the request handler.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_tool_body_is_an_internal_error() {
+        let failed = blocking_answer(|| panic!("resolve pass exploded"))
+            .await
+            .expect_err("a panic is an error");
+        assert_eq!(failed.code, ErrorCode::INTERNAL_ERROR);
+        assert!(failed.message.starts_with("tool task failed: "), "{}", failed.message);
+        assert!(failed.message.contains("resolve pass exploded"), "{}", failed.message);
+        let answered = blocking_answer(|| Ok(CallToolResult::success(Vec::new())))
+            .await
+            .expect("a body that returns is answered");
+        assert_eq!(answered.is_error, Some(false));
+    }
 
     #[test]
     fn each_engine_error_keeps_its_message_and_maps_to_the_code_the_cli_reads() {
@@ -137,6 +177,17 @@ mod tests {
             assert_eq!(mapped.message, message);
             assert!(mapped.data.is_none());
         }
+        let busy = McpError::from(EngineError::busy("held"));
+        assert_eq!(busy.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(busy.message, "held");
+        assert_eq!(
+            busy.data.as_ref().and_then(|data| data.get(BUSY_DATA)),
+            Some(&serde_json::Value::Bool(true)),
+            "busy, so the CLI exits 3"
+        );
+        let cancelled = McpError::from(EngineError::Cancelled);
+        assert_eq!(cancelled.code, ErrorCode(-32800));
+        assert_eq!(cancelled.message, "request_cancelled");
         let io = McpError::from(EngineError::from(std::io::Error::other("disk gone")));
         assert_eq!(io.code, ErrorCode::INTERNAL_ERROR);
         assert_eq!(io.message, "disk gone");

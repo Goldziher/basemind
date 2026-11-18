@@ -80,6 +80,7 @@ fn a_full_scan_writes_a_breadcrumb_at_the_path_the_doctor_reads() {
         EmbedMode::Deferred,
         &ScanCancel::new(),
         &mut peek,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
 
@@ -112,6 +113,7 @@ fn a_scan_that_returns_leaves_no_breadcrumb_behind() {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
 
@@ -148,6 +150,7 @@ fn the_incremental_entry_point_writes_no_breadcrumb() {
         EmbedMode::Deferred,
         &ScanCancel::new(),
         &mut peek,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan_paths");
 
@@ -170,6 +173,7 @@ fn the_incremental_entry_point_writes_no_breadcrumb() {
         &ConfigV1::with_defaults(),
         &touched,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan_paths");
     assert_eq!(scan_evidence::read(&cache_dir), None);
@@ -200,6 +204,7 @@ fn a_leaked_breadcrumb_is_found_by_the_stale_scan_enumerator() {
         EmbedMode::Deferred,
         &ScanCancel::new(),
         &mut peek,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
     let mut record = peek.seen.expect("a live scan leaves a record");

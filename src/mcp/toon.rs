@@ -7,10 +7,9 @@
 //!
 //! ## Why native (not `serde_toon`)
 //!
-//! The crate already pulls `serde_toon_format`, but only behind the `documents` feature
-//! (`dep:serde_toon_format` lives in that feature list). The tools above are core tools present
-//! in the default build, so their encoder must compile with no features enabled. This module is
-//! therefore a small, dependency-free encoder over [`serde_json::Value`].
+//! The tools above are core tools present in the default build, so their encoder must compile with
+//! no features enabled. This module is therefore a small, dependency-free encoder over
+//! [`serde_json::Value`].
 //!
 //! ## Shape handled
 //!
@@ -22,51 +21,7 @@
 //! ragged key sets, arrays of scalars/arrays) falls back to compact JSON for that value, so the
 //! output is always lossless and round-trippable.
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolResult, ContentBlock};
-use serde::Serialize;
 use serde_json::Value;
-
-/// Wire format an agent can opt into per tool call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ResponseFormat {
-    /// Compact JSON via the existing `ContentBlock::json` path (the default, backward compatible).
-    Json,
-    /// Native TOON for the list array, scalars as `key: value` lines.
-    Toon,
-}
-
-impl ResponseFormat {
-    /// Parse the optional `format` (alias `encoding`) tool param. Unknown / absent values
-    /// resolve to [`ResponseFormat::Json`] so the default stays backward compatible and a typo
-    /// degrades to JSON rather than erroring the call.
-    pub(super) fn parse(opt: Option<&str>) -> Self {
-        match opt.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-            Some("toon") => Self::Toon,
-            _ => Self::Json,
-        }
-    }
-}
-
-/// Serialize `value` into a `CallToolResult` honoring the requested wire format.
-///
-/// `Json` delegates to the canonical [`super::helpers::json_result`] (`ContentBlock::json`). `Toon`
-/// renders [`encode`] output into a plain `ContentBlock::text` item so the agent receives the compact
-/// table on the wire.
-pub(super) fn format_result<T: Serialize>(value: &T, fmt: ResponseFormat) -> Result<CallToolResult, McpError> {
-    match fmt {
-        ResponseFormat::Json => super::helpers::json_result(value),
-        ResponseFormat::Toon => {
-            let json = serde_json::to_value(value)
-                .map_err(|e| McpError::internal_error(format!("toon: serialize: {e}"), None))?;
-            // Keep the compact TOON table as the text mirror, but still carry SEP-2106
-            // structured_content (format-independent) so typed clients get the parsed result.
-            let mut result = CallToolResult::success(vec![ContentBlock::text(encode(&json))]);
-            result.structured_content = Some(json);
-            Ok(result)
-        }
-    }
-}
 
 /// Encode a `serde_json::Value` as TOON, falling back to compact JSON for anything that is not a
 /// uniform array of flat objects (directly, or as the array field of a flat envelope object).
@@ -231,16 +186,6 @@ fn compact_json(value: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn parse_recognizes_toon_case_insensitively() {
-        assert_eq!(ResponseFormat::parse(Some("toon")), ResponseFormat::Toon);
-        assert_eq!(ResponseFormat::parse(Some("TOON")), ResponseFormat::Toon);
-        assert_eq!(ResponseFormat::parse(Some(" Toon ")), ResponseFormat::Toon);
-        assert_eq!(ResponseFormat::parse(Some("json")), ResponseFormat::Json);
-        assert_eq!(ResponseFormat::parse(None), ResponseFormat::Json);
-        assert_eq!(ResponseFormat::parse(Some("garbage")), ResponseFormat::Json);
-    }
 
     // NOTE: the encoder sorts envelope keys and table columns explicitly (see `encode_envelope`
     #[test]

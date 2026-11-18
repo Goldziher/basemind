@@ -1,7 +1,7 @@
 //! The `memory` table: one vector row per saved note.
 //!
 //! The Fjall `memory_by_key` record is the truth for a note; a row here only makes it findable by
-//! meaning. A caller must join every hit against that record (see `crate::mcp::memory_vectors`).
+//! meaning. A caller must join every hit against that record (see `crate::engine::memory::vectors`).
 
 use std::sync::Arc;
 

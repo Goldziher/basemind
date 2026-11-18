@@ -40,10 +40,8 @@ fn a_valid_policy_reports_its_rules() {
     assert!(policy.enabled());
     assert!(policy.admits("lead"));
     assert!(!policy.admits("someone-else"));
-    assert_eq!(
-        policy.flavor(HarnessKind::Codex).unwrap().caveats(),
-        &[Caveat::UserMcpServers]
-    );
+    // Codex's own MCP servers are switched off at launch (ADR-0044).
+    assert!(policy.flavor(HarnessKind::Codex).unwrap().caveats().is_empty());
     assert!(policy.flavor(HarnessKind::ClaudeCode).is_none());
 }
 

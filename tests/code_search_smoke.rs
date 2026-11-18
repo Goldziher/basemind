@@ -234,7 +234,15 @@ fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
 
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
 
-    let s1 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("deferred scan");
+    let s1 = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("deferred scan");
     assert_eq!(
         s1.stats.updated, 1,
         "the one source file is newly indexed by the deferred pass"
@@ -249,14 +257,30 @@ fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
         "the deferred pass writes chunks only — no vectors yet"
     );
 
-    let s1b = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("deferred rescan");
+    let s1b = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("deferred rescan");
     assert_eq!(s1b.stats.updated, 0, "a second deferred pass changes nothing");
     assert_eq!(
         s1b.stats.skipped_unchanged, 1,
         "the file is skipped as unchanged on the second deferred pass"
     );
 
-    let s2 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline scan");
+    let s2 = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("inline scan");
     assert_eq!(
         s2.stats.skipped_unchanged, 0,
         "the inline embed pass must re-process a chunk-only file, not skip it as unchanged"

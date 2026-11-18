@@ -200,7 +200,7 @@ enum CommsLifecycleCmd {
         /// row. Off by default so the plain report stays RPC-free and safe on a wedged machine.
         #[arg(long)]
         probe: bool,
-        /// Acknowledge and delete the recorded fatal store error for this comms dir.
+        /// Acknowledge and delete the records of scans whose process died without unwinding.
         #[arg(long)]
         clear_fatal: bool,
     },
@@ -570,8 +570,8 @@ fn scan_streaming(
     config: &basemind::config::Config,
     cancel: &basemind::scanner::ScanCancel,
 ) -> std::result::Result<basemind::scanner::ScanReport, basemind::scanner::ScanError> {
-    // The pass releases the process-wide embedding engine when the scan ends, so the model is not
-    // held through the git-history sync and until exit (the daemon does the same per full pass).
+    // The pass releases the embedding engine it loaded when the scan ends, so the model is not held
+    // through the git-history sync and until exit.
     #[cfg(feature = "intelligence")]
     let _embed_pass = basemind::embeddings::begin_embed_pass();
     let mut observer = render::ScanLineObserver::new(no_color, verbosity);
@@ -583,6 +583,7 @@ fn scan_streaming(
         basemind::scanner::EmbedMode::Inline,
         cancel,
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     );
     observer.finish();
     report

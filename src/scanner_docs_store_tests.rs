@@ -85,7 +85,7 @@ fn setup() -> (tempfile::TempDir, Store, Config, Filters) {
     let store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
     let mut config = crate::config::default_for_root(std::path::Path::new("."));
     config.documents.embed = true;
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     (tmp, store, config, filters)
 }
 
@@ -184,15 +184,15 @@ fn excluded_documents_lose_their_vectors_and_stay_searchable() {
     let (_tmp, mut store, mut config, _) = setup();
     track(&mut store, &blob("alpha", true), &["docs/a.md"]);
     track(&mut store, &blob("beta", true), &["notes/b.md"]);
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
     config.documents.embed_exclude = vec!["docs/**".to_string()];
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     assert!(strip_unwanted_vectors(&store, &config, &filters));
     let caps = doc_store(&store, &config).capabilities().unwrap();
     assert_eq!((caps.rows, caps.vectors), (4, 2));
     config.documents.embed = false;
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     assert!(strip_unwanted_vectors(&store, &config, &filters));
     assert_eq!(doc_store(&store, &config).capabilities().unwrap().vectors, 0);
 }
@@ -308,7 +308,7 @@ fn worktrees() -> (tempfile::TempDir, Store, Store, Config, Filters) {
     let b = Store::open(&linked, crate::store::VIEW_WORKING).unwrap();
     let mut config = crate::config::default_for_root(std::path::Path::new("."));
     config.documents.embed = true;
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     (tmp, a, b, config, filters)
 }
 
@@ -424,7 +424,7 @@ fn stripping_vectors_leaves_the_rows_a_sibling_names() {
     b.flush().unwrap();
 
     config.documents.embed_exclude = vec!["docs/**".to_string()];
-    let excluding = Filters::build(&config, Vec::new()).unwrap();
+    let excluding = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     assert!(strip_unwanted_vectors(&a, &config, &excluding));
 
     let present = doc_store(&a, &config)
@@ -492,4 +492,37 @@ fn the_per_view_store_of_an_earlier_build_is_replaced_by_the_group_store() {
     seed(&legacy);
     sync_document_rows(&mut empty, &config, &filters, &AHashSet::new(), usize::MAX);
     assert!(!legacy.exists(), "a view without documents removes it too");
+}
+
+/// A scan's open stamps its own store and removes a sibling store of another model no scan has
+/// opened for the idle window, judged by the stamp or, before it, the directory's mtime.
+#[test]
+fn an_open_removes_retrieval_stores_of_models_no_scan_uses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().join("lance");
+    let now = std::time::SystemTime::now();
+    let old = now - IDLE_MODEL_STORE - std::time::Duration::from_secs(60);
+    let mk = |name: &str| {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("meta.json"), b"{}").unwrap();
+        dir
+    };
+    let current = mk("balanced-768-aaaaaaaa");
+    let stamped_old = mk("small-384-bbbbbbbb");
+    std::fs::File::create(stamped_old.join(LAST_USED_FILE))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let unstamped_old = mk("large-1024-cccccccc");
+    std::fs::File::open(&unstamped_old).unwrap().set_modified(old).unwrap();
+    let recent = mk("other-768-dddddddd");
+    std::fs::File::create(recent.join(LAST_USED_FILE)).unwrap();
+
+    prune_idle_model_stores(&current, now);
+
+    assert!(current.join(LAST_USED_FILE).exists(), "the open store is stamped");
+    assert!(!stamped_old.exists());
+    assert!(!unstamped_old.exists());
+    assert!(recent.exists(), "a store another worktree used lately stays");
 }

@@ -32,6 +32,7 @@ fn scanned_repo() -> tempfile::TempDir {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("initial scan");
     drop(store);

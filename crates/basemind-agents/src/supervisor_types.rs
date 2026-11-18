@@ -283,6 +283,10 @@ pub enum SupervisorError {
     /// ([`FlavorPolicy::launcher_may_allow`](crate::FlavorPolicy::launcher_may_allow)).
     #[error("only the operator may allow this approval request")]
     LauncherMayNotAllow,
+    /// [`Supervisor::shutdown`](crate::Supervisor::shutdown) ran: the supervisor starts nothing
+    /// more.
+    #[error("the supervisor is shutting down")]
+    ShuttingDown,
 }
 
 impl SupervisorError {
@@ -314,6 +318,7 @@ impl SupervisorError {
             Self::NestedHost => "nested_host",
             Self::HostDumpable => "host_dumpable",
             Self::LauncherMayNotAllow => "launcher_may_not_allow",
+            Self::ShuttingDown => "shutting_down",
         }
     }
 }

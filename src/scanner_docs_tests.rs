@@ -223,7 +223,7 @@ fn doc_entry_settled_backs_off_after_a_failed_embed_attempt() {
 fn filters_for(documents: DocumentsConfig) -> Filters {
     let mut config = crate::config::default_for_root(Path::new("."));
     config.documents = documents;
-    Filters::build(&config, Vec::new()).expect("build filters")
+    Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).expect("build filters")
 }
 
 /// `doc_embed_requested` is the single gate both `extract_and_persist_doc` and the

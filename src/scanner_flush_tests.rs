@@ -23,7 +23,7 @@ fn config() -> Config {
 }
 
 fn filters(config: &Config) -> Filters {
-    Filters::build(config, Vec::new()).unwrap()
+    Filters::build(config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap()
 }
 
 /// A document blob of `chunks` chunks, each with a vector of `dim` (none when `dim` is 0).
@@ -175,6 +175,7 @@ fn rows_a_scan_could_not_write_stay_owed_and_the_next_scan_writes_them() {
         &config,
         ScanSource::WorkingTree,
         EmbedMode::Inline,
+        crate::scanner_vectors::test_retrieval(),
     )
     .unwrap();
 
@@ -192,6 +193,7 @@ fn rows_a_scan_could_not_write_stay_owed_and_the_next_scan_writes_them() {
         &config,
         ScanSource::WorkingTree,
         EmbedMode::Inline,
+        crate::scanner_vectors::test_retrieval(),
     )
     .unwrap();
 
@@ -218,6 +220,7 @@ fn an_incremental_scan_writes_rows_an_earlier_scan_left_owed() {
         &config,
         ScanSource::WorkingTree,
         EmbedMode::Inline,
+        crate::scanner_vectors::test_retrieval(),
     )
     .unwrap();
     assert_eq!(owed_on_disk(&store), [rel]);
@@ -226,7 +229,15 @@ fn an_incremental_scan_writes_rows_an_earlier_scan_left_owed() {
 
     let other = tmp.path().join("lib.rs");
     std::fs::write(&other, "fn other() {}\n").unwrap();
-    scan_paths(tmp.path(), &mut store, &config, &[other], EmbedMode::Inline).unwrap();
+    scan_paths(
+        tmp.path(),
+        &mut store,
+        &config,
+        &[other],
+        EmbedMode::Inline,
+        crate::scanner_vectors::test_retrieval(),
+    )
+    .unwrap();
 
     assert_eq!(doc_rows(&mut store, &scope), [rel]);
     assert!(owed_on_disk(&store).is_empty());
@@ -417,7 +428,15 @@ fn an_incremental_scan_writes_a_bounded_number_of_absent_documents() {
 }
 
 fn inline_scan(root: &Path, store: &mut Store, config: &Config) {
-    scan(root, store, config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    scan(
+        root,
+        store,
+        config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        crate::scanner_vectors::test_retrieval(),
+    )
+    .unwrap();
 }
 
 /// The document store can be wiped or deleted on its own (`cache clear`, a new table version),
@@ -455,7 +474,15 @@ fn an_incremental_scan_also_finds_the_vector_store_gone() {
 
     let other = tmp.path().join("lib.rs");
     std::fs::write(&other, "fn other() {}\n").unwrap();
-    scan_paths(tmp.path(), &mut store, &config, &[other], EmbedMode::Inline).unwrap();
+    scan_paths(
+        tmp.path(),
+        &mut store,
+        &config,
+        &[other],
+        EmbedMode::Inline,
+        crate::scanner_vectors::test_retrieval(),
+    )
+    .unwrap();
 
     assert_eq!(doc_rows(&mut store, &scope), [rel]);
 }
@@ -475,6 +502,7 @@ fn a_view_that_never_wrote_rows_owes_nothing_for_a_store_that_is_not_there() {
         &config,
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        crate::scanner_vectors::test_retrieval(),
     )
     .unwrap();
     lanes(&mut store, &config, usize::MAX);
@@ -528,6 +556,7 @@ fn a_cancelled_full_scan_requeues_a_bounded_number_of_owed_paths() {
         ScanSource::WorkingTree,
         EmbedMode::Inline,
         &cancel,
+        crate::scanner_vectors::test_retrieval(),
     )
     .unwrap();
 
@@ -826,5 +855,25 @@ mod code {
         lanes(&mut store, &config, usize::MAX);
         assert_eq!(code_rows(&mut store), ["src/good.rs"]);
         assert!(store.pending_vectors.is_empty());
+    }
+
+    /// An owed set that cannot be read loads empty, but the paths it named are unknown, not none:
+    /// every indexed file is owed again and its rows are written.
+    #[test]
+    fn an_unreadable_owed_set_owes_every_indexed_file_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = open_store(tmp.path());
+        let config = code_config();
+        owe_code(&mut store, "src/good.rs", Some(&sidecar(2, DIM)));
+        store.flush().unwrap();
+        std::fs::write(store.view_dir.join(PENDING_FILE), b"\xc1 torn").unwrap();
+        store.pending_vectors = PendingVectors::load(&store.view_dir);
+        assert!(store.pending_vectors.is_empty());
+
+        lanes(&mut store, &config, usize::MAX);
+
+        assert_eq!(code_rows(&mut store), ["src/good.rs"]);
+        assert!(store.pending_vectors.is_empty());
+        assert!(!store.view_dir.join(PENDING_FILE).exists(), "the torn file is replaced");
     }
 }

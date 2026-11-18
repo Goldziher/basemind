@@ -11,8 +11,9 @@ at its root, and the binary in it must:
 3. answer ``initialize`` and ``tools/list`` over ``serve``'s stdio, advertising at least one tool,
    and answer one ``tools/call`` of an advertised read-only tool without ``isError``.
 
-Every run gets its own ``BASEMIND_DATA_HOME``, ``BASEMIND_COMMS_DIR``, ``HOME`` and cache directory,
-so nothing reaches a real session's index or daemon; daemons it started are stopped at the end.
+Every run gets its own ``BASEMIND_DATA_HOME``, ``BASEMIND_COMMS_DIR``, ``HOME`` (with the Windows
+``AppData`` folders a real profile has) and cache directory, so nothing reaches a real session's index
+or daemon; daemons it started are stopped at the end.
 ``LD_LIBRARY_PATH`` is removed so a Linux binary loads the libraries bundled beside it, as it does
 on a machine that never built it.
 """
@@ -56,11 +57,18 @@ def sandbox_env(root: Path) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH" and not k.startswith("BASEMIND_")}
     for name in ("data", "comms", "home", "cache"):
         (root / name).mkdir(parents=True, exist_ok=True)
+    # Windows resolves LocalAppData (the grammar cache's home) as %USERPROFILE%\AppData\Local and
+    # reports no folder when that directory is missing, so the sandbox profile carries both.
+    local, roaming = root / "home" / "AppData" / "Local", root / "home" / "AppData" / "Roaming"
+    local.mkdir(parents=True, exist_ok=True)
+    roaming.mkdir(parents=True, exist_ok=True)
     env.update(
         BASEMIND_DATA_HOME=str(root / "data"),
         BASEMIND_COMMS_DIR=str(root / "comms"),
         HOME=str(root / "home"),
         USERPROFILE=str(root / "home"),
+        LOCALAPPDATA=str(local),
+        APPDATA=str(roaming),
         XDG_CACHE_HOME=str(root / "cache"),
         NO_COLOR="1",
     )

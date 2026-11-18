@@ -108,7 +108,9 @@ fn a_valid_file_launches_at_depth_one_with_no_allows_and_its_credentials_from_th
     assert!(config.approval_policy.is_none());
     let server = config.mcp_server.as_ref().unwrap();
     assert_eq!(server.args, ["serve"], "the injected serve is never a lead");
-    assert!(server.allow_tools.is_empty());
+    // Only the agent comms tools are pre-approved, and the rule consents to exactly them.
+    assert_eq!(server.allow_tools, ["agent_post", "agent_inbox", "agent_threads"]);
+    assert_eq!(rule.allow_tools, server.allow_tools);
 }
 
 /// Each field a lead model must never get from the file makes it fail to build, and the policy
@@ -231,4 +233,43 @@ fn a_policy_file_inside_the_lead_workspace_is_refused() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let refused = fixture.load(&path);
     assert!(matches!(refused, Err(PolicyFileError::Unsafe { .. })), "{refused:?}");
+}
+
+/// A mode the harness's adapter refuses at every launch is refused when the file loads, so the
+/// lead never advertises a launch that cannot run.
+#[test]
+fn a_permission_mode_the_harness_cannot_launch_in_is_refused_at_load() {
+    let fixture = Fixture::new();
+    for (harness, mode) in [
+        ("codex", "accept_edits"),
+        ("opencode", "read_only"),
+        ("opencode", "accept_edits"),
+    ] {
+        let path = fixture.write(&format!(
+            "{}[agents.launch.harness.{harness}]\nexecutable = \"/bin/sh\"\npermission_mode = \"{mode}\"\n",
+            fixture.text("", "")
+        ));
+        let refused = fixture.load(&path);
+        assert!(
+            matches!(&refused, Err(PolicyFileError::Invalid { reason, .. }) if reason.contains("permission_mode")),
+            "{harness} {mode}: {refused:?}"
+        );
+    }
+    // The control: every mode that can launch loads.
+    for (harness, mode) in [
+        ("codex", "supervised"),
+        ("codex", "read_only"),
+        ("opencode", "supervised"),
+        ("claude", "accept_edits"),
+    ] {
+        let text = if harness == "claude" {
+            fixture.text("", &format!("permission_mode = \"{mode}\""))
+        } else {
+            format!(
+                "{}[agents.launch.harness.{harness}]\nexecutable = \"/bin/sh\"\npermission_mode = \"{mode}\"\n",
+                fixture.text("", "")
+            )
+        };
+        fixture.enabled(&fixture.write(&text));
+    }
 }

@@ -195,7 +195,15 @@ fn warm_up() {
 
     let config = lean_config();
     let mut store = Store::open(root, VIEW_WORKING).expect("open warm store");
-    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("warm scan");
+    scan(
+        root,
+        &mut store,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("warm scan");
 }
 
 /// Write past libtest's output capture: `eprintln!` is captured and shown only for a failing test,
@@ -255,7 +263,15 @@ fn a_full_scan_stays_inside_an_affine_memory_budget() {
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
     let watch = WriteBufferWatch::start(store.index_db.clone().expect("a writable store has an index"));
     let started = Instant::now();
-    let report = scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    let report = scan(
+        root,
+        &mut store,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     let scan_secs = started.elapsed().as_secs_f64();
     let unflushed_high = watch.finish();
 
@@ -290,7 +306,15 @@ fn a_full_scan_stays_inside_an_affine_memory_budget() {
     body.push_str("pub fn edited_after_the_first_pass() -> usize { 1 }\n");
     std::fs::write(&edited, body).expect("edit module");
     let started = Instant::now();
-    let rescan = scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    let rescan = scan(
+        root,
+        &mut store,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("rescan");
     let rescan_secs = started.elapsed().as_secs_f64();
     let delta = peak_bytes().saturating_sub(baseline);
     report_line(&format!(

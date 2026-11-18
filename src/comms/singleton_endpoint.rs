@@ -95,7 +95,6 @@ fn reply_len(prefix: [u8; 4]) -> Option<usize> {
 fn decode_reply(reply: &[u8]) -> Option<CommsResponse> {
     match rmp_serde::from_slice::<CommsOut>(reply).ok()? {
         CommsOut::Response(resp) | CommsOut::Reply { response: resp, .. } => Some(resp),
-        CommsOut::Notification(_) => None,
     }
 }
 

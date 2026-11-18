@@ -58,6 +58,7 @@ fn scan_staged_uses_index_blobs_not_working_tree() {
         &cfg,
         ScanSource::Staged(&repo),
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan staged");
 
@@ -84,6 +85,7 @@ fn scan_rev_at_head_matches_clean_working_tree() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     let wt_entry = wt_store.lookup("a.rs").expect("a.rs in WT view").clone();
@@ -102,6 +104,7 @@ fn scan_rev_at_head_matches_clean_working_tree() {
             sha: head_sha,
         },
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     let rev_entry = rev_store.lookup("a.rs").expect("a.rs in rev view").clone();
@@ -128,6 +131,7 @@ fn views_live_in_separate_subdirs_under_workspace_cache() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     drop(working);
@@ -139,6 +143,7 @@ fn views_live_in_separate_subdirs_under_workspace_cache() {
         &cfg,
         ScanSource::Staged(&repo),
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     drop(staged);
@@ -216,6 +221,7 @@ fn scan_skips_submodule_paths_by_default() {
             &cfg,
             ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .expect("scan default");
         assert!(store.lookup("top.rs").is_some(), "parent file should be indexed");
@@ -234,6 +240,7 @@ fn scan_skips_submodule_paths_by_default() {
         &cfg2,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan opt-in");
     assert!(
@@ -435,6 +442,7 @@ fn staged_and_rev_scans_do_not_sweep_grep_bloom_rows() {
         &cfg,
         ScanSource::Staged(&repo),
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(planted(&staged), "a staged scan must not sweep");
@@ -451,6 +459,7 @@ fn staged_and_rev_scans_do_not_sweep_grep_bloom_rows() {
             sha: head_sha,
         },
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(planted(&rev), "a rev scan must not sweep");

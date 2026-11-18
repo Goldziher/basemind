@@ -85,7 +85,7 @@ async fn a_poisoned_index_is_reopened_while_a_hosted_stack_serves_the_workspace(
         .expect("scan");
     let (shared, conn) = pool.serve_conn(root, no_history()).await.expect("hosted stack");
     assert!(
-        shared.workspace.store_lock().read().read_index_view().is_some(),
+        shared.workspace.store_read().read_index_view().is_some(),
         "the hosted store reads the writer's index"
     );
 
@@ -121,7 +121,7 @@ async fn a_poisoned_index_is_reopened_while_a_hosted_stack_serves_the_workspace(
     };
     assert!(!cancelled);
     assert!(stats.updated >= 1, "gamma.rs is committed: {stats:?}");
-    let hosted = shared.workspace.store_lock().read().read_index_view();
+    let hosted = shared.workspace.store_read().read_index_view();
     let hosted = hosted.expect("the hosted store reads the reopened index");
     assert!(
         !hosted.symbols_by_name_lookup("gamma", 8).is_empty(),

@@ -26,7 +26,15 @@ fn server_with(root: &std::path::Path, scanned: bool, config: ConfigV1) -> Basem
     {
         let mut store = Store::open(root, VIEW_WORKING).expect("open rw");
         if scanned {
-            scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+            scan(
+                root,
+                &mut store,
+                &config,
+                ScanSource::WorkingTree,
+                EmbedMode::Inline,
+                crate::retrieval_wiring::backend(),
+            )
+            .expect("scan");
         } else {
             store.flush().expect("persist the empty file map");
         }
@@ -156,6 +164,7 @@ async fn an_indexed_file_whose_blob_is_unreadable_says_so_and_the_rescan_it_name
             &config,
             ScanSource::WorkingTree,
             EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
         )
         .expect("scan");
         let hash_hex = store.lookup("a.rs").expect("entry").hash_hex.clone();
@@ -177,8 +186,10 @@ async fn an_indexed_file_whose_blob_is_unreadable_says_so_and_the_rescan_it_name
 
     // What `index_rescan {"paths":["a.rs"]}` runs.
     let named = Some(vec![tmp.path().join("a.rs")]);
-    super::helpers::scan_and_refresh(Arc::clone(&server.state), named, EmbedMode::Deferred, true)
+    let ws = Arc::clone(&server.state.shared);
+    tokio::task::spawn_blocking(move || ws.rescan(named, EmbedMode::Deferred, true))
         .await
+        .expect("join")
         .expect("rescan the named path");
     let served = into_tool_result(server.code_outline_call(outline("a.rs")).await);
     assert_ne!(served.is_error, Some(true), "{}", text_of(&served));

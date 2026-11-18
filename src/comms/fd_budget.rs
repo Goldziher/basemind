@@ -2,7 +2,8 @@
 //!
 //! Each Fjall database keeps a table of open segment files: 150 by default on macOS and 900 on
 //! Linux (fjall `db_config.rs`). The daemon holds an index and a memory store for each hot
-//! workspace, a git-history database per repository it serves, and the comms store, plus up to
+//! workspace, a git-history database per repository it serves (each capped at
+//! [`CACHED_FILES`](crate::git_history::CACHED_FILES)), and the comms store, plus up to
 //! [`MAX_CONNECTIONS`](super::accept_gate::MAX_CONNECTIONS) connections on each front-end. A soft
 //! `RLIMIT_NOFILE` of 256 (the macOS default) runs out long before that; accepts then fail with
 //! `EMFILE`.
@@ -26,8 +27,8 @@ const SLACK: u64 = 512;
 /// The descriptors the daemon may hold at its configured caps.
 pub fn wanted() -> u64 {
     let hot = super::workspace_pool::DEFAULT_HOT_CAP as u64;
-    let databases = hot * 2 + GIT_HISTORIES;
-    databases * FJALL_FILES_PER_DB
+    hot * 2 * FJALL_FILES_PER_DB
+        + GIT_HISTORIES * crate::git_history::CACHED_FILES as u64
         + COMMS_STORE_CACHED_FILES as u64
         + FRONT_ENDS * super::accept_gate::MAX_CONNECTIONS as u64
         + SLACK

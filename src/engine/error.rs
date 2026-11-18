@@ -20,6 +20,13 @@ pub(crate) enum EngineError {
     /// The index cannot be read right now (empty, or held by another process); retry later.
     #[error("{0}")]
     IndexUnavailable(String),
+    /// Another process holds what the operation reads (the index, the writer lock): retry, or route
+    /// the call through the daemon. The CLI exits `3` for it.
+    #[error("{0}")]
+    Busy(String),
+    /// The caller cancelled the operation before it finished.
+    #[error("request_cancelled")]
+    Cancelled,
     #[error(transparent)]
     Store(#[from] crate::store::StoreError),
     #[error(transparent)]
@@ -50,11 +57,28 @@ impl EngineError {
         Self::Unavailable(message.into())
     }
 
+    pub(crate) fn busy(message: impl Into<String>) -> Self {
+        Self::Busy(message.into())
+    }
+
     pub(crate) fn index_unavailable(message: impl Into<String>) -> Self {
         Self::IndexUnavailable(message.into())
     }
 
     pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self::Internal(message.into())
+    }
+
+    /// The refusal of a tool whose retrieval stack is not in this build: it is advertised in every
+    /// build, and answers this rather than an empty result an agent would read as "nothing found".
+    #[cfg_attr(
+        all(feature = "code-search", feature = "documents", feature = "memory"),
+        allow(dead_code, reason = "only the gated-off arms name a missing feature")
+    )]
+    pub(crate) fn feature_missing(tool: &str, feature: &str) -> Self {
+        Self::Unavailable(format!(
+            "`{tool}` needs the `{feature}` Cargo feature, which is not compiled into this basemind binary. \
+             Rebuild with `--features {feature}`; the published release binary includes it."
+        ))
     }
 }

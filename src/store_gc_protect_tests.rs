@@ -372,6 +372,7 @@ fn emptying_a_file_map_pins_its_hashes_until_the_rebuild_is_done() {
             &config,
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Deferred,
+            crate::scan_retrieval::Retrieval::inert(),
         )
         .expect("scan");
     };

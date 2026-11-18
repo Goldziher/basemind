@@ -3,9 +3,11 @@
 //! Two responsibilities, both born from the 116 GB incident where the daemon's hourly sweep was
 //! starved behind a runaway rescan and the cache grew unbounded and invisibly:
 //!
-//! 1. **Size budget** ([`enforce_cache_budget`]). The blob store + workspace indexes are a
+//! 1. **Size budget** ([`enforce_cache_budget`]). The blob store, the workspaces and the group
+//!    directories (`cache/groups/<group>/`: the code index and the document retrieval stores) are a
 //!    rebuildable cache, so when their combined footprint exceeds a byte budget the coldest
-//!    workspace dirs are evicted (their blobs orphan and the next sweep reclaims them). This is
+//!    workspace dirs are evicted (their blobs orphan and the next sweep reclaims them), and a group
+//!    goes with the last of its workspaces that still held a view. This is
 //!    the backstop the reference-counting GC lacks: reaping only ever removes *orphans*, so a
 //!    machine that accumulates live-but-idle workspaces still grows without bound.
 //! 2. **GC health state** ([`persist_gc_state`] / [`read_gc_state`]). Every attempt records its
@@ -137,9 +139,12 @@ pub struct GcState {
     /// Cold workspace dirs evicted by budget enforcement.
     #[serde(default)]
     pub workspaces_evicted: usize,
-    /// Bytes reclaimed by those evictions.
+    /// Bytes reclaimed by those evictions, the evicted groups' included.
     #[serde(default)]
     pub evicted_bytes_freed: u64,
+    /// Group directories evicted with the last of their workspaces that held a view.
+    #[serde(default)]
+    pub groups_evicted: usize,
     /// Cache budget applied by the most recent completed sweep.
     #[serde(default)]
     pub cache_budget_bytes: Option<u64>,
@@ -164,7 +169,7 @@ pub struct GcState {
 /// Result of one budget-enforcement pass.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EvictReport {
-    /// Combined cache footprint (workspaces + blobs) measured before eviction, without what a newer
+    /// Combined cache footprint (workspaces + groups + blobs) measured before eviction, without what a newer
     /// basemind wrote. A pass that finds the cache within budget does not tell a newer basemind's
     /// workspaces apart (that reads a view of every workspace) and counts them here.
     pub total_bytes_before: u64,
@@ -175,6 +180,10 @@ pub struct EvictReport {
     pub evicted: usize,
     /// Bytes those dirs occupied (stat'd before deletion).
     pub bytes_freed: u64,
+    /// Group directories evicted because no workspace that holds a view belongs to them any more.
+    pub groups_evicted: usize,
+    /// Bytes those group directories occupied. Disjoint from [`Self::bytes_freed`].
+    pub group_bytes_freed: u64,
     /// Blob files reclaimed after workspace eviction removed their final reference.
     pub blobs_removed: usize,
     /// Bytes reclaimed from those orphan blobs.
@@ -258,6 +267,7 @@ pub(crate) fn persist_gc_state_at(path: &Path, report: &GcReport) {
         workspace_bytes_freed: report.workspace_bytes_freed,
         workspaces_evicted: report.workspaces_evicted,
         evicted_bytes_freed: report.evicted_bytes_freed,
+        groups_evicted: report.groups_evicted,
         cache_budget_bytes: report.cache_budget_bytes,
         cache_bytes_after: report.cache_bytes_after,
         hot_workspaces_evicted: report.hot_workspaces_evicted,
@@ -336,8 +346,9 @@ pub(crate) fn read_gc_state_at(path: &Path) -> Option<GcState> {
     }
 }
 
-/// Enforce the cache byte budget against the machine-global cache: when workspaces + blobs
-/// exceed `budget_bytes`, evict the coldest workspace dirs, then hot dirs only if necessary.
+/// Enforce the cache byte budget against the machine-global cache: when workspaces + groups +
+/// blobs exceed `budget_bytes`, evict the coldest workspace dirs, then hot dirs only if necessary,
+/// and the group directory of each evicted workspace once no workspace holding a view uses it.
 /// Locked workspaces remain protected. Each eviction immediately reclaims blobs that lost their
 /// final reference and remeasures the real footprint before selecting another victim.
 pub fn enforce_cache_budget(budget_bytes: u64) -> Result<EvictReport, GcError> {
@@ -434,13 +445,21 @@ pub(crate) fn enforce_cache_budget_at(
                 continue;
             }
         };
+        let group_bytes = match crate::store_layout::group_of_workspace(&candidate.dir) {
+            Some(group) => crate::store_gc_groups::evict_idle_group(workspaces_dir, &group)?,
+            None => 0,
+        };
+        if group_bytes > 0 {
+            report.groups_evicted += 1;
+            report.group_bytes_freed += group_bytes;
+        }
         let probed = SystemTime::now();
         let reclaimed = gc_global_blobs_in(workspaces_dir, blobs_dir, orphan_grace(workspaces_dir, probed))?;
         report.blobs_removed += reclaimed.removed;
         report.blob_bytes_freed += reclaimed.bytes_freed;
         report.total_bytes_after = cache_footprint(workspaces_dir, blobs_root, schema, &newer)?;
         let measured_freed = bytes_before_candidate.saturating_sub(report.total_bytes_after);
-        if size > 0 || reclaimed.bytes_freed > 0 {
+        if size > 0 || group_bytes > 0 || reclaimed.bytes_freed > 0 {
             report.evicted += 1;
             report.bytes_freed += size;
             report.hot_evicted += usize::from(candidate.hot);
@@ -668,14 +687,27 @@ fn workspaces_of_a_newer_basemind(workspaces_dir: &Path) -> Vec<PathBuf> {
     )
 }
 
-/// The bytes the budget is held against: the workspaces other than `newer`, and the blob store
-/// without the namespaces of a schema newer than `schema`. Both belong to a newer basemind sharing
-/// the cache. This binary never deletes them, so counting them would have it evict workspaces
-/// every cycle to make up for bytes no eviction can free.
+/// The bytes the budget is held against: the workspaces other than `newer`, the group directories
+/// (`cache/groups/`, beside `workspaces_dir`) other than those of `newer`, and the blob store
+/// without the namespaces of a schema newer than `schema`. What is left out belongs to a newer
+/// basemind sharing the cache. This binary never deletes it, so counting it would have it evict
+/// workspaces every cycle to make up for bytes no eviction can free.
 fn cache_footprint(workspaces_dir: &Path, blobs_root: &Path, schema: u16, newer: &[PathBuf]) -> Result<u64, GcError> {
-    let mut total = dir_size_or_zero(workspaces_dir)? + dir_size_or_zero(blobs_root)?;
+    let groups_dir = workspaces_dir
+        .parent()
+        .map(|cache| cache.join(crate::store_layout::GROUPS_DIR));
+    let groups_bytes = match &groups_dir {
+        Some(dir) => dir_size_or_zero(dir)?,
+        None => 0,
+    };
+    let mut total = dir_size_or_zero(workspaces_dir)? + groups_bytes + dir_size_or_zero(blobs_root)?;
     for workspace in newer {
         total = total.saturating_sub(dir_size_or_zero(workspace)?);
+    }
+    if let Some(cache) = workspaces_dir.parent() {
+        for group in crate::store_gc_groups::group_dirs_of(cache, newer) {
+            total = total.saturating_sub(dir_size_or_zero(&group)?);
+        }
     }
     if blobs_root.exists() {
         for entry in read_dir(blobs_root)?.flatten() {

@@ -30,6 +30,7 @@ fn scan_extracts_rust_symbols() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.updated, 1);
@@ -72,6 +73,7 @@ fn scan_preserves_notebook_code_cell_text_in_document_index() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -104,6 +106,7 @@ fn scan_reuses_extraction_across_views_sharing_blobs() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(first.stats.updated, 1);
@@ -120,6 +123,7 @@ fn scan_reuses_extraction_across_views_sharing_blobs() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(second.stats.updated, 1, "file is new to this view's index");
@@ -172,6 +176,7 @@ fn scan_indexes_dynamic_language_without_override_queries() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.updated, 1, "css file should be processed");
@@ -198,6 +203,7 @@ fn rescan_is_idempotent_and_uses_cache() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(first.stats.updated, 1);
@@ -210,6 +216,7 @@ fn rescan_is_idempotent_and_uses_cache() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(second.stats.updated, 0);
@@ -230,6 +237,7 @@ fn modifying_a_file_triggers_reextract() {
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
     }
@@ -242,6 +250,7 @@ fn modifying_a_file_triggers_reextract() {
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
         assert_eq!(s.stats.updated, 1);
@@ -267,6 +276,7 @@ fn removed_files_get_purged_from_index() {
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
     }
@@ -279,6 +289,7 @@ fn removed_files_get_purged_from_index() {
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
         assert_eq!(s.stats.removed, 1);
@@ -303,6 +314,7 @@ fn skips_large_files() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(s.stats.skipped_too_large, 1);
@@ -322,6 +334,7 @@ fn ignores_unknown_languages() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     #[cfg(not(feature = "documents"))]
@@ -346,6 +359,7 @@ fn extracts_python() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -390,6 +404,7 @@ fn scan_flags_files_with_syntax_errors() {
         basemind::scanner::EmbedMode::Inline,
         &ScanCancel::new(),
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.updated, 1);
@@ -439,6 +454,7 @@ fn scan_paths_only_touches_listed_files() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -453,6 +469,7 @@ fn scan_paths_only_touches_listed_files() {
         &cfg,
         &[root.join("a.rs")],
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.scanned, 1, "scan_paths visited only one file");
@@ -484,6 +501,7 @@ fn ts_arrow_function_const_is_function_kind() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -516,6 +534,7 @@ fn js_function_expression_const_is_function_kind() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -540,6 +559,7 @@ fn rust_impl_block_is_impl_kind() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -568,6 +588,7 @@ fn binary_file_with_source_extension_is_skipped() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -592,6 +613,7 @@ fn tsx_file_uses_tsx_query() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -615,6 +637,7 @@ fn scan_paths_purges_removed_files() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(store.lookup("a.rs").is_some());
@@ -626,6 +649,7 @@ fn scan_paths_purges_removed_files() {
         &cfg,
         &[root.join("a.rs")],
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.removed, 1);
@@ -648,6 +672,7 @@ fn ts_namespace_is_namespace_kind() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -676,6 +701,7 @@ fn ts_getter_and_setter_kinds() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -708,6 +734,7 @@ fn python_decorators_attach_to_symbol() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -737,38 +764,6 @@ fn python_decorators_attach_to_symbol() {
         "name should carry @property; got {:?}",
         name.symbol.decorators
     );
-}
-
-// Marked #[ignore] on Linux too: the GitHub-hosted Ubuntu runners' filesystem rejects
-#[cfg(target_os = "linux")]
-#[test]
-#[ignore = "non-UTF-8 filename indexing not reliable on GitHub-hosted Ubuntu runners"]
-fn scanner_preserves_non_utf8_filename_bytes() {
-    use std::os::unix::ffi::OsStrExt;
-
-    let (dir, cfg) = fresh_repo();
-    let root = dir.path();
-    let raw_bytes: &[u8] = b"f\xffoo.rs";
-    let bad_name = std::ffi::OsStr::from_bytes(raw_bytes);
-    fs::write(root.join(bad_name), b"pub fn from_bad_path() {}\n").unwrap();
-
-    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(
-        root,
-        &mut store,
-        &cfg,
-        basemind::scanner::ScanSource::WorkingTree,
-        basemind::scanner::EmbedMode::Inline,
-    )
-    .unwrap();
-    assert!(
-        report.stats.updated >= 1,
-        "scanner should index files with non-UTF-8 names; updated={}",
-        report.stats.updated
-    );
-    let key = basemind::path::RelPath::from(raw_bytes);
-    let entry = store.lookup(&key).expect("non-UTF-8 path should be in index");
-    assert_eq!(entry.language, "rust");
 }
 
 /// End-to-end check that xberg's `whatlang`-backed language detector is
@@ -925,6 +920,7 @@ fn ts_multiline_generic_signature_is_collapsed() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -966,6 +962,7 @@ fn scan_paths_noop_batch_does_no_work() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -983,6 +980,7 @@ fn scan_paths_noop_batch_does_no_work() {
         basemind::scanner::EmbedMode::Inline,
         &ScanCancel::new(),
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.updated, 0, "no indexable file changed");
@@ -1006,6 +1004,7 @@ fn scan_paths_prunes_deleted_indexed_file() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(store.lookup("a.rs").is_some());
@@ -1017,6 +1016,7 @@ fn scan_paths_prunes_deleted_indexed_file() {
         &cfg,
         &[root.join("a.rs")],
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.removed, 1, "deleted indexed file pruned");
@@ -1045,6 +1045,7 @@ fn markdown_headings_and_obsidian_references_are_indexed() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.updated, 2);
@@ -1097,6 +1098,7 @@ fn documents_are_cached_unchanged_and_pruned() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.docs_indexed, 1, "doc extracted on first scan");
@@ -1110,6 +1112,7 @@ fn documents_are_cached_unchanged_and_pruned() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.docs_indexed, 0, "unchanged doc not re-indexed");
@@ -1128,6 +1131,7 @@ fn documents_are_cached_unchanged_and_pruned() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(
@@ -1156,6 +1160,7 @@ fn identical_documents_share_the_content_addressed_cache() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     let hash_a = store.lookup_doc("a.svg").expect("a.svg tracked").hash_hex.clone();
@@ -1169,6 +1174,7 @@ fn identical_documents_share_the_content_addressed_cache() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     let hash_b = &store.lookup_doc("b.svg").expect("b.svg tracked").hash_hex;
@@ -1194,6 +1200,7 @@ fn same_size_content_change_is_reextracted() {
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
     }
@@ -1205,6 +1212,7 @@ fn same_size_content_change_is_reextracted() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(
@@ -1242,6 +1250,7 @@ fn deferred_embed_mode_indexes_symbols_and_keyword_lane_but_writes_no_vectors() 
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(report.stats.updated, 1);
@@ -1282,6 +1291,7 @@ fn cancelled_scan_returns_partial_report_and_purges_nothing() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(full.stats.updated, 10, "baseline pass indexes every fixture file");
@@ -1296,6 +1306,7 @@ fn cancelled_scan_returns_partial_report_and_purges_nothing() {
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
         &cancel,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(partial.cancelled, "a tripped token must mark the report cancelled");
@@ -1316,6 +1327,7 @@ fn cancelled_scan_returns_partial_report_and_purges_nothing() {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(!followup.cancelled);
@@ -1352,6 +1364,7 @@ fn cancel_flag_pretripped_skips_all_candidates_fast() {
         basemind::scanner::EmbedMode::Inline,
         &cancel,
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(report.cancelled);

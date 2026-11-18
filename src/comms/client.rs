@@ -459,7 +459,6 @@ impl CommsClient {
                 Some(CommsOut::Response(_)) => {
                     tracing::debug!(expected = ?expect_id, "comms: discarding uncorrelated response");
                 }
-                Some(CommsOut::Notification(_)) => {}
                 None => return Err(CommsClientError::Closed),
             }
         }

@@ -31,6 +31,7 @@ fn scan(root: &Path, cfg: &ConfigV1) -> Vec<FileStatus> {
         EmbedMode::Inline,
         &ScanCancel::new(),
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
     observer

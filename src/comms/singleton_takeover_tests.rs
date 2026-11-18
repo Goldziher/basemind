@@ -176,13 +176,6 @@ fn busy() -> CommsResponse {
     }
 }
 
-fn store_error() -> CommsResponse {
-    CommsResponse::Error {
-        code: "store_error".to_string(),
-        message: "fjall error: Poisoned".to_string(),
-    }
-}
-
 /// Write `dir`'s `daemon.pid` naming `pid`, as the lock holder would have just now.
 fn record_holder(dir: &Path, pid: u32) {
     let now = std::time::SystemTime::now()
@@ -543,42 +536,6 @@ async fn the_pidfile_is_read_again_at_the_end_of_the_exit_window() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_daemon_refusing_with_a_store_error_is_reported_with_its_store_and_the_way_out() {
-    for proto_ver in [PROTO_VER, OTHER_PROTO] {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let stand_in = StandIn::spawn();
-        let paths = generation(dir.path(), Some(stand_in.0));
-        let pid = stand_in.0;
-        let _daemon = Scripted::serve(&paths.socket_path, move |request| match request {
-            CommsRequest::Status => Some(status(pid, OLDER, proto_ver)),
-            CommsRequest::Stop => Some(store_error()),
-            CommsRequest::Ping => Some(CommsResponse::Pong),
-            _ => None,
-        });
-
-        let error = settle(&paths)
-            .await
-            .expect_err("a daemon with a broken store cannot be used");
-
-        assert!(
-            matches!(&error, SingletonError::FailingPredecessor { pid: reported, .. } if *reported == pid),
-            "{error}"
-        );
-        let message = error.to_string();
-        let store = dir.path().join(crate::comms::v2::store::STORE_DIR);
-        assert!(message.contains(&store.display().to_string()), "{message}");
-        assert!(message.contains("Poisoned"), "{message}");
-        assert!(message.contains("basemind comms stop --all"), "{message}");
-        assert!(message.contains("basemind comms doctor --probe"), "{message}");
-        assert!(
-            !message.contains("idle"),
-            "a broken store does not clear when sessions end: {message}"
-        );
-        assert!(stand_in.alive(), "a daemon that answered must not be signalled");
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_caller_that_already_asked_does_not_send_stop_again() {
     for (proto_ver, usable) in [(PROTO_VER, true), (OTHER_PROTO, false)] {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -692,7 +649,6 @@ const QUICK: ReclaimRules = ReclaimRules {
     exit: Duration::from_millis(200),
     term_grace: Duration::from_secs(2),
     probe_timeout: Duration::from_millis(300),
-    store_error_is_silence: false,
 };
 
 /// A pid no process has.
@@ -839,33 +795,4 @@ async fn a_daemon_that_answers_the_stop_sent_at_the_end_of_the_window_is_left_al
             "{answer:?}: a daemon that answers must not be signalled"
         );
     }
-}
-
-/// A daemon that answers only to say its store is broken is spared by a takeover and reclaimed
-/// by an operator's `comms stop`, which exists for exactly that daemon.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_store_error_spares_the_daemon_unless_the_caller_counts_it_as_silence() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let stand_in = StandIn::spawn();
-    let paths = generation(dir.path(), Some(stand_in.0));
-    let _lock = hold_lock(dir.path());
-    let _daemon = Scripted::serve(&paths.socket_path, |request| match request {
-        CommsRequest::Stop => Some(store_error()),
-        CommsRequest::Ping => Some(CommsResponse::Pong),
-        _ => None,
-    });
-
-    let spared = reclaim_holder(&paths, None, QUICK).await;
-    assert!(matches!(spared, Reclaimed::Answers { .. }), "{spared:?}");
-    assert!(stand_in.alive());
-
-    let operator = ReclaimRules {
-        store_error_is_silence: true,
-        ..QUICK
-    };
-    assert_eq!(
-        reclaim_holder(&paths, None, operator).await,
-        Reclaimed::Gone { forced: true }
-    );
-    assert!(!stand_in.alive());
 }

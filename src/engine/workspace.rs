@@ -29,9 +29,8 @@ use crate::store::Store;
 pub(crate) struct Workspace {
     /// The opened store. A synchronous, task-fair lock, so the engine names no runtime: a scan holds
     /// the write side for its whole run, and readers wait for it as they did on the async lock this
-    /// replaces (a waiting writer holds back new readers, and a panic poisons nothing). Shared by
-    /// `Arc` so an async caller can hold an owned, `Send` read guard ([`store_lock`](Self::store_lock)).
-    store: Arc<RwLock<Store>>,
+    /// replaces (a waiting writer holds back new readers, and a panic poisons nothing).
+    store: RwLock<Store>,
     pub(crate) root: PathBuf,
     /// In-RAM mirror of every indexed file's L1 blob.
     ///
@@ -90,21 +89,25 @@ pub(crate) struct Workspace {
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(feature = "code-search")]
-    pub(crate) lance: crate::mcp::lance_cell::LanceCell,
-    /// Owner of this workspace's `individual` memory notes: the checkout's comms v2 principal
-    /// (`identity::resolve_agent_id`), which is the same at every server start.
+    pub(crate) lance: crate::engine::lance_cell::LanceCell,
+    /// Owner of this workspace's `individual` memory notes, which is the same at every server start
+    /// ([`OpenOptions::memory_owner`]).
     #[cfg(feature = "memory")]
     pub(crate) memory_owner: String,
-    /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
+    /// The repo group's memory vector store (see `engine::memory::vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
-    pub(crate) memory_lance: crate::mcp::lance_cell::LanceCell,
+    pub(crate) memory_lance: crate::engine::lance_cell::LanceCell,
     /// Memory namespaces `(vis_byte, owner)` whose vector rows a search in this process is bringing
     /// up to date with the notes, or has.
     #[cfg(feature = "memory")]
-    pub(crate) memory_backfill: std::sync::Mutex<ahash::AHashMap<(u8, String), crate::mcp::memory_vectors::Backfill>>,
-    /// Shared embedding engine. Lazy-init on first embed call.
+    pub(crate) memory_backfill:
+        std::sync::Mutex<ahash::AHashMap<(u8, String), crate::engine::memory::vectors::Backfill>>,
+    /// Shared embedding engine. Lazy-init on first embed call ([`Workspace::shared_embedder`]).
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-    pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
+    pub(crate) embedder: std::sync::OnceLock<Arc<crate::embeddings::SharedEmbedder>>,
+    /// Held by the one embedder load running, so the calls that arrive during it wait for it.
+    #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+    pub(super) embedder_loading: Mutex<()>,
     /// True while the boot-time initial scan (auto-scan of an empty index) is running. Lets a
     /// client polling `status` distinguish "index still building" from "index empty / no matches"
     /// so the build cost is not silently folded into the first query's latency.
@@ -126,7 +129,7 @@ pub(crate) struct Workspace {
     /// the cache wait on it (bounded by [`CACHE_WARM_WAIT_CAP`]) so a query issued during the warmup
     /// window returns COMPLETE data rather than an empty snapshot.
     warm_gate: WarmGate,
-    /// True while a watcher-driven incremental rescan (`scan_and_refresh` from the active filesystem
+    /// True while a watcher-driven incremental rescan (`Workspace::rescan` from the active filesystem
     /// watcher) is in flight. Surfaced as the `Rescanning` lifecycle so a client sees "results may be
     /// a moment stale" rather than treating a mid-rescan snapshot as final.
     pub(crate) rescan_active: AtomicBool,
@@ -143,7 +146,7 @@ pub(crate) struct Workspace {
     /// callers of the barrier all wait for the single build rather than racing to rebuild the map.
     pub(crate) lazy_cache_built: std::sync::OnceLock<()>,
     /// True when this serve fell back to a read-only store because another serve owns the
-    /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
+    /// write lock for this repo (issue #27). The single in-process writer (`Workspace::rescan`,
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
     /// without the lock.
     pub(crate) read_only: bool,
@@ -191,6 +194,10 @@ pub(crate) struct OpenOptions {
     /// How the host brings the git-history index up to HEAD when a history read finds it behind;
     /// `None` reads the live walk until something else syncs it.
     pub(crate) history_sync: Option<fn(&Workspace)>,
+    /// The owner of the workspace's `individual` memory notes, from its root: the host's durable
+    /// principal for the checkout (the MCP adapter resolves the comms v2 identity).
+    #[cfg(feature = "memory")]
+    pub(crate) memory_owner: fn(&std::path::Path) -> String,
 }
 
 /// Boot decisions derived purely from the opened store + [`OpenOptions`]: whether an initial scan
@@ -254,12 +261,12 @@ impl Workspace {
             "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
         #[cfg(feature = "memory")]
-        let memory_owner = crate::mcp::identity::resolve_agent_id(&store.root);
+        let memory_owner = (options.memory_owner)(&store.root);
         let outline_cache: Arc<OutlineCache> = Arc::new(OutlineCache::default());
         Self {
             #[cfg(feature = "memory")]
             memory_owner,
-            store: Arc::new(RwLock::new(store)),
+            store: RwLock::new(store),
             root,
             cache: ArcSwap::from(cache),
             repo,
@@ -276,7 +283,9 @@ impl Workspace {
             #[cfg(feature = "code-search")]
             lance: Default::default(),
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-            embedder: tokio::sync::OnceCell::new(),
+            embedder: std::sync::OnceLock::new(),
+            #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+            embedder_loading: Mutex::new(()),
             #[cfg(feature = "memory")]
             memory_lance: Default::default(),
             #[cfg(feature = "memory")]
@@ -320,12 +329,6 @@ impl Workspace {
     /// Read the store if no writer holds it right now.
     pub(crate) fn try_store_read(&self) -> Result<RwLockReadGuard<'_, Store>, StoreBusy> {
         self.store.try_read().ok_or(StoreBusy)
-    }
-
-    /// The lock itself, for a caller that needs an owned guard (`read_arc`, `write_arc`): one it
-    /// can move to another thread or hold across an `.await`.
-    pub(crate) fn store_lock(&self) -> &Arc<RwLock<Store>> {
-        &self.store
     }
 
     /// Mark the deferred preload finished and wake every caller of

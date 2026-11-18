@@ -6,7 +6,13 @@ pub(crate) const SEARCH_LIMIT_DEFAULT: u32 = 100;
 /// Upper bound on a `limit` that pages a symbol list.
 pub(crate) const SEARCH_LIMIT_MAX: u32 = 1000;
 
+pub(crate) mod code_grep;
 mod code_outline;
 mod code_read;
+mod code_refs;
+mod code_search;
 mod code_symbols;
+mod docs_search;
 pub(crate) mod find_files;
+pub(crate) mod index;
+mod memory;

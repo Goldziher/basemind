@@ -130,18 +130,9 @@ fn process_doc(
     let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     };
-    let (bytes, size_bytes, mtime) =
-        match read_working_tree(root, rel, filters.doc_max_file_bytes, config.scan.follow_symlinks) {
-            Ok(triple) => triple,
-            Err(status) => return FileResult::bare(rel.to_string(), status),
-        };
-    let hash = hashing::hash_bytes(&bytes);
-    let hex_buf = hashing::hex_buf(&hash);
-    let hash_hex = hashing::hex_str(&hex_buf);
-
     let embed_requested = doc_embed_requested(rel, &config.documents, embed, filters);
-    if let Some(existing) = store.lookup_doc(rel)
-        && (doc_entry_settled(
+    let unchanged = |existing: &crate::store::DocEntry, hash_hex: &str| {
+        (doc_entry_settled(
             existing,
             hash_hex,
             &config.documents.embedding_preset,
@@ -149,11 +140,44 @@ fn process_doc(
             &filters.doc_digest,
             filters.reflush_embeds,
         ) || owes_vectors_to_an_unavailable_embedder(existing, hash_hex, embed_requested, filters, config))
-        && if filters.verify_blobs {
-            store.doc_blob_is_intact(hash_hex)
-        } else {
-            store.blob_path_doc_hex(hash_hex).exists()
-        }
+            && if filters.verify_blobs {
+                store.doc_blob_is_intact(hash_hex)
+            } else {
+                store.blob_path_doc_hex(hash_hex).exists()
+            }
+    };
+    // The code lane's `(size, mtime)` shortcut: an unchanged document is neither read nor hashed, so
+    // a scan does not re-read every document in the tree. The recorded stamp is a settled one (0
+    // when the read raced an edit), and 0 never matches.
+    if let Some(existing) = store.lookup_doc(rel)
+        && existing.mtime != 0
+        && let Ok(meta) = doc_stat(&abs, config.scan.follow_symlinks)
+        && meta.is_file()
+        && meta.len() == existing.size_bytes
+        && crate::scanner_file::mtime_nanos(&meta) == existing.mtime
+        && unchanged(existing, &existing.hash_hex)
+    {
+        return FileResult::bare(rel.to_string(), FileStatus::DocUnchanged);
+    }
+
+    // Taken before the read, not just around the extraction: a document is held in memory from here
+    // until it is handed to xberg, so the slot bounds how many are held at once. ~keep
+    let _doc_slot = crate::backpressure::acquire_doc_slot(config.resources.max_concurrent_documents);
+    let (bytes, size_bytes, mtime) =
+        match read_working_tree(root, rel, filters.doc_max_file_bytes, config.scan.follow_symlinks) {
+            Ok(triple) => triple,
+            Err(status) => return FileResult::bare(rel.to_string(), status),
+        };
+    // The stamp the entry records: a stamp taken too close to the clock cannot vouch for the bytes
+    // just read, so the shortcut above must not trust it (see `settled_mtime`). The raw stamp still
+    // goes to the extraction, which checks the file did not change under it.
+    let settled = crate::scanner_file::settled_mtime(mtime, crate::scanner_file::now_nanos());
+    let hash = hashing::hash_bytes(&bytes);
+    let hex_buf = hashing::hex_buf(&hash);
+    let hash_hex = hashing::hex_str(&hex_buf);
+
+    if let Some(existing) = store.lookup_doc(rel)
+        && unchanged(existing, hash_hex)
     {
         return FileResult::bare(rel.to_string(), FileStatus::DocUnchanged);
     }
@@ -187,11 +211,10 @@ fn process_doc(
     // document's footprint for nothing.
     drop(bytes);
 
-    // Both bounds, in the order that makes them complementary: take a concurrency slot first so at ~keep
-    // most `max_concurrent_documents` extractions can ever overlap, then serialise through the ~keep
-    // footprint gate: over the ceiling only one document is admitted at a time (see ~keep
+    // Both bounds, in the order that makes them complementary: the concurrency slot taken before the ~keep
+    // read means at most `max_concurrent_documents` extractions can ever overlap, then serialise ~keep
+    // through the footprint gate: over the ceiling only one document is admitted at a time (see ~keep
     // `FootprintGate::admit_exclusive`), so an overshoot is one document, not one per worker. ~keep
-    let _doc_slot = crate::backpressure::acquire_doc_slot(config.resources.max_concurrent_documents);
     let admission = gate.admit_exclusive();
     tracing::debug!(path = rel, estimated_mb = estimated / (1024 * 1024), admitted = ?admission.outcome(), "extracting document");
 
@@ -221,7 +244,7 @@ fn process_doc(
                 hash_hex: hash_hex.to_string(),
                 embedding_preset: config.documents.embedding_preset.clone(),
                 size_bytes,
-                mtime,
+                mtime: settled,
                 embedded: batch.embedded,
                 embed_attempted: batch.embed_attempted,
                 config_digest: filters.doc_digest.clone(),
@@ -273,6 +296,16 @@ fn process_doc(
     }
 }
 
+/// The document's metadata as the read would see it: the link itself when links are not followed,
+/// so a symlinked document never matches the shortcut (the read refuses it).
+fn doc_stat(abs: &Path, follow_symlinks: bool) -> std::io::Result<std::fs::Metadata> {
+    if follow_symlinks {
+        std::fs::metadata(abs)
+    } else {
+        std::fs::symlink_metadata(abs)
+    }
+}
+
 /// True when a document-extraction error means the file's format simply has no xberg
 /// extractor (xberg's `UnsupportedFormat` → "Unsupported format: <mime>"), as opposed to a
 /// genuine extraction failure on a real document. Such files are skipped, not failed.
@@ -302,3 +335,7 @@ mod tests {
 #[cfg(test)]
 #[path = "scanner_flush_tests.rs"]
 mod flush_tests;
+
+#[cfg(all(test, unix))]
+#[path = "scanner_docs_lane_failure_tests.rs"]
+mod failure_tests;

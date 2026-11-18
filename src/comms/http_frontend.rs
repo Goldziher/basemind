@@ -523,6 +523,7 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
     let local = listener.local_addr().context("read the bound HTTP address")?;
     http_auth::write_portfile(&comms_dir, &local, &token)
         .with_context(|| format!("write HTTP portfile under {}", comms_dir.display()))?;
+    broker.mark_serving_http();
     tracing::info!(addr = %local, "comms: streamable-HTTP MCP transport listening (bearer token required)");
 
     let cancel = CancellationToken::new();

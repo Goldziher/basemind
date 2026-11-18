@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (library):** `basemind::scanner::scan`, `scan_paths` and the other public scan entries
+  take the `Retrieval` binding as an argument; a library caller passes
+  `basemind::retrieval_wiring::backend()`.
+- A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
+  result reading `tool task failed: …`, where it read `scan join: …` or
+  `host rescan task panicked: …`.
 - `code_refs` call sites, `callers` (with `path`) and `implementations` in a session that holds no
   index — a CLI command or a second `serve` beside a writer, with no daemon — are refused as busy
   (exit `3`), naming `basemind comms start`, instead of answering from an in-RAM projection of the
@@ -130,7 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   - The 15 tools are always loaded (`_meta["anthropic/alwaysLoad"]: true`), so a host that defers MCP
     tools needs no tool-search round trip; the agent tools are not marked and stay deferred
-    (ADR-0021). `tools/list` for the 15 is about 18 KB (about 4.5k tokens), down from about 25 KB (about
+    (ADR-0021). `tools/list` for the 15 is about 20 KB (about 5k tokens), down from about 25 KB (about
     6.3k tokens) for the four tools they replace; a test enforces a 20,000-byte ceiling. No tool declares
     an output schema.
   - Required arguments are required in the schema, and an unknown argument is rejected with a did-you-mean
@@ -276,8 +282,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `basemind agent post|inbox|threads`, plus `basemind agent status` and `basemind agent cleanup`.
   Reading now marks read (`peek: true` does not), bodies come inline (4 KiB, `id` reads one whole),
   a thread is open to its repository or invitation-only, and membership belongs to the principal.
-  The comms protocol version goes from 6 to 7 and the relay protocol from 1 to 2: a client and a
-  daemon of different versions refuse each other at connect, so restart every session and run
+  The comms protocol version goes from 4 (0.33.0) to 7 and the relay protocol from 1 to 2, in one
+  step with the protocol changes listed below: a client and a daemon of different versions refuse
+  each other at connect, so restart every session and run
   `basemind comms stop`. The agent store moves to `agents.fjall` in the protocol generation's
   directory and starts empty: threads and messages of earlier releases are not carried over. The
   legacy `store.fjall` is left in place and never read; `basemind comms cleanup` removes the
@@ -334,6 +341,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The `store_error` exception of `basemind comms stop` and the takeover, and the `last-fatal.json`
+  record `basemind comms doctor` reported. No daemon of this generation answers `store_error` or
+  writes the record: a broken agent store shows as `agent_store` in `Status`. `--clear-fatal` now
+  acknowledges only the records of scans that died without unwinding.
+- **BREAKING: the `[documents.output] format` setting, `--documents-output-format` and
+  `BASEMIND_DOCUMENTS_OUTPUT_FORMAT`.** No tool read them: the verb tools answer in JSON. The flag is
+  now rejected, so a host config that still passes it fails to start `basemind serve`. A
+  `[documents.output]` table still loads, and a set `BASEMIND_DOCUMENTS_OUTPUT_FORMAT` is ignored;
+  each logs a warning to remove it.
 - The daemon socket's forwarded `memory`, `resolved_refs`, `index_read` and `code_search_lanes`
   requests. No process sends them any more: a CLI next to the daemon forwards its whole call, and a
   daemon-hosted session reads through the daemon's pool in process. The comms protocol version stays
@@ -382,8 +398,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (see Changed for their new tool names). Stored
   notes keep their `verified`, `last_verified` and `importance` fields, which nothing updates any more. The
   `memory_archive` and `proposals` keyspaces an older version wrote stay in the repo's `memory.fjall`
-  untouched and are never opened. The comms protocol version goes from 4 to 5 because the `governance`
-  request was removed: the first upgraded session replaces a running older daemon, and a client and daemon
+  untouched and are never opened. The `governance` request was removed from the comms protocol (part of its
+  step from 4 to 7, see agent comms v2 above): the first upgraded session replaces a running older daemon, and a client and daemon
   that disagree fail the handshake with `proto_skew`.
 - **The code graph.** The `graph` MCP tool (`calls`, `neighbors`, `path`, `subgraph`, `communities`, `map`,
   `export`, `display`, `open`) and the `basemind graph` CLI group are gone, along with the
@@ -456,6 +472,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The daemon's memory no longer climbs under steady memory, document and code-search writes: every
+  LanceDB store of a process caches through one session of 64 MiB (index) and 32 MiB (metadata)
+  instead of Lance's default 6 GiB and 1 GiB per store, where each commit's manifest and file
+  metadata stayed cached after its version was pruned.
 - A root commit's file list (`git_log` `files`, a directory's history, `basemind git churn` and
   `git by-path`) names its files only, no longer every directory of its tree. The git-history index
   rebuilds once and the cached file lists are recomputed.
@@ -721,7 +741,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by name, with how to fix it, when read by key, instead of breaking the connection; a search
   through the daemon leaves it out and the daemon logs it, where it failed every search whose hits
   or embedding batch included it.
-- The daemon protocol version is 6 (was 5): a search by meaning reads the `updated_at` of its
+- The daemon protocol changes (part of the comms protocol's step from 4 to 7): a search by meaning reads the `updated_at` of its
   hits' notes, and whole only the notes it may serve, in batches (at most 256 keys and 8 MiB of
   notes per reply, which the daemon enforces), and a rescan says whether its paths were named or
   watched. A client and a daemon of different protocol versions refuse each other at connect, as
@@ -878,6 +898,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `symbol_history` with a structural `hash_mode` fingerprints a symbol declared inside a macro body on
   its own instead of hashing the whole macro body.
 - A parse that hit its timeout no longer leaves the pooled parser to resume it on the next file.
+- The git-history index runs on fixed memory, journal and open-file budgets (8 MiB memtables, a
+  16 MiB cache, a 64 MiB journal, 64 cached files) instead of fjall's defaults of 64 MiB memtables,
+  a 512 MiB journal and up to 900 cached files per repository the daemon holds. The index rebuilds
+  once.
+- A hosted workspace's idle clocks start when its last session ends, not when it connected, so a
+  long session's read stack is no longer shed right after it closes.
+- A forwarded CLI command no longer counts as a second `serve` session of the agent's identity, which
+  made agent replies warn of a shared identity.
+- A comms `Hello` refreshes the machine registry's rows for its root at most once every five minutes
+  instead of enumerating the repository's worktrees and branches and rewriting the registry on every
+  prompt hook. A root that resolves to the filesystem root is no longer registered.
+- A daemon serving the HTTP front-end is no longer stopped for idleness. It disappeared ten minutes
+  after its last request, and no HTTP client could start another.
+- `basemind comms doctor --probe` reports a daemon whose agent store is not open as degraded.
+- `BASEMIND_COMMS_DIR` naming an existing directory no longer has its mode changed to 0700; only the
+  generation directory inside it is made owner-only.
+- The daemon's exit path (shedding hosted stacks, the agent store's last flush) is bounded, and the
+  waits on a draining predecessor cover the whole teardown.
+- A hosted workspace's file watcher no longer wakes five times a second while nothing changes.
 
 ## [0.33.0] - 2026-11-14
 

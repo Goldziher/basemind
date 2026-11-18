@@ -3,7 +3,7 @@
 //!
 //! Each `#[tool]` is a thin shim: [`BasemindServer::answer`] rejects inexact arguments and reports
 //! failures as `isError` results, and the `*_call` method beside it (also what `basemind code …`
-//! runs) records telemetry around the body in `helpers_code.rs` or an engine op.
+//! runs) runs an engine op through the adapter, which records telemetry around it.
 //!
 //! No tool declares an `output_schema`: the response structs nest, schemars emits nested structs
 //! as `$ref` into `$defs` (the construct that dropped the whole registry in GH #50), and inlining
@@ -18,14 +18,18 @@ use rmcp::tool;
 
 use super::BasemindServer;
 use super::adapter::{self, Op};
-use super::cursor_bind::bound;
-use super::helpers_code;
 use super::strict::Strict;
 use super::types_tools::{
     CodeGrepParams, CodeOutlineParams, CodeReadParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams,
     FindFilesToolParams,
 };
 use crate::engine::Workspace;
+
+tokio::task_local! {
+    /// The cancellation token of the MCP `code_grep` call running on this task. The sweep runs on
+    /// rayon threads that aborting the tool's task does not stop, so it checks the token per file.
+    static GREP_CANCEL: tokio_util::sync::CancellationToken;
+}
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
 impl BasemindServer {
@@ -115,7 +119,7 @@ impl BasemindServer {
         Parameters(args): Parameters<Strict<CodeGrepParams>>,
         ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        super::helpers_grep::GREP_CANCEL
+        GREP_CANCEL
             .scope(ctx.ct, self.answer(args, |p| self.code_grep_call(p)))
             .await
     }
@@ -190,7 +194,11 @@ impl BasemindServer {
 impl BasemindServer {
     /// Run the engine operation `op` as a verb-tool call: the body both a `#[tool]` shim and the
     /// matching `basemind` command run ([`adapter::call`]).
-    pub(crate) async fn op<P, R>(&self, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+    pub(crate) async fn op<P, R>(
+        &self,
+        p: P,
+        op: impl FnOnce(&Workspace, P) -> Result<R, crate::engine::EngineError> + Send + 'static,
+    ) -> Result<CallToolResult, McpError>
     where
         P: super::cursor_bind::Paged + Send + 'static,
         R: serde::Serialize + 'static,
@@ -233,34 +241,28 @@ impl BasemindServer {
         self.op_unpaged(p, Workspace::code_read).await
     }
 
-    /// Body of `code_grep`, shared with `basemind code grep`.
+    /// Body of the `code_grep` tool: [`Workspace::code_grep`], stopped when the MCP request running
+    /// it is cancelled ([`GREP_CANCEL`]).
     pub(crate) async fn code_grep_call(&self, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_grep",
-            p,
-            bound(p, |p| helpers_code::code_grep(&self.state, p)).await
-        )
+        let cancel = GREP_CANCEL.try_with(Clone::clone).ok();
+        self.op(p, move |ws: &Workspace, p| {
+            ws.code_grep_until(p, &|| {
+                cancel
+                    .as_ref()
+                    .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+            })
+        })
+        .await
     }
 
-    /// Body of `code_search`, shared with `basemind code search`.
+    /// Body of the `code_search` tool.
     pub(crate) async fn code_search_call(&self, p: CodeSearchParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_search",
-            p,
-            bound(p, |p| helpers_code::code_search(&self.state, p)).await
-        )
+        self.op(p, Workspace::code_search).await
     }
 
-    /// Body of `code_refs`, shared with `basemind code refs`.
+    /// Body of the `code_refs` tool.
     pub(crate) async fn code_refs_call(&self, p: CodeRefsParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_refs",
-            p,
-            bound(p, |p| helpers_code::code_refs(&self.state, p)).await
-        )
+        self.op(p, Workspace::code_refs).await
     }
 
     /// Body of the `find_files` tool.
@@ -272,98 +274,8 @@ impl BasemindServer {
     /// `basemind code chunk`.
     pub(crate) async fn code_chunk_call(
         &self,
-        p: super::types_code::GetChunkParams,
+        p: crate::engine::types::search::GetChunkParams,
     ) -> Result<CallToolResult, McpError> {
-        #[cfg(feature = "code-search")]
-        {
-            super::helpers_code_search::run_get_chunk(&self.state, p).await
-        }
-        #[cfg(not(feature = "code-search"))]
-        {
-            let _ = p;
-            Err(super::tool_contract::feature_missing("code chunk", "code-search"))
-        }
-    }
-}
-
-/// Count content-addressed blobs in the GLOBAL blob store by tallying `.fm.msgpack` files
-/// (one combined L1 + L2 filemap per indexed content hash; the `.doc` sibling shares the same
-/// stem so it is not double-counted). A single directory read — cheaper than
-/// [`crate::store_gc::cache_stats`], which also unions every view index — so it is safe to call
-/// from the `status` path.
-///
-/// Since the blob store went machine-global this counts blobs across EVERY workspace, so the
-/// `status` divergence heuristic (empty index yet blobs on disk) can over-report on a shared
-/// machine — advisory only, as before.
-///
-/// Returns `0` when the blobs directory is absent or unreadable; the count is advisory.
-pub(super) fn count_fm_blobs() -> usize {
-    crate::store::count_fm_blobs(&crate::store::global_blobs_dir())
-}
-
-/// The `status` note: that a rescan is owed (see [`crate::store::Store::rescan_owed`]), else the
-/// divergence note below.
-///
-/// The divergence note (bug #10): when the current view's index is empty
-/// but content-addressed blobs are present on disk, the index was lost/wiped over live
-/// blobs and a rescan would rebuild it. A legitimately unscanned repo (no blobs either)
-/// gets no note.
-pub(super) fn index_note(rescan_owed: bool, file_count: usize, blob_count: usize) -> Option<String> {
-    if rescan_owed {
-        return Some(crate::store::RESCAN_OWED.to_string());
-    }
-    blob_divergence_note(file_count, blob_count)
-}
-
-fn blob_divergence_note(file_count: usize, blob_count: usize) -> Option<String> {
-    if file_count == 0 && blob_count > 0 {
-        Some(format!(
-            "index for this view is empty but {blob_count} blob file(s) exist on disk; \
-             the view index was lost or wiped — run `basemind scan` to rebuild it"
-        ))
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn status_note_absent_when_index_and_blobs_agree() {
-        assert_eq!(blob_divergence_note(42, 100), None, "populated index: no note");
-    }
-
-    #[test]
-    fn status_note_absent_for_unscanned_empty_repo() {
-        assert_eq!(
-            blob_divergence_note(0, 0),
-            None,
-            "empty index with no blobs is a legitimately unscanned repo, not a lost index"
-        );
-    }
-
-    #[test]
-    fn status_note_says_a_rescan_is_owed_before_anything_else() {
-        let note = index_note(true, 0, 7).expect("an owed rescan always has a note");
-        assert!(
-            note.contains("basemind scan") && note.contains("index_rescan"),
-            "{note}"
-        );
-        assert_eq!(index_note(false, 42, 100), None);
-        assert!(index_note(false, 0, 7).is_some_and(|note| note.contains("7 blob file")));
-    }
-
-    #[test]
-    fn status_note_present_when_index_empty_but_blobs_exist() {
-        let note = blob_divergence_note(0, 7);
-        assert!(
-            note.is_some(),
-            "lost-index-over-live-blobs must surface a note (bug #10)"
-        );
-        let note = note.unwrap();
-        assert!(note.contains("7 blob file"), "note reports the blob count");
-        assert!(note.contains("scan"), "note suggests a rescan");
+        self.cli_op(p, Workspace::code_chunk).await
     }
 }

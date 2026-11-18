@@ -377,5 +377,56 @@ class HookTimeoutTests(unittest.TestCase):
                     self.assertGreaterEqual(hook["timeout"], 10 * unit)
 
 
+@unittest.skipIf(os.name == "nt", "the manifests' commands are POSIX shell")
+class HookRootTests(unittest.TestCase):
+    """A hook resolves its script against the host's plugin root, never the session's directory."""
+
+    MANIFESTS = (".codex-plugin/hooks/hooks.json", ".cursor-plugin/hooks/hooks.json")
+    ROOT_VARS = ("PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "CODEX_PLUGIN_ROOT", "CURSOR_PLUGIN_ROOT")
+
+    def commands(self, manifest: str) -> list[str]:
+        groups = json.loads((ROOT / manifest).read_text())["hooks"]
+        return [hook["command"] for entries in groups.values() for entry in entries for hook in entry["hooks"]]
+
+    def plant(self, directory: Path, marker: Path) -> None:
+        hooks = directory / "hooks"
+        hooks.mkdir(parents=True)
+        script = hooks / "run-hook.cmd"
+        script.write_text(f'#!/bin/sh\nprintf ran > "{marker}"\n')
+        script.chmod(0o755)
+
+    def run_command(self, command: str, cwd: Path, **roots: str) -> subprocess.CompletedProcess:
+        env = {key: value for key, value in os.environ.items() if key not in self.ROOT_VARS}
+        return subprocess.run(
+            ["sh", "-c", command], cwd=cwd, env={**env, **roots}, capture_output=True, text=True, check=False
+        )
+
+    def test_without_a_plugin_root_no_repository_script_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout, marker = Path(tmp) / "checkout", Path(tmp) / "ran"
+            self.plant(checkout, marker)
+            for manifest in self.MANIFESTS:
+                for command in self.commands(manifest):
+                    with self.subTest(manifest=manifest, command=command):
+                        result = self.run_command(command, checkout)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertFalse(marker.exists(), "the session's ./hooks/run-hook.cmd ran")
+
+    def test_the_hosts_plugin_root_runs_the_plugins_script(self) -> None:
+        hosts = {
+            ".codex-plugin/hooks/hooks.json": ("PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"),
+            ".cursor-plugin/hooks/hooks.json": ("CURSOR_PLUGIN_ROOT",),
+        }
+        for manifest, variables in hosts.items():
+            for variable in variables:
+                for command in self.commands(manifest):
+                    with self.subTest(manifest=manifest, variable=variable), tempfile.TemporaryDirectory() as tmp:
+                        plugin, marker = Path(tmp) / "plugin", Path(tmp) / "ran"
+                        self.plant(plugin, marker)
+                        result = self.run_command(command, Path(tmp), **{variable: str(plugin)})
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertTrue(marker.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

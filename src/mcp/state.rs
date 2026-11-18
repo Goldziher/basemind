@@ -8,14 +8,7 @@
 
 use std::sync::Arc;
 
-use super::{Workspace, types};
-use crate::store::Store;
-
-/// An owned read guard on a workspace's store, from [`ServerState::store_read`].
-pub(crate) type StoreReadGuard = parking_lot::ArcRwLockReadGuard<parking_lot::RawRwLock, Store>;
-/// An owned write guard on a workspace's store, from [`ServerState::store_write`].
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) type StoreWriteGuard = parking_lot::ArcRwLockWriteGuard<parking_lot::RawRwLock, Store>;
+use super::Workspace;
 
 /// A [`Workspace`] together with what every connection served from it shares: the telemetry writer
 /// and how the workspace's writes reach the index. The engine knows none of these; they belong to
@@ -116,68 +109,31 @@ impl ServerState {
     /// Neither regime waits on
     /// [`Lifecycle::BuildingIndex`](crate::engine::Lifecycle::BuildingIndex) — a from-scratch scan
     /// can run for minutes, so those tools return the partial index plus a
-    /// [`lifecycle_notice`](Self::lifecycle_notice) telling the client to poll.
+    /// [`lifecycle_notice`](Workspace::lifecycle_notice) telling the client to poll.
     pub(crate) async fn await_cache_ready(&self) {
         use std::sync::atomic::Ordering::Relaxed;
         if self.shared.lazy_cache {
             if self.shared.lazy_cache_built.get().is_none() {
-                super::blocking::blocking(|| self.build_cache_on_demand());
+                let ws = Arc::clone(&self.shared);
+                super::adapter::blocking(move || build_cache_on_demand(&ws)).await;
             }
             return;
         }
         if !self.shared.cache_warming.load(Relaxed) {
             return;
         }
-        super::blocking::blocking(|| self.shared.wait_for_warm());
+        let ws = Arc::clone(&self.shared);
+        super::adapter::blocking(move || ws.wait_for_warm()).await;
     }
+}
 
-    /// Build the whole-corpus in-RAM map and publish it — exactly once, however many callers race
-    /// the barrier.
-    ///
-    /// [`MapCache::build`] is IO-bound (a rayon `par_iter` probing every indexed file's blob), so it
-    /// must not run on the async reactor: [`await_cache_ready`](Self::await_cache_ready) runs it
-    /// inside [`blocking::blocking`](super::blocking::blocking), which hands the worker over
-    /// on the multi-thread runtime the CLI builds and runs it in place on a `current_thread` test
-    /// runtime, which has no other task to starve.
-    fn build_cache_on_demand(&self) {
-        if let Some(cache) = self.shared.build_map_on_demand() {
-            super::background::warm_terms(&cache);
-        }
-    }
-
-    /// Read the workspace's store from async code. A free lock is taken at once; a held one (a scan
-    /// is writing) is waited for on a blocking thread, so the wait never parks a runtime worker. The
-    /// guard is owned and `Send`, so it may be held across an `.await`, as the async lock this
-    /// replaces allowed.
-    pub(crate) async fn store_read(&self) -> StoreReadGuard {
-        let lock = self.shared.store_lock();
-        if let Some(store) = lock.try_read_arc() {
-            return store;
-        }
-        let lock = Arc::clone(lock);
-        match tokio::task::spawn_blocking(move || lock.read_arc()).await {
-            Ok(store) => store,
-            Err(join) => std::panic::resume_unwind(join.into_panic()),
-        }
-    }
-
-    /// Write the workspace's store from async code, waiting as [`store_read`](Self::store_read)
-    /// does. Only the daemon-forward refresh writes from async code.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) async fn store_write(&self) -> StoreWriteGuard {
-        let lock = self.shared.store_lock();
-        if let Some(store) = lock.try_write_arc() {
-            return store;
-        }
-        let lock = Arc::clone(lock);
-        match tokio::task::spawn_blocking(move || lock.write_arc()).await {
-            Ok(store) => store,
-            Err(join) => std::panic::resume_unwind(join.into_panic()),
-        }
-    }
-
-    /// The notice a read-tool response carries ([`Workspace::lifecycle_notice`]).
-    pub(crate) fn lifecycle_notice(&self) -> Option<types::LifecycleNotice> {
-        self.shared.lifecycle_notice()
+/// Build the whole-corpus in-RAM map and publish it — exactly once, however many callers race
+/// the barrier.
+///
+/// [`MapCache::build`](crate::engine::MapCache::build) is IO-bound (a rayon `par_iter` probing every indexed file's blob), so it
+/// must not run on the async reactor: [`ServerState::await_cache_ready`] runs it on a blocking thread.
+fn build_cache_on_demand(ws: &Workspace) {
+    if let Some(cache) = ws.build_map_on_demand() {
+        super::background::warm_terms(&cache);
     }
 }

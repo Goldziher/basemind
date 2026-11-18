@@ -1,0 +1,9 @@
+//! The reads behind `code_refs`: call sites and the callers of one definition (`calls`, over the
+//! name scan in `calls_scan`), implementations (`impls`), the definition a reference binds to
+//! (`intel`), and what an exact name match is (`matching`). Each reads the index alone.
+
+pub(crate) mod calls;
+pub(crate) mod calls_scan;
+pub(crate) mod impls;
+pub(crate) mod intel;
+pub(crate) mod matching;

@@ -54,8 +54,8 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
 schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
-needs no tool-search round trip: call them directly. Their `tools/list` entry is about 18 KB (about
-4.5k tokens). The three agent tools (`comms` builds) are deferred: a host finds them by tool search, and the session-start hook and the server instructions name them. An unknown argument is
+needs no tool-search round trip: call them directly. Their `tools/list` entry is about 20 KB (about
+5k tokens). The three agent tools (`comms` builds) are deferred: a host finds them by tool search, and the session-start hook and the server instructions name them. An unknown argument is
 rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
 fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
 the previous `code` / `git` / `memory` / `admin` tools: the
@@ -590,7 +590,10 @@ The daemon can additionally serve MCP over streamable HTTP on loopback, but that
 request must then present the bearer token published as the second line of `<comms_dir>/http.addr`
 (mode `0600`; `<comms_dir>` is the generation directory, `comms/g1/` under the data directory). The
 first line of that file is the bound address: the default port is `51786`, but a daemon that finds it
-in use binds another. Plugin manifests and the CLI use the stdio transport and need none of this.
+in use binds another. A daemon serving HTTP is not stopped for idleness, because no HTTP client can
+start one and a daemon started implicitly never serves HTTP: start it with `basemind comms start`
+(or the systemd unit) and stop it with `basemind comms stop`. Plugin manifests and the CLI use the
+stdio transport and need none of this.
 
 </details>
 
@@ -650,8 +653,9 @@ process, answers two more tools on its own stdio, never through the daemon:
 | `agent_stop` | stop an agent you launched, by `session` |
 
 Launching is off until the operator writes `agents.toml` in basemind's user configuration directory
-(`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS), owned by you
-and writable by nobody else. A repository's `basemind.toml` cannot turn it on, nor can the
+(`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS, under your
+account's home directory as the user database names it, whatever `HOME` or `XDG_CONFIG_HOME` say),
+owned by you and writable by nobody else. A repository's `basemind.toml` cannot turn it on, nor can the
 environment, a flag or a tool argument:
 
 ```toml
@@ -667,8 +671,14 @@ permission_mode = "supervised"              # supervised | read_only | accept_ed
 pass_env = ["ANTHROPIC_API_KEY"]            # read from the lead's environment
 ```
 
-A launched agent runs at depth 1 and cannot launch; every approval it asks for is denied; each
-`working_dir` is an existing directory under `worktrees_root` that no other live agent uses; every
+A launched agent runs at depth 1 and cannot launch; it may use the injected server's agent comms
+tools (`agent_inbox`, `agent_post`, `agent_threads`) unasked, and every other approval it asks for is
+denied ([ADR-0044](docs/adr/0044-launched-agent-comms-and-user-mcp-isolation.md)); its harness starts
+none of your own MCP servers but OpenCode's plugins and the servers of a managed or organisation
+OpenCode configuration; each `working_dir` is an existing directory
+under `worktrees_root` that no session of any lead of yours holds, and inside or around none that
+one holds (leads see each other through lock files in their data directory, so leads run with
+different `BASEMIND_DATA_HOME`s do not; a human's session there is not detected); every
 launch, stop and refusal is written to `<data dir>/agents/launch-audit-*.jsonl`. Without the file,
 `serve --lead` serves exactly like `serve` and says why in its instructions. This bounds what a model
 can do through MCP; it is no sandbox against a process of the same user. See
@@ -1247,7 +1257,7 @@ checkout's principal.
 | Command | Purpose |
 |---|---|
 | `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon of this version's protocol generation on the machine), or inspect pid / version / uptime. |
-| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges a recorded fatal store error. |
+| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges the records of scans that died without unwinding. |
 | `cleanup [--dry-run --older-than <days>]` | Remove the comms files of other protocol generations and of releases up to 0.33 (including a pre-generation `store.fjall`) once no daemon holds their lock and they have been idle for 30 days. |
 
 **Workspace (`basemind workspace`, `--features comms`)**

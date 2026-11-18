@@ -43,7 +43,61 @@ pub(crate) fn open_doc_store(store: &Store, config: &Config, create: bool) -> Re
     } else {
         DocStore::shared_existing(&dir, dim, preset)
     };
-    opened.map_err(|error| format!("{error:#}"))
+    let opened = opened.map_err(|error| format!("{error:#}"))?;
+    if opened.is_some() {
+        prune_idle_model_stores(&dir, std::time::SystemTime::now());
+    }
+    Ok(opened)
+}
+
+/// How long a group retrieval store of another embedding model may go unused by any scan before a
+/// scan of the group removes it. A worktree that still uses that model rebuilds its store from the
+/// cached blobs, with no embedding, on its next scan.
+const IDLE_MODEL_STORE: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 60 * 60);
+
+/// File in a retrieval store directory whose mtime is the last time a scan opened the store.
+const LAST_USED_FILE: &str = ".last-used";
+
+/// Stamp `dir`, the store this scan opened, as used, and remove each sibling store (another model
+/// or dimension of the same group) no scan has opened for [`IDLE_MODEL_STORE`]. Without this a
+/// store of every preset a group ever tried stays until the whole group is reaped. A store from
+/// before the stamp is judged by its directory's mtime.
+///
+/// A scan holds the group lock, so no other writer has a sibling open. Best effort: a store that
+/// cannot be stamped or removed is left for the next scan.
+fn prune_idle_model_stores(dir: &std::path::Path, now: std::time::SystemTime) {
+    let stamp = dir.join(LAST_USED_FILE);
+    let touched = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&stamp)
+        .and_then(|file| file.set_modified(now));
+    if let Err(error) = touched {
+        tracing::debug!(%error, path = %stamp.display(), "could not stamp the retrieval store as used");
+    }
+    let Some(parent) = dir.parent() else {
+        return;
+    };
+    for entry in std::fs::read_dir(parent).into_iter().flatten().flatten() {
+        let sibling = entry.path();
+        if sibling == dir || !sibling.is_dir() {
+            continue;
+        }
+        let last_used = std::fs::metadata(sibling.join(LAST_USED_FILE))
+            .or_else(|_| std::fs::metadata(&sibling))
+            .and_then(|meta| meta.modified());
+        let idle = last_used.is_ok_and(|at| now.duration_since(at).is_ok_and(|idle| idle >= IDLE_MODEL_STORE));
+        if !idle {
+            continue;
+        }
+        match std::fs::remove_dir_all(&sibling) {
+            Ok(()) => tracing::info!(store = %sibling.display(), "removed a retrieval store no scan has used lately"),
+            Err(error) => {
+                tracing::debug!(%error, store = %sibling.display(), "could not remove an idle retrieval store")
+            }
+        }
+    }
 }
 
 /// One live document: the blob its rows are built from, its paths, and whether any of them wants

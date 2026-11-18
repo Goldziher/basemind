@@ -23,7 +23,15 @@ fn write(root: &Path, rel: &str, body: &str) {
 
 fn full_scan(root: &Path, store: &mut Store, config: &Config) -> crate::index::bm25_pass::PassOutcome {
     LAST_BM25_OUTCOME.with(|last| last.set(None));
-    scan(root, store, config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    scan(
+        root,
+        store,
+        config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        crate::scan_retrieval::Retrieval::inert(),
+    )
+    .unwrap();
     LAST_BM25_OUTCOME
         .with(std::cell::Cell::get)
         .expect("the full pass finished its BM25 pass")
@@ -68,6 +76,7 @@ fn a_full_pass_after_a_watcher_batch_takes_the_shortcut() {
         &config,
         &[root.join("src/a.rs"), root.join("src/b.rs")],
         EmbedMode::Inline,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .unwrap();
     exact_state(&store);

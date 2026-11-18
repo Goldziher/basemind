@@ -43,11 +43,18 @@ const DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
 pub(crate) trait LeadCalls: Send + Sync + 'static {
     /// The `CallToolResult` for `name` called with `arguments`.
     fn call(self: Arc<Self>, name: String, arguments: Value) -> Pin<Box<dyn Future<Output = Value> + Send>>;
+
+    /// Stop what the calls started and wait for it; blocks.
+    fn shutdown(&self);
 }
 
 impl LeadCalls for basemind::lead::LeadHost {
     fn call(self: Arc<Self>, name: String, arguments: Value) -> Pin<Box<dyn Future<Output = Value> + Send>> {
         Box::pin(async move { basemind::lead::LeadHost::call(self, &name, arguments).await })
+    }
+
+    fn shutdown(&self) {
+        basemind::lead::LeadHost::shutdown(self);
     }
 }
 
@@ -96,9 +103,49 @@ pub(crate) fn mode(root: &std::path::Path, principal: basemind::comms::v2::Princ
         Err(off) => {
             tracing::error!("basemind serve --lead: {off}; serving without agent_launch");
             Mode::Off {
-                notice: format!("{off}; agent_launch and agent_stop are not available in this session."),
+                notice: format!(
+                    "{}; agent_launch and agent_stop are not available in this session (the reason is on \
+                     the serve's stderr).",
+                    off.1
+                ),
             }
         }
+    }
+}
+
+impl Mode {
+    /// What answers the calls, when the lead host runs: the `serve` shuts it down once the
+    /// filter has returned.
+    pub(crate) fn calls(&self) -> Option<Arc<dyn LeadCalls>> {
+        match self {
+            Self::On { calls, .. } => Some(Arc::clone(calls)),
+            Self::Off { .. } => None,
+        }
+    }
+}
+
+/// Resolves once the process is asked to end by SIGTERM, SIGHUP or SIGINT. A lead treats that as
+/// the end of its input, so its sessions are stopped and recorded before it exits. Without a
+/// handler the signal would end the process at once, leaving detached processes behind.
+///
+/// The handlers stay installed for the life of the process, so a second SIGTERM, SIGHUP or SIGINT
+/// while the sessions are being stopped is ignored: the shutdown runs to its end, bounded by the
+/// longest stop grace plus a few seconds. Only SIGKILL ends the process sooner, and leaves the
+/// sessions' detached processes and missing exit records behind.
+pub(crate) async fn termination() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut term), Ok(mut hup), Ok(mut int)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::hangup()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        tracing::warn!("basemind serve --lead: cannot handle termination signals");
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = hup.recv() => {}
+        _ = int.recv() => {}
     }
 }
 
@@ -127,7 +174,15 @@ where
         Mode::On { calls, notice } => (Some(calls), notice),
         Mode::Off { notice } => (None, notice),
     };
-    let inbound = tokio::spawn(inbound(input, to_relay, calls, Arc::clone(&awaited), answers));
+    // Aborted however `run` ends: a `serve` ended by a signal drops this future, and a reader left
+    // running would turn later host lines into lead calls after the sessions were shut down.
+    let inbound = AbortOnDrop(tokio::spawn(inbound(
+        input,
+        to_relay,
+        calls,
+        Arc::clone(&awaited),
+        answers,
+    )));
     let relayed = relay(relay_read, relay_write);
     let outbound = async {
         let mut from_relay = BufReader::new(from_relay);
@@ -154,7 +209,7 @@ where
         }
         // The relay is gone: read no more from the host, and give the lead calls already taken
         // their answers. The reader's sender goes with it; each call's goes when it is answered.
-        inbound.abort();
+        inbound.0.abort();
         let _ = tokio::time::timeout(DRAIN, async {
             while let Some(mut answer) = answered.recv().await {
                 answer.push('\n');
@@ -168,6 +223,15 @@ where
     };
     let (relayed, written) = tokio::join!(relayed, outbound);
     relayed.and(written)
+}
+
+/// A task aborted when this is dropped.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Copy the host's lines to the relay, answering the lead tools' calls here instead.

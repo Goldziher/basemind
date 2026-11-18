@@ -54,11 +54,20 @@ fn serve(root: &Path, view: &str, lead: bool) -> Result<()> {
         #[cfg(unix)]
         if lead {
             let mode = crate::serve_lead::mode(root, identity.principal.clone(), host_of_session());
-            return crate::serve_lead::run(tokio::io::stdin(), tokio::io::stdout(), mode, |input, output| {
+            let calls = mode.calls();
+            let filtered = crate::serve_lead::run(tokio::io::stdin(), tokio::io::stdout(), mode, |input, output| {
                 stdio_relay::run(input, output, connect)
-            })
-            .await
-            .context("run persistent daemon relay");
+            });
+            // A signal ends the relay as end of input would; either way the launched sessions are
+            // stopped and waited for here, before the runtime is shut down in the background.
+            let served = tokio::select! {
+                served = filtered => served,
+                () = crate::serve_lead::termination() => Ok(()),
+            };
+            if let Some(calls) = calls {
+                let _ = tokio::task::spawn_blocking(move || calls.shutdown()).await;
+            }
+            return served.context("run persistent daemon relay");
         }
         let _ = lead;
         stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), connect)

@@ -9,20 +9,15 @@
 //! every platform against a scripted one (`singleton_takeover_decision_tests.rs`), and on Unix
 //! against real sockets and processes (`singleton_takeover_tests.rs`).
 
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::super::protocol::StatusReport;
-use super::super::v2::store::STORE_DIR;
 use super::probe::{StopOutcome, force_terminate, request_stop_within};
 use super::{
     CommsPaths, ENDPOINT_TIMEOUT, Liveness, NO_AUTOSPAWN_ENV, SPAWN_POLL_INTERVAL, SingletonError, SpawnPolicy,
     autospawn_disabled, daemon_status, endpoint_accepts, off_worker, probe_liveness, version_is_older,
 };
 use crate::daemon_lock::{self, DaemonKind, DaemonRecord, LockState};
-
-/// The store error token: the one `Stop` refusal that reports a fault rather than a decision.
-const STORE_ERROR: &str = "store_error";
 
 /// The waits a takeover is allowed. Injected so the tests do not sit through production graces.
 #[derive(Clone, Copy, Debug)]
@@ -49,7 +44,6 @@ impl Timings {
             exit: self.exit,
             term_grace: self.term_grace,
             probe_timeout: ENDPOINT_TIMEOUT,
-            store_error_is_silence: false,
         }
     }
 }
@@ -63,10 +57,6 @@ pub struct ReclaimRules {
     pub term_grace: Duration,
     /// How long the `Stop` sent at the end of the exit window waits for an answer.
     pub probe_timeout: Duration,
-    /// Whether a `store_error` answer to that `Stop` counts as no answer. It does for an operator's
-    /// explicit stop: a daemon that answers only to say its store is broken is the one they are
-    /// trying to get rid of. It never does for a takeover.
-    pub store_error_is_silence: bool,
 }
 
 /// How [`reclaim_holder`] left the generation.
@@ -101,8 +91,6 @@ pub enum Reclaimed {
 /// What the takeover and the reclaim need from the machine: the daemon's endpoint, the
 /// generation's lock and pidfile, and the one way a process is signalled.
 pub(super) trait Generation {
-    /// The generation's directory, for naming its store in an error.
-    fn dir(&self) -> &Path;
     /// The daemon's answer to `Status`, if it gave one.
     fn status(&self) -> Option<StatusReport>;
     /// Ask the daemon to stop, waiting up to `timeout` for its answer.
@@ -128,10 +116,6 @@ pub(super) trait Generation {
 struct Live<'a>(&'a CommsPaths);
 
 impl Generation for Live<'_> {
-    fn dir(&self) -> &Path {
-        &self.0.comms_dir
-    }
-
     fn status(&self) -> Option<StatusReport> {
         off_worker(|| daemon_status(&self.0.socket_path))
     }
@@ -290,14 +274,6 @@ async fn settle(
     );
     *stop_sent = true;
     match generation.stop(ENDPOINT_TIMEOUT) {
-        StopOutcome::Refused { code, message } if code == STORE_ERROR => {
-            return Err(SingletonError::FailingPredecessor {
-                version: report.version,
-                pid: report.pid,
-                store: generation.dir().join(STORE_DIR),
-                message,
-            });
-        }
         StopOutcome::Refused { code, message } if usable => {
             tracing::info!(
                 daemon_version = %report.version,
@@ -380,8 +356,7 @@ async fn reclaim(generation: &impl Generation, reported_pid: Option<u32>, rules:
             Liveness::Answers => false,
             Liveness::Unknown => return Reclaimed::Unknown,
         },
-        StopOutcome::Refused { code, .. } => rules.store_error_is_silence && code == STORE_ERROR,
-        StopOutcome::Accepted => false,
+        StopOutcome::Refused { .. } | StopOutcome::Accepted => false,
     };
     if !silent {
         return Reclaimed::Answers { stop };

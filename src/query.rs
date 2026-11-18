@@ -202,6 +202,7 @@ mod tests {
             &ConfigV1::with_defaults(),
             ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Inline,
+            crate::scan_retrieval::Retrieval::inert(),
         )
         .expect("scan");
         store

@@ -30,6 +30,7 @@ fn scan_fixture(name: &str) -> (TempDir, Store) {
         &cfg,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
     assert_eq!(report.stats.updated, 1, "fixture should be processed");

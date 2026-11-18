@@ -68,7 +68,15 @@ fn fixture() -> (TempDir, ConfigV1) {
 }
 
 fn full_scan(root: &Path, store: &mut Store, cfg: &ConfigV1) -> ScanReport {
-    scan(root, store, cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan")
+    scan(
+        root,
+        store,
+        cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan")
 }
 
 #[test]
@@ -117,6 +125,7 @@ fn rename_churn_reuses_cached_extraction() {
         &cfg,
         &[root.join("alpha.svg"), root.join("alpha-renamed.svg")],
         EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -165,6 +174,7 @@ fn rename_reuse_refreshes_the_doc_blob_mtime_for_gc_grace() {
         &cfg,
         &[root.join("alpha.svg"), root.join("alpha-renamed.svg")],
         EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert_eq!(
@@ -195,7 +205,15 @@ fn mtime_only_subtree_churn_refires_nothing() {
         fs::write(&abs, doc_body(name, &salt)).unwrap();
     }
     let paths: Vec<_> = DOC_NAMES.iter().map(|n| root.join(n)).collect();
-    let report = scan_paths(root, &mut store, &cfg, &paths, EmbedMode::Inline).unwrap();
+    let report = scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &paths,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
 
     assert_eq!(
         report.stats.docs_indexed, 0,
@@ -230,6 +248,7 @@ fn repeated_churn_cycles_accumulate_zero_fresh_extractions() {
             &cfg,
             &[root.join(&alpha_current), root.join(alpha_next)],
             EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
         total_indexed += report.stats.docs_indexed;
@@ -246,7 +265,15 @@ fn repeated_churn_cycles_accumulate_zero_fresh_extractions() {
             .filter(|n| **n != "alpha.svg")
             .map(|n| root.join(n))
             .collect();
-        let report = scan_paths(root, &mut store, &cfg, &paths, EmbedMode::Inline).unwrap();
+        let report = scan_paths(
+            root,
+            &mut store,
+            &cfg,
+            &paths,
+            EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
+        )
+        .unwrap();
         total_indexed += report.stats.docs_indexed;
         total_reused += report.stats.reused_doc_extraction;
     }

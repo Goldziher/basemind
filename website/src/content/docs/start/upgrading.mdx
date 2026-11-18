@@ -160,7 +160,7 @@ The `agents` MCP tool and `basemind agents` are removed, with no aliases. Three 
 them (`agent_post`, `agent_inbox`, `agent_threads`); the CLI is `basemind agent post|inbox|threads`,
 plus `status` and `cleanup`.
 
-1. **Restart every session.** The comms protocol goes from 6 to 7 and the relay protocol from 1 to 2;
+1. **Restart every session.** The comms protocol goes from 4 (0.33.0) to 7 and the relay protocol from 1 to 2;
    a client and a daemon of different versions refuse each other. Run `basemind comms stop` after the
    upgrade so the old daemon is replaced.
 2. **Old threads and messages are not imported.** The agent store is now `agents.fjall` in the

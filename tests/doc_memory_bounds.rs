@@ -16,7 +16,15 @@ use basemind::store::Store;
 
 fn scan_once(root: &std::path::Path, cfg: &ConfigV1) -> basemind::scanner::ScanReport {
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    scan(root, &mut store, cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan")
+    scan(
+        root,
+        &mut store,
+        cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan")
 }
 
 fn offline_config() -> ConfigV1 {

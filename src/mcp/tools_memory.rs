@@ -2,7 +2,7 @@
 //! `docs_search` (ADR-0018).
 //!
 //! All three are registered in every build; the `memory` and `documents` feature gates are
-//! enforced in the bodies (`helpers_memory.rs`), so a binary without them answers "rebuild with
+//! enforced in the engine ops (`engine/ops/{memory,docs_search}.rs`), so a binary without them answers "rebuild with
 //! `--features …`" instead of hiding the tool. See `tools.rs` for the shim contract.
 
 use rmcp::ErrorData as McpError;
@@ -11,11 +11,10 @@ use rmcp::model::CallToolResult;
 use rmcp::tool;
 
 use super::BasemindServer;
-use super::cursor_bind::bound;
-use super::helpers_memory;
 use super::strict::Strict;
-use super::types_memory::MemoryDeleteParams;
 use super::types_tools::{DocsSearchParams, MemorySaveParams, MemorySearchToolParams};
+use crate::engine::Workspace;
+use crate::engine::types::memory::MemoryDeleteParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_memory")]
 impl BasemindServer {
@@ -81,38 +80,23 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
-    /// Body of `docs_search`, shared with `basemind memory documents`.
+    /// Body of the `docs_search` tool, shared with `basemind memory documents`.
     pub(crate) async fn docs_search_call(&self, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "docs_search",
-            p,
-            bound(p, |p| helpers_memory::docs_search(&self.state, p)).await
-        )
+        self.op(p, Workspace::docs_search).await
     }
 
-    /// Body of `memory_save`, shared with `basemind memory put`.
+    /// Body of the `memory_save` tool, shared with `basemind memory put`.
     pub(crate) async fn memory_save_call(&self, p: MemorySaveParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "memory_save",
-            p,
-            helpers_memory::memory_save(&self.state, p).await
-        )
+        self.op_unpaged(p, Workspace::memory_save).await
     }
 
-    /// Body of `memory_search`, shared with `basemind memory get|list|search`.
+    /// Body of the `memory_search` tool, shared with `basemind memory get|list|search`.
     pub(crate) async fn memory_search_call(&self, p: MemorySearchToolParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "memory_search",
-            p,
-            bound(p, |p| helpers_memory::memory_search(&self.state, p)).await
-        )
+        self.op(p, Workspace::memory_search).await
     }
 
     /// Delete one note. No MCP tool: `basemind memory delete`.
     pub(crate) async fn memory_delete_call(&self, p: MemoryDeleteParams) -> Result<CallToolResult, McpError> {
-        helpers_memory::memory_delete(&self.state, p).await
+        self.cli_op(p, Workspace::memory_delete).await
     }
 }

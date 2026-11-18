@@ -26,7 +26,15 @@ fn oneshot_server(root: &std::path::Path) -> BasemindServer {
     let config = ConfigV1::with_defaults();
     {
         let mut store = Store::open(root, VIEW_WORKING).expect("open rw");
-        scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+        scan(
+            root,
+            &mut store,
+            &config,
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
+        )
+        .expect("scan");
     }
     let store = Store::open_read_only(root, VIEW_WORKING).expect("open ro");
     let git_cache = Arc::new(GitCache::open(&store.basemind_dir, 16, false).expect("git cache"));
@@ -197,6 +205,7 @@ async fn index_status_says_when_a_rescan_is_owed() {
             &config,
             ScanSource::WorkingTree,
             EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
         )
         .expect("scan");
         // The state a writer leaves when it emptied the file map for a rebuild and died before it.

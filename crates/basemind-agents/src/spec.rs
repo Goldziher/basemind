@@ -128,9 +128,10 @@ pub struct McpServerSpec {
     pub env: BTreeMap<String, String>,
     /// The tools of this server the harness may call without an approval request, by their
     /// MCP name (`[A-Za-z0-9_-]{1,64}`). Empty by default: every call is then a request the
-    /// approval policy decides, and without a policy it is denied. Only Claude Code can
-    /// pre-approve single tools; for Codex and ACP agents a non-empty list fails the launch
-    /// with [`LaunchError::Unsupported`].
+    /// approval policy decides, and without a policy it is denied. Claude Code takes them as
+    /// `--allowedTools`, Codex as each tool's `approval_mode = "approve"` and OpenCode as an
+    /// `allow` permission; for any other ACP agent a non-empty list fails the launch with
+    /// [`LaunchError::Unsupported`].
     pub allow_tools: Vec<String>,
 }
 

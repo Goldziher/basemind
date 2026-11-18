@@ -7,8 +7,8 @@ name: bm-init
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:80435f7489da7903093b24c80cd788d01b3ba12e4f1779ae7c540e282c596ef1
-Source-Hash: blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8
+Content-Hash: blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a
+Source-Hash: blake3:020e00400901c88d82d3c9448bb2a0c2ddf8af7aa9204c2a6bf1a794bea85230
 Schema-Version: v1
 -->
 
@@ -26,8 +26,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 ## How to use
 
 1. **Ask which capabilities matter** (one short question). The options are:
-   `code-search-navigation`, `code-mapping-architecture`, `git-history`, `agent-comms`,
-   `documents-rag`, `semantic-search`. If the user has no preference, enable all.
+   `code-search-navigation`, `code-mapping-architecture`, `git-history`, `file-finding`,
+   `agent-comms`, `documents-rag`, `semantic-search`. If the user has no preference, enable all.
 
 2. **Ask where the rules block should go — do NOT assume.** Never write a committed `CLAUDE.md`
    or `AGENTS.md` without the user's explicit say-so. Present the choice:

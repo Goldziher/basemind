@@ -231,8 +231,8 @@ pub struct DocEntry {
     pub hash_hex: String,
     pub embedding_preset: String,
     pub size_bytes: u64,
-    /// File mtime in nanoseconds since the epoch (0 = unknown). Recorded for symmetry with
-    /// [`FileEntry`]; the doc unchanged-skip currently keys on the content hash, not mtime.
+    /// File mtime in nanoseconds since the epoch (0 = unknown, or read too close to an edit to be
+    /// trusted). With [`Self::size_bytes`] it lets the scan skip reading an unchanged document.
     pub mtime: i64,
     /// Whether the pass that recorded this entry left the doc's embedding requirement satisfied —
     /// vectors present, doc chunkless, or the pass didn't ask to embed. The unchanged fast path
@@ -439,7 +439,7 @@ impl Store {
     /// A store opened via [`Store::open_read_only`] never creates these — that constructor
     /// deliberately does no filesystem writes so a read-only consumer never contends for the
     /// exclusive lock. But `admin rescan` / `basemind scan` upgrade a read-only-opened store to a
-    /// writer in place (`scan_and_refresh` takes the in-process write lock and scans directly into
+    /// writer in place (`Workspace::rescan` takes the in-process write lock and scans directly into
     /// it, never re-opening through [`Store::open_with_holder`]), so on a workspace's first-ever
     /// scan `view_dir` does not exist on disk yet and `flush()`'s `OpenOptions::open` on
     /// `index.msgpack.tmp` fails with ENOENT. Call this before scanning a store that may have been

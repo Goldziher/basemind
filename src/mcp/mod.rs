@@ -15,47 +15,24 @@ pub(crate) mod admission;
 mod agent_context;
 pub mod agent_tools;
 mod background;
-mod budget;
-mod by_path;
 mod completions;
 pub mod lead_tools;
 pub(crate) use crate::engine::cursor;
 mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
-use crate::engine::freshness;
 mod helpers;
-pub(crate) use helpers::BUSY_DATA;
+pub(crate) use adapter::BUSY_DATA;
 
 /// The overload refusal a CLI session answers with ([`admission::ServerBusy::into_cli_error`]).
 #[cfg(all(test, feature = "comms", any(unix, windows)))]
 pub(crate) fn server_busy_for_cli() -> rmcp::ErrorData {
     admission::ServerBusy.into_cli_error()
 }
+#[cfg(all(test, feature = "comms", feature = "code-intel-js", any(unix, windows)))]
+mod code_refs_hosted_tests;
 #[cfg(test)]
-pub(crate) use helpers::rescan_error;
-mod blocking;
-#[cfg(feature = "documents")]
-mod docs_pipeline;
-mod helpers_admin;
-pub(crate) mod helpers_calls;
-#[cfg(test)]
-mod helpers_calls_resolved_tests;
-mod helpers_calls_scan;
-mod helpers_code;
-#[cfg(feature = "code-search")]
-mod helpers_code_search;
-#[cfg(all(feature = "documents", feature = "code-search"))]
-mod helpers_documents;
-mod helpers_grep;
-mod helpers_grep_text;
-pub(crate) mod helpers_impls;
-mod helpers_intel;
-mod helpers_memory;
-#[cfg(any(feature = "code-search", feature = "documents", test))]
-mod helpers_page;
-mod helpers_refs_match;
-mod helpers_stale;
+mod code_refs_tests;
 mod helpers_telemetry;
 mod history_sync;
 pub(crate) mod identity;
@@ -64,14 +41,9 @@ pub mod in_memory;
 #[cfg(test)]
 mod index_view_tests;
 pub(crate) use crate::engine::l1_cache;
-#[cfg(any(feature = "memory", feature = "code-search"))]
-pub(crate) mod lance_cell;
 mod lean;
-#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-mod memory;
-#[cfg(feature = "memory")]
-pub(crate) mod memory_ops;
-pub(crate) mod memory_vectors;
+#[cfg(all(test, feature = "memory"))]
+mod memory_tests;
 mod notifications;
 pub mod offline;
 mod prompts;
@@ -94,10 +66,6 @@ mod tools_git;
 mod tools_memory;
 pub(crate) mod toon;
 mod types;
-mod types_code;
-mod types_documents;
-mod types_impls;
-pub(crate) mod types_memory;
 mod types_tools;
 
 use std::path::PathBuf;
@@ -197,8 +165,6 @@ pub mod params {
 
     pub(crate) use super::strict::parse as parse_args;
     pub use super::types::{FindCommitsByPathParams, HotFilesParams, TelemetrySummaryParams};
-    pub use super::types_code::GetChunkParams;
-    pub use super::types_memory::{MemoryDeleteParams, Visibility};
     #[cfg(feature = "test-support")]
     pub use super::types_tools::check_arguments;
     pub use super::types_tools::{
@@ -206,6 +172,8 @@ pub mod params {
         DocsSearchParams, FindFilesToolParams, GitBlameParams, GitDiffParams, GitLogParams, IndexRescanParams,
         IndexStatusParams, MemorySaveParams, MemorySearchToolParams, RETIRED_TOOLS, VERB_TOOLS,
     };
+    pub use crate::engine::types::memory::{MemoryDeleteParams, Visibility};
+    pub use crate::engine::types::search::GetChunkParams;
 }
 
 pub use params::Parameters;
@@ -256,7 +224,7 @@ pub struct ServerOptions {
     pub background: bool,
     /// When true (and `background` is on, and the served view is the working
     /// view), spawn a live filesystem watcher that funnels changed paths into
-    /// `scan_and_refresh` so the in-RAM map stays current as the agent edits.
+    /// `Workspace::rescan` so the in-RAM map stays current as the agent edits.
     /// When false, fall back to the passive view watcher (which only reacts to
     /// external scans writing `index.msgpack`). Disabled for one-shot queries.
     ///
@@ -286,6 +254,8 @@ impl From<ServerOptions> for crate::engine::workspace::OpenOptions {
             forwards_writes: false,
             lazy_cache: options.lazy_cache,
             history_sync: Some(history_sync::request),
+            #[cfg(feature = "memory")]
+            memory_owner: identity::resolve_agent_id,
         }
     }
 }
@@ -392,10 +362,7 @@ impl BasemindServer {
                 if defer_warm {
                     background::spawn_cache_warm(Arc::clone(&state));
                 }
-                let gc_state = Arc::clone(&state);
-                tokio::spawn(async move {
-                    background::run_background_gc(gc_state).await;
-                });
+                background::spawn_background_gc(Arc::clone(&state.shared));
             }
         }
         Self {
@@ -603,14 +570,16 @@ mod map_cache_tests {
     /// hint) and suppressed when ready, so a healthy response carries no `notice` field.
     #[test]
     fn lifecycle_notice_maps_state_to_tag_and_retry() {
-        assert!(types::LifecycleNotice::for_state(Lifecycle::Ready).is_none());
-        let warming = types::LifecycleNotice::for_state(Lifecycle::WarmingUp).expect("warming notice");
+        assert!(crate::engine::types::LifecycleNotice::for_state(Lifecycle::Ready).is_none());
+        let warming = crate::engine::types::LifecycleNotice::for_state(Lifecycle::WarmingUp).expect("warming notice");
         assert_eq!(warming.state, "warming_up");
         assert!(warming.retry, "warming asks the caller to retry for complete results");
-        let building = types::LifecycleNotice::for_state(Lifecycle::BuildingIndex).expect("building notice");
+        let building =
+            crate::engine::types::LifecycleNotice::for_state(Lifecycle::BuildingIndex).expect("building notice");
         assert_eq!(building.state, "building_index");
         assert!(building.retry);
-        let rescanning = types::LifecycleNotice::for_state(Lifecycle::Rescanning).expect("rescan notice");
+        let rescanning =
+            crate::engine::types::LifecycleNotice::for_state(Lifecycle::Rescanning).expect("rescan notice");
         assert_eq!(rescanning.state, "rescanning");
         assert!(!rescanning.retry, "rescan results are usable, no retry required");
     }
@@ -623,14 +592,15 @@ mod map_cache_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         crate::store::write_status_sidecar(dir.path(), 5, 5, &ScanHealth::partial("index rebuilding", 0, 0));
         let degraded = crate::store::read_status_sidecar(dir.path());
-        let notice = types::LifecycleNotice::for_scan_status(degraded.as_ref()).expect("degraded notice");
+        let notice =
+            crate::engine::types::LifecycleNotice::for_scan_status(degraded.as_ref()).expect("degraded notice");
         assert_eq!(notice.state, "index_rebuilding");
         assert!(notice.retry && notice.message.contains("index rebuilding"));
 
         crate::store::write_status_sidecar(dir.path(), 5, 5, &ScanHealth::complete());
         let clean: Option<StatusSidecar> = crate::store::read_status_sidecar(dir.path());
-        assert!(types::LifecycleNotice::for_scan_status(clean.as_ref()).is_none());
-        assert!(types::LifecycleNotice::for_scan_status(None).is_none());
+        assert!(crate::engine::types::LifecycleNotice::for_scan_status(clean.as_ref()).is_none());
+        assert!(crate::engine::types::LifecycleNotice::for_scan_status(None).is_none());
     }
 
     /// `with_delta` must re-read only the changed blobs, preserve untouched entries, and drop
@@ -651,6 +621,7 @@ mod map_cache_tests {
             &cfg,
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
         )
         .unwrap();
 
@@ -665,6 +636,7 @@ mod map_cache_tests {
             &cfg,
             &[root.join("a.rs")],
             crate::scanner::EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
         )
         .unwrap();
         assert_eq!(report.stats.updated, 1);
@@ -712,6 +684,7 @@ mod map_cache_tests {
             &cfg,
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
         )
         .unwrap();
 

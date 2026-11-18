@@ -23,11 +23,10 @@ pub enum DaemonProbe {
         /// The state of its agent store (`open`, `newer` or `unreadable`), as it reported it.
         agent_store: String,
     },
-    /// The daemon answered, and the answer was an error: it holds the endpoint but cannot serve.
-    /// This is the poisoned-store shape — every request fails identically while the process stays
-    /// alive, which is exactly what a liveness-only report cannot distinguish from health.
+    /// The daemon answered, and the answer was an error or not a status report: it holds the
+    /// endpoint but did not report itself serving.
     Failing {
-        /// The stable error token (`store_error`, …).
+        /// The stable error token.
         code: String,
         /// The daemon's rendered error.
         message: String,
@@ -94,19 +93,6 @@ pub enum StopOutcome {
     },
     /// Nothing answered, so there is no refusal to respect and reclaim is on the table.
     Unreachable,
-}
-
-impl StopOutcome {
-    /// Whether a daemon in this state may be terminated by pid if it does not go away on its own.
-    ///
-    /// A `store_error` refusal is not a refusal in the meaningful sense: the daemon did answer, but
-    /// only to say its store is broken, which is the wedge this reclaim path exists for.
-    pub fn permits_reclaim(&self) -> bool {
-        match self {
-            Self::Accepted | Self::Unreachable => true,
-            Self::Refused { code, .. } => code == "store_error",
-        }
-    }
 }
 
 /// Ask a daemon to stop and classify its answer. Unlike [`request_stop`](super::request_stop),
@@ -254,21 +240,21 @@ mod tests {
         );
         ok_server.join().expect("server thread");
 
-        // The poisoned-store shape: the process is alive, the socket answers, and every request
-        // comes back as the same store error. Liveness alone cannot tell this from health. ~keep
+        // The process is alive and the socket answers, but with an error: liveness alone cannot
+        // tell this from health. ~keep
         let (bad_socket, bad_server) = serve_one_reply(
             dir.path(),
             "wedged.sock",
             CommsOut::Response(CommsResponse::Error {
-                code: "store_error".to_string(),
-                message: "fjall error: FjallError: Poisoned".to_string(),
+                code: "unexpected_request".to_string(),
+                message: "the daemon cannot answer: Poisoned".to_string(),
             }),
         );
         let verdict = probe_serving(&bad_socket);
         bad_server.join().expect("server thread");
         match verdict {
             DaemonProbe::Failing { code, message } => {
-                assert_eq!(code, "store_error");
+                assert_eq!(code, "unexpected_request");
                 assert!(
                     message.contains("Poisoned"),
                     "the daemon's own error is carried through"

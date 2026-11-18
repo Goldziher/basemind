@@ -145,17 +145,7 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 /// code. `<target>` is the module named (or `extern <crate>`). Remove an entry when its edge is cut.
 /// The `src/engine` edges are the interim ones of ADR-0039, each removed by the engine-unification
 /// step named beside it.
-const KNOWN_VIOLATIONS: &[&str] = &[
-    "src/config/validate.rs -> extern jsonschema",
-    // S7b (memory ops) replaces the embedder's async OnceCell.
-    "src/engine/workspace.rs -> extern tokio",
-    // S7b (memory ops) moves the memory owner, LanceCell and the vector backfill into the engine.
-    "src/engine/workspace.rs -> mcp::identity",
-    "src/engine/workspace.rs -> mcp::lance_cell",
-    "src/engine/workspace.rs -> mcp::memory_vectors",
-    "src/scanner_filter.rs -> retrieval_wiring",
-    "src/store.rs -> lance",
-];
+const KNOWN_VIOLATIONS: &[&str] = &["src/config/validate.rs -> extern jsonschema", "src/store.rs -> lance"];
 
 /// One module of the library: its path, the file holding it, whether it is test-only, the names of
 /// its child modules and its own items (child modules excluded).
@@ -1112,7 +1102,7 @@ fn the_engine_api_check_flags_each_shape() {
 /// `(rmcp_files, helper_lines)`: the non-test files under `src/mcp` that name rmcp, `McpError` or
 /// `CallToolResult`, and the lines of the non-test `src/mcp/helpers*.rs` files. Each engine step
 /// moves tool bodies out of the adapter, so neither may rise; lower them here when they fall.
-const ADAPTER_RATCHET: (usize, usize) = (53, 4_297);
+const ADAPTER_RATCHET: (usize, usize) = (30, 92);
 
 /// A test file under `src/mcp`: every test module there lives in a `*_tests.rs` file.
 fn is_test_file(path: &Path) -> bool {
@@ -1148,7 +1138,7 @@ fn the_adapter_only_shrinks() {
             helper_lines += text.lines().count();
         }
     }
-    assert!(scanned > 50, "scanned only {scanned} files under src/mcp");
+    assert!(scanned > 30, "scanned only {scanned} files under src/mcp");
     let found = (rmcp_files, helper_lines);
     assert!(
         rmcp_files <= ADAPTER_RATCHET.0 && helper_lines <= ADAPTER_RATCHET.1,

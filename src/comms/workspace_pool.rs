@@ -258,6 +258,9 @@ pub(crate) struct ServeConnGuard {
 #[cfg(all(feature = "comms", any(unix, windows)))]
 impl Drop for ServeConnGuard {
     fn drop(&mut self) {
+        // A session uses its workspace until it ends, so the idle clocks start here, not at the
+        // connect: a long session must not leave a stack that looks as old as the session.
+        self.entry.touch();
         self.entry
             .active_conns
             .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
@@ -402,20 +405,46 @@ impl WorkspacePool {
         if cancel.is_cancelled() {
             return Ok((ScanStats::default(), true));
         }
-        // The daemon owns the embedding engine for forwarded and hosted passes alike: release it when
-        // the last concurrent full Inline pass ends. Incremental passes keep it warm for searches.
+        // The daemon owns the embedding engine for forwarded and hosted passes alike: a full Inline
+        // pass releases only an engine it loaded and no search used (see `EmbedPass`).
         #[cfg(feature = "intelligence")]
         let _embed_pass = (matches!(mode, EmbedMode::Inline) && !incremental).then(crate::embeddings::begin_embed_pass);
         let scanned = if incremental {
             let paths = paths.as_deref().unwrap_or_default();
             let (root, observer) = (&entry.root, &mut scanner::NullObserver);
             if verify {
-                scanner::scan_named_paths_with_observer(root, &mut store, &config, paths, mode, cancel, observer)
+                scanner::scan_named_paths_with_observer(
+                    root,
+                    &mut store,
+                    &config,
+                    paths,
+                    mode,
+                    cancel,
+                    observer,
+                    crate::retrieval_wiring::backend(),
+                )
             } else {
-                scanner::scan_paths_with_observer(root, &mut store, &config, paths, mode, cancel, observer)
+                scanner::scan_paths_with_observer(
+                    root,
+                    &mut store,
+                    &config,
+                    paths,
+                    mode,
+                    cancel,
+                    observer,
+                    crate::retrieval_wiring::backend(),
+                )
             }
         } else {
-            scanner::scan_with_cancel(&entry.root, &mut store, &config, ScanSource::WorkingTree, mode, cancel)
+            scanner::scan_with_cancel(
+                &entry.root,
+                &mut store,
+                &config,
+                ScanSource::WorkingTree,
+                mode,
+                cancel,
+                crate::retrieval_wiring::backend(),
+            )
         };
         // Before the scan's error propagates: a poisoned handle fails every later commit for the life
         // of the daemon, so it has to be replaced whether or not this pass got to report it.

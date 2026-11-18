@@ -42,7 +42,15 @@ fn config() -> Config {
 }
 
 fn full_scan(root: &std::path::Path, store: &mut Store, config: &Config) -> ScanReport {
-    scan(root, store, config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan")
+    scan(
+        root,
+        store,
+        config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        crate::scan_retrieval::Retrieval::inert(),
+    )
+    .expect("scan")
 }
 
 /// Make `path` unreadable; `false` when the process can read it anyway (running as root), where
@@ -100,6 +108,7 @@ fn a_file_that_cannot_be_read_keeps_its_indexed_rows() {
         &config,
         std::slice::from_ref(&file),
         EmbedMode::Inline,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("rescan");
     assert_eq!(report.stats.read_failed, 1);
@@ -113,42 +122,6 @@ fn a_file_that_cannot_be_read_keeps_its_indexed_rows() {
         report.stats.updated, 1,
         "the next readable scan indexes the new content"
     );
-}
-
-/// The document lane keeps its entry on the same terms.
-#[cfg(all(unix, feature = "documents"))]
-#[test]
-fn a_document_that_cannot_be_read_keeps_its_entry() {
-    init_isolated_cache();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
-    let file = root.join("notes.md");
-    std::fs::write(&file, b"# Notes\n\nPhotosynthesis turns light into sugar.\n").expect("write");
-    let config = config();
-    let mut store = Store::open(root, VIEW_WORKING).expect("open");
-    assert_eq!(full_scan(root, &mut store, &config).stats.docs_indexed, 1);
-    assert!(store.lookup_doc("notes.md").is_some());
-
-    std::fs::write(&file, b"# Notes\n\nChlorophyll absorbs red and blue light.\n\n").expect("rewrite");
-    if !lock(&file) {
-        return;
-    }
-    let report = full_scan(root, &mut store, &config);
-    assert_eq!(report.stats.read_failed, 1);
-    assert_eq!(report.stats.removed, 0);
-    assert!(store.lookup_doc("notes.md").is_some());
-
-    let report = crate::scanner::scan_paths(
-        root,
-        &mut store,
-        &config,
-        std::slice::from_ref(&file),
-        EmbedMode::Inline,
-    )
-    .expect("rescan");
-    assert_eq!(report.stats.removed, 0);
-    assert!(store.lookup_doc("notes.md").is_some());
-    unlock(&file);
 }
 
 /// One file whose extraction panics fails alone: the scan finishes, reports it, and indexes the

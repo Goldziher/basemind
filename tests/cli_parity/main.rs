@@ -313,7 +313,7 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
                 _ if behaviour::refuses_beside_the_writer(&beside) => busy_beside += 1,
                 _ => beside_failures.push(format!(
                     "{} {} (basemind {}) beside the writer with no daemon: expected a busy refusal \
-                     (exit 3) naming `basemind comms start`, got {beside:?}",
+                     (exit 3) naming the fix, got {beside:?}",
                     case.tool, case.mcp, case.cli
                 )),
             }
