@@ -4,7 +4,7 @@ date: 2026-11-18
 amends: ["0027"]
 ---
 
-# ADR-0045: The release commit reaches main only after its release is public
+# ADR-0046: The release commit reaches main only after its release is public
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0027 (retained rules 1 and 2, and how rule 5's harden gate is enforced);

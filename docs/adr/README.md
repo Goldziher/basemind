@@ -126,4 +126,4 @@ them.
 | [0040](0040-cross-harness-agent-launch.md) | Cross-harness agent launch — `basemind-agents` and `serve --lead` | Accepted |
 | [0041](0041-group-sweep-bm25-holders-and-group-reaping.md) | Group sweep, BM25 holders, packed postings and group reaping | Accepted |
 | [0042](0042-hosted-workspaces-share-the-writers-handles.md) | Hosted workspaces share the writer's handles; no in-RAM reference fallback | Accepted |
-| [0045](0045-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Proposed |
+| [0046](0046-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Proposed |

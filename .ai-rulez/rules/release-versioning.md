@@ -64,7 +64,7 @@ Tags MUST be `v<version>` (e.g. `v0.1.0`, `v0.1.0-rc.1`). The publish workflow
 (`.github/workflows/publish.yaml`) is gated on the `v[0-9]+.*` pattern and reads the version
 back from the tag. `workflow_dispatch` accepts a manual tag input for re-runs.
 
-## Release order (ADR-0045)
+## Release order (ADR-0046)
 
 The marketplaces serve `./plugin` from `main`, so the release commit reaches `main` only after its
 release is public. Nothing else lands on `main` while a release is in flight.

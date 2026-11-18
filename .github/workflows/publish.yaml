@@ -481,7 +481,7 @@ jobs:
   # The marketplaces serve ./plugin from main (ADR-0035), so a host takes the release's plugin, and
   # the binary version its launcher pins, as soon as the release commit is on main. That commit
   # therefore waits on its release branch until the release is public, and only this job moves main
-  # onto it (ADR-0045).
+  # onto it (ADR-0046).
   advance_main:
     name: Fast-forward main to the release
     needs: [meta, finalize_release]
