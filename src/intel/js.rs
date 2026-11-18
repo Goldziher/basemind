@@ -153,14 +153,29 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
     }
 }
 
-/// One `module_only` import per requested module that no binding import already names: side-effect
-/// imports, namespace-only imports and `export … from` re-exports, which the import graph needs as
-/// file edges. Anchored at the first request of the specifier; type-only when every request is.
+/// One `module_only` import per requested module that no binding import already names at the same
+/// tier: side-effect imports, namespace-only imports and `export … from` re-exports, which the
+/// import graph needs as file edges. A runtime request beside only type-only bindings still gets
+/// one, so its edge is not marked type-only. Anchored at the first request of the specifier;
+/// type-only when every request is.
 fn module_only_imports(record: &oxc_syntax::module_record::ModuleRecord<'_>, bound: &[JsImport]) -> Vec<JsImport> {
+    let any_bound: ahash::AHashSet<&str> = bound.iter().map(|import| import.specifier.as_str()).collect();
+    let runtime_bound: ahash::AHashSet<&str> = bound
+        .iter()
+        .filter(|import| !import.is_type)
+        .map(|import| import.specifier.as_str())
+        .collect();
     let mut out: Vec<JsImport> = record
         .requested_modules
         .iter()
-        .filter(|(specifier, _)| !bound.iter().any(|import| import.specifier == specifier.as_str()))
+        .filter(|(specifier, requests)| {
+            let covering = if requests.iter().all(|request| request.is_type) {
+                &any_bound
+            } else {
+                &runtime_bound
+            };
+            !covering.contains(specifier.as_str())
+        })
         .filter_map(|(specifier, requests)| {
             let first = requests.iter().min_by_key(|request| request.span.start)?;
             Some(JsImport {
@@ -268,6 +283,8 @@ export { a as b } from './named';
 export type { T } from './types';
 import { x } from './x';
 export { x } from './x';
+import type { U } from './u';
+export * from './u';
 ";
         let a = ts(src);
         let module_only: Vec<(&str, bool, u32)> = a
@@ -284,6 +301,7 @@ export { x } from './x';
                 ("./all", false, at("'./all'")),
                 ("./named", false, at("'./named'")),
                 ("./types", true, at("'./types'")),
+                ("./u", false, at("'./u'")),
             ]
         );
         assert!(
