@@ -1,16 +1,13 @@
 //! Transport abstraction for the broker: front-ends accept links, links carry frames.
 //!
-//! Two implementations live alongside this module: [`UdsFrontend`](super::frontend_uds) over a
-//! Unix domain socket (the production IPC path) and
-//! [`InProcFrontend`](super::frontend_inproc) over tokio mpsc channels (for same-process
-//! embedding and tests). Both decode the same [`CommsRequest`] and emit the same
-//! [`CommsOut`], so the broker is transport-agnostic.
+//! The front-ends ([`UdsFrontend`](super::frontend_uds) over a Unix domain socket, the named pipe
+//! on Windows) decode the same [`CommsRequest`] and emit the same [`CommsOut`], so the broker is
+//! transport-agnostic.
 //!
 //! ## Frame codec
 //!
 //! The Unix-socket link frames with [`tokio_util::codec::LengthDelimitedCodec`] (a `u32`
-//! big-endian length prefix) and a msgpack body. The in-process link skips framing entirely
-//! and moves owned values across channels.
+//! big-endian length prefix) and a msgpack body.
 
 use std::collections::VecDeque;
 use std::future::Future;
