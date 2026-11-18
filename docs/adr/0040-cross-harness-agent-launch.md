@@ -1,13 +1,15 @@
 ---
 status: proposed
-date: 2026-11-17
+date: 2026-11-18
+amends: ["0039"]
 ---
 
-# ADR draft: Cross-harness agent launch
+# ADR-0040: Cross-harness agent launch
 
 - **Deciders:** basemind maintainers
-- **Related:** ADR-0021 (agent comms v2, which left two constraints for this ADR), ADR-0018 and
-  ADR-0020 (verb tools), ADR-0023 (crate layering), ADR-0024 (daemon and process model)
+- **Related:** amends ADR-0039 (two tools are never forwarded); ADR-0021 (agent comms v2, which
+  left two constraints for this ADR), ADR-0018 and ADR-0020 (verb tools), ADR-0023 (crate
+  layering), ADR-0024 (daemon and process model)
 
 ## Context
 
@@ -64,8 +66,8 @@ id that fails the grammar stops the launch.
    self-asserted: see Consequences.
 5. **Safety model.** The crate enforces the first group against hostile model-chosen fields (the
    request) and a hostile child. It trusts the config. The second group, the launch policy, is
-   also in the crate, in its `Supervisor` (decision 6). The third belongs to the engine and the
-   configuration, which do not exist yet.
+   also in the crate, in its `Supervisor` (decision 6). The third is basemind's wiring, `serve
+   --lead` and the operator's policy file (decision 7).
 
    Enforced by `basemind-agents`:
    - **Approvals are denied by default.** A request is allowed only by a policy the config
@@ -140,7 +142,9 @@ id that fails the grammar stops the launch.
      paths at the plan, against the absolute entries of the launcher's `PATH`, and refused when
      they lie inside the root, directly, at the end of their links or through any link on the
      way. The check is not atomic with the exec. The child's `PATH` keeps only absolute entries
-     outside the root.
+     outside the root. A `Supervisor` takes absolute paths only (`RelativeExecutable`): a `PATH`
+     entry the user can write (`~/.local/bin`, an npm global bin) is one a launched agent can
+     plant a `claude` in for the next launch.
    - **Working directory.** It resolves inside the root, checked at the plan and again in the
      child. The agent is not sandboxed to the root. The root itself may not contain the launcher's home or
      XDG configuration and data directories, nor be, contain or lie inside a harness's own
@@ -299,152 +303,115 @@ id that fails the grammar stops the launch.
      plugins from its user-level configuration, OpenCode even with an empty `mcpServers`;
      nothing in the launch switches that off, so an operator allowing the flavor accepts it.
 
-   Left to the engine and the configuration, none of which the crate does, and all of which have
-   to exist before `agent_launch` is offered:
-   - **Configuration.** An `[agents.launch]` table that builds the `PolicySpec` and one
-     `LaunchConfig` per allowed flavor (executable, root, env additions, approval policy,
-     caps), with `enabled = false` mapping to `LaunchPolicy::default()`, and the audit log's
-     path under basemind's data directory.
-   - **The topology: the supervisor lives in the lead's own process.** One topology is
-     supported. The lead's `basemind serve` (the stdio relay its MCP host starts, ADR-0024), or
-     an embedding that runs in-process, hosts the supervisor and registers itself with
-     `register_launcher_in_process` at start-up, before the first launch. The daemon of
-     ADR-0024 never hosts a supervisor and never spawns a lead; it stays the comms broker and
-     index owner, and that `serve` stays its client for both. This fits ADR-0024 as written:
-     a `serve` is a per-session process, so the supervisor needs no daemon state, and the
-     daemon's idle exit and replacement rules do not touch it. The consequence, stated
-     plainly: launched agents are children of the lead's `serve`, and when that `serve` exits
-     (its host closed the session, or it crashed) its sessions end, through the supervisor's
-     drop or, for a crash, the keeper process in each harness group. The lead's tool calls
-     arrive on that process's stdio and are made with `Caller::principal(.., Peer::embedding())`
-     there; a launched agent's injected `basemind serve` reaches the supervisor over a socket
-     the lead's `serve` listens on (path passed to the child; mode 0600 is no barrier, see
-     below). Planted code a launched agent leaves for the lead (git hooks, build scripts, the
-     lead's own project settings) runs as a descendant of the lead's harness, not of its
-     `serve`, so it is a sibling outside the supervisor's tree and is refused.
-     Only a `serve` started with an explicit lead switch hosts a supervisor. The restricted
-     profile the injected `serve` runs forwards `agent_launch` / `agent_stop` to the parent's
-     socket and never constructs a `Supervisor`. The crate enforces the rest: `Supervisor::new`
-     refuses a launching policy (`NestedHost`) and every registration refuses (`nested_host`) in
-     a process that carries `BASEMIND_LAUNCH_TOKEN` or `BASEMIND_AGENT_DEPTH`, that has an
-     ancestor running the same program (by command name or executable file, since Codex filters
-     the environment of the MCP servers it starts), or whose ancestry cannot be read. Without
-     that, the injected `serve`, or the user's own basemind MCP server that Codex and OpenCode
-     load from user-level configuration, would host a supervisor of its own under the same
-     `[agents.launch]` configuration and make the launched agent a depth-0 launcher with a fresh
-     budget, one level further down each time.
-   - **Limits are per lead.** `max_concurrent`, `max_children` and the budget bound one
-     supervisor, so one lead's session; two leads each get their own. Global caps across leads
-     would need daemon-side accounting, which this ADR does not add.
-   - **Caller identity on the wire.** The lead's `serve` builds a launched agent's `Caller`
-     from the connection: the `Peer` from `Peer::of_socket` on the accepted connection, right
-     after `accept` (never a pid the client sends, never `Peer::embedding()`), and the launch
-     token the injected `basemind serve` read from `BASEMIND_LAUNCH_TOKEN`. A transport without
-     peer credentials cannot reach the supervisor. `Peer::of_socket` refuses a socket whose peer
-     is this process (a `socketpair`, or a pre-connected or inherited descriptor, which Linux
-     reports as its creator's): in-process that process is the principal, so the injected
-     `serve` is given a path to connect to, never a descriptor.
-   - **Registration.** Only the two in-process forms exist: `register_launcher_in_process`
-     for the lead, and `register_launcher_child(&mut Child)` for a child the embedding spawned
-     itself, which must execute nothing another agent can write (no shell, hooks, build steps
-     or scripts from a tree a launched agent edits). No agent lead satisfies that, which is
-     why the lead is registered in-process. The crate has no API that registers the peer of a
-     connection: every process of the user, an escaped agent's included, can connect to a
-     socket the user can, read the lead's secrets (`/proc/<pid>/environ`, its files) and claim
-     any name, and an orphan of an earlier run is already alive at start-up. Until a principal
-     is registered no caller is it; a binding is released only by `unregister_launcher`.
-   - **The operator is in-process.** There is no operator channel on a socket. The embedding
-     binds the operator to its own process (`register_operator_in_process`) and calls
-     `Supervisor::operator()` only for a decision the human made through the embedding's own
-     channel, such as an MCP elicitation the lead's `serve` sends to its client and the human
-     answers in that UI. A tool call a launched agent can make, or a message over comms, is
-     never such a decision. Until the embedding has that channel it registers no operator:
-     approvals stay default-deny, or the launcher denies them.
-   - **The injected server's surface.** `basemind serve` exposes every tool to the launched
-     agent. The wiring has to start it with a restricted profile (the comms verb tools and
-     `agent_launch` / `agent_stop` only); no domain tool is pre-approved by name.
-   - **Relaying approvals and output.** An `Ask` verdict waits for an answer; the engine has
-     to deliver the request (through the observer, as a comms message) and its answer
-     (`Supervisor::answer`). No MCP tool lets a model allow: an allow comes from the approval
-     policy or from the operator's elicitation, which shows the human the grant (the command,
-     the file, the tool and its arguments), never only an id. A launcher may deny. With the
-     launched agent's request in front of it, the lead model is the one prompt-injected party
-     in the loop ("approve codex-3 for the tests"), and at depth 2 a launched agent allowing
-     its own children would be its harness's permission mode bypassed with no `BypassOptIn`.
-     The crate enforces it: `answer(allow = true)` is refused with `launcher_may_not_allow` for
-     anyone but the operator unless the flavor sets `launcher_may_allow`, which needs
-     `max_depth = 1`. A model-facing error is the `SupervisorError` code, not its text.
+7. **The wiring: only `basemind serve --lead` hosts a supervisor.** Review 9 found that a
+   supervisor reached over a socket cannot tell the lead from any other process of the same user:
+   the relay hello's principal and client kind are the peer's own claim, so a daemon-hosted
+   supervisor would make every same-uid process the lead, including a launched agent's shell and
+   the user's own basemind MCP server that Codex and OpenCode start inside a launched session. So:
+   - **Topology.** The lead's harness starts `basemind serve --lead`. Its first statement, before
+     argument parsing, logging or the runtime, is `basemind_agents::seal_host()`: on Linux the
+     process names its thread-group leader `basemind-lead` and makes itself non-dumpable, so no
+     process of the user can open its stdin through `/proc` and write the lead's requests into it.
+     It then reads the operator's policy, opens the audit log, builds the `Supervisor`, binds it
+     with `register_launcher_in_process` and runs the ordinary stdio relay to the daemon (ADR-0024)
+     behind a filter. The filter answers `tools/call` of `agent_launch` / `agent_stop` in this
+     process and never writes them to the relay; it appends the two tools to the first page of
+     `tools/list` and one line to `initialize`'s `instructions`. Every other line passes through
+     byte for byte. A line it cannot read as one JSON object (over 1 MiB, not UTF-8, malformed,
+     too deeply nested, a JSON-RPC batch) passes through untouched, so a lead tool inside a batch
+     reaches the daemon and is answered as unknown.
+   - **No other way in.** The daemon never hosts a supervisor and no `BasemindServer` router holds
+     the two tools: the daemon's relay sessions (a plain `serve`'s and a CLI's) and its HTTP
+     front-end answer them as unknown tools. There is no CLI command for them: a CLI command is a
+     forwarded relay session whose launcher identity is the hello's claim, so it would be a
+     second way in. They are the one exception to "every MCP tool has a CLI command" (ADR-0018),
+     listed as `NOT_FORWARDED` in `tests/cli_parity/capabilities.rs`. This amends ADR-0039: a
+     process that does not own the index forwards whole tool calls, except these two, which only
+     the lead's own process answers.
+   - **No listener.** `max_depth` is 1, so a launched agent never needs to reach a supervisor, and
+     nothing listens for one. A launched agent gets `basemind serve` without `--lead` as its MCP
+     server (`McpServerSpec::basemind_serve`), which never lists the two tools. If a connection
+     path is ever added, it takes the callers' `Peer` from `Peer::of_socket` at accept, refuses
+     callers when `!Peer::pins_connections()`, lives in a 0700 directory per `serve` and bounds its
+     connections and requests.
+   - **Off by default; policy only from the operator's file.** The policy is the `[agents.launch]`
+     table of `agents.toml` in basemind's user-level configuration directory
+     (`$XDG_CONFIG_HOME/basemind` or `~/.config/basemind` on Linux,
+     `~/Library/Application Support/basemind` on macOS). It is opened without following a link
+     and refused unless it is a regular file with one link, owned by this user and writable by
+     nobody else, in a directory owned by this user or root that nobody else can write, outside
+     the lead's workspace. It is never read from the repository's `basemind.toml` (whose `[agents]`
+     table is dropped with a warning naming the right file), from the environment, from CLI flags
+     or from MCP arguments: `ConfigV1` has no field for it and no override layer can name it.
+     Without the file, or with `enabled = false`, the lead is a plain relay: the two tools are not
+     listed, a call to either is an unknown tool, and the reason is logged to stderr and appended
+     to `instructions`.
+   - **What the file can say.** `enabled`, `worktrees_root`, `max_concurrent`, `max_children`,
+     `wall_time_secs`, `max_launches`, `max_turns`, `audit_max_bytes`, and per harness
+     (`claude`, `codex`, `opencode`) an absolute `executable`, a `permission_mode` of `supervised`,
+     `read_only` or `accept_edits`, `pass_env` (credential names whose values are read from the
+     lead's environment; a missing one is an error, never a default) and per-session caps. Unknown
+     keys are errors. It cannot express a bypass, an `UnverifiedModeOptIn` (so the other ACP
+     flavors cannot be configured), an `ApprovalPolicy`, `launcher_may_allow`, `allow_tools`, a
+     launcher list or a depth: the lead's comms principal is the only launcher, `max_depth` is 1
+     and `max_allows` 0. No operator is registered, since the lead has no interactive elicitation
+     channel yet, so every approval a launched agent asks for is denied.
+   - **A worktree per launched agent.** `worktrees_root` is the `LaunchConfig::root` of every
+     flavor; the builder refuses one that is, contains or lies inside the lead's workspace.
+     `agent_launch` requires `working_dir`: an existing directory strictly inside it, plain
+     relative components only, not overlapping a directory a live session or a launch in progress
+     holds. The crate has no worktree hook, so the lead creates the worktree first (in this
+     polyrepo, `mise run worktree:add`).
+   - **Audit.** One `FileAuditSink` per lead process, `<data dir>/agents/launch-audit-<pid>-<unix
+     seconds>.jsonl`, in a 0700 directory. Launching stays off when it cannot be opened or the
+     reserve is refused; `audit_exhausted` is logged on stderr.
+   - **Model-facing replies** carry `SupervisorError::code()` (and fixed codes of the wiring:
+     `working_dir_invalid`, `working_dir_in_use`, `flavor_not_allowed`), never an error's text or
+     `Event::Diagnostics`. `status` and `list` are not exposed.
+   - **Unix only.** On Windows `serve --lead` exits with an error; `basemind-agents` is a Unix-only
+     dependency enabled by the `comms` feature.
 
-### Engine obligations
+### Engine obligations, as wired
 
-The crate's guarantees hold only when the engine meets all of these before `agent_launch` is
-offered. The crate now enforces what it can: a nested host (`NestedHost` / `nested_host`), a
-model's allow (`launcher_may_not_allow`), a dumpable in-process host on Linux
-(`host_dumpable`), a self-peer socket (`Peer::of_socket` refuses it), and `launcher_may_allow`
-with `max_depth` above 1. The rest cannot be enforced by the API and stays written here.
+Review 9's conditions, each with where it holds:
 
-1. **Host.** Host the supervisor only in a `serve` started with the explicit lead switch, and
-   register it in-process at start-up, before the first launch. The injected `serve` runs the
-   restricted profile, which relays `agent_launch` / `agent_stop` to the parent's socket and
-   never constructs a `Supervisor`. Use `register_launcher_child` only for a just-spawned,
-   unwaited child that executes nothing another agent can write. Never register from a
-   connection.
-2. **Callers.** Build every connection's caller with `Peer::of_socket` on the accepted
-   descriptor, right after `accept`; never use `Peer::embedding()` for a connection. Give the
-   injected `serve` a path, never a `socketpair` or a pre-connected or inherited descriptor, and
-   keep `O_CLOEXEC` on every listening and accepted socket. Refuse callers, or at least
-   launching, when `!Peer::pins_connections()` (Linux before 6.5).
-3. **Listener.** One socket per `serve`, in a directory of mode 0700 created for it (the README
-   example's fixed `/run/user/1000/basemind/agents.sock` would collide between leads). Bound the
-   connections and their threads, and each connection's request size and rate: every
-   connection costs an ancestry walk through the process table.
-4. **Process hygiene.** No `SIG_IGN` or `SA_NOCLDWAIT` on `SIGCHLD`; no `waitpid(-1)` anywhere
-   in the process, dependencies included; `SIGPIPE` ignored; the `Supervisor` dropped on
-   shutdown, so `stop_all` and the kill path run.
-5. **Policy, from configuration only.** `enabled = false` maps to `LaunchPolicy::default()`. A
-   flavor allow-list, each with a fixed mode. `max_depth = 1`. No `BypassOptIn` or
-   `UnverifiedModeOptIn` on a flavor reachable over MCP without a per-launch human approval
-   (open question 3). No `ApprovalPolicy` that allows on its own. `max_concurrent` and
-   `max_children` small, `wall_time` well under the 24 h ceiling.
-6. **Audit.** A `FileAuditSink` per supervisor under the data directory (open question 7);
-   launching stays off when it cannot be opened or `Supervisor::new` refuses the reserve. Surface
-   `audit_failures()`, `FileAuditSink::dropped()` and `SessionObserver::audit_exhausted` to the
-   operator outside the log, and turn launching off on exhaustion until the log is rotated.
-7. **Model-facing replies** carry `SupervisorError::code()` and `Event::Error` only, never
-   `Event::Diagnostics` or an error's text.
-8. **The MCP surface.** `agent_launch` and `agent_stop` take no mode, opt-in, executable,
-   environment or principal field; `harness` must be in the allow-list. Annotations:
-   `read_only_hint = false`, open-world. While launching is off they answer `disabled` with no
-   side effect, or are not advertised. No tool lets a model allow an approval request.
-   `Supervisor::status` and `Supervisor::list` are unscoped: scope them to the caller's own tree
-   before exposing them.
-9. **No direct adapter launch.** The engine never calls the public `Registry::launch`, which
-   bypasses the policy, the identity checks and the audit; gating it behind a feature is worth
-   considering when the crate is wired.
-10. **The operator.** Register one only once the client declared elicitation and is
-    interactive: a headless `claude -p` or an SDK host answers elicitations without a human. Mint
-    `operator()` only for a decision the human made there, shown the grant itself.
-11. **Worktrees.** Give each launched agent its own worktree, a root the lead does not execute
-    from. The supervisor refuses planted code as a caller, but the lead's harness still runs
-    what a launched agent writes into the lead's tree (git hooks, build scripts, project
-    settings) with the lead's permissions; that is not something the supervisor sees.
+1. Topology: only `serve --lead` builds a `Supervisor`, registered in-process before the relay
+   reads a request; the daemon, HTTP and CLI answer the tools as unknown
+   (`tests/agent_launch_surface.rs`, `tests/http_frontend_smoke.rs`, `src/serve_lead_tests.rs`).
+2. `max_depth = 1`, no listener (`lead::policy_file`; a source check in `agent_launch_surface`).
+3. Seal first (`seal_if_lead` in `main`; on Linux, `/proc/<pid>` of a lead is root's, its stdin
+   cannot be opened and its name is the marker, a plain `serve` being the control).
+4. Policy only from the operator file, absolute executables, no forbidden field
+   (`src/lead/policy_file_tests.rs`, `tests/config_trust.rs`; `Supervisor::new` also refuses a
+   relative executable or MCP command, `RelativeExecutable`).
+5. No model allows: no answer tool, no operator registered, `max_allows` 0.
+6. `NestedHost` stays on, and the daemon spawn removes `BASEMIND_LAUNCH_TOKEN` and
+   `BASEMIND_AGENT_DEPTH`; a lead whose ancestor is named `basemind-lead` is nested even when its
+   executable cannot be read, and on Linux an ancestor that cannot be described fails closed.
+7. Audit fails closed (`src/lead/host_tests.rs`).
+8. Callers: no connection path exists.
+9. Unix only.
+10. Separate worktree (the builder and `agent_launch` both refuse).
+11. Model-facing replies are codes.
+12. Budgets are per lead process: see Consequences.
 
-### Tool surface, later
+Process hygiene (no `SIGCHLD` disposition change, no `waitpid(-1)`, `SIGPIPE` ignored, the
+supervisor dropped on shutdown) holds for `serve`, which installs no signal handler and reaps no
+child it did not start. The engine never calls `Registry::launch` directly.
 
-Two deferred verb tools beside `agent_post`, `agent_inbox` and `agent_threads`:
+### Tool surface
 
-- `agent_launch { harness, brief, thread?, working_dir?, model?, effort?, max_turns?,
-  wall_time_s? }` calls `Supervisor::launch` for the caller, joins the launched agent to
-  `thread`, and returns the session id, the launched principal, its depth and the flavor's
-  caveats. Its fields map to a `LaunchRequest`; `harness` selects the flavor, whose
-  `LaunchConfig` the configuration defines. It takes no principal: the caller is whoever the
-  supervisor places the connection's process as, never a name the call carries. It does not
-  stream: output reaches the launcher as comms messages and through `agent_inbox`.
-- `agent_stop { session }` calls `Supervisor::stop`, which refuses a session the caller did not
-  launch.
+- `agent_launch { harness, brief, working_dir, model?, effort?, max_turns?, wall_time_s? }` calls
+  `Supervisor::launch` for the lead and, on success, opens a comms thread from the lead's principal
+  to the launched one (subject `launched <agent>`), returning `session`, `agent`, `depth`,
+  `caveats` and `thread` (null with a `notice` when the daemon could not be asked). It takes no
+  principal, executable, environment, mode or opt-in. Annotations: not read-only, destructive,
+  not idempotent, open-world.
+- `agent_stop { session }` calls `Supervisor::stop`; the session's descendants stop with it.
 
-Neither exists yet. There is no operator CLI: a CLI run in a terminal is a socket peer, and no
-peer is ever the operator. Operator approvals are elicitations in the lead's own session.
+Both are not always-loaded, and they are not verb tools: `tests/fixtures/lead_tools_list.json`
+pins their `tools/list` entries under a ceiling of their own, and a plain `serve`'s `tools/list`
+is unchanged.
 
 ## Consequences
 
@@ -528,6 +495,35 @@ peer is ever the operator. Operator approvals are elicitations in the lead's own
   itself with its bypass flag, edit basemind's configuration, or stop and replace the daemon
   (ADR-0024 lets any client). The supervisor bounds two things: the MCP path, for agents whose
   harness gates code execution, and the audit's attribution. It does not contain an escapee.
+- **What `serve --lead` does and does not bound, same user.** The lead's tool calls are trusted
+  because they arrive on its stdio, and `max_depth = 1` holds because no socket reaches the
+  supervisor and its stdin cannot be reopened through `/proc` once sealed. Left open:
+  - the window from `exec` to `seal_host`, before which a process of the user that was already
+    waiting (an orphan of an earlier session) can open `/proc/<pid>/fd/0` for writing; the
+    descriptor stays valid after the seal;
+  - a process of the user that traces (with `CAP_SYS_PTRACE`), injects into, signals or types
+    into the lead's process; on macOS the seal is a no-op and `task_for_pid` is what protects it;
+  - the restricted injected `serve` only shapes what a launched harness lists to its model. It is
+    no boundary against the agent's own shell: with the daemon up, any process of the user runs
+    `basemind <command>` as a CLI relay session whose principal is its own claim, reaching every
+    verb tool and `memory_delete` (this predates agent launch). Codex and OpenCode also start the
+    user's own basemind MCP server inside a launched session, whose principal falls back to the
+    root-derived id, which in a shared root is the lead's;
+  - `max_depth` does not stop influence: a launched agent can ask the lead model, over comms or
+    in its output, to launch for it. That is bounded only by the lead's `max_children`,
+    `max_concurrent` and budget.
+
+  Containing an escaped agent needs a kernel boundary (a separate uid, or a sandbox that denies
+  `connect` to the comms socket and access to `/proc/<lead>`), which this ADR does not add.
+- **Budgets are per lead process.** `max_launches` (and the unused `max_allows`) live in the
+  supervisor, so a lead `serve` that is killed and restarted starts with a fresh budget. Persisting
+  them would bound nothing a same-user process cannot already undo: one that can kill the lead
+  can edit the operator's file or run a harness itself. A restart is visible as a new audit file,
+  which names the process. `max_concurrent` still holds, since the sessions of a killed lead die
+  with it (the keeper process in each harness group).
+- **Advisory, not enforced:** `BASEMIND_AGENT_ID` and the comms identity of a launched agent;
+  that a launched agent stays in its worktree (it is not sandboxed to it); that the lead creates a
+  real git worktree for `working_dir` rather than any directory; `UserMcpServers`.
 - **Project files race the check.** The project-file check is a snapshot at plan time: a file
   written between the plan and the harness reading its configuration, or during the session, is
   only seen by the next launch, which it then refuses. This repository has a `.codex/`, so Codex
@@ -595,11 +591,11 @@ should do next.
    with launching off by default, each bound to the lead's own process, which hosts the
    supervisor (`register_launcher_in_process`). A launched agent may launch only while
    `max_depth` allows, identified by its peer process (its session) and its launch token; the
-   recommended default is `max_depth = 1`, which refuses every launch by a launched agent's
-   processes, those that escaped its session included: they descend from no registered process,
-   since only the lead's own process is registered and it admits no descendant, and on Linux
-   that process is non-dumpable, so no process of the user can write into its stdio through
-   `/proc`. It does not stop a process of the same user that traces (with `CAP_SYS_PTRACE`),
+   recommended default, and the only depth the wiring allows, is `max_depth = 1`. No socket
+   reaches the supervisor, so a launched agent's processes, those that escaped its session
+   included, can reach it only through the lead's stdin, which on Linux is sealed before the
+   first read. It does not stop a process that was already waiting in the window between the
+   lead's `exec` and its seal, nor one of the same user that traces (with `CAP_SYS_PTRACE`),
    injects into or types into the lead's process.
 2. **Is the launched agent a sub-identity or a principal?** Recommended and implemented: a
    principal of its own, `launched-<flavor>-<id>-<hex>`, with its launcher recorded in the
@@ -615,13 +611,13 @@ should do next.
 4. **Budget.** Implemented: wall time, turns, depth, fan-out, live sessions and a lifetime
    launch count. Recommended: add a token or cost budget only once the adapters report usage in
    one shape; the three harnesses report it differently and the events drop it today.
-5. **Pre-approving basemind's own tools.** Recommended: no pre-approval of domain tools by name;
-   the injected server runs a restricted serve profile with the comms verb tools and
-   `agent_launch` / `agent_stop` only, and the approval policy decides on those.
+5. **Pre-approving basemind's own tools.** Implemented: none. The injected server is a plain
+   `serve`, which lists neither lead tool; a restricted profile was not added, because it would
+   only shape what the harness lists and the agent's shell reaches the full surface anyway.
 6. **Windows.** Recommended: keep `agent_launch` refused on Windows until a Job Object contains
    the tree and has a test. The supervisor's detached-group tracking is Unix-only too.
-7. **Where does the audit log live?** Recommended: one file per supervisor, so per lead `serve`,
-   under `<data dir>/agents/` (for example `launch-audit-<pid>-<start>.jsonl`), rotated by the
+7. **Where does the audit log live?** Implemented: one file per supervisor, so per lead `serve`,
+   under `<data dir>/agents/` (`launch-audit-<pid>-<unix seconds>.jsonl`), rotated by the
    operator; the `serve` opens it with `FileAuditSink::open` (which holds it exclusively) before
    it registers, and refuses to enable launching when it cannot open it, when
    `Supervisor::new` refuses the budget for its reserve, or once `audit_exhausted` is set.

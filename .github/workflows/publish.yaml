@@ -520,10 +520,10 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates_auth.outputs.token }}
         run: |
           set -euo pipefail
-          # basemind depends on four vendored, in-tree crates (forks we own). crates.io is a closed
-          # registry, so each must be published — and in topological order — before the crate that
-          # depends on it: the two leaves, then stack-graphs, then tree-sitter-stack-graphs, then
-          # basemind itself last. `cargo publish` waits for each to appear in the index before
+          # basemind depends on four vendored, in-tree crates (forks we own) and on basemind-agents.
+          # crates.io is a closed registry, so each must be published — and in topological order —
+          # before the crate that depends on it: the two leaves, then stack-graphs, then
+          # tree-sitter-stack-graphs, then basemind-agents, then basemind itself last. `cargo publish` waits for each to appear in the index before
           # returning, so the next publish resolves it.
           # Re-running a tag finds its own earlier uploads, so "already exists" is a skip. That is
           # only safe because meta's vendored-crate check has proven an existing version's source
@@ -545,6 +545,7 @@ jobs:
           publish basemind-tree-sitter-graph
           publish basemind-stack-graphs
           publish basemind-tree-sitter-stack-graphs
+          publish basemind-agents
           # The verification build resolves the forks from crates.io, as a user's build does, and
           # with every feature the release binary has: a fork that drifted from its published
           # version fails here instead of in a user's `cargo install --features full`.

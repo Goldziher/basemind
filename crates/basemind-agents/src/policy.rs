@@ -14,7 +14,7 @@ use crate::spec::{BypassOptIn, PermissionMode, UnverifiedModeOptIn};
 /// The deepest launch tree a policy may allow.
 pub const MAX_DEPTH_CEILING: u32 = 8;
 /// The most live sessions a policy may allow at once. A session holds up to about 200 MiB in
-/// the worst case (see the crate's ADR draft), so the ceiling bounds the launcher's memory.
+/// the worst case (see ADR-0040), so the ceiling bounds the launcher's memory.
 pub const MAX_CONCURRENT_CEILING: u32 = 32;
 /// The longest wall time a policy may allow a session.
 pub const MAX_WALL_TIME_CEILING: Duration = Duration::from_secs(24 * 60 * 60);

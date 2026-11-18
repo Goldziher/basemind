@@ -24,6 +24,7 @@ publish workflow both run it, and it fails on any surface that is missing or dis
 | Surface | Format | Notes |
 |---|---|---|
 | `Cargo.toml` `[package] version` | `X.Y.Z` or `X.Y.Z-rc.N` | Source of truth. |
+| `crates/basemind-agents/Cargo.toml` `[package] version`, and the root's `basemind-agents` requirement | `X.Y.Z` or `X.Y.Z-rc.N` | Published to crates.io before `basemind` (ADR-0040). |
 | `npm-package/package.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | Same shape as Cargo. |
 | `pip-package/pyproject.toml` `version` | `X.Y.Z` or `X.Y.ZrcN` | PyPI canonical form (`basemind`, binary wrapper). |
 | `pip-package/basemind/__init__.py` `__version__` | matches `pyproject.toml` | Used by `downloader.py` to compute the GH release URL. |
