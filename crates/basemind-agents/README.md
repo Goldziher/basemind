@@ -212,9 +212,10 @@ println!("{} runs as {}", launched.id, launched.agent);
   member is the session's and the group is neither init's nor the launcher's, else each process
   alone, each checked again right before the signal (through a pidfd on Linux 5.3 and later;
   before that, and on macOS, a pid reused in that instant could be signalled). Nothing is killed
-  without a listing, and the session is reported finished only then. `UserMcpServers` (OpenCode, Codex): the harness starts the
-  user's own MCP servers and plugins from its user-level configuration even when the launch names
-  none (OpenCode with an empty `mcpServers`); nothing here can switch that off.
+  without a listing, and the session is reported finished only then. `UserMcpServers` (OpenCode): the harness loads the user's
+  plugins, and MCP servers of a managed or organisation configuration, which nothing here can
+  switch off. The servers of its user configuration files are switched off by name, as are all of
+  Codex's (ADR-0044).
 
 ## Safety defaults
 
@@ -261,7 +262,10 @@ config is trusted.
   Codex, Gemini, Cursor and OpenCode are not launched over one of their project files in the
   working directory or above it, and Gemini, Cursor, Grok, Hermes and a generic ACP agent not over
   a `.env*` file there, which could redirect their endpoint or proxy and so their credentials. Only the MCP tools the config names are pre-approved (Claude
-  Code only). Claude Code's init frame is checked again every turn. A Codex turn notification
+  Code `--allowedTools`, Codex per-tool `approval_mode = "approve"`, OpenCode `allow` permissions;
+  other ACP agents refuse them). Codex and OpenCode start none of the user's own MCP servers: a
+  launch lists them (`codex mcp list --json` with plugins and apps off; OpenCode's
+  `opencode.json{,c}`) and switches each off by name, or is refused. Claude Code's init frame is checked again every turn. A Codex turn notification
   without the `threadId` its schema requires fails the session, so a sub-agent's turn can neither
   end the session's turn nor escape the turn count.
 - The harness executable and the MCP server's command resolve to absolute paths outside the root,
@@ -302,8 +306,8 @@ Limits:
   configuration must restrict them. The executable check is not atomic with the exec, and outside
   the root is not the same as not writable by the agent.
 - The harnesses' user-level configuration (`~/.codex`, `~/.gemini`, `~/.cursor`, OpenCode's and
-  Hermes's) still applies: Codex 0.169 started the user's own MCP servers and plugins next to the
-  injected one. Claude Code's managed settings and user `CLAUDE.md` were not checked.
+  Hermes's) still applies, but for Codex's and OpenCode's MCP servers, which a launch switches off
+  (OpenCode's plugins still load). Claude Code's managed settings and user `CLAUDE.md` were not checked.
 - What Cursor's, Gemini's, Grok's, Hermes's and a generic agent's modes ask for, and what
   OpenCode's plan mode blocks, were not run against a live harness.
 - `BASEMIND_AGENT_ID` is self-asserted: a launched agent with a shell can post as anyone over

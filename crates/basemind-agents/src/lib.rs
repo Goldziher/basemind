@@ -155,6 +155,7 @@ mod supervisor_reserve;
 mod supervisor_types;
 #[cfg(test)]
 mod test_support;
+mod user_mcp;
 
 pub use acp::AcpAdapter;
 pub use audit::{

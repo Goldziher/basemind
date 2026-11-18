@@ -108,7 +108,9 @@ fn a_valid_file_launches_at_depth_one_with_no_allows_and_its_credentials_from_th
     assert!(config.approval_policy.is_none());
     let server = config.mcp_server.as_ref().unwrap();
     assert_eq!(server.args, ["serve"], "the injected serve is never a lead");
-    assert!(server.allow_tools.is_empty());
+    // Only the agent comms tools are pre-approved, and the rule consents to exactly them.
+    assert_eq!(server.allow_tools, ["agent_post", "agent_inbox", "agent_threads"]);
+    assert_eq!(rule.allow_tools, server.allow_tools);
 }
 
 /// Each field a lead model must never get from the file makes it fail to build, and the policy

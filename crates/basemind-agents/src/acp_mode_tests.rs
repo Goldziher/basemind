@@ -60,6 +60,29 @@ fn a_mode_whose_behaviour_is_unverified_needs_an_opt_in_naming_harness_and_mode(
 }
 
 #[test]
+fn opencode_pre_approves_exactly_the_servers_allowed_tools_and_other_flavors_refuse() {
+    let root = tempfile::tempdir().unwrap();
+    let mut spec = spec(HarnessKind::Acp(AcpFlavor::OpenCode), root.path());
+    let mut server = crate::McpServerSpec::basemind_serve(crate::test_support::MCP_COMMAND);
+    server.allow_tools = vec!["agent_inbox".to_owned(), "agent_post".to_owned()];
+    spec.mcp_server = Some(server);
+    let plan = AcpAdapter.plan_spec(&spec).unwrap();
+    let content = plan.env.get(OPENCODE_ASK.0).and_then(|value| value.to_str()).unwrap();
+    let content: serde_json::Value = serde_json::from_str(content).unwrap();
+    assert_eq!(
+        content,
+        json!({"permission": {"*": "ask", "basemind_agent_inbox": "allow", "basemind_agent_post": "allow"}})
+    );
+
+    let mut cursor = in_mode(acp_spec(AcpFlavor::Cursor, root.path()), PermissionMode::Supervised);
+    cursor.mcp_server = spec.mcp_server.clone();
+    assert!(matches!(
+        AcpAdapter.plan_spec(&cursor),
+        Err(LaunchError::Unsupported { .. })
+    ));
+}
+
+#[test]
 fn an_agent_that_switches_its_own_mode_fails_the_session() {
     let root = tempfile::tempdir().unwrap();
     let run = converse_with(&acp_spec(AcpFlavor::Cursor, root.path()), Vec::new(), |agent| {

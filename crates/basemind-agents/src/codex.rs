@@ -47,12 +47,18 @@ impl Adapter for CodexAdapter {
 }
 
 impl CodexAdapter {
+    /// The plan without the user's own MCP servers, which only a launch lists.
     pub(crate) fn plan_spec(&self, spec: &LaunchSpec) -> Result<CommandPlan, LaunchError> {
-        self.plan_prepared(spec).map(|(plan, _)| plan)
+        self.plan_prepared(spec, &[]).map(|(plan, _)| plan)
     }
 
-    /// The plan and the checked spec it was built from, checked once per launch.
-    fn plan_prepared(&self, spec: &LaunchSpec) -> Result<(CommandPlan, Prepared), LaunchError> {
+    /// The plan and the checked spec it was built from, checked once per launch. `users` are
+    /// the user's own MCP servers, each switched off.
+    pub(crate) fn plan_prepared(
+        &self,
+        spec: &LaunchSpec,
+        users: &[String],
+    ) -> Result<(CommandPlan, Prepared), LaunchError> {
         let prepared = spec.prepare()?;
         if spec.permission_mode == PermissionMode::AcceptEdits {
             // Codex 0.169 under `on-request` and a workspace-write sandbox ran `touch` unasked:
@@ -62,36 +68,39 @@ impl CodexAdapter {
                 feature: "an accept-edits mode: its nearest one also runs commands unasked",
             });
         }
-        let mut server_args = Vec::new();
+        // Codex merges `-c` into the user's configuration, so the user's servers stay unless
+        // each is switched off by name; plugins and apps bring servers of their own.
+        let injected = spec.mcp_server.as_ref().map(|server| server.name.as_str());
+        let mut server_args = crate::user_mcp::codex_disable_args(users, injected)?;
         if let (Some(server), Some(command)) = (&spec.mcp_server, &prepared.mcp_command) {
-            // Codex approves a server's tools all at once; single tools cannot be named here.
-            if !server.allow_tools.is_empty() {
-                return Err(LaunchError::Unsupported {
-                    harness: spec.harness.kind.id(),
-                    feature: "pre-approving single MCP tools",
-                });
-            }
             // Codex hands a server only the variables named in `env_vars`. Without an explicit
             // `prompt`, Codex 0.169 (`untrusted`, code mode) ran the server's non-read-only tools
             // unasked, so no call reached the approval policy.
-            let settings = [
-                ("command", toml_string(utf8(command)?)),
-                ("args", toml_array(&server.args)),
-                ("env_vars", toml_array(&spec.mcp_env_names())),
-                ("default_tools_approval_mode", toml_string("prompt")),
+            let mut settings = vec![
+                ("command".to_owned(), toml_string(utf8(command)?)),
+                ("args".to_owned(), toml_array(&server.args)),
+                ("env_vars".to_owned(), toml_array(&spec.mcp_env_names())),
+                ("default_tools_approval_mode".to_owned(), toml_string("prompt")),
             ];
+            // A pre-approved tool runs without a request, under every approval policy.
+            for tool in &server.allow_tools {
+                settings.push((format!("tools.{tool}.approval_mode"), toml_string("approve")));
+            }
             for (key, value) in settings {
                 server_args.extend(["-c".to_owned(), format!("mcp_servers.{}.{key}={value}", server.name)]);
             }
         }
         let mut args = vec!["app-server".to_owned()];
+        args.extend(crate::user_mcp::CODEX_FEATURES_OFF.map(str::to_owned));
         args.extend(prepared.model_args.iter().cloned());
         let plan = spec.plan(&prepared, args, server_args, &[])?;
         Ok((plan, prepared))
     }
 
     fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
-        let (plan, prepared) = self.plan_prepared(spec)?;
+        let (listing, _) = self.plan_prepared(spec, &[])?;
+        let users = crate::user_mcp::codex_servers(&listing)?;
+        let (plan, prepared) = self.plan_prepared(spec, &users)?;
         let access = Access::new(spec.permission_mode, prepared.bypass(spec));
         let protocol = CodexProtocol::new(spec.brief.clone(), utf8(&plan.cwd)?.to_owned(), access);
         let (driver, control) = LineDriver::boxed(protocol);

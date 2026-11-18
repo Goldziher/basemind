@@ -7,7 +7,8 @@
 //! else, in a directory owned by this user (or root) that nobody else can write, outside the lead's
 //! workspace. Its schema can express only what is safe to let a lead model use: no bypass or
 //! unverified-mode opt-in, no approval policy, no `launcher_may_allow`, no launcher list and no
-//! depth (`max_depth` is 1, `max_allows` 0). Executables are absolute paths; credentials are named
+//! depth (`max_depth` is 1, `max_allows` 0), and no pre-approved tool: every launch pre-approves the
+//! injected server's agent comms tools and nothing else (ADR-0044). Executables are absolute paths; credentials are named
 //! (`pass_env`) and read from the lead's own environment, never written in the file.
 
 use std::collections::BTreeMap;
@@ -225,6 +226,7 @@ fn build(launch: LaunchTable, context: &Context<'_>) -> Result<LeadPolicy, Strin
         let config = flavor_config(kind, table, &worktrees_root, wall_time, max_turns, context)?;
         let mut rule = FlavorPolicy::supervised(kind);
         rule.permission_mode = config.permission_mode;
+        rule.allow_tools = comms_tools();
         rules.push(rule);
         configs.push(config);
     }
@@ -250,6 +252,16 @@ fn build(launch: LaunchTable, context: &Context<'_>) -> Result<LeadPolicy, Strin
         worktrees_root,
         audit_max_bytes: launch.audit_max_bytes,
     })
+}
+
+/// The injected server's tools every launch pre-approves: the agent comms tools, so the launched
+/// agent can read and answer the thread its launcher opened (ADR-0044). Every other tool, of the
+/// server or the harness, still asks and is denied.
+fn comms_tools() -> Vec<String> {
+    crate::mcp::agent_tools::AGENT_TOOLS
+        .iter()
+        .map(|tool| (*tool).to_owned())
+        .collect()
 }
 
 /// The canonical worktrees root: absolute, existing, and neither the lead's root, nor above it, nor
@@ -314,7 +326,9 @@ fn flavor_config(
         env.insert(variable, value);
     }
     config.env = env;
-    config.mcp_server = Some(McpServerSpec::basemind_serve(context.mcp_command));
+    let mut server = McpServerSpec::basemind_serve(context.mcp_command);
+    server.allow_tools = comms_tools();
+    config.mcp_server = Some(server);
     config.permission_mode = table.permission_mode.into();
     config.limits.wall_time = table
         .wall_time_secs
