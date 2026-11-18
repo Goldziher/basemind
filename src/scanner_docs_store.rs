@@ -111,6 +111,9 @@ struct LiveDoc {
 }
 
 fn live_docs(store: &Store, config: &Config, filters: &Filters) -> AHashMap<String, LiveDoc> {
+    /// The extraction digest of the entries naming this key: the settings the rows must be built
+    /// under.
+    digest: String,
     let cfg = &config.documents;
     let mut live: AHashMap<String, LiveDoc> = AHashMap::new();
     for (path, entry) in &store.index.doc_files {
@@ -127,6 +130,7 @@ fn live_docs(store: &Store, config: &Config, filters: &Filters) -> AHashMap<Stri
         doc.want_vectors |= want;
         doc.embedded |= entry.embedded && entry.embedding_preset == cfg.embedding_preset;
         doc.paths.push(path);
+                digest: entry.config_digest.clone(),
     }
     live
 }
@@ -305,6 +309,16 @@ pub(crate) fn sync_document_rows(
                 );
                 blobless.extend(doc.paths.iter().cloned());
             }
+            // The blob is global and keyed by content alone: a workspace with other document
+            // settings or another model rewrote it. Rows built from it would carry that
+            // workspace's chunks, or lose their vectors for good, so the file is extracted again.
+            Ok(Some(blob)) if displaced(&blob, doc, &preset) => {
+                tracing::info!(
+                    key,
+                    "document blob rewritten under other settings; the file is extracted again"
+                );
+                damaged.extend(doc.paths.iter().cloned());
+            }
             Err(crate::store::StoreError::Io { source, .. }) => {
                 tracing::warn!(key, error = %source, "reading a document blob failed; its rows stay owed");
             }
@@ -375,6 +389,15 @@ fn sweep_dead_rows_as_of(
     if let Err(error) = doc_store.delete_dead(&live_keys) {
         tracing::warn!(
             ?error,
+/// Whether `blob` was rewritten by a scan of other settings than the entries of `doc` record: another
+/// extraction digest, or vectors of another model where the entries say the blob holds this preset's
+/// and a path wants them. A blob from before digests (empty) is this workspace's.
+fn displaced(blob: &FileMapDoc, doc: &LiveDoc, preset: &str) -> bool {
+    let other_settings = !blob.config_digest.is_empty() && blob.config_digest != doc.digest;
+    let lost_vectors = doc.embedded && doc.want_vectors && !super::doc_has_vectors_of(blob, preset);
+    other_settings || lost_vectors
+}
+
             "deleting dead document rows failed; they are filtered out at query time"
         );
     }

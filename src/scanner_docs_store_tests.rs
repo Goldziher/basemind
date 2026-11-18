@@ -130,6 +130,40 @@ fn a_document_over_the_chunk_cap_keeps_its_chunk_rows() {
     );
 }
 
+/// A blob is keyed by content alone, so another workspace with other document settings or another
+/// model overwrites it. Rows are never built from such a blob: its entry is dropped and the path
+/// owed, so the next pass extracts the file again under this view's settings (review 3 S1).
+#[test]
+fn a_blob_of_other_settings_or_another_model_is_extracted_again_not_written() {
+    let (_tmp, mut store, config, filters) = setup();
+    let mine = blob("displaced digest", false);
+    let hash = crate::hashing::hash_bytes(mine.content.as_bytes());
+    track(&mut store, &mine, &["digest.md"]);
+    let mut theirs = mine.clone();
+    theirs.config_digest = "other settings".to_string();
+    store.write_doc(&hash, &theirs).unwrap();
+
+    let embedded = blob("displaced model", true);
+    let hash = crate::hashing::hash_bytes(embedded.content.as_bytes());
+    track(&mut store, &embedded, &["model.md"]);
+    let mut other_model = embedded.clone();
+    other_model.embedding_model = "another-model".to_string();
+    store.write_doc(&hash, &other_model).unwrap();
+
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX),
+        0,
+        "nothing is built from another workspace's blob"
+    );
+    for path in ["digest.md", "model.md"] {
+        assert!(store.lookup_doc(path).is_none(), "{path} is extracted again");
+        assert!(
+            store.pending_vectors.docs().contains(bstr::BStr::new(path.as_bytes())),
+            "{path} owes its rows"
+        );
+    }
+}
+
 #[test]
 fn a_scan_writes_absent_documents_once_per_content_and_settles_their_paths() {
     let (_tmp, mut store, config, filters) = setup();
