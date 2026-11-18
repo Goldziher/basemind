@@ -44,7 +44,7 @@ Do **not** bump when:
    - Extend the read-before-write deletion to enumerate the partition under the file's primary key and stage deletes for those secondary keys.
    - Add integration tests covering upsert-then-remove leaves the partition empty.
 
-4. **Reader in `src/mcp/helpers.rs` (and/or `query.rs`)**
+4. **Reader in `src/engine/` (and/or `query.rs`)**
    - Add a `scan_<partition>_by_<key>` helper that range-scans the prefix and decodes values.
    - Apply `scan_cap = limit * 8`.
 
