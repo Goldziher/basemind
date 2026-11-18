@@ -103,8 +103,9 @@ const INDEX_KEYSPACES: [&str; 16] = [
 /// the wholesale one once instead of trusting an empty probe index.
 const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
 
-/// Layout revision of the probe keyspaces; bump to force one wholesale resolve pass.
-const IMPORT_PROBE_VER: u8 = 1;
+/// Layout revision of the probe keyspaces; bump to force one wholesale resolve pass. Revision 2 added
+/// the file-edge row ([`keys::FILE_EDGES_START`]).
+const IMPORT_PROBE_VER: u8 = 2;
 
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
 /// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;
