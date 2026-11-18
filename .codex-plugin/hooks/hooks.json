@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-.}/hooks/run-hook.cmd\" session-start",
+            "command": "\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:?basemind: the host set no plugin root}}/hooks/run-hook.cmd\" session-start",
             "timeout": 45,
             "async": false
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-.}/hooks/run-hook.cmd\" agent-as",
+            "command": "\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:?basemind: the host set no plugin root}}/hooks/run-hook.cmd\" agent-as",
             "timeout": 15,
             "async": false
           }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT:-.}/hooks/run-hook.cmd\" inbox-notify",
+            "command": "\"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:?basemind: the host set no plugin root}}/hooks/run-hook.cmd\" inbox-notify",
             "timeout": 20,
             "async": false
           }

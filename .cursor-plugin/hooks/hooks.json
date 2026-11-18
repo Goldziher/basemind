@@ -1,5 +1,5 @@
 {
-  "_comment": "BEST-EFFORT: Cursor hook wiring. Cursor's hooks subsystem does not reliably surface additional_context emitted on SessionStart, so the UserPromptSubmit (inbox-notify) path is the reliable delta channel here. The shared session-start script already emits Cursor's additional_context shape, gated on CURSOR_PLUGIN_ROOT; the command path passes that env var so the Cursor branch of the tri-format emit fires.",
+  "_comment": "BEST-EFFORT: Cursor hook wiring. Cursor's hooks subsystem does not reliably surface additional_context emitted on SessionStart, so the UserPromptSubmit (inbox-notify) path is the reliable delta channel here. The shared session-start script already emits Cursor's additional_context shape, gated on CURSOR_PLUGIN_ROOT, which also locates the hook scripts; without it a hook fails rather than run a script from the session's directory.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CURSOR_PLUGIN_ROOT=\"${CURSOR_PLUGIN_ROOT:-.}\" \"${CURSOR_PLUGIN_ROOT:-.}/hooks/run-hook.cmd\" session-start",
+            "command": "\"${CURSOR_PLUGIN_ROOT:?basemind: the host set no plugin root}/hooks/run-hook.cmd\" session-start",
             "timeout": 45,
             "async": false
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CURSOR_PLUGIN_ROOT=\"${CURSOR_PLUGIN_ROOT:-.}\" \"${CURSOR_PLUGIN_ROOT:-.}/hooks/run-hook.cmd\" inbox-notify",
+            "command": "\"${CURSOR_PLUGIN_ROOT:?basemind: the host set no plugin root}/hooks/run-hook.cmd\" inbox-notify",
             "timeout": 20,
             "async": false
           }
