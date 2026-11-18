@@ -295,6 +295,111 @@ pub fn run_with_deadline<T: Send + 'static>(
     }
 }
 
+/// Stalls extractions of chosen files, so a test can make a document overrun its budget by
+/// construction instead of by being slow on the machine at hand. Compiled only under the dev-only
+/// `test-support` feature, so production builds carry neither the state nor the branch.
+///
+/// A stalled extraction blocks before xberg runs until [`test_stall::release`], then ends with an
+/// error without extracting anything: a released thread leaves the abandoned count at once and burns
+/// no CPU while a later scan runs.
+#[cfg(feature = "test-support")]
+pub mod test_stall {
+    use std::path::Path;
+    use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+
+    struct State {
+        names: Vec<String>,
+        generation: u64,
+    }
+
+    static STATE: Mutex<State> = Mutex::new(State {
+        names: Vec::new(),
+        generation: 0,
+    });
+    static RELEASED: Condvar = Condvar::new();
+
+    fn state() -> MutexGuard<'static, State> {
+        STATE.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps the files of [`stall`] stalled; dropping it stops stalling and releases every stalled
+    /// extraction, so a failing test cannot leave threads blocked for the next one.
+    #[must_use = "stalling ends when the guard is dropped"]
+    pub struct Stalled(());
+
+    impl Drop for Stalled {
+        fn drop(&mut self) {
+            state().names.clear();
+            release();
+        }
+    }
+
+    /// Stall every extraction of a file whose name (not path) is one of `names`.
+    pub fn stall(names: &[&str]) -> Stalled {
+        state().names = names.iter().map(|name| (*name).to_string()).collect();
+        Stalled(())
+    }
+
+    /// Wake every extraction stalled so far; the files stay stalled for later extractions.
+    pub fn release() {
+        state().generation += 1;
+        RELEASED.notify_all();
+    }
+
+    /// A stalled extraction: it waits for the first release after it was issued.
+    #[derive(Debug)]
+    pub struct Ticket(u64);
+
+    pub(crate) fn ticket(path: &Path) -> Option<Ticket> {
+        let name = path.file_name()?.to_str()?;
+        let state = state();
+        state
+            .names
+            .iter()
+            .any(|stalled| stalled == name)
+            .then_some(Ticket(state.generation))
+    }
+
+    pub(crate) fn wait(ticket: Ticket) -> std::io::Error {
+        let mut state = state();
+        while state.generation == ticket.0 {
+            state = RELEASED.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+        std::io::Error::other("stalled extraction released (test-support)")
+    }
+}
+
+/// A stalled extraction (see `test_stall`); uninhabited without the `test-support` feature.
+#[cfg(feature = "test-support")]
+pub(crate) type StallTicket = test_stall::Ticket;
+/// A stalled extraction; uninhabited without the `test-support` feature.
+#[cfg(not(feature = "test-support"))]
+pub(crate) type StallTicket = std::convert::Infallible;
+
+/// The stall the extraction of `path` must wait out, when a test asked for one.
+#[cfg(feature = "test-support")]
+pub(crate) fn stall_ticket(path: &std::path::Path) -> Option<StallTicket> {
+    test_stall::ticket(path)
+}
+
+/// Never a stall outside the `test-support` feature.
+#[cfg(not(feature = "test-support"))]
+pub(crate) const fn stall_ticket(_path: &std::path::Path) -> Option<StallTicket> {
+    None
+}
+
+/// Block until the stall is released, returning the error the extraction then ends with.
+#[cfg(feature = "test-support")]
+pub(crate) fn wait_out(ticket: StallTicket) -> std::io::Error {
+    test_stall::wait(ticket)
+}
+
+/// Unreachable outside the `test-support` feature: there is no ticket to wait out.
+#[cfg(not(feature = "test-support"))]
+pub(crate) fn wait_out(ticket: StallTicket) -> std::io::Error {
+    match ticket {}
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;

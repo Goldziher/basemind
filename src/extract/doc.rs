@@ -502,7 +502,11 @@ fn run_guarded(
     let runtime = extraction_runtime()?;
     let budget = std::time::Duration::from_secs(config.extraction_timeout_secs);
     let ledger = doc_guard::AbandonedThreads::global();
+    let stall = doc_guard::stall_ticket(path);
     doc_guard::run_with_deadline(ledger, config.max_abandoned_extractions, budget, move || {
+        if let Some(released) = stall.map(doc_guard::wait_out) {
+            return Err(released.into());
+        }
         runtime.block_on(extract(input, &krz_config))
     })
     .map_err(|error| match error {
