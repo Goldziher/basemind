@@ -47,21 +47,6 @@ impl BasemindServer {
     }
 }
 
-/// The error for a tool whose retrieval stack is not in this build.
-#[cfg_attr(
-    feature = "memory",
-    allow(dead_code, reason = "only the gated-off arms name a missing feature")
-)]
-pub(super) fn feature_missing(tool: &str, feature: &str) -> McpError {
-    McpError::invalid_request(
-        format!(
-            "`{tool}` needs the `{feature}` Cargo feature, which is not compiled into this basemind binary. \
-             Rebuild with `--features {feature}`; the published release binary includes it."
-        ),
-        None,
-    )
-}
-
 /// Finish the assembled router: mark every verb tool always-loaded and strip schema keywords that
 /// cost bytes on every session without telling a model anything.
 ///

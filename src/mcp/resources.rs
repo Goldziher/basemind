@@ -188,7 +188,9 @@ impl BasemindServer {
                 super::adapter::run(&state.shared, params, crate::engine::Workspace::code_outline).await?
             }
             ResourceUri::Memory(key) => {
-                let result = super::helpers_memory::memory_search(state, from_args(json!({ "key": key }))?).await?;
+                let params: super::types_tools::MemorySearchToolParams = from_args(json!({ "key": key }))?;
+                let result =
+                    super::adapter::run(&state.shared, params, crate::engine::Workspace::memory_search).await?;
                 let text = tool_text(result, uri)?;
                 if text.trim() == "null" {
                     return Err(McpError::resource_not_found(

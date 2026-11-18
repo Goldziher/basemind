@@ -17,6 +17,8 @@ pub(crate) mod l1_cache;
 #[cfg(any(feature = "memory", feature = "code-search"))]
 pub(crate) mod lance_cell;
 pub(crate) mod map_cache;
+#[cfg(feature = "memory")]
+pub(crate) mod memory;
 pub(crate) mod ops;
 pub(crate) mod outline_cache;
 pub(crate) mod pick;

@@ -12,9 +12,7 @@
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
-use super::cursor::Cursor;
 use super::strict::ToolArgs;
-use super::types_memory::Visibility;
 
 macro_rules! tool_args {
     ($($params:ident => $tool:literal),+ $(,)?) => {
@@ -62,49 +60,9 @@ pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymb
 pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
 pub use crate::engine::types::grep::CodeGrepParams;
+pub use crate::engine::types::memory::{MemorySaveParams, MemorySearchToolParams};
 pub use crate::engine::types::refs::CodeRefsParams;
 pub use crate::engine::types::search::{CodeSearchParams, DocsSearchParams};
-
-/// Arguments of `memory_save`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct MemorySaveParams {
-    /// Stable identifier, e.g. `decision/auth-tokens`.
-    pub key: String,
-    /// The note.
-    pub value: String,
-    /// Labels to filter on later.
-    #[serde(default)]
-    pub tags: Option<Vec<String>>,
-    #[serde(default)]
-    pub visibility: Option<Visibility>,
-}
-
-/// Arguments of `memory_search`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct MemorySearchToolParams {
-    /// Search notes by meaning. At most one of `query`, `key`, `prefix`; none lists every note.
-    #[serde(default)]
-    pub query: Option<String>,
-    /// Read one note by exact key.
-    #[serde(default)]
-    pub key: Option<String>,
-    /// List notes whose key starts with this.
-    #[serde(default)]
-    pub prefix: Option<String>,
-    /// Only notes carrying this tag. Not with `key`.
-    #[serde(default)]
-    pub tag: Option<String>,
-    #[serde(default)]
-    pub visibility: Option<Visibility>,
-    /// Max notes (default 10 for `query`, 100 for a listing). Not with `key`.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous listing page. Not with `query` or `key`.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-}
 
 /// Arguments of `index_status`: none.
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]

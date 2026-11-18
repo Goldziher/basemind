@@ -14,3 +14,4 @@ mod code_search;
 mod code_symbols;
 mod docs_search;
 pub(crate) mod find_files;
+mod memory;

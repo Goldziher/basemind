@@ -12,7 +12,7 @@ use rmcp::model::CallToolResult;
 use serde::Serialize;
 
 use super::ServerState;
-use super::cursor_bind::{Paged, bound_blocking};
+use super::cursor_bind::{Paged, bound};
 use super::helpers::json_result;
 use super::strict::ToolArgs;
 use super::telemetry::Telemetry;
@@ -109,7 +109,7 @@ fn call_blocking<P: Paged, R: Serialize>(
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-    let result = bound_blocking(p, |p| answer(ws, p, op));
+    let result = bound(p, |p| answer(ws, p, op));
     record(ws, telemetry, P::TOOL, &params, started, &result);
     result
 }

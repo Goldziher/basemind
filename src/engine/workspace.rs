@@ -91,17 +91,18 @@ pub(crate) struct Workspace {
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(feature = "code-search")]
     pub(crate) lance: crate::engine::lance_cell::LanceCell,
-    /// Owner of this workspace's `individual` memory notes: the checkout's comms v2 principal
-    /// (`identity::resolve_agent_id`), which is the same at every server start.
+    /// Owner of this workspace's `individual` memory notes, which is the same at every server start
+    /// ([`OpenOptions::memory_owner`]).
     #[cfg(feature = "memory")]
     pub(crate) memory_owner: String,
-    /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
+    /// The repo group's memory vector store (see `engine::memory::vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
     pub(crate) memory_lance: crate::engine::lance_cell::LanceCell,
     /// Memory namespaces `(vis_byte, owner)` whose vector rows a search in this process is bringing
     /// up to date with the notes, or has.
     #[cfg(feature = "memory")]
-    pub(crate) memory_backfill: std::sync::Mutex<ahash::AHashMap<(u8, String), crate::mcp::memory_vectors::Backfill>>,
+    pub(crate) memory_backfill:
+        std::sync::Mutex<ahash::AHashMap<(u8, String), crate::engine::memory::vectors::Backfill>>,
     /// Shared embedding engine. Lazy-init on first embed call ([`Workspace::shared_embedder`]).
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) embedder: std::sync::OnceLock<Arc<crate::embeddings::SharedEmbedder>>,
@@ -194,6 +195,10 @@ pub(crate) struct OpenOptions {
     /// How the host brings the git-history index up to HEAD when a history read finds it behind;
     /// `None` reads the live walk until something else syncs it.
     pub(crate) history_sync: Option<fn(&Workspace)>,
+    /// The owner of the workspace's `individual` memory notes, from its root: the host's durable
+    /// principal for the checkout (the MCP adapter resolves the comms v2 identity).
+    #[cfg(feature = "memory")]
+    pub(crate) memory_owner: fn(&std::path::Path) -> String,
 }
 
 /// Boot decisions derived purely from the opened store + [`OpenOptions`]: whether an initial scan
@@ -257,7 +262,7 @@ impl Workspace {
             "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
         #[cfg(feature = "memory")]
-        let memory_owner = crate::mcp::identity::resolve_agent_id(&store.root);
+        let memory_owner = (options.memory_owner)(&store.root);
         let outline_cache: Arc<OutlineCache> = Arc::new(OutlineCache::default());
         Self {
             #[cfg(feature = "memory")]

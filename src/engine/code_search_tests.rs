@@ -186,6 +186,8 @@ fn the_keyword_lane_without_an_index_is_refused_with_the_fix() {
             forwards_writes: false,
             lazy_cache: false,
             history_sync: None,
+            #[cfg(feature = "memory")]
+            memory_owner: |_| "owner".to_string(),
         },
     );
 

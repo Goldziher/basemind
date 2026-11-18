@@ -68,6 +68,8 @@ fn workspace_over(root: &Path, cache: &Path) -> Workspace {
             forwards_writes: false,
             lazy_cache: false,
             history_sync: None,
+            #[cfg(feature = "memory")]
+            memory_owner: |_| "owner".to_string(),
         },
     )
 }

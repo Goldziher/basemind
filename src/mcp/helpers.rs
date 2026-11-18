@@ -11,9 +11,6 @@ use super::ServerState;
 
 pub(super) use super::helpers_telemetry::record_call;
 
-#[cfg(feature = "memory")]
-pub(super) use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
-
 /// Wrap a tool-shim body with telemetry instrumentation.
 ///
 /// Captures `Instant::now()` before the body runs, serializes the params for a deterministic
