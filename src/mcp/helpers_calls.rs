@@ -10,7 +10,6 @@ use rmcp::model::CallToolResult;
 use super::MapCache;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
-pub(crate) use super::helpers_calls_scan::InRamCallIndex;
 use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, mark_shared_lines};
 use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
