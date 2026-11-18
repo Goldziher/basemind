@@ -28,6 +28,21 @@ fn arm_watcher(root: &Path, path_rx: &mpsc::Receiver<Vec<PathBuf>>) {
     while path_rx.recv_timeout(Duration::from_millis(300)).is_ok() {}
 }
 
+/// Every path the watcher emits within `window`. A negative test asserts on the paths it must not
+/// see rather than on silence: under load the probe's own events can arrive after the arming drain,
+/// and they say nothing about the filter under test.
+fn collect_for(path_rx: &mpsc::Receiver<Vec<PathBuf>>, window: Duration) -> Vec<PathBuf> {
+    let deadline = std::time::Instant::now() + window;
+    let mut emitted = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match path_rx.recv_timeout(left) {
+            Ok(paths) => emitted.extend(paths),
+            Err(_) => break,
+        }
+    }
+    emitted
+}
+
 /// `watch_paths` should hand the callback the repo-relative path of a file
 /// that changes under the watched root, within a bounded window. This is the
 /// primitive the MCP serve watcher funnels into `scan_and_refresh`.
@@ -283,8 +298,13 @@ fn should_ignore_changes_under_basemind_dir() {
     std::fs::write(root.join(crate::config::BASEMIND_DIR).join("noise.txt"), b"ignored\n")
         .expect("write basemind file");
 
-    let result = path_rx.recv_timeout(Duration::from_millis(800));
-    assert!(result.is_err(), "expected no emission, got {result:?}");
+    let emitted = collect_for(&path_rx, Duration::from_millis(800));
+    assert!(
+        !emitted
+            .iter()
+            .any(|p| p.starts_with(root.join(crate::config::BASEMIND_DIR))),
+        "expected no .basemind emission, got {emitted:?}"
+    );
 
     let _ = shutdown_tx.send(());
     let _ = handle.join();
@@ -324,10 +344,12 @@ fn should_ignore_nested_basemind_and_gitignored_paths() {
     .expect("write nested basemind file");
     std::fs::write(root.join("build").join("out.o"), b"\x00").expect("write gitignored file");
 
-    let result = path_rx.recv_timeout(Duration::from_millis(800));
+    let emitted = collect_for(&path_rx, Duration::from_millis(800));
     assert!(
-        result.is_err(),
-        "expected no emission for nested-.basemind / gitignored churn, got {result:?}"
+        !emitted
+            .iter()
+            .any(|p| p.starts_with(root.join("child")) || p.starts_with(root.join("build"))),
+        "expected no emission for nested-.basemind / gitignored churn, got {emitted:?}"
     );
 
     let _ = shutdown_tx.send(());
