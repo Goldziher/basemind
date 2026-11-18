@@ -382,3 +382,72 @@ mod python {
         });
     }
 }
+
+mod rust {
+    use super::*;
+
+    const MANIFEST: &str = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n";
+    const LIB: &str = "mod a;\nuse crate::a::Thing;\n";
+
+    #[test]
+    fn module_file_moves_into_a_directory() {
+        assert_incremental_equals_full(&Case {
+            before: &[
+                ("Cargo.toml", MANIFEST),
+                ("src/lib.rs", LIB),
+                ("src/a.rs", "pub struct Thing;\n"),
+            ],
+            edits: &[
+                Edit::Remove("src/a.rs"),
+                Edit::Write("src/a/mod.rs", "pub struct Thing;\n"),
+            ],
+            grammar_probe: "src/lib.rs",
+            expect: &[],
+        });
+    }
+
+    #[test]
+    fn added_manifest_roots_a_previously_unrooted_crate() {
+        assert_incremental_equals_full(&Case {
+            before: &[("src/lib.rs", LIB), ("src/a.rs", "pub struct Thing;\n")],
+            edits: &[Edit::Write("Cargo.toml", MANIFEST)],
+            grammar_probe: "src/lib.rs",
+            expect: &[],
+        });
+    }
+}
+
+mod go {
+    use super::*;
+
+    const GO_MOD: &str = "module example.com/demo\n\ngo 1.22\n";
+    const MAIN: &str = "package main\n\nimport \"example.com/demo/store\"\n\nfunc main() { store.Get() }\n";
+
+    #[test]
+    fn new_file_in_an_imported_package() {
+        assert_incremental_equals_full(&Case {
+            before: &[
+                ("go.mod", GO_MOD),
+                ("main.go", MAIN),
+                ("store/a.go", "package store\n\nfunc Get() {}\n"),
+            ],
+            edits: &[Edit::Write("store/b.go", "package store\n\nfunc other() {}\n")],
+            grammar_probe: "main.go",
+            expect: &[],
+        });
+    }
+
+    #[test]
+    fn renamed_module_unresolves_the_import() {
+        assert_incremental_equals_full(&Case {
+            before: &[
+                ("go.mod", GO_MOD),
+                ("main.go", MAIN),
+                ("store/a.go", "package store\n\nfunc Get() {}\n"),
+            ],
+            edits: &[Edit::Write("go.mod", "module example.com/renamed\n\ngo 1.22\n")],
+            grammar_probe: "main.go",
+            expect: &[],
+        });
+    }
+}

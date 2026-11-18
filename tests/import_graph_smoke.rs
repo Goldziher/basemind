@@ -121,3 +121,106 @@ mod js {
         assert_eq!(app.unresolved_specifiers, ["./missing"]);
     }
 }
+
+/// Targets of `importer`'s row with its external and unresolved counts.
+fn summary(rows: &[(String, FileEdges)], importer: &str) -> (Vec<String>, u32, u32) {
+    let edges = row(rows, importer);
+    (
+        targets(edges).into_iter().map(str::to_string).collect(),
+        edges.external,
+        edges.unresolved,
+    )
+}
+
+fn owned(rels: &[&str]) -> Vec<String> {
+    rels.iter().map(|rel| (*rel).to_string()).collect()
+}
+
+mod rust {
+    use super::*;
+
+    const B: &str = "use super::a::Thing;\nuse std::fmt;\nmod c;\npub fn helper() {}\n\n#[cfg(test)]\nmod tests {\n    \
+                     use super::*;\n}\n";
+
+    /// A `mod` tree with `crate::` and `super::` paths, a module cycle (`a` and `b` import each
+    /// other), an inline test module and a declaration whose file is missing.
+    #[test]
+    fn mod_tree_and_use_paths_are_file_edges() {
+        let (_dir, store) = scanned(&[
+            ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"),
+            ("src/lib.rs", "pub mod a;\npub mod b;\nmod gone;\npub use a::Thing;\n"),
+            (
+                "src/a.rs",
+                "use crate::b::helper;\npub struct Thing;\npub fn run() {\n    helper();\n}\n",
+            ),
+            ("src/b/mod.rs", B),
+            ("src/b/c.rs", "use crate::Thing;\n"),
+        ]);
+        if !indexed(&store, "src/lib.rs") {
+            return;
+        }
+        let rows = rows(&store);
+        assert_eq!(
+            summary(&rows, "src/lib.rs"),
+            (owned(&["src/a.rs", "src/b/mod.rs"]), 0, 1)
+        );
+        assert_eq!(row(&rows, "src/lib.rs").unresolved_specifiers, ["mod gone"]);
+        assert_eq!(summary(&rows, "src/a.rs"), (owned(&["src/b/mod.rs"]), 0, 0));
+        assert_eq!(
+            summary(&rows, "src/b/mod.rs"),
+            (owned(&["src/a.rs", "src/b/c.rs"]), 1, 0),
+            "`use super::*` in the inline test module is the file itself, not an edge"
+        );
+        assert_eq!(summary(&rows, "src/b/c.rs"), (owned(&["src/lib.rs"]), 0, 0));
+        let to_c = row(&rows, "src/b/mod.rs")
+            .edges
+            .iter()
+            .find(|edge| edge.target.as_str() == Some("src/b/c.rs"))
+            .unwrap();
+        assert_eq!(to_c.local_start as usize, B.find("mod c;").unwrap());
+    }
+}
+
+mod go {
+    use super::*;
+
+    const MAIN: &str = "package main\n\nimport (\n\t\"fmt\"\n\t\"example.com/demo/store\"\n\t\"example.com/demo/missing\"\n)\n\n\
+                        func main() { fmt.Println(store.Get()) }\n";
+
+    /// An import of a package of the module is an edge to each of its non-test files.
+    #[test]
+    fn package_imports_are_edges_to_the_package_files() {
+        let (_dir, store) = scanned(&[
+            ("go.mod", "module example.com/demo\n\ngo 1.22\n"),
+            ("main.go", MAIN),
+            (
+                "store/a.go",
+                "package store\n\nimport \"example.com/demo/util\"\n\nfunc Get() int { return util.One() }\n",
+            ),
+            ("store/b.go", "package store\n\nfunc other() {}\n"),
+            (
+                "store/b_test.go",
+                "package store\n\nimport \"testing\"\n\nfunc TestOther(t *testing.T) { other() }\n",
+            ),
+            ("util/u.go", "package util\n\nfunc One() int { return 1 }\n"),
+        ]);
+        if !indexed(&store, "main.go") {
+            return;
+        }
+        let rows = rows(&store);
+        assert_eq!(summary(&rows, "main.go"), (owned(&["store/a.go", "store/b.go"]), 1, 1));
+        assert_eq!(
+            row(&rows, "main.go").unresolved_specifiers,
+            ["example.com/demo/missing"]
+        );
+        let anchors: Vec<usize> = row(&rows, "main.go")
+            .edges
+            .iter()
+            .map(|edge| edge.local_start as usize)
+            .collect();
+        let quoted = MAIN.find("\"example.com/demo/store\"").unwrap();
+        assert_eq!(anchors, [quoted, quoted]);
+        assert_eq!(summary(&rows, "store/a.go"), (owned(&["util/u.go"]), 0, 0));
+        assert_eq!(summary(&rows, "store/b_test.go"), (Vec::new(), 1, 0));
+    }
+}

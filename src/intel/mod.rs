@@ -14,6 +14,16 @@
 #[cfg(feature = "code-intel-js")]
 pub mod js;
 pub mod model;
+/// Go file-level module resolution (import path → the package's files), for the import graph.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+pub(crate) mod module_go;
+/// File-level module resolution for Rust and Go: each importer's file-edge and probe rows, written
+/// from its L1 outline with no binding join.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+pub(crate) mod module_resolver;
+/// Rust file-level module resolution (`mod` and `use` paths → module files), for the import graph.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+pub(crate) mod module_rust;
 pub mod resolve;
 pub(crate) mod resolve_pass;
 /// Per-language module-specifier resolution (importer specifier → repo-relative target file),
