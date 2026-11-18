@@ -299,3 +299,25 @@ fn plugins_only_dispatch_publishes_only_from_its_release_tag() {
         );
     }
 }
+
+/// CI decides whether the pinned version is released by its checksums file, as the plugin launcher
+/// does. The tag page answers 200 for a bare tag or a draft release, whose assets are not public:
+/// reading that as a release failed the skew legs, and with them the publish's ci_gate, for as long
+/// as the release that gate held back did not exist.
+#[test]
+fn the_skew_gate_reads_a_release_from_its_checksums_not_its_tag() {
+    let ci = read_workflow("ci.yaml");
+    let start = ci
+        .find("- name: Fetch release binaries for the upgrade test and the skew gate")
+        .expect("the skew gate's fetch step");
+    let rest = &ci[start + 1..];
+    let step = &rest[..rest.find("\n      - name:").unwrap_or(rest.len())];
+    assert!(
+        !step.contains("/releases/tag/"),
+        "a tag page exists before the release is public:\n{step}"
+    );
+    assert!(
+        step.contains("/releases/download/v$pinned/basemind_${pinned}_checksums.txt"),
+        "the pinned release must be detected by its checksums file:\n{step}",
+    );
+}
