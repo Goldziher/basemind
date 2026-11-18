@@ -600,3 +600,29 @@ fn a_rebuilt_view_holds_no_key() {
     assert_eq!(postings_of(a, "a1"), 1, "a still holds a1");
     assert_eq!(postings_of(a, "b1"), 0, "no view holds b1");
 }
+
+/// A file whose postings stage no forward row (no chunk id parses) holds no key: a holder row with
+/// no forward row would pin the key's postings for good.
+#[test]
+fn a_file_that_stages_no_forward_row_writes_no_holder_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_group, views) = group_views(dir.path(), &["ws-a"]);
+    let a = &views[0];
+    let unparsable = [ChunkPosting {
+        chunk_id: "no-ordinal".to_string(),
+        doclen: 1,
+        terms: vec![("alpha".to_string(), 1)],
+    }];
+    let mut writer = a.writer();
+    writer
+        .upsert_bm25_file(
+            &RelPath::from("src/a.rs"),
+            &keys::bm25_content_key("a1", "rust", "d"),
+            &unparsable,
+        )
+        .unwrap();
+    writer.commit().unwrap();
+
+    assert_eq!(a.code_bm25_by_path.iter().count(), 0);
+    assert_eq!(holders(a), 0);
+}

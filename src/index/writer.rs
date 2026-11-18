@@ -333,8 +333,10 @@ impl IndexWriter {
         drop(shared);
         let staged = stored.and_then(|stored| {
             let old = self.stage_bm25_deletes_for(rel)?;
-            self.stage_bm25_holders(rel, &old, Some(content), !postings.is_empty());
-            self.stage_bm25_inserts_for(rel, content, postings, !stored)
+            // A holder row is found and removed only through a forward row: none without one. ~keep
+            let holds = self.stage_bm25_inserts_for(rel, content, postings, !stored)?;
+            self.stage_bm25_holders(rel, &old, Some(content), holds);
+            Ok(())
         });
         #[cfg(test)]
         let staged = staged.and_then(|()| match self.fail_after_staging {
@@ -697,7 +699,8 @@ impl IndexWriter {
     /// Stage inserts for `rel`'s BM25 postings: one shared `code_bm25_postings` row per term of the
     /// content packing `ordinal ‖ tf ‖ doclen` of every chunk holding it (only when `write_postings`),
     /// plus one `code_bm25_by_path` forward entry per chunk carrying `doclen ‖ content hash ‖ terms`.
-    /// A posting whose chunk id does not parse is skipped.
+    /// A posting whose chunk id does not parse is skipped. Returns whether a forward entry was
+    /// staged: only then does the file hold `content`.
     #[cfg(feature = "code-search")]
     fn stage_bm25_inserts_for(
         &mut self,
@@ -705,8 +708,9 @@ impl IndexWriter {
         content: &keys::Bm25Key,
         postings: &[ChunkPosting],
         write_postings: bool,
-    ) -> Result<(), IndexError> {
+    ) -> Result<bool, IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        let mut holds = false;
         let mut by_term: ahash::AHashMap<&str, Vec<(u32, u32, u32)>> = ahash::AHashMap::new();
         for posting in postings {
             let Some((hash, ordinal)) = keys::split_chunk_id(&posting.chunk_id) else {
@@ -737,6 +741,7 @@ impl IndexWriter {
                 self.bm25_delta.staged_under(generation);
                 self.bm25_delta.add_row(posting.doclen);
             }
+            holds = true;
             self.writes_postings = true;
             self.changes_bm25_forward = true;
         }
@@ -756,7 +761,7 @@ impl IndexWriter {
         if self.changes_bm25_forward {
             self.mark_bm25_dirty_outside_pass();
         }
-        Ok(())
+        Ok(holds)
     }
 
     /// Stage the L2 call sites of `content` into both call partitions.
