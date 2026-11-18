@@ -266,6 +266,7 @@ pub(super) fn symbol_kind_byte(k: SymbolKind) -> u8 {
         SymbolKind::Constructor => 19,
         SymbolKind::Decorator => 20,
         SymbolKind::Heading => 21,
+        SymbolKind::Route => 22,
     }
 }
 
@@ -292,6 +293,7 @@ pub(super) fn symbol_kind_from_byte(b: u8) -> SymbolKind {
         19 => SymbolKind::Constructor,
         20 => SymbolKind::Decorator,
         21 => SymbolKind::Heading,
+        22 => SymbolKind::Route,
         _ => SymbolKind::Unknown,
     }
 }
@@ -456,10 +458,22 @@ mod tests {
             SymbolKind::Namespace,
             SymbolKind::Getter,
             SymbolKind::Setter,
+            SymbolKind::Field,
+            SymbolKind::Variable,
+            SymbolKind::EnumVariant,
+            SymbolKind::Constructor,
+            SymbolKind::Decorator,
+            SymbolKind::Heading,
+            SymbolKind::Route,
         ];
         for k in all {
             assert_eq!(symbol_kind_from_byte(symbol_kind_byte(k)), k);
         }
+        assert_eq!(
+            symbol_kind_byte(SymbolKind::Route),
+            22,
+            "ADR-0048 appends Route at the tail"
+        );
     }
 
     /// The identifier-encoding functions must return `None` at the 65536-byte boundary

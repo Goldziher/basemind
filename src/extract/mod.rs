@@ -264,6 +264,9 @@ pub enum SymbolKind {
     /// heading text; the heading hierarchy is implicit in document (line) order. Lets `outline` and
     /// `search_symbols` navigate a notes vault by section, mirroring how source symbols work.
     Heading,
+    /// An HTTP route a server framework registers (ADR-0048). The name is the method and the
+    /// normalized path (`GET /users/:param`); the signature is the handler's name.
+    Route,
 }
 
 impl SymbolKind {
@@ -290,6 +293,7 @@ impl SymbolKind {
             "constructor" => Self::Constructor,
             "decorator" => Self::Decorator,
             "heading" => Self::Heading,
+            "route" => Self::Route,
             _ => Self::Unknown,
         }
     }
@@ -303,7 +307,7 @@ impl SymbolKind {
             Unknown => 0,
             Const | Variable | Field | Decorator => 1,
             Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module | Macro | Impl
-            | Namespace | Getter | Setter | EnumVariant | Constructor | Heading => 2,
+            | Namespace | Getter | Setter | EnumVariant | Constructor | Heading | Route => 2,
         }
     }
 }

@@ -181,6 +181,7 @@ fn kind_str(kind: SymbolKind) -> &'static str {
         SymbolKind::Constructor => "constructor",
         SymbolKind::Decorator => "decorator",
         SymbolKind::Heading => "heading",
+        SymbolKind::Route => "route",
         SymbolKind::Unknown => "unknown",
     }
 }
