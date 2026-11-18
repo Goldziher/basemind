@@ -611,13 +611,17 @@ fn an_idle_group_counts_against_the_budget_and_goes_with_its_last_workspace() {
     let newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::ZERO);
     name_group(&cold, "cold-group");
     name_group(&newest, "live-group");
-    let budget = dir_size(&workspaces).expect("size") + dir_size(&blobs).expect("size");
-    let idle = seed_group(&workspaces, "cold-group", 1 << 20);
+    // The budget fits everything but the idle group: the most recently used workspace and its group ~keep
+    // are protected, so they remain after any eviction. ~keep
     let live = seed_group(&workspaces, "live-group", 4096);
+    let groups = tmp.path().join(crate::store_layout::GROUPS_DIR);
+    let budget =
+        dir_size(&workspaces).expect("size") + dir_size(&blobs).expect("size") + dir_size(&groups).expect("size");
+    let idle = seed_group(&workspaces, "cold-group", 1 << 20);
 
     let report = enforce_cache_budget_in(&workspaces, &blobs, budget, DAY_AGO, Duration::ZERO).expect("enforce");
 
-    assert!(report.total_bytes_before > budget + (1 << 20), "{report:?}");
+    assert!(report.total_bytes_before >= budget + (1 << 20), "{report:?}");
     assert_eq!(report.groups_evicted, 1, "{report:?}");
     assert!(report.group_bytes_freed >= 1 << 20, "{report:?}");
     assert!(!idle.exists(), "the group no workspace holding a view uses is evicted");
