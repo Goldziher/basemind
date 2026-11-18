@@ -197,6 +197,7 @@ impl Workspace {
 
     /// [`publish_store`](Self::publish_store) only when `store` maps the workspace differently from
     /// the map served now; `None` when it does not, and nothing is replaced or bumped.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn publish_store_if_changed(&self, store: Store) -> Option<Arc<MapCache>> {
         let cache = Arc::new(
             self.cache

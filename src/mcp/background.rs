@@ -90,8 +90,8 @@ impl Writer {
     /// Whether the catch-up should stop before its next step: the daemon is draining, or the pool no
     /// longer holds the workspace (evicted while the map warmed), which a scan would reopen only to
     /// publish to a stack nobody serves.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     fn catch_up_moot(&self) -> bool {
-        #[cfg(all(feature = "comms", any(unix, windows)))]
         if let Some(pool) = &self.pool {
             let key = crate::store::workspace_key(&self.ws.root);
             return pool.scan_cancel().is_cancelled() || !pool.accessed().iter().any(|hot| hot.key == key);
@@ -105,8 +105,8 @@ impl Writer {
     /// ([`Workspace::publish_store_if_changed`]): a publish bumps the generations every cursor is
     /// bound to, and an unchanged tree must not cut a session's paging short. The comparison is with
     /// the map, not the pass's counts, so a write another path made since the stack opened is taken.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     fn catch_up(&self) -> Result<Option<(usize, usize, usize)>, EngineError> {
-        #[cfg(all(feature = "comms", any(unix, windows)))]
         if let Some(pool) = &self.pool {
             let (stats, cancelled) = pool
                 .hosted_rescan(&self.ws.root, None, false, false, false)
@@ -205,6 +205,7 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
 /// anything is followed, as the initial scan is, by a detached embedding pass. The host's work pin,
 /// when it lends one (a workspace with a git-history index), keeps the daemon up meanwhile; the
 /// pool's drain token stops the pass, and a pass the daemon no longer needs is skipped.
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
     let writer = Writer::of(&state);
     let rescanning = writer.ws.mark_rescan();
