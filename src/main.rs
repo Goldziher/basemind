@@ -317,7 +317,13 @@ fn run() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     // Before any command touches the data home: every layer below reads this, not the environment.
-    let _engine = basemind::cli::env_config::install_from_env()?;
+    // The status line and the hooks run on every prompt and tool call; their output is not the
+    // place for a misset variable's warning, which every other command prints. ~keep
+    let _engine = if matches!(cli.cmd, Cmd::Statusline | Cmd::Hook { .. }) {
+        basemind::cli::env_config::install_from_env_quietly()?
+    } else {
+        basemind::cli::env_config::install_from_env()?
+    };
 
     // Every process that may build an ONNX session bounds its memory before the first one exists. The
     // comms daemon applies its own (tighter) thread cap in `comms_daemon::run`, and a one-shot scan its

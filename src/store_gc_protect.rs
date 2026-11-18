@@ -75,7 +75,9 @@ pub fn cache_grace() -> Duration {
 pub fn cache_grace_from(raw: Option<&str>) -> Duration {
     let minutes = match raw {
         Some(raw) => raw.trim().parse::<u64>().unwrap_or_else(|_| {
-            tracing::warn!(value = %raw, "{CACHE_GRACE_ENV} is not a number; using the default grace window");
+            crate::config::trust::warn_once(format!(
+                "{CACHE_GRACE_ENV}={raw:?} is not a number; using the default grace window"
+            ));
             DEFAULT_CACHE_GRACE_MINUTES
         }),
         None => DEFAULT_CACHE_GRACE_MINUTES,

@@ -217,10 +217,9 @@ pub fn cache_budget_from(raw: Option<&str>) -> Option<u64> {
         Some(raw) => match raw.trim().parse::<u64>() {
             Ok(mib) => mib,
             Err(_) => {
-                tracing::warn!(
-                    value = %raw,
-                    "{CACHE_BUDGET_ENV} is not a number; disabling cache budget enforcement"
-                );
+                crate::config::trust::warn_once(format!(
+                    "{CACHE_BUDGET_ENV}={raw:?} is not a number; disabling cache budget enforcement"
+                ));
                 return None;
             }
         },
