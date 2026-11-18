@@ -16,6 +16,7 @@
 use std::path::Path;
 
 use ahash::AHashMap;
+use rayon::prelude::*;
 
 use crate::extract::FileMapL1;
 use crate::index::IndexDb;
@@ -119,49 +120,27 @@ pub(crate) fn harvest_module_importers(facts: &[(String, FileResolvedRefs)], out
 
 /// Resolve every importer in `importers` with its language's module resolver and write its
 /// file-edge row and probe rows. Runs after the resolve pass staged the importers' facts, which
-/// cleared their previous rows. Returns whether every batch committed.
+/// cleared their previous rows. Resolution runs in parallel (each worker with its own resolver
+/// caches); staging stays serial, as in the resolve pass. Returns whether every batch committed.
 pub(crate) fn stitch_module_edges(root: &Path, store: &Store, index_db: &IndexDb, importers: &[String]) -> bool {
     if importers.is_empty() {
         return true;
     }
+    let started = std::time::Instant::now();
     let mut keys: Vec<&String> = importers.iter().collect();
     keys.sort_unstable();
     keys.dedup();
-    let indexed = |rel: &str| store.lookup(rel).is_some();
-    let mut resolvers: AHashMap<String, Option<ModuleResolver>> = AHashMap::new();
-    let mut batch = BudgetedWriter::new(index_db, COMMIT_BATCH, "module stitch");
+    let resolved: Vec<(&String, Vec<ModuleImport>, ProbeSet)> = keys
+        .par_iter()
+        .map_init(AHashMap::new, |resolvers, importer| {
+            resolve_importer(root, store, resolvers, importer)
+        })
+        .flatten()
+        .collect();
 
-    for importer in keys {
-        let Some(entry) = store.lookup(importer.as_str()) else {
-            continue;
-        };
-        let resolver = resolvers
-            .entry(entry.language.clone())
-            .or_insert_with_key(|lang| ModuleResolver::for_language(lang));
-        let Some(resolver) = resolver.as_mut() else {
-            continue;
-        };
-        let l1 = match store.read_l1_by_hex(&entry.hash_hex) {
-            Ok(Some(l1)) => l1,
-            Ok(None) => continue,
-            Err(error) => {
-                tracing::debug!(importer = %importer, %error, "module stitch: outline unreadable — skipping");
-                continue;
-            }
-        };
-        let mut probes = ProbeSet::default();
-        let imports = resolver.resolve(
-            &mut Probe {
-                root,
-                indexed: &indexed,
-                probes: &mut probes,
-            },
-            importer,
-            &l1,
-        );
-        if imports.is_empty() {
-            continue;
-        }
+    let mut batch = BudgetedWriter::new(index_db, COMMIT_BATCH, "module stitch");
+    let rows = resolved.len();
+    for (importer, imports, probes) in resolved {
         let importer_rel = RelPath::from(importer.as_str());
         if !probes.is_empty() {
             batch
@@ -174,7 +153,49 @@ pub(crate) fn stitch_module_edges(root: &Path, store: &Store, index_db: &IndexDb
             .upsert_file_edges(&importer_rel, &file_edges(importer, imports).finish());
         batch.item_staged();
     }
-    batch.finish()
+    let committed = batch.finish();
+    tracing::debug!(
+        importers = keys.len(),
+        rows,
+        elapsed_ms = started.elapsed().as_millis(),
+        "module stitch: staged file-edge rows"
+    );
+    committed
+}
+
+/// One importer's resolved imports and probes, or `None` when it has no resolver, no readable
+/// outline or no import. `resolvers` is the calling worker's per-language cache.
+fn resolve_importer<'a>(
+    root: &Path,
+    store: &Store,
+    resolvers: &mut AHashMap<String, Option<ModuleResolver>>,
+    importer: &&'a String,
+) -> Option<(&'a String, Vec<ModuleImport>, ProbeSet)> {
+    let importer: &'a String = importer;
+    let entry = store.lookup(importer.as_str())?;
+    let resolver = resolvers
+        .entry(entry.language.clone())
+        .or_insert_with_key(|lang| ModuleResolver::for_language(lang))
+        .as_mut()?;
+    let l1 = match store.read_l1_by_hex(&entry.hash_hex) {
+        Ok(l1) => l1?,
+        Err(error) => {
+            tracing::debug!(importer = %importer, %error, "module stitch: outline unreadable — skipping");
+            return None;
+        }
+    };
+    let indexed = |rel: &str| store.lookup(rel).is_some();
+    let mut probes = ProbeSet::default();
+    let imports = resolver.resolve(
+        &mut Probe {
+            root,
+            indexed: &indexed,
+            probes: &mut probes,
+        },
+        importer,
+        &l1,
+    );
+    (!imports.is_empty()).then_some((importer, imports, probes))
 }
 
 /// Fold one importer's resolved imports into its file edges.
