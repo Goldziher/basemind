@@ -167,6 +167,7 @@ impl IndexDb {
         for keyspace in [
             &self.implementations_by_path,
             &self.refs_by_path,
+            &self.import_targets,
             &self.code_bm25_by_path,
         ] {
             let mut from = Vec::new();
@@ -458,6 +459,25 @@ mod tests {
         let paths = db.indexed_paths().expect("paths");
 
         assert_eq!(paths.into_iter().collect::<Vec<_>>(), vec![RelPath::from("a.rs")]);
+    }
+
+    /// An importer whose imports all missed has only `import_targets` rows: its file-edge row must
+    /// still be found, or an interrupted scan leaves an edge from a file no map lists.
+    #[test]
+    fn indexed_paths_lists_an_importer_with_only_import_target_rows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = IndexDb::open(dir.path()).expect("open");
+        let importer = RelPath::from("gone.ts");
+        db.keyspace(Part::ImportTargets)
+            .insert(
+                &super::super::keys::import_target(&importer, super::super::keys::FILE_EDGES_START),
+                super::super::keys::file_edges_value(&Default::default()),
+            )
+            .expect("insert");
+
+        let paths = db.indexed_paths().expect("paths");
+
+        assert_eq!(paths.into_iter().collect::<Vec<_>>(), vec![importer]);
     }
 
     fn discarded_siblings(view_dir: &Path) -> Vec<String> {
