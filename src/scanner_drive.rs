@@ -122,6 +122,35 @@ const RECOVERY_CLEAR_ADMITS: usize = 4;
 /// data in memory.
 const EMBED_PASS_MAX_WORKERS: usize = 2;
 
+/// Workers one chunk may use, `0` for the whole pool. Inference serializes on the embed pool (two
+/// threads by default), so extra scan workers in a pass that embeds only hold file and chunk data
+/// while they wait their turn. A pass that cannot embed (no embedder compiled in, or neither tier
+/// embeds) keeps every worker: capping it only slows parsing.
+fn chunk_max_workers(governed: usize, pool_threads: usize, embed: crate::scanner::EmbedMode, config: &Config) -> usize {
+    let max_workers = if governed >= pool_threads { 0 } else { governed };
+    if !matches!(embed, crate::scanner::EmbedMode::Inline) || !pass_can_embed(config) {
+        return max_workers;
+    }
+    match max_workers {
+        0 => EMBED_PASS_MAX_WORKERS,
+        n => n.min(EMBED_PASS_MAX_WORKERS),
+    }
+}
+
+/// Whether an inline pass under `config` can run inference: a tier that embeds, compiled in.
+fn pass_can_embed(config: &Config) -> bool {
+    #[cfg(feature = "code-search")]
+    if config.code_search.enabled && config.code_search.embed {
+        return true;
+    }
+    #[cfg(feature = "documents")]
+    if config.documents.enabled && config.documents.embed {
+        return true;
+    }
+    let _ = config;
+    false
+}
+
 /// Floor on the drive chunk, independent of the worker count: below this the serial absorb pass
 /// dominates and the drive stops being a parallel scan at all.
 const MIN_BASE_CHUNK_ITEMS: usize = 1024;
@@ -319,19 +348,7 @@ pub(crate) fn drive_scan(
         // the bytes a chunk touches are held by at most one worker each, never by the chunk.
         |_, _| 0,
         |ctx: &DriveCtx<'_>, chunk| {
-            let mut max_workers = if workers.get() >= pool_threads {
-                0
-            } else {
-                workers.get()
-            };
-            // Inference serializes on the embed pool (two threads by default), so extra scan workers
-            // in the embedding pass only hold file and chunk data while they wait their turn.
-            if matches!(drive.embed, crate::scanner::EmbedMode::Inline) {
-                max_workers = match max_workers {
-                    0 => EMBED_PASS_MAX_WORKERS,
-                    n => n.min(EMBED_PASS_MAX_WORKERS),
-                };
-            }
+            let max_workers = chunk_max_workers(workers.get(), pool_threads, drive.embed, drive.config);
             run_candidates(
                 chunk,
                 drive.root,
@@ -538,6 +555,32 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn only_a_pass_that_can_embed_is_capped_to_the_embed_pool() {
+        use crate::scanner::EmbedMode;
+        let mut config = crate::config::default_for_root(Path::new("/nonexistent"));
+        config.code_search.embed = false;
+        config.documents.embed = false;
+        assert_eq!(
+            chunk_max_workers(8, 8, EmbedMode::Inline, &config),
+            0,
+            "nothing embeds: whole pool"
+        );
+        assert_eq!(
+            chunk_max_workers(5, 8, EmbedMode::Inline, &config),
+            5,
+            "the governor still narrows"
+        );
+        assert_eq!(chunk_max_workers(8, 8, EmbedMode::Deferred, &config), 0);
+
+        config.code_search.enabled = true;
+        config.code_search.embed = true;
+        let embeds = cfg!(feature = "code-search");
+        let capped = if embeds { EMBED_PASS_MAX_WORKERS } else { 0 };
+        assert_eq!(chunk_max_workers(8, 8, EmbedMode::Inline, &config), capped);
+        assert_eq!(chunk_max_workers(8, 8, EmbedMode::Deferred, &config), 0);
+    }
 
     const MB: u64 = 1024 * 1024;
 
