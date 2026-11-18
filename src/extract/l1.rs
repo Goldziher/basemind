@@ -106,7 +106,7 @@ pub(super) fn run_combined(
             .find(|class| !matches!(class, CaptureClass::Other));
         match class {
             Some(CaptureClass::Symbol) => {
-                if let Some(sym) = build_symbol(q, m, source, lang) {
+                if let Some(sym) = build_symbol(q, m, root, source, lang) {
                     symbols.push(sym);
                 }
             }
@@ -169,7 +169,7 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
     keep
 }
 
-fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8], lang: LangId) -> Option<Symbol> {
+fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: LangId) -> Option<Symbol> {
     let mut name: Option<String> = None;
     let mut kind: Option<SymbolKind> = None;
     let mut start_byte = 0u32;
@@ -199,7 +199,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8], lang: LangId) -> Optio
         } else if let Some(suffix) = cname.strip_prefix("symbol.") {
             // Decided before the signature is built: most value matches in JS and Python are
             // function locals, and their signature would be collapsed only to be dropped.
-            if !nested_rust_fn(node) && is_function_local(node) {
+            if !nested_rust_fn(node) && is_function_local(root, node) {
                 return None;
             }
             kind = Some(SymbolKind::from_capture_suffix(suffix));
@@ -263,15 +263,23 @@ const FUNCTION_SCOPE_KINDS: &[&str] = &[
 /// The node itself being a function does not count: top-level and class-level functions and methods
 /// are kept, as are class fields and module-level bindings; function locals and nested definitions
 /// are not.
-fn is_function_local(node: Node) -> bool {
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if FUNCTION_SCOPE_KINDS.contains(&n.kind()) {
+///
+/// Walks down from `root` (the tree `node` belongs to) rather than up through `Node::parent`, which
+/// itself descends from the root on every call: one walk instead of one per ancestor.
+fn is_function_local(root: Node, node: Node) -> bool {
+    if root == node {
+        return false;
+    }
+    let mut cur = root;
+    loop {
+        if FUNCTION_SCOPE_KINDS.contains(&cur.kind()) {
             return true;
         }
-        cur = n.parent();
+        match cur.child_with_descendant(node) {
+            Some(next) if next != node => cur = next,
+            _ => return false,
+        }
     }
-    false
 }
 
 /// Longest signature kept for a value-like symbol (variable, constant, field). Their "signature" is
