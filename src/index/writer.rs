@@ -32,9 +32,9 @@ pub struct IndexWriter {
     /// What the batch does to the BM25 forward rows, for an open full pass (see `bm25_pass`).
     #[cfg(feature = "code-search")]
     bm25_delta: super::bm25_pass::Bm25Delta,
-    /// The batch already stages the drop of the exact-BM25 marker.
+    /// The batch already stages a fresh BM25 dirty token for the view.
     #[cfg(feature = "code-search")]
-    bm25_exact_dropped: bool,
+    bm25_dirty_marked: bool,
     /// The batch already stages the group's owed sweep.
     #[cfg(feature = "code-search")]
     bm25_sweep_owed: bool,
@@ -132,7 +132,7 @@ impl IndexWriter {
             #[cfg(feature = "code-search")]
             bm25_delta: super::bm25_pass::Bm25Delta::default(),
             #[cfg(feature = "code-search")]
-            bm25_exact_dropped: false,
+            bm25_dirty_marked: false,
             #[cfg(feature = "code-search")]
             bm25_sweep_owed: false,
             #[cfg(test)]
@@ -369,8 +369,12 @@ impl IndexWriter {
         #[cfg(feature = "code-search")]
         if result.is_err() {
             self.db.bm25_pass.poison();
-        } else if !self.bm25_delta.is_empty() {
-            self.db.bm25_pass.absorb(self.bm25_delta);
+        } else if !self.bm25_delta.is_empty() && !self.db.bm25_pass.absorb(self.bm25_delta) {
+            // Staged under a pass that has since closed: the view must not be vouched for. ~keep
+            let token = super::bm25_pass::fresh_token().to_be_bytes();
+            if let Err(error) = self.db.meta.insert(super::bm25_pass::META_BM25_DIRTY, token) {
+                tracing::warn!(%error, "could not mark the BM25 stats dirty; the next pass may trust them");
+            }
         }
         if self.changes_bm25_forward {
             // After the commit, failed or not: a cache built from rows read before it is stale. ~keep
@@ -519,7 +523,7 @@ impl IndexWriter {
     fn stage_bm25_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let prefix = keys::code_bm25_by_path_prefix(rel);
-        let keys: Vec<Vec<u8>> = if db.bm25_pass.is_open() {
+        let keys: Vec<Vec<u8>> = if let Some(generation) = db.bm25_pass.open_generation() {
             // An open pass needs each row's value too: the postings it names and its doclen. The ~keep
             // tally is local until every row was read, so a read error leaves none of it behind. ~keep
             let mut keys = Vec::new();
@@ -536,6 +540,7 @@ impl IndexWriter {
                 delta.remove_row(&db.bm25_pass, &key, &value);
                 keys.push(key.to_vec());
             }
+            self.bm25_delta.staged_under(generation);
             self.bm25_delta.merge(delta);
             keys
         } else {
@@ -550,7 +555,7 @@ impl IndexWriter {
             stage_remove(batch, staged_bytes, &db.code_bm25_by_path, key);
         }
         if self.changes_bm25_forward {
-            self.drop_bm25_exact_outside_pass();
+            self.mark_bm25_dirty_outside_pass();
         }
         if deleted {
             self.owe_bm25_sweep_outside_pass();
@@ -574,20 +579,22 @@ impl IndexWriter {
         self.bm25_sweep_owed = true;
     }
 
-    /// A forward-row write outside an open full pass makes the stored BM25 state unvouched for:
-    /// stage the drop of the exact marker into the same batch, once.
+    /// A forward-row write outside an open pass makes the view's stored BM25 stats unvouched for:
+    /// stage a fresh dirty token into the same batch, once.
     #[cfg(feature = "code-search")]
-    fn drop_bm25_exact_outside_pass(&mut self) {
-        if self.bm25_exact_dropped || self.db.bm25_pass.is_open() {
+    fn mark_bm25_dirty_outside_pass(&mut self) {
+        if self.bm25_dirty_marked || self.db.bm25_pass.is_open() {
             return;
         }
-        stage_remove(
+        let token = super::bm25_pass::fresh_token().to_be_bytes();
+        stage_insert(
             &mut self.batch,
             &mut self.staged_bytes,
             &self.db.meta,
-            IndexDb::bm25_exact_marker(),
+            super::bm25_pass::META_BM25_DIRTY.to_vec(),
+            token.to_vec(),
         );
-        self.bm25_exact_dropped = true;
+        self.bm25_dirty_marked = true;
     }
 
     #[cfg(feature = "code-search")]
@@ -640,14 +647,15 @@ impl IndexWriter {
                 keys::code_bm25_by_path(rel, content, ordinal),
                 value,
             );
-            if db.bm25_pass.is_open() {
+            if let Some(generation) = db.bm25_pass.open_generation() {
+                self.bm25_delta.staged_under(generation);
                 self.bm25_delta.add_row(posting.doclen);
             }
             self.writes_postings = true;
             self.changes_bm25_forward = true;
         }
         if self.changes_bm25_forward {
-            self.drop_bm25_exact_outside_pass();
+            self.mark_bm25_dirty_outside_pass();
         }
         Ok(())
     }

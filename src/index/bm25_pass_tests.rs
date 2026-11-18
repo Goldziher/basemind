@@ -240,14 +240,16 @@ fn a_commit_error_during_a_pass_forces_the_fallback() {
 #[test]
 fn a_pass_whose_retired_keys_outgrow_the_ceiling_sweeps_instead() {
     let ledger = Bm25PassLedger::default();
+    let generation = ledger.open();
     let mut delta = Bm25Delta {
+        generation,
         retired_bytes: RETIRED_KEYS_CEILING_BYTES + 1,
         ..Bm25Delta::default()
     };
     delta.retired.insert([0; keys::BM25_KEY_LEN], vec![vec![1]]);
-    ledger.absorb(delta);
+    assert!(ledger.absorb(delta));
     assert!(ledger.overflowed());
-    let state = ledger.reset();
+    let state = ledger.close(generation).expect("the pass is open");
     assert!(
         state.overflowed && state.retired.is_empty(),
         "the keys are dropped, not kept"
@@ -348,4 +350,55 @@ fn a_view_whose_chunks_have_no_terms_gets_the_right_n() {
         Some((2, 1)),
         "the term-less chunk counts toward N"
     );
+}
+
+/// S4: a second handle on the same view (a reopen, a background lane) shares the open pass's
+/// ledger, so its writes are counted rather than missed.
+#[test]
+fn a_second_handle_on_the_view_writes_into_the_open_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = super::super::group::GroupDb::open_shared(dir.path(), || Ok(Box::new(()))).unwrap();
+    let memory = dir.path().join("memory");
+    let id = group.allocate_view_id("ws-a", "working").unwrap();
+    let first = group.open_view(id, &memory, false).unwrap();
+    let pass = first.begin_bm25_pass(PassKind::Full).unwrap();
+    upsert(&first, "src/a.rs", "a1", &["alpha"]);
+    upsert(&first, "src/b.rs", "b1", &["beta"]);
+    pass.finish().unwrap();
+
+    let second = group.open_view(id, &memory, false).unwrap();
+    let pass = first.begin_bm25_pass(PassKind::Full).unwrap();
+    upsert(&second, "src/a.rs", "a2", &["gamma", "delta"]);
+    let outcome = pass.finish().unwrap();
+    let stamped = first.view().bm25_stats();
+    assert!(
+        !outcome.swept,
+        "the write went through the shared ledger, so nothing was owed"
+    );
+    assert_eq!(postings_of(&first, "a1"), 0, "the second handle's orphan was retired");
+    assert_eq!(swept(&first).1, stamped);
+}
+
+/// S4: a batch staged before a pass began and committed during it is in neither the pass's base
+/// nor its tally, so the pass must not vouch for its stats.
+#[test]
+fn a_batch_staged_before_the_pass_and_committed_during_it_is_not_lost() {
+    let (_dir, db) = exact_db_with(&[("src/a.rs", "a1", &["alpha"])]);
+    let mut early = db.writer();
+    early
+        .upsert_bm25_file(
+            &RelPath::from("src/b.rs"),
+            &keys::bm25_content_key("b1", "rust", "d"),
+            &postings("b1", &["beta", "gamma"]),
+        )
+        .unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
+    early.commit().unwrap();
+    pass.finish().unwrap();
+    let stamped = db.view().bm25_stats();
+    assert_eq!(swept(&db).1, stamped, "the stats include the early batch");
+
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
+    pass.finish().unwrap();
+    assert_eq!(swept(&db).1, db.view().bm25_stats(), "and the next pass still agrees");
 }

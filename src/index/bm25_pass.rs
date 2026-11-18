@@ -13,10 +13,12 @@
 //!
 //! Two facts decide whether that is sound, and they have different scopes:
 //!
-//! - **The view's stats are exact** (per view). A `meta` marker says no forward row of this view
-//!   changed outside a completed pass since the stats were written: a write outside a pass drops it
-//!   in its own batch, and a pass drops it at its start and stamps it only once finished. A view
-//!   with no forward row at all is exact at zero, which makes a new worktree's first scan cheap.
+//! - **The view's stats are exact** (per view). `meta` holds a dirty token, replaced in the same
+//!   batch by every forward-row write made outside a pass and by every pass when it begins, and an
+//!   exact stamp, the token a finished pass still found in place. The stored stats are a valid base
+//!   only while the two are equal, so a pass that dies, or a write the ledger did not see, leaves
+//!   them unequal. A view with no forward row at all is exact at zero, which makes a new
+//!   worktree's first scan cheap.
 //! - **The group's posting list holds no garbage** (per group). A group `meta` row records that a
 //!   sweep is owed. It is set in the same batch as any forward-row delete made outside a pass, by
 //!   [`IndexDb::mark_bm25_sweep_owed`] for deletes made without the writer, and by a pass at its
@@ -28,7 +30,7 @@
 //! recompute, which are exact whatever the failed batch did.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use ahash::AHashMap;
 
@@ -36,9 +38,12 @@ use super::bm25_live::Bm25Candidates;
 use super::keys::{self, Bm25Key};
 use super::{IndexDb, IndexError, META_BM25_DOC_COUNT, META_BM25_TOTAL_LEN};
 
-/// `meta` marker: the posting list holds no posting this view orphaned and the stored BM25 stats
-/// are exact. Present only between a completed pass and the next forward-row write outside one.
+/// Per-view `meta`: the dirty token a finished pass found in place; the stored stats are exact while
+/// it equals [`META_BM25_DIRTY`].
 const META_BM25_EXACT: &[u8] = b"code_bm25_exact";
+/// Per-view `meta`: a token replaced by every forward-row write outside a pass and by every pass
+/// when it begins. The stats are exact while [`META_BM25_EXACT`] holds the same token.
+pub(crate) const META_BM25_DIRTY: &[u8] = b"code_bm25_dirty";
 
 /// Group `meta`, outside every view's prefix: a token present while the shared posting list may
 /// hold postings no view names.
@@ -67,6 +72,8 @@ const RETIRED_KEY_OVERHEAD: u64 = 24;
 /// the batch has committed.
 #[derive(Default)]
 pub(crate) struct Bm25Delta {
+    /// The pass the delta was staged under; `0` until the writer stages in one.
+    generation: u64,
     docs: i64,
     total_len: i64,
     retired: AHashMap<Bm25Key, Vec<Vec<u8>>>,
@@ -80,6 +87,13 @@ pub(crate) struct Bm25Delta {
 impl Bm25Delta {
     pub(crate) fn is_empty(&self) -> bool {
         self.docs == 0 && self.total_len == 0 && self.retired.is_empty() && !self.overflowed && !self.poisoned
+    }
+
+    /// Bind the delta to the pass of `generation` (the first one it stages under).
+    pub(crate) fn staged_under(&mut self, generation: u64) {
+        if self.generation == 0 {
+            self.generation = generation;
+        }
     }
 
     /// Fold `other`, built for one file's forward rows, in once all of them were read and staged.
@@ -141,19 +155,37 @@ struct PassState {
     poisoned: bool,
 }
 
-/// The open pass's tally, shared by every clone of one view's [`IndexDb`].
-#[derive(Default)]
+/// The open pass's tally. One per view, shared by every handle on it (`GroupDb::open_view`), so a
+/// second handle's writes land in the same pass.
 pub(crate) struct Bm25PassLedger {
-    open: AtomicBool,
+    /// The open pass's generation; `0` while none is open.
+    generation: AtomicU64,
+    next_generation: AtomicU64,
     full: AtomicBool,
     state: Mutex<PassState>,
 }
 
+impl Default for Bm25PassLedger {
+    fn default() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            next_generation: AtomicU64::new(1),
+            full: AtomicBool::new(false),
+            state: Mutex::default(),
+        }
+    }
+}
+
 impl Bm25PassLedger {
-    /// Whether a pass is collecting: writers then record their deltas instead of dropping the
-    /// exact marker.
+    /// The open pass's generation, or `None` while no pass is collecting.
+    pub(crate) fn open_generation(&self) -> Option<u64> {
+        Some(self.generation.load(Ordering::Acquire)).filter(|generation| *generation != 0)
+    }
+
+    /// Whether a pass is collecting: writers then record their deltas instead of marking the view
+    /// dirty.
     pub(crate) fn is_open(&self) -> bool {
-        self.open.load(Ordering::Acquire)
+        self.open_generation().is_some()
     }
 
     fn overflowed(&self) -> bool {
@@ -171,32 +203,51 @@ impl Bm25PassLedger {
         }
     }
 
-    /// Fold one committed batch's delta in.
-    pub(crate) fn absorb(&self, delta: Bm25Delta) {
+    /// Fold one committed batch's delta in. `false` when the delta belongs to no open pass (it was
+    /// staged under one that has finished), so the caller must mark the view dirty instead.
+    pub(crate) fn absorb(&self, delta: Bm25Delta) -> bool {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.open_generation() != Some(delta.generation) {
+            return false;
+        }
         state.docs += delta.docs;
         state.total_len += delta.total_len;
         state.poisoned |= delta.poisoned;
         if state.overflowed || delta.overflowed {
             state.overflowed = true;
-            return;
+            return true;
         }
         state.retired_bytes += delta.retired_bytes;
         if state.retired_bytes > RETIRED_KEYS_CEILING_BYTES {
             state.overflowed = true;
             state.retired = AHashMap::new();
             self.full.store(true, Ordering::Relaxed);
-            return;
+            return true;
         }
         for (content, postings) in delta.retired {
             state.retired.entry(content).or_default().extend(postings);
         }
+        true
     }
 
-    fn reset(&self) -> PassState {
-        self.open.store(false, Ordering::Release);
+    fn open(&self) -> u64 {
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *state = PassState::default();
         self.full.store(false, Ordering::Relaxed);
-        std::mem::take(&mut *self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        self.generation.store(generation, Ordering::Release);
+        generation
+    }
+
+    /// Close the pass of `generation` and hand back its tally; `None` when it is not the open one.
+    fn close(&self, generation: u64) -> Option<PassState> {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.generation.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        self.generation.store(0, Ordering::Release);
+        self.full.store(false, Ordering::Relaxed);
+        Some(std::mem::take(&mut *state))
     }
 }
 
@@ -218,10 +269,14 @@ pub(crate) struct PassOutcome {
 }
 
 /// An open full pass; see the module docs. Dropping it unfinished (a cancelled or failed pass)
-/// closes the ledger and leaves the view's marker unset and the group's sweep owed.
+/// closes the ledger and leaves the view's stats unvouched and the group's sweep owed.
 pub(crate) struct Bm25Pass {
     db: IndexDb,
     kind: PassKind,
+    generation: u64,
+    /// The dirty token this pass wrote at its begin; the view is vouched for only if it is still
+    /// there at the finish.
+    token: u64,
     /// Stored `(N, total_len)` when the pass began, when they were exact; `None` means recompute.
     base: Option<(u64, u64)>,
     /// The group's owed token as the pass found it: a debt this pass pays with a sweep.
@@ -231,9 +286,12 @@ pub(crate) struct Bm25Pass {
 }
 
 impl IndexDb {
-    /// The meta marker drop a forward-row write outside a pass stages into its own batch.
-    pub(crate) fn bm25_exact_marker() -> &'static [u8] {
-        META_BM25_EXACT
+    fn bm25_stat(&self, key: &[u8]) -> Result<Option<u64>, IndexError> {
+        Ok(self
+            .meta
+            .get(key)?
+            .and_then(|bytes| <[u8; 8]>::try_from(&bytes[..]).ok())
+            .map(u64::from_be_bytes))
     }
 
     /// Record that the shared posting list may hold garbage, for forward rows deleted without the
@@ -264,28 +322,20 @@ impl IndexDb {
         Ok(())
     }
 
-    /// Open a full pass: read whether the view's stats are exact, drop the view's marker, owe the
-    /// group a sweep until the pass finishes, and start collecting.
+    /// Open a pass: read whether the view's stats are exact, mark the view dirty with the pass's
+    /// own token, owe the group a sweep until the pass finishes, and start collecting.
     pub(crate) fn begin_bm25_pass(&self, kind: PassKind) -> Result<Bm25Pass, IndexError> {
-        self.bm25_pass.reset();
-        let stat = |key: &[u8]| -> Result<Option<u64>, IndexError> {
-            Ok(self
-                .meta
-                .get(key)?
-                .and_then(|bytes| <[u8; 8]>::try_from(&bytes[..]).ok())
-                .map(u64::from_be_bytes))
-        };
+        let exact = self.bm25_stat(META_BM25_EXACT)?;
         let base = if self.code_bm25_by_path.keys().next().transpose()?.is_none() {
             Some((0, 0))
-        } else if self.meta.get(META_BM25_EXACT)?.is_some() {
-            match (stat(META_BM25_DOC_COUNT)?, stat(META_BM25_TOTAL_LEN)?) {
-                (Some(n), Some(len)) => Some((n, len)),
-                _ => None,
-            }
+        } else if exact.is_some() && exact == self.bm25_stat(META_BM25_DIRTY)? {
+            self.bm25_stat(META_BM25_DOC_COUNT)?
+                .zip(self.bm25_stat(META_BM25_TOTAL_LEN)?)
         } else {
             None
         };
-        self.meta.remove(META_BM25_EXACT)?;
+        let token = fresh_token();
+        self.meta.insert(META_BM25_DIRTY, token.to_be_bytes())?;
         let owed_before = self.sweep_owed_token()?;
         let owed_own = match owed_before {
             Some(_) => None,
@@ -295,10 +345,12 @@ impl IndexDb {
                 Some(own)
             }
         };
-        self.bm25_pass.open.store(true, Ordering::Release);
+        let generation = self.bm25_pass.open();
         Ok(Bm25Pass {
             db: self.clone(),
             kind,
+            generation,
+            token,
             base,
             owed_before,
             owed_own,
@@ -316,13 +368,21 @@ impl Bm25Pass {
 
     /// Retire the postings the pass's deleted rows named and stamp the stats, then mark the state
     /// exact. Falls back to the full sweep and recompute when the pass began inexact or its
-    /// ledger overflowed. On an error the marker stays unset.
+    /// ledger overflowed. On an error nothing is vouched for.
     pub(crate) fn finish(self) -> Result<PassOutcome, IndexError> {
         let db = &self.db;
-        let state = db.bm25_pass.reset();
+        let Some(state) = db.bm25_pass.close(self.generation) else {
+            return Err(IndexError::Io {
+                path: std::path::PathBuf::new(),
+                source: std::io::Error::other("the BM25 pass ledger was closed by another pass"),
+            });
+        };
+        // A write that reached the view outside the ledger replaced the token: it is in neither ~keep
+        // the base nor the tally, so the stats must be recomputed and not vouched for. ~keep
+        let untouched = db.bm25_stat(META_BM25_DIRTY)? == Some(self.token);
         let exact = self
             .base
-            .filter(|_| !state.overflowed && !state.poisoned)
+            .filter(|_| untouched && !state.overflowed && !state.poisoned)
             .and_then(|(n, len)| {
                 let n = i64::try_from(n).ok()?.checked_add(state.docs)?;
                 let len = i64::try_from(len).ok()?.checked_add(state.total_len)?;
@@ -356,7 +416,9 @@ impl Bm25Pass {
             }
             None => db.recompute_bm25_stats()?,
         }
-        db.meta.insert(META_BM25_EXACT, [1u8])?;
+        if db.bm25_stat(META_BM25_DIRTY)? == Some(self.token) {
+            db.meta.insert(META_BM25_EXACT, self.token.to_be_bytes())?;
+        }
         Ok(outcome)
     }
 }
@@ -371,9 +433,7 @@ impl IndexDb {
 
 impl Drop for Bm25Pass {
     fn drop(&mut self) {
-        if self.db.bm25_pass.is_open() {
-            self.db.bm25_pass.reset();
-        }
+        self.db.bm25_pass.close(self.generation);
     }
 }
 
