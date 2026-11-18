@@ -159,3 +159,46 @@ fn common_terms_are_skipped_and_candidates_are_bounded() {
     assert_eq!(work.candidates, 3, "the accumulator stops at the bound: {work:?}");
     assert_eq!(hits.len(), 3);
 }
+
+/// A session that holds no index and is not hosted by the daemon (another process holds the lock,
+/// no daemon is up: a CLI command beside a writer `serve`) refuses the keyword lane naming the fix,
+/// marked busy so the CLI exits `3`, instead of an internal error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_keyword_lane_without_an_index_is_refused_with_the_fix() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), BODY).unwrap();
+    drop(scanned(root));
+    let store = Store::open_read_only_no_index(root, crate::store::VIEW_WORKING).expect("index-less store");
+    assert!(!store.rescan_owed(), "the scanned index owes no rebuild");
+    let telemetry_dir = store.basemind_dir.clone();
+    let shared = crate::mcp::Workspace::new(
+        store,
+        root.to_path_buf(),
+        Arc::new(crate::config::Config::with_defaults()),
+        None,
+        Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
+        None,
+        crate::mcp::ServerOptions {
+            read_only: true,
+            ..crate::mcp::ServerOptions::default()
+        }
+        .into(),
+    );
+    let state = ServerState::for_connection(
+        crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
+        "test".into(),
+    );
+
+    let refused = keyword_hits(&state, "retry upload", 5)
+        .await
+        .expect_err("a session with no index cannot run the keyword lane");
+    assert_eq!(refused.code, rmcp::model::ErrorCode::INVALID_REQUEST, "{refused:?}");
+    assert!(refused.message.contains("holds this workspace's index"), "{refused:?}");
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    assert!(refused.message.contains("`basemind comms start`"), "{refused:?}");
+    let exit = crate::cli::run_tool("code_search", Err(refused)).expect_err("refused");
+    assert_eq!(crate::cli::exit::exit_code_for(&exit), crate::cli::exit::BUSY);
+}

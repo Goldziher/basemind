@@ -548,7 +548,8 @@ impl BasemindServer {
     ///   database and builds it in-process, as before. Nobody else can, and history tools would
     ///   otherwise permanently live-walk.
     /// * **read-only fallback** (another process owns the write lock, no daemon): no handle — history
-    ///   tools live-walk, visibly (`partial: true`). Unchanged.
+    ///   tools live-walk, visibly (`partial: true`). A one-shot CLI command beside such a process
+    ///   does not try the database at all, and tries a free one once, never the retry ladder.
     fn open_git_history(
         root: &std::path::Path,
         history_dir: &std::path::Path,
@@ -582,7 +583,16 @@ impl BasemindServer {
         if options.read_only || (!options.background && !crate::git_history::GitHistoryIndex::exists(history_dir)) {
             return None;
         }
-        match crate::git_history::GitHistoryIndex::open(history_dir) {
+        // ~keep A one-shot query holds no writer lock, so a held index is another process's for as
+        // ~keep long as it runs: it live-walks at once instead of climbing the retry ladder (~1.5 s).
+        let opened = if options.background {
+            crate::git_history::GitHistoryIndex::open(history_dir)
+        } else if crate::store_lock::writer_lock_is_held(history_dir) {
+            return None;
+        } else {
+            crate::git_history::GitHistoryIndex::open_once(history_dir)
+        };
+        match opened {
             Ok(index) => Some(Arc::new(index)),
             Err(error) => {
                 tracing::warn!(?error, "git-history index unavailable; tools will live-walk");
