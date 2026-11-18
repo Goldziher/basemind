@@ -42,6 +42,12 @@ class PreToolGuardTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.tmp = temporary.name
+        # session-start's verdict that the workspace is indexed, for the sessions these tests use.
+        self.private = Path(self.tmp) / f"basemind-{os.getuid()}"
+        (self.private / "indexed").mkdir(parents=True)
+        self.private.chmod(0o700)
+        for session in ("s", "s1"):
+            (self.private / "indexed" / session).touch()
 
     def run_guard(self, tool: str, tool_input: dict, **extra: str) -> str:
         payload = {"session_id": "s1", "tool_name": tool, "tool_input": tool_input, **extra}
@@ -133,17 +139,29 @@ class PreToolGuardTests(unittest.TestCase):
 
     def test_markers_stay_in_a_private_directory_and_never_follow_a_planted_link(self) -> None:
         self.assertNotEqual(self.bash("rg a", agent_id="own"), "")
-        private = Path(self.tmp) / f"basemind-{os.getuid()}"
+        private = self.private
         self.assertEqual(private.stat().st_mode & 0o777, 0o700)
         self.assertTrue(any((private / "guard").iterdir()), "the marker is in the private directory")
 
         shutil.rmtree(private)
         elsewhere = Path(self.tmp) / "elsewhere"
-        elsewhere.mkdir()
+        (elsewhere / "indexed").mkdir(parents=True)
+        (elsewhere / "indexed" / "s1").touch()
         private.symlink_to(elsewhere)
-        self.assertNotEqual(self.bash("rg a", agent_id="planted"), "")
-        self.assertNotEqual(self.bash("rg a", agent_id="planted"), "", "no marker, so the advice repeats")
-        self.assertEqual(list(elsewhere.iterdir()), [], "nothing is written through the link")
+        self.assertEqual(self.bash("rg a", agent_id="planted"), "", "a planted verdict is not read")
+        self.assertEqual(list((elsewhere / "indexed").iterdir()), [elsewhere / "indexed" / "s1"])
+        self.assertFalse((elsewhere / "guard").exists(), "nothing is written through the link")
+
+    def test_a_session_without_a_verified_index_is_not_steered(self) -> None:
+        (self.private / "indexed" / "s1").unlink()
+        self.assertEqual(self.bash("rg a"), "")
+        self.assertEqual(self.run_guard("Grep", {"pattern": "x"}), "")
+        env = {**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "redirect"}
+        payload = json.dumps({"session_id": "unscanned", "tool_name": "Grep", "tool_input": {"pattern": "x"}})
+        out = subprocess.run(
+            ["/bin/bash", str(HOOK)], input=payload, env=env, capture_output=True, text=True, check=True
+        ).stdout
+        self.assertEqual(out, "", "redirect does not deny a search the index cannot answer")
 
     def test_redirect_mode_never_denies_bash(self) -> None:
         env = {**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "redirect"}

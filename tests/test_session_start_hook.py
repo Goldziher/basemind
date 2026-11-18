@@ -54,7 +54,7 @@ class SessionStartTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for command in ("jq", "dirname", "sed", "grep", "wc", "tr", "cat", "sleep", "pkill"):
+        for command in ("jq", "dirname", "sed", "grep", "wc", "tr", "cat", "sleep", "pkill", "id", "mkdir", "ls", "rm"):
             (self.bin / command).symlink_to(shutil.which(command))
         hooks = self.root / "hooks"
         hooks.mkdir()
@@ -95,6 +95,8 @@ esac""",
             "PATH": str(self.bin),
             "CLAUDE_PLUGIN_ROOT": str(self.root),
             "CLAUDE_PROJECT_DIR": "/some/project with space & ampersand",
+            "TMPDIR": str(self.root),
+            "XDG_RUNTIME_DIR": "",
             "STATUS_RESULT": response,
             "STATUS_EXIT": str(exit_code),
             "INBOX_RESULT": inbox,
@@ -140,6 +142,16 @@ esac""",
         self.assertIn("launcher could not run `basemind status` (exit 1", failed)
         unreadable = self.invoke("not JSON")
         self.assertIn("unreadable status", unreadable)
+
+    def test_the_index_verdict_is_left_for_the_guard_only_when_verified(self) -> None:
+        verdict = self.root / f"basemind-{os.getuid()}" / "indexed" / "s1"
+        self.invoke('{"file_count":631,"schema_version":33}')
+        self.assertTrue(verdict.is_file(), "a verified index lets the guard steer this session")
+        self.invoke('{"file_count":0,"schema_version":33}')
+        self.assertFalse(verdict.exists(), "an empty index withdraws it")
+        self.invoke('{"file_count":631,"schema_version":33}')
+        self.invoke("", exit_code=1)
+        self.assertFalse(verdict.exists(), "so does a failed probe")
 
     def test_tool_names_are_exactly_the_advertised_surface(self) -> None:
         declared = re.search(r'^TOOL_NAMES="([^"]*)"$', HOOK.read_text(), re.MULTILINE)

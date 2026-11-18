@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:0718829ca48364416e47c63e1ea0d35079fb18822e9c4083f67d50c443eba4a8",
+  "source_hash": "blake3:5314059d2d93d3d159f16103a03a8b1ffd1ae9c44fbdb4806900c3cced910ae2",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -659,7 +659,7 @@
       "mode": "0755"
     },
     "hooks/pre-tool-guard": {
-      "content_hash": "blake3:addc34e895b426ddc02210e3bbc7dfc04a9e3956e423cd4c5781ea47c611f1e1",
+      "content_hash": "blake3:2ae62b81ac9475b7f2fdb95915ffc7b7b7f6de76eb1ca197cbd5930ede246563",
       "mode": "0755"
     },
     "hooks/run-hook.cmd": {
@@ -667,7 +667,7 @@
       "mode": "0755"
     },
     "hooks/session-start": {
-      "content_hash": "blake3:6e5bdca670392d5a058cdc26c770b901d011cfb3ea160d2fdecf18dbc6b82d4e",
+      "content_hash": "blake3:9343e1efbc37b7ad46b6a78020b95cd801f293d0ad3fca352bae6e3aeedcebda",
       "mode": "0755"
     },
     "kimi.plugin.json": {
