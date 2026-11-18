@@ -88,14 +88,44 @@ impl LiveKeys {
 
     /// The run of `key` in `entries`: searched within the bucket of its leading bits.
     fn find_run(&self, key: u128) -> Option<(u32, u32)> {
+        let run = self.runs.get(self.first_run_at_or_above(key))?;
+        (run.key == key).then_some((run.start, run.end))
+    }
+
+    /// [`Self::find_run`] for a [`LiveCursor`] at `at`, which it moves to the first run not below
+    /// `key`.
+    fn find_run_from(&self, at: &mut usize, key: u128) -> Option<(u32, u32)> {
+        let runs = &self.runs;
+        let ahead = runs.get(*at..).unwrap_or_default();
+        let behind = *at > 0 && runs[*at - 1].key >= key;
+        let near = match behind {
+            true => None,
+            false => ahead.iter().take(CURSOR_STEPS).position(|run| run.key >= key),
+        };
+        *at = match near {
+            Some(step) => *at + step,
+            None if !behind && ahead.len() <= CURSOR_STEPS => runs.len(),
+            None => self.first_run_at_or_above(key),
+        };
+        let run = runs.get(*at)?;
+        (run.key == key).then_some((run.start, run.end))
+    }
+
+    /// Index into `runs` of the first run whose key is not below `key`: searched within the bucket
+    /// of its leading bits; `runs.len()` when there is none.
+    fn first_run_at_or_above(&self, key: u128) -> usize {
         let bucket = bucket_of(key, self.bucket_bits);
         // A default (never published) set has no buckets. ~keep
-        let (from, to) = (
-            *self.buckets.get(bucket)? as usize,
-            *self.buckets.get(bucket + 1)? as usize,
-        );
-        let run = self.runs[from..to].iter().find(|run| run.key >= key)?;
-        (run.key == key).then_some((run.start, run.end))
+        let (Some(from), Some(to)) = (self.buckets.get(bucket), self.buckets.get(bucket + 1)) else {
+            return self.runs.len();
+        };
+        let (from, to) = (*from as usize, *to as usize);
+        from + self.runs[from..to].partition_point(|run| run.key < key)
+    }
+
+    /// A cursor for looking keys up in ascending order, as a name scan meets them.
+    pub(crate) fn cursor(&self) -> LiveCursor<'_> {
+        LiveCursor { live: self, at: 0 }
     }
 
     /// The content key the view holds at `rel`.
@@ -176,6 +206,28 @@ fn bucket_index(runs: &[Run]) -> (Box<[u32]>, u32) {
         *bound = index(at);
     }
     (buckets.into_boxed_slice(), bits)
+}
+
+/// Runs a [`LiveCursor`] steps over before it looks a key up by its bucket instead.
+const CURSOR_STEPS: usize = 8;
+
+/// Looks up the live keys a name scan meets: the rows of one name (and symbol kind) come in
+/// ascending content-key order, so the next key is usually a few runs past the last one, on the
+/// same or the next cache line. A key behind the cursor, or too far ahead, is looked up by its
+/// bucket and the cursor moves there. Answers exactly what [`LiveKeys::holders`] answers.
+pub(crate) struct LiveCursor<'a> {
+    live: &'a LiveKeys,
+    /// Index into `runs` of the first run not below the last key looked up.
+    at: usize,
+}
+
+impl<'a> LiveCursor<'a> {
+    /// The view's paths holding `key`, sorted, each with the key; empty when the view holds none.
+    pub(crate) fn holders(&mut self, key: &ContentKey) -> &'a [(ContentKey, RelPath)] {
+        let live = self.live;
+        live.find_run_from(&mut self.at, u128::from_be_bytes(*key))
+            .map_or(&[], |(start, end)| &live.entries[start as usize..end as usize])
+    }
 }
 
 /// [`LiveKeys`] of one view, shared by every handle on it.
@@ -290,9 +342,8 @@ pub(crate) struct ExpandHits<'a> {
     /// The cursor's site and path: holders of that site up to the path were on an earlier page.
     resume: Resume,
     row: Option<Row>,
-    /// The last content looked up and its run in the live keys: a content's rows of one name are
-    /// consecutive.
-    last: Option<(u128, Option<(u32, u32)>)>,
+    /// Where the next content is looked up from in the live keys: see [`LiveCursor`].
+    cursor: usize,
     /// Two buffers hit keys are composed in. A reader that dropped the key it was handed leaves its
     /// buffer to be written again, so a scan allocates per hit only while its reader keeps keys.
     buffers: [Arc<Vec<u8>>; 2],
@@ -310,7 +361,7 @@ impl<'a> ExpandHits<'a> {
             shape,
             resume,
             row: None,
-            last: None,
+            cursor: 0,
             buffers: [Arc::new(Vec::new()), Arc::new(Vec::new())],
             heads: [u64::MAX; 2],
             opened: 0,
@@ -319,15 +370,7 @@ impl<'a> ExpandHits<'a> {
 
     /// The run of `content`'s holders in the live keys.
     fn run_of(&mut self, content: ContentKey) -> Option<(u32, u32)> {
-        let content = u128::from_be_bytes(content);
-        if let Some((last, run)) = &self.last
-            && *last == content
-        {
-            return *run;
-        }
-        let run = self.live.find_run(content);
-        self.last = Some((content, run));
-        run
+        self.live.find_run_from(&mut self.cursor, u128::from_be_bytes(content))
     }
 
     /// Open a stored row, or hand it back when its key is not of this keyspace's shape.
@@ -597,6 +640,40 @@ mod tests {
                 assert!(live.holders(&edge).is_empty());
             }
         }
+    }
+
+    /// A cursor answers what a lookup answers, whatever order the keys come in: ascending (one name's
+    /// rows), restarting lower (the next symbol kind), or skipping far ahead.
+    #[test]
+    fn a_cursor_finds_exactly_what_a_lookup_finds() {
+        let keys: Vec<ContentKey> = (0..400).map(|at| content_key(&format!("h{at}"), "rust", 1)).collect();
+        let live = LiveKeys::from_entries(
+            keys.iter()
+                .enumerate()
+                .filter(|(at, _)| at % 3 != 0)
+                .map(|(at, key)| (RelPath::from(format!("f{at}.rs").as_str()), *key)),
+        );
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        let sparse: Vec<ContentKey> = sorted.iter().step_by(37).copied().collect();
+        let orders = [
+            sorted.clone(),
+            sorted.iter().rev().copied().collect(),
+            [&sorted[200..], &sorted[..200]].concat(),
+            sparse,
+            keys.clone(),
+            vec![[0u8; 16], [0xFF; 16], [0u8; 16]],
+        ];
+        for (at, order) in orders.iter().enumerate() {
+            let mut cursor = live.cursor();
+            for key in order {
+                assert_eq!(cursor.holders(key), live.holders(key), "order {at}");
+            }
+        }
+        let mut empty = LiveKeys::default();
+        assert!(empty.cursor().holders(&keys[0]).is_empty());
+        empty = LiveKeys::from_entries([]);
+        assert!(empty.cursor().holders(&keys[0]).is_empty());
     }
 
     #[test]

@@ -424,6 +424,7 @@ fn symbols_from_rows(
         return Vec::new();
     }
     let mut out = Vec::with_capacity(cap.min(256));
+    let mut live = live.cursor();
     for row in rows {
         if out.len() >= cap {
             break;
