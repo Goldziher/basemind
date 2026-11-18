@@ -4,8 +4,10 @@
 //! the policy in `basemind.toml`, and a lead inside a launched session answer them as unknown tools.
 //! The HTTP front-end's half is in `http_frontend_smoke.rs`.
 //!
-//! Every child runs with the isolated data and comms dirs of `init_isolated_cache` and a temp `HOME`
-//! / `XDG_CONFIG_HOME`, so no real user-level policy is read. The only harness launched is a
+//! Every child runs with the isolated data and comms dirs of `init_isolated_cache`, a temp `HOME` /
+//! `XDG_CONFIG_HOME`, and a temp `BASEMIND_TEST_ACCOUNT_HOME` (the `test-support` stand-in for the
+//! account's home directory, which the policy path is otherwise taken from), so no real user-level
+//! policy is read. The only harness launched is a
 //! `/bin/sh` stand-in that reads its input until it is stopped.
 #![cfg(all(feature = "comms", unix))]
 
@@ -60,12 +62,12 @@ impl Layout {
         }
     }
 
-    /// Where `directories` puts basemind's user-level configuration under this layout's home.
+    /// Where the lead looks for basemind's user-level configuration under this layout's home.
     fn config_dir(&self) -> PathBuf {
         if cfg!(target_os = "macos") {
             self.home.join("Library/Application Support/basemind")
         } else {
-            self.xdg.join("basemind")
+            self.home.join(".config/basemind")
         }
     }
 
@@ -95,6 +97,7 @@ impl Layout {
             }
             c.env("HOME", &self.home)
                 .env("XDG_CONFIG_HOME", &self.xdg)
+                .env("BASEMIND_TEST_ACCOUNT_HOME", &self.home)
                 .env_remove("BASEMIND_AGENT_DEPTH")
                 .env_remove("BASEMIND_LAUNCH_TOKEN")
                 .envs(env.iter().copied());
@@ -318,6 +321,7 @@ fn a_lead_is_sealed_before_it_answers_and_a_plain_serve_is_not() {
         let mut child = command
             .env("HOME", &layout.home)
             .env("XDG_CONFIG_HOME", &layout.xdg)
+            .env("BASEMIND_TEST_ACCOUNT_HOME", &layout.home)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -435,6 +439,7 @@ fn a_lead_that_ends_stops_its_sessions_and_records_their_exit() {
             .args(["serve", "--lead"])
             .env("HOME", &layout.home)
             .env("XDG_CONFIG_HOME", &layout.xdg)
+            .env("BASEMIND_TEST_ACCOUNT_HOME", &layout.home)
             .env_remove("BASEMIND_AGENT_DEPTH")
             .env_remove("BASEMIND_LAUNCH_TOKEN")
             .stdin(std::process::Stdio::piped())

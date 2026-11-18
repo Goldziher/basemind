@@ -650,8 +650,9 @@ process, answers two more tools on its own stdio, never through the daemon:
 | `agent_stop` | stop an agent you launched, by `session` |
 
 Launching is off until the operator writes `agents.toml` in basemind's user configuration directory
-(`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS), owned by you
-and writable by nobody else. A repository's `basemind.toml` cannot turn it on, nor can the
+(`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS, under your
+account's home directory as the user database names it, whatever `HOME` or `XDG_CONFIG_HOME` say),
+owned by you and writable by nobody else. A repository's `basemind.toml` cannot turn it on, nor can the
 environment, a flag or a tool argument:
 
 ```toml

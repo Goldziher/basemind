@@ -8,7 +8,8 @@ amends: ["0040"]
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0040 (decision 4 "No tool of it is pre-approved", decision 6
-  `UserMcpServers`, open question 5, the Consequences on user-level configuration and on Codex
+  `UserMcpServers`, the policy file's location under "Off by default; policy only from the
+  operator's file", open question 5, the Consequences on user-level configuration and on Codex
   `ReadOnly`); ADR-0021 (agent comms v2)
 
 ## Context
@@ -104,6 +105,16 @@ Codex's read-only mode failed in the probes too: the agent's shell could not rea
    (read-only) as under `untrusted` (supervised). The read-only sandbox still blocks the agent's
    shell from the socket (`basemind agent inbox` failed with `Operation not permitted`), which is
    the intended boundary. Nothing is changed for it.
+
+4. **The operator policy's path comes from the user database, not the environment.** ADR-0040
+   names `$XDG_CONFIG_HOME/basemind` or `~/.config/basemind` on Linux, which `directories`
+   resolves from `HOME` and `XDG_CONFIG_HOME`; an MCP host that sets its servers' environment
+   from a project's settings would then choose the policy file, against ADR-0040's "never read
+   ... from the environment". `serve --lead` takes the home directory from the user database
+   entry of its effective user (`getpwuid_r`) and reads `<home>/.config/basemind/agents.toml`
+   (`<home>/Library/Application Support/basemind/agents.toml` on macOS); neither variable moves
+   it. Tests that run the binary as a lead name a stand-in home through
+   `BASEMIND_TEST_ACCOUNT_HOME`, which only a build with the `test-support` feature reads.
 
 ## Consequences
 
