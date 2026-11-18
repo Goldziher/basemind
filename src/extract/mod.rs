@@ -12,6 +12,7 @@ pub mod l1;
 pub mod l2;
 pub mod l3;
 pub mod locals;
+mod query_walk;
 mod rationale;
 mod rust_macro_items;
 
@@ -39,7 +40,7 @@ pub(crate) fn capture_name(q: &Query, index: u32) -> &str {
 /// When `eager_l2` is `false` the function returns `(l1, None)` and pays only for the single
 /// parse + L1 query walk. When `eager_l2` is `true` an L2 failure is non-fatal: the function
 /// returns `(l1, None)` rather than propagating the error, matching the scanner's existing
-/// tolerance for L2 failures.
+/// tolerance for L2 failures. A timeout is the exception: it is returned, so the file is retried.
 pub fn extract_l1_l2(
     lang: LangId,
     source: &[u8],
@@ -50,15 +51,16 @@ pub fn extract_l1_l2(
         ParseOutcome::Ok(t) => t,
         ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
         ParseOutcome::TimedOut => {
-            return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
+            return Err(ExtractError::ParseTimeout(crate::lang::parse_timeout()));
         }
     };
     let bodies = rust_macro_items::MacroBodies::collect(lang, tree.root_node(), source)?;
     let l1 = extract_l1_from_tree(lang, &tree, source, &bodies)?;
-    let l2 = if eager_l2 {
-        extract_l2_from_tree(lang, &tree, source, &bodies).ok()
-    } else {
-        None
+    let l2 = match eager_l2.then(|| extract_l2_from_tree(lang, &tree, source, &bodies)) {
+        Some(Ok(l2)) => Some(l2),
+        // A walk cut short by the timeout is retried on the next scan, as a timed-out parse is.
+        Some(Err(timeout @ ExtractError::ParseTimeout(_))) => return Err(timeout),
+        Some(Err(_)) | None => None,
     };
     Ok((l1, l2))
 }

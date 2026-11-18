@@ -670,7 +670,9 @@ fn advance(
 ///
 /// Paths outside `root`, inside `.basemind/`, or not matching the include globs are
 /// silently dropped (the watcher pre-filters but we re-check defensively).
-/// Removed files (path no longer exists) are purged from the index.
+/// Removed files (path no longer exists) are purged from the index. A directory path is expanded
+/// into the files under it on disk and the keys the index holds under it, so a renamed or moved
+/// directory reported as one path re-indexes its new location and prunes its old one.
 pub fn scan_paths(
     root: &Path,
     store: &mut Store,
@@ -750,14 +752,12 @@ fn scan_paths_inner(
     }
     store.retry_vector_store();
     let mut filter = IndexFilter::new(root, config)?;
-    let expanded;
-    let paths = if verify_named {
+    if verify_named {
         filter.verify_blobs();
-        expanded = crate::scanner_named::expand_named_dirs(root, &store.index, config, filter.filters(), paths);
-        expanded.as_slice()
-    } else {
-        paths
-    };
+    }
+    // Named and watched paths alike: a watcher reports a renamed or moved directory as one path.
+    let expanded = crate::scanner_named::expand_named_dirs(root, &store.index, config, filter.filters(), paths);
+    let paths = expanded.as_slice();
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();

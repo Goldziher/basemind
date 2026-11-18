@@ -94,7 +94,9 @@ impl MacroBodies {
 
     /// [`Self::collect`] with every body parsed by `deadline`: one parse budget for the file's
     /// bodies together, so up to [`MAX_BODIES_PER_FILE`] of them cannot each spend a whole one.
-    /// Bodies the deadline leaves unparsed contribute nothing, as a timed-out body does.
+    /// A deadline that leaves a body unparsed is a [`ExtractError::ParseTimeout`], as a timed-out
+    /// file parse is: the outline would silently miss that body's items, and a content-addressed
+    /// blob written from it would be reused as complete by every later scan.
     fn collect_until(lang: LangId, root: Node, source: &[u8], deadline: Instant) -> Result<Self, ExtractError> {
         let mut out = Self::default();
         if lang != "rust" {
@@ -123,13 +125,19 @@ impl MacroBodies {
     }
 
     /// Append the symbols, imports and trait impls declared inside the bodies, in file coordinates.
-    pub(super) fn extend_l1(&self, lang: LangId, source: &[u8], out: &mut CombinedL1) -> Result<(), ExtractError> {
+    pub(super) fn extend_l1(
+        &self,
+        lang: LangId,
+        source: &[u8],
+        out: &mut CombinedL1,
+        partial: &mut bool,
+    ) -> Result<(), ExtractError> {
         if self.bodies.is_empty() {
             return Ok(());
         }
         let before = (out.0.len(), out.1.len(), out.2.len());
         for body in &self.bodies {
-            let (symbols, imports, impls) = run_combined(lang, body.tree.root_node(), body.text(source))?;
+            let (symbols, imports, impls) = run_combined(lang, body.tree.root_node(), body.text(source), partial)?;
             let o = body.origin;
             out.0.extend(symbols.into_iter().map(|s| shift_symbol(s, o)));
             out.1.extend(imports.into_iter().map(|i| shift_import(i, o)));
@@ -197,19 +205,23 @@ fn collect(
         return Ok(());
     }
     for body in item_macro_bodies(root, source) {
-        let remaining = budget.deadline.saturating_duration_since(Instant::now());
-        if budget.bodies == 0 || remaining.is_zero() {
-            return Ok(());
-        }
         let (start, end) = (body.start_byte() + 1, body.end_byte().saturating_sub(1));
         if end <= start || end - start > MAX_BODY_BYTES {
             continue;
+        }
+        if budget.bodies == 0 {
+            return Ok(());
+        }
+        let remaining = budget.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ExtractError::ParseTimeout(parse_timeout()));
         }
         budget.bodies -= 1;
         let text = &source[start..end];
         let tree = match with_parser(lang, |p| parse_timed(p, text, remaining))? {
             ParseOutcome::Ok(tree) => tree,
-            ParseOutcome::Failed | ParseOutcome::TimedOut => continue,
+            ParseOutcome::Failed => continue,
+            ParseOutcome::TimedOut => return Err(ExtractError::ParseTimeout(parse_timeout())),
         };
         if tree.root_node().has_error() {
             continue;
@@ -312,7 +324,8 @@ mod tests {
 
     use super::*;
 
-    /// The deadline is the file's, not each body's: once it has passed, no further body is parsed.
+    /// The deadline is the file's, not each body's: once it has passed, no further body is parsed,
+    /// and the cut is a parse timeout rather than an outline that silently lacks those bodies.
     #[test]
     fn a_files_macro_bodies_share_one_parse_deadline() {
         let src = b"cfg_a! { pub fn a() {} }\ncfg_b! { pub fn b() {} }\n";
@@ -323,7 +336,19 @@ mod tests {
         let later = Instant::now() + Duration::from_secs(60);
         let found = MacroBodies::collect_until("rust", root, src, later).expect("collect");
         assert_eq!(found.bodies.len(), 2);
-        let spent = MacroBodies::collect_until("rust", root, src, Instant::now()).expect("collect");
-        assert!(spent.bodies.is_empty(), "a spent deadline parses no body");
+        let spent = MacroBodies::collect_until("rust", root, src, Instant::now());
+        assert!(
+            matches!(spent, Err(ExtractError::ParseTimeout(_))),
+            "a spent deadline with bodies left is a parse timeout"
+        );
+        let plain = b"pub fn a() {}\n";
+        let tree = with_parser("rust", |p| p.parse(plain, None))
+            .expect("rust grammar")
+            .expect("parse");
+        let none = MacroBodies::collect_until("rust", tree.root_node(), plain, Instant::now()).expect("collect");
+        assert!(
+            none.bodies.is_empty(),
+            "no body to parse: a spent deadline cuts nothing"
+        );
     }
 }

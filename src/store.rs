@@ -231,8 +231,8 @@ pub struct DocEntry {
     pub hash_hex: String,
     pub embedding_preset: String,
     pub size_bytes: u64,
-    /// File mtime in nanoseconds since the epoch (0 = unknown). Recorded for symmetry with
-    /// [`FileEntry`]; the doc unchanged-skip currently keys on the content hash, not mtime.
+    /// File mtime in nanoseconds since the epoch (0 = unknown, or read too close to an edit to be
+    /// trusted). With [`Self::size_bytes`] it lets the scan skip reading an unchanged document.
     pub mtime: i64,
     /// Whether the pass that recorded this entry left the doc's embedding requirement satisfied —
     /// vectors present, doc chunkless, or the pass didn't ask to embed. The unchanged fast path

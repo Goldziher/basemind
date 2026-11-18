@@ -443,3 +443,18 @@ fn a_written_chunk_sidecar_carries_its_extract_epoch() {
     assert_eq!(peek.chunks.len(), 2);
     assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
 }
+
+#[test]
+fn has_l2_reads_the_tier_from_the_header() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let (with, without, absent) = ("9a".repeat(32), "9b".repeat(32), "9c".repeat(32));
+    store
+        .write_filemap_hex(&with, &sample_l1(), Some(&sample_l2()))
+        .expect("write");
+    store.write_filemap_hex(&without, &sample_l1(), None).expect("write");
+    assert!(store.has_l2_by_hex(&with));
+    assert!(!store.has_l2_by_hex(&without));
+    assert!(!store.has_l2_by_hex(&absent));
+}
