@@ -68,6 +68,9 @@ pub(crate) struct FileMeta {
     /// The extract epoch the index entry names ([`crate::store::FileEntry::extract_epoch`]). A
     /// cached outline older than it was decoded before a refresh rewrote the blob under this hash.
     pub(crate) extract_epoch: u16,
+    /// The key the entry's symbol and call rows were written under
+    /// ([`crate::store::FileEntry::content_key`]).
+    pub(crate) content_key: Option<crate::index::keys::ContentKey>,
 }
 
 /// Sorted view of every indexed file that has a readable L1 blob.
@@ -190,6 +193,15 @@ impl FileMeta {
             && self.size_bytes == entry.size_bytes
             && self.mtime_ns == entry.mtime
             && self.extract_epoch == entry.extract_epoch
+            && self.content_key == entry.content_key
+    }
+
+    /// The content key this file's calls are ordered under where no index is read: the recorded
+    /// [`content_key`](Self::content_key), else the key its content would be written under. The
+    /// in-RAM projection, its cursor generation and its placement of resolved callers all use it.
+    pub(crate) fn order_key(&self) -> crate::index::keys::ContentKey {
+        self.content_key
+            .unwrap_or_else(|| crate::index::keys::content_key(&self.hash_hex, &self.language, self.extract_epoch))
     }
 }
 
@@ -201,6 +213,7 @@ impl From<&crate::store::FileEntry> for FileMeta {
             size_bytes: entry.size_bytes,
             mtime_ns: entry.mtime,
             extract_epoch: entry.extract_epoch,
+            content_key: entry.content_key,
         }
     }
 }
@@ -213,6 +226,7 @@ impl Clone for FileMeta {
             size_bytes: self.size_bytes,
             mtime_ns: self.mtime_ns,
             extract_epoch: self.extract_epoch,
+            content_key: self.content_key,
         }
     }
 }

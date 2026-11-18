@@ -1,7 +1,19 @@
 use super::*;
-use crate::extract::{Call, FileMapL2, Import, SymbolKind};
+use crate::extract::{Call, FileMapL2, Import, Symbol, SymbolKind};
 use crate::index::view::IndexView;
 use tempfile::TempDir;
+
+/// The content key the tests write a file's rows under.
+fn content() -> keys::ContentKey {
+    keys::content_key("hash", "rust", crate::extract::EXTRACT_EPOCH)
+}
+
+/// Publish `paths` as the view's live holders of [`content`], as a file map write would.
+fn hold(db: &IndexDb, paths: &[&RelPath]) {
+    db.publish_live_keys(crate::index::live_keys::LiveKeys::from_entries(
+        paths.iter().map(|rel| ((*rel).clone(), content())),
+    ));
+}
 
 fn fresh_db() -> (TempDir, IndexDb) {
     let dir = tempfile::tempdir().unwrap();
@@ -127,41 +139,112 @@ fn upsert_and_query_symbols_by_name() {
     let mut w = db.writer();
     let rel = RelPath::from("src/a.rs");
     let l1 = synthetic_l1(&[("alpha", SymbolKind::Function, 0)]);
-    w.upsert_file(&rel, &l1, None).unwrap();
+    w.upsert_file(&rel, &content(), &l1, None).unwrap();
     w.commit().unwrap();
+    assert!(
+        db.view().symbols_by_name_lookup("alpha", 10).is_empty(),
+        "rows no live key names are not read"
+    );
 
-    let prefix = keys::symbols_by_name_prefix("alpha");
-    let mut hits = 0;
-    for guard in db.symbols_by_name.raw().prefix(prefix) {
-        let (k, _) = guard.into_inner().unwrap();
-        let (name, _, _, _) = keys::parse_symbol_by_name(&k).unwrap();
-        assert_eq!(name, "alpha");
-        hits += 1;
-    }
-    assert_eq!(hits, 1);
+    hold(&db, &[&rel]);
+    let hits = db.view().symbols_by_name_lookup("alpha", 10);
+    assert_eq!(hits, vec![("alpha".to_string(), SymbolKind::Function, rel, 0)]);
 }
 
+/// Content rows are shared: removing a path leaves them for other holders, and the view stops
+/// reading them once its live keys drop the path.
 #[test]
-fn upsert_then_remove_clears_partitions() {
+fn removing_a_path_leaves_its_content_rows_and_the_live_keys_decide() {
     let (_d, db) = fresh_db();
     let mut w = db.writer();
-    let rel = RelPath::from("src/a.rs");
+    let (a, b) = (RelPath::from("src/a.rs"), RelPath::from("src/b.rs"));
     let l1 = synthetic_l1(&[("alpha", SymbolKind::Function, 0)]);
-    w.upsert_file(&rel, &l1, None).unwrap();
+    w.upsert_file(&a, &content(), &l1, None).unwrap();
+    w.upsert_file(&b, &content(), &l1, None).unwrap();
     w.commit().unwrap();
+    assert_eq!(db.symbols_by_path.iter().count(), 1, "one content, one row");
+    hold(&db, &[&a, &b]);
+    assert_eq!(
+        db.view().symbols_by_name_lookup("alpha", 10).len(),
+        2,
+        "one hit per holder"
+    );
 
     let mut w = db.writer();
-    w.remove_file(&rel).unwrap();
+    w.remove_file(&a).unwrap();
+    w.commit().unwrap();
+    hold(&db, &[&b]);
+
+    assert_eq!(db.symbols_by_name.iter().count(), 1, "b still holds the content");
+    let hits = db.view().symbols_by_name_lookup("alpha", 10);
+    assert_eq!(hits, vec![("alpha".to_string(), SymbolKind::Function, b, 0)]);
+    hold(&db, &[]);
+    assert!(db.view().symbols_by_name_lookup("alpha", 10).is_empty());
+    assert!(db.view().symbols_index_is_empty());
+}
+
+fn calls(sites: &[(&str, u32)]) -> FileMapL2 {
+    FileMapL2 {
+        schema_ver: crate::extract::SCHEMA_VER,
+        language: "rust".to_string(),
+        calls: sites
+            .iter()
+            .map(|(callee, start)| Call {
+                callee: callee.to_string(),
+                start_byte: *start,
+                end_byte: *start + 1,
+                start_row: 0,
+                start_col: 0,
+            })
+            .collect(),
+        docs: Vec::new(),
+    }
+}
+
+/// A content extracted again with a different result and no epoch bump (a grammar or query change,
+/// a dev build) is rewritten whole: the earlier extraction's rows are not served beside the new.
+#[test]
+fn writing_a_content_again_replaces_the_rows_of_its_earlier_extraction() {
+    let (_d, db) = fresh_db();
+    let rel = RelPath::from("src/a.rs");
+    let first = synthetic_l1(&[("alpha", SymbolKind::Function, 0), ("beta", SymbolKind::Function, 10)]);
+    let mut w = db.writer();
+    w.upsert_file(
+        &rel,
+        &content(),
+        &first,
+        Some(&calls(&[("old_callee", 3), ("kept", 7)])),
+    )
+    .unwrap();
     w.commit().unwrap();
 
-    assert!(
-        db.symbols_by_path.iter().next().is_none(),
-        "symbols_by_path should be empty after remove_file"
-    );
-    assert!(
-        db.symbols_by_name.iter().next().is_none(),
-        "symbols_by_name should be empty after remove_file"
-    );
+    let again = synthetic_l1(&[("gamma", SymbolKind::Function, 0)]);
+    let mut w = db.writer();
+    w.upsert_file(&rel, &content(), &again, Some(&calls(&[("kept", 7)])))
+        .unwrap();
+    w.commit().unwrap();
+    hold(&db, &[&rel]);
+
+    let view = db.view();
+    for gone in ["alpha", "beta"] {
+        assert!(view.symbols_by_name_lookup(gone, 10).is_empty(), "{gone} is gone");
+    }
+    assert_eq!(view.symbols_by_name_lookup("gamma", 10).len(), 1);
+    assert_eq!(db.symbols_by_path.iter().count(), 1);
+    assert_eq!(db.symbols_by_name.iter().count(), 1);
+    assert_eq!(db.calls_by_path.iter().count(), 1);
+    assert_eq!(db.calls_by_callee.iter().count(), 1, "old_callee's row is gone");
+    assert!(view.call_at(&content(), 3).unwrap().is_none());
+    assert!(view.call_at(&content(), 7).unwrap().is_some());
+
+    // The same extraction again writes nothing; one without calls leaves the calls as they are. ~keep
+    let mut w = db.writer();
+    w.upsert_file(&rel, &content(), &again, Some(&calls(&[("kept", 7)])))
+        .unwrap();
+    assert_eq!(w.staged_bytes(), 0, "an identical extraction stages nothing");
+    w.upsert_file(&rel, &content(), &again, None).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.calls_by_callee.iter().count(), 1);
 }
 
 #[test]
@@ -198,18 +281,27 @@ fn calls_index_round_trip() {
         ],
         docs: Vec::new(),
     };
-    w.upsert_file(&rel, &l1, Some(&l2)).unwrap();
+    w.upsert_file(&rel, &content(), &l1, Some(&l2)).unwrap();
     w.commit().unwrap();
 
     let prefix = keys::calls_by_callee_prefix("spawn");
+    let spawn_row_len = keys::call_by_callee("spawn", &content(), 0).unwrap().len();
     let mut spawn_hits = 0;
     for guard in db.calls_by_callee.raw().prefix(prefix) {
         let (k, _) = guard.into_inner().unwrap();
-        let (callee, _, _) = keys::parse_call_by_callee(&k).unwrap();
-        assert_eq!(callee, "spawn", "prefix scan must not bleed into spawn_blocking");
+        assert_eq!(k.len(), spawn_row_len, "prefix scan must not bleed into spawn_blocking");
+        assert_eq!(keys::call_by_callee_content(&k), Some(content()));
         spawn_hits += 1;
     }
     assert_eq!(spawn_hits, 2);
+
+    hold(&db, &[&rel]);
+    let view = db.view();
+    let call = view.call_at(&content(), 30).unwrap().expect("the call at 30");
+    assert_eq!(rmp_serde::from_slice::<Call>(&call).unwrap().start_byte, 30);
+    assert_eq!(view.calls_in_content(&content()).count(), 3);
+    let other = keys::content_key("other", "rust", crate::extract::EXTRACT_EPOCH);
+    assert_eq!(view.calls_in_content(&other).count(), 0);
 }
 
 #[test]
@@ -232,7 +324,7 @@ fn imports_by_module_round_trip() {
             end_byte: 24,
         },
     ];
-    w.upsert_file(&rel, &l1, None).unwrap();
+    w.upsert_file(&rel, &content(), &l1, None).unwrap();
     w.commit().unwrap();
 
     let prefix = keys::imports_by_module_prefix("os");
@@ -273,6 +365,7 @@ fn implementations_dual_partition_consistency() {
     let mut w = db.writer();
     w.upsert_file(
         &rel,
+        &content(),
         &synthetic_l1_with_impls(&[("Display", "Foo", 0), ("Debug", "Foo", 10)]),
         None,
     )
@@ -295,8 +388,13 @@ fn implementations_dual_partition_consistency() {
     assert_eq!(display_hits, 1);
 
     let mut w = db.writer();
-    w.upsert_file(&rel, &synthetic_l1_with_impls(&[("Display", "Foo", 0)]), None)
-        .unwrap();
+    w.upsert_file(
+        &rel,
+        &content(),
+        &synthetic_l1_with_impls(&[("Display", "Foo", 0)]),
+        None,
+    )
+    .unwrap();
     w.commit().unwrap();
 
     assert_eq!(db.implementations_by_trait.iter().count(), 1);
@@ -330,7 +428,7 @@ fn imports_by_path_roundtrip_and_dual_partition_consistency() {
             end_byte: 24,
         },
     ];
-    w.upsert_file(&rel, &l1, None).unwrap();
+    w.upsert_file(&rel, &content(), &l1, None).unwrap();
     w.commit().unwrap();
 
     assert_eq!(db.imports_by_module.iter().count(), 2);
@@ -354,7 +452,7 @@ fn imports_by_path_roundtrip_and_dual_partition_consistency() {
         end_byte: 9,
     }];
     let mut w = db.writer();
-    w.upsert_file(&rel, &l1, None).unwrap();
+    w.upsert_file(&rel, &content(), &l1, None).unwrap();
     w.commit().unwrap();
 
     assert_eq!(db.imports_by_module.iter().count(), 1);
@@ -381,7 +479,7 @@ fn oversized_identifier_skipped_gracefully() {
         (&huge_name, SymbolKind::Function, 100),
     ]);
     let mut w = db.writer();
-    w.upsert_file(&rel, &l1, None).unwrap();
+    w.upsert_file(&rel, &content(), &l1, None).unwrap();
     w.commit().unwrap();
 
     assert_eq!(

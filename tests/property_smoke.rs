@@ -1,7 +1,7 @@
 use basemind::extract::SymbolKind;
 use basemind::index::keys::{
-    call_by_callee, impl_by_path, impl_by_trait, import_by_module, parse_call_by_callee, parse_impl_by_path,
-    parse_impl_by_trait, parse_import_by_module, parse_symbol_by_name, symbol_by_name,
+    call_by_callee_hit, content_key, impl_by_path, impl_by_trait, import_by_module, parse_call_by_callee,
+    parse_impl_by_path, parse_impl_by_trait, parse_import_by_module, parse_symbol_by_name, symbol_by_name_hit,
 };
 use basemind::path::RelPath;
 use proptest::prelude::*;
@@ -36,7 +36,7 @@ proptest! {
         );
     }
 
-    /// Round-trip five Fjall key encoders: `symbol_by_name`, `call_by_callee`,
+    /// Round-trip five Fjall key encoders: the `symbol_by_name` and `call_by_callee` hit keys,
     /// `import_by_module`, `impl_by_trait`, `impl_by_path`. Uses ASCII-safe names (the
     /// encoders require valid UTF-8 for the name components) and arbitrary byte sequences
     /// for the path to exercise the non-UTF-8 `RelPath` path.
@@ -48,8 +48,9 @@ proptest! {
         start_byte in any::<u32>(),
     ) {
         let rel = RelPath::from(rel_bytes.as_slice());
+        let content = content_key(&name, "rust", 1);
 
-        let key = symbol_by_name(&name, SymbolKind::Function, &rel, start_byte)
+        let key = symbol_by_name_hit(&name, SymbolKind::Function, &content, start_byte, &rel)
             .expect("symbol_by_name: name is ≤64 chars so encoding cannot fail");
         let (decoded_name, decoded_kind, decoded_rel, decoded_start) =
             parse_symbol_by_name(&key).expect("parse_symbol_by_name failed");
@@ -58,7 +59,7 @@ proptest! {
         prop_assert_eq!(decoded_rel.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start, start_byte);
 
-        let key = call_by_callee(&name, &rel, start_byte)
+        let key = call_by_callee_hit(&name, &content, start_byte, &rel)
             .expect("call_by_callee: name is ≤64 chars so encoding cannot fail");
         let (decoded_callee, decoded_rel2, decoded_start2) =
             parse_call_by_callee(&key).expect("parse_call_by_callee failed");

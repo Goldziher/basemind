@@ -2,7 +2,7 @@
 //! each test hands the code under test a [`RecordingView`] and asserts on what was read. A layered
 //! implementation can therefore replace the view without touching a call site.
 
-use super::helpers_calls_scan::{calls_in_file_fjall, scan_calls_by_name};
+use super::helpers_calls_scan::{calls_in_content_fjall, scan_calls_by_name};
 use super::helpers_impls::scan_impls_fjall;
 use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
@@ -92,9 +92,10 @@ fn call_and_implementation_scans_read_through_the_view() {
     assert_eq!(log.entries(), name_scan_reads(), "name scan");
 
     log.clear();
-    let calls = calls_in_file_fjall(&view, &RelPath::from("m0.rs")).expect("calls");
+    let live = view.live_keys();
+    let calls = calls_in_content_fjall(&view, live.key_of(&RelPath::from("m0.rs"))).expect("calls");
     assert!(!calls.is_empty());
-    assert_eq!(log.entries(), ["range:calls_by_path"], "per-file calls");
+    assert_eq!(log.entries(), ["prefix:calls_by_path"], "per-file calls");
 
     log.clear();
     let impls = scan_impls_fjall(
@@ -141,7 +142,11 @@ fn probe_and_grep_prefilter_reads_go_through_the_view() {
 
     log.clear();
     assert!(!view.symbols_index_is_empty());
-    assert_eq!(log.entries(), ["iter:symbols_by_path"], "emptiness peeks the first key");
+    assert_eq!(
+        log.entries(),
+        ["prefix:symbols_by_path"],
+        "emptiness peeks one live key's rows (every file here has symbols)"
+    );
 
     log.clear();
     let entries = grep_entries(&store);
@@ -187,7 +192,7 @@ async fn the_local_route_answers_every_read_from_its_view() {
     let (view, log) = recording(&store);
     let route = IndexRoute::Local(Box::new(view));
 
-    let page = route
+    let (page, _) = route
         .scan_calls(&cache, "shared_helper", Matching::Substring, 50, None)
         .await
         .expect("scan");
@@ -196,9 +201,10 @@ async fn the_local_route_answers_every_read_from_its_view() {
 
     log.clear();
     let paths = vec![RelPath::from("m1.rs")];
-    let per_file = route.calls_in_files(&cache, &paths).await.expect("calls");
-    assert!(!per_file[0].is_empty());
-    assert_eq!(log.entries(), ["range:calls_by_path"], "resolved callers");
+    let files: Vec<_> = paths.iter().cloned().zip(route.content_keys(&cache, &paths)).collect();
+    let per_file = route.calls_in_files(&cache, &files).await.expect("calls");
+    assert!(per_file[0].as_ref().is_some_and(|(_, calls)| !calls.is_empty()));
+    assert_eq!(log.entries(), ["prefix:calls_by_path"], "resolved callers");
 
     log.clear();
     let impls = route

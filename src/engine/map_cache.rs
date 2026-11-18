@@ -3,9 +3,10 @@
 
 use std::sync::Arc;
 
+use crate::engine::call_projection::InRamCallIndex;
 use crate::engine::l1_cache;
 use crate::extract::FileMapL1;
-use crate::mcp::{helpers_calls, helpers_impls};
+use crate::mcp::helpers_impls;
 use crate::store::Store;
 
 pub(crate) struct MapCache {
@@ -19,7 +20,7 @@ pub(crate) struct MapCache {
     /// nor a daemon to forward `references` / `callers` to.
     /// Built on first use ([`calls_projection`](Self::calls_projection)) and never otherwise, so a
     /// daemon-backed session that only asks point queries holds none of it.
-    calls: std::sync::OnceLock<helpers_calls::InRamCallIndex>,
+    calls: std::sync::OnceLock<InRamCallIndex>,
     /// In-RAM trait→impl index, same lazy last-resort role as `calls` for `find_implementations`.
     impls: std::sync::OnceLock<helpers_impls::InRamImplIndex>,
     /// Searchable symbol-name / import text of every file, built on first use (or by the cache
@@ -31,6 +32,8 @@ pub(crate) struct MapCache {
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
     /// (no blob or LanceDB read), so it is rebuilt with every cache build and delta.
     pub(crate) doc_paths: std::sync::Arc<[crate::path::RelPath]>,
+    /// See [`content_fingerprint`](Self::content_fingerprint); computed on first use.
+    fingerprint: std::sync::OnceLock<u64>,
 }
 
 /// The sorted document-tier paths of `store`'s index.
@@ -58,6 +61,7 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
+            fingerprint: Default::default(),
             doc_paths: doc_paths_of(store),
         }
     }
@@ -75,6 +79,7 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
+            fingerprint: Default::default(),
             doc_paths: Default::default(),
         }
     }
@@ -94,6 +99,7 @@ impl MapCache {
                 size_bytes: map.size_bytes,
                 mtime_ns: 0,
                 extract_epoch: map.extract_epoch,
+                content_key: None,
             };
             l1.seed(&hash_hex, Arc::new(map));
             metas.push((path, meta));
@@ -104,17 +110,31 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
+            fingerprint: Default::default(),
             doc_paths: Default::default(),
         }
+    }
+
+    /// A digest of every file's path and order key ([`l1_cache::FileMeta::order_key`]), as
+    /// [`crate::index::live_keys::LiveKeys`] digests them: the generation a `references` / `callers`
+    /// cursor carries when the scan runs in RAM. Each delta builds a new map, so the value is
+    /// computed once per map.
+    pub(crate) fn content_fingerprint(&self) -> u64 {
+        *self.fingerprint.get_or_init(|| {
+            crate::index::live_keys::fingerprint_of(
+                self.files
+                    .iter()
+                    .map(|(path, meta)| (path.as_bytes(), meta.order_key())),
+            )
+        })
     }
 
     /// The in-RAM call projection, built on first use. Only reached by a session with no reachable
     /// Fjall index (see [`calls`](Self::calls)); a build that hits the byte budget is truncated and
     /// reports it through [`projections_capped`](Self::projections_capped).
-    pub(crate) fn calls_projection(&self) -> &helpers_calls::InRamCallIndex {
-        self.calls.get_or_init(|| {
-            helpers_calls::InRamCallIndex::build(&self.files, self.l1.blobs_dir(), self.l1.budget_bytes())
-        })
+    pub(crate) fn calls_projection(&self) -> &InRamCallIndex {
+        self.calls
+            .get_or_init(|| InRamCallIndex::build(&self.files, self.l1.blobs_dir(), self.l1.budget_bytes()))
     }
 
     /// The in-RAM implementation projection, built on first use. See
@@ -136,7 +156,7 @@ impl MapCache {
     /// silently degrading a result to "no matches". `false` until a projection exists, which is why
     /// the handlers that fall back to one read the notice AFTER running the scan.
     pub(crate) fn projections_capped(&self) -> bool {
-        self.calls.get().is_some_and(helpers_calls::InRamCallIndex::capped)
+        self.calls.get().is_some_and(InRamCallIndex::capped)
             || self.impls.get().is_some_and(helpers_impls::InRamImplIndex::capped)
     }
 
@@ -278,6 +298,7 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
+            fingerprint: Default::default(),
             doc_paths: doc_paths_of(store),
         };
         self.l1.forget_superseded(superseded, &next.files);

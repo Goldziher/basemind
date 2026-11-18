@@ -12,7 +12,7 @@ use super::cursor::Cursor;
 use super::helpers_calls::resolve_call_line_col;
 use super::helpers_refs_match::Matching;
 use super::types::ReferenceHit;
-use crate::index::view::Part;
+pub(crate) use crate::engine::call_projection::{CallRef, InRamCallIndex};
 
 /// Keys one name scan examines before it stops, whether or not they matched. `scan_cap` counts only
 /// accepted hits, so without this an exact scan for a name that is also a common fragment (`get`)
@@ -101,50 +101,69 @@ pub(super) struct BudgetedCallPage {
 /// it with no gap or overlap. `max_tokens = None` keeps the whole page. Each hit is written as
 /// listed for a query of `name` ([`ReferenceHit::named`]) before it is costed, so the budget charges
 /// what is written.
+///
+/// The kept hits are then sorted by path (ADR-0036 rule 6): the scan's key order is by content
+/// key, which says nothing to a reader. The sort is stable, so one file's hits stay in offset order.
 pub(super) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Option<u32>) -> BudgetedCallPage {
     let hits: Vec<ReferenceHit> = page.hits.into_iter().map(|hit| hit.named(name)).collect();
-    if max_tokens.is_none() {
-        return BudgetedCallPage {
+    let mut budgeted = if max_tokens.is_none() {
+        BudgetedCallPage {
             hits,
             next_cursor: page.next_cursor,
             budgeted: false,
-        };
-    }
-    let budget = super::budget::apply_budget_by_path(hits, max_tokens);
-    if !budget.budgeted {
-        return BudgetedCallPage {
-            hits: budget.items,
-            next_cursor: page.next_cursor,
-            budgeted: false,
-        };
-    }
-    let kept = budget.items.len();
-    let next_cursor = page.hit_keys.get(kept - 1).map(|k| Cursor::encode_fjall(k));
-    BudgetedCallPage {
-        hits: budget.items,
-        next_cursor,
-        budgeted: true,
-    }
+        }
+    } else {
+        let budget = super::budget::apply_budget_by_path(hits, max_tokens);
+        if budget.budgeted {
+            let kept = budget.items.len();
+            BudgetedCallPage {
+                hits: budget.items,
+                next_cursor: page.hit_keys.get(kept - 1).map(|k| Cursor::encode_fjall(k)),
+                budgeted: true,
+            }
+        } else {
+            BudgetedCallPage {
+                hits: budget.items,
+                next_cursor: page.next_cursor,
+                budgeted: false,
+            }
+        }
+    };
+    budgeted.hits.sort_by(|a, b| a.path.cmp(&b.path));
+    budgeted
 }
 
-/// Set [`ReferenceHit::shared_line`] on each hit of a page: another call site of the same callee is
-/// on its line of its file, anywhere in the result. A scan lists one callee's sites in one file as a
-/// run in start-byte order, so a file whose runs lie inside the page holds every such site on the
-/// page. Only the files of the page's first and last hit can have a run cut by the page edge; their
-/// call sites are read whole.
+/// Set [`ReferenceHit::shared_line`] on each hit of a page, in scan order with its `hit_keys`:
+/// another call site of the same callee is on its line of its file, anywhere in the result. A scan
+/// lists one callee's sites in one content as a run in start-byte order, each site once per file
+/// holding the content, so a file whose run lies inside the page holds every such site on the page.
+/// Only the files holding the content of the page's first or last hit can have a run cut by the
+/// page edge; their call sites are read whole.
 pub(super) async fn mark_shared_lines(
     route: &super::index_route::IndexRoute,
     cache: &super::MapCache,
     hits: &mut [ReferenceHit],
+    hit_keys: &[Vec<u8>],
 ) {
-    let mut edges: Vec<crate::path::RelPath> = hits
-        .first()
+    let content = |key: Option<&Vec<u8>>| key.and_then(|key| crate::index::keys::call_by_callee_content(key));
+    let edge_contents = [content(hit_keys.first()), content(hit_keys.last())];
+    let mut edges: Vec<(crate::path::RelPath, Option<crate::index::keys::ContentKey>)> = Vec::new();
+    for (index, hit) in hits.iter().enumerate() {
+        let key = content(hit_keys.get(index));
+        let at_edge =
+            index == 0 || index + 1 == hits.len() || key.is_some_and(|key| edge_contents.contains(&Some(key)));
+        if at_edge && !edges.iter().any(|(path, _)| *path == hit.path) {
+            edges.push((hit.path.clone(), key));
+        }
+    }
+    let edge_calls: Vec<Vec<CallRef>> = route
+        .calls_in_files(cache, &edges)
+        .await
+        .unwrap_or_default()
         .into_iter()
-        .chain(hits.last())
-        .map(|hit| hit.path.clone())
+        .map(|read| read.map(|(_, calls)| calls).unwrap_or_default())
         .collect();
-    edges.dedup();
-    let edge_calls = route.calls_in_files(cache, &edges).await.unwrap_or_default();
+    let edges: Vec<crate::path::RelPath> = edges.into_iter().map(|(path, _)| path).collect();
     let flags: Vec<bool> = {
         let mut on_page: ahash::AHashMap<(&crate::path::RelPath, u32, &str), usize> = ahash::AHashMap::new();
         for hit in hits.iter() {
@@ -245,7 +264,8 @@ pub(super) fn scan_calls_examining(
         total += 1;
         matched += 1;
         if hits.len() < limit {
-            let (line, column) = resolve_call_line_col(idx, &rel, start);
+            let (line, column) = crate::index::keys::call_by_callee_content(&k)
+                .map_or((0, 0), |content| resolve_call_line_col(idx, &content, start));
             hits.push(ReferenceHit {
                 path: rel,
                 line,
@@ -277,18 +297,19 @@ pub(super) fn scan_calls_examining(
     ))
 }
 
-/// Every call site in `path` from the Fjall `calls_by_path` keyspace, in start-byte order. The one
-/// reader behind the writer session's per-file lookups and the daemon's forwarded
-/// `CallsInFiles`, so the two cannot drift.
-pub(crate) fn calls_in_file_fjall(
+/// Every call site of `content` from the Fjall `calls_by_path` keyspace, in start-byte order; none
+/// for `None`, a path the view does not hold. The one reader behind the writer session's per-file
+/// lookups and the daemon's forwarded `CallsInFiles`, so the two cannot drift. The caller takes the
+/// content key from a hit key, or from one live-key snapshot for its whole query.
+pub(crate) fn calls_in_content_fjall(
     idx: &dyn crate::index::view::IndexView,
-    path: &crate::path::RelPath,
+    content: Option<&crate::index::keys::ContentKey>,
 ) -> Result<Vec<CallRef>, McpError> {
-    let prefix = crate::index::keys::calls_by_path_prefix(path);
-    let upper = super::cursor::prefix_upper_bound(&prefix);
-    let upper = upper.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+    let Some(content) = content else {
+        return Ok(Vec::new());
+    };
     let mut out = Vec::new();
-    for guard in idx.range(Part::CallsByPath, Bound::Included(&prefix), upper) {
+    for guard in idx.calls_in_content(content) {
         let (_, v) = guard.map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
         let call: crate::extract::Call = match rmp_serde::from_slice(&v) {
             Ok(c) => c,
@@ -330,7 +351,7 @@ pub(super) fn scan_calls_in_ram_examining(
     let examine_cap = examine_cap.max(1);
     let finder = memchr::memmem::Finder::new(name.as_bytes());
     let start = match cursor_after {
-        Some(cursor) => index.entries.partition_point(|e| e.key.as_slice() <= cursor),
+        Some(cursor) => index.entries().partition_point(|e| e.key.as_slice() <= cursor),
         None => 0,
     };
     let mut hits: Vec<ReferenceHit> = Vec::with_capacity(limit.min(64));
@@ -342,10 +363,10 @@ pub(super) fn scan_calls_in_ram_examining(
     let mut has_more = false;
     let mut matched: usize = 0;
     let mut stopped_after: Option<Vec<u8>> = None;
-    for (examined, entry) in index.entries[start..].iter().enumerate() {
+    for (examined, entry) in index.entries()[start..].iter().enumerate() {
         if examined >= examine_cap {
             total_is_partial = true;
-            stopped_after = Some(index.entries[start + examined - 1].key.clone());
+            stopped_after = Some(index.entries()[start + examined - 1].key.clone());
             break;
         }
         if finder.find(entry.callee.as_bytes()).is_none() || !matching.accepts_callee(&entry.callee, name) {
@@ -384,148 +405,10 @@ pub(super) fn scan_calls_in_ram_examining(
     )
 }
 
-/// How many files one projection pass decodes before folding them into the views. Bounds the
-/// decoded-L2 working set to O(chunk) rather than O(corpus).
-const L2_PROJECTION_CHUNK: usize = 256;
-
-/// In-RAM mirror of the Fjall `calls_by_callee` + `calls_by_path` keyspaces, built
-/// from the L2 call blobs for read-only `serve` sessions that can't open the
-/// single-holder Fjall index. Lets unlimited concurrent sessions answer
-/// `find_references` / `find_callers` from the shared, immutable,
-/// concurrently-readable blobs.
-pub(crate) struct InRamCallIndex {
-    /// Sorted ascending by `key` to match Fjall's `range` iteration order
-    /// (drives `find_references` / `find_callers`).
-    entries: Vec<InRamCall>,
-    /// path → its call sites (the `calls_by_path` keyspace).
-    by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>>,
-    /// True when the byte budget cut the projection short, so its answers are incomplete.
-    capped: bool,
-}
-
-struct InRamCall {
-    /// `keys::call_by_callee(callee, rel, start_byte)` — the exact key the writer
-    /// persists, reused so cursors round-trip identically across the two paths.
-    key: Vec<u8>,
-    callee: String,
-    rel: crate::path::RelPath,
-    /// 0-based byte offset of the call site (for containing-function resolution).
-    start_byte: u32,
-    /// 1-based line (`start_row + 1`), matching [`resolve_call_line_col`].
-    line: u32,
-    /// 0-based byte column.
-    column: u32,
-}
-
-/// A call site within a file: the callee identifier, its start byte offset, and its position.
-#[derive(Clone)]
-pub(crate) struct CallRef {
-    pub callee: String,
-    pub start_byte: u32,
-    /// 1-based line (`start_row + 1`), matching [`resolve_call_line_col`].
-    pub line: u32,
-    /// 0-based byte column.
-    pub column: u32,
-}
-
-impl InRamCallIndex {
-    /// Project the L2 calls of every file into the two views, bounded by `budget_bytes`
-    /// (`0` = unbounded).
-    ///
-    /// Reads/decodes run in parallel a chunk at a time; the two views are assembled serially per
-    /// chunk. See [`capped`](Self::capped) for what happens when the budget is reached.
-    pub(crate) fn build(
-        files: &super::l1_cache::FileIndexView,
-        blobs_dir: &std::path::Path,
-        budget_bytes: u64,
-    ) -> Self {
-        use rayon::prelude::*;
-        let paths: Vec<(&crate::path::RelPath, &str)> =
-            files.iter().map(|(rel, meta)| (rel, &*meta.hash_hex)).collect();
-        let mut entries: Vec<InRamCall> = Vec::new();
-        let mut by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>> =
-            ahash::AHashMap::with_capacity(paths.len());
-        let mut charged: u64 = 0;
-        let mut capped = false;
-        // Chunked rather than one whole-corpus `par_iter`: the previous shape materialised EVERY
-        // file's decoded L2 calls before assembling either view, so peak residency was the sum of
-        // the projection and the raw decode it was projected from. Here at most one chunk of
-        // decoded blobs is live, and the loop stops the moment the projection reaches its budget.
-        for chunk in paths.chunks(L2_PROJECTION_CHUNK) {
-            let per_file: Vec<(crate::path::RelPath, Vec<crate::extract::Call>)> = chunk
-                .par_iter()
-                .filter_map(|(rel, hash_hex)| {
-                    let calls = crate::store_blob::read_l2_blob_in(blobs_dir, hash_hex)
-                        .ok()
-                        .flatten()?
-                        .calls;
-                    Some(((*rel).clone(), calls))
-                })
-                .collect();
-            for (rel, calls) in per_file {
-                let mut refs: Vec<CallRef> = Vec::with_capacity(calls.len());
-                for call in calls {
-                    charged += (call.callee.len() + rel.as_bytes().len()) as u64
-                        + (std::mem::size_of::<InRamCall>() + std::mem::size_of::<CallRef>()) as u64;
-                    if budget_bytes != 0 && charged > budget_bytes {
-                        capped = true;
-                        break;
-                    }
-                    if let Some(key) = crate::index::keys::call_by_callee(&call.callee, &rel, call.start_byte) {
-                        entries.push(InRamCall {
-                            key,
-                            callee: call.callee.clone(),
-                            rel: rel.clone(),
-                            start_byte: call.start_byte,
-                            line: call.start_row + 1,
-                            column: call.start_col,
-                        });
-                    }
-                    refs.push(CallRef {
-                        line: call.start_row + 1,
-                        column: call.start_col,
-                        callee: call.callee,
-                        start_byte: call.start_byte,
-                    });
-                }
-                by_path.insert(rel, refs);
-                if capped {
-                    break;
-                }
-            }
-            if capped {
-                break;
-            }
-        }
-        entries.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-        Self {
-            entries,
-            by_path,
-            capped,
-        }
-    }
-
-    /// A projection of no files.
-    #[cfg(test)]
-    pub(crate) fn empty() -> Self {
-        Self {
-            entries: Vec::new(),
-            by_path: ahash::AHashMap::new(),
-            capped: false,
-        }
-    }
-
-    /// Whether the byte budget truncated this projection.
-    pub(crate) fn capped(&self) -> bool {
-        self.capped
-    }
-
-    /// All call sites in `rel` (the `calls_by_path` keyspace).
-    pub(crate) fn calls_in_file(&self, rel: &crate::path::RelPath) -> &[CallRef] {
-        self.by_path.get(rel).map_or(&[], Vec::as_slice)
-    }
-}
-
 #[cfg(test)]
 #[path = "helpers_calls_scan_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "helpers_calls_group_tests.rs"]
+mod group_tests;

@@ -33,6 +33,8 @@ pub struct IndexBytes(Repr);
 enum Repr {
     /// A fjall slice read from `offset` on: a view of a group index strips its key prefix this way.
     Fjall(fjall::Slice, usize),
+    /// Bytes the view composed: a content row's key followed by the path of one live holder.
+    Owned(std::sync::Arc<[u8]>),
 }
 
 impl IndexBytes {
@@ -45,6 +47,11 @@ impl IndexBytes {
         debug_assert!(offset <= slice.len(), "a scoped key is at least its prefix");
         Self(Repr::Fjall(slice, offset))
     }
+
+    /// Bytes composed by the view rather than read.
+    pub(super) fn shared(bytes: std::sync::Arc<[u8]>) -> Self {
+        Self(Repr::Owned(bytes))
+    }
 }
 
 impl Deref for IndexBytes {
@@ -53,6 +60,7 @@ impl Deref for IndexBytes {
     fn deref(&self) -> &[u8] {
         match &self.0 {
             Repr::Fjall(slice, offset) => &slice[*offset..],
+            Repr::Owned(bytes) => bytes,
         }
     }
 }
@@ -85,6 +93,11 @@ pub type KvIter<'a> = Box<dyn Iterator<Item = KvResult> + 'a>;
 
 /// The keyspaces a view reads. The memory and embedding keyspaces are not here: they are never read
 /// through a view.
+///
+/// The generic reads (`get`, `prefix`, `range`, `iter`) return stored rows as they are. Those of
+/// the content-keyed keyspaces (`symbols_by_*`, `calls_by_*`) name content, not paths, and include
+/// rows of content other views hold: read them through the named accessors, which filter them by
+/// [`IndexView::live_keys`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Part {
     Meta,
@@ -214,8 +227,15 @@ pub trait IndexView: Send + Sync {
     /// Every row of `part`, in key order.
     fn iter<'a>(&'a self, part: Part) -> KvIter<'a>;
 
-    /// Keys of `calls_by_callee` after `lower`, in key order, whose callee name may contain `needle`
-    /// (callers still filter by name). Served from the callee-name dictionary when it is built.
+    /// The content keys this view holds, with their paths ([`super::live_keys`]). Every read of a
+    /// content-keyed keyspace (`symbols_by_*`, `calls_by_*`) filters through them.
+    fn live_keys(&self) -> std::sync::Arc<super::live_keys::LiveKeys>;
+
+    /// Hit keys of `calls_by_callee` after `cursor_after` (a hit key or a row key), in key order,
+    /// whose callee name may contain `needle` (callers still filter by name): each row once per live
+    /// holder, `row ‖ path` ([`super::keys_content`]); a row no holder is live for comes back as its
+    /// bare row key, which names no call site. `lower` is ignored: the position is the cursor's.
+    /// Served from the callee-name dictionary when it is built.
     fn callee_keys_matching<'a>(
         &'a self,
         needle: &str,
@@ -231,15 +251,30 @@ pub trait IndexView: Send + Sync {
         lower: Bound<Vec<u8>>,
     ) -> KvIter<'a>;
 
-    /// True when the index holds no per-file symbol entries. Cheap: peeks at the first key of
-    /// `symbols_by_path` rather than counting.
+    /// True when the view holds no symbol row: none of its live content keys has one. Stops at the
+    /// first key that does.
     ///
     /// Used by the MCP startup auto-scan to detect a present-but-empty index (e.g. a
     /// `views/<view>/index.fjall/` wiped out-of-band while the msgpack `index.msgpack` survived). The
     /// in-RAM map cache then looks populated while the index-backed tools would silently return
     /// nothing, so a rescan is warranted.
     fn symbols_index_is_empty(&self) -> bool {
-        self.iter(Part::SymbolsByPath).next().is_none()
+        let live = self.live_keys();
+        !live
+            .keys()
+            .any(|key| self.prefix(Part::SymbolsByPath, key).next().is_some())
+    }
+
+    /// The call rows of `content`, in start-byte order: keys `content key ‖ start`, values msgpack
+    /// `Call`. The caller names the content: a hit key carries it, and a lookup by path takes it from
+    /// one [`Self::live_keys`] snapshot for the whole query.
+    fn calls_in_content<'a>(&'a self, content: &keys::ContentKey) -> KvIter<'a> {
+        self.prefix(Part::CallsByPath, content)
+    }
+
+    /// The msgpack `Call` starting at `start_byte` in `content`.
+    fn call_at(&self, content: &keys::ContentKey, start_byte: u32) -> Result<Option<IndexBytes>, IndexError> {
+        self.get(Part::CallsByPath, &keys::content_row(content, start_byte))
     }
 
     /// Resolved uses of the definition at `(def_path, def_start)`: the scope/import-resolved backing
@@ -329,8 +364,9 @@ pub trait IndexView: Send + Sync {
     /// symbol's owning chunk span.
     fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
         let prefix = keys::symbols_by_name_prefix(name);
+        let rows = self.prefix(Part::SymbolsByName, &prefix);
         let mut out = Vec::new();
-        for row in self.prefix(Part::SymbolsByName, &prefix) {
+        for row in super::live_keys::ExpandHits::new(rows, self.live_keys(), keys::NameRow::Symbol, None) {
             if out.len() >= cap {
                 break;
             }
@@ -410,30 +446,35 @@ impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
         self.db().bm25_live()
     }
 
+    fn live_keys(&self) -> std::sync::Arc<super::live_keys::LiveKeys> {
+        self.db().live_keys()
+    }
+
     fn callee_keys_matching<'a>(
         &'a self,
         needle: &str,
         cursor_after: Option<&[u8]>,
-        lower: Bound<Vec<u8>>,
+        _lower: Bound<Vec<u8>>,
     ) -> KvIter<'a> {
         let db = self.db();
-        name_dict::name_ordered_keys(&db.calls_by_callee, &db.callee_names, needle, cursor_after, lower)
+        let (lower, resume) = super::live_keys::resume_after(cursor_after, keys::NameRow::Call);
+        let rows = name_dict::name_ordered_keys(&db.calls_by_callee, &db.callee_names, needle, lower);
+        Box::new(super::live_keys::ExpandHits::new(
+            rows,
+            db.live_keys(),
+            keys::NameRow::Call,
+            resume,
+        ))
     }
 
     fn trait_keys_matching<'a>(
         &'a self,
         needle: &str,
-        cursor_after: Option<&[u8]>,
+        _cursor_after: Option<&[u8]>,
         lower: Bound<Vec<u8>>,
     ) -> KvIter<'a> {
         let db = self.db();
-        name_dict::name_ordered_keys(
-            &db.implementations_by_trait,
-            &db.trait_names,
-            needle,
-            cursor_after,
-            lower,
-        )
+        name_dict::name_ordered_keys(&db.implementations_by_trait, &db.trait_names, needle, lower)
     }
 }
 
@@ -510,6 +551,10 @@ mod recording {
         fn bm25_live(&self) -> Result<Arc<crate::index::bm25_live::Bm25Live>, IndexError> {
             self.log.record("bm25_live", None);
             self.inner.bm25_live()
+        }
+
+        fn live_keys(&self) -> Arc<crate::index::live_keys::LiveKeys> {
+            self.inner.live_keys()
         }
 
         fn callee_keys_matching<'a>(

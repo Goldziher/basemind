@@ -61,6 +61,7 @@ pub(super) fn build_fixture() -> Fixture {
             size_bytes: 2,
             mtime: 0,
             extract_epoch: crate::extract::EXTRACT_EPOCH,
+            content_key: None,
         },
     );
     let bytes = rmp_serde::to_vec_named(&index).expect("encode index");
@@ -334,6 +335,7 @@ fn build_two_view_fixture() -> (tempfile::TempDir, PathBuf) {
                 size_bytes: 2,
                 mtime: 0,
                 extract_epoch: crate::extract::EXTRACT_EPOCH,
+                content_key: None,
             },
         );
         let bytes = rmp_serde::to_vec_named(&index).expect("encode");
@@ -437,6 +439,7 @@ fn seed_workspace(workspaces_dir: &Path, key: &str, stems: &[&str]) {
                 size_bytes: 2,
                 mtime: 0,
                 extract_epoch: crate::extract::EXTRACT_EPOCH,
+                content_key: None,
             },
         );
     }

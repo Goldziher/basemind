@@ -484,19 +484,34 @@ fn callers_scan_and_file_batches_are_identical_on_every_route() {
             .map(|c| (c.start_byte, c.callee, c.line, c.column))
             .collect::<Vec<_>>()
     };
-    let local = block_on(fx.local.calls_in_files(&fx.cache, &paths)).expect("local batch");
-    let host = block_on(fx.host.calls_in_files(&fx.cache, &paths)).expect("host batch");
-    let in_ram = block_on(IndexRoute::InRam.calls_in_files(&fx.cache, &paths)).expect("in-ram batch");
+    let files = |route: &IndexRoute| -> Vec<(RelPath, Option<crate::index::keys::ContentKey>)> {
+        paths
+            .iter()
+            .cloned()
+            .zip(route.content_keys(&fx.cache, &paths))
+            .collect()
+    };
+    let local = block_on(fx.local.calls_in_files(&fx.cache, &files(&fx.local))).expect("local batch");
+    // The daemon reads under its own keys: a session map that lacks every file changes nothing.
+    let empty = MapCache::empty();
+    let host = block_on(fx.host.calls_in_files(&empty, &files(&fx.host))).expect("host batch");
+    let in_ram =
+        block_on(IndexRoute::InRam.calls_in_files(&fx.cache, &files(&IndexRoute::InRam))).expect("in-ram batch");
     assert_eq!(local.len(), paths.len());
-    assert!(local[0].len() >= 3, "m0.rs makes several calls");
-    assert!(local[4].is_empty(), "an unindexed path has no calls");
-    let normalise = |batch: Vec<Vec<_>>| {
+    assert!(
+        local[0].as_ref().is_some_and(|(_, calls)| calls.len() >= 3),
+        "m0.rs makes several calls"
+    );
+    assert!(local[4].is_none(), "an unindexed path is read under no key");
+    let normalise = |batch: Vec<Option<(crate::index::keys::ContentKey, Vec<_>)>>| {
         batch
             .into_iter()
-            .map(|calls| {
-                let mut calls = key(calls);
-                calls.sort();
-                calls
+            .map(|read| {
+                read.map(|(content, calls)| {
+                    let mut calls = key(calls);
+                    calls.sort();
+                    (content, calls)
+                })
             })
             .collect::<Vec<_>>()
     };
@@ -647,4 +662,50 @@ fn an_oversized_grep_bloom_batch_is_refused() {
     )
     .expect_err("an unbounded wire batch must be rejected");
     assert!(error.contains("at most"), "{error}");
+}
+
+/// A forwarded `references` page is cut in the daemon's key order, so its cursor carries the
+/// daemon's generation: an edit the daemon indexed refuses a cursor cut before it, although the
+/// session's own map has not taken the edit yet.
+#[test]
+fn a_forwarded_cursor_cut_before_a_daemon_side_edit_is_refused_after_it() {
+    let fx = fixture();
+    let first = references_page(&fx.host, &fx.cache, "shared_helper_3", 5, None, None);
+    let cursor = first["next_cursor"].as_str().expect("a second page").to_string();
+    let page = |cursor: &str| {
+        block_on(super::helpers::run_find_references(
+            &fx.host,
+            FindReferencesParams {
+                substring: true,
+                name: "shared_helper_3".to_string(),
+                limit: Some(5),
+                max_tokens: None,
+                format: None,
+                cursor: Some(super::cursor::Cursor(cursor.to_string())),
+            },
+            &fx.cache,
+            || None,
+            |_| {},
+        ))
+    };
+    assert!(page(&cursor).is_ok(), "an unchanged daemon view continues");
+
+    std::fs::write(
+        fx.root.join("pkg3/m3.rs"),
+        "pub fn edited() { shared_helper_3(); shared_helper_3(); }\n",
+    )
+    .expect("edit");
+    let mut store = fx.store.store.lock().expect("store lock");
+    scan(
+        &fx.root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+    )
+    .expect("rescan");
+    drop(store);
+
+    let refused = page(&cursor).expect_err("a cursor cut before the daemon's edit");
+    assert!(refused.message.contains("changed since this cursor"), "{refused:?}");
 }

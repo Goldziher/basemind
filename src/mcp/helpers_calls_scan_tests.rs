@@ -122,6 +122,23 @@ fn lang_of(rel: &RelPath) -> &'static str {
     }
 }
 
+/// The content key file `rel` is written under: one of its own, so every file has rows of its own.
+fn ck(rel: &RelPath) -> crate::index::keys::ContentKey {
+    crate::index::keys::content_key(&rel.to_str_lossy(), lang_of(rel), crate::extract::EXTRACT_EPOCH)
+}
+
+/// Write `rel`'s rows and add it to the view's live keys, as a scan and its file map write do.
+fn upsert(db: &IndexDb, rel: &RelPath, l1: &FileMapL1, l2: Option<&FileMapL2>) {
+    let mut writer = db.writer();
+    writer.upsert_file(rel, &ck(rel), l1, l2).unwrap();
+    writer.commit().unwrap();
+    let live = db.live_keys();
+    let entries = live.iter().map(|(path, key)| (path.clone(), *key));
+    db.publish_live_keys(crate::index::live_keys::LiveKeys::from_entries(
+        entries.chain([(rel.clone(), ck(rel))]),
+    ));
+}
+
 /// Write file `i` with a random selection of calls and implementations. `hot` names are repeated
 /// enough across the corpus to push past the `scan_cap` of a small page.
 fn write_file(db: &IndexDb, rng: &mut Rng, vocab: &[String], i: usize) {
@@ -137,9 +154,7 @@ fn write_file(db: &IndexDb, rng: &mut Rng, vocab: &[String], i: usize) {
     let impls: Vec<(String, String)> = (0..rng.below(4))
         .map(|k| (vocab[rng.below(vocab.len())].clone(), format!("Ty{i}_{k}")))
         .collect();
-    let mut writer = db.writer();
-    writer.upsert_file(&rel, &l1(&impls), Some(&l2(calls))).unwrap();
-    writer.commit().unwrap();
+    upsert(db, &rel, &l1(&impls), Some(&l2(calls)));
 }
 
 type CallPage = (u32, bool, Vec<Vec<u8>>, Vec<(String, u32, u32)>, bool);
@@ -404,9 +419,7 @@ fn an_exact_call_scan_is_not_starved_by_substring_only_callees() {
     let db = IndexDb::open(dir.path()).unwrap();
     let mut calls: Vec<Call> = (0..17_000).map(|k| call("zapx", k)).collect();
     calls.extend((0..3).map(|k| call("ns::zap", 20_000 + k)));
-    let mut writer = db.writer();
-    writer.upsert_file(&path(0), &l1(&[]), Some(&l2(calls))).unwrap();
-    writer.commit().unwrap();
+    upsert(&db, &path(0), &l1(&[]), Some(&l2(calls)));
 
     for stage in ["walk", "dictionary"] {
         let exact = scan_calls_by_name(&db.view(), "zap", Matching::Exact, 10, None).unwrap();
@@ -434,11 +447,7 @@ fn an_exact_impl_scan_is_not_starved_by_substring_only_traits() {
         .map(|k| ("IteratorExt".to_string(), format!("Ty{k}")))
         .collect();
     impls.extend((0..2).map(|k| ("std::iter::Iterator<Item = u8>".to_string(), format!("Exact{k}"))));
-    let mut writer = db.writer();
-    writer
-        .upsert_file(&path(0), &l1(&impls), Some(&l2(Vec::new())))
-        .unwrap();
-    writer.commit().unwrap();
+    upsert(&db, &path(0), &l1(&impls), Some(&l2(Vec::new())));
 
     let scan = |matching| {
         scan_impls_fjall(
@@ -474,9 +483,7 @@ fn an_exact_call_scan_stops_at_the_examined_keys_cap_and_resumes() {
     let db = IndexDb::open(dir.path()).unwrap();
     let mut calls: Vec<Call> = (0..17_000).map(|k| call("zapx", k)).collect();
     calls.extend((0..3).map(|k| call("ns::zap", 20_000 + k)));
-    let mut writer = db.writer();
-    writer.upsert_file(&path(0), &l1(&[]), Some(&l2(calls))).unwrap();
-    writer.commit().unwrap();
+    upsert(&db, &path(0), &l1(&[]), Some(&l2(calls)));
 
     for stage in ["walk", "dictionary"] {
         let scan = |cursor: Option<&[u8]>, cap| {
@@ -519,11 +526,7 @@ fn an_exact_impl_scan_stops_at_the_examined_keys_cap_and_resumes() {
         .map(|k| ("IteratorExt".to_string(), format!("Ty{k}")))
         .collect();
     impls.extend((0..3).map(|k| ("std::iter::Iterator<Item = u8>".to_string(), format!("Exact{k}"))));
-    let mut writer = db.writer();
-    writer
-        .upsert_file(&path(0), &l1(&impls), Some(&l2(Vec::new())))
-        .unwrap();
-    writer.commit().unwrap();
+    upsert(&db, &path(0), &l1(&impls), Some(&l2(Vec::new())));
 
     let scan = |cursor: Option<&[u8]>| {
         scan_impls_examining(
@@ -603,15 +606,12 @@ fn an_examined_keys_cap_of_zero_still_yields_a_resumable_page() {
     let dir = tempfile::tempdir().unwrap();
     let db = IndexDb::open(dir.path()).unwrap();
     let impls: Vec<(String, String)> = (0..3).map(|k| ("IteratorExt".to_string(), format!("Ty{k}"))).collect();
-    let mut writer = db.writer();
-    writer
-        .upsert_file(
-            &path(0),
-            &l1(&impls),
-            Some(&l2((0..3).map(|k| call("zapx", k)).collect())),
-        )
-        .unwrap();
-    writer.commit().unwrap();
+    upsert(
+        &db,
+        &path(0),
+        &l1(&impls),
+        Some(&l2((0..3).map(|k| call("zapx", k)).collect())),
+    );
 
     let calls = scan_calls_examining(&db.view(), "zap", Matching::Exact, 10, None, 0).unwrap();
     assert!(calls.total_is_partial && calls.stopped_after.is_some() && calls.next_cursor.is_some());
@@ -693,4 +693,52 @@ fn dropping_hits_from_a_forwarded_page_does_not_report_a_scan_cap() {
     assert_eq!(impls.hit_keys, [vec![2]]);
     assert_eq!(impls.total, 8);
     assert!(!impls.total_is_partial, "no scan cap was hit");
+}
+
+/// Rows of a content no live path holds (an edited file's earlier content, until the group sweep
+/// collects it) are examined and count toward the examined-keys cap. A page they stop says so
+/// (`total_is_partial`, a cursor where it stopped), and paging on still reaches every live hit once.
+#[test]
+fn dead_rows_that_fill_the_examined_keys_cap_stop_a_page_visibly_and_paging_finds_every_live_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = IndexDb::open(dir.path()).unwrap();
+    for i in 100..104 {
+        let mut writer = db.writer();
+        let dead = l2((0..40).map(|k| call("zap", k)).collect());
+        writer
+            .upsert_file(&path(i), &ck(&path(i)), &l1(&[]), Some(&dead))
+            .unwrap();
+        writer.commit().unwrap();
+    }
+    for i in 0..5 {
+        upsert(&db, &path(i), &l1(&[]), Some(&l2(vec![call("zap", 1), call("zap", 2)])));
+    }
+
+    let mut cursor: Option<Vec<u8>> = None;
+    let mut seen: Vec<(String, u32)> = Vec::new();
+    let mut stops = 0;
+    for _ in 0..200 {
+        let page = scan_calls_examining(&db.view(), "zap", Matching::Exact, 100, cursor.as_deref(), 25).unwrap();
+        if page.stopped_after.is_some() {
+            assert!(page.total_is_partial, "a stop at the cap is reported");
+            stops += 1;
+        }
+        seen.extend(
+            page.hits
+                .iter()
+                .zip(&page.hit_starts)
+                .map(|(hit, start)| (hit.path.to_string(), *start)),
+        );
+        match page.next_cursor {
+            Some(next) => cursor = Some(next.decode_fjall().unwrap()),
+            None => break,
+        }
+    }
+    assert!(stops > 0, "the dead rows filled the cap, or this test proves nothing");
+    let mut expected: Vec<(String, u32)> = (0..5)
+        .flat_map(|i| [(path(i).to_string(), 1), (path(i).to_string(), 2)])
+        .collect();
+    expected.sort();
+    seen.sort();
+    assert_eq!(seen, expected, "every live hit once, no dead one");
 }

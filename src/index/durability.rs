@@ -161,12 +161,10 @@ impl IndexDb {
     }
 
     /// Every path holding a row in a partition keyed by path, each once: one seek per distinct path
-    /// and partition, not a read of every row.
+    /// and partition, not a read of every row. Content-keyed rows name no path and are not read.
     pub(crate) fn indexed_paths(&self) -> Result<ahash::AHashSet<RelPath>, IndexError> {
         let mut paths = ahash::AHashSet::new();
         for keyspace in [
-            &self.symbols_by_path,
-            &self.calls_by_path,
             &self.imports_by_path,
             &self.implementations_by_path,
             &self.refs_by_path,
@@ -438,7 +436,7 @@ mod tests {
     fn indexed_paths_reads_past_a_key_it_cannot_parse() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = IndexDb::open(dir.path()).expect("open");
-        let rows = db.keyspace(Part::SymbolsByPath);
+        let rows = db.keyspace(Part::ImportsByPath);
         rows.insert(&[0u8], "a key too short for its length prefix")
             .expect("insert");
         rows.insert(&[0u8, 4, b'a', b'.', b'r', b's', 0, 0], "row")

@@ -6,6 +6,9 @@
 //! in-memory file map, and the file map on disk of every other view. A file map that cannot be read
 //! and is not provably of another schema makes the liveness unknowable, and the sweep is skipped.
 //!
+//! Symbol and call rows are keyed by content too, but read rather than swept here: a view reads them
+//! through the live keys its file map names ([`live_keys_of`], [`Store::publish_live_keys`]).
+//!
 //! The document rows of the retrieval store (ADR-0029) are keyed the same way, by [`doc_key`]:
 //! [`Store::group_live_doc_keys`] lists the keys every view of the group names.
 
@@ -13,6 +16,7 @@ use std::path::PathBuf;
 
 use ahash::AHashSet;
 
+use crate::index::live_keys::LiveKeys;
 use crate::store::{Index, Store, StoreError};
 use crate::store_hash_refs::HashRefs;
 
@@ -157,16 +161,60 @@ impl Store {
                 view_dir: self.view_dir.clone(),
             });
         }
-        live_doc_keys_in(&self.index, self.sibling_view_dirs()?)
+        let mut keys = self.sibling_doc_keys()?;
+        keys.extend(doc_keys_of(&self.index));
+        Ok(keys)
+    }
+
+    /// The document keys the file maps of the group's other views name, read from disk (see
+    /// [`for_each_map`]). Fails, and a sweep must then delete nothing, when one cannot be read.
+    pub(crate) fn sibling_doc_keys(&self) -> Result<AHashSet<String>, LivenessUnknown> {
+        sibling_doc_keys_in(self.sibling_view_dirs()?)
+    }
+
+    /// Publish the live keys of the file map just written, so the view's reads follow it.
+    pub(crate) fn publish_live_keys(&self) {
+        if let Some(db) = self.index_db.as_ref() {
+            db.publish_live_keys(live_keys_of(&self.index));
+        }
+    }
+
+    /// Publish the live keys of the file map this open loaded, unless a writer of this process
+    /// already published the view's.
+    pub(crate) fn publish_live_keys_if_unset(&self) {
+        if let Some(db) = self.index_db.as_ref() {
+            db.publish_live_keys_if_unset(|| live_keys_of(&self.index));
+        }
+    }
+
+    /// Publish the live keys of the file map on disk, unless the view's are already published: for
+    /// a reopened handle, whose store may hold entries not yet flushed. Those name rows a reader must
+    /// not see before the map that lists them is written. A map that cannot be read publishes none.
+    pub(crate) fn publish_written_live_keys_if_unset(&self) {
+        if let Some(db) = self.index_db.as_ref() {
+            db.publish_live_keys_if_unset(|| match crate::store::read_index(&self.view_dir) {
+                Ok(Some(written)) => live_keys_of(&written),
+                _ => LiveKeys::default(),
+            });
+        }
     }
 }
 
-/// The document keys named by `own` and by the file maps under `view_dirs`.
-fn live_doc_keys_in(
-    own: &Index,
-    view_dirs: impl IntoIterator<Item = PathBuf>,
-) -> Result<AHashSet<String>, LivenessUnknown> {
-    let mut keys: AHashSet<String> = doc_keys_of(own).collect();
+/// The content keys a file map names, each with its paths (ADR-0028 rule 7): the key each entry
+/// records its rows were written under (rule 3), never one recomputed. An entry that records none
+/// names no rows.
+pub(crate) fn live_keys_of(index: &Index) -> LiveKeys {
+    LiveKeys::from_entries(
+        index
+            .files
+            .iter()
+            .filter_map(|(rel, entry)| Some((rel.clone(), entry.content_key?))),
+    )
+}
+
+/// The document keys named by the file maps under `view_dirs`.
+fn sibling_doc_keys_in(view_dirs: impl IntoIterator<Item = PathBuf>) -> Result<AHashSet<String>, LivenessUnknown> {
+    let mut keys = AHashSet::new();
     for_each_map(view_dirs, |index| keys.extend(doc_keys_of(index)))?;
     Ok(keys)
 }
@@ -177,6 +225,17 @@ mod tests {
 
     use super::*;
     use crate::store::{DocEntry, FileEntry, INDEX_FILE, Index};
+
+    /// The document keys named by `own` and by the file maps under `view_dirs`, as
+    /// [`Store::group_live_doc_keys`] gathers them.
+    fn live_doc_keys_in(
+        own: &Index,
+        view_dirs: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<AHashSet<String>, LivenessUnknown> {
+        let mut keys = sibling_doc_keys_in(view_dirs)?;
+        keys.extend(doc_keys_of(own));
+        Ok(keys)
+    }
 
     fn doc_entry(hash: &str, digest: &str) -> DocEntry {
         DocEntry {
@@ -223,6 +282,7 @@ mod tests {
                     size_bytes: 1,
                     mtime: 0,
                     extract_epoch: 0,
+                    content_key: None,
                 },
             );
         }

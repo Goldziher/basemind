@@ -7,12 +7,31 @@ use fjall::{OwnedWriteBatch, Slice};
 use super::scoped::Scoped;
 
 use super::keys;
+use super::writer_content::{Family, FreshRow};
 use super::{IndexDb, IndexError};
-use crate::extract::{FileMapL1, FileMapL2, Symbol};
+use crate::extract::{FileMapL1, FileMapL2};
 use crate::intel::model::FileResolvedRefs;
 use crate::path::RelPath;
 #[cfg(feature = "code-search")]
 use crate::search::bm25::ChunkPosting;
+
+/// The symbol rows of a content: `symbols_by_path` and `symbols_by_name`.
+fn symbol_family(db: &IndexDb) -> Family<'_> {
+    Family {
+        rows: &db.symbols_by_path,
+        names: &db.symbols_by_name,
+        name_of: super::writer_content::symbol_name_key,
+    }
+}
+
+/// The call rows of a content: `calls_by_path` and `calls_by_callee`.
+fn call_family(db: &IndexDb) -> Family<'_> {
+    Family {
+        rows: &db.calls_by_path,
+        names: &db.calls_by_callee,
+        name_of: super::writer_content::callee_key,
+    }
+}
 
 pub struct IndexWriter {
     db: IndexDb,
@@ -100,7 +119,7 @@ fn staged_entry_bytes(key_len: usize, value_len: usize) -> u64 {
 /// Free-standing rather than a `&mut self` method so a caller can hold disjoint borrows of the
 /// writer's fields — `&db.<partition>` alongside `&mut batch` — which a method taking `&mut self`
 /// plus `&self.db.<partition>` would reject.
-fn stage_insert<K: Into<Vec<u8>>, V: Into<Slice>>(
+pub(super) fn stage_insert<K: Into<Vec<u8>>, V: Into<Slice>>(
     batch: &mut OwnedWriteBatch,
     staged_bytes: &mut u64,
     partition: &Scoped,
@@ -115,7 +134,12 @@ fn stage_insert<K: Into<Vec<u8>>, V: Into<Slice>>(
 
 /// Stage one delete. `WriteBatch::remove` stages a full `Item` carrying an empty value, so a
 /// tombstone costs everything an insert does bar the value payload.
-fn stage_remove<K: Into<Vec<u8>>>(batch: &mut OwnedWriteBatch, staged_bytes: &mut u64, partition: &Scoped, key: K) {
+pub(super) fn stage_remove<K: Into<Vec<u8>>>(
+    batch: &mut OwnedWriteBatch,
+    staged_bytes: &mut u64,
+    partition: &Scoped,
+    key: K,
+) {
     let key_len = partition.stage_remove(batch, key);
     *staged_bytes += staged_entry_bytes(key_len, 0);
 }
@@ -149,14 +173,24 @@ impl IndexWriter {
         self.staged_bytes
     }
 
-    /// Replace the index entries for `rel` with those derived from `l1` (and optionally
-    /// `l2`). Reads the existing per-file entries first to compute their secondary-index
-    /// keys for deletion, then stages the fresh inserts in the same batch. Atomic.
-    pub fn upsert_file(&mut self, rel: &RelPath, l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<(), IndexError> {
+    /// Write the rows of `rel`, whose content has the [`keys::ContentKey`] `content`: its symbols
+    /// and call sites (from `l1` and optionally `l2`) under `content`, shared by every view of the
+    /// group holding it, and its path-keyed rows, replaced. The content's stored rows are reconciled
+    /// with the fresh ones ([`super::writer_content`]): an identical extraction writes nothing, a
+    /// different one replaces them whole. Calls are left as they are when `l2` is `None`. A view
+    /// reads the content rows once its file map names `rel` under `content`
+    /// ([`super::live_keys`]). Atomic.
+    pub fn upsert_file(
+        &mut self,
+        rel: &RelPath,
+        content: &keys::ContentKey,
+        l1: &FileMapL1,
+        l2: Option<&FileMapL2>,
+    ) -> Result<(), IndexError> {
         self.stage_deletes_for(rel)?;
-        self.stage_inserts_for(rel, l1)?;
+        self.stage_inserts_for(rel, content, l1)?;
         if let Some(l2) = l2 {
-            self.stage_call_inserts(rel, l2)?;
+            self.stage_call_inserts(rel, content, l2)?;
         }
         #[cfg(test)]
         if self.fail_after_staging {
@@ -168,9 +202,18 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Drop every index entry for `rel`. Used when a file is removed from the scan set.
+    /// Drop the path-keyed rows of `rel`. Used when a file is removed from the scan set. Its content
+    /// rows stay for the views that hold the content; the group sweep collects them.
     pub fn remove_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         self.stage_deletes_for(rel)
+    }
+
+    /// Drop every symbol and call row of `content`, for every view that holds it. Only for a
+    /// content no view holds (the group sweep), or to model lost rows in a test.
+    pub fn remove_content(&mut self, content: &keys::ContentKey) -> Result<(), IndexError> {
+        let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        symbol_family(db).stage(batch, staged_bytes, content, Vec::new())?;
+        call_family(db).stage(batch, staged_bytes, content, Vec::new())
     }
 
     /// Store the grep bloom `row` (built by [`super::grep_bloom::build_row`] from the bytes the
@@ -385,50 +428,6 @@ impl IndexWriter {
 
     fn stage_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        let path_prefix = keys::symbols_by_path_prefix(rel);
-        let mut found_symbols: Vec<(Vec<u8>, Symbol)> = Vec::new();
-        for row in db.symbols_by_path.prefix(&path_prefix) {
-            let (k, v) = row?;
-            match rmp_serde::from_slice::<Symbol>(&v) {
-                Ok(sym) => found_symbols.push(((*k).to_vec(), sym)),
-                Err(e) => {
-                    tracing::warn!(
-                        path = %rel,
-                        error = %e,
-                        "index: failed to decode Symbol blob during delete staging — skipping entry"
-                    );
-                }
-            }
-        }
-        for (path_key, sym) in found_symbols {
-            stage_remove(batch, staged_bytes, &db.symbols_by_path, path_key);
-            if let Some(name_key) = keys::symbol_by_name(&sym.name, sym.kind, rel, sym.start_byte) {
-                stage_remove(batch, staged_bytes, &db.symbols_by_name, name_key);
-            }
-        }
-
-        let call_path_prefix = keys::calls_by_path_prefix(rel);
-        let mut found_calls: Vec<(Vec<u8>, crate::extract::Call)> = Vec::new();
-        for row in db.calls_by_path.prefix(&call_path_prefix) {
-            let (k, v) = row?;
-            match rmp_serde::from_slice::<crate::extract::Call>(&v) {
-                Ok(call) => found_calls.push(((*k).to_vec(), call)),
-                Err(e) => {
-                    tracing::warn!(
-                        path = %rel,
-                        error = %e,
-                        "index: failed to decode Call blob during delete staging — skipping entry"
-                    );
-                }
-            }
-        }
-        for (path_key, call) in found_calls {
-            stage_remove(batch, staged_bytes, &db.calls_by_path, path_key);
-            if let Some(callee_key) = keys::call_by_callee(&call.callee, rel, call.start_byte) {
-                stage_remove(batch, staged_bytes, &db.calls_by_callee, callee_key);
-            }
-        }
-
         let imp_path_prefix = keys::imports_by_path_prefix(rel);
         let mut found_imports: Vec<(Vec<u8>, String, u32)> = Vec::new();
         for row in db.imports_by_path.prefix(&imp_path_prefix) {
@@ -660,44 +659,59 @@ impl IndexWriter {
         Ok(())
     }
 
-    /// Stage the L2 call sites for `rel` into both call partitions.
-    fn stage_call_inserts(&mut self, rel: &RelPath, l2: &FileMapL2) -> Result<(), IndexError> {
+    /// Stage the L2 call sites of `content` into both call partitions.
+    fn stage_call_inserts(
+        &mut self,
+        rel: &RelPath,
+        content: &keys::ContentKey,
+        l2: &FileMapL2,
+    ) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         // Before the keys are staged: the dictionary must never miss a name that has a key.
         db.callee_names.record(l2.calls.iter().map(|call| call.callee.as_str()));
+        let mut fresh = Vec::with_capacity(l2.calls.len());
         for call in &l2.calls {
-            let path_key = keys::call_by_path(rel, call.start_byte);
-            let value = rmp_serde::to_vec_named(call)?;
-            stage_insert(batch, staged_bytes, &db.calls_by_path, path_key, value);
-            if let Some(callee_key) = keys::call_by_callee(&call.callee, rel, call.start_byte) {
-                stage_insert(batch, staged_bytes, &db.calls_by_callee, callee_key, Vec::<u8>::new());
-            } else {
+            let name_key = keys::call_by_callee(&call.callee, content, call.start_byte);
+            if name_key.is_none() {
                 tracing::debug!(
                     path = %rel,
                     callee_len = call.callee.len(),
                     "index: callee name exceeds 64 KiB — skipping calls_by_callee entry"
                 );
             }
+            fresh.push(FreshRow {
+                row: keys::content_row(content, call.start_byte),
+                value: rmp_serde::to_vec_named(call)?,
+                name_key,
+            });
         }
-        Ok(())
+        call_family(db).stage(batch, staged_bytes, content, fresh)
     }
 
-    fn stage_inserts_for(&mut self, rel: &RelPath, l1: &FileMapL1) -> Result<(), IndexError> {
+    fn stage_inserts_for(
+        &mut self,
+        rel: &RelPath,
+        content: &keys::ContentKey,
+        l1: &FileMapL1,
+    ) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        let mut fresh = Vec::with_capacity(l1.symbols.len());
         for sym in &l1.symbols {
-            let path_key = keys::symbol_by_path(rel, sym.start_byte);
-            let value = rmp_serde::to_vec_named(sym)?;
-            stage_insert(batch, staged_bytes, &db.symbols_by_path, path_key, value);
-            if let Some(name_key) = keys::symbol_by_name(&sym.name, sym.kind, rel, sym.start_byte) {
-                stage_insert(batch, staged_bytes, &db.symbols_by_name, name_key, Vec::<u8>::new());
-            } else {
+            let name_key = keys::symbol_by_name(&sym.name, sym.kind, content, sym.start_byte);
+            if name_key.is_none() {
                 tracing::debug!(
                     path = %rel,
                     name_len = sym.name.len(),
                     "index: symbol name exceeds 64 KiB — skipping symbols_by_name entry"
                 );
             }
+            fresh.push(FreshRow {
+                row: keys::content_row(content, sym.start_byte),
+                value: rmp_serde::to_vec_named(sym)?,
+                name_key,
+            });
         }
+        symbol_family(db).stage(batch, staged_bytes, content, fresh)?;
         for imp in &l1.imports {
             if let Some(module) = &imp.module {
                 match (

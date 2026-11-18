@@ -627,12 +627,13 @@ fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass()
     let dir = one_file_repo();
     let root = dir.path();
     let ghost = root.join("ghost.rs");
-    std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+    std::fs::write(&ghost, GHOST).expect("write");
     let mut store = Store::open(root, VIEW_WORKING).expect("open");
     full_scan(root, &mut store);
     let view_dir = store.view_dir.clone();
     let db = store.index_db.clone().expect("index");
     assert_eq!(db.view().symbols_by_name_lookup("ghost", 4).len(), 1);
+    assert!(holds_path_rows(&db, "ghost.rs"), "the file has rows keyed by its path");
     // What the killed pass leaves: its open pass recorded, the rows of a file it had just indexed,
     // and a file map that never listed that file.
     db.open_rows_pass().expect("record the pass");
@@ -653,8 +654,12 @@ fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass()
 
     let view = store.index_view().expect("index");
     assert!(
+        !holds_path_rows(store.index_db.as_ref().expect("index"), "ghost.rs"),
+        "the unlisted path's rows are gone"
+    );
+    assert!(
         view.symbols_by_name_lookup("ghost", 4).is_empty(),
-        "the unlisted rows are gone"
+        "no file map lists its content, so its content rows are not read"
     );
     assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
 }
@@ -727,6 +732,24 @@ fn a_blob_the_file_map_already_references_is_not_touched_on_reuse() {
     );
 }
 
+/// A file with rows of both kinds: content-keyed (its symbols) and keyed by its path (its trait
+/// implementation; a Rust `use` records no module, so it writes no import row).
+const GHOST: &[u8] = b"pub trait Spirit {}\npub struct Ghost;\nimpl Spirit for Ghost {}\npub fn ghost() -> u32 { 9 }\n";
+
+/// The `symbols_by_name` rows stored for `name`, whether or not a view reads them.
+fn stored_symbol_rows(db: &crate::index::IndexDb, name: &str) -> usize {
+    db.keyspace_for_test(crate::index::view::Part::SymbolsByName)
+        .prefix(crate::index::keys::symbols_by_name_prefix(name))
+        .count()
+}
+
+/// Whether the index holds rows keyed by the path `rel`: the rows the issue #62 purge removes.
+fn holds_path_rows(db: &crate::index::IndexDb, rel: &str) -> bool {
+    db.indexed_paths()
+        .expect("indexed paths")
+        .contains(&crate::path::RelPath::from(rel))
+}
+
 /// Stands in for a process killed mid-drive: unwinds out of the pass once its first chunk's rows
 /// are committed, before any file map lists them.
 struct KilledAfterFirstChunk;
@@ -764,7 +787,7 @@ fn rows_of_a_killed_rebuild_pass_outlive_no_seal_that_wrote_no_rows() {
     let dir = one_file_repo();
     let root = dir.path();
     let ghost = root.join("ghost.rs");
-    std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+    std::fs::write(&ghost, GHOST).expect("write");
     let view_dir = {
         let mut store = Store::open(root, VIEW_WORKING).expect("open");
         full_scan(root, &mut store);
@@ -782,9 +805,17 @@ fn rows_of_a_killed_rebuild_pass_outlive_no_seal_that_wrote_no_rows() {
         killed_full_pass(root, &mut store);
         let db = store.index_db.as_ref().expect("index");
         assert_eq!(
-            db.view().symbols_by_name_lookup("ghost", 4).len(),
+            stored_symbol_rows(db, "ghost"),
             1,
             "the killed pass committed the file's rows, or this test proves nothing"
+        );
+        assert!(
+            db.view().symbols_by_name_lookup("ghost", 4).is_empty(),
+            "no file map lists them, so the view does not read them"
+        );
+        assert!(
+            holds_path_rows(db, "ghost.rs"),
+            "the killed pass left rows keyed by the path"
         );
     }
     std::fs::remove_file(&ghost).expect("delete");
@@ -795,8 +826,12 @@ fn rows_of_a_killed_rebuild_pass_outlive_no_seal_that_wrote_no_rows() {
 
     let view = store.index_view().expect("index");
     assert!(
+        !holds_path_rows(store.index_db.as_ref().expect("index"), "ghost.rs"),
+        "the deleted file's path rows are gone"
+    );
+    assert!(
         view.symbols_by_name_lookup("ghost", 4).is_empty(),
-        "the deleted file's rows are gone"
+        "the deleted file's content rows are not read"
     );
     assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
 }
@@ -812,10 +847,15 @@ fn rows_of_a_killed_pass_outlive_no_seal_of_a_store_claimed_in_place() {
     {
         let mut store = Store::open(root, VIEW_WORKING).expect("open");
         full_scan(root, &mut store);
-        std::fs::write(&ghost, b"pub fn ghost() -> u32 { 9 }\n").expect("write");
+        std::fs::write(&ghost, GHOST).expect("write");
         killed_full_pass(root, &mut store);
         let db = store.index_db.as_ref().expect("index");
-        assert_eq!(db.view().symbols_by_name_lookup("ghost", 4).len(), 1);
+        assert_eq!(stored_symbol_rows(db, "ghost"), 1, "the killed pass committed the rows");
+        assert!(db.view().symbols_by_name_lookup("ghost", 4).is_empty());
+        assert!(
+            holds_path_rows(db, "ghost.rs"),
+            "the killed pass left rows keyed by the path"
+        );
     }
     std::fs::remove_file(&ghost).expect("delete");
     let writer = Store::open(root, VIEW_WORKING).expect("another writer");
@@ -835,8 +875,55 @@ fn rows_of_a_killed_pass_outlive_no_seal_of_a_store_claimed_in_place() {
     .expect("incremental scan");
 
     let view = in_place.index_view().expect("index");
+    assert!(
+        !holds_path_rows(in_place.index_db.as_ref().expect("index"), "ghost.rs"),
+        "the deleted file's path rows are gone"
+    );
     assert!(view.symbols_by_name_lookup("ghost", 4).is_empty());
     assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
+}
+
+/// `extract_again` (a torn chunk sidecar) asks the next pass to extract a file again. Until that
+/// pass runs, the file's rows are still those its entry names (ADR-0028 rule 3), so they are read.
+#[cfg(feature = "code-search")]
+#[test]
+fn a_file_marked_for_extraction_again_is_still_read_until_the_next_pass() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    assert_eq!(
+        store
+            .index_view()
+            .expect("index")
+            .symbols_by_name_lookup("alpha", 4)
+            .len(),
+        1
+    );
+
+    store.extract_again("alpha.rs");
+    store.flush().expect("flush");
+
+    assert_eq!(
+        store
+            .index_view()
+            .expect("index")
+            .symbols_by_name_lookup("alpha", 4)
+            .len(),
+        1,
+        "the file's rows are read while it waits to be extracted again"
+    );
+    let report = full_scan(root, &mut store);
+    assert_eq!(report.stats.updated, 1, "the next pass extracts it again");
+    assert_eq!(
+        store
+            .index_view()
+            .expect("index")
+            .symbols_by_name_lookup("alpha", 4)
+            .len(),
+        1
+    );
 }
 
 /// A read-only open in a process that holds no group handle takes none (ADR-0036 rule 3). A scan that

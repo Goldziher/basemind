@@ -52,6 +52,7 @@ pub(super) fn seed_workspace_aged(workspaces_dir: &Path, key: &str, stem: &str, 
             size_bytes: 2,
             mtime: 0,
             extract_epoch: crate::extract::EXTRACT_EPOCH,
+            content_key: None,
         },
     );
     fs::write(

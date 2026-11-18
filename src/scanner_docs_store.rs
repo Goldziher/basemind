@@ -383,30 +383,6 @@ pub(crate) fn remove_dead_document_rows(store: &mut Store, config: &Config) {
     }
 }
 
-/// The document keys the file maps of the group's other views name, read from disk. A map of
-/// another schema or blob layout names nothing (its view rebuilds it); one that cannot be read
-/// makes the set unknown.
-fn sibling_doc_keys(store: &Store) -> Result<AHashSet<String>, crate::store::LivenessUnknown> {
-    use crate::store::StoreError;
-    let mut keys = AHashSet::new();
-    for view_dir in store.sibling_view_dirs()? {
-        match crate::store::read_index(&view_dir) {
-            Ok(Some(index)) => keys.extend(
-                index
-                    .doc_files
-                    .values()
-                    .map(|entry| doc_key(&entry.hash_hex, &entry.config_digest)),
-            ),
-            Ok(None)
-            | Err(
-                StoreError::SchemaMismatch { .. } | StoreError::NewerSchema { .. } | StoreError::StaleBlobLayout { .. },
-            ) => {}
-            Err(source) => return Err(crate::store::LivenessUnknown::UnreadableMap { path: view_dir, source }),
-        }
-    }
-    Ok(keys)
-}
-
 /// Rewrite without vectors the rows of documents no path of which may be embedded any more. They
 /// stay searchable by the lexical lane. A document another view of the group names keeps its
 /// vectors: that view's policy may want them, and the rows are shared (ADR-0037 rule 3). `false`
@@ -421,7 +397,7 @@ pub(crate) fn strip_unwanted_vectors(store: &Store, config: &Config, filters: &F
     if unwanted.is_empty() {
         return true;
     }
-    match sibling_doc_keys(store) {
+    match store.sibling_doc_keys() {
         Ok(siblings) => unwanted.retain(|key| !siblings.contains(key)),
         Err(error) => {
             tracing::warn!(%error, "the group's other documents are unknown; excluded documents keep their vectors");

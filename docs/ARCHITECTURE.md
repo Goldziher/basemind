@@ -422,10 +422,10 @@ and only that view is rebuilt. Source: `src/index/{mod,keys,writer,group,scoped}
 | Keyspace | Purpose |
 |---|---|
 | `meta` | Constants (e.g. `schema_ver`). |
-| `symbols_by_path` | Per-file outline lookups. |
-| `symbols_by_name` | `name`-prefix range scans for symbol search. |
-| `calls_by_path` | Per-file call lookups. |
-| `calls_by_callee` | `callee`-prefix range scans — drives the `code_refs` call-site lookup. |
+| `symbols_by_path` | One content's symbols, keyed by content key; shared by the group. |
+| `symbols_by_name` | `name`-prefix range scans for symbol search; shared by the group. |
+| `calls_by_path` | One content's call sites, keyed by content key; shared by the group. |
+| `calls_by_callee` | `callee`-prefix range scans — drives the `code_refs` call-site lookup; shared by the group. |
 | `imports_by_module` | `module`-prefix range scans — drives `code_refs` with `relation: "importers"`. |
 | `imports_by_path` | Per-file import lookups. |
 | `implementations_by_trait` | `trait`-prefix range scans — drives `code_refs` with `relation: "implementations"`. |
@@ -449,13 +449,14 @@ database at `<cache>/cache/repos/<group>/memory.fjall/` (see [Split memory](#spl
 A store written before the audit and mining features were removed also holds `memory_archive` and
 `proposals`. They are never opened and never deleted.
 
-Key shapes (length-prefixed, see `src/index/keys.rs`):
+Key shapes (length-prefixed, see `src/index/keys.rs` and `src/index/keys_content.rs`; `ckey` is the
+16-byte content key of content hash, language and extract epoch):
 
 ```text
-symbols_by_path     u16:len(rel) ‖ rel ‖ start_byte:u32_be
-symbols_by_name     u16:len(name) ‖ name ‖ kind:u8 ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
-calls_by_path       u16:len(rel) ‖ rel ‖ start_byte:u32_be
-calls_by_callee     u16:len(callee) ‖ callee ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
+symbols_by_path     ckey:16 ‖ start_byte:u32_be
+symbols_by_name     u16:len(name) ‖ name ‖ kind:u8 ‖ ckey:16 ‖ start_byte:u32_be
+calls_by_path       ckey:16 ‖ start_byte:u32_be
+calls_by_callee     u16:len(callee) ‖ callee ‖ ckey:16 ‖ start_byte:u32_be
 imports_by_module   u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
 refs_by_def         u16:len(def_path) ‖ def_path ‖ def_start:u32_be ‖ u16:len(use_path) ‖ use_path ‖ use_start:u32_be
 refs_by_path        u16:len(use_path) ‖ use_path ‖ use_start:u32_be ‖ u16:len(def_path) ‖ def_path ‖ def_start:u32_be
@@ -466,8 +467,12 @@ grep_bloom          rel (the path bytes)  →  version:u8 ‖ size:u64 ‖ mtime
 ```
 
 Length-prefixed components guarantee prefix-scan isolation: a `Foo` prefix never
-spills into `Foobar`. Every key above is stored under the view's 4-byte id, except `grep_bloom`,
-which the group shares by content. Schema version is stamped in the `meta` keyspace; mismatch on
+spills into `Foobar`. Every key above is stored under the view's 4-byte id, except `grep_bloom` and
+the four symbol and call keyspaces, which the group shares by content. A view reads the content-keyed
+rows only through its live keys: the content key each entry of its file map records, with the paths
+holding it (`src/index/live_keys.rs`). A name scan expands each row to one hit per live holder, the
+HIT key being the row key followed by that path; a row of a content the view does not hold yields no
+hit. Schema version is stamped in the `meta` keyspace; mismatch on
 open drops the group's whole `index.fjall/` directory, and every view rebuilds on its next scan.
 
 ### Index reads and resident lookup structures

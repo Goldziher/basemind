@@ -5,20 +5,21 @@
 //! `implementations` scans are shipped to the daemon as an
 //! [`IndexReadQuery`](crate::comms::index_read_proto::IndexReadQuery). [`index_read_against`] runs
 //! them against the daemon's read-write store by calling the very same scan functions a writer
-//! session calls (`scan_calls_by_name`, `calls_in_file_fjall`, `scan_impls_fjall`) — which is what
+//! session calls (`scan_calls_by_name`, `calls_in_content_fjall`, `scan_impls_fjall`) — which is what
 //! makes the two paths equal by construction rather than by a test that has to keep up.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
 use super::cursor::Cursor;
 use super::helpers::SEARCH_LIMIT_MAX;
-use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_file_fjall, scan_calls_by_name};
+use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_content_fjall, scan_calls_by_name};
 use super::helpers_impls::{ImplScanPage, scan_impls_fjall};
 pub(crate) use super::helpers_refs_match::Matching;
 use super::types::ReferenceHit;
 use super::types_impls::ImplementationHit;
 use crate::comms::index_read_proto::{
-    IndexReadQuery, IndexReadResult, MAX_CALLS_IN_FILES, WireCall, WireCallHit, WireCallScan, WireImplHit, WireImplScan,
+    IndexReadQuery, IndexReadResult, MAX_CALLS_IN_FILES, WireCall, WireCallHit, WireCallScan, WireFileCalls,
+    WireImplHit, WireImplScan,
 };
 use crate::index::view::IndexView;
 use crate::store::Store;
@@ -79,9 +80,10 @@ pub(crate) fn call_scan(
     limit: u32,
     cursor: Option<&[u8]>,
 ) -> Result<IndexReadResult, String> {
+    let generation = idx.live_keys().fingerprint();
     let page = scan_calls_by_name(idx, name, matching, clamp_limit(limit), cursor)
         .map_err(|error| error.message.to_string())?;
-    Ok(IndexReadResult::CallScan(call_page_to_wire(page)))
+    Ok(IndexReadResult::CallScan(call_page_to_wire(page, generation)))
 }
 
 /// The `GrepBloom` arm on its own, so the daemon can run it holding only a cloned [`IndexDb`] handle
@@ -115,11 +117,15 @@ fn calls_in_files(idx: &dyn IndexView, paths: &[crate::path::RelPath]) -> Result
             paths.len()
         ));
     }
+    // One snapshot of the live keys for the whole request. ~keep
+    let live = idx.live_keys();
     let per_file = paths
         .iter()
         .map(|path| {
-            calls_in_file_fjall(idx, path).map(|calls| {
-                calls
+            let content = live.key_of(path);
+            calls_in_content_fjall(idx, content).map(|calls| WireFileCalls {
+                content: content.copied(),
+                calls: calls
                     .into_iter()
                     .map(|c| WireCall {
                         callee: c.callee,
@@ -127,10 +133,10 @@ fn calls_in_files(idx: &dyn IndexView, paths: &[crate::path::RelPath]) -> Result
                         line: c.line,
                         column: c.column,
                     })
-                    .collect()
+                    .collect(),
             })
         })
-        .collect::<Result<Vec<Vec<WireCall>>, _>>()
+        .collect::<Result<Vec<WireFileCalls>, _>>()
         .map_err(|error| error.message.to_string())?;
     Ok(IndexReadResult::CallsInFiles(per_file))
 }
@@ -140,7 +146,7 @@ fn clamp_limit(limit: u32) -> usize {
     (limit as usize).min(SEARCH_LIMIT_MAX as usize)
 }
 
-fn call_page_to_wire(page: CallScanPage) -> WireCallScan {
+fn call_page_to_wire(page: CallScanPage, generation: u64) -> WireCallScan {
     let has_more = page.next_cursor.is_some() && page.stopped_after.is_none();
     let resume_after = page.stopped_after;
     let hits = page
@@ -163,6 +169,7 @@ fn call_page_to_wire(page: CallScanPage) -> WireCallScan {
         has_more,
         resume_after,
         hits,
+        generation,
     }
 }
 
@@ -203,15 +210,22 @@ pub(super) fn call_page_from_wire(wire: WireCallScan) -> CallScanPage {
     }
 }
 
-pub(super) fn calls_from_wire(wire: Vec<WireCall>) -> Vec<CallRef> {
-    wire.into_iter()
+/// One file of a `CallsInFiles` reply as [`IndexRoute::calls_in_files`] returns it: `None` for a
+/// file read under no key.
+///
+/// [`IndexRoute::calls_in_files`]: super::index_route::IndexRoute::calls_in_files
+pub(super) fn file_calls_from_wire(wire: WireFileCalls) -> Option<(crate::index::keys::ContentKey, Vec<CallRef>)> {
+    let calls = wire
+        .calls
+        .into_iter()
         .map(|c| CallRef {
             callee: c.callee,
             start_byte: c.start_byte,
             line: c.line,
             column: c.column,
         })
-        .collect()
+        .collect();
+    Some((wire.content?, calls))
 }
 
 fn impl_page_to_wire(page: ImplScanPage) -> WireImplScan {

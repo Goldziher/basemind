@@ -621,6 +621,7 @@ mod code {
                 size_bytes: 1,
                 mtime: 0,
                 extract_epoch: crate::extract::EXTRACT_EPOCH,
+                content_key: None,
             },
         );
         store.pending_vectors.owe_code(rel);

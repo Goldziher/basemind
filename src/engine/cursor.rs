@@ -3,9 +3,10 @@
 //! Two backends, one wire shape:
 //!
 //! * **Fjall-backed** cursors hold the raw last-seen key bytes. On resume the helper
-//!   range-scans `(Excluded(last_key)..Excluded(prefix_upper_bound))` so the next page
-//!   picks up immediately after the previous one. Stable across rescans because Fjall
-//!   keys are content-addressed.
+//!   range-scans from just after that key so the next page picks up immediately after the
+//!   previous one. The symbol and call rows are keyed by content (ADR-0028), so an edit moves
+//!   the edited file's hits in that order: the `references` / `callers` cursor also carries
+//!   the generation of the view it was cut from, and is refused as stale once that changes.
 //! * **In-memory** cursors hold a `{ offset, snapshot_id }` pair. `snapshot_id` is whatever
 //!   the calling tool uses to detect that its view changed between pages — the map-reading
 //!   tools use the `cache_generation` AtomicU32, the tools whose list never comes from the boot
@@ -28,8 +29,9 @@ use serde::{Deserialize, Serialize};
 /// to fetch the next page.
 ///
 /// Stability guarantee depends on the source:
-/// * Fjall-backed tools (`find_references`, `find_callers`, `memory_list`):
-///   cursors are stable across rescans — Fjall keys are content-addressed.
+/// * Fjall-backed tools (`find_references`, `find_callers`, `memory_list`): cursors hold
+///   the last key listed. A `references` / `callers` cursor is refused as stale once a file of
+///   the view changes content, since that moves the file's hits in the key order.
 /// * In-memory tools (`search_symbols`, `list_files`): cursors are valid only
 ///   for the same in-RAM snapshot. If the cache is swapped (rescan), the
 ///   response carries `cursor_invalidated = true` and the caller must restart.
@@ -82,6 +84,7 @@ struct InMemCursor {
 /// Compute the exclusive upper bound for a prefix scan: increment the last byte that
 /// isn't `0xFF`, dropping trailing `0xFF` bytes. Returns `None` when the prefix is all
 /// `0xFF` (the upper bound is "past the end of the keyspace" — use unbounded then).
+#[cfg(any(test, feature = "memory"))]
 pub(crate) fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut out = prefix.to_vec();
     while let Some(last) = out.last_mut() {

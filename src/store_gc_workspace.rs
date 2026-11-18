@@ -341,6 +341,7 @@ mod tests {
                     size_bytes: 2,
                     mtime: 0,
                     extract_epoch: crate::extract::EXTRACT_EPOCH,
+                    content_key: None,
                 },
             );
         }

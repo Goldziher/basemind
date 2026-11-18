@@ -104,6 +104,7 @@ mod tests {
             size_bytes: 0,
             mtime: 0,
             extract_epoch: 0,
+            content_key: None,
         };
         index.files.insert(crate::path::RelPath::from("src/gone.rs"), entry);
 

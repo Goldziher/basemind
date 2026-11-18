@@ -68,22 +68,15 @@ fn views_keep_their_rows_seal_generations_and_rebuilds_apart() {
         view(&group, "ws-b", "working", &memory),
     );
 
-    a.keyspace(Part::SymbolsByPath)
-        .insert(b"same-key", "a")
-        .expect("insert");
-    b.keyspace(Part::SymbolsByPath)
-        .insert(b"same-key", "b")
-        .expect("insert");
+    a.keyspace(Part::RefsByPath).insert(b"same-key", "a").expect("insert");
+    b.keyspace(Part::RefsByPath).insert(b"same-key", "b").expect("insert");
     a.keyspace(Part::GrepBloom).insert(b"hash", "bloom").expect("insert");
     assert_eq!(a.seal_scan(0).expect("seal"), 1);
     assert_eq!(a.seal_scan(1).expect("seal"), 2);
     assert_eq!(b.scan_generation().expect("read"), 0, "a seal is the view's own");
 
     assert_eq!(
-        &*b.view()
-            .get(Part::SymbolsByPath, b"same-key")
-            .expect("get")
-            .expect("row"),
+        &*b.view().get(Part::RefsByPath, b"same-key").expect("get").expect("row"),
         b"b"
     );
     assert!(
@@ -92,13 +85,10 @@ fn views_keep_their_rows_seal_generations_and_rebuilds_apart() {
     );
 
     a.clear_for_rebuild().expect("clear");
-    assert!(a.keyspace(Part::SymbolsByPath).is_empty().expect("empty"));
+    assert!(a.keyspace(Part::RefsByPath).is_empty().expect("empty"));
     assert_eq!(a.scan_generation().expect("read"), 0);
     assert_eq!(
-        &*b.view()
-            .get(Part::SymbolsByPath, b"same-key")
-            .expect("get")
-            .expect("row"),
+        &*b.view().get(Part::RefsByPath, b"same-key").expect("get").expect("row"),
         b"b"
     );
     assert!(
@@ -120,4 +110,37 @@ fn the_incarnation_survives_a_reopen_and_changes_with_a_new_database() {
     assert_eq!(open(&group_dir).incarnation(), first, "a reopen keeps it");
     std::fs::remove_dir_all(&group_dir).expect("lose the database");
     assert_ne!(open(&group_dir).incarnation(), first, "a new database gets a new one");
+}
+
+/// Handles on one view share its live keys; a view with no open handle keeps none, so a long-lived
+/// process does not hold the keys of every view it ever opened.
+#[test]
+fn live_keys_are_shared_by_a_view_s_handles_and_dropped_with_the_last() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = open(&dir.path().join("group"));
+    let a = view(&group, "ws-a", "working", &memory);
+    let b = view(&group, "ws-b", "working", &memory);
+    let a_id = group.allocate_view_id("ws-a", "working").expect("id");
+    let b_id = group.allocate_view_id("ws-b", "working").expect("id");
+    let again = group.open_view(a_id, &memory, true).expect("a second handle on a");
+    let key = crate::index::keys::content_key("h", "rust", 1);
+    a.publish_live_keys(crate::index::live_keys::LiveKeys::from_entries([(
+        crate::path::RelPath::from("x.rs"),
+        key,
+    )]));
+    assert_eq!(
+        again.live_keys().key_of(&crate::path::RelPath::from("x.rs")),
+        Some(&key),
+        "one view's handles share its keys"
+    );
+    assert!(b.live_keys().is_empty(), "another view's are its own");
+
+    drop(b);
+    let mut held = group.live_key_views();
+    held.sort_unstable();
+    assert_eq!(held, [a_id], "the closed view's cell is gone");
+    assert!(!held.contains(&b_id));
+    drop((a, again));
+    assert!(group.live_key_views().is_empty());
 }

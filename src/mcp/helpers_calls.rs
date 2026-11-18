@@ -10,12 +10,10 @@ use rmcp::model::CallToolResult;
 use super::MapCache;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
-pub(crate) use super::helpers_calls_scan::InRamCallIndex;
 use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, mark_shared_lines};
 use super::helpers_refs_match::Matching;
 use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
-use crate::index::view::Part;
 use crate::path::RelPath;
 
 /// How `find_callers` fetches the cross-file resolved uses of a definition. The precise
@@ -74,16 +72,16 @@ impl RefsSource<'_> {
     }
 }
 
-/// Point-lookup a `Call` value in the index by `(path, start_byte)` and return its
-/// `(line, column)` as 1-based / 0-based respectively. Falls back to `(0, 0)` when the
+/// Point-lookup a `Call` value in the index by `(content, start_byte)` and return its
+/// `(line, column)` as 1-based / 0-based respectively. The content key is the one the hit key
+/// carries, so no second live-key snapshot is taken mid-query. Falls back to `(0, 0)` when the
 /// row/col fields aren't populated (older L2 blobs predating the field's introduction).
 pub(super) fn resolve_call_line_col(
     idx: &dyn crate::index::view::IndexView,
-    rel: &crate::path::RelPath,
+    content: &crate::index::keys::ContentKey,
     start_byte: u32,
 ) -> (u32, u32) {
-    let key = crate::index::keys::call_by_path(rel, start_byte);
-    let value = match idx.get(Part::CallsByPath, &key) {
+    let value = match idx.call_at(content, start_byte) {
         Ok(Some(v)) => v,
         _ => return (0, 0),
     };
@@ -106,12 +104,13 @@ pub(super) async fn run_find_references(
     use super::types::FindReferencesResponse;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
-    let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
+    let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
-    let mut scan = route
+    let (mut scan, generation) = route
         .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
         .await?;
-    mark_shared_lines(route, cache, &mut scan.hits).await;
+    refuse_stale(stamped, generation)?;
+    mark_shared_lines(route, cache, &mut scan.hits, &scan.hit_keys).await;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let mut budgeted = budget_call_page(scan, &params.name, params.max_tokens);
@@ -124,7 +123,7 @@ pub(super) async fn run_find_references(
             truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
             budgeted: budgeted.budgeted,
             hits: budgeted.hits,
-            next_cursor: budgeted.next_cursor,
+            next_cursor: stamp(budgeted.next_cursor, generation),
             notice: notice(),
         },
         format,
@@ -205,11 +204,12 @@ pub(super) async fn run_find_callers(
         column: symbol.start_col + 1,
     };
 
-    let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
+    let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
-    let scan = route
+    let (scan, generation) = route
         .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
         .await?;
+    refuse_stale(stamped, generation)?;
 
     // Resolution facts are a per-file blob the scan writes only for a file that produced some. No
     // blob is not `resolved_total: 0`: the language has no resolution engine, the resolve pass did
@@ -244,7 +244,7 @@ pub(super) async fn run_find_callers(
     };
 
     let mut page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());
-    mark_shared_lines(route, cache, &mut page.hits).await;
+    mark_shared_lines(route, cache, &mut page.hits, &page.hit_keys).await;
     let total = page.total;
     let total_is_partial = page.total_is_partial;
     let budgeted = budget_call_page(page, &params.name, params.max_tokens);
@@ -257,9 +257,50 @@ pub(super) async fn run_find_callers(
         truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
         budgeted: budgeted.budgeted,
         hits: budgeted.hits,
-        next_cursor: budgeted.next_cursor,
+        next_cursor: stamp(budgeted.next_cursor, generation),
         notice: notice(),
     })
+}
+
+/// Bytes of the generation a `references` / `callers` cursor starts with.
+const GENERATION_LEN: usize = 8;
+
+/// The generation a [`stamp`]ed cursor was cut in, and the scan key after which it resumes.
+type Stamped = ([u8; GENERATION_LEN], Vec<u8>);
+
+/// The cursor of a name scan, prefixed with the generation of the key order it was cut in
+/// ([`IndexRoute::scan_calls`]). Hits are in content-key order, and an edit moves the edited file's
+/// hits, so a cursor continues only the view it was cut from.
+fn stamp(cursor: Option<Cursor>, generation: u64) -> Option<Cursor> {
+    let key = cursor?.decode_fjall().ok()?;
+    let mut bytes = Vec::with_capacity(GENERATION_LEN + key.len());
+    bytes.extend_from_slice(&generation.to_be_bytes());
+    bytes.extend_from_slice(&key);
+    Some(Cursor::encode_fjall(&bytes))
+}
+
+/// The generation a [`stamp`]ed cursor was cut in and the scan position it names; the stale-cursor
+/// error for a cursor too short to carry a generation.
+fn unstamp(cursor: Option<&Cursor>) -> Result<Option<Stamped>, McpError> {
+    let Some(cursor) = cursor else {
+        return Ok(None);
+    };
+    let bytes = cursor.decode_fjall()?;
+    match bytes.split_first_chunk::<GENERATION_LEN>() {
+        Some((stamped, key)) => Ok(Some((*stamped, key.to_vec()))),
+        None => Err(super::cursor_bind::stale_cursor("code_refs").into()),
+    }
+}
+
+/// The stale-cursor error when the page continued a cursor cut in another generation than the one
+/// its scan ran in: the view changed since, so the page may skip or repeat hits.
+fn refuse_stale(stamped: Option<[u8; GENERATION_LEN]>, generation: u64) -> Result<(), McpError> {
+    match stamped {
+        Some(stamped) if stamped != generation.to_be_bytes() => {
+            Err(super::cursor_bind::stale_cursor("code_refs").into())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The scope/import-resolved callers of a definition — the refinement layer over the name scan.
@@ -400,10 +441,20 @@ async fn resolved_callers(
         .map(|(path, _)| (*path).clone())
         .collect();
     runs.truncate(probe_cap);
-    for batch in runs.chunks(CALL_SITE_BATCH) {
-        let paths: Vec<crate::path::RelPath> = batch.iter().map(|(path, _)| (*path).clone()).collect();
-        let per_file = route.calls_in_files(cache, &paths).await.ok()?;
-        for ((use_path, run), calls) in batch.iter().zip(per_file) {
+    let paths: Vec<crate::path::RelPath> = runs.iter().map(|(path, _)| (*path).clone()).collect();
+    // One snapshot for every file, so the keys agree with each other and with the calls read. ~keep
+    let keys = route.content_keys(cache, &paths);
+    for (batch, batch_keys) in runs.chunks(CALL_SITE_BATCH).zip(keys.chunks(CALL_SITE_BATCH)) {
+        let files: Vec<(crate::path::RelPath, Option<crate::index::keys::ContentKey>)> = batch
+            .iter()
+            .map(|(path, _)| (*path).clone())
+            .zip(batch_keys.iter().copied())
+            .collect();
+        let per_file = route.calls_in_files(cache, &files).await.ok()?;
+        // A file read under no key has no calls, so every proven site below has its key. ~keep
+        for ((use_path, run), (content, calls)) in
+            batch.iter().zip(per_file).filter_map(|(run, read)| Some((run, read?)))
+        {
             let calls = index_by_start(calls);
             for (_, use_start) in *run {
                 let Some(site) = calls.get(use_start) else {
@@ -411,8 +462,10 @@ async fn resolved_callers(
                 };
                 total += 1;
                 sites.entry((*use_path).clone()).or_default().insert(*use_start);
-                if finder.find(site.callee.as_bytes()).is_none()
-                    && let Some(key) = crate::index::keys::call_by_callee(&site.callee, use_path, *use_start)
+                if finder.find(site.callee.as_bytes()).is_some() {
+                    continue;
+                }
+                if let Some(key) = crate::index::keys::call_by_callee_hit(&site.callee, &content, *use_start, use_path)
                 {
                     aliased.push((
                         key,

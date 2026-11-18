@@ -318,6 +318,7 @@ fn process_file(
         && existing.mtime != 0
         && existing.language == lang
         && existing.extract_epoch >= extract::EXTRACT_EPOCH
+        && existing.content_key.is_some()
         && let Ok(meta) = std::fs::metadata(root.join(rel))
     {
         // The cap outranks the unchanged shortcut: lowering `max_file_bytes` must evict an already
@@ -385,6 +386,7 @@ fn process_file(
         && existing.hash_hex == hash_hex_str
         && existing.language == lang
         && existing.extract_epoch >= extract::EXTRACT_EPOCH
+        && existing.content_key.is_some()
         && sidecars_present
         && embed_state_satisfied(store, config, filters, rel, hash_hex_str, embed)
     {
@@ -483,7 +485,8 @@ fn process_file(
     }
 
     let rel_path = RelPath::from(rel);
-    if !index_batch.stage(&rel_path, &l1, l2.as_ref()) {
+    let content = crate::index::keys::content_key(hash_hex_str, lang, crate::extract::EXTRACT_EPOCH);
+    if !index_batch.stage(&rel_path, &content, &l1, l2.as_ref()) {
         tracing::warn!(rel, "index upsert failed; reference search may be incomplete");
     }
     // Grep reads the working tree, so only a working-tree scan describes what it will sweep.
@@ -533,6 +536,7 @@ fn process_file(
         size_bytes,
         mtime,
         extract_epoch: crate::extract::EXTRACT_EPOCH,
+        content_key: Some(content),
     };
     FileResult {
         path: rel.to_string(),

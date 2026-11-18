@@ -19,10 +19,11 @@
 use rmcp::ErrorData as McpError;
 
 use super::MapCache;
-use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_file_fjall, scan_calls_by_name, scan_calls_in_ram};
+use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_content_fjall, scan_calls_by_name, scan_calls_in_ram};
 use super::helpers_impls::{ImplScanPage, scan_impls_in_ram, scan_impls_session};
 use super::helpers_refs_match::Matching;
 use crate::index::grep_bloom::GrepEntry;
+use crate::index::keys::ContentKey;
 use crate::index::view::{IndexView, StandaloneView};
 use crate::path::RelPath;
 
@@ -127,7 +128,11 @@ impl IndexRoute {
         None
     }
 
-    /// The `calls_by_callee` name scan behind `references` and `callers`.
+    /// The `calls_by_callee` name scan behind `references` and `callers`, with the generation of the
+    /// key order it was cut in: of the live keys of the index that ran it (this session's, or the
+    /// daemon's), of the in-RAM map's order keys when the projection ran it. A `references` /
+    /// `callers` cursor carries it, and is refused as stale once it changes, since an edit moves the
+    /// edited file's hits in that order.
     pub(super) async fn scan_calls(
         &self,
         cache: &MapCache,
@@ -135,9 +140,11 @@ impl IndexRoute {
         matching: Matching,
         limit: usize,
         cursor_after: Option<&[u8]>,
-    ) -> Result<CallScanPage, McpError> {
+    ) -> Result<(CallScanPage, u64), McpError> {
         if let Self::Local(idx) = self {
-            return blocking(|| scan_calls_by_name(&**idx, name, matching, limit, cursor_after));
+            let generation = idx.live_keys().fingerprint();
+            let page = blocking(|| scan_calls_by_name(&**idx, name, matching, limit, cursor_after))?;
+            return Ok((page, generation));
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self
@@ -150,11 +157,12 @@ impl IndexRoute {
             .await
         {
             Some(Ok(IndexReadResult::CallScan(page))) => {
+                let generation = page.generation;
                 let mut page = super::index_read::call_page_from_wire(page);
                 // A daemon that predates `exact` ignores it and answers with substring hits. Only
                 // this page's share of them can be dropped here, so `retain` marks the total partial.
                 page.retain(|hit| matching.accepts_callee(&hit.callee, name));
-                return Ok(page);
+                return Ok((page, generation));
             }
             Some(Ok(_)) => {
                 tracing::warn!("daemon answered a call scan with the wrong reply; using the in-RAM projection")
@@ -162,27 +170,58 @@ impl IndexRoute {
             Some(Err(error)) => tracing::warn!(%error, "forwarded call scan failed; using the in-RAM projection"),
             None => {}
         }
-        Ok(blocking(|| {
-            scan_calls_in_ram(cache.calls_projection(), name, matching, limit, cursor_after)
-        }))
+        let page = blocking(|| scan_calls_in_ram(cache.calls_projection(), name, matching, limit, cursor_after));
+        Ok((page, cache.content_fingerprint()))
     }
 
-    /// Every call site of each of `paths`, in request order — the `callers` resolved refinement.
+    /// The content key each of `paths` is read under, in request order: from one snapshot of the
+    /// view's live keys on a local index, else the in-RAM map's order key
+    /// ([`FileMeta::order_key`](crate::engine::l1_cache::FileMeta::order_key)), `None` for a file the
+    /// map lacks. A forwarded read replaces them with the daemon's ([`Self::calls_in_files`]).
+    pub(super) fn content_keys(&self, cache: &MapCache, paths: &[RelPath]) -> Vec<Option<ContentKey>> {
+        if let Self::Local(idx) = self {
+            let live = idx.live_keys();
+            return paths.iter().map(|path| live.key_of(path).copied()).collect();
+        }
+        paths
+            .iter()
+            .map(|path| cache.meta(path).map(crate::engine::l1_cache::FileMeta::order_key))
+            .collect()
+    }
+
+    /// Every call site of each of `files`, in request order, with the content key it was read under:
+    /// the order key of the file's calls, which places a resolved caller among the scan hits. `None`
+    /// for a file read under no key, which has no calls. A local index and the in-RAM projection
+    /// read each file under the key given with it (a hit key's, or [`Self::content_keys`]'); a
+    /// forwarded read reads by path under the daemon's live keys and returns the daemon's key.
     pub(super) async fn calls_in_files(
         &self,
         cache: &MapCache,
-        paths: &[RelPath],
-    ) -> Result<Vec<Vec<CallRef>>, McpError> {
+        files: &[(RelPath, Option<ContentKey>)],
+    ) -> Result<Vec<Option<(ContentKey, Vec<CallRef>)>>, McpError> {
         if let Self::Local(idx) = self {
-            return paths.iter().map(|path| calls_in_file_fjall(&**idx, path)).collect();
+            return files
+                .iter()
+                .map(|(_, content)| {
+                    let Some(content) = content else {
+                        return Ok(None);
+                    };
+                    calls_in_content_fjall(&**idx, Some(content)).map(|calls| Some((*content, calls)))
+                })
+                .collect();
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self
-            .forward(IndexReadQuery::CallsInFiles { paths: paths.to_vec() })
+            .forward(IndexReadQuery::CallsInFiles {
+                paths: files.iter().map(|(path, _)| path.clone()).collect(),
+            })
             .await
         {
-            Some(Ok(IndexReadResult::CallsInFiles(per_file))) if per_file.len() == paths.len() => {
-                return Ok(per_file.into_iter().map(super::index_read::calls_from_wire).collect());
+            Some(Ok(IndexReadResult::CallsInFiles(per_file))) if per_file.len() == files.len() => {
+                return Ok(per_file
+                    .into_iter()
+                    .map(super::index_read::file_calls_from_wire)
+                    .collect());
             }
             Some(Ok(_)) => tracing::warn!(
                 "daemon answered a calls-in-files read with the wrong reply; using the in-RAM projection"
@@ -192,9 +231,9 @@ impl IndexRoute {
         }
         Ok(blocking(|| {
             let projection = cache.calls_projection();
-            paths
+            files
                 .iter()
-                .map(|path| projection.calls_in_file(path).to_vec())
+                .map(|(path, content)| content.map(|content| (content, projection.calls_in_file(path).to_vec())))
                 .collect()
         }))
     }
