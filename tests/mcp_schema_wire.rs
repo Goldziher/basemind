@@ -189,6 +189,16 @@ async fn instructions_stay_under_the_client_ceiling() {
             "instructions still describe the mode-dispatched surface (`{retired}`): {instructions}"
         );
     }
+    // `code_grep` searches markdown, config and data files as text; routing an exact string in them
+    // to the semantic `docs_search` sends the agent to a tool that needs a model, or a feature.
+    assert!(
+        !instructions.contains("cover code only"),
+        "instructions must not send exact text in non-code files away from code_grep: {instructions}"
+    );
+    assert!(
+        instructions.contains("markdown, config and data"),
+        "instructions must say code_grep covers markdown, config and data files: {instructions}"
+    );
 }
 
 /// Every advertised tool carries a human-readable `title`, so clients can show a label that is not

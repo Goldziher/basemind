@@ -220,14 +220,14 @@ pub(super) fn server_config() -> ServerConfig {
          {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for only the body you need\n\
          - where is X defined: code_symbols {\"name\":\"open_store\"}\n\
          - what calls / implements / imports X: code_refs {\"name\":\"open_store\"}\n\
-         - find a string or comment: code_grep {\"pattern\":\"cache_root(\"} (literal unless \
-         \"regex\":true)\n\
+         - find a string or comment in code, markdown, config and data files: code_grep \
+         {\"pattern\":\"cache_root(\"} (literal unless \"regex\":true)\n\
          - find code by what it does: code_search {\"query\":\"retry a failed upload\"}\n\
          - find a file by name: find_files {\"query\":\"readme\"}\n\
          History: git_log {} (recent commits; add path, query, author, symbol or rev), \
          git_blame {\"path\":\"src/store.rs\",\"symbol\":\"open\"}, git_diff {} (working-tree status; \
          add path, from, to).\n\
-         Documents (markdown, PDFs, config; the code tools cover code only): docs_search \
+         Documents by meaning (PDFs, Office, markdown, notebooks): docs_search \
          {\"query\":\"how releases are versioned\"}.\n\
          Memory shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"}, \
          memory_search {\"query\":\"…\"}.\n\

@@ -484,6 +484,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per retry.
 - `code_refs` callers (with `path`) and implementations flag a hit in a file edited since the scan
   `stale`, as the call sites of a name scan already did.
+- The server instructions and the `basemind init` rules block send exact text in markdown, config
+  and data files to `code_grep`, which searches them; `docs_search` is for documents by meaning.
 - The daemon's memory no longer climbs under steady memory, document and code-search writes: every
   LanceDB store of a process caches through one session of 64 MiB (index) and 32 MiB (metadata)
   instead of Lance's default 6 GiB and 1 GiB per store, where each commit's manifest and file
