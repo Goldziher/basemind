@@ -127,6 +127,11 @@ impl Mode {
 /// Resolves once the process is asked to end by SIGTERM, SIGHUP or SIGINT. A lead treats that as
 /// the end of its input, so its sessions are stopped and recorded before it exits. Without a
 /// handler the signal would end the process at once, leaving detached processes behind.
+///
+/// The handlers stay installed for the life of the process, so a second SIGTERM, SIGHUP or SIGINT
+/// while the sessions are being stopped is ignored: the shutdown runs to its end, bounded by the
+/// longest stop grace plus a few seconds. Only SIGKILL ends the process sooner, and leaves the
+/// sessions' detached processes and missing exit records behind.
 pub(crate) async fn termination() {
     use tokio::signal::unix::{SignalKind, signal};
     let (Ok(mut term), Ok(mut hup), Ok(mut int)) = (
@@ -169,7 +174,15 @@ where
         Mode::On { calls, notice } => (Some(calls), notice),
         Mode::Off { notice } => (None, notice),
     };
-    let inbound = tokio::spawn(inbound(input, to_relay, calls, Arc::clone(&awaited), answers));
+    // Aborted however `run` ends: a `serve` ended by a signal drops this future, and a reader left
+    // running would turn later host lines into lead calls after the sessions were shut down.
+    let inbound = AbortOnDrop(tokio::spawn(inbound(
+        input,
+        to_relay,
+        calls,
+        Arc::clone(&awaited),
+        answers,
+    )));
     let relayed = relay(relay_read, relay_write);
     let outbound = async {
         let mut from_relay = BufReader::new(from_relay);
@@ -196,7 +209,7 @@ where
         }
         // The relay is gone: read no more from the host, and give the lead calls already taken
         // their answers. The reader's sender goes with it; each call's goes when it is answered.
-        inbound.abort();
+        inbound.0.abort();
         let _ = tokio::time::timeout(DRAIN, async {
             while let Some(mut answer) = answered.recv().await {
                 answer.push('\n');
@@ -210,6 +223,15 @@ where
     };
     let (relayed, written) = tokio::join!(relayed, outbound);
     relayed.and(written)
+}
+
+/// A task aborted when this is dropped.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Copy the host's lines to the relay, answering the lead tools' calls here instead.

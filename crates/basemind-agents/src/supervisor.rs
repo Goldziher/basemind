@@ -139,6 +139,8 @@ pub(crate) struct Inner {
     refusals: Refusals,
     /// Serializes registrations, each with its record.
     pub(crate) registering: Mutex<()>,
+    /// Set by [`Supervisor::shutdown`], under the table's lock: no launch is admitted after it.
+    pub(crate) closed: AtomicBool,
 }
 
 impl Drop for Inner {
@@ -334,6 +336,7 @@ impl Supervisor {
                 reserved: needed,
                 refusals: Refusals::default(),
                 registering: Mutex::new(()),
+                closed: AtomicBool::new(false),
             }),
         })
     }
@@ -720,13 +723,20 @@ impl Drop for Supervisor {
 }
 
 impl Supervisor {
-    /// Stops every live session, writes the refusals still being coalesced, waits for the
-    /// sessions within their stop grace and the detached-group grace, then kills the ones still
-    /// running and waits briefly once more. Blocks for up to the longest stop grace plus a few
+    /// Refuses every later launch ([`SupervisorError::ShuttingDown`]), stops every live session,
+    /// writes the refusals still being coalesced, waits for the sessions within their stop grace
+    /// and the detached-group grace, then kills the ones still running and waits briefly once
+    /// more. Blocks for up to the longest stop grace plus a few
     /// seconds; dropping the supervisor does the same. An embedding that ends its process
     /// without waiting for the drop (a runtime shut down in the background, a signal) calls it
     /// first, so detached processes are reaped and the exits are recorded.
     pub fn shutdown(&self) {
+        // Under the table's lock, which a launch holds from admission to its slot's reservation:
+        // a launch either reserved its slot before, and is stopped below, or is refused.
+        {
+            let _table = self.inner.table();
+            self.inner.closed.store(true, Ordering::SeqCst);
+        }
         self.stop_all();
         for pending in self.inner.refusals.drain() {
             let _ = self.inner.audit(&AuditRecord {
