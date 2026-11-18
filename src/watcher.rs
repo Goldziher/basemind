@@ -124,7 +124,7 @@ fn dispatch_debounced(
 /// This is deliberately Store-free and scan-free: it does NOT own a `Store` and
 /// never touches the index. Both the standalone `watch` (which owns its own
 /// Store and scans) and the embedded MCP serve watcher (which funnels paths into
-/// the server's already-open store via `scan_and_refresh`) build on top of it,
+/// the server's already-open store via `Workspace::rescan`) build on top of it,
 /// so we never open a second `.basemind/.lock` flock for the same repo.
 ///
 /// Blocks until `shutdown` fires or the debouncer channel disconnects. No

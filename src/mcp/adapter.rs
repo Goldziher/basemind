@@ -21,6 +21,9 @@ use crate::engine::{EngineError, Workspace};
 /// One engine operation: a verb tool's body over a [`Workspace`].
 pub(crate) type Op<P, R> = fn(&Workspace, P) -> Result<R, EngineError>;
 
+/// Key of the `data` field that marks a tool error as contention for the workspace writer lock.
+pub(crate) const BUSY_DATA: &str = "busy";
+
 /// Each variant keeps its message; the code is what the CLI turns into an exit status.
 impl From<EngineError> for McpError {
     fn from(error: EngineError) -> Self {
@@ -30,7 +33,7 @@ impl From<EngineError> for McpError {
                 McpError::invalid_request(message, None)
             }
             EngineError::Busy(message) => {
-                McpError::invalid_request(message, Some(serde_json::json!({ super::BUSY_DATA: true })))
+                McpError::invalid_request(message, Some(serde_json::json!({ BUSY_DATA: true })))
             }
             EngineError::Cancelled => super::tasks::request_cancelled(),
             other => McpError::internal_error(other.to_string(), None),
@@ -71,10 +74,11 @@ where
 
 /// [`call`] for a verb tool that pages nothing: no `limit` to refuse, no cursor to bind; the same
 /// telemetry row.
-pub(super) async fn call_unpaged<P, R>(state: &ServerState, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+pub(super) async fn call_unpaged<P, R, O>(state: &ServerState, p: P, op: O) -> Result<CallToolResult, McpError>
 where
     P: ToolArgs + Serialize + Send + 'static,
     R: Serialize + 'static,
+    O: FnOnce(&Workspace, P) -> Result<R, EngineError> + Send + 'static,
 {
     let ws = Arc::clone(&state.shared);
     let telemetry = Arc::clone(&state.telemetry);
@@ -150,7 +154,7 @@ mod tests {
         assert_eq!(busy.code, ErrorCode::INVALID_REQUEST);
         assert_eq!(busy.message, "held");
         assert_eq!(
-            busy.data.as_ref().and_then(|data| data.get(super::super::BUSY_DATA)),
+            busy.data.as_ref().and_then(|data| data.get(BUSY_DATA)),
             Some(&serde_json::Value::Bool(true)),
             "busy, so the CLI exits 3"
         );

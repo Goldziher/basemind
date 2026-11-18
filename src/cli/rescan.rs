@@ -13,68 +13,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use super::exit::CliExit;
-use crate::path::{RelPath, is_external_key, normalize_query_path};
 
-/// Normalize and validate `raw` rescan targets against `root`, returning absolute paths.
-///
-/// A target that no longer exists on disk is accepted only when the index still knows it (or, for a
-/// deleted directory, anything under it): rescanning a deleted file is how its entry is pruned,
-/// whereas a typo should fail loudly instead of reporting a green no-op. Every problem is collected
-/// into one exit-`2` error so the user fixes them in a single pass.
+/// Normalize and validate `raw` rescan targets against `root`, returning absolute paths. Every
+/// problem is reported in one exit-`2` error.
 pub fn resolve_paths(root: &Path, raw: &[String]) -> Result<Vec<PathBuf>> {
-    let mut resolved = Vec::with_capacity(raw.len());
-    let mut problems = Vec::new();
-    let mut indexed: Option<crate::store::Index> = None;
-    for spelling in raw {
-        let Some(rel) = normalize_query_path(spelling, root) else {
-            problems.push(format!(
-                "{spelling:?} is outside the repository root or names the root itself (pass no path to rescan \
-                 everything)"
-            ));
-            continue;
-        };
-        let abs = root.join(&rel);
-        // ~keep An absolute path outside the repo is only ever a `scan.extra_roots` file, which lives
-        // ~keep in the index under its absolute key; anything else outside the root is not a target.
-        let external = is_external_key(rel.as_bytes());
-        if (external || !abs.exists()) && !is_indexed(root, &mut indexed, &rel) {
-            problems.push(if external {
-                format!("{spelling:?} is outside the repository and not an indexed extra root")
-            } else {
-                format!("{spelling:?} does not exist and is not in the index")
-            });
-            continue;
-        }
-        resolved.push(abs);
-    }
-    if problems.is_empty() {
-        return Ok(resolved);
-    }
-    Err(CliExit::usage(format!(
-        "invalid rescan path(s):\n  {}",
-        problems.join("\n  ")
-    )))
-}
-
-/// Whether the working-view index holds `rel` (a file) or anything beneath it (a directory).
-/// Loaded once per call, only when a path is missing from disk.
-fn is_indexed(root: &Path, cache: &mut Option<crate::store::Index>, rel: &str) -> bool {
-    if cache.is_none() {
-        *cache = crate::store::Store::open_read_only_no_index(root, crate::store::VIEW_WORKING)
-            .ok()
-            .map(|store| store.index);
-    }
-    let Some(index) = cache else {
-        return false;
-    };
-    if index.files.contains_key(&RelPath::from(rel)) {
-        return true;
-    }
-    let prefix = format!("{rel}/");
-    index
-        .files
-        .keys()
-        .any(|key| key.as_str().is_some_and(|key| key.starts_with(&prefix)))
+    crate::engine::scan::resolve_rescan_paths(root, raw).map_err(CliExit::usage)
 }
 
 /// Counts the daemon reports for a forwarded rescan.

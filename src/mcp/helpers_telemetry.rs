@@ -1,16 +1,11 @@
-//! Telemetry-row recording for tool calls — the `record_call` hook every `#[tool]` shim invokes.
-//!
-//! Split out of `helpers.rs` to keep that file within the per-file size budget. `record_call`
-//! stays reachable as `super::helpers::record_call` via a re-export in `helpers.rs`, so every
-//! tool call site is unchanged.
+//! Telemetry-row recording for tool calls: the `record_call_to` hook the engine adapter runs
+//! around every verb-tool call.
 
 use std::time::Instant;
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
-
-use super::ServerState;
 
 /// The response text of a tool result, so telemetry can route it through the real tokenizer; the
 /// byte length is recovered as `.len()` for the rows that report raw response bytes. Image /
@@ -41,23 +36,10 @@ fn result_text(result: &CallToolResult) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Record one tool-call row to `.basemind/telemetry.jsonl`. Best-effort:
-/// errors are logged via `tracing::warn!` and swallowed so a misbehaving
-/// telemetry write can never break a tool response. Only successful calls
-/// produce rows — error responses don't carry a meaningful "saved" number.
-pub(super) fn record_call(
-    state: &ServerState,
-    tool: &'static str,
-    params: &Value,
-    started: Instant,
-    result: &Result<CallToolResult, McpError>,
-) {
-    let corpus = state.shared.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
-    record_call_to(&state.telemetry, corpus, tool, params, started, result);
-}
-
-/// [`record_call`] without a `ServerState`: the telemetry writer and the corpus size it costs
-/// against, as the engine adapter holds them on a blocking thread.
+/// Record one tool-call row to `.basemind/telemetry.jsonl`, costed against `corpus` bytes. Best-effort:
+/// errors are logged via `tracing::warn!` and swallowed so a misbehaving telemetry write can never
+/// break a tool response. Only successful calls produce rows — error responses don't carry a
+/// meaningful "saved" number.
 pub(super) fn record_call_to(
     telemetry: &super::telemetry::Telemetry,
     corpus: u64,

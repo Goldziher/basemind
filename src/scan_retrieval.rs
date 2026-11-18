@@ -186,11 +186,15 @@ pub trait DocumentSink: Sync {
     fn purge_unembedded(&self, store: &mut Store, config: &Config, filters: &Filters, scope: &str) -> bool;
 }
 
-/// The retrieval implementations a scan runs with, bound by `crate::retrieval_wiring`.
+/// The retrieval implementations a scan runs with. [`Default`] is this build's, which the engine
+/// layer provides (`crate::retrieval_wiring`).
 #[derive(Clone, Copy)]
 pub struct Retrieval {
     #[cfg(feature = "code-search")]
     pub embedder: &'static dyn Embedder,
+    /// The identity of a preset's model that stored vectors carry.
+    #[cfg(feature = "code-search")]
+    pub model_key: fn(&str) -> String,
     pub vectors: &'static dyn VectorStore,
     #[cfg(feature = "documents")]
     pub documents: &'static dyn DocumentSink,

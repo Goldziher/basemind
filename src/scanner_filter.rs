@@ -311,7 +311,7 @@ impl Filters {
             })
             .collect();
         #[cfg(any(feature = "documents", feature = "code-search"))]
-        let retrieval = crate::retrieval_wiring::backend();
+        let retrieval = crate::scan_retrieval::Retrieval::default();
         #[cfg(feature = "documents")]
         retrieval.documents.warn_unavailable_settings(&config.documents);
         let doc_digest = crate::config::rules::doc_digest(&config.documents, &config.resources);
@@ -332,7 +332,7 @@ impl Filters {
             #[cfg(feature = "documents")]
             doc_embedder_ready: std::sync::OnceLock::new(),
             #[cfg(feature = "code-search")]
-            model_key: crate::retrieval_wiring::model_key(&config.documents.embedding_preset),
+            model_key: (retrieval.model_key)(&config.documents.embedding_preset),
             doc_phase_budget_secs: config.documents.effective_phase_budget_secs(),
             submodule_prefixes,
             eager_l2: config.scan.eager_l2,

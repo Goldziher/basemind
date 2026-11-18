@@ -22,21 +22,17 @@ mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
 mod helpers;
-pub(crate) use helpers::BUSY_DATA;
+pub(crate) use adapter::BUSY_DATA;
 
 /// The overload refusal a CLI session answers with ([`admission::ServerBusy::into_cli_error`]).
 #[cfg(all(test, feature = "comms", any(unix, windows)))]
 pub(crate) fn server_busy_for_cli() -> rmcp::ErrorData {
     admission::ServerBusy.into_cli_error()
 }
-#[cfg(test)]
-pub(crate) use helpers::rescan_error;
-mod blocking;
 #[cfg(all(test, feature = "comms", feature = "code-intel-js", any(unix, windows)))]
 mod code_refs_hosted_tests;
 #[cfg(test)]
 mod code_refs_tests;
-mod helpers_admin;
 mod helpers_telemetry;
 mod history_sync;
 pub(crate) mod identity;
@@ -228,7 +224,7 @@ pub struct ServerOptions {
     pub background: bool,
     /// When true (and `background` is on, and the served view is the working
     /// view), spawn a live filesystem watcher that funnels changed paths into
-    /// `scan_and_refresh` so the in-RAM map stays current as the agent edits.
+    /// `Workspace::rescan` so the in-RAM map stays current as the agent edits.
     /// When false, fall back to the passive view watcher (which only reacts to
     /// external scans writing `index.msgpack`). Disabled for one-shot queries.
     ///
@@ -366,10 +362,7 @@ impl BasemindServer {
                 if defer_warm {
                     background::spawn_cache_warm(Arc::clone(&state));
                 }
-                let gc_state = Arc::clone(&state);
-                tokio::spawn(async move {
-                    background::run_background_gc(gc_state).await;
-                });
+                background::spawn_background_gc(Arc::clone(&state.shared));
             }
         }
         Self {
@@ -577,14 +570,16 @@ mod map_cache_tests {
     /// hint) and suppressed when ready, so a healthy response carries no `notice` field.
     #[test]
     fn lifecycle_notice_maps_state_to_tag_and_retry() {
-        assert!(types::LifecycleNotice::for_state(Lifecycle::Ready).is_none());
-        let warming = types::LifecycleNotice::for_state(Lifecycle::WarmingUp).expect("warming notice");
+        assert!(crate::engine::types::LifecycleNotice::for_state(Lifecycle::Ready).is_none());
+        let warming = crate::engine::types::LifecycleNotice::for_state(Lifecycle::WarmingUp).expect("warming notice");
         assert_eq!(warming.state, "warming_up");
         assert!(warming.retry, "warming asks the caller to retry for complete results");
-        let building = types::LifecycleNotice::for_state(Lifecycle::BuildingIndex).expect("building notice");
+        let building =
+            crate::engine::types::LifecycleNotice::for_state(Lifecycle::BuildingIndex).expect("building notice");
         assert_eq!(building.state, "building_index");
         assert!(building.retry);
-        let rescanning = types::LifecycleNotice::for_state(Lifecycle::Rescanning).expect("rescan notice");
+        let rescanning =
+            crate::engine::types::LifecycleNotice::for_state(Lifecycle::Rescanning).expect("rescan notice");
         assert_eq!(rescanning.state, "rescanning");
         assert!(!rescanning.retry, "rescan results are usable, no retry required");
     }
@@ -597,14 +592,15 @@ mod map_cache_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         crate::store::write_status_sidecar(dir.path(), 5, 5, &ScanHealth::partial("index rebuilding", 0, 0));
         let degraded = crate::store::read_status_sidecar(dir.path());
-        let notice = types::LifecycleNotice::for_scan_status(degraded.as_ref()).expect("degraded notice");
+        let notice =
+            crate::engine::types::LifecycleNotice::for_scan_status(degraded.as_ref()).expect("degraded notice");
         assert_eq!(notice.state, "index_rebuilding");
         assert!(notice.retry && notice.message.contains("index rebuilding"));
 
         crate::store::write_status_sidecar(dir.path(), 5, 5, &ScanHealth::complete());
         let clean: Option<StatusSidecar> = crate::store::read_status_sidecar(dir.path());
-        assert!(types::LifecycleNotice::for_scan_status(clean.as_ref()).is_none());
-        assert!(types::LifecycleNotice::for_scan_status(None).is_none());
+        assert!(crate::engine::types::LifecycleNotice::for_scan_status(clean.as_ref()).is_none());
+        assert!(crate::engine::types::LifecycleNotice::for_scan_status(None).is_none());
     }
 
     /// `with_delta` must re-read only the changed blobs, preserve untouched entries, and drop

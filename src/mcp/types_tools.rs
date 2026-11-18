@@ -9,9 +9,6 @@
 //! The field docs are the schema descriptions an agent reads on every session, so they are kept to
 //! a clause: the whole `tools/list` has a byte ceiling.
 
-use rmcp::schemars;
-use serde::{Deserialize, Serialize};
-
 use super::strict::ToolArgs;
 
 macro_rules! tool_args {
@@ -60,21 +57,7 @@ pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymb
 pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
 pub use crate::engine::types::grep::CodeGrepParams;
+pub use crate::engine::types::index::{IndexRescanParams, IndexStatusParams};
 pub use crate::engine::types::memory::{MemorySaveParams, MemorySearchToolParams};
 pub use crate::engine::types::refs::CodeRefsParams;
 pub use crate::engine::types::search::{CodeSearchParams, DocsSearchParams};
-
-/// Arguments of `index_status`: none.
-#[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct IndexStatusParams {}
-
-/// Arguments of `index_rescan`.
-#[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct IndexRescanParams {
-    /// Repo-relative files or directories to re-index (default: the whole workspace, skipping
-    /// unchanged files).
-    #[serde(default)]
-    pub paths: Option<Vec<String>>,
-}

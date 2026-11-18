@@ -186,11 +186,19 @@ mod tests {
             path: std::path::PathBuf::from(".lock"),
             holder: None,
         });
-        let error = run_tool("rescan", Err(crate::mcp::rescan_error(&locked))).expect_err("refused");
+        let error = run_tool(
+            "rescan",
+            Err(rmcp::ErrorData::from(crate::engine::scan::rescan_error(&locked))),
+        )
+        .expect_err("refused");
         assert_eq!(exit::exit_code_for(&error), exit::BUSY);
 
         let failed = crate::scanner::ScanError::Store(crate::store::StoreError::BlobTooLarge);
-        let error = run_tool("rescan", Err(crate::mcp::rescan_error(&failed))).expect_err("failed");
+        let error = run_tool(
+            "rescan",
+            Err(rmcp::ErrorData::from(crate::engine::scan::rescan_error(&failed))),
+        )
+        .expect_err("failed");
         assert_eq!(
             exit::exit_code_for(&error),
             exit::ERROR,

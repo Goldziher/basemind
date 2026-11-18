@@ -30,7 +30,7 @@ fn arm_watcher(root: &Path, path_rx: &mpsc::Receiver<Vec<PathBuf>>) {
 
 /// `watch_paths` should hand the callback the repo-relative path of a file
 /// that changes under the watched root, within a bounded window. This is the
-/// primitive the MCP serve watcher funnels into `scan_and_refresh`.
+/// primitive the MCP serve watcher funnels into `Workspace::rescan`.
 #[test]
 fn should_emit_changed_path_when_file_is_modified() {
     let tmp = tempfile::tempdir().expect("tempdir");
