@@ -145,3 +145,24 @@ fn a_read_only_open_stamps_no_schema_version() {
     drop(IndexDb::open_with_memory(dir.path(), &memory_dir).unwrap());
     assert_eq!(peek_index_schema_ver(dir.path()).unwrap(), Some(INDEX_SCHEMA_VER));
 }
+
+/// The read-only group open creates no keyspace: a database missing one is refused as needing a
+/// rescan and left as it was found.
+#[test]
+fn a_read_only_group_open_creates_no_keyspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let index_dir = dir.path().join(INDEX_DIR);
+    {
+        let db = Database::builder(&index_dir).open().unwrap();
+        let meta = open_keyspace(&db, "meta").unwrap();
+        meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes()).unwrap();
+    }
+
+    let Err(IndexError::NeedsRescan { stored, current }) = IndexDb::open_group_for_reading(dir.path()) else {
+        panic!("a database missing keyspaces is not read");
+    };
+    assert_eq!((stored, current), (INDEX_SCHEMA_VER, INDEX_SCHEMA_VER));
+    let db = Database::builder(&index_dir).open().unwrap();
+    assert!(db.keyspace_exists("meta"));
+    assert!(!db.keyspace_exists("symbols_by_name"), "the reader created no keyspace");
+}

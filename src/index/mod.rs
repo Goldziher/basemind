@@ -62,8 +62,11 @@ use thiserror::Error;
 /// into its meta keyspace at *create* time and recovers it on reopen, ignoring the create options
 /// for a keyspace that already exists, so an index built by an earlier build would keep the 64 MiB
 /// default forever unless the schema mismatch forces it to be recreated; `+6` the LZ4-at-every-level
-/// block compression ([`index_keyspace_options`]), persisted at create time for the same reason.
-const INDEX_PARTITION_REVISION: u32 = 6;
+/// block compression ([`index_keyspace_options`]), persisted at create time for the same reason;
+/// `+7` the key-per-restart data blocks of the scan-read keyspaces ([`DENSE_RESTART_KEYSPACES`]),
+/// persisted at create time too, and the write-only `imports_by_module` / `imports_by_path`
+/// partitions dropped (ADR-0028 rule 6).
+const INDEX_PARTITION_REVISION: u32 = 7;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
 /// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
@@ -73,6 +76,26 @@ const INDEX_PARTITION_REVISION: u32 = 6;
 pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + INDEX_PARTITION_REVISION;
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
+
+/// Every keyspace of an index database, as [`IndexDb::open`] opens them.
+const INDEX_KEYSPACES: [&str; 16] = [
+    "meta",
+    "symbols_by_path",
+    "symbols_by_name",
+    "calls_by_path",
+    "calls_by_callee",
+    "implementations_by_trait",
+    "implementations_by_path",
+    "refs_by_def",
+    "refs_by_path",
+    "import_targets",
+    "importers_by_probe",
+    "code_bm25_postings",
+    "code_bm25_by_path",
+    "grep_bloom",
+    "code_bm25_holders",
+    "embeddings",
+];
 
 /// `meta` row stamping that `import_targets` / `importers_by_probe` describe EVERY importer, i.e. a
 /// wholesale resolve pass completed since they were created. An index that predates the two
@@ -105,8 +128,6 @@ const KEYSPACE_MEMTABLE_BYTES: &[(&str, u64)] = &[
     ("symbols_by_name", MEMTABLE_WARM_BYTES),
     ("calls_by_path", MEMTABLE_WARM_BYTES),
     ("calls_by_callee", MEMTABLE_WARM_BYTES),
-    ("imports_by_module", MEMTABLE_COLD_BYTES),
-    ("imports_by_path", MEMTABLE_COLD_BYTES),
     ("implementations_by_trait", MEMTABLE_COLD_BYTES),
     ("implementations_by_path", MEMTABLE_COLD_BYTES),
     ("refs_by_def", MEMTABLE_WARM_BYTES),
@@ -169,8 +190,28 @@ const fn memtable_ceiling_bytes() -> u64 {
 /// never pick the new sizes up.
 fn open_keyspace(db: &Database, name: &str) -> Result<Keyspace, IndexError> {
     let bytes = memtable_bytes_for(name);
-    Ok(db.keyspace(name, move || index_keyspace_options(bytes))?)
+    let dense = DENSE_RESTART_KEYSPACES.contains(&name);
+    Ok(db.keyspace(name, move || {
+        let options = index_keyspace_options(bytes);
+        if dense {
+            options.data_block_restart_interval_policy(fjall::config::RestartIntervalPolicy::all(1))
+        } else {
+            options
+        }
+    })?)
 }
+
+/// Keyspaces the name scans step through row by row (`symbols_by_name`, `calls_by_callee`,
+/// `implementations_by_trait`) and the per-hit point reads land in (`calls_by_path`). Their data
+/// blocks store every key whole: a key that shares a prefix with the one before it is otherwise
+/// rebuilt into a fresh allocation on every read, which a profile of the reference scan put at a
+/// third of each row's cost. The blocks grow before compression; LZ4 takes most of it back.
+const DENSE_RESTART_KEYSPACES: [&str; 4] = [
+    "symbols_by_name",
+    "calls_by_callee",
+    "calls_by_path",
+    "implementations_by_trait",
+];
 
 /// Create options shared by every index keyspace: the tiered memtable size plus LZ4 on data and
 /// index blocks at *every* level. fjall's default policy is `[None, None, Lz4]`, which leaves L0 and
@@ -402,7 +443,8 @@ pub struct IndexDb {
     pub(in crate::index) symbols_by_name: scoped::Scoped,
     /// `calls_by_path`: a content's call sites, keyed `content key ‖ start`.
     pub(in crate::index) calls_by_path: scoped::Scoped,
-    /// `calls_by_callee`: `callee ‖ content key ‖ start` — `references` and `callers`.
+    /// `calls_by_callee`: `callee ‖ content key`, the value packing every start of that callee in the
+    /// content (ADR-0043) — `references` and `callers`.
     pub(in crate::index) calls_by_callee: scoped::Scoped,
     /// This view's live content keys: which of its paths hold each content key. Published by the
     /// store whenever it writes the view's file map, shared by every handle on the view.
@@ -410,12 +452,6 @@ pub struct IndexDb {
     /// Distinct callee names of `calls_by_callee`; lets the substring name scan range-scan only the
     /// matching names instead of walking the partition.
     pub(in crate::index) callee_names: std::sync::Arc<name_dict::NameDict>,
-    /// Reserved fast-path partition: written on every upsert so that future
-    /// `dependents`-by-module queries can use a prefix scan instead of iterating the
-    /// full import set. Not yet read by any MCP query path; kept to avoid a schema
-    /// migration when the read path lands.
-    pub(in crate::index) imports_by_module: scoped::Scoped,
-    pub(in crate::index) imports_by_path: scoped::Scoped,
     /// `implementations_by_trait`: prefix scans on trait name — backs `find_implementations`.
     pub(in crate::index) implementations_by_trait: scoped::Scoped,
     /// Distinct trait names of `implementations_by_trait`, as [`Self::callee_names`] is for callees.
@@ -614,7 +650,8 @@ impl IndexDb {
     }
 
     /// Open the group database at `dir` to read it, writing nothing: no schema stamp, no flush, no
-    /// wipe. An index of another schema is [`IndexError::NeedsRescan`].
+    /// wipe, no keyspace created. An index of another schema, or one missing a keyspace, is
+    /// [`IndexError::NeedsRescan`].
     pub(crate) fn open_group_for_reading(dir: &Path) -> Result<Self, IndexError> {
         Self::open_inner(dir, None, true, Some(group_cache_bytes()))
     }
@@ -657,6 +694,22 @@ impl IndexDb {
         };
         if let (Ok(memory), false) = (&memory, tolerate_held_memory) {
             memory_store::migrate_legacy(&db, memory)?;
+        }
+        // The read-only open of a group database creates no keyspace (ADR-0036 rule 3): one that is
+        // missing was never created by a writer of this layout, so the database is not read. ~keep
+        if tolerate_held_memory && memory_dir.is_none() && INDEX_KEYSPACES.iter().any(|name| !db.keyspace_exists(name))
+        {
+            let stored = match db.keyspace_exists("meta") {
+                true => open_keyspace(&db, "meta")?
+                    .get(META_SCHEMA_VER)?
+                    .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
+                    .map_or(0, u32::from_be_bytes),
+                false => 0,
+            };
+            return Err(IndexError::NeedsRescan {
+                stored,
+                current: INDEX_SCHEMA_VER,
+            });
         }
         let mut meta = open_keyspace(&db, "meta")?;
         let on_disk_ver = meta
@@ -704,8 +757,6 @@ impl IndexDb {
         let symbols_by_name = open_keyspace(&db, "symbols_by_name")?;
         let calls_by_path = open_keyspace(&db, "calls_by_path")?;
         let calls_by_callee = open_keyspace(&db, "calls_by_callee")?;
-        let imports_by_module = open_keyspace(&db, "imports_by_module")?;
-        let imports_by_path = open_keyspace(&db, "imports_by_path")?;
         let implementations_by_trait = open_keyspace(&db, "implementations_by_trait")?;
         let implementations_by_path = open_keyspace(&db, "implementations_by_path")?;
         let refs_by_def = open_keyspace(&db, "refs_by_def")?;
@@ -732,8 +783,6 @@ impl IndexDb {
                 &symbols_by_name,
                 &calls_by_path,
                 &calls_by_callee,
-                &imports_by_module,
-                &imports_by_path,
                 &implementations_by_trait,
                 &implementations_by_path,
                 &refs_by_def,
@@ -760,8 +809,6 @@ impl IndexDb {
             calls_by_path: whole(calls_by_path),
             calls_by_callee: whole(calls_by_callee),
             callee_names: std::sync::Arc::default(),
-            imports_by_module: whole(imports_by_module),
-            imports_by_path: whole(imports_by_path),
             implementations_by_trait: whole(implementations_by_trait),
             trait_names: std::sync::Arc::default(),
             implementations_by_path: whole(implementations_by_path),

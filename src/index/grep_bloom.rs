@@ -184,6 +184,43 @@ impl IndexDb {
             .is_some_and(|row| parse_row(&row).is_some())
     }
 
+    /// The window a sweep of the bloom rows holds from before it reads the file maps it judges
+    /// liveness by until its deletes are committed: a sibling view that writes its file map
+    /// meanwhile keeps the rows its writer staged pending until the window closes, so a row a map the
+    /// sweep did not read names is not deleted. `None` while another sweep of the group runs (the
+    /// next pass sweeps); a database of its own needs no window.
+    pub(crate) fn grep_bloom_sweep_window(&self) -> Option<GrepBloomWindow> {
+        match &self.group {
+            None => Some(GrepBloomWindow { _window: None }),
+            Some(own) => own
+                .group
+                .begin_sweep()
+                .map(|window| GrepBloomWindow { _window: Some(window) }),
+        }
+    }
+
+    /// Whether a writer of the group staged the row of `hash` that no file map it wrote names yet.
+    fn bloom_is_pending(&self, hash: &[u8]) -> bool {
+        self.group
+            .as_ref()
+            .is_some_and(|own| std::str::from_utf8(hash).is_ok_and(|hash| own.group.bloom_is_pending(hash)))
+    }
+
+    /// Commit the removal of `keys`, skipping each row a writer of the group staged since the file
+    /// maps were read. Under the gate held exclusively: a writer registers its row under it shared,
+    /// so it either registered first and the row stays, or stages it after the delete is committed.
+    fn commit_bloom_removals<K: std::ops::Deref<Target = [u8]>>(&self, keys: &[K]) -> Result<usize, super::IndexError> {
+        let _exclusive = self.bm25_gate.write();
+        let mut writer = self.writer();
+        let mut dropped = 0;
+        for key in keys.iter().filter(|key| !self.bloom_is_pending(key)) {
+            writer.remove_grep_bloom(key);
+            dropped += 1;
+        }
+        writer.commit()?;
+        Ok(dropped)
+    }
+
     /// Delete every row whose hash `is_live` rejects, returning how many were dropped. Rows are shared
     /// by every path holding the content, so only a hash no indexed file references may go. Path-keyed
     /// rows from before the content-hash re-key are never live, so they leave here too.
@@ -191,14 +228,14 @@ impl IndexDb {
     /// Row values are read only until the keyspace has been swept once under the current
     /// [`ROW_VERSION`] (recorded in `meta`): that pass also drops rows whose layout is older, which
     /// are unreadable. Afterwards every row is current, so the sweep is key-only and a large index
-    /// is not read back in full on each scan.
+    /// is not read back in full on each scan. A row a writer of the group staged and no file map it
+    /// wrote names yet stays.
     pub fn sweep_grep_bloom(&self, is_live: impl Fn(&str) -> bool) -> Result<usize, super::IndexError> {
         let versioned = self
             .meta
             .get(META_ROW_SWEPT_VER)?
             .is_some_and(|v| v.first() == Some(&ROW_VERSION));
-        let mut writer = self.writer();
-        let mut dropped = 0;
+        let mut dead = Vec::new();
         let rows: Box<dyn Iterator<Item = Result<(IndexBytes, bool), super::IndexError>>> = if versioned {
             Box::new(self.grep_bloom.keys().map(|key| key.map(|key| (key, true))))
         } else {
@@ -213,10 +250,9 @@ impl IndexDb {
             if current && std::str::from_utf8(&key).is_ok_and(&is_live) {
                 continue;
             }
-            writer.remove_grep_bloom(&key);
-            dropped += 1;
+            dead.push(key);
         }
-        writer.commit()?;
+        let dropped = self.commit_bloom_removals(&dead)?;
         if !versioned {
             self.meta.insert(META_ROW_SWEPT_VER, [ROW_VERSION])?;
         }
@@ -229,12 +265,15 @@ impl IndexDb {
         &self,
         hashes: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), super::IndexError> {
-        let mut writer = self.writer();
-        for hash in hashes {
-            writer.remove_grep_bloom(hash.as_bytes());
-        }
-        writer.commit()
+        let keys: Vec<&[u8]> = hashes.into_iter().map(str::as_bytes).collect();
+        self.commit_bloom_removals(&keys).map(drop)
     }
+}
+
+/// The group's sweep window, held by a sweep of the bloom rows (see
+/// [`IndexDb::grep_bloom_sweep_window`]); closed on drop.
+pub(crate) struct GrepBloomWindow {
+    _window: Option<super::group_sweep::SweepWindow>,
 }
 
 /// The verdict logic behind [`IndexView::grep_skip_verdicts`], over any row source.

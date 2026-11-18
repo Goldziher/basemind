@@ -7,7 +7,7 @@ use fjall::{OwnedWriteBatch, Slice};
 use super::scoped::Scoped;
 
 use super::keys;
-use super::writer_content::{Family, FreshRow};
+use super::writer_content::{Family, Fresh, FreshRow};
 use super::{IndexDb, IndexError};
 use crate::extract::{FileMapL1, FileMapL2};
 use crate::intel::model::FileResolvedRefs;
@@ -20,7 +20,7 @@ fn symbol_family(db: &IndexDb) -> Family<'_> {
     Family {
         rows: &db.symbols_by_path,
         names: &db.symbols_by_name,
-        name_of: super::writer_content::symbol_name_key,
+        names_of: super::writer_content::symbol_name_keys,
     }
 }
 
@@ -29,7 +29,7 @@ fn call_family(db: &IndexDb) -> Family<'_> {
     Family {
         rows: &db.calls_by_path,
         names: &db.calls_by_callee,
-        name_of: super::writer_content::callee_key,
+        names_of: super::writer_content::callee_name_keys,
     }
 }
 
@@ -247,8 +247,8 @@ impl IndexWriter {
     /// content no view holds (the group sweep), or to model lost rows in a test.
     pub fn remove_content(&mut self, content: &keys::ContentKey) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        symbol_family(db).stage(batch, staged_bytes, content, Vec::new())?;
-        call_family(db).stage(batch, staged_bytes, content, Vec::new())
+        symbol_family(db).stage(batch, staged_bytes, content, Fresh::default())?;
+        call_family(db).stage(batch, staged_bytes, content, Fresh::default())
     }
 
     /// Store the grep bloom `row` (built by [`super::grep_bloom::build_row`] from the bytes the
@@ -257,6 +257,12 @@ impl IndexWriter {
     /// dropped by [`IndexDb::sweep_grep_bloom`]. Counted against the staged-byte budget like every
     /// other entry.
     pub fn upsert_grep_bloom(&mut self, hash_hex: &str, row: Vec<u8>) {
+        // Pending until the view's file map names it, so a bloom sweep that read the maps first ~keep
+        // keeps it (see `IndexDb::grep_bloom_sweep_window`). ~keep
+        if let Some(own) = &self.db.group {
+            let _shared = self.db.bm25_gate.read();
+            own.group.register_pending_bloom(own.view_id, hash_hex);
+        }
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         stage_insert(batch, staged_bytes, &db.grep_bloom, hash_hex.as_bytes().to_vec(), row);
     }
@@ -516,21 +522,6 @@ impl IndexWriter {
 
     fn stage_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        let imp_path_prefix = keys::imports_by_path_prefix(rel);
-        let mut found_imports: Vec<(Vec<u8>, String, u32)> = Vec::new();
-        for row in db.imports_by_path.prefix(&imp_path_prefix) {
-            let (k, _) = row?;
-            if let Some((_, module, start_byte)) = keys::parse_import_by_path(&k) {
-                found_imports.push(((*k).to_vec(), module, start_byte));
-            }
-        }
-        for (path_key, module, start_byte) in found_imports {
-            stage_remove(batch, staged_bytes, &db.imports_by_path, path_key);
-            if let Some(module_key) = keys::import_by_module(&module, rel, start_byte) {
-                stage_remove(batch, staged_bytes, &db.imports_by_module, module_key);
-            }
-        }
-
         let impl_path_prefix = keys::impls_by_path_prefix(rel);
         let mut found_impls: Vec<(Vec<u8>, String, String, u32)> = Vec::new();
         for row in db.implementations_by_path.prefix(&impl_path_prefix) {
@@ -778,21 +769,30 @@ impl IndexWriter {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         // Before the keys are staged: the dictionary must never miss a name that has a key.
         db.callee_names.record(l2.calls.iter().map(|call| call.callee.as_str()));
-        let mut fresh = Vec::with_capacity(l2.calls.len());
+        let mut fresh = Fresh {
+            rows: Vec::with_capacity(l2.calls.len()),
+            names: Vec::new(),
+        };
+        let mut starts_by_callee: ahash::AHashMap<&str, Vec<u32>> = ahash::AHashMap::new();
         for call in &l2.calls {
-            let name_key = keys::call_by_callee(&call.callee, content, call.start_byte);
-            if name_key.is_none() {
-                tracing::debug!(
-                    path = %rel,
-                    callee_len = call.callee.len(),
-                    "index: callee name exceeds 64 KiB — skipping calls_by_callee entry"
-                );
-            }
-            fresh.push(FreshRow {
+            starts_by_callee
+                .entry(call.callee.as_str())
+                .or_default()
+                .push(call.start_byte);
+            fresh.rows.push(FreshRow {
                 row: keys::content_row(content, call.start_byte),
                 value: rmp_serde::to_vec_named(call)?,
-                name_key,
             });
+        }
+        for (callee, starts) in starts_by_callee {
+            match keys::call_name_row(callee, content) {
+                Some(name_key) => fresh.names.push((name_key, keys::pack_starts(starts))),
+                None => tracing::debug!(
+                    path = %rel,
+                    callee_len = callee.len(),
+                    "index: callee name exceeds 64 KiB — skipping calls_by_callee entry"
+                ),
+            }
         }
         call_family(db).stage(batch, staged_bytes, content, fresh)
     }
@@ -804,43 +804,25 @@ impl IndexWriter {
         l1: &FileMapL1,
     ) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        let mut fresh = Vec::with_capacity(l1.symbols.len());
+        let mut fresh = Fresh {
+            rows: Vec::with_capacity(l1.symbols.len()),
+            names: Vec::with_capacity(l1.symbols.len()),
+        };
         for sym in &l1.symbols {
-            let name_key = keys::symbol_by_name(&sym.name, sym.kind, content, sym.start_byte);
-            if name_key.is_none() {
-                tracing::debug!(
+            match keys::symbol_by_name(&sym.name, sym.kind, content, sym.start_byte) {
+                Some(name_key) => fresh.names.push((name_key, Vec::new())),
+                None => tracing::debug!(
                     path = %rel,
                     name_len = sym.name.len(),
                     "index: symbol name exceeds 64 KiB — skipping symbols_by_name entry"
-                );
+                ),
             }
-            fresh.push(FreshRow {
+            fresh.rows.push(FreshRow {
                 row: keys::content_row(content, sym.start_byte),
                 value: rmp_serde::to_vec_named(sym)?,
-                name_key,
             });
         }
         symbol_family(db).stage(batch, staged_bytes, content, fresh)?;
-        for imp in &l1.imports {
-            if let Some(module) = &imp.module {
-                match (
-                    keys::import_by_module(module, rel, imp.start_byte),
-                    keys::import_by_path(rel, module, imp.start_byte),
-                ) {
-                    (Some(module_key), Some(path_key)) => {
-                        stage_insert(batch, staged_bytes, &db.imports_by_module, module_key, Vec::<u8>::new());
-                        stage_insert(batch, staged_bytes, &db.imports_by_path, path_key, Vec::<u8>::new());
-                    }
-                    _ => {
-                        tracing::debug!(
-                            path = %rel,
-                            module_len = module.len(),
-                            "index: import module name exceeds 64 KiB — skipping imports index entries"
-                        );
-                    }
-                }
-            }
-        }
         // Before the keys are staged: the dictionary must never miss a name that has a key.
         db.trait_names
             .record(l1.implementations.iter().map(|imp| imp.trait_name.as_str()));

@@ -24,7 +24,6 @@ view of every worktree of the group; a view's own rows sit under its 4-byte view
 | `symbols_by_name` | `name`-prefix range scans for symbol search; shared by the group. |
 | `calls_by_path` | One content's call sites, keyed by content key; shared by the group. |
 | `calls_by_callee` | `callee`-prefix range scans — drives `code_refs`; shared by the group. |
-| `imports_by_module` | `module`-prefix rows; written by every scan but read by nothing today: `code_refs` relation `importers` scans the imports of the cached outlines. |
 | `code_bm25_postings` | BM25 postings shared by the group: `term ‖ key` → packed `ordinal ‖ tf ‖ doclen` per chunk. |
 | `code_bm25_by_path` | A view's per-file BM25 forward rows; their terms name the postings to retire. |
 | `code_bm25_holders` | `key ‖ view id ‖ path` per holder of a BM25 key; a posting goes once none names its key. |

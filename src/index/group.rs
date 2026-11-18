@@ -52,11 +52,12 @@ pub(super) const SHARED_PARTS: [Part; 7] = [
 const META_FORMAT: &[u8] = b"\xffgroup/format";
 /// The layout of the rows in a group database. Bumped when a stage of ADR-0028 changes a key shape
 /// within an unreleased minor: an open that finds another value (or none, in a database that has an
-/// incarnation) empties every keyspace and takes a new incarnation, so every view's file map names a
-/// gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content. 3:
+/// incarnation) discards the database and creates it anew with a new incarnation, so every view's
+/// file map names a gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content. 3:
 /// symbol and call rows shared, keyed by content. 4: BM25 holders; postings written once per key. 5: one posting row per term and
-/// content, packing its chunks (ADR-0041).
-const GROUP_FORMAT: u32 = 5;
+/// content, packing its chunks (ADR-0041). 6: one call name row per callee and content, packing its
+/// starts (ADR-0043).
+const GROUP_FORMAT: u32 = 6;
 
 /// Keeps the cross-process group lock held for as long as the database is open.
 pub(crate) type GroupLock = Box<dyn Send + Sync>;
@@ -72,11 +73,11 @@ pub(crate) struct GroupDb {
     /// A view's retirement holds it too, and so does every open's claim of an id
     /// ([`Self::claim_view`]), so no open gets an id being retired.
     pub(super) allocation: Mutex<()>,
-    /// Each view's BM25 live-key cache, shared by every handle on the view.
-    bm25_live: Mutex<AHashMap<u32, Arc<Bm25LiveCache>>>,
-    /// Each view's BM25 pass ledger, shared by every handle on the view as `bm25_live` is.
+    /// Each view's BM25 live-key cache, shared by every handle on the view and dropped with the last.
+    bm25_live: Mutex<AHashMap<u32, Weak<Bm25LiveCache>>>,
+    /// Each view's BM25 pass ledger, shared and dropped as `bm25_live` is.
     #[cfg(feature = "code-search")]
-    bm25_pass: Mutex<AHashMap<u32, Arc<super::bm25_pass::Bm25PassLedger>>>,
+    bm25_pass: Mutex<AHashMap<u32, Weak<super::bm25_pass::Bm25PassLedger>>>,
     /// Orders the BM25 posting sweep against posting commits, across every view of the group.
     bm25_gate: Bm25Gate,
     /// Each view's live content keys, shared by every handle on the view and dropped with the last.
@@ -130,6 +131,22 @@ fn read_u32(bytes: &[u8]) -> Option<u32> {
 
 fn read_u64(bytes: &[u8]) -> Option<u64> {
     <[u8; 8]>::try_from(bytes).ok().map(u64::from_be_bytes)
+}
+
+/// Whether the database holds rows no open of this build may read: a format other than
+/// [`GROUP_FORMAT`], or rows without the incarnation that every writer stamps before its first row
+/// (what a crash in an older build's in-place clear left).
+fn holds_rows_of_another_layout(db: &IndexDb) -> Result<bool, IndexError> {
+    let meta = db.keyspace(Part::Meta).raw();
+    if meta.get(META_INCARNATION)?.is_some() {
+        return Ok(meta.get(META_FORMAT)?.as_deref().and_then(read_u32) != Some(GROUP_FORMAT));
+    }
+    for part in Part::ALL.into_iter().filter(|part| *part != Part::Meta) {
+        if !db.keyspace(part).raw().is_empty()? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A fresh incarnation: distinct from every earlier one of the directory with overwhelming
@@ -218,20 +235,23 @@ impl GroupDb {
     }
 
     fn open(dir: &Path, lock: GroupLock) -> Result<Self, IndexError> {
-        let fresh = super::IndexDb::open_without_memory(dir)?;
-        let wiped_on_open = fresh.wiped_on_open();
+        let mut fresh = super::IndexDb::open_without_memory(dir)?;
+        let mut wiped_on_open = fresh.wiped_on_open();
+        if holds_rows_of_another_layout(&fresh)? {
+            // Discarded whole, as a schema mismatch is: emptying it keyspace by keyspace would leave,
+            // after a crash, rows of the old layout under view ids the next open allocates again. ~keep
+            tracing::info!(dir = %dir.display(), "group index rows are of another layout; rebuilding it");
+            drop(fresh);
+            super::durability::discard_dir(&dir.join(super::INDEX_DIR))?;
+            fresh = super::IndexDb::open_without_memory(dir)?;
+            wiped_on_open = true;
+        }
         let meta = fresh.keyspace(Part::Meta).raw().clone();
         let stored = meta.get(META_INCARNATION)?.as_deref().and_then(read_u64);
         let current_format = meta.get(META_FORMAT)?.as_deref().and_then(read_u32) == Some(GROUP_FORMAT);
         let incarnation = match stored {
             Some(incarnation) if !wiped_on_open && current_format => incarnation,
             _ => {
-                if stored.is_some() && !current_format {
-                    tracing::info!(dir = %dir.display(), "group index rows are of an older layout; rebuilding it");
-                    for part in Part::ALL {
-                        fresh.keyspace(part).raw().clear()?;
-                    }
-                }
                 let incarnation = new_incarnation(dir);
                 let mut batch = fresh.db.batch().durability(Some(PersistMode::SyncAll));
                 batch.insert(&meta, META_INCARNATION, incarnation.to_be_bytes());
@@ -387,8 +407,6 @@ impl GroupDb {
             calls_by_path: scoped(Part::CallsByPath),
             calls_by_callee: scoped(Part::CallsByCallee),
             callee_names: Arc::clone(&self.callee_names),
-            imports_by_module: scoped(Part::ImportsByModule),
-            imports_by_path: scoped(Part::ImportsByPath),
             implementations_by_trait: scoped(Part::ImplementationsByTrait),
             trait_names: Arc::default(),
             implementations_by_path: scoped(Part::ImplementationsByPath),
@@ -399,23 +417,11 @@ impl GroupDb {
             code_bm25_postings: scoped(Part::CodeBm25Postings),
             code_bm25_by_path: scoped(Part::CodeBm25ByPath),
             code_bm25_holders: scoped(Part::CodeBm25Holders),
-            bm25_live: Arc::clone(
-                self.bm25_live
-                    .lock()
-                    .expect("bm25 live caches")
-                    .entry(view_id)
-                    .or_default(),
-            ),
+            bm25_live: per_view(&self.bm25_live, view_id),
             bm25_gate: Arc::clone(&self.bm25_gate),
             live,
             #[cfg(feature = "code-search")]
-            bm25_pass: Arc::clone(
-                self.bm25_pass
-                    .lock()
-                    .expect("bm25 pass ledgers")
-                    .entry(view_id)
-                    .or_default(),
-            ),
+            bm25_pass: per_view(&self.bm25_pass, view_id),
             grep_bloom: scoped(Part::GrepBloom),
             embeddings: self.embeddings.clone(),
             fault: Arc::default(),
@@ -431,18 +437,9 @@ impl GroupDb {
         })
     }
 
-    /// The live-key cell of view `view_id`: the one its open handles share, or a new one when none
-    /// is open. Cells of views with no open handle are dropped here, so a long-lived process does
-    /// not keep the keys of every view it ever opened.
+    /// The live-key cell of view `view_id`, as [`per_view`] hands it out.
     fn live_keys_cell(&self, view_id: u32) -> Arc<LiveKeysCell> {
-        let mut cells = self.live.lock().expect("live key cells");
-        cells.retain(|_, cell| cell.strong_count() > 0);
-        if let Some(cell) = cells.get(&view_id).and_then(Weak::upgrade) {
-            return cell;
-        }
-        let cell = Arc::default();
-        cells.insert(view_id, Arc::downgrade(&cell));
-        cell
+        per_view(&self.live, view_id)
     }
 
     /// Views whose live-key cell is still held by an open handle.
@@ -458,6 +455,28 @@ impl GroupDb {
         #[cfg(feature = "code-search")]
         self.bm25_pass.lock().expect("bm25 pass ledgers").remove(&view_id);
     }
+
+    /// Views whose BM25 live-key cache is still held by an open handle.
+    #[cfg(test)]
+    pub(crate) fn bm25_cache_views(&self) -> Vec<u32> {
+        let mut caches = self.bm25_live.lock().expect("bm25 live caches");
+        caches.retain(|_, cache| cache.strong_count() > 0);
+        caches.keys().copied().collect()
+    }
+}
+
+/// View `view_id`'s entry of a per-view map: the one its open handles share, or a new one when none
+/// is open. Entries no open handle holds are dropped here, so a long-lived process (the daemon,
+/// hosting one view of the group) does not keep the state of every view it ever opened.
+fn per_view<T: Default>(entries: &Mutex<AHashMap<u32, Weak<T>>>, view_id: u32) -> Arc<T> {
+    let mut entries = entries.lock().expect("per-view entries");
+    entries.retain(|_, entry| entry.strong_count() > 0);
+    if let Some(entry) = entries.get(&view_id).and_then(Weak::upgrade) {
+        return entry;
+    }
+    let entry = Arc::default();
+    entries.insert(view_id, Arc::downgrade(&entry));
+    entry
 }
 
 #[cfg(test)]

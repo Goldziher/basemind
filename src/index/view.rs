@@ -33,8 +33,9 @@ pub struct IndexBytes(Repr);
 enum Repr {
     /// A fjall slice read from `offset` on: a view of a group index strips its key prefix this way.
     Fjall(fjall::Slice, usize),
-    /// Bytes the view composed: a content row's key followed by the path of one live holder.
-    Owned(std::sync::Arc<[u8]>),
+    /// Bytes the view composed (a site key followed by the path of one live holder), in a buffer it
+    /// writes again once no reader holds it.
+    Buffer(std::sync::Arc<Vec<u8>>),
 }
 
 impl IndexBytes {
@@ -48,9 +49,14 @@ impl IndexBytes {
         Self(Repr::Fjall(slice, offset))
     }
 
-    /// Bytes composed by the view rather than read.
-    pub(super) fn shared(bytes: std::sync::Arc<[u8]>) -> Self {
-        Self(Repr::Owned(bytes))
+    /// No bytes: the value of a hit, which names its row by key alone.
+    pub(super) fn empty() -> Self {
+        Self(Repr::Fjall(fjall::Slice::from(&[][..]), 0))
+    }
+
+    /// Bytes composed by the view in a reusable buffer.
+    pub(super) fn buffer(bytes: std::sync::Arc<Vec<u8>>) -> Self {
+        Self(Repr::Buffer(bytes))
     }
 }
 
@@ -60,7 +66,7 @@ impl Deref for IndexBytes {
     fn deref(&self) -> &[u8] {
         match &self.0 {
             Repr::Fjall(slice, offset) => &slice[*offset..],
-            Repr::Owned(bytes) => bytes,
+            Repr::Buffer(bytes) => bytes,
         }
     }
 }
@@ -105,8 +111,6 @@ pub enum Part {
     SymbolsByName,
     CallsByPath,
     CallsByCallee,
-    ImportsByModule,
-    ImportsByPath,
     ImplementationsByTrait,
     ImplementationsByPath,
     RefsByDef,
@@ -122,14 +126,12 @@ pub enum Part {
 impl Part {
     /// Every keyspace a view reads, in declaration order. Checked against [`KEYSPACE_MEMTABLE_BYTES`] in
     /// `view_tests`, so a keyspace added to either list alone fails there.
-    pub(super) const ALL: [Part; 17] = [
+    pub(super) const ALL: [Part; 15] = [
         Part::Meta,
         Part::SymbolsByPath,
         Part::SymbolsByName,
         Part::CallsByPath,
         Part::CallsByCallee,
-        Part::ImportsByModule,
-        Part::ImportsByPath,
         Part::ImplementationsByTrait,
         Part::ImplementationsByPath,
         Part::RefsByDef,
@@ -150,8 +152,6 @@ impl Part {
             Part::SymbolsByName => "symbols_by_name",
             Part::CallsByPath => "calls_by_path",
             Part::CallsByCallee => "calls_by_callee",
-            Part::ImportsByModule => "imports_by_module",
-            Part::ImportsByPath => "imports_by_path",
             Part::ImplementationsByTrait => "implementations_by_trait",
             Part::ImplementationsByPath => "implementations_by_path",
             Part::RefsByDef => "refs_by_def",
@@ -174,8 +174,6 @@ impl IndexDb {
             Part::SymbolsByName => &self.symbols_by_name,
             Part::CallsByPath => &self.calls_by_path,
             Part::CallsByCallee => &self.calls_by_callee,
-            Part::ImportsByModule => &self.imports_by_module,
-            Part::ImportsByPath => &self.imports_by_path,
             Part::ImplementationsByTrait => &self.implementations_by_trait,
             Part::ImplementationsByPath => &self.implementations_by_path,
             Part::RefsByDef => &self.refs_by_def,
@@ -235,10 +233,11 @@ pub trait IndexView: Send + Sync {
     /// content-keyed keyspace (`symbols_by_*`, `calls_by_*`) filters through them.
     fn live_keys(&self) -> std::sync::Arc<super::live_keys::LiveKeys>;
 
-    /// Hit keys of `calls_by_callee` after `cursor_after` (a hit key or a row key), in key order,
-    /// whose callee name may contain `needle` (callers still filter by name): each row once per live
-    /// holder, `row ‖ path` ([`super::keys_content`]); a row no holder is live for comes back as its
-    /// bare row key, which names no call site. `lower` is ignored: the position is the cursor's.
+    /// Hit keys of `calls_by_callee` after `cursor_after` (a hit or site key), in key order, whose
+    /// callee name may contain `needle` (callers still filter by name): each call site of each row
+    /// once per live holder, `site ‖ path` ([`super::keys_content`]); a site no holder is live for
+    /// comes back as its bare site key, which names no holder; values are empty. `lower` is ignored:
+    /// the position is the cursor's.
     /// Served from the callee-name dictionary when it is built.
     fn callee_keys_matching<'a>(
         &'a self,
@@ -368,19 +367,10 @@ pub trait IndexView: Send + Sync {
     /// symbol's owning chunk span.
     fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
         let prefix = keys::symbols_by_name_prefix(name);
-        let rows = self.prefix(Part::SymbolsByName, &prefix);
-        let mut out = Vec::new();
-        for row in super::live_keys::ExpandHits::new(rows, self.live_keys(), keys::NameRow::Symbol, None) {
-            if out.len() >= cap {
-                break;
-            }
-            if let Ok((k, _)) = row
-                && let Some(symbol) = keys::parse_symbol_by_name(&k)
-            {
-                out.push(symbol);
-            }
-        }
-        out
+        let rows = self
+            .prefix(Part::SymbolsByName, &prefix)
+            .map(|row| row.map(|(key, _)| key));
+        symbols_from_rows(rows, &self.live_keys(), name, &prefix, cap)
     }
 
     /// Corpus-global BM25 stats for the code-search keyword lane: `(N, total_len)` where `N` is the
@@ -419,6 +409,41 @@ pub trait IndexView: Send + Sync {
     }
 }
 
+/// [`IndexView::symbols_by_name_lookup`] over the keys of the `symbols_by_name` rows under
+/// `prefix`: one hit per live holder of each row, no hit key composed, and a row no live path holds
+/// skipped before anything is decoded.
+fn symbols_from_rows(
+    rows: impl Iterator<Item = Result<IndexBytes, IndexError>>,
+    live: &super::live_keys::LiveKeys,
+    name: &str,
+    prefix: &[u8],
+    cap: usize,
+) -> Vec<(String, SymbolKind, RelPath, u32)> {
+    if prefix.len() != 2 + name.len() {
+        // Longer than a key holds: no symbol is stored under it. ~keep
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(cap.min(256));
+    let mut live = live.cursor();
+    for row in rows {
+        if out.len() >= cap {
+            break;
+        }
+        let Some((kind, content, start)) = row.ok().and_then(|key| keys::parse_symbol_row(&key)) else {
+            continue;
+        };
+        let holders = live.holders(&content);
+        let holders = &holders[..holders.len().min(cap - out.len())];
+        if let Some(((_, last), rest)) = holders.split_last() {
+            // The length-prefixed name is the whole name: every row under it is named `name`. ~keep
+            let found = name.to_owned();
+            out.extend(rest.iter().map(|(_, path)| (found.clone(), kind, path.clone(), start)));
+            out.push((found, kind, last.clone(), start));
+        }
+    }
+    out
+}
+
 /// The view of one [`IndexDb`] handle, read as is. `T` is `&IndexDb` to borrow it or `IndexDb` to
 /// own a handle (clones share the same keyspaces).
 pub struct StandaloneView<T = IndexDb>(pub(crate) T);
@@ -452,6 +477,19 @@ impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
 
     fn live_keys(&self) -> std::sync::Arc<super::live_keys::LiveKeys> {
         self.db().live_keys()
+    }
+
+    fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
+        let prefix = keys::symbols_by_name_prefix(name);
+        let db = self.db();
+        // Keys only, statically dispatched: the rows' values are empty. ~keep
+        symbols_from_rows(
+            db.symbols_by_name.prefix_keys(&prefix),
+            &db.live_keys(),
+            name,
+            &prefix,
+            cap,
+        )
     }
 
     fn callee_keys_matching<'a>(

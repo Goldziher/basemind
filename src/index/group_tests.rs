@@ -144,3 +144,101 @@ fn live_keys_are_shared_by_a_view_s_handles_and_dropped_with_the_last() {
     drop((a, again));
     assert!(group.live_key_views().is_empty());
 }
+
+/// A view's BM25 cache lives as long as a handle on the view: the daemon keeps the group open for
+/// its hosted view, and must not keep the cache of every other view a query ever opened.
+#[test]
+fn a_view_s_bm25_cache_is_dropped_with_its_last_handle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = open(&dir.path().join("group"));
+    let a = view(&group, "ws-a", "working", &memory);
+    let b = view(&group, "ws-b", "working", &memory);
+    let a_id = group.allocate_view_id("ws-a", "working").expect("id");
+    let again = group.open_view(a_id, &memory, true).expect("a second handle on a");
+    assert!(
+        Arc::ptr_eq(&a.bm25_live, &again.bm25_live),
+        "one view's handles share its cache"
+    );
+    assert!(!Arc::ptr_eq(&a.bm25_live, &b.bm25_live), "another view's is its own");
+
+    drop(b);
+    assert_eq!(group.bm25_cache_views(), [a_id], "the closed view's cache is gone");
+    drop((a, again));
+    assert!(group.bm25_cache_views().is_empty());
+}
+
+/// A group database of another format is discarded whole, and so is one holding rows without an
+/// incarnation (an older build died while emptying it in place): no row of the old layout survives
+/// under a view id the new database allocates again.
+#[test]
+fn rows_of_another_layout_never_survive_the_rebuild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let group_dir = dir.path().join("group");
+    let memory = dir.path().join("memory.fjall");
+    for crashed_mid_clear in [false, true] {
+        let first = {
+            let group = open(&group_dir);
+            let a = view(&group, "ws-a", "working", &memory);
+            a.keyspace(Part::RefsByPath).insert(b"old", "row").expect("insert");
+            a.keyspace(Part::GrepBloom).insert(b"hash", "bloom").expect("insert");
+            let meta = group.meta();
+            if crashed_mid_clear {
+                meta.remove(META_INCARNATION).expect("lose the incarnation");
+                meta.remove(META_FORMAT).expect("lose the format");
+                meta.remove(META_NEXT_VIEW).expect("lose the view counter");
+                meta.remove(view_record("ws-a", "working"))
+                    .expect("lose the view record");
+            } else {
+                meta.insert(META_FORMAT, (GROUP_FORMAT - 1).to_be_bytes())
+                    .expect("older format");
+            }
+            group.incarnation()
+        };
+
+        let group = open(&group_dir);
+        assert_ne!(group.incarnation(), first, "crashed mid-clear: {crashed_mid_clear}");
+        let a = view(&group, "ws-a", "working", &memory);
+        assert!(
+            a.keyspace(Part::RefsByPath).is_empty().expect("read"),
+            "{crashed_mid_clear}"
+        );
+        assert!(
+            a.keyspace(Part::GrepBloom).is_empty().expect("read"),
+            "{crashed_mid_clear}"
+        );
+    }
+}
+
+/// A bloom row a sibling's writer staged, which no file map names yet, survives a sweep that judged
+/// liveness by the maps; once the sibling writes its map, liveness alone decides.
+#[test]
+fn a_bloom_sweep_keeps_the_rows_a_sibling_staged_until_its_map_names_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = open(&dir.path().join("group"));
+    let a = view(&group, "ws-a", "working", &memory);
+    let b = view(&group, "ws-b", "working", &memory);
+    let mut writer = b.writer();
+    writer.upsert_grep_bloom("fresh", crate::index::grep_bloom::build_row(b"fn fresh() {}"));
+    writer.commit().expect("commit");
+
+    {
+        let _window = a.grep_bloom_sweep_window().expect("no other sweep runs");
+        assert_eq!(a.sweep_grep_bloom(|_| false).expect("sweep"), 0);
+    }
+    assert!(a.grep_bloom_current("fresh"), "the sibling's staged row stays");
+    a.remove_grep_bloom_rows(["fresh"]).expect("remove");
+    assert!(
+        a.grep_bloom_current("fresh"),
+        "and stays for the incremental removal too"
+    );
+
+    b.publish_live_keys(crate::index::live_keys::LiveKeys::default());
+    assert_eq!(
+        a.sweep_grep_bloom(|_| false).expect("sweep"),
+        1,
+        "settled: the maps decide"
+    );
+    assert!(!a.grep_bloom_current("fresh"));
+}
