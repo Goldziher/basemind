@@ -25,6 +25,7 @@ pub use documents::{
     ApiKey, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
     OcrBackend, OcrConfig, RerankerConfig, SecretString, SummarizationConfig, SummarizationStrategy,
 };
+#[cfg(feature = "intelligence")]
 pub(crate) use documents_validate::MAX_ABANDONED_EXTRACTIONS;
 pub use layered::{ConfigLayers, LoadedConfig, NoOverrides, OverrideLayer, defaults_only, merge_layers};
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
