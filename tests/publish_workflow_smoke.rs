@@ -321,3 +321,22 @@ fn the_skew_gate_reads_a_release_from_its_checksums_not_its_tag() {
         "the pinned release must be detected by its checksums file:\n{step}",
     );
 }
+
+/// The marketplaces serve `./plugin` from main, so main reaches the release commit only once the
+/// release is public (ADR-0045): earlier, every auto-updating host pinned a binary with no assets.
+#[test]
+fn main_advances_to_the_release_only_after_it_is_public() {
+    let workflow = workflow();
+    let block = job_block(&workflow, "advance_main");
+    assert_gated_on_finalize(&workflow, "advance_main");
+    assert!(
+        block.contains("git merge-base --is-ancestor origin/main \"$sha\"")
+            && block.contains("git push origin \"$sha:refs/heads/main\"")
+            && !block.contains("--force"),
+        "advance_main must only fast-forward main:\n{block}"
+    );
+    assert!(
+        block.contains("gh workflow run ci.yaml --ref main") && block.contains("actions: write"),
+        "a push with the workflow token starts no ci run, so advance_main must dispatch one:\n{block}"
+    );
+}
