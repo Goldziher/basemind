@@ -90,7 +90,7 @@ code_outline {"path":"src/mcp/tools.rs"}
   at `find_files`.
 - `path` is repo-relative with forward slashes. `line`, `end_line` and `column` are 1-based.
 - `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
-  not both. A body over 128 KiB is cut after a whole line and flagged `truncated`
+  not both. A body over 128 KiB is cut at a line end (a single longer line inside it) and flagged `truncated`
   (`omitted_bytes` is what was left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file changed since it was
   indexed and was read as it is now; a file deleted since the scan is an error naming
   `index_rescan`.

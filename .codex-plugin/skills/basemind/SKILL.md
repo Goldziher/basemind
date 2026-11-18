@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:4eb980af891c8555c35d119760a82ed358183bf247dd4e9e47f81721f69afdaa
-Source-Hash: blake3:020e00400901c88d82d3c9448bb2a0c2ddf8af7aa9204c2a6bf1a794bea85230
+Content-Hash: blake3:963975b86c644b84228ad38dab363b6fdb52d3326d3bab8ba9905d0556674e52
+Source-Hash: blake3:e9ce4c3282c460bc11b11666bc7a7c2a9337b6c57ccb90f607c6ab77e97ab9ba
 Schema-Version: v1
 -->
 
@@ -181,7 +181,8 @@ A 1000-line file becomes a 30-line table of contents.
   Defaults: `code_symbols` / `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500
   symbols, `code_search` / `docs_search` 10, `git_log` 20.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
-  subsequence matches last. Each row says which with `match`, and `total` counts the whole corpus.
+  subsequence matches last. Compare a row's `name` with the query to tell which; `total` counts the
+  whole corpus.
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. Add `path` to
   pin one definition: the response names that `definition`, and a hit then has `resolved: true`

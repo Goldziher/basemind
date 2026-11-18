@@ -184,7 +184,8 @@ A 1000-line file becomes a 30-line table of contents.
   Defaults: `code_symbols` / `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500
   symbols, `code_search` / `docs_search` 10, `git_log` 20.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
-  subsequence matches last. Each row says which with `match`, and `total` counts the whole corpus.
+  subsequence matches last. Compare a row's `name` with the query to tell which; `total` counts the
+  whole corpus.
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. Add `path` to
   pin one definition: the response names that `definition`, and a hit then has `resolved: true`
