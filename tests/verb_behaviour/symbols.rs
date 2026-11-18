@@ -60,7 +60,6 @@ async fn code_symbols_answers_byte_for_byte() {
             r#"{"total":3,"results":[{"path":"src/outline.rs","line":15,"kind":"struct","name":"Renderer","signature":"pub struct Renderer"},{"path":"src/outline.rs","line":17,"kind":"impl","name":"Renderer","signature":"impl Renderer"},{"path":"src/outline.rs","line":18,"kind":"function","name":"render","signature":"pub fn render(&self) -> u32"}]}"#,
         ),
         (json!({ "name": "zzz_none" }), r#"{"total":0,"results":[]}"#),
-        (json!({ "name": "" }), r#"{"total":0,"results":[]}"#),
         (
             json!({ "name": "outline", "limit": 2 }),
             r#"{"total":3,"results":[{"path":"src/outline.rs","line":11,"kind":"function","name":"outline_file_outline_cached","signature":"pub fn outline_file_outline_cached() -> u32"},{"path":"src/outline.rs","line":3,"kind":"function","name":"file_outline","signature":"pub fn file_outline() -> u32"}],"next_cursor":"<cursor>"}"#,
@@ -100,6 +99,10 @@ async fn every_code_symbols_refusal_keeps_its_exact_words() {
         (
             json!({ "name": "render", "kind": "bogus" }),
             r#"unknown symbol kind: bogus"#,
+        ),
+        (
+            json!({ "name": "" }),
+            r#"`code_symbols`: `name` is empty; pass the name of the definition to find."#,
         ),
     ];
     let mut rows = Vec::new();

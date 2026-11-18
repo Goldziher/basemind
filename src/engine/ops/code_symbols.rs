@@ -35,6 +35,13 @@ struct Candidate<'a> {
     symbol: usize,
 }
 
+/// Where the next page starts in the ranking: at the first row the token budget dropped, else after
+/// the whole window this page took, rows that could not be shown included. `offsets` holds each
+/// shown row's place in the ranking; `kept` rows survived the budget.
+fn resume_at(window_end: usize, offsets: &[usize], kept: usize) -> usize {
+    offsets.get(kept).copied().unwrap_or(window_end)
+}
+
 /// Which literal rank `name` holds for `needle`; the caller has established it contains it.
 fn literal_rank(name: &[u8], needle: &[u8]) -> usize {
     if name == needle {
@@ -49,6 +56,11 @@ fn literal_rank(name: &[u8], needle: &[u8]) -> usize {
 impl Workspace {
     /// `code_symbols`: find definitions by name, best match first.
     pub(crate) fn code_symbols(&self, p: CodeSymbolsParams) -> Result<SearchResponse, EngineError> {
+        if p.name.is_empty() {
+            return Err(EngineError::invalid_argument(
+                "`code_symbols`: `name` is empty; pass the name of the definition to find.",
+            ));
+        }
         search_symbols(
             self,
             SearchSymbolsParams {
@@ -102,7 +114,7 @@ fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchR
     let cache = ws.cache.load_full();
 
     // The sweep walks every symbol name of the corpus: off the reactor.
-    let (page, total, total_is_partial) = {
+    let (page, offsets, window_end, total, total_is_partial) = {
         let mut literal: [Vec<Candidate<'_>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut literal_total = 0usize;
         for (path, terms) in cache.terms().iter() {
@@ -150,34 +162,45 @@ fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchR
         let total = literal_total + fuzzy.len();
 
         let cache_ref = &cache;
-        let page: Vec<SearchHitView> = literal
+        let window: Vec<Candidate<'_>> = literal
             .into_iter()
             .flatten()
             .chain(fuzzy.into_iter().map(|(_, candidate)| candidate))
             .skip(skip)
             .take(limit)
-            .filter_map(|candidate| {
+            .collect();
+        let window_end = skip + window.len();
+        // A candidate whose outline no longer loads is left out; each row keeps its place in the
+        // ranking so the next page starts after the rows this one consumed, not after as many rows
+        // as it shows.
+        let (offsets, page): (Vec<usize>, Vec<SearchHitView>) = window
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, candidate)| {
                 let l1 = cache_ref.get(candidate.path)?;
                 let symbol = l1.symbols.get(candidate.symbol)?;
-                Some(SearchHitView {
-                    path: candidate.path.clone(),
-                    line: symbol.start_row + 1,
-                    kind: kind_to_str(symbol.kind),
-                    name: symbol.name.clone(),
-                    signature: symbol.signature.clone(),
-                    stale: false,
-                })
+                Some((
+                    skip + i,
+                    SearchHitView {
+                        path: candidate.path.clone(),
+                        line: symbol.start_row + 1,
+                        kind: kind_to_str(symbol.kind),
+                        name: symbol.name.clone(),
+                        signature: symbol.signature.clone(),
+                        stale: false,
+                    },
+                ))
             })
-            .collect();
-        (page, total, total_is_partial)
+            .unzip();
+        (page, offsets, window_end, total, total_is_partial)
     };
 
     let mut page = page;
     crate::engine::stale::follow_symbols(ws, &cache, &mut page);
     let budget = apply_budget(page, params.max_tokens);
     let results = budget.items;
-    let returned_through = skip + results.len();
-    let next_cursor = (total > returned_through && !results.is_empty())
+    let returned_through = resume_at(window_end, &offsets, results.len());
+    let next_cursor = (total > returned_through && returned_through > skip)
         .then(|| Cursor::encode_in_memory(returned_through as u64, generation));
     Ok(SearchResponse {
         total,
@@ -194,6 +217,25 @@ fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row that cannot be shown (its outline did not load) still took its place in the ranking:
+    /// the next page starts after it, so no row is shown twice and none is skipped.
+    #[test]
+    fn the_next_page_starts_after_the_rows_this_one_consumed() {
+        // Ranking rows 10..15 taken; row 12 could not be shown.
+        let offsets = [10, 11, 13, 14];
+        assert_eq!(resume_at(15, &offsets, 4), 15, "every shown row kept: after the window");
+        assert_eq!(
+            resume_at(15, &offsets, 2),
+            13,
+            "the budget dropped rows 13 and 14: resume at 13"
+        );
+        assert_eq!(
+            resume_at(15, &[], 0),
+            15,
+            "no row could be shown: still past the window"
+        );
+    }
 
     #[test]
     fn literal_rank_orders_exact_before_prefix_before_substring() {
