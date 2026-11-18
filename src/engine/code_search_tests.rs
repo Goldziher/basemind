@@ -200,3 +200,16 @@ fn the_keyword_lane_without_an_index_is_refused_with_the_fix() {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     assert!(message.contains("`basemind comms start`"), "{message}");
 }
+
+/// The refusal of a semantic-only search names the argument the tool takes: an agent that follows
+/// it with `mode` gets an unknown-argument error (review 3 S3).
+#[test]
+fn the_semantic_refusal_names_the_lane_argument() {
+    let meanwhile = SEMANTIC_MEANWHILE.expect("the refusal says what to do meanwhile");
+    assert!(meanwhile.contains("`lane: \"keyword\"`"), "{meanwhile}");
+    assert!(meanwhile.contains("`lane: \"hybrid\"`"), "{meanwhile}");
+    assert!(!meanwhile.contains("mode"), "{meanwhile}");
+    let followed: Result<crate::engine::types::search::CodeSearchParams, _> =
+        serde_json::from_value(serde_json::json!({"query": "retry", "lane": "keyword"}));
+    assert!(followed.is_ok(), "the call the refusal suggests is accepted");
+}

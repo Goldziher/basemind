@@ -172,7 +172,7 @@ mod tests {
             .get_or_open(|| Err("opened again".to_string()))
             .err()
             .expect("refused inside the window");
-        let error = refused.refusal("code_search", Some("Search with `mode: \"keyword\"` meanwhile."));
+        let error = refused.refusal("code_search", Some("Search with `lane: \"keyword\"` meanwhile."));
         let EngineError::Unavailable(message) = error else {
             panic!("a refusal, not an internal error: {error:?}");
         };
@@ -182,7 +182,7 @@ mod tests {
         );
         assert!(message.contains("retry in about "), "{message}");
         assert!(
-            message.ends_with("Search with `mode: \"keyword\"` meanwhile."),
+            message.ends_with("Search with `lane: \"keyword\"` meanwhile."),
             "{message}"
         );
     }

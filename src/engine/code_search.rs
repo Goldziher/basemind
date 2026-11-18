@@ -244,7 +244,7 @@ fn fjall_lanes(ws: &Workspace, query: &str, limit: usize, want_exact: bool) -> L
 
 /// What a semantic-only `code_search` can do while the vector store is unavailable.
 const SEMANTIC_MEANWHILE: Option<&str> = Some(
-    "Meanwhile `mode: \"keyword\"` searches without it, and `mode: \"hybrid\"` runs the keyword and exact \
+    "Meanwhile `lane: \"keyword\"` searches without it, and `lane: \"hybrid\"` runs the keyword and exact \
      lanes and names the vector lane in `lanes_unavailable`.",
 );
 
