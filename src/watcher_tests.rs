@@ -259,6 +259,20 @@ fn should_emit_new_path_when_file_is_renamed() {
     let _ = handle.join();
 }
 
+/// The batches the watcher emits until it stays quiet for 800 ms, cut off after 10 s so a steady
+/// stream of unrelated events (a noisy FSEvents run) cannot keep a no-emission test running.
+fn batches_until_quiet(path_rx: &mpsc::Receiver<Vec<PathBuf>>) -> Vec<Vec<PathBuf>> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut batches = Vec::new();
+    while std::time::Instant::now() < deadline {
+        match path_rx.recv_timeout(Duration::from_millis(800)) {
+            Ok(paths) => batches.push(paths),
+            Err(_) => break,
+        }
+    }
+    batches
+}
+
 /// Changes inside `.basemind/` must never surface — the watcher would
 /// otherwise feed its own index writes back into a rescan loop.
 #[test]
@@ -284,7 +298,7 @@ fn should_ignore_changes_under_basemind_dir() {
         .expect("write basemind file");
 
     let basemind = root.join(crate::config::BASEMIND_DIR);
-    while let Ok(paths) = path_rx.recv_timeout(Duration::from_millis(800)) {
+    for paths in batches_until_quiet(&path_rx) {
         assert!(
             !paths.iter().any(|p| p.starts_with(&basemind)),
             "expected no emission under .basemind/, got {paths:?}"
@@ -330,7 +344,7 @@ fn should_ignore_nested_basemind_and_gitignored_paths() {
     std::fs::write(root.join("build").join("out.o"), b"\x00").expect("write gitignored file");
 
     let (nested, ignored) = (root.join("child"), root.join("build"));
-    while let Ok(paths) = path_rx.recv_timeout(Duration::from_millis(800)) {
+    for paths in batches_until_quiet(&path_rx) {
         assert!(
             !paths.iter().any(|p| p.starts_with(&nested) || p.starts_with(&ignored)),
             "expected no emission for nested-.basemind / gitignored churn, got {paths:?}"
