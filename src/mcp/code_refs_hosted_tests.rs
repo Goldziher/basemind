@@ -53,7 +53,7 @@ async fn a_hosted_cross_file_definition_is_refused_while_the_resolve_pass_is_uns
         .get_or_build_serve_state(root, |_| None)
         .await
         .expect("hosted stack");
-    if served.workspace.store_lock().read().lookup("a.ts").is_none() {
+    if served.workspace.store_read().lookup("a.ts").is_none() {
         crate::testing::unavailable(
             "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
             "the typescript grammar is unavailable",
@@ -68,8 +68,7 @@ async fn a_hosted_cross_file_definition_is_refused_while_the_resolve_pass_is_uns
 
     served
         .workspace
-        .store_lock()
-        .read()
+        .store_read()
         .mark_status_health(&crate::store::ScanHealth::resolving());
     let unsettled = goto(&served.workspace);
     assert_eq!(

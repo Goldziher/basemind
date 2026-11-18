@@ -72,6 +72,7 @@ fn scanned(files: &BTreeMap<String, String>) -> (tempfile::TempDir, Store) {
         &config(),
         ScanSource::WorkingTree,
         EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     (dir, store)
@@ -129,7 +130,15 @@ fn assert_incremental_equals_full(case: &Case<'_>) {
             }
         }
     }
-    scan_paths(dir.path(), &mut store, &config(), &touched, EmbedMode::Inline).unwrap();
+    scan_paths(
+        dir.path(),
+        &mut store,
+        &config(),
+        &touched,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
     let incremental = rows(&store);
 
     let (_full_dir, full_store) = scanned(&files);

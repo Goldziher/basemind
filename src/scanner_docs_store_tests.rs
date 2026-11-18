@@ -85,7 +85,7 @@ fn setup() -> (tempfile::TempDir, Store, Config, Filters) {
     let store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
     let mut config = crate::config::default_for_root(std::path::Path::new("."));
     config.documents.embed = true;
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     (tmp, store, config, filters)
 }
 
@@ -184,15 +184,15 @@ fn excluded_documents_lose_their_vectors_and_stay_searchable() {
     let (_tmp, mut store, mut config, _) = setup();
     track(&mut store, &blob("alpha", true), &["docs/a.md"]);
     track(&mut store, &blob("beta", true), &["notes/b.md"]);
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
     config.documents.embed_exclude = vec!["docs/**".to_string()];
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     assert!(strip_unwanted_vectors(&store, &config, &filters));
     let caps = doc_store(&store, &config).capabilities().unwrap();
     assert_eq!((caps.rows, caps.vectors), (4, 2));
     config.documents.embed = false;
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     assert!(strip_unwanted_vectors(&store, &config, &filters));
     assert_eq!(doc_store(&store, &config).capabilities().unwrap().vectors, 0);
 }
@@ -308,7 +308,7 @@ fn worktrees() -> (tempfile::TempDir, Store, Store, Config, Filters) {
     let b = Store::open(&linked, crate::store::VIEW_WORKING).unwrap();
     let mut config = crate::config::default_for_root(std::path::Path::new("."));
     config.documents.embed = true;
-    let filters = Filters::build(&config, Vec::new()).unwrap();
+    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     (tmp, a, b, config, filters)
 }
 
@@ -424,7 +424,7 @@ fn stripping_vectors_leaves_the_rows_a_sibling_names() {
     b.flush().unwrap();
 
     config.documents.embed_exclude = vec!["docs/**".to_string()];
-    let excluding = Filters::build(&config, Vec::new()).unwrap();
+    let excluding = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
     assert!(strip_unwanted_vectors(&a, &config, &excluding));
 
     let present = doc_store(&a, &config)

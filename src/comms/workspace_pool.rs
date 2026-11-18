@@ -413,12 +413,38 @@ impl WorkspacePool {
             let paths = paths.as_deref().unwrap_or_default();
             let (root, observer) = (&entry.root, &mut scanner::NullObserver);
             if verify {
-                scanner::scan_named_paths_with_observer(root, &mut store, &config, paths, mode, cancel, observer)
+                scanner::scan_named_paths_with_observer(
+                    root,
+                    &mut store,
+                    &config,
+                    paths,
+                    mode,
+                    cancel,
+                    observer,
+                    crate::retrieval_wiring::backend(),
+                )
             } else {
-                scanner::scan_paths_with_observer(root, &mut store, &config, paths, mode, cancel, observer)
+                scanner::scan_paths_with_observer(
+                    root,
+                    &mut store,
+                    &config,
+                    paths,
+                    mode,
+                    cancel,
+                    observer,
+                    crate::retrieval_wiring::backend(),
+                )
             }
         } else {
-            scanner::scan_with_cancel(&entry.root, &mut store, &config, ScanSource::WorkingTree, mode, cancel)
+            scanner::scan_with_cancel(
+                &entry.root,
+                &mut store,
+                &config,
+                ScanSource::WorkingTree,
+                mode,
+                cancel,
+                crate::retrieval_wiring::backend(),
+            )
         };
         // Before the scan's error propagates: a poisoned handle fails every later commit for the life
         // of the daemon, so it has to be replaced whether or not this pass got to report it.

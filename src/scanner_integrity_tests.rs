@@ -4,7 +4,7 @@ use crate::index::view::IndexView;
 use crate::scanner::{EmbedMode, ScanReport, ScanSource, scan};
 use crate::store::{VIEW_WORKING, init_isolated_cache};
 
-fn one_file_repo() -> tempfile::TempDir {
+pub(super) fn one_file_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let status = std::process::Command::new("git")
         .args(["init", "--quiet"])
@@ -16,13 +16,14 @@ fn one_file_repo() -> tempfile::TempDir {
     dir
 }
 
-fn full_scan(root: &std::path::Path, store: &mut Store) -> ScanReport {
+pub(super) fn full_scan(root: &std::path::Path, store: &mut Store) -> ScanReport {
     scan(
         root,
         store,
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("a non-fatal commit failure degrades the scan, it does not fail it")
 }
@@ -98,6 +99,7 @@ fn rows_written_after_the_seal_are_synced_before_a_scan_returns() {
         &ConfigV1::with_defaults(),
         &[outer],
         EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("incremental scan");
     assert_eq!(report.stats.updated, 1);
@@ -167,6 +169,7 @@ fn a_scan_that_sealed_no_journal_does_not_flush_the_memtables() {
         &ConfigV1::with_defaults(),
         &[alpha],
         EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("incremental scan");
     assert_eq!(report.stats.updated, 1);
@@ -281,6 +284,7 @@ fn rescanning_a_named_file_rebuilds_its_torn_blob_and_a_watcher_batch_trusts_it(
         &config,
         std::slice::from_ref(&file),
         EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan_paths");
     assert_eq!(
@@ -297,6 +301,7 @@ fn rescanning_a_named_file_rebuilds_its_torn_blob_and_a_watcher_batch_trusts_it(
         EmbedMode::Deferred,
         &crate::scanner::ScanCancel::new(),
         &mut crate::scanner::NullObserver,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan the named path");
     assert_eq!(
@@ -326,6 +331,7 @@ fn a_cancelled_pass_leaves_the_blob_verification_owed() {
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
         &cancel,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("a cancelled pass returns");
 
@@ -374,8 +380,15 @@ fn a_rebuild_interrupted_after_the_emptied_file_map_is_finished_by_an_incrementa
         "documents in the map must not hide a pending rebuild"
     );
 
-    crate::scanner::scan_paths(root, &mut store, &ConfigV1::with_defaults(), &[], EmbedMode::Deferred)
-        .expect("scan_paths");
+    crate::scanner::scan_paths(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        &[],
+        EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
+    )
+    .expect("scan_paths");
 
     assert!(store.lookup("alpha.rs").is_some(), "the whole tree is indexed again");
     assert!(!store.index.rebuild_pending);
@@ -436,6 +449,7 @@ fn a_deleted_file_stays_in_the_file_map_when_its_index_rows_could_not_be_removed
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     );
 
     assert!(failed.is_err(), "the failed purge commit must fail the scan");
@@ -483,6 +497,7 @@ fn a_failed_purge_does_not_keep_the_other_removals_out_of_the_file_map() {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     );
 
     assert!(failed.is_err(), "the failed purge still fails the scan");
@@ -515,7 +530,14 @@ fn a_failed_purge_in_an_incremental_scan_still_writes_the_file_map() {
     }
     store.index_db.as_ref().expect("index").fault.inject_commit_failures(1);
 
-    let failed = crate::scanner::scan_paths(root, &mut store, &ConfigV1::with_defaults(), &gone, EmbedMode::Deferred);
+    let failed = crate::scanner::scan_paths(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        &gone,
+        EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
+    );
 
     assert!(failed.is_err(), "the failed purge still fails the scan");
     assert_eq!(stale_entries_on_disk(&store).len(), 1);
@@ -534,8 +556,17 @@ fn a_torn_chunk_sidecar_is_rebuilt_by_the_next_pass() {
     let mut config = ConfigV1::with_defaults();
     config.code_search.enabled = true;
     config.code_search.embed = false;
-    let pass =
-        |store: &mut Store| scan(root, store, &config, ScanSource::WorkingTree, EmbedMode::Deferred).expect("scan");
+    let pass = |store: &mut Store| {
+        scan(
+            root,
+            store,
+            &config,
+            ScanSource::WorkingTree,
+            EmbedMode::Deferred,
+            crate::scan_retrieval::Retrieval::inert(),
+        )
+        .expect("scan")
+    };
     let mut store = Store::open(root, VIEW_WORKING).expect("open");
     assert_eq!(pass(&mut store).stats.updated, 1);
     assert_eq!(pass(&mut store).stats.skipped_unchanged, 1);
@@ -589,6 +620,7 @@ fn a_scan_into_a_store_opened_beside_a_writer_is_refused_until_it_can_take_the_l
         &config,
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect_err("a full scan beside a writer");
     assert!(
@@ -596,8 +628,15 @@ fn a_scan_into_a_store_opened_beside_a_writer_is_refused_until_it_can_take_the_l
         "{refused}"
     );
     let named = [root.join("alpha.rs")];
-    let refused = crate::scanner::scan_paths(root, &mut in_place, &config, &named, EmbedMode::Deferred)
-        .expect_err("an incremental scan beside a writer");
+    let refused = crate::scanner::scan_paths(
+        root,
+        &mut in_place,
+        &config,
+        &named,
+        EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
+    )
+    .expect_err("an incremental scan beside a writer");
     assert!(
         matches!(&refused, ScanError::Store(error) if error.is_lock_contention()),
         "{refused}"
@@ -649,7 +688,14 @@ fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass()
     let alpha = root.join("alpha.rs");
     std::fs::write(&alpha, b"pub fn alpha() -> u32 { 2 }\n").expect("rewrite");
     let config = ConfigV1::with_defaults();
-    let scanned = crate::scanner::scan_paths(root, &mut store, &config, &[alpha], EmbedMode::Deferred);
+    let scanned = crate::scanner::scan_paths(
+        root,
+        &mut store,
+        &config,
+        &[alpha],
+        EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
+    );
     scanned.expect("incremental scan");
 
     let view = store.index_view().expect("index");
@@ -662,74 +708,6 @@ fn rows_a_killed_pass_left_of_a_file_no_map_lists_are_removed_by_the_next_pass()
         "no file map lists its content, so its content rows are not read"
     );
     assert_eq!(view.symbols_by_name_lookup("alpha", 4).len(), 1);
-}
-
-fn age(blob: &std::path::Path) -> std::time::SystemTime {
-    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(7 * 3600);
-    std::fs::File::options()
-        .write(true)
-        .open(blob)
-        .and_then(|file| file.set_modified(aged))
-        .expect("age the blob");
-    aged
-}
-
-fn mtime(blob: &std::path::Path) -> std::time::SystemTime {
-    std::fs::metadata(blob).and_then(|meta| meta.modified()).expect("mtime")
-}
-
-/// The blob sweep keeps an unreferenced blob only within its grace, judged by mtime. A scan that
-/// reused an old blob no file map referenced left it to be swept before the map named it; the
-/// reuse now refreshes the blob's mtime.
-#[test]
-fn a_blob_reused_for_a_new_path_is_kept_young_for_the_sweep() {
-    init_isolated_cache();
-    let dir = one_file_repo();
-    let root = dir.path();
-    // Content of its own: blobs are shared by every test, and another one ages or touches its own. ~keep
-    std::fs::write(root.join("alpha.rs"), b"pub fn reused_for_a_new_path() -> u32 { 1 }\n").expect("write");
-    let mut store = Store::open(root, VIEW_WORKING).expect("open");
-    full_scan(root, &mut store);
-    let hash_hex = store.lookup("alpha.rs").expect("entry").hash_hex.clone();
-    let blob = store.blob_path_fm_hex(&hash_hex);
-    let content = std::fs::read(root.join("alpha.rs")).expect("read");
-    std::fs::remove_file(root.join("alpha.rs")).expect("delete");
-    full_scan(root, &mut store);
-    assert!(!store.hash_is_held(&hash_hex), "no file map references the blob now");
-    let aged = age(&blob);
-    std::fs::write(root.join("beta.rs"), content).expect("the same content again");
-
-    let report = full_scan(root, &mut store);
-
-    assert_eq!(report.stats.reused_extraction, 1);
-    assert!(
-        mtime(&blob) > aged + std::time::Duration::from_secs(3600),
-        "the reused blob is young again"
-    );
-}
-
-/// A blob the file map already references is safe from the sweep, so reusing it costs no write:
-/// that reuse runs for every file of a rebuild and of the embedding pass.
-#[test]
-fn a_blob_the_file_map_already_references_is_not_touched_on_reuse() {
-    init_isolated_cache();
-    let dir = one_file_repo();
-    let root = dir.path();
-    std::fs::write(root.join("alpha.rs"), b"pub fn referenced_on_reuse() -> u32 { 1 }\n").expect("write");
-    let mut store = Store::open(root, VIEW_WORKING).expect("open");
-    full_scan(root, &mut store);
-    let hash_hex = store.lookup("alpha.rs").expect("entry").hash_hex.clone();
-    let blob = store.blob_path_fm_hex(&hash_hex);
-    let aged = age(&blob);
-    std::fs::copy(root.join("alpha.rs"), root.join("beta.rs")).expect("copy");
-
-    let report = full_scan(root, &mut store);
-
-    assert_eq!(report.stats.reused_extraction, 1, "the copy reused the blob");
-    assert!(
-        mtime(&blob) < aged + std::time::Duration::from_secs(3600),
-        "a referenced blob is left as it was"
-    );
 }
 
 /// A file with rows of both kinds: content-keyed (its symbols) and keyed by its path (its trait
@@ -772,6 +750,7 @@ fn killed_full_pass(root: &std::path::Path, store: &mut Store) {
             EmbedMode::Deferred,
             &crate::scanner::ScanCancel::new(),
             &mut KilledAfterFirstChunk,
+            crate::scan_retrieval::Retrieval::inert(),
         )
     }));
     assert!(pass.is_err(), "the pass was killed");
@@ -871,6 +850,7 @@ fn rows_of_a_killed_pass_outlive_no_seal_of_a_store_claimed_in_place() {
         &ConfigV1::with_defaults(),
         &[alpha],
         EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("incremental scan");
 
@@ -982,6 +962,7 @@ fn an_incremental_pass_holds_a_hosting_marker_while_it_runs() {
         EmbedMode::Deferred,
         &crate::scanner::ScanCancel::new(),
         &mut seen,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("incremental scan");
 

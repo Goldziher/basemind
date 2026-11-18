@@ -95,11 +95,15 @@ pub fn warn_inert_fields(config: &ConfigV1) {
 
 /// Removed-feature tables that `config` still carries with content.
 pub fn deprecated_sections_set(config: &ConfigV1) -> Vec<&'static str> {
-    [("crawl", &config.crawl), ("shells", &config.shells)]
-        .into_iter()
-        .filter(|(_, section)| !section.is_empty())
-        .map(|(name, _)| name)
-        .collect()
+    [
+        ("crawl", &config.crawl),
+        ("shells", &config.shells),
+        ("documents.output", &config.documents.output),
+    ]
+    .into_iter()
+    .filter(|(_, section)| !section.is_empty())
+    .map(|(name, _)| name)
+    .collect()
 }
 
 pub fn warn_deprecated_sections(config: &ConfigV1) {
@@ -111,6 +115,20 @@ pub fn warn_deprecated_sections(config: &ConfigV1) {
     for (_, message) in deprecated_settings(config) {
         warn_once(message.to_string());
     }
+    for name in deprecated_env_set(|name| std::env::var_os(name).is_some()) {
+        warn_once(format!(
+            "{name} is set, but the setting it overrode was removed and the variable is ignored; unset it"
+        ));
+    }
+}
+
+/// Environment variables of removed settings. Nothing reads them, so a host that still exports one is
+/// warned, as a file that still carries the matching table is.
+const DEPRECATED_ENV: &[&str] = &["BASEMIND_DOCUMENTS_OUTPUT_FORMAT"];
+
+/// The [`DEPRECATED_ENV`] variables `is_set` reports as set.
+fn deprecated_env_set(is_set: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    DEPRECATED_ENV.iter().copied().filter(|name| is_set(name)).collect()
 }
 
 /// Settings for document capabilities that were removed (archive extraction, LLM summarization and
@@ -206,6 +224,20 @@ mod tests {
         assert_eq!(
             deprecated_sections_set(&repo_config("[shells]\nvisual = \"window\"\n")),
             vec!["shells"]
+        );
+        assert!(deprecated_sections_set(&repo_config("[documents.output]\n")).is_empty());
+        assert_eq!(
+            deprecated_sections_set(&repo_config("[documents.output]\nformat = \"toon\"\n")),
+            vec!["documents.output"]
+        );
+    }
+
+    #[test]
+    fn a_removed_setting_variable_is_reported_only_when_set() {
+        assert!(deprecated_env_set(|_| false).is_empty());
+        assert_eq!(
+            deprecated_env_set(|name| name == "BASEMIND_DOCUMENTS_OUTPUT_FORMAT"),
+            vec!["BASEMIND_DOCUMENTS_OUTPUT_FORMAT"]
         );
     }
 

@@ -144,9 +144,6 @@
             "eng"
           ]
         },
-        "output": {
-          "format": "json"
-        },
         "embed_max_threads": 0
       }
     },
@@ -651,11 +648,8 @@
           }
         },
         "output": {
-          "description": "Response wire format for the document MCP tools.",
-          "$ref": "#/$defs/OutputConfig",
-          "default": {
-            "format": "json"
-          }
+          "description": "Deprecated and ignored: the verb tools answer in JSON whatever this table says. Accepted so\nfiles that still carry a `[documents.output]` table keep loading; one with content logs a\nwarning.",
+          "$ref": "#/$defs/DeprecatedSection"
         },
         "embed_max_threads": {
           "description": "Maximum number of threads dedicated to ONNX embedding. `0` means\n\"auto = max(2, logical_cpus / 4)\" — a bounded fraction of available\ncores so the embedder never pins the machine. Both the document and\ncode-search tiers route their `embed_texts` calls through a single\nprocess-wide rayon `ThreadPool` of this size; code-map extraction\nkeeps the full global pool.",
@@ -891,23 +885,11 @@
         "vlm"
       ]
     },
-    "OutputConfig": {
+    "DeprecatedSection": {
+      "description": "A table that configured a removed feature. Any content is accepted and nothing is read from it,\nso a `basemind.toml` written for an older version keeps loading under the strict schema.",
       "type": "object",
-      "properties": {
-        "format": {
-          "description": "Wire format used by document-tier MCP responses.",
-          "$ref": "#/$defs/OutputFormat",
-          "default": "json"
-        }
-      },
-      "additionalProperties": false
-    },
-    "OutputFormat": {
-      "type": "string",
-      "enum": [
-        "json",
-        "toon"
-      ]
+      "additionalProperties": true,
+      "deprecated": true
     },
     "ResourcesConfig": {
       "description": "Top-level `[resources]` table. Every field has `#[serde(default)]` (directly\nor via a default fn) so adding a knob never breaks an older TOML file, and an\nomitted `[resources]` section deserialises to [`ResourcesConfig::default`].\n\n`0` is the \"auto\" sentinel for the thread / concurrency caps: it means \"let\nbasemind pick a bounded fraction of the machine\" rather than \"use zero\nthreads\". This keeps the default config safe on a laptop while letting an\noperator pin an explicit budget on a shared box.\n\n**In the shared daemon these are ceilings, not requests.** The effective value is the smaller of\nthe file's and the daemon's cap (`BASEMIND_DAEMON_MAX_SCAN_THREADS`, `..._MAX_EMBED_THREADS`,\n`..._MAX_EMBED_BATCH`, `..._MAX_CONCURRENT_DOCUMENTS`, `..._MAX_FOOTPRINT_MB`,\n`..._MAX_MAP_CACHE_MB`, and `..._MAX_CANDIDATES` for `[scan] max_candidates`), and a file value\nthat means \"no limit\" (`0`, `\"auto\"`, `\"off\"`) resolves to the cap. The operator raises a cap in\nthe daemon's environment; a repository cannot.",
@@ -1205,12 +1187,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "DeprecatedSection": {
-      "description": "A table that configured a removed feature. Any content is accepted and nothing is read from it,\nso a `basemind.toml` written for an older version keeps loading under the strict schema.",
-      "type": "object",
-      "additionalProperties": true,
-      "deprecated": true
     },
     "LlmConfig": {
       "description": "Deprecated and ignored: LLM credentials + model selection for the removed LLM summarization\nand LLM entity recognition. Nothing reads it; it stays typed so existing files keep loading\nunder the strict schema and a literal `api_key` keeps serialising as `\"<redacted>\"`.",

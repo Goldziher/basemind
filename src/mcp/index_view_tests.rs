@@ -34,6 +34,7 @@ fn scanned_store(root: &std::path::Path) -> Store {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Inline,
+        crate::retrieval_wiring::backend(),
     )
     .expect("scan");
     store

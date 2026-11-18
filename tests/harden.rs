@@ -323,6 +323,7 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
         &config,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
     let elapsed = t0.elapsed();

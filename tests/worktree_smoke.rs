@@ -68,6 +68,7 @@ fn linked_worktrees_share_the_global_blob_cache() {
             &cfg,
             ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
     }
@@ -104,6 +105,7 @@ fn linked_worktrees_share_the_global_blob_cache() {
             &cfg,
             ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
         // The linked worktree's first scan finds the content-identical file's blob and counts it under

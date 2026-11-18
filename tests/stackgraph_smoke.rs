@@ -36,6 +36,7 @@ fn scan_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, Store) {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     (dir, store)

@@ -6,6 +6,8 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::DeprecatedSection;
+
 /// Top-level `[documents]` table. Each sub-config has `#[serde(default)]` so
 /// adding a new tier never breaks older TOML files.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -158,9 +160,11 @@ pub struct DocumentsConfig {
     /// OCR backend selection for image / scanned-PDF inputs.
     #[serde(default)]
     pub ocr: OcrConfig,
-    /// Response wire format for the document MCP tools.
-    #[serde(default)]
-    pub output: OutputConfig,
+    /// Deprecated and ignored: the verb tools answer in JSON whatever this table says. Accepted so
+    /// files that still carry a `[documents.output]` table keep loading; one with content logs a
+    /// warning.
+    #[serde(default, skip_serializing_if = "DeprecatedSection::is_empty")]
+    pub output: DeprecatedSection,
     /// Maximum number of threads dedicated to ONNX embedding. `0` means
     /// "auto = max(2, logical_cpus / 4)" — a bounded fraction of available
     /// cores so the embedder never pins the machine. Both the document and
@@ -270,7 +274,7 @@ impl Default for DocumentsConfig {
             ner: NerConfig::default(),
             summarization: SummarizationConfig::default(),
             ocr: OcrConfig::default(),
-            output: OutputConfig::default(),
+            output: DeprecatedSection::default(),
             embed_max_threads: 0,
         }
     }
@@ -545,22 +549,6 @@ pub enum OcrBackend {
     Tesseract,
     Paddle,
     Vlm,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct OutputConfig {
-    /// Wire format used by document-tier MCP responses.
-    #[serde(default)]
-    pub format: OutputFormat,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputFormat {
-    #[default]
-    Json,
-    Toon,
 }
 
 /// Deprecated and ignored: LLM credentials + model selection for the removed LLM summarization

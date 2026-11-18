@@ -237,7 +237,15 @@ fn an_epoch_refresh_re_extracts_the_calls_of_an_old_blob_with_eager_l2_off() {
     let mut cfg = basemind::config::ConfigV1::with_defaults();
     cfg.scan.eager_l2 = false;
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     let entry = store.lookup("lib.rs").expect("lib.rs indexed").clone();
 
     // The blob an extractor from before the turbofish fix left: L1 and L2, the L2 without `parse`.
@@ -257,7 +265,15 @@ fn an_epoch_refresh_re_extracts_the_calls_of_an_old_blob_with_eager_l2_off() {
     );
     store.flush().unwrap();
 
-    let report = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("rescan");
     assert_eq!(
         report.stats.refreshed_extraction, 1,
         "premise: the stale blob is refreshed"
@@ -288,7 +304,15 @@ fn an_epoch_refresh_re_chunks_a_file_whose_outline_changed() {
     cfg.code_search.enabled = true;
     cfg.code_search.embed = false;
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     let entry = store.lookup("lib.rs").expect("lib.rs indexed").clone();
     let has_inside = |blob: &CodeChunkBlob| blob.chunks.iter().any(|c| c.symbol.as_deref() == Some("spawn_inside"));
     let current = store
@@ -337,7 +361,15 @@ fn an_epoch_refresh_re_chunks_a_file_whose_outline_changed() {
     );
     store.flush().unwrap();
 
-    let report = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("rescan");
     assert_eq!(
         report.stats.refreshed_extraction, 1,
         "premise: the stale blob is refreshed"
@@ -369,7 +401,15 @@ fn a_chunk_sidecar_from_an_older_epoch_is_re_chunked_under_a_current_outline() {
     cfg.code_search.enabled = true;
     cfg.code_search.embed = false;
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     let entry = store.lookup("lib.rs").expect("lib.rs indexed").clone();
     assert_eq!(entry.extract_epoch, EXTRACT_EPOCH, "premise: the outline is current");
     let has_inside = |blob: &CodeChunkBlob| {
@@ -412,7 +452,15 @@ fn a_chunk_sidecar_from_an_older_epoch_is_re_chunked_under_a_current_outline() {
     );
     store.write_chunks_hex(&entry.hash_hex, &stale).unwrap();
 
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("rescan");
     let rechunked = store
         .read_chunks_by_hex(&entry.hash_hex)
         .unwrap()
@@ -425,7 +473,15 @@ fn a_chunk_sidecar_from_an_older_epoch_is_re_chunked_under_a_current_outline() {
         ..rechunked.clone()
     };
     store.write_chunks_hex(&entry.hash_hex, &unstamped).unwrap();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("rescan");
     let restamped = store
         .read_chunks_by_hex(&entry.hash_hex)
         .unwrap()

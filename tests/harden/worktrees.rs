@@ -179,6 +179,7 @@ fn measure_worktree(root: &Path, label: &str, commit: &str, diff_files: usize) -
         &config,
         basemind::scanner::ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan worktree");
     let scan_ended = Instant::now();

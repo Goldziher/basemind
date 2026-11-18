@@ -97,9 +97,16 @@ fn a_scan_at_the_cap_defers_the_remaining_documents_and_reports_the_live_count()
     cfg.resources.scan_threads = 1;
 
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
-    let stats = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline)
-        .unwrap()
-        .stats;
+    let stats = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap()
+    .stats;
 
     assert_eq!(stats.doc_timeouts, 1, "{stats:?}");
     assert_eq!(

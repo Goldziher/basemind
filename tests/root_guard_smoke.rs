@@ -154,7 +154,7 @@ fn paths_that_resolve_to_the_filesystem_root_are_refused_even_under_the_env_hatc
 /// `basemind rescan` is a full working-tree walk that reaches `crate::scanner::scan`
 /// in-process, but the tool-subcommand dispatcher never calls the CLI's root guard — so
 /// `cd / && basemind rescan` reproduced issue #62 on a verb the guard missed. The guard now
-/// sits at `mcp::helpers::scan_and_refresh`, which is also what the `admin` MCP tool funnels through.
+/// sits at `Workspace::rescan` (`src/engine/scan.rs`), which the `index_rescan` tool also funnels through.
 #[test]
 fn rescan_refuses_a_non_project_root() {
     basemind::store::init_isolated_cache();

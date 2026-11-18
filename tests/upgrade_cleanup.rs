@@ -38,7 +38,15 @@ fn fixture(salt: &str) -> (TempDir, ConfigV1) {
 }
 
 fn full_scan(root: &Path, store: &mut Store, cfg: &ConfigV1) -> ScanReport {
-    scan(root, store, cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan")
+    scan(
+        root,
+        store,
+        cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan")
 }
 
 fn blob_exists(store: &Store, hash_hex: &str, suffix: &str) -> bool {

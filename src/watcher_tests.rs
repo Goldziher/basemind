@@ -23,8 +23,8 @@ fn arm_watcher(root: &Path, path_rx: &mpsc::Receiver<Vec<PathBuf>>) {
         }
     }
     std::fs::remove_file(&probe).expect("remove probe file");
-    // Drain the arming batches (and the probe's own removal) so they cannot be mistaken for
-    // an emission the assertion under test is meant to rule out.
+    // Drain the arming batches (and the probe's own removal). A late one can still arrive after the
+    // drain, so the assertions under test match the paths they rule out, not any emission.
     while path_rx.recv_timeout(Duration::from_millis(300)).is_ok() {}
 }
 
@@ -44,7 +44,7 @@ fn emitted_within(path_rx: &mpsc::Receiver<Vec<PathBuf>>, window: Duration) -> V
 
 /// `watch_paths` should hand the callback the repo-relative path of a file
 /// that changes under the watched root, within a bounded window. This is the
-/// primitive the MCP serve watcher funnels into `scan_and_refresh`.
+/// primitive the MCP serve watcher funnels into `Workspace::rescan`.
 #[test]
 fn should_emit_changed_path_when_file_is_modified() {
     let tmp = tempfile::tempdir().expect("tempdir");

@@ -393,6 +393,7 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
             &config,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .expect("first scan");
         store.flush().expect("flush");
@@ -473,6 +474,7 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
             &config,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .expect("refresh scan");
         store.flush().expect("flush");

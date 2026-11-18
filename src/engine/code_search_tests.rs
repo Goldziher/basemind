@@ -15,7 +15,15 @@ fn scanned(root: &Path) -> Store {
     crate::store::init_isolated_cache();
     let cfg = ConfigV1::with_defaults();
     let mut store = Store::open(root, crate::store::VIEW_WORKING).expect("open");
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("scan");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+        crate::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     store
 }
 

@@ -29,9 +29,8 @@ use crate::store::Store;
 pub(crate) struct Workspace {
     /// The opened store. A synchronous, task-fair lock, so the engine names no runtime: a scan holds
     /// the write side for its whole run, and readers wait for it as they did on the async lock this
-    /// replaces (a waiting writer holds back new readers, and a panic poisons nothing). Shared by
-    /// `Arc` so an async caller can hold an owned, `Send` read guard ([`store_lock`](Self::store_lock)).
-    store: Arc<RwLock<Store>>,
+    /// replaces (a waiting writer holds back new readers, and a panic poisons nothing).
+    store: RwLock<Store>,
     pub(crate) root: PathBuf,
     /// In-RAM mirror of every indexed file's L1 blob.
     ///
@@ -130,7 +129,7 @@ pub(crate) struct Workspace {
     /// the cache wait on it (bounded by [`CACHE_WARM_WAIT_CAP`]) so a query issued during the warmup
     /// window returns COMPLETE data rather than an empty snapshot.
     warm_gate: WarmGate,
-    /// True while a watcher-driven incremental rescan (`scan_and_refresh` from the active filesystem
+    /// True while a watcher-driven incremental rescan (`Workspace::rescan` from the active filesystem
     /// watcher) is in flight. Surfaced as the `Rescanning` lifecycle so a client sees "results may be
     /// a moment stale" rather than treating a mid-rescan snapshot as final.
     pub(crate) rescan_active: AtomicBool,
@@ -147,7 +146,7 @@ pub(crate) struct Workspace {
     /// callers of the barrier all wait for the single build rather than racing to rebuild the map.
     pub(crate) lazy_cache_built: std::sync::OnceLock<()>,
     /// True when this serve fell back to a read-only store because another serve owns the
-    /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
+    /// write lock for this repo (issue #27). The single in-process writer (`Workspace::rescan`,
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
     /// without the lock.
     pub(crate) read_only: bool,
@@ -267,7 +266,7 @@ impl Workspace {
         Self {
             #[cfg(feature = "memory")]
             memory_owner,
-            store: Arc::new(RwLock::new(store)),
+            store: RwLock::new(store),
             root,
             cache: ArcSwap::from(cache),
             repo,
@@ -330,12 +329,6 @@ impl Workspace {
     /// Read the store if no writer holds it right now.
     pub(crate) fn try_store_read(&self) -> Result<RwLockReadGuard<'_, Store>, StoreBusy> {
         self.store.try_read().ok_or(StoreBusy)
-    }
-
-    /// The lock itself, for a caller that needs an owned guard (`read_arc`, `write_arc`): one it
-    /// can move to another thread or hold across an `.await`.
-    pub(crate) fn store_lock(&self) -> &Arc<RwLock<Store>> {
-        &self.store
     }
 
     /// Mark the deferred preload finished and wake every caller of

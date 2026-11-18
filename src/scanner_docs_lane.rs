@@ -335,3 +335,7 @@ mod tests {
 #[cfg(test)]
 #[path = "scanner_flush_tests.rs"]
 mod flush_tests;
+
+#[cfg(all(test, unix))]
+#[path = "scanner_docs_lane_failure_tests.rs"]
+mod failure_tests;

@@ -42,6 +42,7 @@ fn scan_paths_refreshes_resolved_edges_after_edit() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -61,7 +62,15 @@ fn scan_paths_refreshes_resolved_edges_after_edit() {
 
     let after = "const count = 1;\nfunction f() {\n  return count + count + count;\n}\n";
     fs::write(&app_abs, after).unwrap();
-    scan_paths(root, &mut store, &cfg, &[app_abs], basemind::scanner::EmbedMode::Inline).unwrap();
+    scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[app_abs],
+        basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
 
     let mut uses = basemind::query::resolved_references(&store, &app, def_start);
     uses.sort_by_key(|(_, s)| *s);
@@ -102,6 +111,7 @@ fn scan_paths_purges_resolved_edges_for_removed_file() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -127,6 +137,7 @@ fn scan_paths_purges_resolved_edges_for_removed_file() {
         &cfg,
         &[gone_abs],
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 

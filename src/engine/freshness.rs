@@ -330,6 +330,7 @@ mod tests {
                 &config,
                 crate::scanner::ScanSource::WorkingTree,
                 crate::scanner::EmbedMode::Inline,
+                crate::retrieval_wiring::backend(),
             )
             .expect("scan");
         };

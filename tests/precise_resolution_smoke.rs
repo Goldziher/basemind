@@ -89,6 +89,7 @@ fn run_scan(root: &Path) {
                 &cfg,
                 basemind::scanner::ScanSource::WorkingTree,
                 basemind::scanner::EmbedMode::Inline,
+                basemind::retrieval_wiring::backend(),
             )
             .expect("scan");
         });

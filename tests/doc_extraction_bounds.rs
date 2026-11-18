@@ -76,7 +76,15 @@ fn slow_config() -> ConfigV1 {
 fn scan_once(root: &Path, cfg: &ConfigV1) -> ScanReport {
     drain_abandoned();
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
-    scan(root, &mut store, cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan")
+    scan(
+        root,
+        &mut store,
+        cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan")
 }
 
 fn open(root: &Path) -> Store {

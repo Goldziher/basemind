@@ -23,6 +23,7 @@ async fn server() -> (tempfile::TempDir, rmcp::service::RunningService<rmcp::Rol
                 &cfg,
                 basemind::scanner::ScanSource::WorkingTree,
                 basemind::scanner::EmbedMode::Inline,
+                basemind::retrieval_wiring::backend(),
             )
             .expect("scan");
         });

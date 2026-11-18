@@ -58,7 +58,15 @@ fn fixture() -> (TempDir, ConfigV1) {
 }
 
 fn full_scan(root: &Path, store: &mut Store, cfg: &ConfigV1) {
-    scan(root, store, cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    scan(
+        root,
+        store,
+        cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
 }
 
 fn code_entry(language: &str) -> FileEntry {
@@ -143,7 +151,15 @@ fn incremental_scan_moves_legacy_code_mapped_entries_to_documents() {
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     store.upsert("README.md", code_entry("markdown"));
 
-    scan_paths(root, &mut store, &cfg, &[root.join("README.md")], EmbedMode::Inline).unwrap();
+    scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[root.join("README.md")],
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
 
     assert!(store.lookup("README.md").is_none(), "purged from the code map");
     assert!(store.lookup_doc("README.md").is_some(), "indexed as a document");
@@ -167,7 +183,15 @@ fn a_document_that_becomes_code_leaves_the_document_tier() {
         },
     );
 
-    scan_paths(root, &mut store, &cfg, &[root.join("a.rs")], EmbedMode::Inline).unwrap();
+    scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[root.join("a.rs")],
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
 
     assert!(store.lookup_doc("a.rs").is_none(), "no longer a document");
     assert!(store.lookup("a.rs").is_some(), "code-mapped");
@@ -206,7 +230,15 @@ fn a_current_document_does_not_keep_a_stale_code_entry_alive() {
     assert!(store.lookup("README.md").is_none(), "full scan purges it");
 
     store.upsert("README.md", code_entry("markdown"));
-    scan_paths(root, &mut store, &cfg, &[root.join("README.md")], EmbedMode::Inline).unwrap();
+    scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[root.join("README.md")],
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
     assert!(store.lookup("README.md").is_none(), "incremental scan purges it");
     assert!(store.lookup_doc("README.md").is_some(), "document survives");
 }

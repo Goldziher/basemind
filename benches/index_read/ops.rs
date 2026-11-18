@@ -74,7 +74,15 @@ impl Worktree {
         let mut store = Store::open(root, VIEW_WORKING).expect("open store");
         let mut config = ConfigV1::with_defaults();
         config.documents.enabled = false;
-        let report = scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+        let report = scan(
+            root,
+            &mut store,
+            &config,
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
+        )
+        .expect("scan");
         assert_eq!(report.stats.extract_failed, 0, "synthetic sources must all extract");
         let mut grep_entries: Vec<GrepEntry> = store
             .index

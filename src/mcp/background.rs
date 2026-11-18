@@ -1,38 +1,90 @@
-//! Detached background facilities spawned by `serve`: blob GC and the two filesystem watchers.
+//! Detached background facilities spawned by `serve`: the initial scan, the map warm, blob GC and
+//! the two filesystem watchers. Each spawns a thread that runs a synchronous engine operation
+//! ([`Workspace::rescan`], [`Workspace::warm`], [`Workspace::gc_blobs`]) and logs its outcome; a
+//! daemon-hosted workspace's scans go to the daemon's pool instead
+//! ([`writer_rescan`](super::daemon_forward::writer_rescan)).
+//!
+//! The threads are the runtime's blocking pool, so a runtime shutting down waits for the operation
+//! in flight and starts no later one.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::helpers;
 use super::{MapCache, ServerState};
+use crate::engine::{EngineError, Workspace};
+use crate::scanner::EmbedMode;
 
-/// Run an in-process blob GC once, logging the outcome and swallowing any error.
-///
-/// Uses the UNLOCKED `store_gc` primitives (`collect_referenced_hashes` + `gc_blobs`)
-/// under a `blocking_read()` store guard — NEVER `store_gc::run_gc`, which re-acquires
-/// the `.basemind/.lock` flock that `serve` already holds (that would deadlock). The
-/// held read guard blocks the only in-process writer (`scan_and_refresh`) for the
-/// mark+sweep; cross-process scans are impossible because serve holds the flock.
-pub(super) async fn run_background_gc(state: Arc<ServerState>) {
-    if state.store_read().await.blobs_shared {
-        tracing::debug!("background blob GC skipped: blob cache is shared across git worktrees");
-        return;
-    }
-    let result = tokio::task::spawn_blocking(move || {
-        let store = state.shared.store_read();
-        let referenced = crate::store_gc::collect_referenced_hashes(&store.basemind_dir)?;
-        crate::store_gc::gc_blobs(&referenced)
-    })
-    .await;
-    match result {
-        Ok(Ok(report)) if report.removed > 0 => tracing::info!(
+/// Run `work` on the runtime's blocking pool, logging `panicked` if it panics.
+fn spawn_logged(panicked: &'static str, work: impl FnOnce() + Send + 'static) {
+    let task = tokio::task::spawn_blocking(work);
+    tokio::spawn(async move {
+        if let Err(error) = task.await
+            && error.is_panic()
+        {
+            tracing::error!(%error, "{panicked}");
+        }
+    });
+}
+
+/// Run an in-process blob GC once on a blocking thread, logging the outcome and swallowing any error.
+pub(super) fn spawn_background_gc(ws: Arc<Workspace>) {
+    spawn_logged("background blob GC task panicked", move || run_background_gc(&ws));
+}
+
+/// [`Workspace::gc_blobs`], logged.
+fn run_background_gc(ws: &Workspace) {
+    match ws.gc_blobs() {
+        Ok(None) => tracing::debug!("background blob GC skipped: blob cache is shared across git worktrees"),
+        Ok(Some(report)) if report.removed > 0 => tracing::info!(
             removed = report.removed,
             bytes_freed = report.bytes_freed,
             "background blob GC reclaimed orphaned blobs"
         ),
-        Ok(Ok(_)) => tracing::debug!("background blob GC: nothing to reclaim"),
-        Ok(Err(error)) => tracing::warn!(%error, "background blob GC failed"),
-        Err(error) => tracing::warn!(%error, "background blob GC task panicked"),
+        Ok(Some(_)) => tracing::debug!("background blob GC: nothing to reclaim"),
+        Err(error) => tracing::warn!(%error, "background blob GC failed"),
+    }
+}
+
+/// Where a workspace's scans run: its own store, or a daemon-hosted workspace's pool writer.
+#[derive(Clone)]
+struct Writer {
+    ws: Arc<Workspace>,
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pool: Option<Arc<crate::comms::workspace_pool::WorkspacePool>>,
+}
+
+impl Writer {
+    fn of(state: &ServerState) -> Self {
+        Self {
+            ws: Arc::clone(&state.shared),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            pool: state.pool.clone(),
+        }
+    }
+
+    /// Whether the daemon's pool writes this workspace.
+    fn hosted(&self) -> bool {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        return self.pool.is_some();
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        false
+    }
+
+    /// Scan `paths` (`None`: the whole working tree), not named by anyone, and report `(scanned,
+    /// updated, removed)`.
+    fn scan(
+        &self,
+        paths: Option<Vec<std::path::PathBuf>>,
+        embed: EmbedMode,
+    ) -> Result<(usize, usize, usize), EngineError> {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if let Some(pool) = &self.pool {
+            let embed = matches!(embed, EmbedMode::Inline);
+            let stats = super::daemon_forward::writer_rescan(&self.ws, pool, paths, false, embed, false)?;
+            return Ok((stats.scanned, stats.updated, stats.removed));
+        }
+        let report = self.ws.rescan(paths, embed, false)?;
+        Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
     }
 }
 
@@ -43,82 +95,62 @@ pub(super) async fn run_background_gc(state: Arc<ServerState>) {
 ///    embeddings — this is what clears `initial_scan_active`, so `status` reports the index ready.
 /// 2. A detached `Inline` scan then fills the vectors the fast pass skipped, reusing the fast pass'
 ///    content-addressed caches (only not-yet-embedded content is embedded, bounded by WS4-A's embed
-///    pool). GC runs after it settles so the sweep reaps against the final blob set.
+///    pool). GC runs after it settles so the sweep reaps against the final blob set; a hosted
+///    workspace's pool owns its sweep.
 pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     tracing::info!("empty index on startup; running initial scan in background");
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(pool) = state.pool.clone() {
-        tokio::spawn(async move {
-            use std::sync::atomic::Ordering;
-            state.shared.initial_scan_active.store(true, Ordering::Relaxed);
-            let started = std::time::Instant::now();
-            match super::daemon_forward::writer_rescan_and_refresh(&state, &pool, None, false, false, false).await {
-                Ok(report) => tracing::info!(
-                    scanned = report.scanned,
-                    updated = report.updated,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "initial scan complete (via daemon writer; embeddings deferred)"
-                ),
-                Err(error) => tracing::warn!(%error, "initial writer scan failed"),
-            }
-            state
-                .shared
-                .initial_scan_ms
-                .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-            state.shared.initial_scan_active.store(false, Ordering::Relaxed);
-            let embed_state = Arc::clone(&state);
-            tokio::spawn(async move {
-                let embed_started = std::time::Instant::now();
-                tracing::info!("background embedding pass starting (forwarded to daemon)");
-                match super::daemon_forward::writer_rescan_and_refresh(&embed_state, &pool, None, false, true, false)
-                    .await
-                {
-                    Ok(report) => tracing::info!(
-                        scanned = report.scanned,
-                        updated = report.updated,
-                        elapsed_ms = embed_started.elapsed().as_millis() as u64,
-                        "background embedding pass complete (via daemon writer)"
-                    ),
-                    Err(error) => tracing::warn!(%error, "background writer embedding pass failed"),
-                }
-            });
-        });
-        return;
-    }
-    tokio::spawn(async move {
+    let writer = Writer::of(&state);
+    spawn_logged("initial background scan task panicked", move || {
         use std::sync::atomic::Ordering;
-        state.shared.initial_scan_active.store(true, Ordering::Relaxed);
+        let ws = &writer.ws;
+        ws.initial_scan_active.store(true, Ordering::Relaxed);
         let started = std::time::Instant::now();
-        match helpers::scan_and_refresh(Arc::clone(&state), None, crate::scanner::EmbedMode::Deferred, false).await {
-            Ok(report) => tracing::info!(
-                scanned = report.stats.scanned,
-                updated = report.stats.updated,
+        match writer.scan(None, EmbedMode::Deferred) {
+            Ok((scanned, updated, _)) if writer.hosted() => tracing::info!(
+                scanned,
+                updated,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "initial scan complete (via daemon writer; embeddings deferred)"
+            ),
+            Ok((scanned, updated, _)) => tracing::info!(
+                scanned,
+                updated,
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "initial background scan complete (code-map + keyword lane; embeddings deferred)"
             ),
+            Err(error) if writer.hosted() => tracing::warn!(%error, "initial writer scan failed"),
             Err(error) => tracing::warn!(%error, "initial background scan failed"),
         }
-        state
-            .shared
-            .initial_scan_ms
+        ws.initial_scan_ms
             .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-        state.shared.initial_scan_active.store(false, Ordering::Relaxed);
-        let embed_state = Arc::clone(&state);
-        tokio::spawn(async move {
+        ws.initial_scan_active.store(false, Ordering::Relaxed);
+        spawn_logged("background embedding pass task panicked", move || {
             let embed_started = std::time::Instant::now();
-            tracing::info!("background embedding pass starting");
-            match helpers::scan_and_refresh(Arc::clone(&embed_state), None, crate::scanner::EmbedMode::Inline, false)
-                .await
-            {
-                Ok(report) => tracing::info!(
-                    scanned = report.stats.scanned,
-                    updated = report.stats.updated,
+            let hosted = writer.hosted();
+            if hosted {
+                tracing::info!("background embedding pass starting (forwarded to daemon)");
+            } else {
+                tracing::info!("background embedding pass starting");
+            }
+            match writer.scan(None, EmbedMode::Inline) {
+                Ok((scanned, updated, _)) if hosted => tracing::info!(
+                    scanned,
+                    updated,
+                    elapsed_ms = embed_started.elapsed().as_millis() as u64,
+                    "background embedding pass complete (via daemon writer)"
+                ),
+                Ok((scanned, updated, _)) => tracing::info!(
+                    scanned,
+                    updated,
                     elapsed_ms = embed_started.elapsed().as_millis() as u64,
                     "background embedding pass complete"
                 ),
+                Err(error) if hosted => tracing::warn!(%error, "background writer embedding pass failed"),
                 Err(error) => tracing::warn!(%error, "background embedding pass failed"),
             }
-            run_background_gc(embed_state).await;
+            if !hosted {
+                run_background_gc(&writer.ws);
+            }
         });
     });
 }
@@ -127,50 +159,19 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
 /// index is already populated (no initial scan needed) on the background `serve` path.
 ///
 /// `serve` boots with an EMPTY [`MapCache`] placeholder so it can answer the MCP `initialize` /
-/// `tools/list` handshake immediately, then this task does the heavy `MapCache::build` (a rayon
-/// `par_iter` over every L1/L2 blob) on a blocking thread, publishes the full map via `ArcSwap`, and
-/// opens the warm gate every tool waits on in [`ServerState::await_cache_ready`]. Without this, that
-/// build ran synchronously before `.serve(transport)` and — under rayon-pool contention from other
+/// `tools/list` handshake immediately, then [`Workspace::warm`] does the heavy `MapCache::build` (a
+/// rayon `par_iter` over every L1/L2 blob) on a blocking thread, publishes the full map, and opens
+/// the warm gate every tool waits on in [`ServerState::await_cache_ready`]. Without this, that build
+/// ran synchronously before `.serve(transport)` and — under rayon-pool contention from other
 /// sessions' scans — could take minutes, blowing the client's startup window so the tools never
 /// registered.
 pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
     tracing::info!("warming in-RAM code map in background (handshake already served)");
-    tokio::spawn(async move {
-        use std::sync::atomic::Ordering;
-        let started = std::time::Instant::now();
-        let build_state = Arc::clone(&state);
-        let built = tokio::task::spawn_blocking(move || {
-            let store = build_state.shared.store_read();
-            let budget = super::l1_cache::budget_bytes_from(&build_state.shared.config.resources);
-            MapCache::build(&store, budget)
-        })
-        .await;
-        match built {
-            Ok(cache) => {
-                let files = cache.len();
-                let cache = Arc::new(cache);
-                state.shared.cache.store(Arc::clone(&cache));
-                state.shared.cache_generation.fetch_add(1, Ordering::Relaxed);
-                // Build the `symbols` / `dependents` term index off the query path so the first
-                // lookup after boot is as fast as every later one.
-                warm_terms(&cache);
-                state
-                    .shared
-                    .cache_warm_ms
-                    .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                state.shared.finish_warm();
-                tracing::info!(
-                    files,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "in-RAM code map warm complete"
-                );
-            }
-            Err(error) => {
-                state.shared.finish_warm();
-                tracing::error!(%error, "in-RAM code map warm task panicked; serving un-warmed cache");
-            }
-        }
-    });
+    let ws = Arc::clone(&state.shared);
+    spawn_logged(
+        "in-RAM code map warm task panicked; serving un-warmed cache",
+        move || ws.warm(),
+    );
 }
 
 /// Build the term index on a blocking thread so the first `symbols` / `dependents` call after
@@ -183,40 +184,6 @@ pub(super) fn warm_terms(cache: &Arc<MapCache>) {
             cache.terms();
         });
     }
-}
-
-/// Run one debounced batch of changed paths through the writer and report `(scanned, updated,
-/// removed)`. A daemon-hosted workspace scans the batch through the daemon's pool (the sole
-/// writer) and rebuilds its read-only map; every other serve scans locally under its own write lock. Bridges
-/// the watcher's blocking std thread to the async writer via the captured runtime `Handle`.
-fn refresh_batch(
-    handle: &tokio::runtime::Handle,
-    state: &Arc<ServerState>,
-    paths: Vec<std::path::PathBuf>,
-) -> Result<(usize, usize, usize), String> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(pool) = &state.pool {
-        let report = handle
-            .block_on(super::daemon_forward::writer_rescan_and_refresh(
-                state,
-                pool,
-                Some(paths),
-                false,
-                true,
-                false,
-            ))
-            .map_err(|error| error.to_string())?;
-        return Ok((report.scanned, report.updated, report.removed));
-    }
-    let report = handle
-        .block_on(helpers::scan_and_refresh(
-            Arc::clone(state),
-            Some(paths),
-            crate::scanner::EmbedMode::Inline,
-            false,
-        ))
-        .map_err(|error| error.to_string())?;
-    Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
 }
 
 const VIEW_WATCHER_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -269,19 +236,22 @@ pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) -> WatcherGuard {
 }
 
 fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
-    let root = state.shared.root.clone();
-    let config = Arc::clone(&state.shared.config);
+    let writer = Writer::of(&state);
+    drop(state);
+    let root = writer.ws.root.clone();
+    let config = Arc::clone(&writer.ws.config);
+    // ~keep A hosted scan warms the published map's term index on the runtime's blocking pool.
     let handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("basemind-mcp-serve-watcher".to_string())
         .spawn(move || {
+            let _runtime = handle.enter();
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
             let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
                 use std::sync::atomic::Ordering;
-                let refresh_state = Arc::clone(&state);
-                refresh_state.shared.rescan_active.store(true, Ordering::Relaxed);
-                let outcome = refresh_batch(&handle, &refresh_state, paths);
-                refresh_state.shared.rescan_active.store(false, Ordering::Relaxed);
+                writer.ws.rescan_active.store(true, Ordering::Relaxed);
+                let outcome = writer.scan(Some(paths), EmbedMode::Inline);
+                writer.ws.rescan_active.store(false, Ordering::Relaxed);
                 match outcome {
                     Ok((scanned, updated, removed)) => {
                         tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")

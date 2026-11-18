@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (library):** `basemind::scanner::scan`, `scan_paths` and the other public scan entries
+  take the `Retrieval` binding as an argument; a library caller passes
+  `basemind::retrieval_wiring::backend()`.
+- A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
+  result reading `tool task failed: …`, where it read `scan join: …` or
+  `host rescan task panicked: …`.
 - `code_refs` call sites, `callers` (with `path`) and `implementations` in a session that holds no
   index — a CLI command or a second `serve` beside a writer, with no daemon — are refused as busy
   (exit `3`), naming `basemind comms start`, instead of answering from an in-RAM projection of the
@@ -339,6 +345,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record `basemind comms doctor` reported. No daemon of this generation answers `store_error` or
   writes the record: a broken agent store shows as `agent_store` in `Status`. `--clear-fatal` now
   acknowledges only the records of scans that died without unwinding.
+- **BREAKING: the `[documents.output] format` setting, `--documents-output-format` and
+  `BASEMIND_DOCUMENTS_OUTPUT_FORMAT`.** No tool read them: the verb tools answer in JSON. The flag is
+  now rejected, so a host config that still passes it fails to start `basemind serve`. A
+  `[documents.output]` table still loads, and a set `BASEMIND_DOCUMENTS_OUTPUT_FORMAT` is ignored;
+  each logs a warning to remove it.
 - The daemon socket's forwarded `memory`, `resolved_refs`, `index_read` and `code_search_lanes`
   requests. No process sends them any more: a CLI next to the daemon forwards its whole call, and a
   daemon-hosted session reads through the daemon's pool in process. The comms protocol version stays

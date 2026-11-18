@@ -182,7 +182,10 @@ impl BasemindServer {
         self.state.await_cache_ready().await;
         let state = &self.state;
         let result = match parsed {
-            ResourceUri::Status => super::helpers_admin::index_status(state).await?,
+            ResourceUri::Status => {
+                let params = super::types_tools::IndexStatusParams {};
+                super::adapter::run(&state.shared, params, crate::engine::Workspace::index_status).await?
+            }
             ResourceUri::Outline(path) => {
                 let params: super::types_tools::CodeOutlineParams = from_args(json!({ "path": path }))?;
                 super::adapter::run(&state.shared, params, crate::engine::Workspace::code_outline).await?

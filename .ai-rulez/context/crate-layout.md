@@ -37,7 +37,7 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
   - `strict.rs`, `tool_contract.rs` — `Strict<T>` argument validation (unknown field → did-you-mean + accepted list), `answer` (failures become `isError` results), and `finalize_router` (always-load marker, schema compaction).
   - `adapter.rs`, `cursor_bind.rs` — run an engine operation for a shim or a CLI command: a blocking thread, `EngineError` → `McpError`, the cursor bound to its query, the telemetry row.
   - `tools.rs` (`code_*`, `find_files`) + `tools_git.rs` (`git_*`) / `tools_memory.rs` (`docs_search`, `memory_*`) / `tools_admin.rs` (`index_*`) — one thin `#[tool]` shim per tool plus the `<tool>_call` method the CLI also runs (1000-line cap each). `tools_comms.rs` holds the agent tools.
-  - `helpers.rs`, `helpers_admin.rs` (`index_status`, `index_rescan`), `helpers_telemetry.rs` — what is left on the MCP side; every other tool body is in `engine/`.
+  - `helpers.rs`, `helpers_telemetry.rs` — what is left on the MCP side; every other tool body is in `engine/`.
   - `savings.rs`, `telemetry.rs` — token-savings heuristics (keyed by tool name, with the pre-ADR-0018 `code:outline`-style keys mapped onto them), telemetry sink.
 - `engine/` — the engine API (ADR-0039), which names no rmcp type: `ops/<tool>.rs` (one synchronous `impl Workspace` method per verb tool, returning `Result<_, EngineError>`), `git/` (the git tools), `types/<area>.rs` (their responses), `memory/`, `refs/`, and the contract pieces every body uses (`budget.rs`, `cursor.rs`, `filters.rs`, `freshness.rs`, `pick.rs`, `files.rs`, `error.rs`).
 - `query.rs` — read-side helpers shared between MCP tools and the CLI.

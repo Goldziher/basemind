@@ -583,6 +583,7 @@ fn scan_streaming(
         basemind::scanner::EmbedMode::Inline,
         cancel,
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     );
     observer.finish();
     report

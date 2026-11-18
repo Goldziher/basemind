@@ -49,8 +49,6 @@ homepage = "https://basemind.ai"
 keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
 
-[package.metadata.cargo-machete]
-ignored = ["serde_toon_format"]
 [workspace]
 members = [
   "crates/basemind-agents",
@@ -92,7 +90,6 @@ tokenizer = ["dep:xberg", "xberg/chunking-tokenizers"]
 documents = [
   "intelligence",
   "tokenizer",
-  "dep:serde_toon_format",
   "xberg/pdf",
   "xberg/office",
   "xberg/excel",
@@ -225,7 +222,6 @@ rmp-serde = "1"
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-serde_toon_format = { version = "0.2", optional = true }
 stack-graphs = { package = "basemind-stack-graphs", version = "0.14.2", path = "crates/stack-graphs", optional = true }
 streaming-iterator = "0.1"
 tempfile = "3"

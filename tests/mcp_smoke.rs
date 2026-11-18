@@ -106,6 +106,7 @@ fn run_scan(root: &Path) {
                 &cfg,
                 basemind::scanner::ScanSource::WorkingTree,
                 basemind::scanner::EmbedMode::Inline,
+                basemind::retrieval_wiring::backend(),
             )
             .expect("scan");
         });
@@ -1855,6 +1856,7 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
                 &cfg,
                 basemind::scanner::ScanSource::WorkingTree,
                 basemind::scanner::EmbedMode::Inline,
+                basemind::retrieval_wiring::backend(),
             )
             .expect("scan");
         });

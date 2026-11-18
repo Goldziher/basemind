@@ -84,7 +84,15 @@ fn config(max_characters: Option<usize>) -> ConfigV1 {
 
 fn scan_working(root: &Path, config: &ConfigV1) -> Store {
     let mut store = Store::open(root, VIEW_WORKING).expect("open");
-    scan(root, &mut store, config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    scan(
+        root,
+        &mut store,
+        config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     store
 }
 
@@ -182,6 +190,7 @@ fn postings_are_shared_by_content_and_retired_when_no_view_holds_them() {
         &config,
         &[roots[0].join("f0.rs")],
         EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("incremental rescan");
     let hits = |store: &Store| {
@@ -222,7 +231,15 @@ fn after_an_incremental_pass_every_view_scores_like_a_standalone_index() {
     let incremental = |root: &Path, changed: &[&str]| {
         let mut store = Store::open(root, VIEW_WORKING).expect("open");
         let paths: Vec<PathBuf> = changed.iter().map(|rel| root.join(rel)).collect();
-        basemind::scanner::scan_paths(root, &mut store, &config, &paths, EmbedMode::Inline).expect("incremental pass");
+        basemind::scanner::scan_paths(
+            root,
+            &mut store,
+            &config,
+            &paths,
+            EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
+        )
+        .expect("incremental pass");
         store
     };
     let linked = incremental(&roots[1], &["f1.rs", "extra.rs"]);
@@ -309,6 +326,7 @@ fn after_a_full_pass_the_group_holds_exactly_the_rows_of_its_live_views() {
         &config,
         &[roots[1].join("f1.rs")],
         EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("incremental pass");
     drop(linked);

@@ -439,7 +439,7 @@ impl Store {
     /// A store opened via [`Store::open_read_only`] never creates these — that constructor
     /// deliberately does no filesystem writes so a read-only consumer never contends for the
     /// exclusive lock. But `admin rescan` / `basemind scan` upgrade a read-only-opened store to a
-    /// writer in place (`scan_and_refresh` takes the in-process write lock and scans directly into
+    /// writer in place (`Workspace::rescan` takes the in-process write lock and scans directly into
     /// it, never re-opening through [`Store::open_with_holder`]), so on a workspace's first-ever
     /// scan `view_dir` does not exist on disk yet and `flush()`'s `OpenOptions::open` on
     /// `index.msgpack.tmp` fails with ENOENT. Call this before scanning a store that may have been

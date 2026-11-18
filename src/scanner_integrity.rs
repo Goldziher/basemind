@@ -316,3 +316,7 @@ pub(crate) fn drop_unheld_grep_bloom_rows(store: &Store, hashes: &[String]) {
 #[cfg(test)]
 #[path = "scanner_integrity_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "scanner_integrity_blob_tests.rs"]
+mod blob_tests;
