@@ -563,3 +563,28 @@ jobs:
           cargo test --features full --no-fail-fast
           --test daemon_integration --test scan_smoke --test mcp_smoke --test git_parity --test git_history_smoke
           -- --ignored --test-threads=1
+
+  # ~keep The regression test for the long-lived daemon's embed leak reads phys_footprint through
+  # ~keep `vmmap`, so it is macOS-only and runs nowhere else.
+  footprint-ratchet:
+    name: embed footprint ratchet (nightly, macOS)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: footprint-ratchet
+          cache-on-failure: true
+          cache-directories: ~/Library/Caches/ort.pyke.io
+      - name: cargo test --ignored (embed footprint ratchet)
+        run: >-
+          cargo test --features "documents code-search" --test embed_streaming_smoke
+          -- --ignored --exact embed_pass_footprint_does_not_ratchet_across_rescans --nocapture
