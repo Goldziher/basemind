@@ -16,6 +16,7 @@ use crate::engine::Workspace;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
+use super::analysis::{self, AnalysisCmd};
 use super::choices::{RefsMatch, RefsRelation, SearchLane};
 use super::render::{Emit, emit};
 use super::{resolve_path, run_tool};
@@ -245,6 +246,8 @@ pub enum CodeCmd {
         #[arg(long)]
         byte_start: Option<u32>,
     },
+    #[command(flatten)]
+    Analysis(AnalysisCmd),
 }
 
 /// Dispatch a `code` subcommand through the in-process server.
@@ -544,6 +547,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                 )
                 .await,
         ),
+        CodeCmd::Analysis(cmd) => analysis::call(tools, cmd).await,
     };
 
     let r = run_tool(tool, result)?;
