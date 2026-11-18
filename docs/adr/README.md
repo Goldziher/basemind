@@ -132,3 +132,4 @@ them.
 | [0046](0046-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Accepted |
 | [0047](0047-analysis-commands-and-the-import-graph.md) | Analyses ship as daemon-answered CLI commands; the file-level import graph | Proposed |
 | [0048](0048-http-routes-and-client-calls.md) | HTTP routes as symbols, client calls as call rows, linked by path | Proposed |
+| [0049](0049-reading-outside-the-repository.md) | Reading outside the repository — session transcripts and dependency documentation | Proposed |
