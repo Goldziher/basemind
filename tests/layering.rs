@@ -47,6 +47,7 @@ use Layer::{Core, Engine, Retrieval, Root};
 /// `Workspace` (ADR-0039).
 const LAYERS: &[(&str, Layer)] = &[
     ("alloc_tag", Core),
+    ("allocator", Core),
     ("backpressure", Core),
     ("boot_identity", Core),
     ("chunk", Core),
@@ -76,6 +77,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("lance", Retrieval),
     ("lang", Core),
     ("lang_rules", Core),
+    ("lead", Root),
     ("mcp", Root),
     ("once_map", Core),
     ("path", Core),
@@ -111,6 +113,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("store_doc_tombstone", Core),
     ("store_gc", Core),
     ("store_gc_budget", Core),
+    ("store_gc_groups", Core),
     ("store_gc_live", Core),
     ("store_gc_namespaces", Core),
     ("store_gc_protect", Core),
@@ -149,8 +152,6 @@ const KNOWN_VIOLATIONS: &[&str] = &[
     "src/engine/map_cache.rs -> mcp::helpers_impls",
     // S7b (memory ops) replaces the embedder's async OnceCell.
     "src/engine/workspace.rs -> extern tokio",
-    // S6a (find_files) moves TrackedCache into the engine.
-    "src/engine/workspace.rs -> mcp::helpers_files",
     // S7b (memory ops) moves the memory owner, LanceCell and the vector backfill into the engine.
     "src/engine/workspace.rs -> mcp::identity",
     "src/engine/workspace.rs -> mcp::lance_cell",
@@ -1114,7 +1115,7 @@ fn the_engine_api_check_flags_each_shape() {
 /// `(rmcp_files, helper_lines)`: the non-test files under `src/mcp` that name rmcp, `McpError` or
 /// `CallToolResult`, and the lines of the non-test `src/mcp/helpers*.rs` files. Each engine step
 /// moves tool bodies out of the adapter, so neither may rise; lower them here when they fall.
-const ADAPTER_RATCHET: (usize, usize) = (66, 9_499);
+const ADAPTER_RATCHET: (usize, usize) = (54, 4_842);
 
 /// A test file under `src/mcp`: every test module there lives in a `*_tests.rs` file.
 fn is_test_file(path: &Path) -> bool {

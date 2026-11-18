@@ -76,8 +76,16 @@ fn daemon_binary_for(exe: &Path) -> std::io::Result<PathBuf> {
 /// The spawning agent's identity, inherited by every child unless removed. A daemon that inherited
 /// them would answer as whichever agent happened to start it — and, worse, would keep answering as
 /// that agent long after the session was gone. The daemon resolves no identity of its own (it is a
-/// broker, not a participant), so removing them takes nothing away from it.
-const INHERITED_IDENTITY_VARS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PARENT_AGENT_ID", "BASEMIND_THREAD_ID"];
+/// broker, not a participant), so removing them takes nothing away from it. A launched agent's depth
+/// and launch token (`basemind-agents`) are among them: a daemon a launched agent's basemind call
+/// (re)spawned would otherwise keep a live token in a long-lived process's environment.
+const INHERITED_IDENTITY_VARS: [&str; 5] = [
+    "BASEMIND_AGENT_ID",
+    "BASEMIND_PARENT_AGENT_ID",
+    "BASEMIND_THREAD_ID",
+    "BASEMIND_AGENT_DEPTH",
+    "BASEMIND_LAUNCH_TOKEN",
+];
 
 /// Shell-maintained records of the *spawning* shell's directory. They are not the child's cwd — the
 /// shell writes them, nothing keeps them in step with `chdir` — so leaving them set hands the daemon
@@ -441,6 +449,25 @@ mod tests {
             INHERITED_IDENTITY_VARS.len() + INHERITED_CWD_VARS.len() + INHERITED_GRANT_VARS.len(),
             "nothing the daemon needs (PATH, HOME, XDG, proxy, model vars) may be swept up: {removed:?}"
         );
+    }
+
+    /// A daemon spawned from inside a launched session carries neither its token nor its depth.
+    #[test]
+    fn a_launched_sessions_token_and_depth_never_reach_the_daemon() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = daemon_command(
+            std::path::Path::new("/usr/local/bin/basemind"),
+            &paths_at(dir.path()),
+            Grants::Passed,
+        );
+        let removed: Vec<String> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for key in ["BASEMIND_LAUNCH_TOKEN", "BASEMIND_AGENT_DEPTH"] {
+            assert!(removed.iter().any(|removed| removed == key), "{key}: {removed:?}");
+        }
     }
 
     /// One shell with `BASEMIND_ALLOW_ANY_ROOT=1` or `BASEMIND_ALLOW_HTTP=1` that happened to start

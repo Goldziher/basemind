@@ -43,10 +43,20 @@ pub struct IndexWriter {
     /// same way. Callers batch against [`Self::staged_bytes`]; see
     /// `scanner_index_batch::WorkerIndexBatch`.
     staged_bytes: u64,
-    /// The batch inserts BM25 postings, so its commit holds the group's BM25 gate shared.
+    /// The batch inserts BM25 postings or owes the group a sweep, so its commit holds the group's
+    /// BM25 gate shared.
     writes_postings: bool,
     /// The batch changes this view's BM25 forward rows, so its commit invalidates the live-key cache.
     changes_bm25_forward: bool,
+    /// What the batch does to the BM25 forward rows, for an open full pass (see `bm25_pass`).
+    #[cfg(feature = "code-search")]
+    bm25_delta: super::bm25_pass::Bm25Delta,
+    /// The batch already stages a fresh BM25 dirty token for the view.
+    #[cfg(feature = "code-search")]
+    bm25_dirty_marked: bool,
+    /// The batch already stages the group's owed sweep.
+    #[cfg(feature = "code-search")]
+    bm25_sweep_owed: bool,
     /// Test-only fault seam: make the next [`Self::upsert_file`] (or `upsert_bm25_file`) stage its
     /// deletes and inserts and *then* fail. The real failures have exactly that shape — a fjall read
     /// error inside `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and
@@ -54,6 +64,10 @@ pub struct IndexWriter {
     /// upsert still count" invariant cannot be exercised at all.
     #[cfg(test)]
     pub(crate) fail_after_staging: bool,
+    /// Test-only fault seam: fail the read of a file's BM25 forward rows after this many rows, the
+    /// shape of a fjall read error partway through the prefix.
+    #[cfg(all(test, feature = "code-search"))]
+    pub(crate) fail_forward_read_after: Option<usize>,
 }
 
 /// Fixed cost of one entry staged in a fjall write batch, independent of its payload.
@@ -139,8 +153,16 @@ impl IndexWriter {
             staged_bytes: 0,
             writes_postings: false,
             changes_bm25_forward: false,
+            #[cfg(feature = "code-search")]
+            bm25_delta: super::bm25_pass::Bm25Delta::default(),
+            #[cfg(feature = "code-search")]
+            bm25_dirty_marked: false,
+            #[cfg(feature = "code-search")]
+            bm25_sweep_owed: false,
             #[cfg(test)]
             fail_after_staging: false,
+            #[cfg(all(test, feature = "code-search"))]
+            fail_forward_read_after: None,
         }
     }
 
@@ -261,16 +283,19 @@ impl IndexWriter {
         content: &keys::Bm25Key,
         postings: &[ChunkPosting],
     ) -> Result<(), IndexError> {
-        self.stage_bm25_deletes_for(rel)?;
-        self.stage_bm25_inserts_for(rel, content, postings)?;
+        let staged = self
+            .stage_bm25_deletes_for(rel)
+            .and_then(|()| self.stage_bm25_inserts_for(rel, content, postings));
         #[cfg(test)]
-        if self.fail_after_staging {
-            return Err(IndexError::Io {
+        let staged = staged.and_then(|()| match self.fail_after_staging {
+            true => Err(IndexError::Io {
                 path: rel.to_path_buf(),
                 source: std::io::Error::other("injected bm25 upsert failure after staging"),
-            });
-        }
-        Ok(())
+            }),
+            false => Ok(()),
+        });
+        // A file staged in part leaves rows the pass's tally may not describe. ~keep
+        staged.inspect_err(|_| self.db.bm25_pass.poison())
     }
 
     /// Drop the file's forward rows. Its postings stay, unread by this view, until a retirement or
@@ -278,6 +303,7 @@ impl IndexWriter {
     #[cfg(feature = "code-search")]
     pub fn remove_bm25_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         self.stage_bm25_deletes_for(rel)
+            .inspect_err(|_| self.db.bm25_pass.poison())
     }
 
     /// Stage a single CROSS-FILE resolved edge: the use in `use_rel` binds to a definition in a
@@ -369,6 +395,8 @@ impl IndexWriter {
     pub fn commit(self) -> Result<(), IndexError> {
         #[cfg(test)]
         if self.db.fault.take_injected_commit_failure() {
+            #[cfg(feature = "code-search")]
+            self.db.bm25_pass.poison();
             return Err(IndexError::Io {
                 path: std::path::PathBuf::new(),
                 source: std::io::Error::other("injected commit failure"),
@@ -379,6 +407,17 @@ impl IndexWriter {
         drop(gate);
         if let Err(error) = &result {
             self.db.record_commit_error(error);
+        }
+        // A failed commit may still have reached the journal: the pass can no longer vouch. ~keep
+        #[cfg(feature = "code-search")]
+        if result.is_err() {
+            self.db.bm25_pass.poison();
+        } else if !self.bm25_delta.is_empty() && !self.db.bm25_pass.absorb(self.bm25_delta) {
+            // Staged under a pass that has since closed: the view must not be vouched for. ~keep
+            let token = super::bm25_pass::fresh_token().to_be_bytes();
+            if let Err(error) = self.db.meta.insert(super::bm25_pass::META_BM25_DIRTY, token) {
+                tracing::warn!(%error, "could not mark the BM25 stats dirty; the next pass may trust them");
+            }
         }
         if self.changes_bm25_forward {
             // After the commit, failed or not: a cache built from rows read before it is stale. ~keep
@@ -482,16 +521,79 @@ impl IndexWriter {
     #[cfg(feature = "code-search")]
     fn stage_bm25_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        let keys: Vec<Vec<u8>> = db
-            .code_bm25_by_path
-            .prefix_keys(&keys::code_bm25_by_path_prefix(rel))
-            .map(|key| key.map(|key| key.to_vec()))
-            .collect::<Result<_, _>>()?;
-        self.changes_bm25_forward |= !keys.is_empty();
+        let prefix = keys::code_bm25_by_path_prefix(rel);
+        let keys: Vec<Vec<u8>> = if let Some(generation) = db.bm25_pass.open_generation() {
+            // An open pass needs each row's value too: the postings it names and its doclen. The ~keep
+            // tally is local until every row was read, so a read error leaves none of it behind. ~keep
+            let mut keys = Vec::new();
+            let mut delta = super::bm25_pass::Bm25Delta::default();
+            for row in db.code_bm25_by_path.prefix(&prefix) {
+                #[cfg(test)]
+                if self.fail_forward_read_after == Some(keys.len()) {
+                    return Err(IndexError::Io {
+                        path: rel.to_path_buf(),
+                        source: std::io::Error::other("injected forward-row read failure"),
+                    });
+                }
+                let (key, value) = row?;
+                delta.remove_row(&db.bm25_pass, &key, &value);
+                keys.push(key.to_vec());
+            }
+            self.bm25_delta.staged_under(generation);
+            self.bm25_delta.merge(delta);
+            keys
+        } else {
+            db.code_bm25_by_path
+                .prefix_keys(&prefix)
+                .map(|key| key.map(|key| key.to_vec()))
+                .collect::<Result<_, _>>()?
+        };
+        let deleted = !keys.is_empty();
+        self.changes_bm25_forward |= deleted;
         for key in keys {
             stage_remove(batch, staged_bytes, &db.code_bm25_by_path, key);
         }
+        if self.changes_bm25_forward {
+            self.mark_bm25_dirty_outside_pass();
+        }
+        if deleted {
+            self.owe_bm25_sweep_outside_pass();
+        }
         Ok(())
+    }
+
+    /// A forward-row delete outside an open pass leaves its postings for no retirement: stage the
+    /// group's owed sweep into the same batch, once, and hold the posting gate for the commit so a
+    /// sweep that is clearing the debt cannot miss it.
+    #[cfg(feature = "code-search")]
+    fn owe_bm25_sweep_outside_pass(&mut self) {
+        if self.bm25_sweep_owed || self.db.bm25_pass.is_open() {
+            return;
+        }
+        let token = super::bm25_pass::fresh_token().to_be_bytes();
+        let key = super::bm25_pass::META_BM25_SWEEP_OWED;
+        self.batch.insert(self.db.meta.raw(), key.to_vec(), token.to_vec());
+        self.staged_bytes += staged_entry_bytes(key.len(), token.len());
+        self.writes_postings = true;
+        self.bm25_sweep_owed = true;
+    }
+
+    /// A forward-row write outside an open pass makes the view's stored BM25 stats unvouched for:
+    /// stage a fresh dirty token into the same batch, once.
+    #[cfg(feature = "code-search")]
+    fn mark_bm25_dirty_outside_pass(&mut self) {
+        if self.bm25_dirty_marked || self.db.bm25_pass.is_open() {
+            return;
+        }
+        let token = super::bm25_pass::fresh_token().to_be_bytes();
+        stage_insert(
+            &mut self.batch,
+            &mut self.staged_bytes,
+            &self.db.meta,
+            super::bm25_pass::META_BM25_DIRTY.to_vec(),
+            token.to_vec(),
+        );
+        self.bm25_dirty_marked = true;
     }
 
     #[cfg(feature = "code-search")]
@@ -544,8 +646,15 @@ impl IndexWriter {
                 keys::code_bm25_by_path(rel, content, ordinal),
                 value,
             );
+            if let Some(generation) = db.bm25_pass.open_generation() {
+                self.bm25_delta.staged_under(generation);
+                self.bm25_delta.add_row(posting.doclen);
+            }
             self.writes_postings = true;
             self.changes_bm25_forward = true;
+        }
+        if self.changes_bm25_forward {
+            self.mark_bm25_dirty_outside_pass();
         }
         Ok(())
     }

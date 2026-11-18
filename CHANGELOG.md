@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind serve --lead` (Unix, `comms` builds): the lead's own `serve` hosts the
+  `basemind-agents` supervisor and answers `agent_launch` / `agent_stop` on its stdio; the daemon,
+  the HTTP front-end, a plain `serve` and the CLI never do. Off until the operator's user-level
+  `agents.toml` enables it; a repository's `basemind.toml` `[agents]` table is ignored with a
+  warning. Launched agents run at depth 1 in a worktree of their own, with every approval denied,
+  and are audited per lead (ADR-0040).
 - `stale` on `code_read` (a symbol found by parsing a file edited since it was indexed), on `code_outline`
   (outlined from the file as it is) and on a `code_grep` hit in such a file (which then carries no
   `symbol`).
@@ -41,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- With the comms daemon up, a CLI tool command on the working view forwards its whole call to the
+  daemon over one relay session (a `cli` client in the relay hello) instead of opening the store
+  itself; the output and exit codes are unchanged. Against a daemon too old to take the call it exits
+  `4` and names `basemind comms stop` (ADR-0039).
+- A CLI command beside another process that holds the workspace's index, with no daemon up, refuses
+  `code_search`'s keyword lane, and a hybrid search none of whose lanes could run, as busy (exit `3`)
+  naming `basemind comms start`, where it was an internal error (exit `1`). It no longer starts a
+  daemon to read the lanes. It also no longer retries the git-history database such a process holds
+  (about 1.5 s per command): history tools live-walk at once.
 - A CLI or hook resolving its agent id no longer creates a workspace cache directory that holds only that id: the
   id is derived from the workspace's cache path. A workspace whose id an older basemind persisted keeps it.
 - **BREAKING: the MCP tools are one per job.** The mode-dispatched `code`, `git`, `memory` and `admin`
@@ -302,6 +317,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The daemon socket's forwarded `memory`, `resolved_refs`, `index_read` and `code_search_lanes`
+  requests. No process sends them any more: a CLI next to the daemon forwards its whole call, and a
+  daemon-hosted session reads through the daemon's pool in process. The comms protocol version stays
+  7, so an older basemind of the same generation keeps using a newer daemon; one that still sends a
+  removed request has that link closed (ADR-0039).
 - **BREAKING: the shared worktree index of ADR-0016** (`BASEMIND_INDEX_LAYERED=1`), its sibling seeding of a new
   worktree's view (`BASEMIND_NO_SEED`) and `scan --verify-shared-base`. The group index replaces them.
 - **BREAKING: `index_rescan`'s `full` argument and `basemind rescan --full`.** `{}` and `{"full": true}`

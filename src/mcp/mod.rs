@@ -18,6 +18,7 @@ mod background;
 mod budget;
 mod by_path;
 mod completions;
+pub mod lead_tools;
 pub(crate) use crate::engine::cursor;
 mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -25,6 +26,12 @@ mod daemon_forward;
 use crate::engine::freshness;
 mod helpers;
 pub(crate) use helpers::BUSY_DATA;
+
+/// The overload refusal a CLI session answers with ([`admission::ServerBusy::into_cli_error`]).
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
+pub(crate) fn server_busy_for_cli() -> rmcp::ErrorData {
+    admission::ServerBusy.into_cli_error()
+}
 #[cfg(test)]
 pub(crate) use helpers::rescan_error;
 #[cfg(feature = "documents")]
@@ -37,18 +44,8 @@ mod helpers_calls_scan;
 mod helpers_code;
 #[cfg(feature = "code-search")]
 mod helpers_code_search;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod helpers_daemon;
 #[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
-mod helpers_expand;
-pub(crate) mod helpers_files;
-mod helpers_filters;
-mod helpers_fingerprint;
-mod helpers_git;
-mod helpers_git_by_path;
-mod helpers_git_file;
-mod helpers_git_show;
 mod helpers_grep;
 mod helpers_grep_text;
 pub(crate) mod helpers_impls;
@@ -56,10 +53,8 @@ mod helpers_intel;
 mod helpers_memory;
 #[cfg(any(feature = "code-search", feature = "documents", test))]
 mod helpers_page;
-mod helpers_pick;
 mod helpers_refs_match;
 mod helpers_stale;
-mod helpers_symbols;
 mod helpers_telemetry;
 mod history_sync;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -107,7 +102,6 @@ pub(crate) mod toon;
 mod types;
 mod types_code;
 mod types_documents;
-mod types_git;
 mod types_impls;
 pub(crate) mod types_memory;
 mod types_tools;
@@ -127,8 +121,6 @@ pub(crate) use crate::engine::Workspace;
 pub use agent_context::AgentContext;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) use host::HostBackend;
-#[cfg(all(feature = "test-support", feature = "comms", any(unix, windows)))]
-pub use in_memory::serve_in_memory_daemon_writer;
 #[cfg(feature = "test-support")]
 pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
 pub(crate) use state::{ServedWorkspace, ServerState};
@@ -176,8 +168,6 @@ pub use params::Parameters;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) const HOSTED_GIT_CACHE_MEM: usize = 1024;
 
-pub(crate) use crate::engine::outline_cache::{OutlineCache, OutlineEntry};
-
 /// Shared MCP server state. `ToolRouter<Self>` is Clone (Arc inside), so we hold it directly
 /// on the struct as the `#[tool_handler]` macro expects.
 #[derive(Clone)]
@@ -195,6 +185,8 @@ pub struct BasemindServer {
     tasks: TaskManager,
     /// Bounds allocation-heavy calls while allowing control/comms traffic to bypass the queue.
     heavy_admission: Arc<admission::HeavyAdmission>,
+    /// A `basemind` CLI command's relay session ([`for_cli`](Self::for_cli)).
+    cli: bool,
 }
 
 /// Construction-time switches for [`BasemindServer`].
@@ -231,11 +223,6 @@ pub struct ServerOptions {
     /// scanning. The passive view watcher still runs, so the in-RAM map tracks
     /// the lock-holding writer's `index.msgpack` updates.
     pub read_only: bool,
-    /// When true, this serve forwards every write (auto-scan, watcher rescan, `rescan` tool) to
-    /// the machine daemon (the sole fjall writer) rather than writing locally, and rebuilds its
-    /// in-RAM map from the daemon-written `index.msgpack`. Set only by the real `serve` binary on
-    /// a `comms` build; always false for the in-process one-shot and non-comms builds.
-    pub daemon_writer: bool,
     /// When true, defer [`MapCache::build`] to the first tool that actually reads the map, instead
     /// of running it at construction. Set only for the one-shot CLI — see
     /// [`ServerState::lazy_cache`].
@@ -247,8 +234,9 @@ impl From<ServerOptions> for crate::engine::workspace::OpenOptions {
         Self {
             background: options.background,
             read_only: options.read_only,
-            forwards_writes: options.daemon_writer,
+            forwards_writes: false,
             lazy_cache: options.lazy_cache,
+            history_sync: Some(history_sync::request),
         }
     }
 }
@@ -259,7 +247,6 @@ impl Default for ServerOptions {
             background: true,
             watch: true,
             read_only: false,
-            daemon_writer: false,
             lazy_cache: false,
         }
     }
@@ -302,7 +289,6 @@ impl BasemindServer {
                 background: false,
                 watch: false,
                 read_only: false,
-                daemon_writer: false,
                 lazy_cache: true,
             },
         )
@@ -327,8 +313,8 @@ impl BasemindServer {
             repo.is_some(),
             &agent_id,
             &options,
-            // ~keep In-process serve / CLI: no daemon hosting us, so history reads use the socket-forward
-            // ~keep path (or a local handle) — never the in-process seam.
+            // ~keep In-process serve / CLI: no daemon hosting us, so history reads use a local handle,
+            // ~keep or none while the daemon holds the database.
             #[cfg(all(feature = "comms", any(unix, windows)))]
             None,
         );
@@ -344,14 +330,7 @@ impl BasemindServer {
             git_history,
             options.into(),
         ));
-        // ~keep In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
-        // ~keep (not the host seam) handles writes when a daemon is up.
-        #[allow(unused_mut)] // ~keep only a `comms` build records the daemon topology
-        let mut served = ServedWorkspace::new(shared, &basemind_dir);
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        {
-            served.daemon_writer = options.daemon_writer;
-        }
+        let served = ServedWorkspace::new(shared, &basemind_dir);
         let state = Arc::new(ServerState::for_connection(served, agent_id));
         let mut watcher = None;
         if options.background {
@@ -361,13 +340,13 @@ impl BasemindServer {
                     Err(_) => false,
                 }
             };
-            let watcher_guard = if options.watch && (options.daemon_writer || !options.read_only) && view_is_working {
+            let watcher_guard = if options.watch && !options.read_only && view_is_working {
                 background::spawn_serve_watcher(Arc::clone(&state))
             } else {
                 background::spawn_view_watcher(Arc::clone(&state))
             };
             watcher = Some(Arc::new(watcher_guard));
-            history_sync::request(&state);
+            history_sync::request(&state.shared);
             if needs_initial_scan {
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
@@ -387,6 +366,7 @@ impl BasemindServer {
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
             heavy_admission: Arc::new(admission::HeavyAdmission::default()),
+            cli: false,
         }
     }
 
@@ -452,7 +432,18 @@ impl BasemindServer {
             prompt_router: router_cache::cached_prompt_router(),
             tasks: TaskManager::new(),
             heavy_admission,
+            cli: false,
         }
+    }
+
+    /// This session forwards a `basemind` CLI command: a failed call is answered as a JSON-RPC error
+    /// carrying the code the CLI turns into its exit status, and the CLI-only commands
+    /// ([`server_handler::CLI_ONLY`]) are answered too, off `tools/list`. Only a CLI's hello on the
+    /// daemon's local socket or pipe asks for it.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn for_cli(mut self) -> Self {
+        self.cli = true;
+        self
     }
 
     /// Build (once) the shared read stack the daemon hosts for one workspace, plus its single
@@ -463,7 +454,7 @@ impl BasemindServer {
     /// the N-watchers-per-workspace → one-watcher-per-workspace consolidation: per-connection
     /// servers ([`from_shared`](Self::from_shared)) spawn nothing.
     ///
-    /// The warden uses the same topology as today's thin `serve` (`read_only` + `daemon_writer`), so
+    /// The warden is `read_only` and hosted (its writes go to the pool through `host`), so
     /// its scans forward to the daemon's sole-writer pool over the existing path — no new scan/write
     /// machinery. The store is [`open_read_only_no_index`](crate::store::Store::open_read_only_no_index)
     /// (no fjall lock), so the shared `MapCache` still builds its in-RAM call/impl indexes exactly as
@@ -496,7 +487,6 @@ impl BasemindServer {
             background: true,
             watch: true,
             read_only: true,
-            daemon_writer: true,
             lazy_cache: false,
         };
         let agent_id = identity::resolve_agent_id(&store.root);
@@ -509,7 +499,12 @@ impl BasemindServer {
             &options,
             Some(git_history_host),
         );
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
+        // ~keep The pool writes the index, so an empty one still asks for an initial scan.
+        let open = crate::engine::workspace::OpenOptions {
+            forwards_writes: true,
+            ..options.into()
+        };
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &open);
         let telemetry_dir = store.basemind_dir.clone();
         let workspace = Arc::new(Workspace::new(
             store,
@@ -518,17 +513,16 @@ impl BasemindServer {
             repo,
             git_cache,
             git_history,
-            options.into(),
+            open,
         ));
         let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);
-        shared.daemon_writer = options.daemon_writer;
         // ~keep The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
         // ~keep the pool instead of looping back over the daemon's own socket.
         shared.host = Some(host);
         // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
         let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
-        history_sync::request(&warden);
+        history_sync::request(&warden.shared);
         if needs_initial_scan {
             background::spawn_initial_scan(Arc::clone(&warden));
         } else if defer_warm {
@@ -545,18 +539,17 @@ impl BasemindServer {
     /// read-only open takes it — so `git-history.fjall/` has exactly one holder machine-wide, and the
     /// only question here is whether that holder is us or the daemon:
     ///
-    /// * **a daemon is up**: the DAEMON holds the database, so every session — a `daemon_writer`
-    ///   serve, and equally the one-shot CLI, which runs these same tool bodies in-process — takes a
-    ///   forwarding handle. It must not try to open the index: it cannot win the lock, so it would
-    ///   burn the retry ladder on every invocation and then silently live-walk, on the exact machine
-    ///   where the index is built and fresh. Serve knows a daemon is up by construction (it brings
-    ///   one up); the CLI has to ask, which is one `stat` when there is no daemon and one ping when
-    ///   there is (see [`crate::git_history::remote::daemon_is_up`]).
+    /// * **a daemon is up**: the DAEMON holds the database. A session it hosts reads it in process
+    ///   through the daemon's handle. Any other session (a CLI command on a view the daemon does not
+    ///   host) gets no handle and live-walks: it cannot win the lock, and trying would burn the retry
+    ///   ladder on every invocation. The CLI asks whether a daemon is up, which is one `stat` when
+    ///   there is none (see [`crate::git_history::remote::daemon_is_up`]).
     /// * **no daemon** (a standalone process, or a non-`comms` build): this process holds the
     ///   database and builds it in-process, as before. Nobody else can, and history tools would
     ///   otherwise permanently live-walk.
     /// * **read-only fallback** (another process owns the write lock, no daemon): no handle — history
-    ///   tools live-walk, visibly (`partial: true`). Unchanged.
+    ///   tools live-walk, visibly (`partial: true`). A one-shot CLI command beside such a process
+    ///   does not try the database at all, and tries a free one once, never the retry ladder.
     fn open_git_history(
         root: &std::path::Path,
         history_dir: &std::path::Path,
@@ -573,21 +566,33 @@ impl BasemindServer {
             return None;
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if options.daemon_writer || crate::git_history::remote::daemon_is_up() {
-            if let Some(host) = git_history_host {
-                return Some(Arc::new(crate::git_history::remote::hosted_index(
-                    root.to_path_buf(),
-                    host,
-                )));
-            }
-            return Some(Arc::new(crate::git_history::remote::remote_index(root.to_path_buf())));
+        if let Some(host) = git_history_host {
+            return Some(Arc::new(crate::git_history::remote::hosted_index(
+                root.to_path_buf(),
+                host,
+            )));
+        }
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if crate::git_history::remote::daemon_is_up() {
+            // ~keep The daemon holds the database and fjall's lock is exclusive even to a reader
+            // ~keep (fjall `locked_file.rs` `try_lock`), so a session it does not host live-walks.
+            return None;
         }
         let _ = (root, agent_id);
         // ~keep A one-shot query never syncs, so an index it would open empty would stay empty.
         if options.read_only || (!options.background && !crate::git_history::GitHistoryIndex::exists(history_dir)) {
             return None;
         }
-        match crate::git_history::GitHistoryIndex::open(history_dir) {
+        // ~keep A one-shot query holds no writer lock, so a held index is another process's for as
+        // ~keep long as it runs: it live-walks at once instead of climbing the retry ladder (~1.5 s).
+        let opened = if options.background {
+            crate::git_history::GitHistoryIndex::open(history_dir)
+        } else if crate::store_lock::writer_lock_is_held(history_dir) {
+            return None;
+        } else {
+            crate::git_history::GitHistoryIndex::open_once(history_dir)
+        };
+        match opened {
             Ok(index) => Some(Arc::new(index)),
             Err(error) => {
                 tracing::warn!(?error, "git-history index unavailable; tools will live-walk");

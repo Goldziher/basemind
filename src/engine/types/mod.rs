@@ -2,6 +2,8 @@
 //! struct's field docs are its tool's schema descriptions (ADR-0018), so they move byte for byte.
 
 pub(crate) mod code;
+pub(crate) mod files;
+pub(crate) mod git;
 
 use serde::Serialize;
 
@@ -105,3 +107,11 @@ impl LifecycleNotice {
 pub(crate) fn is_zero(count: &usize) -> bool {
     *count == 0
 }
+
+/// `serde(default)` for a flag that is on unless the caller turns it off.
+pub(crate) fn default_true() -> bool {
+    true
+}
+
+/// `truncated_reason` of a scan that stopped at its cap before the end of the matches.
+pub(crate) const SCAN_CAP: &str = "scan_cap";

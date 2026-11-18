@@ -133,6 +133,22 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
     let mut observer = inner.observer.get();
     let mut status = FinishStatus::Failed;
     for event in session.events() {
+        // The supervisor holds a request before the observer hears of it, so an embedding that
+        // answers from the observer finds it pending.
+        if let Event::ApprovalRequest(request) = &event {
+            let mut table = inner.table();
+            if let Some(entry) = table.sessions.get_mut(&id)
+                && entry.approvals.len() < MAX_REMEMBERED_APPROVALS
+            {
+                entry.approvals.insert(
+                    request.id.clone(),
+                    Pending {
+                        kind: approval_kind(request.kind),
+                        answered: false,
+                    },
+                );
+            }
+        }
         if let Some(watching) = observer {
             let delivered = std::panic::catch_unwind(AssertUnwindSafe(|| watching.event(SessionId(id), &event)));
             if delivered.is_err() {
@@ -141,20 +157,6 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
             }
         }
         match &event {
-            Event::ApprovalRequest(request) => {
-                let mut table = inner.table();
-                if let Some(entry) = table.sessions.get_mut(&id)
-                    && entry.approvals.len() < MAX_REMEMBERED_APPROVALS
-                {
-                    entry.approvals.insert(
-                        request.id.clone(),
-                        Pending {
-                            kind: approval_kind(request.kind),
-                            answered: false,
-                        },
-                    );
-                }
-            }
             Event::ApprovalResolved {
                 id: approval,
                 allowed,

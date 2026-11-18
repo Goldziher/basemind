@@ -1,14 +1,14 @@
 //! Keeping the git-history index caught up with HEAD on a long-lived serve.
 //!
 //! A serve syncs the index once at start, and again whenever a history call finds it behind HEAD
-//! ([`super::helpers::git_history_if_fresh`]): a commit made while the server runs is otherwise never
+//! (`git_history_if_fresh` in `engine/git/common.rs`): a commit made while the server runs is otherwise never
 //! indexed, and every later history call stays on the bounded live walk. One sync runs at a time per
 //! read stack; calls that find the index behind while it runs answer from the live walk.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::ServerState;
+use crate::engine::Workspace;
 
 /// Clears the in-flight flag when the sync ends, however it ends.
 struct Syncing(Arc<AtomicBool>);
@@ -30,8 +30,7 @@ impl Drop for Syncing {
 ///
 /// The one-shot CLI never syncs: it exits in milliseconds, and a first build on a deep repo is a
 /// minutes-long walk.
-pub(super) fn request(state: &ServerState) {
-    let shared = &state.shared;
+pub(super) fn request(shared: &Workspace) {
     let Some(index) = shared.git_history.as_deref() else {
         return;
     };
@@ -66,18 +65,6 @@ pub(super) fn request(state: &ServerState) {
     }
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if index.forwarder().is_some_and(|forwarder| forwarder.hosts_in_process()) {
-        return;
-    }
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if index.is_daemon_backed() {
-        let root = shared.root.clone();
-        runtime.spawn(async move {
-            let _syncing = syncing;
-            match crate::git_history::remote::request_sync(root).await {
-                Some(outcome) => tracing::info!(?outcome, "git-history index synced by the daemon"),
-                None => tracing::warn!("git-history index sync unavailable; history tools live-walk"),
-            }
-        });
         return;
     }
     let _ = index;

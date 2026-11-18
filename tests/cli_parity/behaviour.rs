@@ -21,8 +21,10 @@ pub struct Case {
     /// Fields of this tool's payload that differ between two calls by design (a write timestamp,
     /// the answering process).
     pub volatile: &'static [&'static str],
-    /// The CLI side needs the daemon to open the workspace store, which the in-process server
-    /// locks for as long as it lives: the command runs after the MCP session has ended.
+    /// The tool reads the workspace's fjall index, which the in-process writer locks for as long as
+    /// it lives. Beside it, with no daemon, the CLI cannot read that index and must refuse busy
+    /// (exit 3) naming the fix ([`refuses_beside_the_writer`]); the payloads are compared once the
+    /// session has ended. Every other case answers beside the writer.
     pub after_session: bool,
 }
 
@@ -230,14 +232,42 @@ pub fn run_cli(root: &std::path::Path, cli_path: &str, operands: &[&str]) -> Res
         .map_err(|e| format!("non-JSON stdout ({e}): {}", String::from_utf8_lossy(&output.stdout)))
 }
 
+/// Whether a CLI command run beside the writer left the git-history database alone: the writer
+/// holds it, so a one-shot command live-walks at once instead of retrying the open (each attempt
+/// logs the database path).
+pub fn leaves_the_held_history_alone(root: &std::path::Path, cli_path: &str, operands: &[&str]) -> Result<(), String> {
+    let output = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args(["--root", root.to_str().expect("utf8 root"), "--json"])
+        .args(cli_path.split(' '))
+        .args(operands)
+        .output()
+        .map_err(|e| format!("spawn: {e}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() || stderr.contains("git-history.fjall") {
+        return Err(format!("exit {:?}: {stderr}", output.status.code()));
+    }
+    Ok(())
+}
+
+/// How [`run_cli`] reports a command that exited busy (`3`): the workspace's lock is held elsewhere.
+const BUSY_EXIT: &str = "exit Some(3): ";
+
+/// Whether the CLI refused a command beside the writer as the contract says: busy, naming the fix.
+pub fn refuses_beside_the_writer(cli: &Result<Value, String>) -> bool {
+    matches!(cli, Err(message) if message.starts_with(BUSY_EXIT)
+        && message.contains("holds this workspace's index")
+        && message.contains("`basemind comms start`"))
+}
+
 /// [`run_cli`] for a command issued right after the in-process server ended: its store lock is
-/// released when the server task winds down, which can trail the client's disconnect by a moment.
+/// released when the server's background work winds down, which can trail the client's disconnect
+/// by a moment. Until then the command exits busy, the contract for a held lock, and is retried.
 pub fn run_cli_once_unlocked(root: &std::path::Path, cli_path: &str, operands: &[&str]) -> Result<Value, String> {
     const ATTEMPTS: usize = 20;
     let mut last = run_cli(root, cli_path, operands);
     for _ in 1..ATTEMPTS {
         match &last {
-            Err(message) if message.contains("holds the lock") => {
+            Err(message) if message.starts_with(BUSY_EXIT) => {
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 last = run_cli(root, cli_path, operands);
             }

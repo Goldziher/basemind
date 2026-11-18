@@ -127,6 +127,7 @@ code-search = ["intelligence", "xberg/reranker", "xberg/reranker-presets"]
 memory = ["intelligence"]
 
 comms = [
+  "dep:basemind-agents",
   "dep:hyper",
   "dep:hyper-util",
   "dep:http",
@@ -153,6 +154,12 @@ code-intel = ["code-intel-js", "code-intel-stack"]
 full = ["documents", "documents-ocr", "documents-ner", "memory", "comms", "code-intel", "code-search"]
 
 test-support = []
+
+# The system allocator instead of mimalloc (`src/allocator.rs`), for leak checking only
+# (`scripts/hardening/leak_check.py`): macOS `leaks` scans the malloc zones, and mimalloc registers
+# none, so on a mimalloc build every C allocation a Rust value owns looks unreferenced and a
+# Rust-heap leak is invisible. Never shipped: every other feature set installs mimalloc.
+system-allocator = []
 
 [dependencies]
 ahash = "0.8"
@@ -194,12 +201,12 @@ jsonschema = { version = "0.61", default-features = false }
 # types always share LanceDB's identity. A separate Arrow major forks them and breaks `Scannable`/`Schema`. ~keep
 lancedb = { version = "0.41.0", features = ["remote"], optional = true }
 libc = "0.2"
-# ~keep `extended` exposes `mi_option_set`, used by `alloc_tag` to retag the heap off `VM_MEMORY_IOACCELERATOR`.
+# ~keep The global allocator (`src/allocator.rs`). `extended` exposes `mi_option_set`, used by `alloc_tag` to
+# ~keep retag the heap off `VM_MEMORY_IOACCELERATOR`, and `mi_is_in_heap_region`, which proves the binary's allocator.
 libmimalloc-sys = { version = "0.1", features = ["extended"] }
 lru = "0.19.0"
 memchr = "2"
 memmap2 = "0.9"
-mimalloc = "0.1"
 notify = "8"
 notify-debouncer-full = "0.7"
 nucleo-matcher = "0.3.1"
@@ -250,6 +257,10 @@ zstd = "0.14.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.7"
+
+# ~keep `basemind serve --lead` (ADR-0040) hosts the agent-launch supervisor; launching is Unix-only.
+[target.'cfg(unix)'.dependencies]
+basemind-agents = { version = "0.1.0", path = "crates/basemind-agents", optional = true }
 
 [dev-dependencies]
 basemind = { path = ".", features = ["test-support"] }

@@ -27,15 +27,15 @@ fn join_error(error: tokio::task::JoinError) -> McpError {
     McpError::internal_error(format!("spawn_blocking: {error}"), None)
 }
 
-/// The view's document store for the configured preset, or `None` when no scan has written one.
+/// The group's document store for the configured preset, or `None` when no scan has written one.
 /// Opened without the embedding model: the lexical lane needs none.
 async fn docs_store(state: &ServerState) -> Result<Option<DocStore>, McpError> {
     let preset = state.shared.config.documents.embedding_preset.clone();
     let dim = crate::scanner_docs::preset_dim(&preset)
         .map_err(|error| McpError::invalid_request(format!("`docs_search`: {error}"), None))?;
-    let parent = state.store_read().await.view_dir.clone();
+    let root = state.store_read().await.root.clone();
     tokio::task::spawn_blocking(move || {
-        DocStore::shared_existing(&crate::lance::docs::store_dir(&parent, &preset, dim), dim, &preset)
+        DocStore::shared_existing(&crate::lance::docs::group_store_dir(&root, &preset, dim), dim, &preset)
     })
     .await
     .map_err(join_error)?

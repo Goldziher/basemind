@@ -5,24 +5,23 @@
 //! `basemind code …` command run. They translate the tool's wire arguments
 //! ([`super::types_tools`]) into the per-operation shapes the query bodies take; those bodies stay
 //! where they already lived: `helpers_files`, `helpers_grep`, `helpers_calls`, `helpers_impls`,
-//! `helpers_intel`, `helpers_code_search`. `code_read` is in `helpers_expand`.
+//! `helpers_intel`, `helpers_code_search`. `code_read` is an engine op (`engine/ops/code_read.rs`).
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::{
-    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_files,
-    run_find_implementations, run_find_references, run_list_files, run_workspace_grep,
+    RefsSource, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_implementations,
+    run_find_references, run_workspace_grep,
 };
 use super::index_route::IndexRoute;
 use super::tool_contract::budget;
 use super::types::{
-    DependentsResponse, FindCallersParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
-    ListFilesParams, SearchSymbolsParams, WorkspaceGrepParams,
+    DependentsResponse, FindCallersParams, FindReferencesParams, GotoDefinitionParams, WorkspaceGrepParams,
 };
 use super::types_impls::FindImplementationsParams;
-use super::types_tools::{CodeGrepParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams, FindFilesToolParams};
+use super::types_tools::{CodeGrepParams, CodeRefsParams, CodeSearchParams};
 
 /// `code_grep`: content search over every indexed code file.
 pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
@@ -44,23 +43,6 @@ pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<
             format: None,
             include_context: p.context.unwrap_or(false),
             literal: !p.regex.unwrap_or(false),
-            cursor: p.cursor,
-        },
-    )
-    .await
-}
-
-/// `code_symbols`: find definitions by name.
-pub(super) async fn code_symbols(state: &ServerState, p: CodeSymbolsParams) -> Result<CallToolResult, McpError> {
-    super::helpers_symbols::run_search_symbols(
-        state,
-        SearchSymbolsParams {
-            needle: p.name,
-            kind: p.kind,
-            fuzzy: p.fuzzy.unwrap_or(false),
-            limit: p.limit,
-            max_tokens: budget(p.max_tokens),
-            format: None,
             cursor: p.cursor,
         },
     )
@@ -100,42 +82,6 @@ pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Res
     {
         let _ = (state, p);
         Err(super::tool_contract::feature_missing("code_search", "code-search"))
-    }
-}
-
-/// `find_files`: fuzzy file-name search, or a plain listing when `query` is omitted.
-pub(super) async fn find_files(state: &ServerState, p: FindFilesToolParams) -> Result<CallToolResult, McpError> {
-    match p.query.filter(|query| !query.trim().is_empty()) {
-        Some(query) => {
-            run_find_files(
-                state,
-                FindFilesParams {
-                    query,
-                    path_prefix: p.path_prefix,
-                    language: p.language,
-                    limit: p.limit,
-                    max_tokens: budget(p.max_tokens),
-                    format: None,
-                    cursor: p.cursor,
-                },
-            )
-            .await
-        }
-        None => {
-            run_list_files(
-                state,
-                ListFilesParams {
-                    path_contains: None,
-                    path_prefix: p.path_prefix,
-                    language: p.language,
-                    limit: p.limit,
-                    max_tokens: budget(p.max_tokens),
-                    format: None,
-                    cursor: p.cursor,
-                },
-            )
-            .await
-        }
     }
 }
 
@@ -287,8 +233,7 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
 
 /// Body of the `callers` mode. Resolves where the resolved-reference join runs before handing the
 /// scan to [`run_find_callers`]: a daemon-hosted connection resolves in-process through the pool's
-/// read-write index, a `daemon_writer` serve forwards to the daemon, and everything else reads its
-/// own store.
+/// read-write index, and everything else reads its own store.
 async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
     let route = IndexRoute::resolve(state).await;
@@ -300,12 +245,6 @@ async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<C
         // ~keep Seam-B degradation) instead of dialing the daemon over its own socket.
         RefsSource::Host {
             host: std::sync::Arc::clone(host),
-            root: state.shared.root.clone(),
-        }
-    } else if state.daemon_writer {
-        let client = super::helpers_daemon::daemon_client(state).await?;
-        RefsSource::Daemon {
-            client,
             root: state.shared.root.clone(),
         }
     } else {

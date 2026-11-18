@@ -31,6 +31,12 @@ MIME_BY_EXT = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".eml": "message/rfc822",
     ".ipynb": "application/x-ipynb+json",
+    ".txt": "text/plain",
+    ".log": "text/plain",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".yaml": "application/yaml",
+    ".toml": "application/toml",
 }
 
 ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
@@ -1496,6 +1502,215 @@ def build_notebooks() -> None:
 
 
 # --------------------------------------------------------------------------
+# Text and data files (plain text, logs, CSV, JSON, YAML, TOML)
+# --------------------------------------------------------------------------
+
+
+def telemetry_log() -> str:
+    lines = []
+    events = {
+        37: "WARN adcs: star tracker lost lock during slew; falling back to sun sensors",
+        81: "ERROR eps: battery string B undervoltage at 6.41 V; load shedding level 2 engaged",
+        122: "INFO comms: S-band downlink resumed after Halvmark pass handover",
+        167: "WARN thermal: imager focal plane at 31.8 C, above the 30 C imaging limit",
+    }
+    for i in range(200):
+        minute, second = divmod(i * 17, 60)
+        stamp = f"2025-03-14T06:{minute % 60:02d}:{second:02d}Z"
+        body = events.get(
+            i, f"DEBUG hk: housekeeping frame {i} nominal, bus 7.{i % 9}2 V, obc load {20 + i % 13} percent"
+        )
+        lines.append(f"{stamp} mirelle-1 {body}")
+    return "\n".join(lines) + "\n"
+
+
+def meter_csv() -> str:
+    rows = ["meter_id,district,reading_m3,read_on,status"]
+    districts = ["Harbour", "Ostbank", "Millfield", "Quayside", "Upper Varn"]
+    for i in range(120):
+        status = "ok"
+        if i == 73:
+            status = "suspected tamper: seal broken, flow reversed"
+        elif i % 29 == 11:
+            status = "estimated: no access"
+        rows.append(
+            f"VW-{4000 + i},{districts[i % 5]},{(i * 37) % 900 + 12}.{i % 10},2025-02-{1 + i % 27:02d},{status}"
+        )
+    return "\n".join(rows) + "\n"
+
+
+def stations_yaml() -> str:
+    out = ["# Mirelle-1 ground segment configuration", "ground_stations:"]
+    stations = [
+        ("halvmark", "Halvmark", 67.9, 5.0, "primary"),
+        ("orrsund", "Orrsund", 59.3, 10.0, "backup"),
+        ("tessel", "Tessel Point", 44.1, 7.5, "campaign"),
+    ]
+    for key, name, lat, elevation, role in stations:
+        out += [
+            f"  {key}:",
+            f"    name: {name}",
+            f"    latitude_deg: {lat}",
+            f"    min_elevation_deg: {elevation}",
+            f"    role: {role}",
+            "    bands:",
+            "      - s_band_downlink",
+            "      - uhf_uplink",
+        ]
+    out += [
+        "scheduling:",
+        "  max_passes_per_day: 6",
+        "  command_upload_deadline_min: 12",
+        "  conflict_policy: prefer_primary_then_longest_pass",
+    ]
+    return "\n".join(out) + "\n"
+
+
+def scoring_toml() -> str:
+    return dedent(
+        """
+        # Cairnfall scoring constants used by the club's score app.
+
+        [cairns]
+        stone_points = 1
+        completed_cairn_bonus = 4
+        sigil_cairn_multiplier = 2
+
+        [ridges]
+        points_per_tile = 1
+        unbroken_ridge_bonus = 3
+        minimum_length = 3
+
+        [weather]
+        gale_discard_penalty = 2
+        fog_hand_limit = 3
+
+        [tiebreak]
+        order = ["most_cairns", "longest_ridge", "fewest_discards"]
+        """
+    )
+
+
+def pumps_json() -> str:
+    pumps = {
+        "Quayside": {"duty_pumps": 3, "standby_pumps": 1, "rated_flow_ls": 410, "start_level_m": 2.35},
+        "Ostbank": {"duty_pumps": 2, "standby_pumps": 1, "rated_flow_ls": 260, "start_level_m": 1.9},
+        "Millfield": {"duty_pumps": 2, "standby_pumps": 2, "rated_flow_ls": 180, "start_level_m": 3.1},
+    }
+    doc = {
+        "network": "Varnholt Water Board raw water",
+        "revision": "2025-01",
+        "stations": {
+            name: dict(cfg, alarm={"high_level_m": cfg["start_level_m"] + 1.2, "notify": "control-room"})
+            for name, cfg in pumps.items()
+        },
+        "rotation": {"interval_hours": 168, "skip_if_alarm": True},
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def garden_txt() -> str:
+    paragraphs = [
+        "Fennick Road Community Garden: notes from the autumn work morning. These notes are kept as a plain "
+        "text file in the shared folder so anyone can add to them without special software.",
+        "The rainwater butts by the shed were drained and scrubbed. Two of them had cracked lids, which "
+        "were replaced with the spare lids from the tool store. The hose reel was wound in for winter.",
+        "Plot 14 has been empty since the summer. The committee agreed to offer it to the next person on "
+        "the waiting list, and to split the overgrown blackberry bed between plots 13 and 15 if nobody takes it.",
+        "Leaf mould: the wire cage behind the compost bays is now full. Leaves collected after this date go "
+        "into the second cage, which was rebuilt with new chicken wire and four oak stakes.",
+        "Next work morning is the first Saturday of December. Bring gloves; the tea urn is being repaired.",
+    ]
+    return "\n\n".join(textwrap.fill(p, width=72) for p in paragraphs) + "\n"
+
+
+DATA_FILES = {
+    "satellite/telemetry.log": telemetry_log,
+    "utility/meter-readings.csv": meter_csv,
+    "satellite/ground-stations.yaml": stations_yaml,
+    "game/scoring.toml": scoring_toml,
+    "utility/pump-stations.json": pumps_json,
+    "misc/work-morning-notes.txt": garden_txt,
+}
+
+
+def build_data_files() -> None:
+    for rel, make in DATA_FILES.items():
+        write_text(rel, make())
+
+
+# Tasks on the text and data files, numbered after every other task so earlier ids stay put. Each names
+# the gold line (`meta.gold_line`): `citations.py` checks the cited line range holds it. Rows are
+# (key, gold, variant, query, a substring of the gold line, rare term or None).
+DATA_TASKS = [
+    (
+        "d_tracker",
+        "satellite/telemetry.log",
+        "question",
+        "When did the spacecraft's star tracker lose lock, and what did attitude control fall back to?",
+        "star tracker lost lock",
+        None,
+    ),
+    (
+        "d_undervoltage",
+        "satellite/telemetry.log",
+        "rare_term",
+        "battery string B undervoltage load shedding",
+        "undervoltage at 6.41 V",
+        "undervoltage",
+    ),
+    (
+        "d_tamper",
+        "utility/meter-readings.csv",
+        "question",
+        "Which water meter reading was flagged as a suspected tamper?",
+        "suspected tamper",
+        None,
+    ),
+    (
+        "d_orrsund",
+        "satellite/ground-stations.yaml",
+        "keywords",
+        "Orrsund backup ground station minimum elevation",
+        "min_elevation_deg: 10.0",
+        None,
+    ),
+    (
+        "d_ridge",
+        "game/scoring.toml",
+        "keywords",
+        "unbroken ridge bonus points scoring constant",
+        "unbroken_ridge_bonus",
+        None,
+    ),
+    (
+        "d_quayside_pumps",
+        "utility/pump-stations.json",
+        "question",
+        "How many duty pumps does the Quayside raw water station run, and at what rated flow?",
+        '"rated_flow_ls": 410',
+        None,
+    ),
+    (
+        "d_plot14",
+        "misc/work-morning-notes.txt",
+        "question",
+        "What will happen to the empty plot 14 and the blackberry bed if nobody takes it?",
+        "blackberry bed",
+        None,
+    ),
+]
+
+
+def gold_line(rel: str, marker: str) -> int:
+    lines = PLAIN[rel].splitlines()
+    found = [n for n, line in enumerate(lines, 1) if marker in line]
+    if len(found) != 1:
+        raise SystemExit(f"{rel}: marker {marker!r} on lines {found}")
+    return found[0]
+
+
+# --------------------------------------------------------------------------
 # Tasks
 # --------------------------------------------------------------------------
 
@@ -2048,6 +2263,19 @@ def make_task(  # noqa: PLR0913, PLR0917
     return {"args": args, "gold": [gold], "k": TASK_K, "meta": meta, "mode": "docs", "scoring": "ranked"}
 
 
+def data_tasks(lowered: dict[str, str]) -> list[dict]:
+    tasks = []
+    for key, gold, variant, query, marker, rare in DATA_TASKS:
+        if rare is not None:
+            hits = [rel for rel, text in lowered.items() if rare.lower() in text]
+            if hits != [gold]:
+                raise SystemExit(f"{key}: rare term {rare!r} found in {hits}")
+        task = make_task(gold, variant, query, None, None)
+        task["meta"]["gold_line"] = gold_line(gold, marker)
+        tasks.append(task)
+    return tasks
+
+
 def build_tasks() -> list[dict]:
     sel = selectivities()
     by_key = {}
@@ -2073,6 +2301,7 @@ def build_tasks() -> list[dict]:
     for gold, variant, query, section, page in FILTER_DECIDES:
         mime = mime_of(gold)
         tasks.append(make_task(gold, variant, query, section, page, mime, sel[mime]))
+    tasks.extend(data_tasks(lowered))
     for i, task in enumerate(tasks, start=1):
         task["id"] = f"docs-corpus-{i:04d}"
     return tasks
@@ -2114,6 +2343,7 @@ def main() -> None:
     build_docxs()
     build_emails()
     build_notebooks()
+    build_data_files()
     check_markdown_shape()
     check_emails()
     tasks = build_tasks()

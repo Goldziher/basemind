@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Soak a release basemind build: a scripted MCP + CLI workload, sampled into NDJSON.
 
-Phases: `load` (the workload; its first `--warmup` seconds are tagged `warmup`), `idle` (sessions
-stay connected, no calls), `shutdown` (clean close, host SIGKILL, serve SIGKILL, `comms stop`, then
-a sweep for any surviving process of the run). `analyze.py` turns the NDJSON into a verdict.
+Phases: `load` (the workload; its first `--warmup` seconds are tagged `warmup`, followed by a
+`--quiesce`-second `baseline` with no calls), `idle` (sessions stay connected, no calls),
+`shutdown` (clean close, host SIGKILL, serve SIGKILL, `comms stop`, then a sweep for any surviving
+process of the run). `analyze.py` turns the NDJSON into a verdict.
 
 Usage:
     soak.py --binary target/release/basemind [--repo PATH | --fixture] [--duration 600] [--idle 180]
@@ -35,7 +36,7 @@ from common import (  # noqa: E402 - path set up above
     ToolResult,
     binary_version,
     default_out_root,
-    dir_bytes,
+    dir_usage,
     host_info,
     install_cleanup,
     log,
@@ -46,6 +47,7 @@ from common import (  # noqa: E402 - path set up above
     run_cli,
     sample_pid,
     terminate_owned,
+    thread_census,
 )
 from fixtures import build_fixture  # noqa: E402
 
@@ -68,6 +70,9 @@ rpc(2, "tools/call", {"name": "index_status", "arguments": {}})
 print(p.pid, flush=True)
 time.sleep(3600)
 """
+
+# cache/workspaces/<key>/views/<view>/<store>: deep enough to name the store that grows.
+DIR_PARTS_DEPTH = 6
 
 FEATURE_TOOLS = ("code_search", "docs_search", "memory_save", "memory_search")
 
@@ -118,6 +123,7 @@ class Sampler(threading.Thread):
                     "footprint": s.footprint,
                     "vsz": s.vsz,
                     "threads": s.threads,
+                    "thread_names": thread_census(pid) if role in ("daemon", "serve") else None,
                     "fds": s.fds,
                     "cpu_s": round(s.cpu_s, 4),
                     "cpu_delta_s": None if prev is None else round(s.cpu_s - prev, 4),
@@ -125,15 +131,19 @@ class Sampler(threading.Thread):
                     "interval_s": self.every,
                 }
             )
-        data_app, data_alloc = dir_bytes(self.iso.data_home)
-        comms_app, _ = dir_bytes(self.iso.comms_dir)
+        data = dir_usage(self.iso.data_home, DIR_PARTS_DEPTH)
+        comms = dir_usage(self.iso.comms_dir, DIR_PARTS_DEPTH)
         self.sink.write(
             {
                 "kind": "dir",
                 "phase": self.phase,
-                "data_bytes": data_app,
-                "data_alloc_bytes": data_alloc,
-                "comms_bytes": comms_app,
+                "data_bytes": data.apparent,
+                "data_alloc_bytes": data.allocated,
+                "data_journals": data.journals,
+                "data_telemetry_bytes": data.telemetry,
+                "comms_bytes": comms.apparent,
+                "data_parts": data.parts,
+                "comms_parts": comms.parts,
             }
         )
         self.sink.write({"kind": "census", "phase": self.phase, "counts": census, "total": sum(census.values())})
@@ -512,6 +522,12 @@ def main() -> int:  # noqa: PLR0915
         "--warmup", type=float, default=120, help="seconds at the start of load excluded from slopes (default 120)"
     )
     ap.add_argument("--idle", type=float, default=180, help="idle phase seconds (default 180)")
+    ap.add_argument(
+        "--quiesce",
+        type=float,
+        default=45,
+        help="seconds of no calls after warm-up, the thread baseline (default 45; not part of --duration)",
+    )
     ap.add_argument("--sample-every", type=float, default=5, help="sampling period seconds (default 5)")
     ap.add_argument("--sessions-per-cycle", type=int, default=2, help="short sessions opened and closed per cycle")
     ap.add_argument("--content-period", type=int, default=6, help="edit contents repeat every N cycles (default 6)")
@@ -578,6 +594,7 @@ def main() -> int:  # noqa: PLR0915
             "duration": args.duration,
             "warmup": args.warmup,
             "idle": args.idle,
+            "quiesce": args.quiesce,
             "sample_every": args.sample_every,
             "content_period": args.content_period,
             "pid": os.getpid(),
@@ -623,7 +640,18 @@ def main() -> int:  # noqa: PLR0915
 
     load_start = time.monotonic()
     cycle = 0
+    quiesced = False
     while time.monotonic() - load_start < args.duration:
+        if not quiesced and time.monotonic() - load_start >= args.warmup:
+            # Every pool the workload uses exists by now; with no calls their idle members expire,
+            # and the thread count left is the floor R4 compares the post-load idle against.
+            log(f"quiescent baseline: {args.quiesce}s with the main session connected and no calls")
+            sampler.phase = "baseline"
+            sink.write({"kind": "phase", "name": "baseline_start"})
+            time.sleep(args.quiesce)
+            sink.write({"kind": "phase", "name": "baseline_end"})
+            load_start += args.quiesce
+            quiesced = True
         sampler.phase = "warmup" if time.monotonic() - load_start < args.warmup else "load"
         sink.write({"kind": "cycle", "cycle": cycle, "phase": sampler.phase})
         wl.sweep(wl.main, cycle)

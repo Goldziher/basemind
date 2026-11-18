@@ -136,7 +136,9 @@ fn normal_documents_chunk_exactly_as_before() {
 fn extraction_past_its_wall_clock_budget_is_abandoned() {
     let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("syslog.txt");
+    let path = dir.path().join("big.md");
+    // A log under a Markdown name: one long paragraph for xberg's splitter, which only
+    // Markdown-family text still reaches (plain text is chunked from the file).
     fs::write(&path, pathological_log(2 * 1024 * 1024)).unwrap();
     let config = DocConfig {
         extraction_timeout_secs: 1,
@@ -149,7 +151,7 @@ fn extraction_past_its_wall_clock_budget_is_abandoned() {
     };
 
     let started = Instant::now();
-    let error = extract_doc(Path::new(&path), Some("text/plain"), &config).expect_err("must time out");
+    let error = extract_doc(Path::new(&path), Some("text/markdown"), &config).expect_err("must time out");
 
     assert!(matches!(error, ExtractError::DocTimeout(_)), "got {error:?}");
     assert!(
@@ -211,11 +213,11 @@ fn structured_data_is_linear_but_not_counted_as_degraded() {
 fn scan_counts_a_timed_out_document_and_still_indexes_the_rest() {
     let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("syslog.txt"), pathological_log(2 * 1024 * 1024)).unwrap();
+    fs::write(dir.path().join("big.md"), pathological_log(2 * 1024 * 1024)).unwrap();
     fs::write(dir.path().join("guide.md"), markdown_doc()).unwrap();
     let mut cfg = offline_scan_config();
     cfg.documents.extraction_timeout_secs = 1;
-    cfg.documents.plain_text_chunk_max_bytes = u64::MAX;
+    cfg.documents.markdown_chunk_max_bytes = u64::MAX;
 
     let report = scan_once(dir.path(), &cfg);
 
@@ -226,6 +228,82 @@ fn scan_counts_a_timed_out_document_and_still_indexes_the_rest() {
     );
     assert_eq!(report.stats.docs_indexed, 1, "the normal document is unaffected");
     let store = Store::open(dir.path(), basemind::store::VIEW_WORKING).unwrap();
-    assert!(store.lookup_doc("syslog.txt").is_none());
+    assert!(store.lookup_doc("big.md").is_none());
     assert!(store.lookup_doc("guide.md").is_some());
+}
+
+/// The lines of `source` a chunk cites, end to end.
+fn cited<'a>(source: &'a str, chunk: &basemind::extract::doc::DocChunk) -> String {
+    let (Some(first), Some(last)) = (chunk.line_start, chunk.line_end) else {
+        panic!("chunk {:?} cites no lines", chunk.text);
+    };
+    let lines: Vec<&'a str> = source.split_inclusive('\n').collect();
+    lines[first as usize - 1..last as usize].concat()
+}
+
+/// Text and data files are chunked from the file itself: xberg reflows them (a log into one line, a
+/// JSON object into `key: value` paragraphs), and a chunk of that text can not be found by line.
+#[test]
+fn every_chunk_of_a_text_or_data_file_cites_its_lines() {
+    let _serial = exclusive();
+    let dir = tempfile::tempdir().unwrap();
+    let log = pathological_log(64 * 1024);
+    let prose =
+        "A paragraph of prose that is wrapped\nat a fixed width, the way people\nwrite text files.\n\n".repeat(60);
+    let json = format!(
+        "{{\n{}\n}}\n",
+        (0..80)
+            .map(|i| format!("  \"service{i}\": {{\n    \"port\": {i},\n    \"tags\": [\"a\", \"b\"]\n  }}"))
+            .collect::<Vec<_>>()
+            .join(",\n")
+    );
+    let yaml: String = (0..80)
+        .map(|i| format!("service{i}:\n  port: {i}\n  tags:\n    - a\n"))
+        .collect();
+    let toml: String = (0..80)
+        .map(|i| format!("[service{i}]\nport = {i}\ntags = [\"a\"]\n\n"))
+        .collect();
+    let csv: String = std::iter::once("id,name,port\n".to_string())
+        .chain((0..300).map(|i| format!("{i},service {i},{}\n", 8000 + i)))
+        .collect();
+    let small_cutover = DocConfig {
+        chunk_cutovers: ChunkCutovers {
+            markdown_bytes: 1024,
+            plain_text_bytes: 1024,
+        },
+        ..offline_doc_config()
+    };
+    for (name, mime, body, config) in [
+        ("app.log", "text/plain", &log, offline_doc_config()),
+        ("big.log", "text/plain", &log, small_cutover),
+        ("notes.txt", "text/plain", &prose, offline_doc_config()),
+        ("cfg.json", "application/json", &json, offline_doc_config()),
+        ("cfg.yaml", "application/yaml", &yaml, offline_doc_config()),
+        ("Cargo.toml", "application/toml", &toml, offline_doc_config()),
+        ("data.csv", "text/csv", &csv, offline_doc_config()),
+    ] {
+        let path = dir.path().join(name);
+        fs::write(&path, body).unwrap();
+        let doc = extract_doc(&path, Some(mime), &config).expect(name);
+        assert!(doc.chunks.len() > 1, "{name} must chunk");
+        assert_eq!(&doc.content, body, "{name}: the chunks are cut from the file");
+        for chunk in &doc.chunks {
+            assert_eq!(
+                chunk.text,
+                body[chunk.byte_start as usize..chunk.byte_end as usize],
+                "{name}"
+            );
+            assert!(
+                cited(body, chunk).contains(chunk.text.trim()),
+                "{name}: {:?}",
+                chunk.text
+            );
+        }
+        assert_eq!(doc.chunks[0].line_start, Some(1), "{name}");
+        assert_eq!(
+            doc.chunks.last().unwrap().line_end,
+            Some(u32::try_from(body.lines().count()).unwrap()),
+            "{name}: the last line is cited"
+        );
+    }
 }

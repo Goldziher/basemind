@@ -10,12 +10,16 @@ use std::sync::atomic::Ordering;
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
 
-use super::ServerState;
-use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, kind_to_str, parse_kind};
-use super::types::{SearchHitView, SearchResponse, SearchSymbolsParams};
+use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use crate::engine::budget::{apply_budget, budget};
+use crate::engine::cursor::Cursor;
+use crate::engine::error::EngineError;
+use crate::engine::types::SCAN_CAP;
+use crate::engine::types::code::{
+    CodeSymbolsParams, SearchHitView, SearchResponse, SearchSymbolsParams, kind_to_str, parse_kind,
+};
+use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
 /// Fuzzy candidates held while ranking. A needle of two letters is a subsequence of most names in
@@ -42,16 +46,29 @@ fn literal_rank(name: &[u8], needle: &[u8]) -> usize {
     }
 }
 
+impl Workspace {
+    /// `code_symbols`: find definitions by name, best match first.
+    pub(crate) fn code_symbols(&self, p: CodeSymbolsParams) -> Result<SearchResponse, EngineError> {
+        search_symbols(
+            self,
+            SearchSymbolsParams {
+                needle: p.name,
+                kind: p.kind,
+                fuzzy: p.fuzzy.unwrap_or(false),
+                limit: p.limit,
+                max_tokens: budget(p.max_tokens),
+                cursor: p.cursor,
+            },
+        )
+    }
+}
+
 /// Body of `code_symbols`.
-pub(super) async fn run_search_symbols(
-    state: &ServerState,
-    params: SearchSymbolsParams,
-) -> Result<CallToolResult, McpError> {
-    state.await_cache_ready().await;
-    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
+fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchResponse, EngineError> {
+    ws.wait_map_ready();
     let kind = params.kind.as_deref().map(parse_kind).transpose()?;
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
-    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
+    let generation = ws.cache_generation.load(Ordering::Relaxed);
 
     let empty = |cursor_invalidated: bool| SearchResponse {
         total: 0,
@@ -61,14 +78,14 @@ pub(super) async fn run_search_symbols(
         results: Vec::new(),
         next_cursor: None,
         cursor_invalidated,
-        notice: state.lifecycle_notice(),
+        notice: ws.lifecycle_notice(),
     };
 
     let skip = match params.cursor.as_ref() {
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return super::toon::format_result(&empty(true), format);
+                return Ok(empty(true));
             }
             offset as usize
         }
@@ -78,14 +95,14 @@ pub(super) async fn run_search_symbols(
     // A symbol name never holds the term index's separator, so such a needle matches nothing.
     let needle = params.needle.as_bytes();
     if needle.is_empty() || needle.contains(&0) {
-        return super::toon::format_result(&empty(false), format);
+        return Ok(empty(false));
     }
     let finder = memchr::memmem::Finder::new(needle);
     let want = skip.saturating_add(limit);
-    let cache = state.shared.cache.load_full();
+    let cache = ws.cache.load_full();
 
     // The sweep walks every symbol name of the corpus: off the reactor.
-    let (page, total, total_is_partial) = super::index_route::blocking(|| {
+    let (page, total, total_is_partial) = {
         let mut literal: [Vec<Candidate<'_>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut literal_total = 0usize;
         for (path, terms) in cache.terms().iter() {
@@ -153,28 +170,25 @@ pub(super) async fn run_search_symbols(
             })
             .collect();
         (page, total, total_is_partial)
-    });
+    };
 
     let mut page = page;
-    super::index_route::blocking(|| super::helpers_stale::follow_symbols(state, &cache, &mut page));
-    let budget = super::budget::apply_budget(page, params.max_tokens);
+    crate::engine::stale::follow_symbols(ws, &cache, &mut page);
+    let budget = apply_budget(page, params.max_tokens);
     let results = budget.items;
     let returned_through = skip + results.len();
     let next_cursor = (total > returned_through && !results.is_empty())
-        .then(|| super::cursor::Cursor::encode_in_memory(returned_through as u64, generation));
-    super::toon::format_result(
-        &SearchResponse {
-            total,
-            truncated: total_is_partial,
-            truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
-            budgeted: budget.budgeted,
-            results,
-            next_cursor,
-            cursor_invalidated: false,
-            notice: state.lifecycle_notice(),
-        },
-        format,
-    )
+        .then(|| Cursor::encode_in_memory(returned_through as u64, generation));
+    Ok(SearchResponse {
+        total,
+        truncated: total_is_partial,
+        truncated_reason: total_is_partial.then_some(SCAN_CAP),
+        budgeted: budget.budgeted,
+        results,
+        next_cursor,
+        cursor_invalidated: false,
+        notice: ws.lifecycle_notice(),
+    })
 }
 
 #[cfg(test)]

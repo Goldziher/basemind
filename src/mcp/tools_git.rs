@@ -1,7 +1,7 @@
 //! The git verb tools of `BasemindServer`: `git_log`, `git_blame` and `git_diff` (ADR-0018).
 //!
-//! Thin shims over `helpers_git.rs` / `helpers_git_file.rs` / `helpers_git_by_path.rs`; see
-//! `tools.rs` for the shim contract.
+//! Thin shims over the engine's git operations (`src/engine/git`); see `tools.rs` for the shim
+//! contract.
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
@@ -9,12 +9,9 @@ use rmcp::model::CallToolResult;
 use rmcp::tool;
 
 use super::BasemindServer;
-use super::cursor_bind::bound;
-use super::index_route::blocking;
 use super::strict::Strict;
-use super::types::{FindCommitsByPathParams, HotFilesParams};
 use super::types_tools::{GitBlameParams, GitDiffParams, GitLogParams};
-use super::{helpers_git, helpers_git_by_path};
+use crate::engine::Workspace;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_git")]
 impl BasemindServer {
@@ -86,39 +83,18 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
-    /// Body of `git_log`, shared with `basemind git log`.
+    /// Body of the `git_log` tool.
     pub(crate) async fn git_log_call(&self, p: GitLogParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "git_log",
-            p,
-            bound(p, |p| async { blocking(|| helpers_git::git_log(&self.state, p)) }).await
-        )
+        self.op(p, Workspace::git_log).await
     }
 
-    /// Body of `git_blame`, shared with `basemind git blame`.
+    /// Body of the `git_blame` tool.
     pub(crate) async fn git_blame_call(&self, p: GitBlameParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "git_blame",
-            p,
-            bound(p, |p| async { blocking(|| helpers_git::git_blame(&self.state, p)) }).await
-        )
+        self.op(p, Workspace::git_blame).await
     }
 
-    /// Body of `git_diff`, shared with `basemind git diff`.
+    /// Body of the `git_diff` tool.
     pub(crate) async fn git_diff_call(&self, p: GitDiffParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(&self.state, "git_diff", p, helpers_git::git_diff(&self.state, p).await)
-    }
-
-    /// Churn-ranked files. No MCP tool: `basemind git churn`.
-    pub(crate) fn git_churn_call(&self, p: HotFilesParams) -> Result<CallToolResult, McpError> {
-        helpers_git::run_churn(&self.state, p)
-    }
-
-    /// Commits whose changed paths match a regex. No MCP tool of its own (`git_log` with a
-    /// directory `path` covers the common case): `basemind git by-path`.
-    pub(crate) fn git_by_path_call(&self, p: FindCommitsByPathParams) -> Result<CallToolResult, McpError> {
-        helpers_git_by_path::run_by_path(&self.state, p)
+        self.op_unpaged(p, Workspace::git_diff).await
     }
 }

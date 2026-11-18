@@ -115,6 +115,66 @@ def growth_rule(
     )
 
 
+def _quiescent(rows: list[dict[str, Any]], phase: str, start: float | None, settle: float) -> list[dict[str, Any]]:
+    return [r for r in rows if r["phase"] == phase and start is not None and r["t"] >= start + settle]
+
+
+def _name_delta(before: dict[str, int] | None, after: dict[str, int] | None) -> str:
+    if before is None or after is None:
+        return "no thread names on this platform"
+    keys = sorted(set(before) | set(after))
+    moved = [f"{k or '<unnamed>'} {before.get(k, 0)}->{after.get(k, 0)}" for k in keys if before.get(k) != after.get(k)]
+    return ", ".join(moved) or "same names and counts"
+
+
+def _dir_growth(dirs: list[dict[str, Any]]) -> str:
+    """The data-dir subtrees that grew most over load, for a failure to name its store."""
+    first, last = dirs[0].get("data_parts") or {}, dirs[-1].get("data_parts") or {}
+    grown = sorted(((last.get(k, 0) - first.get(k, 0), k) for k in set(first) | set(last)), reverse=True)
+    top = [f"{k} {d / MIB:+.2f}" for d, k in grown[:4] if d > 0]
+    return "grew over load (MiB): " + (", ".join(top) or "nothing")
+
+
+def thread_rule(
+    v: Verdict,
+    label: str,
+    rows: list[dict[str, Any]],
+    marks: dict[str, float],
+    args: argparse.Namespace,
+) -> None:
+    """Fail when threads started under load are still alive once the process is quiescent again.
+
+    A leaked thread never exits; a pool thread (tokio's blocking pool, a reaped worker) exits after
+    its keep-alive once nothing is asked of it. So the count is compared between two quiescent
+    windows with the same sessions connected: the baseline after warm-up (every pool the workload
+    uses already exists) and the idle phase after load, each after `--idle-settle` seconds, taking
+    each window's minimum so a thread busy at one sampling instant does not count. The load slope is
+    reported, not judged: a demand-sized pool steps up whenever concurrency peaks, and a line fitted
+    through such a step reads as growth however bounded the pool is.
+    """
+    base = _quiescent(rows, "baseline", marks.get("baseline_start"), args.idle_settle)
+    after = _quiescent(rows, "idle", marks.get("idle_start"), args.idle_settle)
+    if len(base) < 2 or len(after) < 2:  # noqa: PLR2004
+        v.add(label, False, f"quiescent samples: baseline {len(base)}, idle {len(after)} (need >= 2 each)")
+        return
+    low_base = min(base, key=lambda r: r["threads"])
+    low_after = min(after, key=lambda r: r["threads"])
+    retained = low_after["threads"] - low_base["threads"]
+    load = [r for r in rows if r["phase"] == "load"]
+    peak = max((r["threads"] for r in load), default=0)
+    slope = fit([(r["t"] / 60.0, r["threads"]) for r in load]) if len(load) >= 3 else None  # noqa: PLR2004
+    v.add(
+        label,
+        retained <= args.thread_slack,
+        f"quiescent floor {low_base['threads']} before load, {low_after['threads']} after "
+        f"({retained:+d}, slack {args.thread_slack}); load peak {peak}"
+        + (f", load slope {slope.slope:+.3f}/min (not judged)" if slope else "")
+        + f"; names before -> after: {_name_delta(low_base.get('thread_names'), low_after.get('thread_names'))}",
+        f"{retained:+d} threads retained",
+        f"{args.thread_slack}",
+    )
+
+
 def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: argparse.Namespace) -> None:
     """Fail when the memory floor keeps rising on a long run, below what the slope rule can see.
 
@@ -189,6 +249,8 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
     )
 
     # ---- R2-R4: memory, descriptors, threads of every long-lived process ----
+    marks = {r["name"]: r["t"] for r in records if r.get("kind") == "phase"}
+    windows = str(meta.get("platform", "")).startswith("Windows")
     for pid in long_lived:
         role = "daemon" if pid in daemon_pids else "main serve"
         series = [r for r in by_pid[pid] if r["phase"] == "load"]
@@ -202,8 +264,20 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
             growth_rule(
                 v, f"R2 {role} {pid} memory (rss)", [(r["t"], r["rss"]) for r in series], args.mem_tol, "MiB", MIB
             )
-        growth_rule(v, f"R3 {role} {pid} open fds", [(r["t"], r["fds"]) for r in series], args.fd_tol, "fds")
-        growth_rule(v, f"R4 {role} {pid} threads", [(r["t"], r["threads"]) for r in series], args.thread_tol, "threads")
+        if windows:
+            # A Windows handle count includes one handle per live thread, so a pool that grows at a
+            # concurrency peak and is reaped at idle reads as handle growth (R4 judges threads). The
+            # handles a call can leak are the ones threads do not account for.
+            growth_rule(
+                v,
+                f"R3 {role} {pid} open handles net of threads",
+                [(r["t"], r["fds"] - r["threads"]) for r in series],
+                args.fd_tol,
+                "handles",
+            )
+        else:
+            growth_rule(v, f"R3 {role} {pid} open fds", [(r["t"], r["fds"]) for r in series], args.fd_tol, "fds")
+        thread_rule(v, f"R4 {role} {pid} threads", by_pid[pid], marks, args)
 
     # ---- R5: no process accumulation during load ----
     census = [r for r in records if r.get("kind") == "census" and r["phase"] == "load"]
@@ -310,7 +384,29 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
 
     # ---- R8: data dir bounded under the steady edit/rescan cycle ----
     dirs = [r for r in records if r.get("kind") == "dir" and r["phase"] == "load"]
-    growth_rule(v, "R8 data dir size (apparent)", [(r["t"], r["data_bytes"]) for r in dirs], args.dir_tol, "MiB", MIB)
+    growth_rule(
+        v,
+        "R8 data dir size (apparent, journals and telemetry excluded)",
+        [
+            (r["t"], r["data_bytes"] - sum(r.get("data_journals", {}).values()) - r.get("data_telemetry_bytes", 0))
+            for r in dirs
+        ],
+        args.dir_tol,
+        "MiB",
+        MIB,
+    )
+    if dirs and "data_journals" not in dirs[0]:
+        v.add("R8b size-bounded stores", False, "no journal / telemetry split recorded: soak.py predates it")
+    elif dirs:
+        journal = max(((n, db) for r in dirs for db, n in r["data_journals"].items()), default=(0, "-"))
+        telemetry = max(r["data_telemetry_bytes"] for r in dirs)
+        v.add(
+            "R8b size-bounded stores",
+            journal[0] <= args.journal_mib * MIB and telemetry <= args.telemetry_mib * MIB,
+            f"largest Fjall journal set {journal[0] / MIB:.1f} MiB ({journal[1]}; bound {args.journal_mib} MiB), "
+            f"telemetry log {telemetry / MIB:.1f} MiB (bound {args.telemetry_mib} MiB); "
+            f"{_dir_growth(dirs)}",
+        )
 
     # ---- R9: the workload itself worked ----
     transport = [c for c in calls if c.get("transport_error")]
@@ -359,7 +455,7 @@ def series_table(by_pid: dict[int, list[dict[str, Any]]], long_lived: list[int],
     ]
     for pid in long_lived:
         role = "daemon" if pid in daemon_pids else "main serve"
-        for phase in ("warmup", "load", "idle"):
+        for phase in ("warmup", "baseline", "load", "idle"):
             s = [r for r in by_pid[pid] if r["phase"] == phase]
             if not s:
                 continue
@@ -433,8 +529,27 @@ def main() -> int:
         "--floor-min-minutes", type=float, default=30.0, help="load minutes before the floor rule judges (default 30)"
     )
     ap.add_argument("--fd-tol", type=float, default=0.2, help="fds/min (default 0.2)")
-    ap.add_argument("--thread-tol", type=float, default=0.2, help="threads/min (default 0.2)")
-    ap.add_argument("--dir-tol", type=float, default=1.0, help="data dir MiB/min (default 1.0)")
+    ap.add_argument(
+        "--thread-slack",
+        type=int,
+        default=0,
+        help="threads the quiescent floor may rise from the baseline to the idle phase (default 0)",
+    )
+    ap.add_argument(
+        "--dir-tol", type=float, default=1.0, help="data dir MiB/min, journals and telemetry excluded (default 1.0)"
+    )
+    ap.add_argument(
+        "--journal-mib",
+        type=float,
+        default=192,
+        help="Fjall journal MiB one database may hold (default 192; see docs/hardening.md R8b)",
+    )
+    ap.add_argument(
+        "--telemetry-mib",
+        type=float,
+        default=16,
+        help="telemetry.jsonl plus its rotated generation, MiB (default 16 = 2 x TELEMETRY_ROTATE_BYTES)",
+    )
     ap.add_argument(
         "--idle-cpu", type=float, default=0.01, help="idle CPU as a fraction of one core (default 0.01 = 1%%)"
     )

@@ -63,10 +63,6 @@ pub(crate) const KEY_MAX_BYTES: usize = 1024;
 /// frame whole, in the save and in every read of it.
 pub(crate) const NOTE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
-/// The most bytes of keys one request may carry, well inside the daemon's 16 MiB frame. Keys saved
-/// before [`KEY_MAX_BYTES`] can be longer, so a batch is cut by bytes as well as by count.
-pub(crate) const REQUEST_KEY_MAX_BYTES: usize = 4 * 1024 * 1024;
-
 /// Refuse a note too long to save: its key past [`KEY_MAX_BYTES`], or its text and tags past
 /// [`NOTE_MAX_BYTES`].
 pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), MemoryOpError> {
@@ -86,29 +82,6 @@ pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), 
         });
     }
     Ok(())
-}
-
-/// The leading keys of `keys` one request may carry: at most `most` of them and, when the request
-/// crosses the daemon's socket (`framed`), [`REQUEST_KEY_MAX_BYTES`] of them, and always the first,
-/// unless it alone is longer than that. A request answered in this process has no frame to fit.
-pub(crate) fn request_chunk(keys: &[String], most: usize, framed: bool) -> Result<&[String], MemoryOpError> {
-    let mut bytes = 0_usize;
-    let mut taken = 0;
-    for key in keys.iter().take(most) {
-        bytes = bytes.saturating_add(key.len());
-        if framed && bytes > REQUEST_KEY_MAX_BYTES {
-            break;
-        }
-        taken += 1;
-    }
-    match keys.first() {
-        Some(first) if taken == 0 => Err(MemoryOpError::TooLong {
-            what: "key",
-            bytes: first.len(),
-            most: REQUEST_KEY_MAX_BYTES,
-        }),
-        _ => Ok(&keys[..taken]),
-    }
 }
 
 /// A fjall-side memory operation failed. Kept small and stringly so it maps cleanly to both an
@@ -537,45 +510,6 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
     })
 }
 
-/// Room a daemon reply keeps beside the notes it carries, for its framing and the entries' numbers.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-const REPLY_FRAME_SLACK: usize = 1024 * 1024;
-
-/// `outcome` made fit to cross the daemon's socket, or why it cannot. A note saved before notes
-/// were capped ([`NOTE_MAX_BYTES`]) can be too long for one frame; sent as it is, the reply would
-/// break the link and say nothing of the note. Read by key it is refused by name. In a batched read
-/// (a search's join, a backfill batch) its slot is emptied and the note named in the daemon's log:
-/// the reader takes it for a note it cannot serve, and one such note costs only itself instead of
-/// failing every search whose hits or batch include it.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) fn fit_for_a_frame(
-    outcome: crate::comms::memory_proto::MemoryOutcome,
-) -> Result<crate::comms::memory_proto::MemoryOutcome, String> {
-    use crate::comms::memory_proto::MemoryOutcome;
-    let most = crate::comms::transport::MAX_FRAME_BYTES - REPLY_FRAME_SLACK;
-    let too_long = |entry: &WireMemoryEntry| {
-        format!(
-            "the memory note `{}` is {} bytes, more than a reply from the daemon carries ({most}); it was saved \
-             before notes were capped at {NOTE_MAX_BYTES} bytes. Save it again under the same key with shorter \
-             text to read it",
-            entry.key,
-            wire_bytes(entry)
-        )
-    };
-    match outcome {
-        MemoryOutcome::Got(Some(entry)) if wire_bytes(&entry) > most => Err(too_long(&entry)),
-        MemoryOutcome::GotMany(mut entries) => {
-            for slot in &mut entries {
-                if let Some(entry) = slot.take_if(|entry| wire_bytes(entry) > most) {
-                    tracing::warn!(reason = %too_long(&entry), "a batched memory read left a note out");
-                }
-            }
-            Ok(MemoryOutcome::GotMany(entries))
-        }
-        other => Ok(other),
-    }
-}
-
 /// Dispatch a wire [`MemoryOp`](crate::comms::memory_proto::MemoryOp) against a workspace's
 /// read-write index, returning the wire outcome. This is the entry point the daemon calls; the local
 /// serve path calls the per-op cores directly so it can interleave the LanceDB half without a second
@@ -854,57 +788,5 @@ mod tests {
             rmcp::ErrorData::from(long_note).code,
             rmcp::model::ErrorCode::INVALID_PARAMS
         );
-    }
-
-    /// Keys are cut into requests by bytes as well as by count, so long keys saved before the key
-    /// limit cannot make a request larger than a frame.
-    #[test]
-    fn a_request_carries_keys_up_to_its_byte_budget() {
-        let long = "k".repeat(REQUEST_KEY_MAX_BYTES / 3);
-        let keys = vec![long.clone(), long.clone(), long.clone(), long.clone()];
-        assert_eq!(request_chunk(&keys, STAMPS_MAX_KEYS, true).unwrap().len(), 3);
-        assert_eq!(request_chunk(&keys, 2, true).unwrap().len(), 2, "and by count");
-        assert!(request_chunk(&[], 2, true).unwrap().is_empty());
-        let too_long = vec!["k".repeat(REQUEST_KEY_MAX_BYTES + 1)];
-        assert!(matches!(
-            request_chunk(&too_long, 2, true),
-            Err(MemoryOpError::TooLong { what: "key", .. })
-        ));
-    }
-
-    /// A note saved before the cap and too long for a frame is refused by name when read by key,
-    /// and left out of a batched read, which still answers the notes beside it; one that fits is
-    /// sent.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    #[test]
-    fn a_note_too_long_for_a_frame_is_refused_by_name() {
-        use crate::comms::memory_proto::MemoryOutcome;
-        let note = |value: String| WireMemoryEntry {
-            key: "huge".into(),
-            value,
-            tags: Vec::new(),
-            created_at: 1,
-            updated_at: 1,
-        };
-        let long = note("x".repeat(crate::comms::transport::MAX_FRAME_BYTES));
-        let fits = note("x".repeat(NOTE_MAX_BYTES * 2));
-        let refused = fit_for_a_frame(MemoryOutcome::Got(Some(long.clone())));
-        assert!(refused.is_err_and(|message| message.contains("`huge`")));
-        let batch = MemoryOutcome::GotMany(vec![None, Some(long), Some(fits.clone())]);
-        assert_eq!(
-            fit_for_a_frame(batch),
-            Ok(MemoryOutcome::GotMany(vec![None, None, Some(fits.clone())])),
-            "only the note too long is left out"
-        );
-        let one = MemoryOutcome::Got(Some(fits));
-        assert_eq!(fit_for_a_frame(one.clone()), Ok(one));
-    }
-
-    /// A request answered in this process has no frame: a key saved before the key limit is read
-    /// there whatever its length, and the keys are cut by count alone.
-    #[test]
-    fn a_request_answered_here_is_cut_by_count_alone() {
-        let too_long = vec!["k".repeat(REQUEST_KEY_MAX_BYTES + 1); 3];
-        assert_eq!(request_chunk(&too_long, 2, false).unwrap().len(), 2);
     }
 }

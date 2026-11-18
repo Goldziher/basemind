@@ -8,8 +8,7 @@
 
 use std::sync::Arc;
 
-use super::{Workspace, l1_cache, types};
-use crate::engine::MapCache;
+use super::{Workspace, types};
 use crate::store::Store;
 
 /// An owned read guard on a workspace's store, from [`ServerState::store_read`].
@@ -28,9 +27,6 @@ pub(crate) struct ServedWorkspace {
     /// Per-tool-call telemetry writer; appends to the workspace's `telemetry.jsonl`. One writer per
     /// served workspace, so connections sharing it share its rotation.
     pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
-    /// Writes go to the machine daemon (see [`ServerState::daemon_writer`]).
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) daemon_writer: bool,
     /// The daemon's own workspace pool, for a daemon-hosted workspace (see [`ServerState::host`]).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) host: Option<Arc<dyn super::HostBackend>>,
@@ -43,8 +39,6 @@ impl ServedWorkspace {
             workspace,
             telemetry: Arc::new(super::telemetry::Telemetry::new(basemind_dir)),
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_writer: false,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
             host: None,
         }
     }
@@ -54,7 +48,7 @@ impl ServedWorkspace {
 ///
 /// Holds one [`Arc<Workspace>`](super::Workspace) (the heavy read state, shared across
 /// connections) plus this connection's own identity. Field accesses to the shared read stack go
-/// through [`shared`](Self::shared); the identity fields (`agent_id`, `daemon_client`)
+/// through [`shared`](Self::shared); the identity fields (`agent_id`, `agents`)
 /// are read directly.
 pub(crate) struct ServerState {
     /// The workspace-level read stack shared across every connection to this `(root, view)`.
@@ -62,34 +56,16 @@ pub(crate) struct ServerState {
     /// Per-tool-call telemetry writer, shared by every connection to this workspace. Always present
     /// (best-effort writes); the dashboard surfaces / statusline read from the same file.
     pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
-    /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
-    /// instead of writing locally. The store is opened read-only, but — unlike a plain
-    /// [`read_only`](Workspace::read_only) fallback — the empty-index auto-scan, the filesystem
-    /// watcher, and the `rescan` tool FORWARD their scans to the daemon over the socket and then
-    /// rebuild the in-RAM map from the daemon-written `index.msgpack`. Only ever true on a
-    /// `comms`-enabled build; always false otherwise, so the local-writer paths are unchanged.
-    ///
-    /// Only exists on a `comms` build: every read of this field lives behind the same `cfg`, so on
-    /// a non-`comms` build there is no daemon to forward to and the field would be dead.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) daemon_writer: bool,
     /// In-process host seam for a DAEMON-HOSTED read stack: the daemon's own workspace pool (the
-    /// machine's sole fjall writer). When `Some`, the writer / resolved-refs branch sites route
-    /// directly through it instead of forwarding to the daemon over a socket — closing the
-    /// daemon-dials-itself loopback and, crucially, serving resolved-refs from the pool's read-write
-    /// fjall index (which a `daemon_writer` serve's index-less store cannot see). `None` on every
-    /// non-hosted stack (in-process serve / CLI), where the `daemon_writer` FORWARD path stays live.
+    /// machine's sole fjall writer). When `Some`, scans, memory operations and the index reads the
+    /// hosted store cannot answer (it holds no index) run through it. `None` on every non-hosted
+    /// stack (in-process serve / CLI), which writes and reads its own store.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) host: Option<Arc<dyn super::HostBackend>>,
     /// Owner segment for the individual-memory tier: the session's principal, resolved by the one
     /// identity resolver of agent comms (ADR-0021). Group-tier writes ignore it.
     #[allow(dead_code)]
     pub(crate) agent_id: String,
-    /// This session's link to the daemon for forwarded work, connected on first use (see
-    /// `helpers_daemon`). It names no agent.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) daemon_client:
-        tokio::sync::OnceCell<std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>>,
     /// Who this session is to the agent tools: set for a daemon-hosted relay session only.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) agents: Option<std::sync::Arc<super::AgentContext>>,
@@ -116,12 +92,8 @@ impl ServerState {
             shared: served.workspace,
             telemetry: served.telemetry,
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_writer: served.daemon_writer,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
             host: served.host,
             agent_id,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_client: tokio::sync::OnceCell::new(),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             agents: None,
             lean: std::sync::atomic::AtomicBool::new(super::lean::lean_mode_enabled()),
@@ -131,16 +103,6 @@ impl ServerState {
 }
 
 impl ServerState {
-    /// Whether a memory request crosses the daemon's socket, whose frame bounds its size, rather
-    /// than being answered in this process.
-    #[cfg(feature = "memory")]
-    pub(crate) fn memory_is_framed(&self) -> bool {
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        return self.daemon_writer && self.host.is_none();
-        #[cfg(not(all(feature = "comms", any(unix, windows))))]
-        false
-    }
-
     /// Barrier every cache-reading tool crosses before it touches [`ServerState::cache`].
     ///
     /// Two regimes:
@@ -178,21 +140,9 @@ impl ServerState {
     /// on the multi-thread runtime the CLI builds and runs it in place on a `current_thread` test
     /// runtime, which has no other task to starve.
     fn build_cache_on_demand(&self) {
-        use std::sync::atomic::Ordering::Relaxed;
-        self.shared.lazy_cache_built.get_or_init(|| {
-            let started = std::time::Instant::now();
-            let store = self.shared.store_read();
-            let budget = l1_cache::budget_bytes_from(&self.shared.config.resources);
-            let cache = MapCache::build(&store, budget);
-            let files = cache.len();
-            let cache = Arc::new(cache);
-            self.shared.cache.store(Arc::clone(&cache));
+        if let Some(cache) = self.shared.build_map_on_demand() {
             super::background::warm_terms(&cache);
-            self.shared.cache_generation.fetch_add(1, Relaxed);
-            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            self.shared.cache_warm_ms.store(elapsed_ms, Relaxed);
-            tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
-        });
+        }
     }
 
     /// Read the workspace's store from async code. A free lock is taken at once; a held one (a scan

@@ -19,6 +19,8 @@ mod args;
 mod bounds;
 #[path = "verb_behaviour/cursors.rs"]
 mod cursors;
+#[path = "verb_behaviour/files.rs"]
+mod files;
 #[path = "verb_behaviour/git.rs"]
 mod git;
 #[path = "verb_behaviour/grep.rs"]
@@ -27,6 +29,8 @@ mod grep;
 mod history;
 #[path = "verb_behaviour/outline.rs"]
 mod outline;
+#[path = "verb_behaviour/read.rs"]
+mod read;
 #[path = "verb_behaviour/refs.rs"]
 mod refs;
 #[path = "verb_behaviour/rescan.rs"]
@@ -35,6 +39,8 @@ mod rescan;
 mod safety;
 #[path = "verb_behaviour/stale.rs"]
 mod stale;
+#[path = "verb_behaviour/symbols.rs"]
+mod symbols;
 
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")

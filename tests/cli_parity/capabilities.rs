@@ -133,6 +133,23 @@ const HOOK: &str = "answers a plugin hook event on stdin; the hooks' entry, not 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 const REGISTRY: &str = "read-only listing of the daemon's machine registry; the registry has no MCP tool";
 
+/// Tools no session of the daemon advertises and no CLI command reaches, by design: they exist only
+/// on the stdio of `basemind serve --lead` (ADR-0040). A CLI command would be a forwarded relay
+/// session whose launcher identity is the peer's own claim, a second way in that review 9 must-fix 1
+/// rules out, so these are the exception to "every MCP tool has a CLI command". `main.rs` checks
+/// that this list is exactly `lead_tools::LEAD_TOOLS`, that no session advertises them and that no
+/// CLI command is named after them.
+pub const NOT_FORWARDED: &[(&str, &str)] = &[
+    (
+        "agent_launch",
+        "answered only by `serve --lead` on its own stdio; never forwarded, so no CLI command reaches it",
+    ),
+    (
+        "agent_stop",
+        "answered only by `serve --lead` on its own stdio; never forwarded, so no CLI command reaches it",
+    ),
+];
+
 pub fn table() -> Vec<Row> {
     #[allow(unused_mut)]
     let mut rows = vec![

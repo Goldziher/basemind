@@ -312,6 +312,9 @@ pub struct Store {
     pub index_rebuild_needed: bool,
     /// Paths whose vector rows are not written yet (see [`crate::store_pending`]).
     pub pending_vectors: crate::store_pending::PendingVectors,
+    /// Document keys ([`doc_key`]) the file map stopped naming since the last document sweep, by
+    /// [`Store::upsert_doc`] and [`Store::remove_doc`]: an incremental pass checks only these.
+    pub(crate) dropped_doc_keys: Vec<String>,
     /// Declared last: fields drop in order, and the lock must outlive the index handle above.
     _lock: Option<crate::store_lock::LockGuard>,
 }
@@ -406,6 +409,7 @@ impl Store {
             reset_stale_schema,
             index_rebuild_needed,
             pending_vectors,
+            dropped_doc_keys: Vec::new(),
             _lock: Some(lock),
         };
         store.persist_file_map_emptied_on_open()?;
@@ -530,6 +534,7 @@ impl Store {
             reset_stale_schema: false,
             index_rebuild_needed,
             pending_vectors,
+            dropped_doc_keys: Vec::new(),
             _lock: None,
         };
         store.publish_live_keys_if_unset();
@@ -615,12 +620,22 @@ impl Store {
     /// Insert / replace the document-tier index entry for `rel`. The doc-tier analogue of
     /// [`Store::upsert`].
     pub fn upsert_doc(&mut self, rel: impl Into<RelPath>, entry: DocEntry) {
-        self.index.doc_files.insert(rel.into(), entry);
+        let rel = rel.into();
+        let replaced = self
+            .index
+            .doc_files
+            .get(&rel)
+            .filter(|old| old.hash_hex != entry.hash_hex || old.config_digest != entry.config_digest)
+            .map(|old| doc_key(&old.hash_hex, &old.config_digest));
+        self.index.doc_files.insert(rel, entry);
+        self.dropped_doc_keys.extend(replaced);
     }
 
     /// Drop the document-tier index entry for `rel`.
     pub fn remove_doc(&mut self, rel: impl AsRef<[u8]>) {
-        self.index.doc_files.remove(bstr::BStr::new(rel.as_ref()));
+        if let Some(old) = self.index.doc_files.remove(bstr::BStr::new(rel.as_ref())) {
+            self.dropped_doc_keys.push(doc_key(&old.hash_hex, &old.config_digest));
+        }
     }
 
     /// Look up a document-tier entry by repository-relative path.

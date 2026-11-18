@@ -1,16 +1,13 @@
 //! Body of `code_read`: one symbol's source body, or an explicit line span of an indexed file.
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
-
-use super::ServerState;
-use super::freshness::{self, Unloadable};
-use super::helpers::{json_result, kind_to_str, parse_kind};
-use super::helpers_pick::pick_symbol;
-use super::index_route::blocking;
-use super::tool_contract::{indexed_file, not_indexed_in};
-use super::types_code::{ExpandParams, ExpandResponse, ReadSpanResponse};
-use super::types_tools::CodeReadParams;
+use crate::engine::error::EngineError;
+use crate::engine::files::{indexed_file, not_indexed_in};
+use crate::engine::freshness::{self, Unloadable};
+use crate::engine::pick::pick_symbol;
+use crate::engine::types::code::{
+    CodeReadParams, CodeReadResult, ExpandParams, ExpandResponse, ReadSpanResponse, kind_to_str, parse_kind,
+};
+use crate::engine::workspace::Workspace;
 use crate::query;
 
 /// Maximum body size returned in a single read (128 KiB).
@@ -28,9 +25,15 @@ const SIZE_CAP: &str = "size_cap";
 const READ_SHAPES: &str = "pass {path, symbol} (a symbol's body; add `line`, any line inside it, or `kind` when \
      several share the name) or {path, line, end_line} (a 1-based inclusive line span)";
 
-/// `code_read`: a symbol's source body, or a 1-based inclusive line span of an indexed file.
-pub(super) async fn code_read(state: &ServerState, p: CodeReadParams) -> Result<CallToolResult, McpError> {
-    let shape_error = |problem: &str| McpError::invalid_params(format!("`code_read`: {problem}; {READ_SHAPES}"), None);
+impl Workspace {
+    /// `code_read`: a symbol's source body, or a 1-based inclusive line span of an indexed file.
+    pub(crate) fn code_read(&self, p: CodeReadParams) -> Result<CodeReadResult, EngineError> {
+        code_read(self, p)
+    }
+}
+
+fn code_read(ws: &Workspace, p: CodeReadParams) -> Result<CodeReadResult, EngineError> {
+    let shape_error = |problem: &str| EngineError::invalid_argument(format!("`code_read`: {problem}; {READ_SHAPES}"));
     match (p.symbol, p.line) {
         (None, None) => Err(shape_error("neither `symbol` nor `line` was given")),
         (Some(name), line) => {
@@ -38,7 +41,7 @@ pub(super) async fn code_read(state: &ServerState, p: CodeReadParams) -> Result<
                 return Err(shape_error("`end_line` applies only to a line span"));
             }
             run_expand(
-                state,
+                ws,
                 ExpandParams {
                     path: p.path,
                     name,
@@ -46,43 +49,41 @@ pub(super) async fn code_read(state: &ServerState, p: CodeReadParams) -> Result<
                     line,
                 },
             )
-            .await
+            .map(CodeReadResult::Symbol)
         }
         (None, Some(line)) => {
             if p.kind.is_some() {
                 return Err(shape_error("`kind` applies only to a symbol read"));
             }
-            read_span(state, &p.path, line, p.end_line.unwrap_or(line)).await
+            read_span(ws, &p.path, line, p.end_line.unwrap_or(line)).map(CodeReadResult::Span)
         }
     }
 }
 
 /// Read lines `line..=end_line` of an indexed file (code or document) from the working tree.
-async fn read_span(
-    state: &ServerState,
+fn read_span(
+    ws: &Workspace,
     path: &crate::path::RelPath,
     line: u32,
     end_line: u32,
-) -> Result<CallToolResult, McpError> {
+) -> Result<ReadSpanResponse, EngineError> {
     if line == 0 || end_line < line {
-        return Err(McpError::invalid_params(
-            format!("`code_read`: lines are 1-based and `end_line` must be >= `line` (got {line}..{end_line})"),
-            None,
-        ));
+        return Err(EngineError::invalid_argument(format!(
+            "`code_read`: lines are 1-based and `end_line` must be >= `line` (got {line}..{end_line})"
+        )));
     }
     // Only the store's file map is consulted: a span never waits for the in-RAM map to build.
-    let file = indexed_file(state, &*state.store_read().await, "code_read", path)?;
-    let span = blocking(|| read_lines(&file, line, end_line))
-        .map_err(|_| freshness::unloadable("code_read", path, Unloadable::Gone, 0))?;
+    let file = indexed_file(ws, &ws.store_read(), "code_read", path)?;
+    let span =
+        read_lines(&file, line, end_line).map_err(|_| freshness::unloadable("code_read", path, Unloadable::Gone, 0))?;
     let total_lines = span.total_lines;
     if line > total_lines.max(1) {
-        return Err(McpError::invalid_params(
-            format!("`code_read`: `{path}` has {total_lines} lines; line {line} is out of range"),
-            None,
-        ));
+        return Err(EngineError::invalid_argument(format!(
+            "`code_read`: `{path}` has {total_lines} lines; line {line} is out of range"
+        )));
     }
     let (body, truncated, last) = cap_body(&span.head, span.bytes, line);
-    json_result(&ReadSpanResponse {
+    Ok(ReadSpanResponse {
         path: path.to_string(),
         line,
         end_line: last,
@@ -189,34 +190,32 @@ fn cap_body(head: &[u8], bytes: usize, line: u32) -> (String, bool, u32) {
 ///
 /// A name that several definitions share is an error listing each with its line span (see
 /// [`pick_symbol`]), never a silent first match.
-async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToolResult, McpError> {
+fn run_expand(ws: &Workspace, params: ExpandParams) -> Result<ExpandResponse, EngineError> {
     let kind_filter = params
         .kind
         .as_deref()
         .map(parse_kind)
         .transpose()
-        .map_err(|e| McpError::invalid_params(format!("`code_read`: invalid kind {:?}: {e}", params.kind), None))?;
+        .map_err(|e| EngineError::invalid_argument(format!("`code_read`: invalid kind {:?}: {e}", params.kind)))?;
 
     let (indexed, entry, file) = {
-        let store = state.store_read().await;
-        let not_indexed = || not_indexed_in(&store, &state.shared.root, "code_read", &params.path);
+        let store = ws.store_read();
+        let not_indexed = || not_indexed_in(&store, &ws.root, "code_read", &params.path);
         let l1 = query::file_outline(&store, &params.path).map_err(|_| not_indexed())?;
         let entry = store.lookup(&params.path).cloned().ok_or_else(not_indexed)?;
-        (l1, entry, indexed_file(state, &store, "code_read", &params.path)?)
+        (l1, entry, indexed_file(ws, &store, "code_read", &params.path)?)
     };
-    let max_bytes = state.shared.config.scan.max_file_bytes;
+    let max_bytes = ws.config.scan.max_file_bytes;
     // The indexed spans locate a symbol only in the bytes that were indexed. In an edited file the
     // symbol is found by parsing what is there now, never by cutting at the old offsets.
-    let (file_bytes, stale, l1) = blocking(|| {
-        let live = freshness::load(&file, (&entry).into(), max_bytes)
-            .map_err(|reason| freshness::unloadable("code_read", &params.path, reason, max_bytes))?;
-        let l1 = if live.fresh {
-            std::sync::Arc::new(indexed)
-        } else {
-            freshness::reparse(&state.shared, "code_read", &params.path, &live.bytes)?
-        };
-        Ok::<_, McpError>((live.bytes, !live.fresh, l1))
-    })?;
+    let live = freshness::load(&file, (&entry).into(), max_bytes)
+        .map_err(|reason| freshness::unloadable("code_read", &params.path, reason, max_bytes))?;
+    let l1 = if live.fresh {
+        std::sync::Arc::new(indexed)
+    } else {
+        freshness::reparse(ws, "code_read", &params.path, &live.bytes)?
+    };
+    let (file_bytes, stale) = (live.bytes, !live.fresh);
     let symbol = pick_symbol(
         "code_read",
         &params.path,
@@ -236,7 +235,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
     let full_bytes = raw.len();
     let (body, truncated, end_line) = cap_body(raw, full_bytes, symbol.start_row + 1);
 
-    let response = ExpandResponse {
+    Ok(ExpandResponse {
         path: params.path.to_string(),
         name: symbol.name.clone(),
         kind: kind_to_str(symbol.kind).to_string(),
@@ -248,9 +247,7 @@ async fn run_expand(state: &ServerState, params: ExpandParams) -> Result<CallToo
         truncated,
         truncated_reason: truncated.then_some(SIZE_CAP),
         stale,
-    };
-
-    json_result(&response)
+    })
 }
 
 #[cfg(test)]

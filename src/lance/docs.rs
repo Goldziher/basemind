@@ -1,9 +1,10 @@
 //! The document retrieval store (ADR-0029): `doc_chunks` and `docs`, keyed by `doc_key`, in one
 //! LanceDB directory per embedding model and dimension.
 //!
-//! Where that directory is lives in [`store_dir`] alone. Today it is beside the workspace's other
-//! stores; ADR-0029 rule 2 puts it under the repository group, and moving it is a change of that
-//! one function's argument, since rows carry no path, scope or workspace.
+//! The directory is the repository group's (ADR-0029 rule 2, ADR-0037 rule 3): every worktree of
+//! a repository shares one store, [`group_store_dir`], since rows carry no path, scope or workspace.
+//! A view reads only the keys its own document map names, and a row is deleted only when no view
+//! of the group names its key.
 
 use std::path::{Path, PathBuf};
 
@@ -28,13 +29,13 @@ pub use crate::store::doc_key;
 /// Keys per `doc_key IN (...)` statement of a write or a lookup.
 const KEYS_PER_STATEMENT: usize = 2_000;
 
-/// The directory of the retrieval store for `model` at `dim`, under `parent`.
-///
-/// `parent` is the view directory today: a view's scan deletes the rows its own document map does
-/// not name, so two views must not share a store. The group-index work (ADR-0028) hands the group
-/// directory instead, with the group sweep deleting what no view names, and the store moves to
-/// `groups/<group>/lance/<model>-<dim>-<hash>/` with no other change. The name ends in a hash of the model's own name, so two models whose readable
-/// slug collides never share, and wipe, one directory.
+/// Directory of a repository group's retrieval stores, under the group directory
+/// (`cache/groups/<group>/lance/`).
+pub const GROUP_STORE_DIR: &str = crate::store_layout::GROUP_LANCE_DIR;
+
+/// The directory of the retrieval store for `model` at `dim`, under `parent`. The name ends in a
+/// hash of the model's own name, so two models whose readable slug collides never share, and wipe,
+/// one directory.
 pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
     let model = crate::embeddings::model_key(model);
     let slug: String = model
@@ -48,9 +49,17 @@ pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
         })
         .collect();
     let hash = crate::hashing::hex(&crate::hashing::hash_bytes(model.as_bytes()));
-    parent
-        .join(crate::store_layout::RETRIEVAL_DIR)
-        .join(format!("{slug}-{dim}-{}", &hash[..8]))
+    parent.join(format!("{slug}-{dim}-{}", &hash[..8]))
+}
+
+/// The retrieval store of `root`'s repository group for `model` at `dim`:
+/// `cache/groups/<group>/lance/<model>-<dim>-<hash>/`. Shared by every worktree of the group.
+pub fn group_store_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
+    store_dir(
+        &crate::store_layout::group_index_dir(root).join(GROUP_STORE_DIR),
+        model,
+        dim,
+    )
 }
 
 /// The coarse kind of a MIME type, the `kind` filter of `docs_search`.
@@ -164,6 +173,24 @@ fn index_for(column: &str) -> Index {
 #[derive(Clone)]
 pub struct DocStore {
     lance: LanceStore,
+    gate: SweepGate,
+}
+
+/// Orders the dead-row sweep against row writes of one store directory, across every view of the
+/// group in this process. A scan names a document in its file map on disk before it writes the
+/// document's rows; a write holds the gate shared, and a sweep holds it exclusively from the read of
+/// the group's liveness to its last delete. So a row is either written before the sweep reads the
+/// file map that names it, or after the sweep is done. Other processes cannot write the store: a
+/// writer holds the group lock (ADR-0028) for as long as it holds the group's index.
+type SweepGate = std::sync::Arc<parking_lot::RwLock<()>>;
+
+/// The gate of the store at `dir`: one per directory for the life of the process, so a handle
+/// opened again after the directory was removed orders against the old one.
+fn sweep_gate(dir: &Path) -> SweepGate {
+    static GATES: std::sync::OnceLock<std::sync::Mutex<AHashMap<PathBuf, SweepGate>>> = std::sync::OnceLock::new();
+    let gates = GATES.get_or_init(Default::default);
+    let mut gates = gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::sync::Arc::clone(gates.entry(dir.to_path_buf()).or_default())
 }
 
 impl DocStore {
@@ -176,7 +203,10 @@ impl DocStore {
             model,
             &[(DOC_CHUNKS_TABLE, doc_chunks_schema(dim)), (DOCS_TABLE, docs_schema())],
         )?;
-        Ok(Self { lance })
+        Ok(Self {
+            lance,
+            gate: sweep_gate(dir),
+        })
     }
 
     /// The process's handle on the store at `dir`, opening it on first use. A scan and a search in
@@ -281,10 +311,14 @@ impl DocStore {
     /// Write the rows of `docs`, replacing any rows of the same keys. The chunk rows commit before
     /// the document rows, so a document row is only ever seen beside its complete chunk rows: a
     /// write cut short between the two leaves the key absent, and the next scan writes it again.
+    ///
+    /// Waits for a running sweep ([`Self::sweep_exclusive`]). The caller's file map on disk must
+    /// already name every key of `docs`, or a sweep may delete them.
     pub fn write(&self, docs: &[DocRows]) -> Result<()> {
         if docs.is_empty() {
             return Ok(());
         }
+        let _shared = self.gate.read();
         let keys: Vec<String> = docs.iter().map(|doc| doc.doc_key.clone()).collect();
         self.delete_keys(&keys)?;
         let dim = self.lance.dim();
@@ -337,13 +371,21 @@ impl DocStore {
         })
     }
 
+    /// Hold off every write to this store until the guard drops. A sweep holds it from the read of
+    /// the group's liveness to its last delete (see [`SweepGate`]); never call [`Self::write`]
+    /// while holding it.
+    pub fn sweep_exclusive(&self) -> parking_lot::RwLockWriteGuard<'_, ()> {
+        self.gate.write()
+    }
+
     /// Delete the rows of every key not in `live`. Returns how many documents went. This is the
     /// store's half of the dead-row sweep: the caller says what is live, the store lists nothing
     /// else (ADR-0029 rule 11).
     pub fn delete_dead(&self, live: &AHashSet<String>) -> Result<usize> {
-        let dead: Vec<String> = self.keys()?.into_iter().filter(|key| !live.contains(key)).collect();
+        let present: AHashSet<String> = self.keys()?.into_iter().collect();
+        let dead: Vec<String> = present.iter().filter(|key| !live.contains(*key)).cloned().collect();
         // Chunk rows whose document row was never written (a cut-short write) are dead as well.
-        let orphans = self.orphan_chunk_keys(live)?;
+        let orphans = self.orphan_chunk_keys(&present, live)?;
         let mut all = dead.clone();
         all.extend(orphans);
         all.sort_unstable();
@@ -352,8 +394,8 @@ impl DocStore {
         Ok(dead.len())
     }
 
-    fn orphan_chunk_keys(&self, live: &AHashSet<String>) -> Result<Vec<String>> {
-        let present: AHashSet<String> = self.keys()?.into_iter().collect();
+    /// Keys of chunk rows with no document row (`present` lists those) and no live key.
+    fn orphan_chunk_keys(&self, present: &AHashSet<String>, live: &AHashSet<String>) -> Result<Vec<String>> {
         self.block_on(async {
             let table = self.table(DOC_CHUNKS_TABLE).await?;
             let mut stream = table

@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 pub mod alloc_tag;
+pub mod allocator;
 pub mod backpressure;
 mod boot_identity;
 #[cfg(feature = "code-search")]
@@ -33,6 +34,9 @@ pub mod intel;
 pub mod lance;
 pub mod lang;
 pub mod lang_rules;
+/// `basemind serve --lead`, the agent-launch host (ADR-0040). Unix only, like launching itself.
+#[cfg(all(feature = "comms", unix))]
+pub mod lead;
 pub mod mcp;
 mod once_map;
 pub mod path;
@@ -71,6 +75,7 @@ pub mod store_cache_admin;
 pub mod store_doc_tombstone;
 pub mod store_gc;
 pub mod store_gc_budget;
+pub mod store_gc_groups;
 pub(crate) mod store_gc_live;
 mod store_gc_namespaces;
 pub mod store_gc_protect;

@@ -110,9 +110,9 @@ fn chunks_cite_the_source_lines_they_came_from() {
 }
 
 #[test]
-fn a_reflowed_source_is_searched_in_linear_time() {
-    // The extractor joined every line of the log into one, so no chunk's line is in the source.
-    let source: String = (0..20_000)
+fn a_reflowed_source_is_found_by_its_collapsed_whitespace() {
+    // The extractor joined every line of the log into one: each chunk is found all the same.
+    let source: String = (0..2_000)
         .map(|i| format!("2021-01-27 host svc[{i}]: event ok\n"))
         .collect();
     let content = source.replace('\n', " ");
@@ -121,15 +121,51 @@ fn a_reflowed_source_is_searched_in_linear_time() {
         .chunks(1000)
         .map(|c| std::str::from_utf8(c).unwrap())
         .collect();
+    let lines = source_lines(&source, chunks.iter().copied());
+    assert!(lines.iter().all(Option::is_some), "{lines:?}");
+    assert_eq!(lines[0].unwrap().0, 1);
+    assert_eq!(lines.last().unwrap().unwrap().1, 2_000);
+}
+
+#[test]
+fn a_source_none_of_whose_lines_are_found_is_searched_in_linear_time() {
+    let source: String = (0..20_000)
+        .map(|i| format!("2021-01-27 host svc[{i}]: event ok\n"))
+        .collect();
+    let content = source.replace('\n', " ").to_uppercase();
+    let chunks: Vec<&str> = content
+        .as_bytes()
+        .chunks(1000)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
     let (lines, searched) = source_lines_counted(&source, chunks.iter().copied());
     assert!(lines.iter().all(Option::is_none));
-    let bound = (SOURCE_LINES_SPILL_FACTOR + 1) * source.len() + chunks.len() * (8 * 1000 + 4096);
+    let per_chunk = 2 * LOOKUP_LINES * (8 * 1000 + 4096);
+    let bound = (SOURCE_LINES_SPILL_FACTOR + 1) * source.len() + chunks.len() * per_chunk;
     assert!(
         searched <= bound,
         "searched {searched} bytes of a {} byte source for {} chunks",
         source.len(),
         chunks.len()
     );
+}
+
+/// What xberg's Markdown rendering does to a source: soft-wrapped paragraphs joined into one line,
+/// `*` bullets written as `-`, entities decoded, table cells re-padded.
+#[test]
+fn markdown_chunks_rewritten_by_the_extractor_still_cite_their_lines() {
+    let source = "# Mirelle-1 Power Budget\n\nMirelle-1 is a six-unit CubeSat that images coastal lagoons. This\n\
+                  document sets out how much power it generates.\n\n## Solar array\n\nFour panels and two wings\n\
+                  carry efficient cells. The array produces up to\n21.4 W at beginning of life.\n\n## Battery\n\n\
+                  * Heater keeps the pack above 5 degrees\n* Pack: four lithium-ion cells (R&amp;D spec)\n\n\
+                  | Mode | Power |\n|------|-------|\n| Safe   | 3.1 W |\n| Imaging | 14.6 W |\n";
+    let chunks = [
+        "# Mirelle-1 Power Budget\n\nMirelle-1 is a six-unit CubeSat that images coastal lagoons. This document sets out how much power it generates.\n\n## Solar array\n\nFour panels and two wings carry efficient cells. The array produces up to 21.4 W at beginning of life.",
+        "efficient cells. The array produces up to 21.4 W at beginning of life.\n\n## Battery\n\n- Heater keeps the pack above 5 degrees\n- Pack: four lithium-ion cells (R&D spec)",
+        "| Mode | Power |\n| --- | --- |\n| Safe | 3.1 W |\n| Imaging | 14.6 W |",
+    ];
+    let lines = source_lines(source, chunks);
+    assert_eq!(lines, vec![Some((1, 10)), Some((9, 15)), Some((17, 20))]);
 }
 
 #[test]

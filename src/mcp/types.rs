@@ -13,94 +13,6 @@ use crate::path::RelPath;
 pub(crate) use crate::engine::types::LifecycleNotice;
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct SearchSymbolsParams {
-    /// Substring matched against symbol name (case-sensitive).
-    pub needle: String,
-    /// Optional kind filter: function, method, struct, enum, class, interface,
-    /// trait, type, const, module, macro.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Also match names the needle is a fuzzy subsequence of, ranked below every literal match.
-    #[serde(default)]
-    pub fuzzy: bool,
-    /// Cap the number of results returned. Default 100, max 1000.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Optional token budget bounding the returned result list (not the whole envelope).
-    /// Items are kept best-first until the budget is hit; the rest are dropped and the
-    /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `results` list — far fewer tokens than JSON for large hit sets.
-    #[serde(default)]
-    pub format: Option<String>,
-    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
-    /// the in-RAM index snapshot and invalidate on rescan.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct ListFilesParams {
-    /// Optional substring matched against the path. Cheaper than reading a glob crate.
-    #[serde(default)]
-    pub path_contains: Option<String>,
-    /// Optional prefix the path must start with.
-    #[serde(default)]
-    pub path_prefix: Option<String>,
-    /// Filter by language (e.g. "rust", "python").
-    #[serde(default)]
-    pub language: Option<String>,
-    /// Cap. Default 200, max 5000.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Optional token budget bounding the returned file list (not the whole envelope).
-    /// Entries are kept in order until the budget is hit; the rest are dropped and the
-    /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `files` list — far fewer tokens than JSON for large listings.
-    #[serde(default)]
-    pub format: Option<String>,
-    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
-    /// the in-RAM index snapshot and invalidate on rescan.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct FindFilesParams {
-    /// Fuzzy query matched as a subsequence against each indexed path (fzf/fd-style — letters
-    /// of `query` must appear in order in the path, not necessarily contiguous). Case-insensitive.
-    pub query: String,
-    /// Optional prefix filter applied before scoring (e.g. "src/mcp/").
-    #[serde(default)]
-    pub path_prefix: Option<String>,
-    /// Filter by language (e.g. "rust", "python"), applied before scoring.
-    #[serde(default)]
-    pub language: Option<String>,
-    /// Cap. Default 200, max 5000 (same convention as `list_files`).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Optional token budget bounding the returned file list (not the whole envelope).
-    /// Entries are kept in score order until the budget is hit; the rest are dropped and the
-    /// response carries `budgeted: true` plus a `next_cursor` to page them.
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
-    /// tabular encoding of the `files` list — far fewer tokens than JSON for large listings.
-    #[serde(default)]
-    pub format: Option<String>,
-    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
-    /// the in-RAM index snapshot (and the score ordering computed for `query`); a rescan
-    /// invalidates them same as `list_files`.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FindReferencesParams {
     /// The callee identifier to look up. Substring match — case-sensitive, no scope
     /// resolution; both `Foo::bar()` and `bar()` register as callee `"bar"`. Use with
@@ -173,83 +85,7 @@ pub struct GotoDefinitionParams {
     pub name: String,
 }
 
-pub(super) fn default_true() -> bool {
-    true
-}
-
-/// One `code_symbols` row: where a definition is and what it is. Rows are ranked: the exact name,
-/// then names it prefixes, then names holding it, then (with `fuzzy`) fuzzy matches; which of those
-/// a row is shows by comparing `name` with the query.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct SearchHitView {
-    pub path: RelPath,
-    /// 1-based line of the definition.
-    pub line: u32,
-    pub kind: &'static str,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
-    /// The file changed since it was indexed: `line` is where the definition is now, or where it
-    /// was when it can no longer be found. Absent when false.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub stale: bool,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct SearchResponse {
-    /// Matching symbols in the corpus, across every page.
-    pub total: usize,
-    /// True when a fuzzy sweep stopped at its candidate cap, so `total` is a lower bound. Never
-    /// true because `limit` cut the page: that is paging, and `next_cursor` says it. Absent when false.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
-    /// `scan_cap` whenever `truncated` is true.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub truncated_reason: Option<&'static str>,
-    /// True when a `max_tokens` budget dropped trailing results. The kept prefix is
-    /// best-first; page the rest with `next_cursor`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    pub results: Vec<SearchHitView>,
-    /// Opaque cursor to pass back on the next call when more results are available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Cursor>,
-    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
-    /// (a rescan happened between calls). The caller must restart pagination from the top.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub cursor_invalidated: bool,
-    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
-    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice: Option<LifecycleNotice>,
-}
-
-/// Response of `find_files`: a fuzzy search ranked best first, or a listing in path order.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct FilesResponse {
-    /// Files that match, from this page on: `next_cursor` continues past this one.
-    pub total: usize,
-    /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
-    /// was clamped down to it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub limit_clamped: bool,
-    /// True when a `max_tokens` budget dropped trailing files. Page the rest with `next_cursor`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    /// Repo-relative paths: by descending match quality for a query (ties by path), else by path.
-    pub files: Vec<RelPath>,
-    /// Opaque cursor to pass back on the next call when more results are available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Cursor>,
-    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
-    /// (a rescan happened between calls). The caller must restart pagination from the top.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub cursor_invalidated: bool,
-    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
-    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice: Option<LifecycleNotice>,
-}
+pub(super) use crate::engine::types::default_true;
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct DependentsResponse {
@@ -664,8 +500,7 @@ impl Serialize for GrepHit {
     }
 }
 
-/// `truncated_reason` of a scan that stopped at its cap before the end of the matches.
-pub(super) const SCAN_CAP: &str = "scan_cap";
+pub(super) use crate::engine::types::SCAN_CAP;
 
 /// Why a `workspace_grep` result was cut short. Present only when `truncated` is true — a grep that
 /// returned every match carries no reason, so an agent can tell a complete zero from a bounded one.
@@ -803,13 +638,4 @@ pub(super) struct RecentCallView {
     pub est_tokens_saved: u64,
 }
 
-pub use super::types_git::{
-    BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DiffFileParams, DiffOutlineParams,
-    FindCommitsByPathParams, HotFilesParams, RecentChangesParams, SearchGitHistoryParams, SymbolHistoryParams,
-};
-pub(super) use super::types_git::{
-    BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView, CommitsTouchingResponse,
-    DiffFileResponse, DiffOutlineResponse, DiffSymbolView, FindCommitsByPathResponse, GitCommitHit, GitShowResponse,
-    HotFileEntry, HotFilesResponse, HunkView, RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry,
-    SymbolHistoryResponse, WorkingTreeStatusView,
-};
+pub use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};

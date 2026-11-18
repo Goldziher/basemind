@@ -1,0 +1,40 @@
+{
+  "network": "Varnholt Water Board raw water",
+  "revision": "2025-01",
+  "stations": {
+    "Quayside": {
+      "duty_pumps": 3,
+      "standby_pumps": 1,
+      "rated_flow_ls": 410,
+      "start_level_m": 2.35,
+      "alarm": {
+        "high_level_m": 3.55,
+        "notify": "control-room"
+      }
+    },
+    "Ostbank": {
+      "duty_pumps": 2,
+      "standby_pumps": 1,
+      "rated_flow_ls": 260,
+      "start_level_m": 1.9,
+      "alarm": {
+        "high_level_m": 3.0999999999999996,
+        "notify": "control-room"
+      }
+    },
+    "Millfield": {
+      "duty_pumps": 2,
+      "standby_pumps": 2,
+      "rated_flow_ls": 180,
+      "start_level_m": 3.1,
+      "alarm": {
+        "high_level_m": 4.3,
+        "notify": "control-room"
+      }
+    }
+  },
+  "rotation": {
+    "interval_hours": 168,
+    "skip_if_alarm": true
+  }
+}

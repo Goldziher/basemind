@@ -1,13 +1,11 @@
-//! Structural-fingerprint helpers for `symbol_history`. Split out of
-//! `helpers.rs` to keep both files under the 1000-line module cap. Everything here is `pub(super)`
-//! or module-private, and re-exported from `helpers.rs` so existing call sites resolve unchanged.
+//! Structural-fingerprint helpers for `symbol_history` and `blame_symbol`: the hash a symbol's body
+//! is compared by across revisions.
 
 use std::sync::Arc;
 
-use rmcp::ErrorData as McpError;
-
-use super::helpers::normalize_for_history;
-use super::{OutlineCache, OutlineEntry};
+use super::common::normalize_for_history;
+use crate::engine::error::EngineError;
+use crate::engine::outline_cache::{OutlineCache, OutlineEntry};
 use crate::extract::SymbolKind;
 use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser};
 
@@ -39,16 +37,15 @@ impl HashMode {
     }
 }
 
-pub(super) fn parse_hash_mode(s: &str) -> Result<HashMode, McpError> {
+pub(super) fn parse_hash_mode(s: &str) -> Result<HashMode, EngineError> {
     Ok(match s.to_ascii_lowercase().as_str() {
         "normalized" => HashMode::Normalized,
         "structural" => HashMode::Structural,
         "structural_loose" => HashMode::StructuralLoose,
         other => {
-            return Err(McpError::invalid_params(
-                format!("unknown hash_mode: {other} (expected normalized|structural|structural_loose)"),
-                None,
-            ));
+            return Err(EngineError::invalid_argument(format!(
+                "unknown hash_mode: {other} (expected normalized|structural|structural_loose)"
+            )));
         }
     })
 }
@@ -77,7 +74,7 @@ pub(super) fn outline_entry_for_blob(
 
 /// Compute a symbol-history fingerprint from an outline cache entry, choosing the strategy
 /// based on `mode`. `occurrence` picks among same-named symbols of the file, as
-/// [`Picked::occurrence`](super::helpers_pick::Picked) counts them. Returns the fingerprint as a `Vec<u8>` so the caller can compare
+/// [`Picked::occurrence`](crate::engine::pick::Picked) counts them. Returns the fingerprint as a `Vec<u8>` so the caller can compare
 /// successive results with `==` regardless of which mode produced them.
 pub(super) fn symbol_fingerprint(
     entry: &OutlineEntry,
@@ -91,7 +88,7 @@ pub(super) fn symbol_fingerprint(
     let same_name = symbols
         .iter()
         .filter(|s| s.name == name && kind.is_none_or(|k| s.kind == k));
-    let sym = super::helpers_pick::nth_occurrence(symbols, same_name, occurrence)?;
+    let sym = crate::engine::pick::nth_occurrence(symbols, same_name, occurrence)?;
     let s = sym.start_byte as usize;
     let e = (sym.end_byte as usize).min(entry.source.len());
     if s >= e {

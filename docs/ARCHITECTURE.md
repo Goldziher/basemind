@@ -87,6 +87,7 @@ src/
 ├── sysres_cgroup.rs        — cgroup / procfs parsers + mount-parameterised readers
 ├── alloc_tag.rs            — macOS: retag mimalloc's mappings (Mach VM tag 254) so the heap stops
 │                             reading as IOAccelerator "GPU" memory
+├── allocator.rs            — the mimalloc `GlobalAlloc` the binary installs (over `libmimalloc-sys`)
 ├── daemon_lock.rs          — single-owner daemon lock, pidfile, machine-wide live-daemon registry +
 │                             ceiling (BASEMIND_MAX_DAEMONS)
 ├── eval/                   — `basemind admin eval`: scores retrieval quality + token savings
@@ -801,7 +802,9 @@ Other bounds that are not `[resources]` keys:
   scan from ~2 GB to 9-13 GB.
 - **Panicking embed jobs** are contained (`catch_unwind`) so a panic surfaces as an error instead of
   aborting the process through rayon.
-- **Allocator.** `mimalloc` is the global allocator (it returns freed pages to the OS). On macOS
+- **Allocator.** `mimalloc` is the global allocator (it returns freed pages to the OS;
+  `src/allocator.rs`, installed in `main.rs` except in the never-shipped `system-allocator` leak-check
+  build, and asserted by a test of the binary target). On macOS
   `src/alloc_tag.rs` retags its mappings from Mach VM tag 100 (`VM_MEMORY_IOACCELERATOR`) to 254
   (application-specific), so `footprint`, `vmmap` and Activity Monitor report the heap as application
   memory, not "GPU" memory.

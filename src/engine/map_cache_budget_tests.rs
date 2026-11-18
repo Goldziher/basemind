@@ -17,7 +17,11 @@ use crate::store::{Store, VIEW_WORKING};
 const ONE_MIB: u64 = 1024 * 1024;
 
 /// Scan a generated corpus whose decoded outlines total well over [`ONE_MIB`].
+///
+/// Pins the cache to the process's isolated data home first. Another test in this binary may set
+/// it at any moment, and a store opened before that and reopened after reads another cache.
 fn scan_oversized_corpus(root: &std::path::Path) -> Store {
+    crate::store::init_isolated_cache();
     for f in 0..40u32 {
         let mut src = String::new();
         for i in 0..150u32 {

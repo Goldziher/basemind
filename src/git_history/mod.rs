@@ -328,13 +328,24 @@ impl GitHistoryIndex {
     /// [`GitHistoryError::NewerSchema`]. Returns `Err` if another process holds the Fjall lock —
     /// read-only callers swallow that to `None`.
     pub fn open(basemind_dir: &Path) -> Result<Self, GitHistoryError> {
+        Self::open_retrying(basemind_dir, GH_OPEN_RETRIES)
+    }
+
+    /// [`GitHistoryIndex::open`] with one attempt, for a one-shot query that holds no writer lock:
+    /// a `Locked` there is another process that keeps the index, not an open that clears, so the
+    /// retry ladder would only delay the live walk the caller falls back to.
+    pub fn open_once(basemind_dir: &Path) -> Result<Self, GitHistoryError> {
+        Self::open_retrying(basemind_dir, 0)
+    }
+
+    fn open_retrying(basemind_dir: &Path, retries: u32) -> Result<Self, GitHistoryError> {
         sweep_discarded(basemind_dir);
         let dir = basemind_dir.join(GIT_HISTORY_DIR);
         let mut attempt = 0;
         loop {
             match Self::open_at(&dir) {
                 Ok(index) => return Ok(index),
-                Err(GitHistoryError::Fjall(fjall::Error::Locked)) if attempt < GH_OPEN_RETRIES => {
+                Err(GitHistoryError::Fjall(fjall::Error::Locked)) if attempt < retries => {
                     attempt += 1;
                     std::thread::sleep(GH_OPEN_BACKOFF);
                 }

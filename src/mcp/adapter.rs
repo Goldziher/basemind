@@ -14,6 +14,7 @@ use serde::Serialize;
 use super::ServerState;
 use super::cursor_bind::{Paged, bound_blocking};
 use super::helpers::json_result;
+use super::strict::ToolArgs;
 use super::telemetry::Telemetry;
 use crate::engine::{EngineError, Workspace};
 
@@ -59,6 +60,38 @@ where
     blocking(move || call_blocking(&ws, &telemetry, p, op)).await
 }
 
+/// [`call`] for a verb tool that pages nothing: no `limit` to refuse, no cursor to bind; the same
+/// telemetry row.
+pub(super) async fn call_unpaged<P, R>(state: &ServerState, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+where
+    P: ToolArgs + Serialize + Send + 'static,
+    R: Serialize + 'static,
+{
+    let ws = Arc::clone(&state.shared);
+    let telemetry = Arc::clone(&state.telemetry);
+    blocking(move || {
+        let started = std::time::Instant::now();
+        let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
+        let result = answer(&ws, p, op);
+        record(&ws, &telemetry, P::TOOL, &params, started, &result);
+        result
+    })
+    .await
+}
+
+/// The telemetry row of one call, costed against the workspace's corpus.
+fn record(
+    ws: &Workspace,
+    telemetry: &Telemetry,
+    tool: &'static str,
+    params: &serde_json::Value,
+    started: std::time::Instant,
+    result: &Result<CallToolResult, McpError>,
+) {
+    let corpus = ws.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
+    super::helpers_telemetry::record_call_to(telemetry, corpus, tool, params, started, result);
+}
+
 fn call_blocking<P: Paged, R: Serialize>(
     ws: &Workspace,
     telemetry: &Telemetry,
@@ -68,13 +101,12 @@ fn call_blocking<P: Paged, R: Serialize>(
     let started = std::time::Instant::now();
     let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
     let result = bound_blocking(p, |p| answer(ws, p, op));
-    let corpus = ws.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
-    super::helpers_telemetry::record_call_to(telemetry, corpus, P::TOOL, &params, started, &result);
+    record(ws, telemetry, P::TOOL, &params, started, &result);
     result
 }
 
 /// `op`'s answer with no cursor binding and no telemetry row: a resource read answers as the tool it
-/// mirrors, and is not a tool call.
+/// mirrors, and is not a tool call; nor is a CLI-only command.
 pub(super) async fn run<P, R>(ws: &Arc<Workspace>, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
 where
     P: Send + 'static,

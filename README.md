@@ -467,8 +467,10 @@ The code map is **code only**. Prose, data and config files — Markdown, reStru
 vimdoc, CSV, JSON, YAML, TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes`
 and Fluent — go to the document tier instead: they are chunked and searched as text with
 `docs_search` (gated by `[documents] include` / `exclude`), and no longer show up in `code_outline`
-and `code_symbols`. `code_grep` still searches them as text, and `find_files` still covers them,
-labelled by grammar name or extension. An existing index migrates on its next scan. A build
+and `code_symbols`. Plain text, logs, CSV, TSV, NDJSON, JSON, YAML and TOML are chunked from the
+file itself (paragraphs, records, top-level entries), so every hit cites its lines. `code_grep`
+still searches them as text, and `find_files` still covers them, labelled by grammar name or
+extension. An existing index migrates on its next scan. A build
 without the `documents` feature keeps the old behaviour, where those files are outlined as code.
 
 ```mermaid
@@ -632,6 +634,45 @@ flowchart LR
   classDef accent fill:#2563eb,stroke:#1e40af,color:#fff
   class BR accent
 ```
+
+</details>
+
+<details>
+<summary><strong>Launching agents in other harnesses (opt-in, Unix)</strong></summary>
+
+A lead agent can hand a task to Claude Code, Codex or OpenCode in a worktree of its own. The lead's
+MCP host runs `basemind serve --lead` instead of `basemind serve`; that process, and only that
+process, answers two more tools on its own stdio, never through the daemon:
+
+| Tool | Job |
+|---|---|
+| `agent_launch` | start an agent (`harness`, `brief`, `working_dir`; optional `model`, `effort`, `max_turns`, `wall_time_s`); returns its session, its id and a thread you share |
+| `agent_stop` | stop an agent you launched, by `session` |
+
+Launching is off until the operator writes `agents.toml` in basemind's user configuration directory
+(`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS), owned by you
+and writable by nobody else. A repository's `basemind.toml` cannot turn it on, nor can the
+environment, a flag or a tool argument:
+
+```toml
+[agents.launch]
+enabled = true
+worktrees_root = "/abs/path/to/worktrees"   # not, nor above, nor inside the lead's repository
+max_concurrent = 2
+max_launches = 16
+
+[agents.launch.harness.claude]
+executable = "/abs/path/to/claude"          # absolute: no PATH lookup
+permission_mode = "supervised"              # supervised | read_only | accept_edits
+pass_env = ["ANTHROPIC_API_KEY"]            # read from the lead's environment
+```
+
+A launched agent runs at depth 1 and cannot launch; every approval it asks for is denied; each
+`working_dir` is an existing directory under `worktrees_root` that no other live agent uses; every
+launch, stop and refusal is written to `<data dir>/agents/launch-audit-*.jsonl`. Without the file,
+`serve --lead` serves exactly like `serve` and says why in its instructions. This bounds what a model
+can do through MCP; it is no sandbox against a process of the same user. See
+[ADR-0040](docs/adr/0040-cross-harness-agent-launch.md).
 
 </details>
 
@@ -1166,7 +1207,7 @@ degrading to a truncated in-memory view.
 | `put <key> <value> [--tag]... [--individual]` | Store a note (`memory_save`). |
 | `get <key>` / `list [--prefix --tag]` / `search <query> [--tag]` | Read one note, list by key prefix, or search by meaning (`memory_search`). |
 | `delete <key>` | Remove a note (CLI only). |
-| `documents <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks by meaning and by words, with citations (`docs_search`). |
+| `documents <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks / Markdown / text, config and data files by meaning and by words, with citations (`docs_search`). |
 **Admin (`basemind admin`)**
 
 | Command | Purpose |

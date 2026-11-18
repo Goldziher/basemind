@@ -2,29 +2,27 @@
 //! operations behind them.
 //!
 //! This file owns the commit-log family (`status`, `recent`, `touching`, `churn`, `search`);
-//! `by_path` lives in `helpers_git_by_path.rs`, and the operations scoped to a single path (`diff`,
-//! `diff_outline`, `blame`, `blame_symbol`, `symbol_history`) in `helpers_git_file.rs`. The split
+//! `by_path` lives in `by_path.rs`, and the operations scoped to a single path (`diff`,
+//! `diff_outline`, `blame`, `blame_symbol`, `symbol_history`) in `file.rs`. The split
 //! is only about the 1000-line per-file cap.
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
-
-use super::ServerState;
-use super::helpers::{
-    LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, commit_to_view, elapsed_us, git_history_if_fresh, head_sha,
-    head_snapshot_id, json_result, require_git_repo,
+use super::by_path::{LIVE_WALK, by_path};
+use super::common::{
+    LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id,
+    require_git_repo,
 };
-use super::helpers_git_by_path::{LIVE_WALK, by_path};
-use super::helpers_git_show::{budget_commits, run_show};
-use super::index_route::blocking;
-use super::tool_contract::budget;
-use super::types::{
+use super::show::{budget_commits, run_show};
+use crate::engine::budget::budget;
+use crate::engine::error::EngineError;
+use crate::engine::timing::elapsed_us;
+use crate::engine::types::git::{
     BlameFileParams, BlameSymbolParams, CommitView, CommitsTouchingParams, CommitsTouchingResponse, DiffFileParams,
-    DiffOutlineParams, FindCommitsByPathParams, HotFileEntry, HotFilesParams, HotFilesResponse, RecentChangesParams,
+    DiffOutlineParams, FindCommitsByPathParams, GitBlameParams, GitBlameResult, GitDiffParams, GitDiffResult,
+    GitLogParams, GitLogResult, HotFileEntry, HotFilesParams, HotFilesResponse, RecentChangesParams,
     RecentChangesResponse, SearchGitHistoryParams, SearchGitHistoryResponse, SymbolHistoryParams,
     WorkingTreeStatusView,
 };
-use super::types_tools::{GitBlameParams, GitDiffParams, GitLogParams};
+use crate::engine::workspace::Workspace;
 use crate::git::CommitInfo;
 use crate::git_history::fts::{self, FtsScope};
 use crate::path::RelPath;
@@ -35,9 +33,32 @@ const LOG_SHAPES: &str = "accepted shapes: {} (recent commits), {path} (commits 
      changed; add `line` when several there share the name), {rev} (one commit in full); `limit`, `cursor` and \
      `max_tokens` page every list";
 
+impl Workspace {
+    /// `git_log`: recent commits, a path's history, a commit search, a symbol's history, or one
+    /// commit.
+    pub(crate) fn git_log(&self, p: GitLogParams) -> Result<GitLogResult, EngineError> {
+        git_log(self, p)
+    }
+
+    /// `git_blame`: who last changed each line of a file, a line span, or one symbol.
+    pub(crate) fn git_blame(&self, p: GitBlameParams) -> Result<GitBlameResult, EngineError> {
+        git_blame(self, p)
+    }
+
+    /// `git_diff`: the working-tree status, a file's text diff, or its symbol-level diff.
+    pub(crate) fn git_diff(&self, p: GitDiffParams) -> Result<GitDiffResult, EngineError> {
+        git_diff(self, p)
+    }
+
+    /// `basemind git churn`: the top-K most-frequently-modified files in a recent window.
+    pub(crate) fn git_churn(&self, p: HotFilesParams) -> Result<HotFilesResponse, EngineError> {
+        run_churn(self, p)
+    }
+}
+
 /// `git_log`: recent commits, a path's history, a commit search, a symbol's history, or one commit.
-pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolResult, McpError> {
-    let shape_error = |problem: &str| McpError::invalid_params(format!("`git_log`: {problem}; {LOG_SHAPES}"), None);
+fn git_log(ws: &Workspace, p: GitLogParams) -> Result<GitLogResult, EngineError> {
+    let shape_error = |problem: &str| EngineError::invalid_argument(format!("`git_log`: {problem}; {LOG_SHAPES}"));
     let max_tokens = budget(p.max_tokens);
 
     if let Some(rev) = p.rev {
@@ -47,7 +68,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
         if p.limit.is_some() || p.cursor.is_some() {
             return Err(shape_error("`rev` shows one commit and takes no `limit` or `cursor`"));
         }
-        return run_show(state, &rev, max_tokens);
+        return run_show(ws, &rev, max_tokens).map(GitLogResult::Show);
     }
     if let Some(symbol) = p.symbol {
         let Some(path) = p.path else {
@@ -58,8 +79,8 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 "`symbol` history does not combine with `query` or `author`",
             ));
         }
-        return super::helpers_git_file::run_symbol_history(
-            state,
+        return super::file::run_symbol_history(
+            ws,
             SymbolHistoryParams {
                 path,
                 name: symbol,
@@ -70,7 +91,8 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 cursor: p.cursor,
                 max_tokens,
             },
-        );
+        )
+        .map(GitLogResult::Symbol);
     }
     if p.line.is_some() {
         return Err(shape_error("`line` picks one definition of `symbol` and needs it"));
@@ -90,7 +112,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
             (None, None) => unreachable!("guarded by the enclosing `if`"),
         };
         return run_search(
-            state,
+            ws,
             SearchGitHistoryParams {
                 pattern,
                 field: Some(field.to_string()),
@@ -99,12 +121,13 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                 max_tokens,
                 author,
             },
-        );
+        )
+        .map(GitLogResult::Search);
     }
-    match p.path.map(|path| as_directory(state, path)) {
+    match p.path.map(|path| as_directory(ws, path)) {
         Some(path) if path.as_bytes().ends_with(b"/") => {
             let mut page = by_path(
-                state,
+                ws,
                 "git_log",
                 FindCommitsByPathParams {
                     pattern: format!("^{}", regex::escape(&path.to_str_lossy())),
@@ -118,7 +141,7 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
             // disk means the path is wrong. The last page says so as an error; a page before it
             // has not seen the whole history, and says why it is empty.
             if !page.matched {
-                let repo = require_git_repo(state)?;
+                let repo = require_git_repo(ws)?;
                 if !repo.is_shallow() && !on_disk(repo, &path) {
                     if page.response.next_cursor.is_none() {
                         return Err(no_such_path(&path));
@@ -129,37 +152,39 @@ pub(super) fn git_log(state: &ServerState, p: GitLogParams) -> Result<CallToolRe
                     ));
                 }
             }
-            json_result(&page.response)
+            Ok(GitLogResult::Directory(page.response))
         }
         Some(path) => run_touching(
-            state,
+            ws,
             CommitsTouchingParams {
                 path,
                 limit: p.limit,
                 cursor: p.cursor,
                 max_tokens,
             },
-        ),
+        )
+        .map(GitLogResult::Touching),
         None => run_recent(
-            state,
+            ws,
             RecentChangesParams {
                 limit: p.limit,
                 include_files: true,
                 cursor: p.cursor,
                 max_tokens,
             },
-        ),
+        )
+        .map(GitLogResult::Recent),
     }
 }
 
 /// `path` with a trailing slash when it names a directory on disk or at HEAD. A commit's file list
 /// holds files, never directories, so a directory's history is the commits that change a file under
 /// it whether or not the caller wrote the slash.
-fn as_directory(state: &ServerState, path: RelPath) -> RelPath {
+fn as_directory(ws: &Workspace, path: RelPath) -> RelPath {
     if path.as_bytes().ends_with(b"/") || path.as_bytes().is_empty() {
         return path;
     }
-    let Ok(repo) = require_git_repo(state) else {
+    let Ok(repo) = require_git_repo(ws) else {
         return path;
     };
     let on_disk = crate::path::contained_file(repo.workdir(), &path).is_ok_and(|file| file.is_dir());
@@ -172,16 +197,13 @@ fn as_directory(state: &ServerState, path: RelPath) -> RelPath {
 }
 
 /// `git_blame`: who last changed each line of a file, a line span, or one symbol.
-pub(super) fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallToolResult, McpError> {
+fn git_blame(ws: &Workspace, p: GitBlameParams) -> Result<GitBlameResult, EngineError> {
     let shape_error = |problem: &str| {
-        McpError::invalid_params(
-            format!(
-                "`git_blame`: {problem}; accepted shapes: {{path}} (whole file), {{path, line, end_line}} (a 1-based \
+        EngineError::invalid_argument(format!(
+            "`git_blame`: {problem}; accepted shapes: {{path}} (whole file), {{path, line, end_line}} (a 1-based \
                  inclusive span; `end_line` defaults to `line`), {{path, symbol}} (one symbol's lines; add `line` \
                  when several share the name); `rev` picks the revision"
-            ),
-            None,
-        )
+        ))
     };
     if p.line == Some(0) || p.end_line == Some(0) {
         return Err(shape_error("lines are 1-based"));
@@ -194,8 +216,8 @@ pub(super) fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallTo
                     "`end_line` applies only to a line span; with `symbol`, `line` picks the definition",
                 ));
             }
-            super::helpers_git_file::run_blame_symbol(
-                state,
+            super::file::run_blame_symbol(
+                ws,
                 BlameSymbolParams {
                     path: p.path,
                     name: symbol,
@@ -207,6 +229,7 @@ pub(super) fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallTo
                     max_tokens,
                 },
             )
+            .map(GitBlameResult::Symbol)
         }
         None => {
             let (line_start, line_end) = match (p.line, p.end_line) {
@@ -219,8 +242,8 @@ pub(super) fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallTo
                 (None, Some(_)) => return Err(shape_error("`end_line` needs `line`")),
                 (None, None) => (None, None),
             };
-            super::helpers_git_file::run_blame(
-                state,
+            super::file::run_blame(
+                ws,
                 BlameFileParams {
                     path: p.path,
                     line_start,
@@ -231,6 +254,7 @@ pub(super) fn git_blame(state: &ServerState, p: GitBlameParams) -> Result<CallTo
                     max_tokens,
                 },
             )
+            .map(GitBlameResult::File)
         }
     }
 }
@@ -242,14 +266,14 @@ const DIFF_SHAPES: &str = "accepted shapes: {} (working-tree status), {path} end
      removed since `from`, default HEAD)";
 
 /// `git_diff`: the working-tree status, a file's text diff, or its symbol-level diff.
-pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<CallToolResult, McpError> {
-    let shape_error = |problem: &str| McpError::invalid_params(format!("`git_diff`: {problem}; {DIFF_SHAPES}"), None);
+fn git_diff(ws: &Workspace, p: GitDiffParams) -> Result<GitDiffResult, EngineError> {
+    let shape_error = |problem: &str| EngineError::invalid_argument(format!("`git_diff`: {problem}; {DIFF_SHAPES}"));
     let structural = p.structural.unwrap_or(false);
     let Some(path) = p.path else {
         if p.from.is_some() || p.to.is_some() || structural {
             return Err(shape_error("a diff needs the `path` of one file"));
         }
-        return blocking(|| run_status(state, None));
+        return run_status(ws, None).map(GitDiffResult::Status);
     };
     if path.as_bytes().ends_with(b"/") {
         if p.from.is_some() || p.to.is_some() || structural {
@@ -257,9 +281,9 @@ pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<Ca
                 "a directory `path` narrows the working-tree status and takes no `from`, `to` or `structural`",
             ));
         }
-        return blocking(|| run_status(state, Some(path)));
+        return run_status(ws, Some(path)).map(GitDiffResult::Status);
     }
-    if let Some(refusal) = blocking(|| directory_without_slash(state, &path, p.from.as_deref(), p.to.as_deref())) {
+    if let Some(refusal) = directory_without_slash(ws, &path, p.from.as_deref(), p.to.as_deref()) {
         return Err(refusal);
     }
     if structural {
@@ -268,60 +292,54 @@ pub(super) async fn git_diff(state: &ServerState, p: GitDiffParams) -> Result<Ca
                 "a structural diff compares `from` against the indexed working tree and takes no `to`",
             ));
         }
-        state.await_cache_ready().await;
-        return blocking(|| super::helpers_git_file::run_diff_outline(state, DiffOutlineParams { path, rev: p.from }));
+        ws.wait_map_ready();
+        return super::file::run_diff_outline(ws, DiffOutlineParams { path, rev: p.from })
+            .map(GitDiffResult::Structural);
     }
-    blocking(|| {
-        super::helpers_git_file::run_diff(
-            state,
-            DiffFileParams {
-                rev_old: p.from.unwrap_or_else(|| "HEAD".to_string()),
-                rev_new: p.to,
-                path,
-            },
-        )
-    })
+    super::file::run_diff(
+        ws,
+        DiffFileParams {
+            rev_old: p.from.unwrap_or_else(|| "HEAD".to_string()),
+            rev_new: p.to,
+            path,
+        },
+    )
+    .map(GitDiffResult::Text)
 }
 
 /// The refusal for a `git_diff` `path` that names a directory and does not end with `/`: on disk,
 /// or in either revision compared. A diff is of one file, and a directory's status is its own
 /// shape, so the message names it.
 fn directory_without_slash(
-    state: &ServerState,
+    ws: &Workspace,
     path: &RelPath,
     from: Option<&str>,
     to: Option<&str>,
-) -> Option<McpError> {
-    let repo = require_git_repo(state).ok()?;
+) -> Option<EngineError> {
+    let repo = require_git_repo(ws).ok()?;
     let on_disk = crate::path::contained_file(repo.workdir(), path).is_ok_and(|file| file.is_dir());
     let in_a_revision = [from.unwrap_or("HEAD")]
         .into_iter()
         .chain(to)
         .any(|rev| repo.is_directory_at(rev, path.as_ref()));
     (on_disk || in_a_revision).then(|| {
-        McpError::invalid_params(
-            format!(
-                "`git_diff`: `{path}` is a directory and a diff is of one file. Pass `{path}/` (with the \
+        EngineError::invalid_argument(format!(
+            "`git_diff`: `{path}` is a directory and a diff is of one file. Pass `{path}/` (with the \
                  trailing slash, and no `from`, `to` or `structural`) for the working-tree status under it, \
                  or the path of a file in it."
-            ),
-            None,
-        )
+        ))
     })
 }
 
 /// Reject a path that lives outside the repository (a `scan.extra_roots` file, keyed by its
 /// absolute path). Such files are indexed for the code map but are not tracked by git, so blame
 /// has nothing to resolve against — return a clear error instead of an opaque gix failure.
-pub(super) fn reject_external_path(path: &RelPath) -> Result<(), McpError> {
+pub(super) fn reject_external_path(path: &RelPath) -> Result<(), EngineError> {
     if path.is_external() {
-        return Err(McpError::invalid_params(
-            format!(
-                "path is outside the git repository (indexed via scan.extra_roots); \
+        return Err(EngineError::invalid_argument(format!(
+            "path is outside the git repository (indexed via scan.extra_roots); \
                  blame is unavailable for external files: {path}"
-            ),
-            None,
-        ));
+        )));
     }
     Ok(())
 }
@@ -332,15 +350,15 @@ const STATUS_PATHS_MAX: usize = 200;
 
 /// The `status` operation: the working tree's staged / unstaged / untracked buckets, for the whole
 /// tree or for the paths under the directory `within`.
-fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolResult, McpError> {
-    let repo = require_git_repo(state)?;
+fn run_status(ws: &Workspace, within: Option<RelPath>) -> Result<WorkingTreeStatusView, EngineError> {
+    let repo = require_git_repo(ws)?;
     // A narrowed status lists every untracked file: a wholly untracked directory collapsed into one
     // entry is an ancestor of the paths asked about, or hides them behind its own name.
     let s = match within {
         Some(_) => repo.status_per_file(),
         None => repo.status_porcelain(),
     }
-    .map_err(|e| McpError::internal_error(format!("git status: {e}"), None))?;
+    .map_err(|e| EngineError::internal(format!("git status: {e}")))?;
     let mut omitted = 0;
     let mut any = false;
     let mut bucket = |mut paths: Vec<RelPath>| {
@@ -365,15 +383,12 @@ fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolRe
         && !any
         && !crate::path::contained_file(repo.workdir(), directory).is_ok_and(|on_disk| on_disk.is_dir())
     {
-        return Err(McpError::invalid_params(
-            format!(
-                "`git_diff`: no directory `{directory}` exists and no changed path is under it. `path` is \
+        return Err(EngineError::invalid_argument(format!(
+            "`git_diff`: no directory `{directory}` exists and no changed path is under it. `path` is \
                  repo-relative; a directory ends with `/`. Locate it with `find_files`."
-            ),
-            None,
-        ));
+        )));
     }
-    json_result(&WorkingTreeStatusView {
+    Ok(WorkingTreeStatusView {
         staged_added,
         staged_modified,
         staged_deleted,
@@ -390,9 +405,9 @@ fn run_status(state: &ServerState, within: Option<RelPath>) -> Result<CallToolRe
 /// The offset a paged git walk's cursor carries and the snapshot it was issued on (`None` without a
 /// cursor), or `None` when HEAD moved since it was issued.
 pub(super) fn walk_cursor(
-    cursor: Option<&super::cursor::Cursor>,
+    cursor: Option<&crate::engine::cursor::Cursor>,
     head: &str,
-) -> Result<Option<(u64, Option<u32>)>, McpError> {
+) -> Result<Option<(u64, Option<u32>)>, EngineError> {
     let Some(cursor) = cursor else {
         return Ok(Some((0, None)));
     };
@@ -415,13 +430,13 @@ pub(super) fn history_page(
     head: &str,
     issued: Option<u32>,
     indexed: Option<Vec<CommitInfo>>,
-    live: impl FnOnce() -> Result<Vec<CommitInfo>, McpError>,
-) -> Result<(Vec<CommitInfo>, u32), McpError> {
+    live: impl FnOnce() -> Result<Vec<CommitInfo>, EngineError>,
+) -> Result<(Vec<CommitInfo>, u32), EngineError> {
     let live_cursor = issued.is_some_and(|issued| issued & LIVE_WALK != 0);
     let indexed = indexed.filter(|commits| !live_cursor && !commits.is_empty());
     let snapshot = (head_snapshot_id(head) & !LIVE_WALK) | u32::from(indexed.is_none());
     if issued.is_some_and(|issued| issued != snapshot) {
-        return Err(super::cursor_bind::walk_switched(tool));
+        return Err(crate::engine::cursor::walk_switched(tool));
     }
     match indexed {
         Some(commits) => Ok((commits, snapshot)),
@@ -431,19 +446,16 @@ pub(super) fn history_page(
 
 /// The refusal for a `path` that no commit reachable from HEAD touches and that is not on disk
 /// either. An empty history would not say the path is wrong.
-fn no_such_path(path: &RelPath) -> McpError {
+fn no_such_path(path: &RelPath) -> EngineError {
     let kind = if path.as_bytes().ends_with(b"/") {
         "directory"
     } else {
         "file"
     };
-    McpError::invalid_params(
-        format!(
-            "`git_log`: no commit reachable from HEAD touches `{path}` and no such {kind} exists. `path` is a \
+    EngineError::invalid_argument(format!(
+        "`git_log`: no commit reachable from HEAD touches `{path}` and no such {kind} exists. `path` is a \
              repo-relative file path, or a directory when it ends with `/`; locate it with `find_files`."
-        ),
-        None,
-    )
+    ))
 }
 
 /// Whether `path` names something in the working tree.
@@ -452,12 +464,12 @@ fn on_disk(repo: &crate::git::Repo, path: &RelPath) -> bool {
 }
 
 /// The `recent` operation: HEAD's ancestry, newest first, one page at a time.
-fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallToolResult, McpError> {
-    let repo = require_git_repo(state)?;
+fn run_recent(ws: &Workspace, params: RecentChangesParams) -> Result<RecentChangesResponse, EngineError> {
+    let repo = require_git_repo(ws)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
     let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
-        return json_result(&RecentChangesResponse {
+        return Ok(RecentChangesResponse {
             commits: Vec::new(),
             truncated: false,
             truncated_reason: None,
@@ -475,10 +487,10 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
         "git_log",
         &head,
         issued,
-        git_history_if_fresh(state, &head).map(|index| index.recent_commits(skip, fetch, params.include_files)),
+        git_history_if_fresh(ws, &head).map(|index| index.recent_commits(skip, fetch, params.include_files)),
         || {
             repo.log_window(&head, skip, fetch, params.include_files)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))
+                .map_err(|e| EngineError::internal(format!("log: {e}")))
         },
     )?;
     let more = commits.len() > limit;
@@ -488,10 +500,10 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
         .map(|c| commit_to_view(c, params.include_files))
         .collect();
     let (page, budgeted) = budget_commits(page, params.max_tokens);
-    let next_cursor =
-        (more || budgeted).then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
+    let next_cursor = (more || budgeted)
+        .then(|| crate::engine::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
-    json_result(&RecentChangesResponse {
+    Ok(RecentChangesResponse {
         commits: page,
         budgeted,
         truncated,
@@ -502,12 +514,12 @@ fn run_recent(state: &ServerState, params: RecentChangesParams) -> Result<CallTo
 }
 
 /// The `touching` operation: commits whose tree differs from the parent's at `path`, a page at a time.
-fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<CallToolResult, McpError> {
-    let repo = require_git_repo(state)?;
+fn run_touching(ws: &Workspace, params: CommitsTouchingParams) -> Result<CommitsTouchingResponse, EngineError> {
+    let repo = require_git_repo(ws)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
     let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
-        return json_result(&CommitsTouchingResponse {
+        return Ok(CommitsTouchingResponse {
             commits: Vec::new(),
             truncated: false,
             truncated_reason: None,
@@ -522,10 +534,10 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
         "git_log",
         &head,
         issued,
-        git_history_if_fresh(state, &head).map(|index| index.commits_touching(&params.path, skip, fetch)),
+        git_history_if_fresh(ws, &head).map(|index| index.commits_touching(&params.path, skip, fetch)),
         || {
             repo.log_window_touching(&head, &params.path, skip, fetch)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))
+                .map_err(|e| EngineError::internal(format!("log: {e}")))
         },
     )?;
     if commits.is_empty() && skip == 0 && !repo.is_shallow() && !on_disk(repo, &params.path) {
@@ -538,10 +550,10 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
         .map(|c| commit_to_view(c, false))
         .collect();
     let (page, budgeted) = budget_commits(page, params.max_tokens);
-    let next_cursor =
-        (more || budgeted).then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
+    let next_cursor = (more || budgeted)
+        .then(|| crate::engine::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
-    json_result(&CommitsTouchingResponse {
+    Ok(CommitsTouchingResponse {
         commits: page,
         budgeted,
         truncated,
@@ -552,19 +564,18 @@ fn run_touching(state: &ServerState, params: CommitsTouchingParams) -> Result<Ca
 }
 
 /// The `churn` operation: the top-K most-frequently-modified files in a recent window.
-pub(super) fn run_churn(state: &ServerState, params: HotFilesParams) -> Result<CallToolResult, McpError> {
+fn run_churn(ws: &Workspace, params: HotFilesParams) -> Result<HotFilesResponse, EngineError> {
     let started = std::time::Instant::now();
-    let repo = require_git_repo(state)?;
+    let repo = require_git_repo(ws)?;
     let window = params.window.unwrap_or(200).min(2000);
     let top_k = params.top_k.unwrap_or(20).min(200) as usize;
     let head = head_sha(repo)?;
-    let commits: Vec<CommitInfo> = match git_history_if_fresh(state, &head) {
+    let commits: Vec<CommitInfo> = match git_history_if_fresh(ws, &head) {
         Some(index) => index.window_commits(window as usize),
-        None => state
-            .shared
+        None => ws
             .git_cache
             .log(repo, &head, None, window, true)
-            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+            .map_err(|e| EngineError::internal(format!("log: {e}")))?
             .as_ref()
             .clone(),
     };
@@ -595,7 +606,7 @@ pub(super) fn run_churn(state: &ServerState, params: HotFilesParams) -> Result<C
     ranked.sort_by(|a, b| b.commits_touching.cmp(&a.commits_touching).then(a.path.cmp(&b.path)));
     ranked.truncate(top_k);
 
-    json_result(&HotFilesResponse {
+    Ok(HotFilesResponse {
         window_inspected: window,
         total_files_changed,
         files: ranked,
@@ -648,8 +659,8 @@ fn by_author(
 /// index when it is fresh (`last_indexed_head == HEAD`), searching author name + email + summary +
 /// full body; otherwise degrades to a bounded live walk over the recent window, flagged
 /// `truncated` with reason `live_walk` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
-fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<CallToolResult, McpError> {
-    let repo = require_git_repo(state)?;
+fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGitHistoryResponse, EngineError> {
+    let repo = require_git_repo(ws)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let scope = FtsScope::parse(params.field.as_deref());
     let head = head_sha(repo)?;
@@ -659,7 +670,7 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
         Some(cursor) => {
             let (offset, snapshot_id) = cursor.decode_in_memory()?;
             if snapshot_id != snapshot {
-                return json_result(&SearchGitHistoryResponse {
+                return Ok(SearchGitHistoryResponse {
                     commits: Vec::new(),
                     truncated: false,
                     truncated_reason: None,
@@ -679,7 +690,7 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
         fts::tokenize(author, &mut terms);
         terms
     });
-    let (mut hits, truncated_reason) = match git_history_if_fresh(state, &head) {
+    let (mut hits, truncated_reason) = match git_history_if_fresh(ws, &head) {
         Some(index) => match author_terms.as_ref() {
             None => (index.search_commits(&params.pattern, scope, skip, want), None),
             Some(author_terms) => {
@@ -689,18 +700,17 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
                     skip,
                     want,
                 );
-                (hits, capped.then_some(super::types::SCAN_CAP))
+                (hits, capped.then_some(crate::engine::types::SCAN_CAP))
             }
         },
         None => {
             let mut query_terms = ahash::AHashSet::new();
             fts::tokenize(&params.pattern, &mut query_terms);
             let window = LOG_WALK_MAX as u32;
-            let live = state
-                .shared
+            let live = ws
                 .git_cache
                 .log(repo, &head, None, window, false)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+                .map_err(|e| EngineError::internal(format!("log: {e}")))?;
             let matched: Vec<CommitInfo> = live
                 .iter()
                 .filter(|c| fts::commit_matches_terms(c, &query_terms, scope))
@@ -724,8 +734,8 @@ fn run_search(state: &ServerState, params: SearchGitHistoryParams) -> Result<Cal
     let (commits, budgeted) = budget_commits(commits, params.max_tokens);
     let has_more = has_more || budgeted;
     let kept = commits.len();
-    let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + kept) as u64, snapshot));
-    json_result(&SearchGitHistoryResponse {
+    let next_cursor = has_more.then(|| crate::engine::cursor::Cursor::encode_in_memory((skip + kept) as u64, snapshot));
+    Ok(SearchGitHistoryResponse {
         commits,
         budgeted,
         truncated: truncated_reason.is_some(),
@@ -800,7 +810,7 @@ mod tests {
         assert_eq!(snapshot, live);
         let indexed = live & !LIVE_WALK;
         let refused = history_page("git_log", head, Some(indexed), None, walked).expect_err("index gone");
-        assert!(refused.message.contains("git-history index"), "{}", refused.message);
+        assert!(refused.to_string().contains("git-history index"), "{refused}");
     }
 
     #[test]

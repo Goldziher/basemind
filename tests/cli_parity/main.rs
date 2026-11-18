@@ -155,6 +155,40 @@ fn every_mcp_tool_is_covered() {
     assert!(failures.is_empty(), "MCP coverage gaps:\n  {}", failures.join("\n  "));
 }
 
+/// The lead tools are the one exception to "every MCP tool has a CLI command": the exception list
+/// is exactly them, with reasons, the server advertises neither, and no CLI command is named after
+/// either (`agent launch`, `agent stop`).
+#[test]
+fn the_lead_tools_are_neither_advertised_nor_reachable_from_the_cli() {
+    let listed: BTreeSet<&str> = capabilities::NOT_FORWARDED.iter().map(|(tool, _)| *tool).collect();
+    let lead: BTreeSet<&str> = basemind::mcp::lead_tools::LEAD_TOOLS.iter().copied().collect();
+    assert_eq!(listed, lead, "NOT_FORWARDED must list exactly the lead tools");
+    assert!(
+        capabilities::NOT_FORWARDED
+            .iter()
+            .all(|(_, why)| !why.trim().is_empty())
+    );
+
+    let live = live_mcp_ops(&mcp_surface::domains());
+    let rows = capabilities::table();
+    for tool in &lead {
+        assert!(
+            !live.iter().any(|op| op.tool == *tool),
+            "the server advertises `{tool}`"
+        );
+        assert!(
+            !rows.iter().filter_map(Row::mcp).any(|op| op.tool == *tool),
+            "`{tool}` has a capability row"
+        );
+        let command = tool.replace('_', " ");
+        let tree = cli_tree::load();
+        assert!(
+            !tree.leaves().any(|leaf| leaf.path == command),
+            "`basemind {command}` would forward a lead tool"
+        );
+    }
+}
+
 /// Layer 1, CLI side: every leaf command has a row, every row names a real leaf command.
 #[test]
 fn every_cli_command_is_covered() {
@@ -239,7 +273,7 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
     let session = mcp_surface::Session::start().await;
     let rows = capabilities::table();
     let mut failures = Vec::new();
-    let (mut answered, mut refused) = (0usize, 0usize);
+    let (mut answered, mut refused, mut busy_beside) = (0usize, 0usize, 0usize);
     let cases = behaviour::cases();
     let mut compare = |case: &behaviour::Case, mcp: Result<Value, String>, cli: Result<Value, String>| {
         let label = format!("{} {} (basemind {})", case.tool, case.mcp, case.cli);
@@ -261,6 +295,7 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
 
     let mut unmapped = Vec::new();
     let mut deferred = Vec::new();
+    let mut beside_failures = Vec::new();
     for case in &cases {
         if !behaviour::table_pairs(&rows, case.tool, case.cli) {
             unmapped.push(format!(
@@ -271,11 +306,27 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
         }
         let mcp = session.call(case.tool, case.mcp.clone()).await;
         if case.after_session {
+            let beside = behaviour::run_cli(session.repo.path(), case.cli, case.cli_operands);
+            match (&mcp, &beside) {
+                // Not compiled in: the deferred comparison checks the CLI prints the same refusal.
+                (Err(m), Err(c)) if c.contains(m.as_str()) && m.contains("Cargo feature") => {}
+                _ if behaviour::refuses_beside_the_writer(&beside) => busy_beside += 1,
+                _ => beside_failures.push(format!(
+                    "{} {} (basemind {}) beside the writer with no daemon: expected a busy refusal \
+                     (exit 3) naming `basemind comms start`, got {beside:?}",
+                    case.tool, case.mcp, case.cli
+                )),
+            }
             deferred.push((case, mcp));
             continue;
         }
         let cli = behaviour::run_cli(session.repo.path(), case.cli, case.cli_operands);
         compare(case, mcp, cli);
+    }
+    if let Err(stderr) = behaviour::leaves_the_held_history_alone(session.repo.path(), "git log", &[]) {
+        beside_failures.push(format!(
+            "basemind git log beside the writer opened the git-history database it holds: {stderr}"
+        ));
     }
     let repo = session.close().await;
     for (case, mcp) in deferred {
@@ -283,13 +334,17 @@ async fn read_only_queries_agree_between_mcp_and_cli() {
         compare(case, mcp, cli);
     }
     failures.extend(unmapped);
+    failures.extend(beside_failures);
 
     assert!(
         cases.len() >= 27,
         "the behaviour layer lost its cases ({} left)",
         cases.len()
     );
-    println!("behavioural parity: {answered} answered on both sides, {refused} refused on both sides");
+    println!(
+        "behavioural parity: {answered} answered on both sides, {refused} refused on both sides, \
+         {busy_beside} refused busy beside the writer"
+    );
     assert!(
         answered >= 22,
         "only {answered} cases compared payloads; the rest merely agreed to refuse"

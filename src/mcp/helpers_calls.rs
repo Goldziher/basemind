@@ -25,14 +25,6 @@ use crate::path::RelPath;
 pub(super) enum RefsSource<'a> {
     /// Resolve against this serve's own store: the open fjall index, else intra-file `.rref` blobs.
     Local(&'a crate::store::Store),
-    /// Forward the lookup to the machine daemon — the `daemon_writer` (read-only serve) path.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    Daemon {
-        /// Cached broker client for this session's identity.
-        client: std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>,
-        /// Canonical workspace root, selecting the daemon's hot workspace.
-        root: std::path::PathBuf,
-    },
     /// Resolve IN-PROCESS through the daemon's own workspace pool — the daemon-HOSTED path. The pool
     /// holds the workspace's read-write fjall index (the sole writer), so this serves the cross-file
     /// `refs_by_def` edges the hosted stack's index-less store cannot see, WITHOUT the daemon dialing
@@ -53,22 +45,6 @@ impl RefsSource<'_> {
     async fn references_to(&self, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
         match self {
             RefsSource::Local(store) => crate::query::resolved_references(store, def_path, def_start),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            RefsSource::Daemon { client, root } => {
-                use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
-                let query = ResolvedRefQuery::ReferencesTo {
-                    def_path: def_path.clone(),
-                    def_start,
-                };
-                match client.lock().await.resolved_refs(root.clone(), query).await {
-                    Ok(ResolvedRefResult::References(uses)) => uses,
-                    Ok(_) => Vec::new(),
-                    Err(error) => {
-                        tracing::debug!(%error, "find_callers: daemon resolved-refs forward failed; name-based fallback");
-                        Vec::new()
-                    }
-                }
-            }
             #[cfg(all(feature = "comms", any(unix, windows)))]
             RefsSource::Host { host, root } => {
                 use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
@@ -210,7 +186,7 @@ pub(super) async fn run_find_callers(
     let source = super::index_route::blocking(|| {
         super::freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), files.max_file_bytes)
     })?;
-    let symbol = super::helpers_pick::pick_symbol(
+    let symbol = crate::engine::pick::pick_symbol(
         "code_refs",
         &params.path,
         None,
@@ -319,7 +295,7 @@ fn unstamp(cursor: Option<&Cursor>, generation: u64) -> Result<Option<Vec<u8>>, 
     let bytes = cursor.decode_fjall()?;
     match bytes.split_at_checked(GENERATION_LEN) {
         Some((stamped, key)) if stamped == generation.to_be_bytes() => Ok(Some(key.to_vec())),
-        _ => Err(super::cursor_bind::stale_cursor("code_refs")),
+        _ => Err(super::cursor_bind::stale_cursor("code_refs").into()),
     }
 }
 

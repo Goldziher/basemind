@@ -10,7 +10,11 @@
 use std::collections::BTreeSet;
 
 use memchr::memmem::Finder;
-use rmcp::ErrorData as McpError;
+
+use crate::engine::MapCache;
+use crate::engine::error::EngineError;
+use crate::engine::types::LifecycleNotice;
+use crate::engine::workspace::Workspace;
 
 /// Languages named in a "no such language" refusal before the rest are counted.
 const LANGUAGES_LISTED_MAX: usize = 30;
@@ -19,19 +23,8 @@ const LANGUAGES_LISTED_MAX: usize = 30;
 /// they occur in real paths (`app/[id]/page.tsx`).
 const GLOB_WILDCARDS: [char; 2] = ['*', '?'];
 
-/// Refuse `limit: 0`: it returns an empty page whose cursor points back at the same position.
-pub(super) fn reject_zero_limit(tool: &str, limit: Option<u32>) -> Result<(), McpError> {
-    if limit == Some(0) {
-        return Err(McpError::invalid_params(
-            format!("`{tool}`: `limit` must be at least 1; omit it for the default page size."),
-            None,
-        ));
-    }
-    Ok(())
-}
-
 /// How a tool matches its path filter against a repo-relative path.
-pub(super) enum PathFilter<'a> {
+pub(crate) enum PathFilter<'a> {
     /// `code_grep`'s `path`: a literal substring. The finder is boxed: on x86_64 it carries its
     /// vector searcher inline (~300 bytes), against 16 for a prefix.
     Contains(&'a str, Box<Finder<'a>>),
@@ -40,11 +33,11 @@ pub(super) enum PathFilter<'a> {
 }
 
 impl<'a> PathFilter<'a> {
-    pub(super) fn contains(needle: &'a str) -> Self {
+    pub(crate) fn contains(needle: &'a str) -> Self {
         Self::Contains(needle, Box::new(Finder::new(needle.as_bytes())))
     }
 
-    pub(super) fn matches(&self, path: &[u8]) -> bool {
+    pub(crate) fn matches(&self, path: &[u8]) -> bool {
         match self {
             Self::Contains(_, finder) => finder.find(path).is_some(),
             Self::Prefix(prefix) => path.starts_with(prefix.as_bytes()),
@@ -67,7 +60,7 @@ impl<'a> PathFilter<'a> {
 }
 
 /// The filters of one call.
-pub(super) struct Filters<'a> {
+pub(crate) struct Filters<'a> {
     pub tool: &'a str,
     pub path: Option<PathFilter<'a>>,
     pub language: Option<&'a str>,
@@ -75,7 +68,7 @@ pub(super) struct Filters<'a> {
 
 /// What a set of files looked like to a call's filters.
 #[derive(Default)]
-pub(super) struct Tally {
+pub(crate) struct Tally {
     any: bool,
     path_seen: bool,
     language_seen: bool,
@@ -87,7 +80,7 @@ pub(super) struct Tally {
 
 impl Tally {
     /// Record one file. Returns whether it passes every filter.
-    pub(super) fn see(&mut self, filters: &Filters<'_>, path: &[u8], language: &str) -> bool {
+    pub(crate) fn see(&mut self, filters: &Filters<'_>, path: &[u8], language: &str) -> bool {
         self.any = true;
         let path_ok = filters.path.as_ref().is_none_or(|filter| filter.matches(path));
         let language_ok = filters.language.is_none_or(|wanted| wanted == language);
@@ -107,7 +100,7 @@ impl Tally {
 }
 
 impl Filters<'_> {
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.path.is_none() && self.language.is_none()
     }
 
@@ -116,21 +109,18 @@ impl Filters<'_> {
     /// tool that does not cover it, so the refusal can say the filters named documents.
     ///
     /// An empty index is not a filter mistake and is left to the tool's own report.
-    pub(super) fn refusal(&self, listed: &Tally, unlisted_documents: Option<&Tally>) -> Option<McpError> {
+    pub(crate) fn refusal(&self, listed: &Tally, unlisted_documents: Option<&Tally>) -> Option<EngineError> {
         let tool = self.tool;
         if self.is_empty() || !listed.any || listed.passed > 0 {
             return None;
         }
         if let Some(documents) = unlisted_documents.filter(|documents| documents.passed > 0) {
-            return Some(McpError::invalid_params(
-                format!(
-                    "`{tool}`: these filters match only documents ({} indexed, e.g. `{}`), and `{tool}` searches \
+            return Some(EngineError::invalid_argument(format!(
+                "`{tool}`: these filters match only documents ({} indexed, e.g. `{}`), and `{tool}` searches \
                      code and text files, not these. Search documents with `docs_search`.",
-                    documents.passed,
-                    documents.first.as_deref().unwrap_or_default()
-                ),
-                None,
-            ));
+                documents.passed,
+                documents.first.as_deref().unwrap_or_default()
+            )));
         }
         let message = match (&self.path, self.language) {
             (_, Some(wanted)) if !listed.language_seen => {
@@ -181,13 +171,98 @@ impl Filters<'_> {
             }
             _ => return None,
         };
-        Some(McpError::invalid_params(message, None))
+        Some(EngineError::invalid_argument(message))
     }
+}
+
+/// [`doc_language`] of an indexed document path; `document` for one that is not UTF-8.
+pub(crate) fn language_of_doc(path: &crate::path::RelPath) -> String {
+    path.as_str().map_or_else(|| "document".to_string(), doc_language)
+}
+
+/// Whether `notice` says files may be missing from the listing, so that "no file passes the
+/// filter" proves nothing yet: an index that is warming, building, rebuilding or empty. Those are
+/// the notices that ask for a retry. A rescan in progress and capped reference projections leave
+/// the file listing whole, and the second lasts for the session.
+fn listing_incomplete(notice: &LifecycleNotice) -> bool {
+    notice.retry
+}
+
+/// The refusal for filters that selected none of the files a tool lists, or `None` when there is
+/// nothing to refuse: no filter, an empty index, or an index still being built, whose page carries
+/// the lifecycle `notice` instead. `listed` tallies the files the tool lists, from the source it
+/// lists them from; it runs only on this path, after the listing itself came back empty.
+pub(crate) fn selects_no_file(
+    ws: &Workspace,
+    filters: &Filters<'_>,
+    listed: impl FnOnce() -> Tally,
+    unlisted_documents: Option<&dyn Fn() -> Tally>,
+) -> Option<EngineError> {
+    if filters.is_empty() || ws.lifecycle_notice().as_ref().is_some_and(listing_incomplete) {
+        return None;
+    }
+    let documents = unlisted_documents.map(|tally| tally());
+    filters.refusal(&listed(), documents.as_ref())
+}
+
+/// [`selects_no_file`] for `code_grep`, which searches the code map and not the document tier.
+pub(crate) fn grep_selects_no_file(ws: &Workspace, cache: &MapCache, filters: &Filters<'_>) -> Option<EngineError> {
+    let listed = || {
+        let mut tally = Tally::default();
+        for (path, meta) in cache.file_metas() {
+            tally.see(filters, path.as_bytes(), &meta.language);
+        }
+        tally
+    };
+    let documents = || {
+        let mut tally = Tally::default();
+        for path in cache.doc_paths.iter() {
+            tally.see(filters, path.as_bytes(), &language_of_doc(path));
+        }
+        tally
+    };
+    selects_no_file(ws, filters, listed, Some(&documents))
+}
+
+/// Language label for a document-tier path: the grammar name when one resolves (`markdown`,
+/// `json`, `yaml` ...), else the lowercased extension (`pdf`, `docx`), else `document`.
+pub(crate) fn doc_language(path: &str) -> String {
+    if let Some(l) = crate::lang::detect(std::path::Path::new(path)) {
+        return l.to_string();
+    }
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map_or_else(|| "document".to_string(), str::to_ascii_lowercase)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::Lifecycle;
+
+    #[test]
+    fn a_filter_refusal_is_held_back_only_while_files_may_be_missing() {
+        let of = |state| LifecycleNotice::for_state(state).expect("notice");
+        for incomplete in [
+            of(Lifecycle::WarmingUp),
+            of(Lifecycle::BuildingIndex),
+            LifecycleNotice::index_rebuilding(),
+            LifecycleNotice::empty_index(),
+        ] {
+            assert!(listing_incomplete(&incomplete), "{}", incomplete.state);
+        }
+        for whole in [of(Lifecycle::Rescanning), LifecycleNotice::projections_capped()] {
+            assert!(!listing_incomplete(&whole), "{}", whole.state);
+        }
+    }
+
+    #[test]
+    fn doc_language_labels() {
+        assert_eq!(doc_language("docs/README.md"), "markdown");
+        assert_eq!(doc_language("a/b.pdf"), "pdf");
+        assert_eq!(doc_language("LICENSEFILE"), "document");
+    }
 
     fn grep<'a>(path: Option<&'a str>, language: Option<&'a str>) -> Filters<'a> {
         Filters {
@@ -208,8 +283,8 @@ mod tests {
     const CODE: &[(&str, &str)] = &[("src/a.rs", "rust"), ("tools.py", "python")];
     const DOCS: &[(&str, &str)] = &[("docs/guide.md", "markdown"), ("docs/api.md", "markdown")];
 
-    fn message(refusal: Option<McpError>) -> String {
-        refusal.expect("a refusal").message.into_owned()
+    fn message(refusal: Option<EngineError>) -> String {
+        refusal.expect("a refusal").to_string()
     }
 
     #[test]

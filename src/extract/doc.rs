@@ -212,6 +212,9 @@ pub struct DocChunk {
 #[path = "doc_text.rs"]
 pub(crate) mod text;
 
+#[path = "doc_source.rs"]
+pub(crate) mod source;
+
 /// Caller-supplied knobs for document extraction.
 ///
 /// Kept independent from xberg's full `ExtractionConfig` so the scanner
@@ -566,6 +569,11 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         );
         krz_config.chunking = None;
     }
+    // A file that is its own text is chunked from the file; xberg's chunks would be thrown away.
+    let shape = source::shape(mime_type.unwrap_or(""));
+    if shape.is_some() {
+        krz_config.chunking = None;
+    }
     let mut outcome = run_guarded(path, mime_type, krz_config.clone(), config)?;
     let mut text_fallback = false;
     if let Err(error) = &outcome
@@ -592,7 +600,7 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     }
     let linear = linear || text_fallback;
     let mut extraction = outcome.map_err(|e| ExtractError::Document(e.to_string()))?;
-    let result = extraction.results.pop().ok_or_else(|| {
+    let mut result = extraction.results.pop().ok_or_else(|| {
         let message = extraction
             .errors
             .into_iter()
@@ -606,30 +614,10 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     }
 
     let embed_requested = config.embed && !matches!(config.document_models, DocumentModelProfile::None_);
-    let inputs: Vec<text::ChunkInput<'_>> = if linear {
-        doc_guard::linear_chunk_spans(&result.content, config.max_characters, config.overlap)
-            .into_iter()
-            .map(|(start, end)| text::ChunkInput::of_span(&result.content, start, end))
-            .collect()
-    } else {
-        result
-            .chunks
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .map(text::ChunkInput::of_xberg)
-            .collect()
-    };
-    let source = text::read_text_source(path, &result.mime_type);
-    let (mut chunks, mut dense_inputs) = text::build_chunks(
-        &result.content,
-        &result.mime_type,
-        source.as_deref(),
-        inputs,
-        embed_requested,
-    );
+    let chunked = source::chunk_document(path, shape, &mut result, linear, config, embed_requested);
+    let (mut chunks, mut dense_inputs) = (chunked.chunks, chunked.dense);
 
-    if linear && chunks.len() > config.max_chunks_per_document {
+    if (linear || chunked.from_source) && chunks.len() > config.max_chunks_per_document {
         tracing::warn!(
             path = %path.display(),
             chunks = chunks.len(),
@@ -683,7 +671,7 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         })
         .collect();
 
-    let entities: Vec<DocEntity> = result
+    let mut entities: Vec<DocEntity> = result
         .entities
         .unwrap_or_default()
         .into_iter()
@@ -695,6 +683,9 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
             confidence: e.confidence,
         })
         .collect();
+    if chunked.from_source {
+        source::place_entities(&chunked.content, &mut entities);
+    }
 
     let summary = result.summary.map(|s| DocSummary {
         text: s.text,
@@ -708,7 +699,7 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         config_digest: String::new(),
         schema_ver: SCHEMA_VER,
         mime_type: result.mime_type.into_owned(),
-        content: result.content,
+        content: chunked.content,
         metadata,
         detected_languages: result.detected_languages.unwrap_or_default(),
         chunks,

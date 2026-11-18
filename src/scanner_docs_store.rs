@@ -1,16 +1,18 @@
-//! The scan's side of the document retrieval store (ADR-0029 rules 2 and 11): bring the store in
-//! line with the view's document map.
+//! The scan's side of the document retrieval store (ADR-0029 rules 2 and 11, ADR-0037 rule 3):
+//! bring the repository group's store in line with the view's document map.
 //!
 //! Each document of the map has a `doc_key`, computed from the content hash and extraction digest
 //! its entry records. The scan asks the store which keys are absent, reads blobs only for those,
-//! and writes their rows; rows of keys no document of the view names are deleted. A wiped or
-//! deleted store is therefore rebuilt by the next scan from the cached blobs, with no embedding.
+//! and writes their rows; a document another worktree already wrote is not written again. Rows of
+//! keys no view of the group names are deleted ([`Store::group_live_doc_keys`]); while that set is
+//! unknown nothing is. A wiped or deleted store is rebuilt by the next scan from the cached blobs,
+//! with no embedding.
 
 use ahash::{AHashMap, AHashSet};
 
 use crate::config::Config;
 use crate::extract::doc::{DocBlobs, FileMapDoc};
-use crate::lance::docs::{DocStore, doc_key, mime_group, store_dir};
+use crate::lance::docs::{DocStore, doc_key, group_store_dir, mime_group};
 use crate::lance::docs_schema::{DocChunkRow, DocRows, SECTION_SEPARATOR};
 use crate::scanner_filter::Filters;
 use crate::store::Store;
@@ -20,12 +22,22 @@ const WRITE_DOCS: usize = crate::lance::BATCH_MAX_DOCS;
 /// Chunk rows per store write.
 const WRITE_ROWS: usize = crate::lance::BATCH_MAX_ROWS;
 
-/// The view's retrieval store for the configured preset. With `create` false, `None` when no store
+/// The group's retrieval store for the configured preset. With `create` false, `None` when no store
 /// was ever written for it: removing rows must not create one.
+///
+/// Every open (all of them are a scan's) also removes the view's own stores an earlier build kept
+/// under `views/<view>/retrieval/`, whether or not the view still holds documents: the group store
+/// replaces them, and is filled from the cached blobs without embedding again.
 pub(crate) fn open_doc_store(store: &Store, config: &Config, create: bool) -> Result<Option<DocStore>, String> {
+    let legacy = store.view_dir.join(crate::store_layout::RETRIEVAL_DIR);
+    if legacy.is_dir()
+        && let Err(error) = std::fs::remove_dir_all(&legacy)
+    {
+        tracing::debug!(%error, dir = %legacy.display(), "removing the view's old document store failed");
+    }
     let preset = &config.documents.embedding_preset;
     let dim = super::preset_dim(preset).map_err(|error| error.to_string())?;
-    let dir = store_dir(&store.view_dir, preset, dim);
+    let dir = group_store_dir(&store.root, preset, dim);
     let opened = if create {
         DocStore::shared(&dir, dim, preset).map(Some)
     } else {
@@ -133,9 +145,16 @@ pub(crate) fn build_doc_rows(doc: FileMapDoc, key: String, with_vectors: bool, m
 /// delete the rows no live document names, and bring the indexes up to date. Returns the number
 /// of documents written. Failures are logged; what was not written stays owed.
 ///
+/// Runs after the pass wrote its file map, which then names every key written here: a sibling's
+/// sweep may delete a row whose key no file map on disk names ([`DocStore::write`]).
+///
 /// The documents at `scanned` (this scan's) are always written when absent; at most `budget` other
 /// absent documents are, so an incremental or cancelled pass does not read every blob a wiped
 /// store lacks. The rest are recorded as owed for a later pass.
+///
+/// A full pass ([`crate::scanner_flush::REQUEUE_ALL`]) sweeps every dead row; any other pass checks
+/// only the keys it dropped ([`Store::dropped_doc_keys`]), and reads the other views' file maps
+/// only when one of them is not in this view's own.
 pub(crate) fn sync_document_rows(
     store: &mut Store,
     config: &Config,
@@ -143,6 +162,7 @@ pub(crate) fn sync_document_rows(
     scanned: &AHashSet<String>,
     budget: usize,
 ) -> usize {
+    let dropped = std::mem::take(&mut store.dropped_doc_keys);
     let live = live_docs(store, config, filters);
     let doc_store = match open_doc_store(store, config, !live.is_empty()) {
         Ok(Some(doc_store)) => doc_store,
@@ -269,15 +289,12 @@ pub(crate) fn sync_document_rows(
         store.pending_vectors.owe_doc(path);
     }
     crate::scanner_flush::extract_again(store, &damaged, |store, rel| store.remove_doc(rel));
-    // The view's store holds this view's rows only, so a key the view does not name is dead. When
-    // the store moves to the repository group (ADR-0028) this call moves to the group sweep, which
-    // passes the live keys of every view.
-    let live_keys: AHashSet<String> = live.into_keys().collect();
-    if let Err(error) = doc_store.delete_dead(&live_keys) {
-        tracing::warn!(
-            ?error,
-            "deleting dead document rows failed; they are filtered out at query time"
-        );
+    if budget == crate::scanner_flush::REQUEUE_ALL {
+        drop(live);
+        sweep_dead_rows(store, &doc_store);
+    } else {
+        sweep_dropped_rows(store, &doc_store, dropped, |key| live.contains_key(key));
+        drop(live);
     }
     if let Err(error) = doc_store.maintain_indexes() {
         tracing::warn!(?error, "document index upkeep failed; searches scan the unindexed rows");
@@ -285,33 +302,108 @@ pub(crate) fn sync_document_rows(
     written
 }
 
-/// Delete the rows of documents the view no longer names. No store is created for it.
-pub(crate) fn remove_dead_document_rows(store: &Store, config: &Config, filters: &Filters) {
-    let live = live_docs(store, config, filters);
-    match open_doc_store(store, config, false) {
-        Ok(Some(doc_store)) => {
-            let live_keys: AHashSet<String> = live.into_keys().collect();
-            if let Err(error) = doc_store.delete_dead(&live_keys) {
-                tracing::warn!(
-                    ?error,
-                    "deleting removed documents' rows failed; they are filtered out at query time"
-                );
-            }
+/// Delete the rows of the group's store whose key no view of the group names. A key one view
+/// dropped stays while another names it. When a view's document map cannot be read the liveness is
+/// unknown and nothing is deleted; dead rows are filtered out at query time meanwhile.
+fn sweep_dead_rows(store: &Store, doc_store: &DocStore) {
+    sweep_dead_rows_as_of(doc_store, || store.group_live_doc_keys());
+}
+
+/// [`sweep_dead_rows`] with the live keys read by `live`, under the store's sweep gate: a sibling
+/// that names a document after `live` read its file map writes the rows after the delete.
+fn sweep_dead_rows_as_of(
+    doc_store: &DocStore,
+    live: impl FnOnce() -> Result<AHashSet<String>, crate::store::LivenessUnknown>,
+) {
+    let _exclusive = doc_store.sweep_exclusive();
+    let live_keys = match live() {
+        Ok(keys) => keys,
+        Err(error) => {
+            tracing::warn!(%error, "the group's live documents are unknown; no document rows are deleted");
+            return;
         }
+    };
+    if let Err(error) = doc_store.delete_dead(&live_keys) {
+        tracing::warn!(
+            ?error,
+            "deleting dead document rows failed; they are filtered out at query time"
+        );
+    }
+}
+
+/// Delete the rows of the keys `dropped` names that no view of the group names any more. The other
+/// views' file maps are read only when this view's own map names none of them. A dead row of a key
+/// not dropped here waits for the next full pass ([`sweep_dead_rows`]).
+fn sweep_dropped_rows(
+    store: &Store,
+    doc_store: &DocStore,
+    mut dropped: Vec<String>,
+    own_names: impl Fn(&String) -> bool,
+) {
+    dropped.retain(|key| !own_names(key));
+    if dropped.is_empty() {
+        return;
+    }
+    dropped.sort_unstable();
+    dropped.dedup();
+    let _exclusive = doc_store.sweep_exclusive();
+    let live = match store.group_live_doc_keys() {
+        Ok(keys) => keys,
+        Err(error) => {
+            tracing::warn!(%error, "the group's live documents are unknown; no document rows are deleted");
+            return;
+        }
+    };
+    dropped.retain(|key| !live.contains(key));
+    if let Err(error) = doc_store.delete_keys(&dropped) {
+        tracing::warn!(
+            ?error,
+            "deleting dropped document rows failed; they are filtered out at query time"
+        );
+    }
+}
+
+/// Delete the rows of the documents this pass dropped that no view of the group names any more.
+/// No store is created for it.
+pub(crate) fn remove_dead_document_rows(store: &mut Store, config: &Config) {
+    let dropped = std::mem::take(&mut store.dropped_doc_keys);
+    if dropped.is_empty() {
+        return;
+    }
+    let own: AHashSet<String> = store
+        .index
+        .doc_files
+        .values()
+        .map(|entry| doc_key(&entry.hash_hex, &entry.config_digest))
+        .collect();
+    match open_doc_store(store, config, false) {
+        Ok(Some(doc_store)) => sweep_dropped_rows(store, &doc_store, dropped, |key| own.contains(key)),
         Ok(None) => {}
         Err(error) => tracing::warn!(%error, "document store did not open; removed documents' rows stay"),
     }
 }
 
 /// Rewrite without vectors the rows of documents no path of which may be embedded any more. They
-/// stay searchable by the lexical lane. `false` when rows that carry vectors could not be rewritten.
+/// stay searchable by the lexical lane. A document another view of the group names keeps its
+/// vectors: that view's policy may want them, and the rows are shared (ADR-0037 rule 3). `false`
+/// when rows that carry vectors could not be rewritten, or the other views' documents are unknown.
 pub(crate) fn strip_unwanted_vectors(store: &Store, config: &Config, filters: &Filters) -> bool {
     let live = live_docs(store, config, filters);
-    let unwanted: Vec<String> = live
+    let mut unwanted: Vec<String> = live
         .iter()
         .filter(|(_, doc)| !doc.want_vectors)
         .map(|(key, _)| key.clone())
         .collect();
+    if unwanted.is_empty() {
+        return true;
+    }
+    match store.sibling_doc_keys() {
+        Ok(siblings) => unwanted.retain(|key| !siblings.contains(key)),
+        Err(error) => {
+            tracing::warn!(%error, "the group's other documents are unknown; excluded documents keep their vectors");
+            return false;
+        }
+    }
     if unwanted.is_empty() {
         return true;
     }

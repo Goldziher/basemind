@@ -3,7 +3,7 @@
 //!
 //! Each `#[tool]` is a thin shim: [`BasemindServer::answer`] rejects inexact arguments and reports
 //! failures as `isError` results, and the `*_call` method beside it (also what `basemind code …`
-//! runs) records telemetry around the body in `helpers_code.rs` / `helpers_expand.rs`.
+//! runs) records telemetry around the body in `helpers_code.rs` or an engine op.
 //!
 //! No tool declares an `output_schema`: the response structs nest, schemars emits nested structs
 //! as `$ref` into `$defs` (the construct that dropped the whole registry in GH #50), and inlining
@@ -19,13 +19,12 @@ use rmcp::tool;
 use super::BasemindServer;
 use super::adapter::{self, Op};
 use super::cursor_bind::bound;
-use super::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
+use super::helpers_code;
 use super::strict::Strict;
 use super::types_tools::{
     CodeGrepParams, CodeOutlineParams, CodeReadParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams,
     FindFilesToolParams,
 };
-use super::{helpers_code, helpers_expand};
 use crate::engine::Workspace;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
@@ -199,29 +198,39 @@ impl BasemindServer {
         adapter::call(&self.state, p, op).await
     }
 
+    /// [`op`](Self::op) for a verb tool that pages nothing (`git_diff`): no cursor to bind, the same
+    /// telemetry row ([`adapter::call_unpaged`]).
+    pub(crate) async fn op_unpaged<P, R>(&self, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+    where
+        P: super::strict::ToolArgs + serde::Serialize + Send + 'static,
+        R: serde::Serialize + 'static,
+    {
+        adapter::call_unpaged(&self.state, p, op).await
+    }
+
+    /// Run the engine operation `op` for a CLI-only command (`git churn`, `git by-path`): no MCP
+    /// tool, so no cursor binding and no telemetry row ([`adapter::run`]).
+    pub(crate) async fn cli_op<P, R>(&self, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+    where
+        P: Send + 'static,
+        R: serde::Serialize + 'static,
+    {
+        adapter::run(&self.state.shared, p, op).await
+    }
+
     /// Body of `code_outline`, shared with `basemind code outline`.
     pub(crate) async fn code_outline_call(&self, p: CodeOutlineParams) -> Result<CallToolResult, McpError> {
         self.op(p, Workspace::code_outline).await
     }
 
-    /// Body of `code_symbols`, shared with `basemind code symbols`.
+    /// Body of the `code_symbols` tool.
     pub(crate) async fn code_symbols_call(&self, p: CodeSymbolsParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_symbols",
-            p,
-            bound(p, |p| helpers_code::code_symbols(&self.state, p)).await
-        )
+        self.op(p, Workspace::code_symbols).await
     }
 
-    /// Body of `code_read`, shared with `basemind code read`.
+    /// Body of the `code_read` tool.
     pub(crate) async fn code_read_call(&self, p: CodeReadParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_read",
-            p,
-            helpers_expand::code_read(&self.state, p).await
-        )
+        self.op_unpaged(p, Workspace::code_read).await
     }
 
     /// Body of `code_grep`, shared with `basemind code grep`.
@@ -254,14 +263,9 @@ impl BasemindServer {
         )
     }
 
-    /// Body of `find_files`, shared with `basemind code find`.
+    /// Body of the `find_files` tool.
     pub(crate) async fn find_files_call(&self, p: FindFilesToolParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "find_files",
-            p,
-            bound(p, |p| helpers_code::find_files(&self.state, p)).await
-        )
+        self.op(p, Workspace::find_files).await
     }
 
     /// Fetch one semantic-search chunk body. No MCP tool (`code_read` reads a hit's span):
@@ -280,18 +284,6 @@ impl BasemindServer {
             Err(super::tool_contract::feature_missing("code chunk", "code-search"))
         }
     }
-}
-
-/// Resolve the effective `list_files` page limit and report whether the caller's
-/// requested limit was clamped to [`LIST_LIMIT_MAX`].
-///
-/// Returns `(effective_limit, clamped)` where `clamped` is true iff the caller asked
-/// for more than the cap allows — surfaced honestly to the client rather than silently
-/// truncating (bug #17).
-pub(super) fn effective_list_limit(requested: Option<u32>) -> (usize, bool) {
-    let asked = requested.unwrap_or(LIST_LIMIT_DEFAULT);
-    let clamped = asked > LIST_LIMIT_MAX;
-    (asked.min(LIST_LIMIT_MAX) as usize, clamped)
 }
 
 /// Count content-addressed blobs in the GLOBAL blob store by tallying `.fm.msgpack` files
@@ -337,35 +329,6 @@ fn blob_divergence_note(file_count: usize, blob_count: usize) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
-
-    #[test]
-    fn list_limit_under_cap_is_not_clamped() {
-        let (limit, clamped) = effective_list_limit(Some(100));
-        assert_eq!(limit, 100);
-        assert!(!clamped, "a request under the cap must not be flagged clamped");
-    }
-
-    #[test]
-    fn list_limit_at_cap_is_not_clamped() {
-        let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX));
-        assert_eq!(limit, LIST_LIMIT_MAX as usize);
-        assert!(!clamped, "a request exactly at the cap is honored, not clamped");
-    }
-
-    #[test]
-    fn list_limit_over_cap_is_clamped_and_signalled() {
-        let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX + 1));
-        assert_eq!(limit, LIST_LIMIT_MAX as usize, "limit is clamped to the cap");
-        assert!(clamped, "exceeding the cap must set the clamp flag (bug #17)");
-    }
-
-    #[test]
-    fn list_limit_default_when_absent() {
-        let (limit, clamped) = effective_list_limit(None);
-        assert_eq!(limit, LIST_LIMIT_DEFAULT as usize);
-        assert!(!clamped);
-    }
 
     #[test]
     fn status_note_absent_when_index_and_blobs_agree() {

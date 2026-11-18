@@ -95,14 +95,24 @@ struct Daemon {
 
 impl Daemon {
     fn start(env: &Env) -> Self {
+        Self::spawn(env, Stdio::null())
+    }
+
+    /// A daemon logging at `info` to `log`, which records each relay session it hosts.
+    fn start_logged(env: &Env, log: &Path) -> Self {
+        Self::spawn(env, std::fs::File::create(log).expect("daemon log").into())
+    }
+
+    fn spawn(env: &Env, stderr: Stdio) -> Self {
         let comms_dir = env.comms_dir();
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", &comms_dir)
             .env("BASEMIND_DATA_HOME", env.home.path())
+            .env("RUST_LOG", "basemind=info")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .spawn()
             .expect("spawn daemon");
         let daemon = Self { child, comms_dir };
@@ -307,4 +317,173 @@ fn ctrl_c_during_scan_stops_cleanly_and_leaves_a_consistent_index() {
     );
     let files = env.run(&["--json", "code", "symbols", "f3999"]);
     assert_eq!(code(&files), 0, "{}", text(&files));
+}
+
+/// `stdout` with the timings taken out: a call's own `elapsed_us` and the process's `startup_us`
+/// differ from run to run, and nothing else may.
+fn answer(out: &Output) -> String {
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("elapsed_us");
+                map.remove("startup_us");
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    match serde_json::from_str::<serde_json::Value>(&stdout) {
+        Ok(mut value) => {
+            strip(&mut value);
+            value.to_string()
+        }
+        Err(_) => stdout.into_owned(),
+    }
+}
+
+/// `stderr` without tracing lines: the in-process call logs opening the store, which a forwarded
+/// one does not; what the command itself prints stays.
+fn diagnostics(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .filter(|line| !line.starts_with("\u{1b}[2m"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// With the daemon up, a CLI command on the working view is forwarded whole to it over one relay
+/// session, and prints byte for byte what the same command prints in process: the answers, the
+/// refusals and their exit codes. The daemon's log proves each call was forwarded.
+#[test]
+fn a_forwarded_call_prints_exactly_what_the_in_process_call_prints() {
+    let env = Env::new();
+    let scan = env.run(&["scan", "--quiet"]);
+    assert_eq!(code(&scan), 0, "{}", text(&scan));
+    let calls: &[&[&str]] = &[
+        &["--json", "code", "outline", "a.rs"],
+        &["--json", "code", "symbols", "alpha"],
+        &["--json", "code", "read", "a.rs", "--symbol", "alpha"],
+        &["--json", "git", "log"],
+        &["--json", "code", "find", "a"],
+        &["--json", "code", "files"],
+        &["--json", "git", "churn"],
+        &["code", "outline", "missing.rs"],
+        &["code", "read", "a.rs", "--symbol", "nope"],
+        &["code", "outline", "a.rs", "--limit", "0"],
+    ];
+    let in_process: Vec<(i32, String, String)> = calls
+        .iter()
+        .map(|args| {
+            let out = env.run(args);
+            (code(&out), answer(&out), diagnostics(&out))
+        })
+        .collect();
+    assert_eq!(in_process[0].0, 0, "{}", in_process[0].2);
+    assert_eq!(
+        in_process[7].0, 2,
+        "a path that is not indexed is a usage error: {}",
+        in_process[7].2
+    );
+    assert!(in_process[7].2.contains("missing.rs"), "{}", in_process[7].2);
+    assert_eq!(in_process[9].0, 2, "{}", in_process[9].2);
+
+    let log = env.home.path().join("daemon-stderr.log");
+    let _daemon = Daemon::start_logged(&env, &log);
+    for (args, expected) in calls.iter().zip(&in_process) {
+        let out = env.run(args);
+        let forwarded = (code(&out), answer(&out), diagnostics(&out));
+        assert_eq!(
+            &forwarded, expected,
+            "basemind {args:?} answered differently through the daemon"
+        );
+    }
+    let hosted = std::fs::read_to_string(&log)
+        .expect("daemon log")
+        .matches("relay: hosting rmcp session")
+        .count();
+    assert_eq!(hosted, calls.len(), "every call is one forwarded relay session");
+}
+
+/// A view the daemon does not host runs in process even with the daemon up.
+#[test]
+fn a_call_on_another_view_runs_in_process_next_to_the_daemon() {
+    let env = Env::new();
+    let log = env.home.path().join("daemon-stderr.log");
+    let _daemon = Daemon::start_logged(&env, &log);
+    let out = env.run(&["--view", "other", "--json", "code", "files"]);
+    let hosted = std::fs::read_to_string(&log)
+        .expect("daemon log")
+        .matches("relay: hosting rmcp session")
+        .count();
+    assert_eq!(hosted, 0, "{}", text(&out));
+}
+
+/// A git call that reads only the repository answers the same on every view, so with the daemon up
+/// it is forwarded whatever `--view` names: byte for byte what it prints in process on the working
+/// view and on a `rev-*` view. A symbol's history reads the view's outline, so it stays in process.
+#[test]
+fn a_view_independent_git_call_on_another_view_is_forwarded_and_answers_alike() {
+    let env = Env::new();
+    std::fs::write(env.root().join("a.rs"), b"pub fn alpha() -> u32 { 1 }\n").unwrap();
+    git(env.root(), &["commit", "-qam", "widen alpha"]);
+    for args in [&["scan", "--quiet"][..], &["scan", "--quiet", "--rev", "HEAD"][..]] {
+        let scan = env.run(args);
+        assert_eq!(code(&scan), 0, "{}", text(&scan));
+    }
+    let head = Command::new("git")
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .current_dir(env.root())
+        .output()
+        .expect("git rev-parse");
+    let rev_view = format!("rev-{}", String::from_utf8_lossy(&head.stdout).trim());
+    let calls: &[&[&str]] = &[
+        &["git", "log"],
+        &["git", "log", "--limit", "1"],
+        &["git", "log", "--path", "a.rs"],
+        &["git", "blame", "a.rs"],
+        &["git", "blame", "a.rs", "--symbol", "alpha"],
+        &["git", "diff"],
+        &["git", "diff", "a.rs"],
+        &["git", "churn"],
+        &["git", "by-path", "a"],
+        &["git", "log", "--path", "missing.rs"],
+    ];
+    let on = |view: &str, call: &[&str]| -> (i32, String, String) {
+        let args: Vec<&str> = ["--view", view, "--json"].iter().chain(call).copied().collect();
+        let out = env.run(&args);
+        (code(&out), answer(&out), diagnostics(&out))
+    };
+    let in_process: Vec<_> = calls.iter().map(|call| on(&rev_view, call)).collect();
+    for (call, rev) in calls.iter().zip(&in_process) {
+        assert_eq!(
+            &on("working", call),
+            rev,
+            "basemind {call:?} answers differently on {rev_view}"
+        );
+    }
+    assert_eq!(in_process[0].0, 0, "{}", in_process[0].2);
+    assert_eq!(in_process[9].0, 2, "{}", in_process[9].2);
+
+    let log = env.home.path().join("daemon-stderr.log");
+    let _daemon = Daemon::start_logged(&env, &log);
+    for (call, expected) in calls.iter().zip(&in_process) {
+        assert_eq!(
+            &on(&rev_view, call),
+            expected,
+            "basemind {call:?} on {rev_view} differs through the daemon"
+        );
+    }
+    let symbol_history = on(&rev_view, &["git", "log", "--path", "a.rs", "--symbol", "alpha"]);
+    assert_eq!(symbol_history.0, 0, "{}", symbol_history.2);
+    let hosted = std::fs::read_to_string(&log)
+        .expect("daemon log")
+        .matches("relay: hosting rmcp session")
+        .count();
+    assert_eq!(
+        hosted,
+        calls.len(),
+        "each repository-only call is forwarded; the symbol history is not"
+    );
 }

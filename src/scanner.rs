@@ -19,7 +19,7 @@ use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
 use crate::scanner_flush::{
-    REQUEUE_PER_INCREMENTAL, derive_scope, finalize_bm25_stats_if_any, flush_code_removals_if_any, flush_vector_lanes,
+    REQUEUE_ALL, REQUEUE_PER_INCREMENTAL, derive_scope, flush_code_removals_if_any, flush_vector_lanes,
     maintain_lance_if_open,
 };
 use crate::scanner_integrity::{abort_on_fault, ensure_space, finish_resolve, flush_code_map, preflight};
@@ -484,6 +484,7 @@ pub fn scan_with_observer(
         embed,
         cancel,
     };
+    let bm25_pass = crate::scanner_flush::begin_bm25_pass_if_any(store, config, true);
     let driven = drive_scan(&drive, &candidates, store, &mut report.stats, observer);
     let (seen_count, total_candidates) = (driven.seen.len(), candidates.len());
     // Before the cancel check and the stale purge: a drive stopped by a fatal commit failure is a ~keep
@@ -626,13 +627,15 @@ pub fn scan_with_observer(
     }
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
-    flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, usize::MAX)?;
+    flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, REQUEUE_ALL)?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
         flush_code_removals_if_any(store, config, &filters, &scope, &stale);
     });
     #[cfg(feature = "documents")]
     crate::scanner_integrity::remove_docs_and_flush(store, config, &filters, &scope, &doc_stale)?;
-    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, true));
+    run_optional_lane(LANE_BM25_STATS, || {
+        crate::scanner_flush::finish_bm25_pass(store, config, bm25_pass, true)
+    });
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store, &filters)
     });
@@ -829,8 +832,8 @@ fn scan_paths_inner(
         .chain(&removed)
         .filter_map(|rel| store.lookup(rel).map(|entry| entry.hash_hex.clone()))
         .collect();
-    #[cfg(feature = "code-search")]
-    let bm25_candidates = crate::scanner_flush::bm25_posting_candidates(store, rels.iter().chain(&removed));
+    // Before `begin_rows`: its purge of unlisted rows deletes forward rows too. ~keep
+    let bm25_pass = crate::scanner_flush::begin_bm25_pass_if_any(store, config, false);
     crate::scanner_integrity::begin_rows(store)?;
     let drive = ScanDrive {
         root,
@@ -897,8 +900,6 @@ fn scan_paths_inner(
     }
 
     crate::scanner_integrity::drop_unheld_grep_bloom_rows(store, &retired);
-    #[cfg(feature = "code-search")]
-    crate::scanner_flush::retire_bm25_postings(store, bm25_candidates);
 
     if cancel.is_cancelled() || purge_failure.is_some() {
         store.flush()?;
@@ -959,7 +960,9 @@ fn scan_paths_inner(
     });
     #[cfg(feature = "documents")]
     crate::scanner_integrity::remove_docs_and_flush(store, config, filter.filters(), &scope, &doc_removed)?;
-    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config, false));
+    run_optional_lane(LANE_BM25_STATS, || {
+        crate::scanner_flush::finish_bm25_pass(store, config, bm25_pass, false)
+    });
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store, filter.filters())
     });

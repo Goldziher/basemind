@@ -99,6 +99,38 @@ fn a_crates_io_blocker_fails_the_release_instead_of_skipping_it() {
     );
 }
 
+/// basemind depends on basemind-agents by path and version (`serve --lead`, ADR-0040): crates.io
+/// resolves it by version, so it is published first, and moves with basemind's version.
+#[test]
+fn basemind_agents_is_published_before_basemind_and_bumped_with_it() {
+    let workflow = workflow();
+    let publish = job_block(&workflow, "publish_crates");
+    let agents = publish
+        .find("publish basemind-agents")
+        .expect("basemind-agents is published");
+    let basemind = publish
+        .find("publish basemind --features full")
+        .expect("basemind is published");
+    assert!(
+        agents < basemind,
+        "basemind-agents must be on crates.io before basemind"
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bump = std::fs::read_to_string(root.join("scripts/release-bump.sh")).expect("release-bump.sh");
+    assert!(
+        bump.contains("crates/basemind-agents/Cargo.toml"),
+        "the bump moves the crate's version"
+    );
+    assert!(bump.contains("basemind-agents = "), "and the root's requirement on it");
+    let check = std::fs::read_to_string(root.join("scripts/check_release_versions.py")).expect("checker");
+    assert!(
+        check.contains("crates/basemind-agents/Cargo.toml"),
+        "the release gate checks it"
+    );
+    let vendored = std::fs::read_to_string(root.join("scripts/check_vendored_crates.py")).expect("drift check");
+    assert!(vendored.contains("\"basemind-agents\""), "and its drift from crates.io");
+}
+
 /// Nothing publishes for a commit CI has not passed.
 #[test]
 fn publish_waits_for_a_green_ci_run() {

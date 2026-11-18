@@ -78,6 +78,42 @@ ADR-0023 and ADR-0032 stand except where this record changes them.
    | `src/engine/workspace.rs -> mcp::helpers_files` (`TrackedCache`) | the `find_files` operation step |
 
    Extraction cannot start while any of these remains, in addition to ADR-0032's three edges.
+4. **A CLI command forwards its whole call to the daemon.** With the daemon up, a tool command on
+   the working view opens no store. It opens one relay session, sends `tools/call {name, arguments}`
+   and renders the `CallToolResult` the daemon's own tool body answered:
+   - The relay hello names its client: `serve` (the default, an agent's session) or `cli`. A CLI
+     session answers a failed call as a JSON-RPC error that keeps its code and data, so the exit
+     status is the one an in-process call gives. It also answers the CLI-only commands (`git churn`,
+     `git by-path`, `code chunk`, `memory delete`) by name. They stay off `tools/list`, which is the
+     same for both kinds. The kind is the peer's own claim, so only the daemon's local socket or
+     pipe honours it. The HTTP front-end never builds a CLI session.
+   - The kind is an additive field in `RelayHello`, and the daemon's acknowledgement (`cli`) is an
+     additive field in `RelayWelcome`. `RELAY_PROTO_VER` stays 2. An older relay's hello reads as
+     `serve`, and an older daemon ignores the kind. A CLI that gets no acknowledgement refuses with
+     exit 4 and names `basemind comms stop`. It never reads an older daemon's `isError` answers as
+     successes. A relay protocol bump would have made every older `serve` refuse a newer daemon of
+     its generation, which ADR-0024 rule 2 has it use as it is.
+   - A git call that reads only the repository (commits, blobs, the working tree, the
+     git-history index) answers the same on every view, so it is forwarded to the daemon's
+     working-view session whatever `--view` names: `git log` without `symbol`, `git blame`,
+     `git diff` without `structural`, `git churn` and `git by-path`. A test pins each byte for byte
+     against the in-process answer on the working view and on a `rev-*` view.
+   - Every other call on a view other than the working tree runs in process, as the daemon hosts
+     only the working view. While the daemon is up, its git-history reads live-walk. Fjall locks the
+     database directory exclusively on every open, readers included (`try_lock` in fjall 3.1's
+     `locked_file.rs`), and the daemon holds `git-history.fjall/`. Only a symbol's history
+     (`git log --path --symbol`) and a structural diff are git calls among them. On this repository
+     (2,349 commits), `git log --path src/store.rs --symbol lookup` on a `rev-*` view takes a p50 of
+     1,733 ms, against 1,296 ms when its history was read over the daemon socket. The same call
+     without `--symbol` is forwarded: 19 ms on either view.
+   - `admin telemetry` and `admin eval` are not tool calls and run in process.
+   - The per-read socket forwards go: the daemon no longer answers `memory`, `resolved_refs`,
+     `index_read` or `code_search_lanes`, and a session that holds no index reaches it only when the
+     daemon hosts it, in process. `GitHistory` stays: `basemind scan` asks the daemon to sync history
+     through it. `PROTO_VER` stays 7. A retired request is a decode error that closes the sender's
+     link, as for the retired worktree claims, while a bump would make every older binary of the
+     generation fail its handshake with a newer daemon (ADR-0024 rule 2) for requests it never
+     needed.
 
 ## Consequences
 

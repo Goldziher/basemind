@@ -11,8 +11,8 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Subcommand;
 
+use super::context::Tools;
 use crate::engine::Workspace;
-use crate::mcp::BasemindServer;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
@@ -248,7 +248,7 @@ pub enum CodeCmd {
 }
 
 /// Dispatch a `code` subcommand through the in-process server.
-pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let (tool, result) = match cmd {
         CodeCmd::Outline {
             path,
@@ -257,15 +257,16 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             max_tokens,
         } => (
             "code_outline",
-            server
-                .op(
+            tools
+                .call(
+                    "code_outline",
                     CodeOutlineParams {
-                        path: resolve_path(server, &path),
+                        path: resolve_path(tools, &path),
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
                     },
-                    Workspace::code_outline,
+                    async |s, p| s.op(p, Workspace::code_outline).await,
                 )
                 .await,
         ),
@@ -278,15 +279,19 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             max_tokens,
         } => (
             "code_symbols",
-            server
-                .code_symbols_call(CodeSymbolsParams {
-                    name,
-                    kind,
-                    fuzzy: fuzzy.then_some(true),
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+            tools
+                .call(
+                    "code_symbols",
+                    CodeSymbolsParams {
+                        name,
+                        kind,
+                        fuzzy: fuzzy.then_some(true),
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    async |s, p| s.op(p, Workspace::code_symbols).await,
+                )
                 .await,
         ),
         CodeCmd::Read {
@@ -297,14 +302,18 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             end_line,
         } => (
             "code_read",
-            server
-                .code_read_call(CodeReadParams {
-                    path: resolve_path(server, &path),
-                    symbol,
-                    kind,
-                    line,
-                    end_line,
-                })
+            tools
+                .call(
+                    "code_read",
+                    CodeReadParams {
+                        path: resolve_path(tools, &path),
+                        symbol,
+                        kind,
+                        line,
+                        end_line,
+                    },
+                    async |s, p| s.op_unpaged(p, Workspace::code_read).await,
+                )
                 .await,
         ),
         CodeCmd::Grep {
@@ -318,17 +327,21 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             max_tokens,
         } => (
             "code_grep",
-            server
-                .code_grep_call(CodeGrepParams {
-                    pattern,
-                    regex: regex.then_some(true),
-                    path,
-                    language,
-                    context: context.then_some(true),
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+            tools
+                .call(
+                    "code_grep",
+                    CodeGrepParams {
+                        pattern,
+                        regex: regex.then_some(true),
+                        path,
+                        language,
+                        context: context.then_some(true),
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    async |s, p| s.code_grep_call(p).await,
+                )
                 .await,
         ),
         CodeCmd::Search {
@@ -339,14 +352,18 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             max_tokens,
         } => (
             "code_search",
-            server
-                .code_search_call(CodeSearchParams {
-                    query,
-                    lane: lane.map(|lane| lane.as_str().to_string()),
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+            tools
+                .call(
+                    "code_search",
+                    CodeSearchParams {
+                        query,
+                        lane: lane.map(|lane| lane.as_str().to_string()),
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    async |s, p| s.code_search_call(p).await,
+                )
                 .await,
         ),
         CodeCmd::Refs {
@@ -363,7 +380,7 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             let refs = CodeRefsParams {
                 name,
                 relation: relation.map(|relation| relation.as_str().to_string()),
-                path: path.map(|path| resolve_path(server, &path)),
+                path: path.map(|path| resolve_path(tools, &path)),
                 line,
                 column,
                 match_mode: match_mode.map(|matching| matching.as_str().to_string()),
@@ -371,7 +388,12 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
                 cursor: cursor.map(Cursor),
                 max_tokens,
             };
-            ("code_refs", server.code_refs_call(refs).await)
+            (
+                "code_refs",
+                tools
+                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .await,
+            )
         }
         CodeCmd::Callers {
             path,
@@ -383,7 +405,7 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             max_tokens,
         } => {
             let refs = CodeRefsParams {
-                path: Some(resolve_path(server, &path)),
+                path: Some(resolve_path(tools, &path)),
                 line,
                 match_mode: match_mode.map(|matching| matching.as_str().to_string()),
                 limit,
@@ -391,7 +413,12 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
                 max_tokens,
                 ..refs(name, RefsRelation::Callers)
             };
-            ("code_refs", server.code_refs_call(refs).await)
+            (
+                "code_refs",
+                tools
+                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .await,
+            )
         }
         CodeCmd::Implementations {
             name,
@@ -407,7 +434,12 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
                 max_tokens,
                 ..refs(name, RefsRelation::Implementations)
             };
-            ("code_refs", server.code_refs_call(refs).await)
+            (
+                "code_refs",
+                tools
+                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .await,
+            )
         }
         CodeCmd::Dependents {
             module,
@@ -421,7 +453,12 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
                 max_tokens,
                 ..refs(module, RefsRelation::Importers)
             };
-            ("code_refs", server.code_refs_call(refs).await)
+            (
+                "code_refs",
+                tools
+                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .await,
+            )
         }
         CodeCmd::Definition {
             path,
@@ -430,12 +467,17 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             column,
         } => {
             let refs = CodeRefsParams {
-                path: Some(resolve_path(server, &path)),
+                path: Some(resolve_path(tools, &path)),
                 line: Some(line),
                 column,
                 ..refs(name, RefsRelation::Definition)
             };
-            ("code_refs", server.code_refs_call(refs).await)
+            (
+                "code_refs",
+                tools
+                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .await,
+            )
         }
         CodeCmd::Find {
             query,
@@ -446,15 +488,19 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             max_tokens,
         } => (
             "find_files",
-            server
-                .find_files_call(FindFilesToolParams {
-                    query,
-                    path_prefix,
-                    language,
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+            tools
+                .call(
+                    "find_files",
+                    FindFilesToolParams {
+                        query,
+                        path_prefix,
+                        language,
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    async |s, p| s.op(p, Workspace::find_files).await,
+                )
                 .await,
         ),
         CodeCmd::Files {
@@ -465,15 +511,19 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             max_tokens,
         } => (
             "find_files",
-            server
-                .find_files_call(FindFilesToolParams {
-                    query: None,
-                    path_prefix,
-                    language,
-                    limit,
-                    cursor: cursor.map(Cursor),
-                    max_tokens,
-                })
+            tools
+                .call(
+                    "find_files",
+                    FindFilesToolParams {
+                        query: None,
+                        path_prefix,
+                        language,
+                        limit,
+                        cursor: cursor.map(Cursor),
+                        max_tokens,
+                    },
+                    async |s, p| s.op(p, Workspace::find_files).await,
+                )
                 .await,
         ),
         CodeCmd::Chunk {
@@ -482,12 +532,16 @@ pub async fn run(server: &BasemindServer, cmd: CodeCmd, opts: &Emit, out: &mut i
             byte_start,
         } => (
             "code_chunk",
-            server
-                .code_chunk_call(GetChunkParams {
-                    path: resolve_path(server, &path),
-                    chunk_id,
-                    byte_start,
-                })
+            tools
+                .call(
+                    "code_chunk",
+                    GetChunkParams {
+                        path: resolve_path(tools, &path),
+                        chunk_id,
+                        byte_start,
+                    },
+                    async |s, p| s.code_chunk_call(p).await,
+                )
                 .await,
         ),
     };

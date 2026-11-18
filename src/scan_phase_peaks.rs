@@ -8,8 +8,12 @@
 //! Peaks are the highest *footprint* ([`crate::sysres::MemoryReading::used_bytes`], the same figure
 //! the `memory` line prints as `rss_mb`) seen by the sampler thread plus one sample at each phase
 //! boundary, so a transient shorter than the sampling interval can still be missed.
+//!
+//! Each phase also carries the wall time spent in it, so a slow scan names its slow phase the same
+//! way a large one names its large phase.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 /// Peak footprint observed while the scan was in `phase`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,12 +22,44 @@ pub struct PhasePeak {
     pub phase: &'static str,
     /// Highest footprint sampled during the phase, in bytes.
     pub peak_bytes: u64,
+    /// Wall time spent in the phase so far, in milliseconds.
+    pub millis: u64,
 }
 
 #[derive(Debug)]
 struct Inner {
     current: &'static str,
+    entered: Instant,
     peaks: Vec<PhasePeak>,
+}
+
+impl Inner {
+    fn peak_mut(&mut self, phase: &'static str) -> &mut PhasePeak {
+        match self.peaks.iter().position(|p| p.phase == phase) {
+            Some(at) => &mut self.peaks[at],
+            None => {
+                self.peaks.push(PhasePeak {
+                    phase,
+                    peak_bytes: 0,
+                    millis: 0,
+                });
+                let last = self.peaks.len() - 1;
+                &mut self.peaks[last]
+            }
+        }
+    }
+
+    /// Charge the time since the current phase was entered to it and restart the clock.
+    fn charge_elapsed(&mut self) {
+        let now = Instant::now();
+        let spent = u64::try_from(now.duration_since(self.entered).as_millis()).unwrap_or(u64::MAX);
+        self.entered = now;
+        let phase = self.current;
+        // Only a phase that has a footprint reading is reported, so time alone never adds a row. ~keep
+        if let Some(peak) = self.peaks.iter_mut().find(|p| p.phase == phase) {
+            peak.millis = peak.millis.saturating_add(spent);
+        }
+    }
 }
 
 /// Shared handle: the scan advances the phase, the sampler thread feeds readings. Cloning shares
@@ -38,6 +74,7 @@ impl Default for PhasePeaks {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 current: crate::scan_evidence::PHASE_STARTING,
+                entered: Instant::now(),
                 peaks: Vec::new(),
             })),
         }
@@ -48,7 +85,10 @@ impl PhasePeaks {
     /// Switch to `phase` and take a boundary sample so a phase shorter than the sampling interval
     /// still records a value.
     pub fn enter(&self, phase: &'static str) {
-        self.lock().current = phase;
+        let mut inner = self.lock();
+        inner.charge_elapsed();
+        inner.current = phase;
+        drop(inner);
         self.sample_now();
     }
 
@@ -56,13 +96,8 @@ impl PhasePeaks {
     pub fn observe(&self, bytes: u64) {
         let mut inner = self.lock();
         let phase = inner.current;
-        match inner.peaks.iter_mut().find(|p| p.phase == phase) {
-            Some(peak) => peak.peak_bytes = peak.peak_bytes.max(bytes),
-            None => inner.peaks.push(PhasePeak {
-                phase,
-                peak_bytes: bytes,
-            }),
-        }
+        let peak = inner.peak_mut(phase);
+        peak.peak_bytes = peak.peak_bytes.max(bytes);
     }
 
     /// Read the footprint now and fold it in. A platform with no reading contributes nothing.
@@ -72,9 +107,12 @@ impl PhasePeaks {
         }
     }
 
-    /// The peaks so far, in the order the phases were first observed.
+    /// The peaks so far, in the order the phases were first observed, with the current phase
+    /// charged up to now.
     pub fn snapshot(&self) -> Vec<PhasePeak> {
-        self.lock().peaks.clone()
+        let mut inner = self.lock();
+        inner.charge_elapsed();
+        inner.peaks.clone()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -117,5 +155,17 @@ mod tests {
             snap.iter().find(|p| p.phase == "flush").map(|p| p.peak_bytes),
             Some(u64::MAX)
         );
+    }
+
+    #[test]
+    fn time_is_charged_to_the_phase_it_was_spent_in() {
+        let peaks = PhasePeaks::default();
+        peaks.enter("extract");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        peaks.enter("flush");
+        let snap = peaks.snapshot();
+        let millis = |phase: &str| snap.iter().find(|p| p.phase == phase).map(|p| p.millis);
+        assert!(millis("extract") >= Some(30), "extract got {:?}", millis("extract"));
+        assert!(millis("flush") < Some(30), "flush got {:?}", millis("flush"));
     }
 }

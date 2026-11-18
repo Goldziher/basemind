@@ -10,5 +10,7 @@ pub mod bm25;
 pub mod exact;
 #[cfg(feature = "code-search")]
 pub mod hydrate;
+#[cfg(feature = "code-search")]
+pub(crate) mod lanes;
 #[cfg(any(feature = "code-search", feature = "documents"))]
 pub mod rrf;

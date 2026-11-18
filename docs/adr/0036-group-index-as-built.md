@@ -57,7 +57,18 @@ force for the clauses that changed. A clause not named here stands.
    `meta`. An open that finds another layout in a database with an incarnation empties every
    keyspace and takes a new incarnation, so every view's file map is emptied and rescanned. A
    read-only open of such a database answers from blobs. `INDEX_PARTITION_REVISION` is not touched.
-8. **ADR-0028 rules 2, 3 and 7, symbol and call rows, as built:** `symbols_by_path`,
+8. **Who collects BM25 garbage, and when a pass walks the keyspaces** (`src/index/bm25_pass.rs`):
+   every pass, full or incremental, retires the postings named by the forward rows it deleted, from
+   a per-view ledger, and writes its stats as the stored ones plus its delta. The full posting
+   sweep runs only when the group owes one: a group `meta` row set in the same batch as any
+   forward-row delete made outside a pass, by a rebuild that clears a view holding rows, and by
+   every pass until it finishes. Any view's next full pass pays that debt; an incremental pass
+   never does. A view's stats are recomputed only when its dirty token differs from the token its
+   last finished pass vouched for. The retirement still reads every view's forward keys to test
+   liveness whenever a pass deleted a row: on the 4 000-file budget corpus a one-file edit's full
+   pass spends about 1.5 s there in a debug build and raises the footprint by about 75 MiB of
+   cached forward blocks. A content-keyed holder index would make that a point lookup per key.
+9. **ADR-0028 rules 2, 3 and 7, symbol and call rows, as built:** `symbols_by_path`,
    `symbols_by_name`, `calls_by_path` and `calls_by_callee` are shared by every view of the group
    and keyed by the 16-byte content key of content hash, language and extract epoch in place of
    the path. Each file map entry records the key its rows were written under (`content_key`), and

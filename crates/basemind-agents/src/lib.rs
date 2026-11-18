@@ -79,7 +79,7 @@
 //!   pre-approved, and only Claude Code can pre-approve.
 //! - **Executables.** The harness executable and the MCP server's command are resolved to
 //!   absolute paths outside the root, with no link on the way inside it; the child's `PATH`
-//!   keeps only absolute entries outside the root.
+//!   keeps only absolute entries outside the root. A [`Supervisor`] takes absolute paths only.
 //! - **Working directory.** It is relative, has to resolve inside [`LaunchConfig::root`], and
 //!   is checked again in the child after it changes into it. The agent is not sandboxed to
 //!   the root.
@@ -166,6 +166,7 @@ pub use codex::CodexAdapter;
 pub use error::LaunchError;
 pub use event::{ApprovalKind, ApprovalRequest, ApprovalSource, Event, FinishStatus, ToolCall, ToolState};
 pub use harness::{AcpFlavor, Harness, HarnessKind};
+pub use host::{HOST_MARKER, seal_host};
 pub use identity::{AgentIdentity, ENV_AGENT_DEPTH, ENV_AGENT_ID, ENV_HOST, ENV_LAUNCH_TOKEN};
 pub use peer::Peer;
 pub use policy::{

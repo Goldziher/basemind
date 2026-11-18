@@ -71,30 +71,7 @@ paged!(
     super::types_tools::MemorySearchToolParams => [("visibility", "group")],
 );
 
-/// The error for a cursor that outlived the index or history it was cut from.
-pub(super) fn stale_cursor(tool: &str) -> McpError {
-    McpError::invalid_params(
-        format!(
-            "`{tool}`: the index or git history changed since this cursor was issued, so it no longer points \
-             into the list. Call again without `cursor`."
-        ),
-        None,
-    )
-}
-
-/// The refusal for a cursor of a paged git walk issued on the other source of commits: the live walk
-/// before the git-history index came up, or the index before it fell back to the live walk. The two
-/// order commits that a sync appended differently, so the offset may skip or repeat commits.
-pub(super) fn walk_switched(tool: &str) -> McpError {
-    McpError::invalid_params(
-        format!(
-            "`{tool}`: the git-history index came up (or stopped answering) since this cursor was issued, and \
-             it orders commits differently from the live walk, so the cursor no longer points into the list. \
-             Restart the walk: call again without `cursor`."
-        ),
-        None,
-    )
-}
+pub(super) use crate::engine::cursor::stale_cursor;
 
 fn foreign_cursor(tool: &str) -> McpError {
     McpError::invalid_params(
@@ -181,7 +158,7 @@ where
 
 /// Refuse `limit: 0`, replace a bound cursor with the tool's own one, and return the query's id.
 fn unbind_params<T: Paged>(params: &mut T) -> Result<u32, McpError> {
-    super::helpers_filters::reject_zero_limit(T::TOOL, params.limit())?;
+    crate::engine::cursor::reject_zero_limit(T::TOOL, params.limit())?;
     let id = query_id(&*params);
     let slot = params.cursor_mut();
     if let Some(cursor) = slot.as_ref() {
@@ -197,7 +174,7 @@ fn rebind(tool: &str, mut result: CallToolResult, id: u32) -> Result<CallToolRes
         return Ok(result);
     };
     if body.remove("cursor_invalidated") == Some(Value::Bool(true)) {
-        return Err(stale_cursor(tool));
+        return Err(stale_cursor(tool).into());
     }
     if let Some(Value::String(cursor)) = body.get_mut("next_cursor") {
         *cursor = bind(cursor, id);

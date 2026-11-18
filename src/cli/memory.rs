@@ -13,7 +13,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::mcp::BasemindServer;
+use super::context::Tools;
 use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
@@ -117,7 +117,7 @@ fn recall(individual: bool) -> MemorySearchToolParams {
 }
 
 /// Dispatch a `memory` subcommand through the in-process server.
-pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let (tool, result) = match cmd {
         MemoryCmd::Put {
             key,
@@ -131,7 +131,12 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
                 tags: (!tags.is_empty()).then_some(tags),
                 visibility: visibility(individual),
             };
-            ("memory_save", server.memory_save_call(p).await)
+            (
+                "memory_save",
+                tools
+                    .call("memory_save", p, async |s, p| s.memory_save_call(p).await)
+                    .await,
+            )
         }
         MemoryCmd::Search {
             query,
@@ -145,14 +150,24 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
                 tag,
                 ..recall(individual)
             };
-            ("memory_search", server.memory_search_call(p).await)
+            (
+                "memory_search",
+                tools
+                    .call("memory_search", p, async |s, p| s.memory_search_call(p).await)
+                    .await,
+            )
         }
         MemoryCmd::Get { key, individual } => {
             let p = MemorySearchToolParams {
                 key: Some(key),
                 ..recall(individual)
             };
-            ("memory_search", server.memory_search_call(p).await)
+            (
+                "memory_search",
+                tools
+                    .call("memory_search", p, async |s, p| s.memory_search_call(p).await)
+                    .await,
+            )
         }
         MemoryCmd::List {
             prefix,
@@ -168,14 +183,24 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
                 cursor: cursor.map(Cursor),
                 ..recall(individual)
             };
-            ("memory_search", server.memory_search_call(p).await)
+            (
+                "memory_search",
+                tools
+                    .call("memory_search", p, async |s, p| s.memory_search_call(p).await)
+                    .await,
+            )
         }
         MemoryCmd::Delete { key, individual } => {
             let p = MemoryDeleteParams {
                 key,
                 visibility: visibility(individual).unwrap_or_default(),
             };
-            ("memory_delete", server.memory_delete_call(p).await)
+            (
+                "memory_delete",
+                tools
+                    .call("memory_delete", p, async |s, p| s.memory_delete_call(p).await)
+                    .await,
+            )
         }
         MemoryCmd::Documents {
             query,
@@ -199,7 +224,12 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
                 cursor: cursor.map(Cursor),
                 max_tokens,
             };
-            ("docs_search", server.docs_search_call(p).await)
+            (
+                "docs_search",
+                tools
+                    .call("docs_search", p, async |s, p| s.docs_search_call(p).await)
+                    .await,
+            )
         }
     };
 

@@ -254,10 +254,45 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         "tools/list must expose the full tool surface, got {}",
         tools.len()
     );
-    for agent_tool in ["agent_post", "agent_inbox", "agent_threads"] {
+    for agent_tool in [
+        "agent_post",
+        "agent_inbox",
+        "agent_threads",
+        "agent_launch",
+        "agent_stop",
+    ] {
         assert!(
             !tools.iter().any(|tool| tool["name"] == agent_tool),
             "agent messaging is not served over HTTP (ADR-0021 rule 17), so `{agent_tool}` is not listed: {parsed}"
+        );
+    }
+
+    // --- the CLI-only commands are not on the HTTP surface: only a CLI's relay hello reaches them ---
+    // --- nor the lead tools, which only `serve --lead` answers, on its own stdio (ADR-0040) ---
+    for (id, name) in [
+        "memory_delete",
+        "git_churn",
+        "git_by_path",
+        "code_chunk",
+        "agent_launch",
+        "agent_stop",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let call = json!({
+            "jsonrpc": "2.0",
+            "id": 10 + id,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": {} }
+        });
+        let (status, body) = http_post(&addr, &target, call.to_string().as_bytes(), &headers).await;
+        assert_eq!(status, 200, "{name}: {body}");
+        let parsed: Value = serde_json::from_str(&body).unwrap_or_else(|e| panic!("{name} json ({e}): {body}"));
+        let message = parsed["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("tool not found"),
+            "{name} must be unknown over HTTP: {parsed}"
         );
     }
 

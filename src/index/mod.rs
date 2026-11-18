@@ -18,6 +18,8 @@
 //! indexes) and keeps the on-disk format free to evolve.
 
 pub mod bm25_live;
+#[cfg(feature = "code-search")]
+pub(crate) mod bm25_pass;
 pub(crate) mod durability;
 pub mod fault;
 pub mod grep_bloom;
@@ -433,6 +435,9 @@ pub struct IndexDb {
     pub(in crate::index) bm25_live: std::sync::Arc<bm25_live::Bm25LiveCache>,
     /// Held shared by commits that write postings and exclusively by the posting sweep; one per group.
     pub(in crate::index) bm25_gate: bm25_live::Bm25Gate,
+    /// The open full pass's BM25 tally (see [`bm25_pass`]); shared by every clone of this handle.
+    #[cfg(feature = "code-search")]
+    pub(in crate::index) bm25_pass: std::sync::Arc<bm25_pass::Bm25PassLedger>,
     /// `grep_bloom`: hex content hash -> trigram bloom filter of that content (see [`grep_bloom`]),
     /// shared by every path holding the bytes. A candidate PREFILTER for `code grep` only; a missing
     /// row (including an older-version or path-keyed one) means "candidate", which is why the layout
@@ -753,6 +758,8 @@ impl IndexDb {
             bm25_live: std::sync::Arc::default(),
             bm25_gate: bm25_live::Bm25Gate::default(),
             live: std::sync::Arc::default(),
+            #[cfg(feature = "code-search")]
+            bm25_pass: std::sync::Arc::default(),
             grep_bloom: whole(grep_bloom),
             embeddings,
             group: None,
@@ -811,6 +818,13 @@ impl IndexDb {
     /// handles internal serialization. Used by the scanner's per-file worker tasks.
     pub fn writer(&self) -> writer::IndexWriter {
         writer::IndexWriter::new(self.clone())
+    }
+
+    /// Bytes written to memtables and not yet flushed to disk, summed over every keyspace (fjall's
+    /// own ledger: charged on insert, released when a flush completes). This is the index's
+    /// resident write buffer, the share of a scan's footprint that fjall rather than basemind holds.
+    pub fn unflushed_bytes(&self) -> u64 {
+        self.db.write_buffer_size()
     }
 
     /// Mark the probe keyspaces complete (`true`) or in flux (`false`). The wholesale pass clears

@@ -140,9 +140,8 @@ fn expect_success(result: CallToolResult, what: &str) -> CallToolResult {
 /// and `call_tool` takes `&self`, so many tasks can share a single `Peer`.
 /// To tear down, call `service.cancel().await` (takes ownership).
 ///
-/// This is the local-writer / read-only-fallback shape (`serve_in_memory`), NOT the comms-build
-/// `daemon_writer` topology — tests that assert daemon-forward semantics must use
-/// [`spawn_daemon_writer_server`] instead.
+/// This is the local-writer / read-only-fallback shape (`serve_in_memory`), NOT a daemon-hosted
+/// session — tests that assert daemon semantics must use [`spawn_hosted_server`] instead.
 async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
     let transport = basemind::mcp::serve_in_memory(root, "working")
         .await
@@ -580,32 +579,37 @@ fn ensure_real_daemon() {
     panic!("comms daemon did not become ready");
 }
 
-/// Spawn a serve session in the `daemon_writer` topology — the exact shape a `comms`-build `basemind
-/// serve` takes: opens blobs-only (`read_only`, no fjall index lock) and forwards every write to the
-/// machine daemon. Unlike [`spawn_server`] (always writable, local), this REQUIRES a real running
-/// comms daemon (brought up by [`ensure_real_daemon`]) for forwarded writes and resolved reads to
-/// land — so these tests genuinely exercise the daemon-forward path rather than a local writer.
+/// Spawn a real `basemind serve`: a stdio relay to the daemon, which hosts the session over the
+/// workspace it holds (the sole fjall writer). Unlike [`spawn_server`] (always writable, local), its
+/// writes and resolved reads land in the daemon brought up by [`ensure_real_daemon`].
 #[cfg(all(feature = "comms", any(unix, windows)))]
-async fn spawn_daemon_writer_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+async fn spawn_hosted_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+
     ensure_real_daemon();
-    let transport = basemind::mcp::serve_in_memory_daemon_writer(root, "working")
-        .await
-        .expect("in-memory daemon-writer serve");
-    ().serve(transport).await.expect("rmcp handshake")
+    let command = tokio::process::Command::new(env!("CARGO_BIN_EXE_basemind")).configure(|command| {
+        command
+            .arg("--root")
+            .arg(root)
+            .arg("serve")
+            .arg("--view")
+            .arg("working");
+    });
+    let transport = TokioChildProcess::new(command).expect("spawn basemind serve");
+    ().serve(transport).await.expect("rmcp handshake over the relay")
 }
 
-/// Seam B serve-flip, end to end: a comms-build `serve` opens read-only and forwards writes to the
-/// machine daemon (the sole fjall writer). From an EMPTY index, a forwarded `rescan` makes the
-/// daemon scan and the serve rebuilds its map from what the daemon wrote, so `search_symbols`
-/// returns fresh symbols. A second serve on the same repo answers queries AND rescans too — N
+/// A comms-build `serve` is hosted by the machine daemon (the sole fjall writer). From an EMPTY
+/// index, `index_rescan` makes the daemon scan and the session's map is rebuilt from what it wrote,
+/// so `code_symbols` returns fresh symbols. A second serve on the same repo answers queries AND rescans too — N
 /// sessions read + write with no single-holder downgrade (the whole point of the daemon model).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
+async fn hosted_serve_rescans_through_the_daemon_and_sees_fresh_symbols() {
     let dir = build_repo();
     let root = dir.path();
 
-    let serve_a = spawn_daemon_writer_server(root).await;
+    let serve_a = spawn_hosted_server(root).await;
     let peer_a = serve_a.peer().clone();
 
     let rescan = peer_a
@@ -631,7 +635,7 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
         "serve A sees 'alpha' after the daemon-forwarded scan: {names_a:?}"
     );
 
-    let serve_b = spawn_daemon_writer_server(root).await;
+    let serve_b = spawn_hosted_server(root).await;
     let peer_b = serve_b.peer().clone();
     let search_b = peer_b
         .call_tool(call_params("code_symbols", json!({ "name": "Beta", "limit": 10 })))
@@ -677,19 +681,19 @@ fn build_ts_crossfile_repo() -> TempDir {
     dir
 }
 
-/// Regression for the daemon-era tsg/code-intel loss: a `daemon_writer` serve holds no fjall index,
-/// so the cross-file `refs_by_def` reverse index (written by the scanner's resolve pass, held only
-/// in the daemon's index) was unreachable — precise `find_callers` degraded to `resolved: false`
-/// with only the name-based scan. With the resolved-reference read forwarded to the daemon, the
-/// serve recovers the cross-file callers and reports `resolved: true` again. Uses TypeScript (oxc)
+/// Regression for the daemon-era tsg/code-intel loss: a session that holds no fjall index cannot see
+/// the cross-file `refs_by_def` reverse index (written by the scanner's resolve pass, held only in
+/// the daemon's index), so precise `find_callers` degraded to `resolved: false` with only the
+/// name-based scan. A daemon-hosted session resolves through the daemon's pool and reports the
+/// cross-file callers again. Uses TypeScript (oxc)
 /// so it runs on any `code-intel-js` build without the heavier Python/Java stack-graph engine.
 #[cfg(all(feature = "comms", feature = "code-intel-js", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
+async fn hosted_serve_resolves_cross_file_callers_through_the_daemon() {
     let dir = build_ts_crossfile_repo();
     let root = dir.path();
 
-    let serve = spawn_daemon_writer_server(root).await;
+    let serve = spawn_hosted_server(root).await;
     let peer = serve.peer().clone();
 
     let rescan = peer
@@ -727,12 +731,12 @@ async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
 }
 
 /// The same cross-file `find_callers` resolution, but for PYTHON (the tsg stack-graph engine) —
-/// `lib.py` defines `target`, `main.py` imports and calls it. Proves the daemon read-forward path
+/// `lib.py` defines `target`, `main.py` imports and calls it. Proves the daemon-hosted path
 /// restores precise cross-file resolution for the stack-graph languages too (the grantflow target),
 /// not just oxc JS/TS. Gated on `code-intel-stack`, so it only runs where the Python engine is in.
 #[cfg(all(feature = "comms", feature = "code-intel-stack", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn daemon_writer_serve_resolves_cross_file_python_callers_through_the_daemon() {
+async fn hosted_serve_resolves_cross_file_python_callers_through_the_daemon() {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -743,7 +747,7 @@ async fn daemon_writer_serve_resolves_cross_file_python_callers_through_the_daem
     git(root, &["add", "lib.py", "main.py"]);
     git(root, &["commit", "-qm", "init"]);
 
-    let serve = spawn_daemon_writer_server(root).await;
+    let serve = spawn_hosted_server(root).await;
     let peer = serve.peer().clone();
 
     let rescan = peer
