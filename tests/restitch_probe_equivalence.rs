@@ -8,8 +8,9 @@
 //! re-export, a tsconfig edit, a file that shadows an already-resolved module, a deleted target, and
 //! a directory that did not exist when the importer last resolved.
 //!
-//! Every case also asserts a concrete edge and that the edit changed the rows, so equality is never
-//! two empty indexes agreeing. Cases skip (rather than fail) when a grammar cannot be fetched.
+//! Every case also asserts a concrete edge, a file edge of its importer, and that the edit changed
+//! the rows, so equality is never two empty indexes agreeing. Cases skip (rather than fail) when a
+//! grammar cannot be fetched.
 #![cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 
 use std::collections::BTreeMap;
@@ -156,7 +157,15 @@ fn assert_incremental_equals_full(case: &Case<'_>) {
         "incremental rescan diverged from a full scan\nonly incremental: {only_incremental:#?}\nonly full: {only_full:#?}"
     );
 
+    let file_edges = basemind::index::view::IndexView::file_edges(&store.index_db.as_ref().unwrap().view());
     for expect in case.expect {
+        assert!(
+            file_edges
+                .iter()
+                .any(|(importer, edges)| importer.as_str() == Some(expect.use_file) && !edges.edges.is_empty()),
+            "{} must have a file edge after the edits; got {file_edges:?}",
+            expect.use_file
+        );
         let src = &files[expect.def_file];
         let start = def_start(src, expect.needle, expect.name);
         let uses = basemind::query::resolved_references(&store, &RelPath::from(expect.def_file), start);

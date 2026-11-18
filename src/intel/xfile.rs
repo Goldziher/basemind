@@ -21,6 +21,10 @@
 //! per resolved import binding, and in `importers_by_probe` every path the resolver consulted (hit
 //! targets, re-export hop files, failed candidates, `tsconfig.json` / `package.json`). That reverse
 //! map is what lets the incremental pass re-stitch exactly the importers a changed path can affect.
+//! It also records the importer's file-level edges ([`FileEdges`]): every indexed file an import
+//! resolves to at the first hop, type-only imports included and flagged, whether or not the name
+//! binds an export there (a barrel forwards it), plus the imports that resolved to none. Only the
+//! imports the extractor records count: a JS namespace or side-effect import has no binding there.
 //!
 //! Best-effort: any resolver miss or unindexed target is logged at debug and skipped; a commit
 //! failure warns but never aborts the scan. Idempotency across re-scans is documented on
@@ -34,6 +38,7 @@ use std::rc::Rc;
 use ahash::AHashMap;
 
 use crate::index::IndexDb;
+use crate::index::keys::{FileEdge, FileEdges, MAX_UNRESOLVED_SPECIFIERS};
 use crate::intel::model::{ExportEdge, ImportEdge, ResolvedEdge};
 use crate::intel::resolver::{ProbeSet, SpecifierResolver};
 use crate::intel::stage_budget::BudgetedWriter;
@@ -221,7 +226,7 @@ pub fn stitch_cross_file_edges(
     importer_keys.sort_unstable();
     for importer_key in importer_keys {
         let importer_facts = &importers[importer_key];
-        if importer_facts.imports.iter().all(|import| import.is_type) {
+        if importer_facts.imports.is_empty() {
             continue;
         }
         let Some(language) = store.lookup(importer_key.as_str()).map(|e| e.language.clone()) else {
@@ -237,20 +242,24 @@ pub fn stitch_cross_file_edges(
         let importer_rel = crate::path::RelPath::from(importer_key.as_str());
         let mut probes = ProbeSet::default();
         let mut targets: Vec<(u32, crate::path::RelPath, u32)> = Vec::new();
+        let mut file_edges = FileEdgesBuilder::default();
 
         for import in &importer_facts.imports {
-            if import.is_type {
-                continue;
-            }
             let Some(target_rel) = resolver.resolve(root, importer_key, import, &mut probes) else {
                 tracing::debug!(
                     importer = %importer_rel,
                     specifier = %import.specifier,
                     "cross-file stitch: specifier did not resolve — skipping"
                 );
+                file_edges.miss(import);
                 continue;
             };
             if store.lookup(&target_rel).is_none() {
+                file_edges.miss(import);
+                continue;
+            }
+            file_edges.hit(target_rel.clone(), import);
+            if import.is_type {
                 continue;
             }
 
@@ -294,6 +303,8 @@ pub fn stitch_cross_file_edges(
                 .upsert_import_probes(&importer_rel, &targets, &probes.hashes());
             batch.item_staged();
         }
+        batch.writer().upsert_file_edges(&importer_rel, &file_edges.finish());
+        batch.item_staged();
     }
 
     let committed = batch.finish();
@@ -301,4 +312,59 @@ pub fn stitch_cross_file_edges(
         tracing::debug!(edges, "cross-file stitch: staged cross-file resolved edges");
     }
     committed
+}
+
+/// Collects one importer's [`FileEdges`] while its imports resolve.
+#[derive(Default)]
+struct FileEdgesBuilder {
+    /// Target -> (first runtime binding, first type-only binding).
+    targets: AHashMap<crate::path::RelPath, (Option<u32>, Option<u32>)>,
+    external: u32,
+    unresolved: u32,
+    unresolved_specifiers: Vec<String>,
+}
+
+impl FileEdgesBuilder {
+    /// `import` resolved to the indexed file `target`.
+    fn hit(&mut self, target: crate::path::RelPath, import: &ImportEdge) {
+        let (runtime, type_only) = self.targets.entry(target).or_default();
+        let slot = if import.is_type { type_only } else { runtime };
+        *slot = Some(slot.map_or(import.local_start, |start| start.min(import.local_start)));
+    }
+
+    /// `import` resolved to no indexed file. A relative specifier (`./x`, `../x`, `.x`, `/x`) names a
+    /// file in the repository and is unresolved; any other is taken for an external module.
+    fn miss(&mut self, import: &ImportEdge) {
+        if !import.specifier.starts_with(['.', '/']) {
+            self.external += 1;
+            return;
+        }
+        self.unresolved += 1;
+        if self.unresolved_specifiers.len() < MAX_UNRESOLVED_SPECIFIERS
+            && !self.unresolved_specifiers.contains(&import.specifier)
+        {
+            self.unresolved_specifiers.push(import.specifier.clone());
+        }
+    }
+
+    fn finish(self) -> FileEdges {
+        let mut edges: Vec<FileEdge> = self
+            .targets
+            .into_iter()
+            .filter_map(|(target, (runtime, type_only))| {
+                Some(FileEdge {
+                    target,
+                    local_start: runtime.or(type_only)?,
+                    type_only: runtime.is_none(),
+                })
+            })
+            .collect();
+        edges.sort_unstable_by(|a, b| a.target.cmp(&b.target));
+        FileEdges {
+            edges,
+            external: self.external,
+            unresolved: self.unresolved,
+            unresolved_specifiers: self.unresolved_specifiers,
+        }
+    }
 }

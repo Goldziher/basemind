@@ -734,6 +734,69 @@ fn import_probe_rows_roundtrip_and_leave_with_the_importer() {
     assert_eq!(db.importers_by_probe.iter().count(), 1);
 }
 
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+fn edges_to(targets: &[(&str, u32, bool)], external: u32) -> keys::FileEdges {
+    keys::FileEdges {
+        edges: targets
+            .iter()
+            .map(|(target, local_start, type_only)| keys::FileEdge {
+                target: RelPath::from(*target),
+                local_start: *local_start,
+                type_only: *type_only,
+            })
+            .collect(),
+        external,
+        ..keys::FileEdges::default()
+    }
+}
+
+/// The file-edge row reads back through the view beside the importer's bindings and manifest,
+/// is never taken for a binding, and leaves with the rest of the importer's prefix: on a re-resolve,
+/// and on removal, which a rename is to the old path.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn file_edge_rows_read_back_and_leave_with_the_importer() {
+    let (_d, db) = fresh_db();
+    let (app, other) = (RelPath::from("src/app.ts"), RelPath::from("src/other.ts"));
+    let impl_ts = RelPath::from("src/impl.ts");
+    let app_edges = edges_to(&[("src/impl.ts", 7, false), ("src/types.ts", 50, true)], 2);
+    let other_edges = edges_to(&[("src/impl.ts", 3, false)], 0);
+
+    let mut w = db.writer();
+    w.upsert_import_probes(&app, &[(7, impl_ts.clone(), 40)], &[keys::probe_hash("src/impl.ts")]);
+    w.upsert_file_edges(&app, &app_edges);
+    w.upsert_file_edges(&other, &other_edges);
+    w.commit().unwrap();
+
+    assert_eq!(
+        db.view().file_edges(),
+        vec![(app.clone(), app_edges.clone()), (other.clone(), other_edges.clone())]
+    );
+    assert_eq!(
+        db.view().import_targets_of(&app),
+        vec![(7, impl_ts, 40)],
+        "the file-edge row must not read as a binding"
+    );
+
+    let mut w = db.writer();
+    w.upsert_resolved_file(&app, &crate::intel::model::FileResolvedRefs::new("typescript"))
+        .unwrap();
+    w.commit().unwrap();
+    assert_eq!(
+        db.view().file_edges(),
+        vec![(other.clone(), other_edges.clone())],
+        "a re-resolve clears the row until the stitch writes it again"
+    );
+
+    let mut w = db.writer();
+    w.upsert_file_edges(&app, &app_edges);
+    w.commit().unwrap();
+    let mut w = db.writer();
+    w.remove_resolved_file(&other).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.view().file_edges(), vec![(app, app_edges)]);
+}
+
 #[test]
 fn import_probes_are_incomplete_until_stamped() {
     let (_d, db) = fresh_db();

@@ -320,6 +320,18 @@ pub trait IndexView: Send + Sync {
             .collect()
     }
 
+    /// The file-level import edges of every importer this view's last stitch resolved, as
+    /// `(importer, edges)` in importer order: the input of the import graph. Complete only when
+    /// [`Self::import_probes_complete`]; a file in a language with no resolver has no row. One walk
+    /// of `import_targets`, whose other rows (one per resolved binding, one manifest per importer)
+    /// are skipped.
+    fn file_edges(&self) -> Vec<(RelPath, keys::FileEdges)> {
+        self.iter(Part::ImportTargets)
+            .filter_map(|row| row.ok())
+            .filter_map(|(k, v)| keys::parse_file_edges(&k, &v))
+            .collect()
+    }
+
     /// Every importer whose resolution consulted `path` (repo-relative, forward-slashed) or one of its
     /// ancestor directories: a prefix scan of `importers_by_probe` per candidate, O(importers).
     ///

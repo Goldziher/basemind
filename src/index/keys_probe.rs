@@ -5,7 +5,8 @@
 //!   `u16:len(importer) ‖ importer ‖ local_start:u32_be  →  u16:len(def_path) ‖ def_path ‖ def_start:u32_be`.
 //!   The reserved [`PROBE_MANIFEST_START`] row of an importer carries its probe manifest instead (the
 //!   concatenated [`ProbeHash`]es of every `importers_by_probe` row it owns), so a re-stitch can
-//!   delete exactly the rows it wrote without a third keyspace.
+//!   delete exactly the rows it wrote without a third keyspace. The reserved [`FILE_EDGES_START`] row
+//!   carries the importer's file-level import edges ([`FileEdges`]), the input of the import graph.
 //! - `importers_by_probe` is the reverse map of "which importers consulted this path":
 //!   `probe_hash:8 ‖ importer`, with an empty value. A prefix scan on the 8-byte hash yields every
 //!   importer whose resolution touched the path (a hit target, a re-export hop file, a failed
@@ -28,6 +29,101 @@ pub type ProbeHash = [u8; PROBE_HASH_LEN];
 /// `local_start` value of the reserved manifest row in `import_targets`. A real binding offset is a
 /// byte position in a source file, so `u32::MAX` (4 GiB) cannot collide with one.
 pub const PROBE_MANIFEST_START: u32 = u32::MAX;
+
+/// `local_start` value of the reserved file-edge row in `import_targets`, beside the manifest row:
+/// like it, past any byte offset a source file can have.
+pub const FILE_EDGES_START: u32 = u32::MAX - 1;
+
+/// Most unresolved specifiers a file-edge row keeps; the count is kept whole.
+pub const MAX_UNRESOLVED_SPECIFIERS: usize = 32;
+
+/// One importer's file-level import edges: every indexed file one of its imports resolved to (the
+/// first hop, before any re-export is followed), and what did not resolve to an indexed file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileEdges {
+    /// One edge per target file, sorted by target.
+    pub edges: Vec<FileEdge>,
+    /// Imports with a non-relative specifier that did not resolve to an indexed file: a package,
+    /// the standard library, or an alias the resolver does not know.
+    pub external: u32,
+    /// Imports with a relative specifier that did not resolve to an indexed file.
+    pub unresolved: u32,
+    /// The distinct specifiers counted in `unresolved`, at most [`MAX_UNRESOLVED_SPECIFIERS`].
+    pub unresolved_specifiers: Vec<String>,
+}
+
+/// An import edge from an importer to `target`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEdge {
+    pub target: RelPath,
+    /// Byte offset of the first binding importing `target` (of a runtime import when there is one).
+    pub local_start: u32,
+    /// Every import of `target` is type-only (`import type`): erased at runtime.
+    pub type_only: bool,
+}
+
+/// [`FileEdge::type_only`] in the edge's flag byte.
+const EDGE_TYPE_ONLY: u8 = 1;
+
+/// Encode the file-edge value:
+/// `external:u32_be ‖ unresolved:u32_be ‖ edges:u32_be ‖ edge* ‖ specifier*`, an edge being
+/// `flags:u8 ‖ u16:len(target) ‖ target ‖ local_start:u32_be` and a specifier `u16:len ‖ bytes`.
+pub fn file_edges_value(edges: &FileEdges) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + edges.edges.len() * 32);
+    out.extend_from_slice(&edges.external.to_be_bytes());
+    out.extend_from_slice(&edges.unresolved.to_be_bytes());
+    let count = u32::try_from(edges.edges.len()).unwrap_or(u32::MAX);
+    out.extend_from_slice(&count.to_be_bytes());
+    for edge in edges.edges.iter().take(count as usize) {
+        out.push(if edge.type_only { EDGE_TYPE_ONLY } else { 0 });
+        let _ = write_len_prefixed(&mut out, edge.target.as_bytes());
+        out.extend_from_slice(&edge.local_start.to_be_bytes());
+    }
+    for specifier in &edges.unresolved_specifiers {
+        let _ = write_len_prefixed(&mut out, specifier.as_bytes());
+    }
+    out
+}
+
+/// Decode a file-edge row to `(importer, edges)`. `None` for every other `import_targets` row and
+/// for malformed input.
+pub fn parse_file_edges(key: &[u8], value: &[u8]) -> Option<(RelPath, FileEdges)> {
+    let mut c = 0;
+    let importer = read_len_prefixed_ref(key, &mut c)?;
+    if key.get(c..)? != FILE_EDGES_START.to_be_bytes() {
+        return None;
+    }
+    let read_u32 = |at: usize| Some(u32::from_be_bytes(value.get(at..at + 4)?.try_into().ok()?));
+    let (external, unresolved, count) = (read_u32(0)?, read_u32(4)?, read_u32(8)?);
+    let mut v = 12;
+    let mut edges = Vec::new();
+    for _ in 0..count {
+        let flags = *value.get(v)?;
+        v += 1;
+        let target = RelPath::from(read_len_prefixed_ref(value, &mut v)?);
+        let local_start = read_u32(v)?;
+        v += 4;
+        edges.push(FileEdge {
+            target,
+            local_start,
+            type_only: flags & EDGE_TYPE_ONLY != 0,
+        });
+    }
+    let mut unresolved_specifiers = Vec::new();
+    while v < value.len() {
+        let specifier = read_len_prefixed_ref(value, &mut v)?;
+        unresolved_specifiers.push(String::from_utf8_lossy(specifier).into_owned());
+    }
+    Some((
+        RelPath::from(importer),
+        FileEdges {
+            edges,
+            external,
+            unresolved,
+            unresolved_specifiers,
+        },
+    ))
+}
 
 /// Hash a probed repo-relative, forward-slashed path.
 pub fn probe_hash(path: &str) -> ProbeHash {
@@ -60,12 +156,12 @@ pub fn import_target_value(def_path: &RelPath, def_start: u32) -> Vec<u8> {
 }
 
 /// Decode an `import_targets` binding row to `(importer, local_start, def_path, def_start)`. `None`
-/// for the manifest row and for malformed input.
+/// for the manifest and file-edge rows and for malformed input.
 pub fn parse_import_target(key: &[u8], value: &[u8]) -> Option<(RelPath, u32, RelPath, u32)> {
     let mut c = 0;
     let importer = read_len_prefixed_ref(key, &mut c)?;
     let local_start = u32::from_be_bytes(key.get(c..c + 4)?.try_into().ok()?);
-    if local_start == PROBE_MANIFEST_START {
+    if local_start == PROBE_MANIFEST_START || local_start == FILE_EDGES_START {
         return None;
     }
     let mut v = 0;
@@ -126,6 +222,44 @@ mod tests {
             parse_import_target(&manifest_key, &import_target_value(&importer, 0)),
             None
         );
+    }
+
+    #[test]
+    fn file_edges_roundtrip_under_the_importer_prefix_and_are_not_a_binding() {
+        let importer = RelPath::from("src/app.ts");
+        let edges = FileEdges {
+            edges: vec![
+                FileEdge {
+                    target: RelPath::from("src/a.ts"),
+                    local_start: 9,
+                    type_only: false,
+                },
+                FileEdge {
+                    target: RelPath::from("src/types.ts"),
+                    local_start: 40,
+                    type_only: true,
+                },
+            ],
+            external: 3,
+            unresolved: 1,
+            unresolved_specifiers: vec!["./gone".to_owned()],
+        };
+        let key = import_target(&importer, FILE_EDGES_START);
+        let value = file_edges_value(&edges);
+        assert!(key.starts_with(&import_targets_prefix(&importer)));
+        assert_eq!(parse_file_edges(&key, &value), Some((importer.clone(), edges)));
+        assert_eq!(parse_import_target(&key, &value), None);
+
+        let empty = file_edges_value(&FileEdges::default());
+        assert_eq!(
+            parse_file_edges(&key, &empty),
+            Some((importer.clone(), FileEdges::default()))
+        );
+        assert_eq!(parse_file_edges(&key, &value[..value.len() - 1]), None, "a cut value");
+        let binding = import_target(&importer, 12);
+        assert_eq!(parse_file_edges(&binding, &value), None, "a binding row");
+        let manifest = import_target(&importer, PROBE_MANIFEST_START);
+        assert_eq!(parse_file_edges(&manifest, &value), None, "the manifest row");
     }
 
     #[test]
