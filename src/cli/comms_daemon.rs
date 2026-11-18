@@ -38,10 +38,6 @@ const GC_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 /// `scan_threads` is unset) and lance's CPU runtime.
 const DAEMON_POOL_ENV: [(&str, &str); 2] = [("RAYON_NUM_THREADS", "6"), ("LANCE_CPU_THREADS", "2")];
 
-/// Intra-op threads for each ONNX session in the daemon (ORT otherwise takes one per core, capped at 8).
-#[cfg(feature = "intelligence")]
-const DAEMON_ORT_THREADS: usize = 2;
-
 /// Async worker threads for the daemon runtime.
 const DAEMON_ASYNC_WORKERS: usize = 8;
 
@@ -98,7 +94,11 @@ pub fn run() -> Result<()> {
     }
 
     #[cfg(feature = "intelligence")]
-    crate::embeddings::bound_ort_memory(DAEMON_ORT_THREADS);
+    crate::embeddings::bound_ort_memory(crate::embeddings::ort_intra_threads(
+        crate::embeddings::EmbedProcess::Daemon,
+        0,
+        0,
+    ));
 
     crate::comms::fd_budget::raise_to_budget();
 

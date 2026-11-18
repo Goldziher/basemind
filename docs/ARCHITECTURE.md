@@ -794,9 +794,11 @@ In the shared daemon these values are ceilings, not settings: `src/config/daemon
 `min(file, cap)` to each (and to `[scan]` / `[documents]` limits), with `0` / `"auto"` /
 `"off"` resolving to the cap, and the operator raises a cap through `BASEMIND_DAEMON_MAX_*` in the
 daemon's environment. ONNX Runtime memory is bounded in every process (`embeddings::bound_ort_memory`:
-no memory-pattern planning, no retained CPU arena; intra-op threads are the auto embed-thread count, or
-2 in the daemon), and the daemon drops resident embedding engines when the last concurrent embedding
-pass ends.
+no memory-pattern planning, no retained CPU arena). Intra-op threads follow `embeddings::ort_intra_threads`:
+2 in the daemon; `embed_threads` when set; otherwise the auto embed-thread count, except in a one-shot
+`basemind scan`, which gives them the scan pool's cores minus the embed pool's other workers so the
+pool's callers and ORT's spawned threads together fill the cores without exceeding them. The daemon
+drops resident embedding engines when the last concurrent embedding pass ends.
 
 Other bounds that are not `[resources]` keys:
 

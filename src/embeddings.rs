@@ -77,6 +77,46 @@ pub fn bound_ort_memory(intra_threads: usize) {
     });
 }
 
+/// Which kind of process is about to build ONNX sessions; decides its ORT intra-op budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbedProcess {
+    /// A one-shot `basemind scan`, which exists only to finish the scan.
+    OneShotScan,
+    /// The comms daemon: long-lived and sharing the machine with every agent.
+    Daemon,
+    /// Any other process (`serve`, the query CLI): it shares the machine with the agent driving it.
+    Interactive,
+}
+
+/// Intra-op threads for each ONNX session in the comms daemon.
+pub const DAEMON_ORT_THREADS: usize = 2;
+
+/// ORT intra-op threads for each ONNX session `process` builds.
+///
+/// `configured` is the user's `[resources] embed_threads` (`0` = auto); `cores` is the core budget
+/// of the process (for a scan, the scan pool's width). The daemon always takes
+/// [`DAEMON_ORT_THREADS`]: a repository cannot raise a daemon cap. Otherwise an explicit setting
+/// wins, and an auto interactive process keeps the embed-pool width, `max(2, cores / 4)`.
+///
+/// An auto one-shot scan spends its time embedding, so it takes the whole budget minus what the
+/// embed pool already occupies. Each of the pool's `W` workers runs its session call on its own
+/// thread, and ORT runs an intra-op pool of `n` as the caller plus `n - 1` spawned threads shared
+/// by concurrent calls, so `W` concurrent calls keep `W + n - 1` threads busy; `n = cores - (W - 1)`
+/// makes that `cores`.
+pub fn ort_intra_threads(process: EmbedProcess, configured: usize, cores: usize) -> usize {
+    match process {
+        EmbedProcess::Daemon => DAEMON_ORT_THREADS,
+        _ if configured != 0 => configured,
+        EmbedProcess::Interactive => auto_embed_threads(cores),
+        EmbedProcess::OneShotScan => cores.saturating_sub(auto_embed_threads(cores) - 1).max(1),
+    }
+}
+
+/// The auto embed-pool width for `cores`: a bounded fraction that leaves the rest for extraction.
+fn auto_embed_threads(cores: usize) -> usize {
+    std::cmp::max(2, cores / 4)
+}
+
 /// Drop every resident embedding engine so its ONNX session, weights and arena are freed. The next
 /// embedding reloads the model. Returns how many engines were dropped.
 pub fn release_engines() -> usize {
@@ -136,7 +176,7 @@ static EMBED_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 /// Any non-zero value is used directly.
 pub fn resolve_embed_threads(max_threads: usize) -> usize {
     if max_threads == 0 {
-        std::cmp::max(2, rayon::current_num_threads() / 4)
+        auto_embed_threads(rayon::current_num_threads())
     } else {
         max_threads
     }
@@ -595,6 +635,40 @@ mod tests {
         bound_ort_memory(2);
         // A second call with another value is a no-op (it must not clear live engine caches).
         bound_ort_memory(7);
+    }
+
+    #[test]
+    fn a_one_shot_scan_gives_ort_the_cores_the_embed_pool_leaves() {
+        use EmbedProcess::OneShotScan;
+        // W = max(2, cores / 4) callers plus n - 1 spawned ORT threads add up to the core count.
+        assert_eq!(ort_intra_threads(OneShotScan, 0, 4), 3);
+        assert_eq!(ort_intra_threads(OneShotScan, 0, 10), 9);
+        assert_eq!(ort_intra_threads(OneShotScan, 0, 16), 13);
+        assert_eq!(ort_intra_threads(OneShotScan, 0, 2), 1);
+        assert_eq!(ort_intra_threads(OneShotScan, 0, 1), 1);
+        assert_eq!(ort_intra_threads(OneShotScan, 0, 0), 1);
+    }
+
+    #[test]
+    fn the_daemon_keeps_its_fixed_ort_budget_whatever_is_configured() {
+        assert_eq!(ort_intra_threads(EmbedProcess::Daemon, 0, 16), DAEMON_ORT_THREADS);
+        assert_eq!(ort_intra_threads(EmbedProcess::Daemon, 12, 16), DAEMON_ORT_THREADS);
+    }
+
+    #[test]
+    fn an_interactive_process_keeps_the_embed_pool_width() {
+        assert_eq!(ort_intra_threads(EmbedProcess::Interactive, 0, 16), 4);
+        assert_eq!(ort_intra_threads(EmbedProcess::Interactive, 0, 4), 2);
+        assert_eq!(
+            ort_intra_threads(EmbedProcess::Interactive, 0, rayon::current_num_threads()),
+            resolve_embed_threads(0)
+        );
+    }
+
+    #[test]
+    fn an_explicit_embed_thread_setting_wins_outside_the_daemon() {
+        assert_eq!(ort_intra_threads(EmbedProcess::OneShotScan, 3, 16), 3);
+        assert_eq!(ort_intra_threads(EmbedProcess::Interactive, 6, 4), 6);
     }
 
     #[test]

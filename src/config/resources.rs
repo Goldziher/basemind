@@ -48,6 +48,9 @@ pub struct ResourcesConfig {
     /// ORT arenas are not replicated across every core. This supersedes the
     /// deprecated `[documents].embed_max_threads`; see
     /// [`ResourcesConfig::effective_embed_threads`] for the precedence.
+    /// In a one-shot `basemind scan` a non-zero value is also each ONNX session's
+    /// intra-op thread count; auto gives those sessions the scan's cores the pool
+    /// leaves (`crate::embeddings::ort_intra_threads`).
     #[serde(default)]
     pub embed_threads: usize,
     /// Upper bound on documents extracted concurrently. `0` (auto) leaves the
