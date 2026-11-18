@@ -471,3 +471,75 @@ fn an_overflowed_pass_sweeps_end_to_end() {
     let stamped = db.view().bm25_stats();
     assert_eq!(swept(&db).1, stamped);
 }
+
+/// Every posting key in the group, and each view's stats.
+fn group_state(views: &[&IndexDb]) -> (std::collections::BTreeSet<Vec<u8>>, Vec<(u64, u64)>) {
+    let keys = views[0]
+        .code_bm25_postings
+        .keys()
+        .map(|key| key.unwrap().to_vec())
+        .collect();
+    // A view no pass has written stats for scores as an empty one. ~keep
+    let stats = views
+        .iter()
+        .map(|view| view.view().bm25_stats().unwrap_or((0, 0)))
+        .collect();
+    (keys, stats)
+}
+
+/// The ledger left exactly what a sweep and a recompute of every view would.
+fn assert_group_exact(views: &[&IndexDb], step: &str) {
+    let before = group_state(views);
+    views[0].sweep_bm25_postings().unwrap();
+    for view in views {
+        view.recompute_bm25_stats().unwrap();
+    }
+    assert_eq!(group_state(views), before, "after {step}");
+}
+
+fn pass(db: &IndexDb, kind: PassKind, body: impl FnOnce(&IndexDb)) -> PassOutcome {
+    let pass = db.begin_bm25_pass(kind).unwrap();
+    body(db);
+    pass.finish().unwrap()
+}
+
+fn remove(db: &IndexDb, path: &str) {
+    let mut writer = db.writer();
+    writer.remove_bm25_file(&RelPath::from(path)).unwrap();
+    writer.commit().unwrap();
+}
+
+/// Two worktrees sharing content, through full and incremental passes that add, delete and edit:
+/// after every step the group's posting set and each view's stats equal a sweep and recompute.
+#[test]
+fn the_group_end_state_equals_a_sweep_after_every_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
+    let (a, b) = (&views[0], &views[1]);
+    let both = [a, b];
+    let seed = |db: &IndexDb| {
+        upsert(db, "src/shared.rs", "s1", &["alpha", "beta"]);
+        upsert(db, "src/own.rs", "o1", &["gamma"]);
+    };
+    pass(a, PassKind::Full, seed);
+    assert_group_exact(&both, "a full scan of A");
+    pass(b, PassKind::Full, seed);
+    assert_group_exact(&both, "a full scan of B");
+
+    let outcome = pass(a, PassKind::Full, |db| remove(db, "src/shared.rs"));
+    assert!(!outcome.swept);
+    assert_group_exact(&both, "deleting a shared file in A");
+    assert_eq!(postings_of(a, "s1"), 2, "B still holds the shared content");
+
+    pass(b, PassKind::Full, |db| upsert(db, "src/shared.rs", "s2", &["delta"]));
+    assert_group_exact(&both, "editing the shared file in B");
+    assert_eq!(postings_of(a, "s1"), 0, "no view holds s1 any more");
+
+    pass(a, PassKind::Incremental, |db| {
+        upsert(db, "src/own.rs", "o2", &["epsilon"])
+    });
+    assert_group_exact(&both, "a watcher batch in A");
+    let outcome = pass(a, PassKind::Full, |_| {});
+    assert!(outcome.stats_from_ledger && !outcome.swept);
+    assert_group_exact(&both, "a full scan of A after the watcher batch");
+}
