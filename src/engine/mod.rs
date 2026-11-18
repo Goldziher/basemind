@@ -28,6 +28,7 @@ pub(crate) mod ranked_cache;
 pub(crate) mod refs;
 mod retrieval;
 pub(crate) mod scan;
+pub(crate) mod scope;
 pub(crate) mod stale;
 pub(crate) mod term_index;
 pub(crate) mod timing;
