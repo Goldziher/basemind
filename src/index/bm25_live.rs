@@ -14,11 +14,14 @@ use ahash::AHashMap;
 
 use super::IndexError;
 #[cfg(feature = "code-search")]
+use super::keys::BM25_KEY_LEN;
+#[cfg(feature = "code-search")]
 use super::keys::parse_code_bm25_posting_chunk;
 use super::keys::{Bm25Key, parse_code_bm25_by_path, parse_code_bm25_by_path_value};
 #[cfg(all(test, feature = "code-search"))]
 use super::keys::{code_bm25_by_path_prefix, code_bm25_posting};
 use super::view::KvResult;
+use crate::path::RelPath;
 
 /// The keys of the BM25 chunks a view holds, each with the content hash it was written for.
 #[derive(Debug, Default)]
@@ -93,9 +96,81 @@ impl Bm25LiveCache {
 }
 
 /// Orders the group's posting sweep against the commits that write postings: a commit holds it
-/// shared, the sweep exclusively. Without it a sweep could read the forward rows, then delete a
-/// posting that a scan of another view re-wrote, with its forward row, in between.
-pub(crate) type Bm25Gate = Arc<parking_lot::RwLock<()>>;
+/// shared, the sweep exclusively. Without it a sweep could read the holders, then delete a posting
+/// that a scan of another view re-wrote, with its holder, in between.
+///
+/// It also counts the keys a writer has staged forward rows for and not yet committed: such a writer
+/// may have found the key's postings stored and written none, so they stay until it commits its
+/// holder row. A writer registers a key while holding the gate shared, so a sweep holding it
+/// exclusively sees every registration made before it.
+#[derive(Default)]
+pub(crate) struct Bm25GateState {
+    lock: parking_lot::RwLock<()>,
+    #[cfg(feature = "code-search")]
+    in_flight: parking_lot::Mutex<AHashMap<Bm25Key, u32>>,
+}
+
+/// One per group: see [`Bm25GateState`].
+pub(crate) type Bm25Gate = Arc<Bm25GateState>;
+
+impl Bm25GateState {
+    pub(crate) fn read(&self) -> parking_lot::RwLockReadGuard<'_, ()> {
+        self.lock.read()
+    }
+
+    pub(crate) fn write(&self) -> parking_lot::RwLockWriteGuard<'_, ()> {
+        self.lock.write()
+    }
+
+    #[cfg(feature = "code-search")]
+    pub(crate) fn begin_in_flight(&self, key: Bm25Key) {
+        *self.in_flight.lock().entry(key).or_default() += 1;
+    }
+
+    #[cfg(feature = "code-search")]
+    pub(crate) fn end_in_flight(&self, key: &Bm25Key) {
+        let mut in_flight = self.in_flight.lock();
+        if let Some(count) = in_flight.get_mut(key) {
+            *count -= 1;
+            if *count == 0 {
+                in_flight.remove(key);
+            }
+        }
+    }
+
+    #[cfg(feature = "code-search")]
+    fn is_in_flight(&self, key: &Bm25Key) -> bool {
+        self.in_flight.lock().contains_key(key)
+    }
+}
+
+/// The BM25 keys one writer registered in flight; released when the writer commits or drops.
+#[cfg(feature = "code-search")]
+#[derive(Default)]
+pub(crate) struct InFlight {
+    gate: Option<Bm25Gate>,
+    keys: Vec<Bm25Key>,
+}
+
+#[cfg(feature = "code-search")]
+impl InFlight {
+    pub(crate) fn register(&mut self, gate: &Bm25Gate, key: Bm25Key) {
+        gate.begin_in_flight(key);
+        self.gate.get_or_insert_with(|| Arc::clone(gate));
+        self.keys.push(key);
+    }
+}
+
+#[cfg(feature = "code-search")]
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Some(gate) = &self.gate {
+            for key in &self.keys {
+                gate.end_in_flight(key);
+            }
+        }
+    }
+}
 
 impl super::IndexDb {
     /// The BM25 chunks this view holds, from the cache or built from its forward rows.
@@ -104,23 +179,62 @@ impl super::IndexDb {
             .get_or_build(|| Bm25Live::from_rows(self.code_bm25_by_path.iter()))
     }
 
-    /// The key of every BM25 chunk any view of the group holds: the keys of every view's forward
-    /// rows, read keys only.
+    /// Whether any view of the group holds `key`, or a writer has it in flight. Call holding the
+    /// gate exclusively.
+    #[cfg(feature = "code-search")]
+    fn bm25_key_is_held(&self, key: &Bm25Key) -> Result<bool, IndexError> {
+        Ok(self.bm25_gate.is_in_flight(key) || self.code_bm25_holders.prefix_keys(key).next().transpose()?.is_some())
+    }
+
+    /// The key of every BM25 chunk any view of the group holds, or a writer has in flight: one seek
+    /// per distinct key of the holders. Call holding the gate exclusively.
     #[cfg(feature = "code-search")]
     fn group_bm25_keys(&self) -> Result<ahash::AHashSet<Bm25Key>, IndexError> {
-        let prefix = if self.code_bm25_by_path.is_view_scoped() {
-            super::scoped::VIEW_PREFIX_LEN
-        } else {
-            0
-        };
-        let mut live = ahash::AHashSet::new();
-        for guard in self.code_bm25_by_path.raw().iter() {
-            let key = guard.key()?;
-            if let Some((_, content, _)) = key.get(prefix..).and_then(parse_code_bm25_by_path) {
-                live.insert(content);
+        let mut live: ahash::AHashSet<Bm25Key> = self.bm25_gate.in_flight.lock().keys().copied().collect();
+        let mut from: Vec<u8> = Vec::new();
+        while let Some(row) = self
+            .code_bm25_holders
+            .range(std::ops::Bound::Included(from.as_slice()), std::ops::Bound::Unbounded)
+            .next()
+        {
+            let (key, _) = row?;
+            let Some(content) = key.get(..BM25_KEY_LEN).and_then(|head| Bm25Key::try_from(head).ok()) else {
+                break;
+            };
+            live.insert(content);
+            match super::name_dict::upper_bound(&content) {
+                Some(next) => from = next,
+                None => break,
             }
         }
         Ok(live)
+    }
+
+    /// Stage the removal of every holder row of view `view_id`, named by its forward rows `forward`:
+    /// before those rows are cleared wholesale.
+    pub(crate) fn remove_view_holders(&self, forward: &super::scoped::Scoped, view_id: u32) -> Result<(), IndexError> {
+        let mut batch = self.db.batch();
+        let mut last: Option<(RelPath, Bm25Key)> = None;
+        for key in forward.keys() {
+            let key = key?;
+            let Some((rel, content, _)) = parse_code_bm25_by_path(&key) else {
+                continue;
+            };
+            if last.as_ref().is_some_and(|(r, c)| *r == rel && *c == content) {
+                continue;
+            }
+            self.code_bm25_holders
+                .stage_remove(&mut batch, super::keys::code_bm25_holder(&content, view_id, &rel));
+            last = Some((rel, content));
+        }
+        let _shared = self.bm25_gate.read();
+        batch.commit()?;
+        Ok(())
+    }
+
+    /// This handle's view id in the holder rows: `0` for a database of its own.
+    pub(crate) fn holder_view_id(&self) -> u32 {
+        self.group.as_ref().map_or(0, |own| own.view_id)
     }
 
     /// The postings this view's chunks at `paths` name, by key: read before a pass replaces or drops
@@ -158,10 +272,9 @@ impl super::IndexDb {
             return Ok(());
         }
         let _exclusive = self.bm25_gate.write();
-        let live = self.group_bm25_keys()?;
         let mut writer = self.writer();
         for (content, postings) in candidates.0 {
-            if live.contains(&content) {
+            if self.bm25_key_is_held(&content)? {
                 continue;
             }
             for key in postings {

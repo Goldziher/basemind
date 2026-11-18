@@ -278,6 +278,9 @@ impl IndexDb {
         let shared = self.group.is_some();
         #[cfg(feature = "code-search")]
         let leaves_postings = shared && self.code_bm25_by_path.keys().next().is_some();
+        if shared {
+            self.remove_view_holders(&self.code_bm25_by_path, self.holder_view_id())?;
+        }
         self.meta.clear(&self.db)?;
         self.db.persist(PersistMode::SyncAll)?;
         for part in Part::ALL.into_iter().filter(|part| *part != Part::Meta) {

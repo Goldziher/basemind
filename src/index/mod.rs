@@ -114,6 +114,7 @@ const KEYSPACE_MEMTABLE_BYTES: &[(&str, u64)] = &[
     ("code_bm25_postings", MEMTABLE_HOT_BYTES),
     ("code_bm25_by_path", MEMTABLE_WARM_BYTES),
     ("grep_bloom", MEMTABLE_COLD_BYTES),
+    ("code_bm25_holders", MEMTABLE_WARM_BYTES),
     ("embeddings", MEMTABLE_COLD_BYTES),
     ("memory_by_key", MEMTABLE_COLD_BYTES),
 ];
@@ -434,6 +435,10 @@ pub struct IndexDb {
     /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(key, ordinal)`, with the
     /// doclen and content hash as value: the view's live BM25 chunks and its totals. Always created.
     pub(in crate::index) code_bm25_by_path: scoped::Scoped,
+    /// `code_bm25_holders`: `key ‖ view id ‖ path` for every path of every view holding a BM25 key,
+    /// shared by the group. Whether a key's postings are written, or may be retired, is one prefix
+    /// seek here instead of a read of every view's forward rows.
+    pub(in crate::index) code_bm25_holders: scoped::Scoped,
     /// The live keys of `code_bm25_by_path`, cached for the scorer; shared by every handle on the view.
     pub(in crate::index) bm25_live: std::sync::Arc<bm25_live::Bm25LiveCache>,
     /// Held shared by commits that write postings and exclusively by the posting sweep; one per group.
@@ -704,6 +709,7 @@ impl IndexDb {
         let code_bm25_postings = open_keyspace(&db, "code_bm25_postings")?;
         let code_bm25_by_path = open_keyspace(&db, "code_bm25_by_path")?;
         let grep_bloom = open_keyspace(&db, "grep_bloom")?;
+        let code_bm25_holders = open_keyspace(&db, "code_bm25_holders")?;
         let embeddings = open_keyspace(&db, "embeddings")?;
 
         // The read-only open writes nothing: no stamp, no flush. An index it finds unstamped is a
@@ -731,6 +737,7 @@ impl IndexDb {
                 &code_bm25_postings,
                 &code_bm25_by_path,
                 &grep_bloom,
+                &code_bm25_holders,
                 &embeddings,
                 &meta,
             ]) {
@@ -758,6 +765,7 @@ impl IndexDb {
             importers_by_probe: whole(importers_by_probe),
             code_bm25_postings: whole(code_bm25_postings),
             code_bm25_by_path: whole(code_bm25_by_path),
+            code_bm25_holders: whole(code_bm25_holders),
             bm25_live: std::sync::Arc::default(),
             bm25_gate: bm25_live::Bm25Gate::default(),
             live: std::sync::Arc::default(),

@@ -560,3 +560,43 @@ fn clearing_a_view_owes_a_sweep_only_when_it_had_forward_rows() {
     assert!(pass(a, PassKind::Full, |_| {}).swept, "x1's postings were left behind");
     assert_eq!(postings_of(a, "x1"), 0);
 }
+
+fn holders(db: &IndexDb) -> usize {
+    db.code_bm25_holders.iter().count()
+}
+
+/// A key's postings are a function of the key: a second holder writes only its forward rows and
+/// holder row, so the posting list never holds a shadowed copy of a key another view wrote.
+#[test]
+fn a_second_holder_of_a_key_writes_no_postings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
+    let (a, b) = (&views[0], &views[1]);
+    upsert(a, "src/a.rs", "a1", &["alpha", "beta"]);
+    // Drop one posting: a second holder that rewrote the key's postings would bring it back. ~keep
+    let alpha = keys::code_bm25_posting("alpha", &keys::bm25_content_key("a1", "rust", "d"), 0).unwrap();
+    a.code_bm25_postings.remove(&alpha).unwrap();
+    upsert(b, "src/a.rs", "a1", &["alpha", "beta"]);
+    upsert(b, "src/b.rs", "a1", &["alpha", "beta"]);
+
+    assert_eq!(postings_of(a, "a1"), 1, "no posting was written again");
+    assert_eq!(holders(a), 3, "one holder row per path of each view");
+}
+
+/// A view's rebuild drops its holder rows: once no view holds a key, retirement finds it dead.
+#[test]
+fn a_rebuilt_view_holds_no_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
+    let (a, b) = (&views[0], &views[1]);
+    upsert(a, "src/a.rs", "a1", &["alpha"]);
+    upsert(b, "src/a.rs", "a1", &["alpha"]);
+    upsert(b, "src/b.rs", "b1", &["beta"]);
+
+    b.clear_for_rebuild().unwrap();
+
+    assert_eq!(holders(a), 1, "only a's holder row is left");
+    a.sweep_bm25_postings().unwrap();
+    assert_eq!(postings_of(a, "a1"), 1, "a still holds a1");
+    assert_eq!(postings_of(a, "b1"), 0, "no view holds b1");
+}

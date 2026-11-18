@@ -264,10 +264,12 @@ impl GroupSweep<'_> {
     /// rows named are owed a sweep from before the first delete.
     fn delete_view_rows(&mut self, view_id: u32) -> Result<(), IndexError> {
         let scoped = |part: Part| Scoped::view(self.group.keyspace(part).clone(), view_id);
-        if scoped(Part::CodeBm25ByPath).keys().next().transpose()?.is_some() {
+        let forward = scoped(Part::CodeBm25ByPath);
+        if forward.keys().next().transpose()?.is_some() {
             #[cfg(feature = "code-search")]
             self.db.mark_bm25_sweep_owed()?;
             self.postings_owed = true;
+            self.db.remove_view_holders(&forward, view_id)?;
         }
         let db = self.group.database();
         for part in Part::ALL.into_iter().filter(|part| !SHARED_PARTS.contains(part)) {

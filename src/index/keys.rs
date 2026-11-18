@@ -20,7 +20,7 @@ use crate::path::RelPath;
 
 pub use crate::index::keys_bm25::{
     BM25_KEY_LEN, Bm25Key, bm25_content_key, code_bm25_by_path, code_bm25_by_path_prefix, code_bm25_by_path_value,
-    code_bm25_posting, code_bm25_posting_value, code_bm25_postings_prefix, parse_code_bm25_by_path,
+    code_bm25_holder, code_bm25_posting, code_bm25_posting_value, code_bm25_postings_prefix, parse_code_bm25_by_path,
     parse_code_bm25_by_path_value, parse_code_bm25_posting, parse_code_bm25_posting_chunk,
     parse_code_bm25_posting_value, split_chunk_id,
 };

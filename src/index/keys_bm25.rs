@@ -132,6 +132,16 @@ pub fn parse_code_bm25_by_path(key: &[u8]) -> Option<(RelPath, Bm25Key, u32)> {
     Some((RelPath::from(rel), content, ordinal))
 }
 
+/// `code_bm25_holders`: `key:16 ‖ view id:u32_be ‖ rel`, one row per path of a view holding `key`.
+/// The key leads, so whether any view holds it is one prefix seek.
+pub fn code_bm25_holder(key: &Bm25Key, view_id: u32, rel: &RelPath) -> Vec<u8> {
+    let mut out = Vec::with_capacity(BM25_KEY_LEN + 4 + rel.as_bytes().len());
+    out.extend_from_slice(key);
+    out.extend_from_slice(&view_id.to_be_bytes());
+    out.extend_from_slice(rel.as_bytes());
+    out
+}
+
 /// Encode a `code_bm25_by_path` value: `doclen:u32_be ‖ u8:len(hash) ‖ content hash (hex) ‖
 /// msgpack(terms)`. The hash turns the view's live keys back into chunk ids, the doclen feeds the
 /// view's BM25 totals, and the terms name the chunk's postings for their retirement.
@@ -194,6 +204,15 @@ mod tests {
         assert!(!code_bm25_by_path(&rel_b, &content, 0).starts_with(&prefix_a));
         let value = code_bm25_by_path_value(42, "hash", b"terms").unwrap();
         assert_eq!(parse_code_bm25_by_path_value(&value), Some((42, "hash", &b"terms"[..])));
+    }
+
+    #[test]
+    fn a_holder_row_leads_with_its_key() {
+        let key = bm25_content_key("h", "rust", "d");
+        let row = code_bm25_holder(&key, 7, &RelPath::from("a.rs"));
+        assert!(row.starts_with(&key));
+        assert_eq!(&row[BM25_KEY_LEN..BM25_KEY_LEN + 4], &7u32.to_be_bytes());
+        assert_eq!(&row[BM25_KEY_LEN + 4..], b"a.rs");
     }
 
     #[test]

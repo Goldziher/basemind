@@ -116,12 +116,13 @@ pub enum Part {
     CodeBm25Postings,
     CodeBm25ByPath,
     GrepBloom,
+    CodeBm25Holders,
 }
 
 impl Part {
     /// Every keyspace a view reads, in declaration order. Checked against [`KEYSPACE_MEMTABLE_BYTES`] in
     /// `view_tests`, so a keyspace added to either list alone fails there.
-    pub(super) const ALL: [Part; 16] = [
+    pub(super) const ALL: [Part; 17] = [
         Part::Meta,
         Part::SymbolsByPath,
         Part::SymbolsByName,
@@ -138,6 +139,7 @@ impl Part {
         Part::CodeBm25Postings,
         Part::CodeBm25ByPath,
         Part::GrepBloom,
+        Part::CodeBm25Holders,
     ];
 
     /// The keyspace's on-disk name.
@@ -159,6 +161,7 @@ impl Part {
             Part::CodeBm25Postings => "code_bm25_postings",
             Part::CodeBm25ByPath => "code_bm25_by_path",
             Part::GrepBloom => "grep_bloom",
+            Part::CodeBm25Holders => "code_bm25_holders",
         }
     }
 }
@@ -182,6 +185,7 @@ impl IndexDb {
             Part::CodeBm25Postings => &self.code_bm25_postings,
             Part::CodeBm25ByPath => &self.code_bm25_by_path,
             Part::GrepBloom => &self.grep_bloom,
+            Part::CodeBm25Holders => &self.code_bm25_holders,
         }
     }
 
