@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-#[cfg(any(feature = "memory", feature = "code-search"))]
+#[cfg(feature = "memory")]
 use rmcp::ErrorData as McpError;
 #[cfg(feature = "memory")]
 use rmcp::model::CallToolResult;
@@ -18,112 +18,26 @@ use super::types_memory::{
     MemoryPutParams, MemoryPutResponse, MemorySearchParams, Visibility,
 };
 
-/// The shared embedding engine, loaded on first use. Loading reads the model from disk (or
-/// downloads it), so it runs on a blocking thread and never stalls the async runtime.
-#[cfg(feature = "intelligence")]
+/// The shared embedding engine ([`Workspace::shared_embedder`](crate::engine::Workspace)), loaded
+/// on a blocking thread.
+#[cfg(any(feature = "memory", feature = "documents"))]
 pub(super) async fn shared_embedder(state: &ServerState) -> Result<Arc<crate::embeddings::SharedEmbedder>, String> {
-    let preset = state.shared.config.documents.embedding_preset.clone();
-    let max_embed_threads = state
-        .shared
-        .config
-        .resources
-        .effective_embed_threads(state.shared.config.documents.embed_max_threads);
-    let embed_batch_size = state.shared.config.resources.embed_batch_size;
-    let provider = state.shared.config.resources.onnx_provider;
-    state
-        .shared
-        .embedder
-        .get_or_try_init(|| async {
-            tokio::task::spawn_blocking(move || {
-                crate::embeddings::SharedEmbedder::load_with_provider(
-                    &preset,
-                    max_embed_threads,
-                    embed_batch_size,
-                    provider,
-                )
-            })
-            .await
-            .map_err(|e| format!("load embedder join: {e}"))?
-            .map(Arc::new)
-            .map_err(|e| format!("load embedder: {e}"))
-        })
-        .await
-        .cloned()
+    let ws = Arc::clone(&state.shared);
+    super::adapter::blocking(move || ws.shared_embedder()).await
 }
 
 /// Embed a search query, with the preset's query prefix (see `SharedEmbedder::embed_query`).
-#[cfg(any(feature = "memory", feature = "code-search"))]
+#[cfg(feature = "memory")]
 pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
-    embed_with(state, text, true).await
+    let (ws, text) = (Arc::clone(&state.shared), text.to_string());
+    Ok(super::adapter::blocking(move || ws.embed_query(&text)).await?)
 }
 
 /// Embed a passage to be found later (a memory note): no query prefix.
 #[cfg(feature = "memory")]
 pub(super) async fn embed_passage(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
-    embed_with(state, text, false).await
-}
-
-#[cfg(any(feature = "memory", feature = "code-search"))]
-async fn embed_with(state: &ServerState, text: &str, query: bool) -> Result<Vec<f32>, McpError> {
-    let embedder = shared_embedder(state)
-        .await
-        .map_err(|e| McpError::internal_error(e, None))?;
-    let text = text.to_string();
-    tokio::task::spawn_blocking(move || {
-        if query {
-            embedder.embed_query(&text)
-        } else {
-            embedder.embed(&text)
-        }
-    })
-    .await
-    .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
-}
-
-/// Open the vector store at `dir` off the async runtime. Only a `writer` (holding the workspace lock)
-/// creates or rebuilds it; any other open reads a matching one ([`crate::lance::LanceStore::open_existing`]).
-#[cfg(feature = "code-search")]
-async fn open_lance(
-    dir: std::path::PathBuf,
-    embedder: &crate::embeddings::SharedEmbedder,
-    writer: bool,
-) -> Result<Arc<crate::lance::LanceStore>, String> {
-    let (dim, model) = (embedder.dim(), embedder.model().to_string());
-    tokio::task::spawn_blocking(move || {
-        if writer {
-            crate::lance::LanceStore::open(&dir, dim, &model)
-        } else {
-            crate::lance::LanceStore::open_existing(&dir, dim, &model)
-        }
-    })
-    .await
-    .map_err(|e| format!("lance open join: {e}"))?
-    .map(Arc::new)
-    .map_err(|e| format!("open LanceStore: {e}"))
-}
-
-#[cfg(feature = "code-search")]
-pub(super) async fn lance_store(
-    state: &ServerState,
-) -> Result<Arc<crate::lance::LanceStore>, super::lance_cell::Unavailable> {
-    state
-        .shared
-        .lance
-        .get_or_open(|| async {
-            let embedder = shared_embedder(state)
-                .await
-                .map_err(|e| format!("embedder init: {e}"))?;
-            let (lance_dir, writer) = {
-                let store = state.store_read().await;
-                (
-                    store.basemind_dir.join(crate::store::LANCE_DIR),
-                    store.holds_writer_lock(),
-                )
-            };
-            open_lance(lance_dir, &embedder, writer).await
-        })
-        .await
+    let (ws, text) = (Arc::clone(&state.shared), text.to_string());
+    Ok(super::adapter::blocking(move || ws.embed_passage(&text)).await?)
 }
 
 /// Per-`(scope, key)` write serialization for `memory_put`.

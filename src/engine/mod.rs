@@ -4,6 +4,7 @@
 
 pub(crate) mod budget;
 pub(crate) mod by_path;
+mod code_search;
 pub(crate) mod cursor;
 pub(crate) mod definition;
 pub(crate) mod error;
@@ -13,12 +14,16 @@ pub(crate) mod freshness;
 pub(crate) mod git;
 pub(crate) mod grep_text;
 pub(crate) mod l1_cache;
+#[cfg(any(feature = "memory", feature = "code-search"))]
+pub(crate) mod lance_cell;
 pub(crate) mod map_cache;
 pub(crate) mod ops;
 pub(crate) mod outline_cache;
 pub(crate) mod pick;
+pub(crate) mod ranked;
 pub(crate) mod ranked_cache;
 pub(crate) mod refs;
+mod retrieval;
 pub(crate) mod stale;
 pub(crate) mod term_index;
 pub(crate) mod timing;

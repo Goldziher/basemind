@@ -90,21 +90,24 @@ pub(crate) struct Workspace {
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(feature = "code-search")]
-    pub(crate) lance: crate::mcp::lance_cell::LanceCell,
+    pub(crate) lance: crate::engine::lance_cell::LanceCell,
     /// Owner of this workspace's `individual` memory notes: the checkout's comms v2 principal
     /// (`identity::resolve_agent_id`), which is the same at every server start.
     #[cfg(feature = "memory")]
     pub(crate) memory_owner: String,
     /// The repo group's memory vector store (see `memory_vectors`). Lazy-init on first use.
     #[cfg(feature = "memory")]
-    pub(crate) memory_lance: crate::mcp::lance_cell::LanceCell,
+    pub(crate) memory_lance: crate::engine::lance_cell::LanceCell,
     /// Memory namespaces `(vis_byte, owner)` whose vector rows a search in this process is bringing
     /// up to date with the notes, or has.
     #[cfg(feature = "memory")]
     pub(crate) memory_backfill: std::sync::Mutex<ahash::AHashMap<(u8, String), crate::mcp::memory_vectors::Backfill>>,
-    /// Shared embedding engine. Lazy-init on first embed call.
+    /// Shared embedding engine. Lazy-init on first embed call ([`Workspace::shared_embedder`]).
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-    pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
+    pub(crate) embedder: std::sync::OnceLock<Arc<crate::embeddings::SharedEmbedder>>,
+    /// Held by the one embedder load running, so the calls that arrive during it wait for it.
+    #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+    pub(super) embedder_loading: Mutex<()>,
     /// True while the boot-time initial scan (auto-scan of an empty index) is running. Lets a
     /// client polling `status` distinguish "index still building" from "index empty / no matches"
     /// so the build cost is not silently folded into the first query's latency.
@@ -276,7 +279,9 @@ impl Workspace {
             #[cfg(feature = "code-search")]
             lance: Default::default(),
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-            embedder: tokio::sync::OnceCell::new(),
+            embedder: std::sync::OnceLock::new(),
+            #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
+            embedder_loading: Mutex::new(()),
             #[cfg(feature = "memory")]
             memory_lance: Default::default(),
             #[cfg(feature = "memory")]

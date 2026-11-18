@@ -9,8 +9,6 @@ use serde::Serialize;
 
 use super::ServerState;
 
-#[cfg(all(feature = "documents", feature = "code-search"))]
-pub(super) use super::helpers_documents::format_response;
 pub(super) use super::helpers_telemetry::record_call;
 
 #[cfg(feature = "memory")]

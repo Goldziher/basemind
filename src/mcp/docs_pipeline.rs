@@ -103,7 +103,7 @@ async fn rank(
 /// `docs_search`: the ranking of the query (computed once per index generation and kept), and the
 /// page of it the cursor points at.
 pub(super) async fn docs_search(state: &ServerState, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
-    use super::helpers_page::{RANKED_LIMIT_DEFAULT, ranked_offset};
+    use crate::engine::ranked::{RANKED_LIMIT_DEFAULT, ranked_offset};
 
     let started = std::time::Instant::now();
     let generation = state.shared.index_generation.load(std::sync::atomic::Ordering::Relaxed);

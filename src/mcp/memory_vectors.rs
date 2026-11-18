@@ -239,25 +239,21 @@ pub(super) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
 }
 
 /// Open the repo group's memory vector store for the configured embedder.
-pub(super) async fn memory_lance_store(state: &ServerState) -> Result<Arc<LanceStore>, super::lance_cell::Unavailable> {
-    state
-        .shared
-        .memory_lance
-        .get_or_open(|| async {
-            let embedder = shared_embedder(state)
-                .await
-                .map_err(|e| format!("embedder init: {e}"))?;
-            let (root, model, dim) = (state.shared.root.clone(), embedder.model().to_string(), embedder.dim());
-            tokio::task::spawn_blocking(move || {
-                let dir = memory_lance_dir(&root, &model, dim);
-                LanceStore::open(&dir, dim, &model)
-            })
-            .await
-            .map_err(|e| format!("lance open join: {e}"))?
-            .map(Arc::new)
-            .map_err(|e| format!("open LanceStore: {e}"))
+pub(super) async fn memory_lance_store(
+    state: &ServerState,
+) -> Result<Arc<LanceStore>, crate::engine::lance_cell::Unavailable> {
+    let ws = Arc::clone(&state.shared);
+    super::adapter::blocking(move || {
+        ws.memory_lance.get_or_open(|| {
+            let embedder = ws.shared_embedder().map_err(|e| format!("embedder init: {e}"))?;
+            let (model, dim) = (embedder.model(), embedder.dim());
+            let dir = memory_lance_dir(&ws.root, model, dim);
+            LanceStore::open(&dir, dim, model)
+                .map(Arc::new)
+                .map_err(|e| format!("open LanceStore: {e}"))
         })
-        .await
+    })
+    .await
 }
 
 /// The store, when a row could be in it: already open in this process, or present on disk. A
@@ -451,7 +447,9 @@ async fn backfill(
     vis_byte: u8,
     owner: &str,
 ) -> Result<Progress, McpError> {
-    let lance = memory_lance_store(state).await?;
+    let lance = memory_lance_store(state)
+        .await
+        .map_err(|unavailable| McpError::from(crate::engine::EngineError::from(unavailable)))?;
     let scope = state.shared.scope.clone();
     let lance_vis = lance_visibility(visibility);
     let listed_at = crate::lance::now_micros();
@@ -732,7 +730,7 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
     let embedding = embed_query(state, &params.query).await?;
     let lance = memory_lance_store(state)
         .await
-        .map_err(|unavailable| unavailable.refusal("memory_search", MEMORY_SEARCH_MEANWHILE))?;
+        .map_err(|unavailable| McpError::from(unavailable.refusal("memory_search", MEMORY_SEARCH_MEANWHILE)))?;
     let catching_up = backfill_step(state, params.visibility, vis_byte, owner).await;
 
     // Rows the join refuses must not shrink the answer: the search fetches more than it serves,

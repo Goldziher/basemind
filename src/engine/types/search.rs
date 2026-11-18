@@ -1,46 +1,29 @@
-//! Internal request shapes and response payloads of the code-search and read bodies.
-//!
-//! The wire arguments live in `types_tools.rs`; [`SearchCodeParams`], [`GetChunkParams`] and
-//! the params here are what the bodies in `helpers_code_search.rs` take.
-//!
-//! The response structs are gated on `code-search` since only the feature-on helper bodies build
-//! them.
+//! Types of `code_search` and of `basemind code chunk`, the fetch half of a search hit.
 
-use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use crate::engine::cursor::Cursor;
 use crate::path::RelPath;
 
-/// Params for the `semantic` mode — hybrid / vector / BM25 retrieval over indexed code chunks.
-#[cfg(feature = "code-search")]
+/// Arguments of `code_search`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct SearchCodeParams {
+#[serde(deny_unknown_fields)]
+pub struct CodeSearchParams {
+    /// What the code does, in plain words.
     pub query: String,
-    /// Max hits to return. Default 10, max 100.
+    /// Retrieval lane (default `hybrid`).
+    #[serde(default)]
+    #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
+    pub lane: Option<String>,
+    /// Max hits (default 10).
     #[serde(default)]
     pub limit: Option<u32>,
-    /// Optional token budget bounding the returned `hits` list (best-first; sets `budgeted`).
+    /// `next_cursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+    /// Token budget for the list (default 6000).
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Wire format: `"json"` (default) or `"toon"`. Overrides the `[documents.output] format`
-    /// config knob for this call.
-    #[serde(default)]
-    pub format: Option<String>,
-    /// Retrieval lane: "hybrid" (RRF fusion of the vector + keyword + exact-symbol lanes — the
-    /// default), "semantic" (vector KNN only), or "keyword" (native BM25 only). Hybrid degrades
-    /// gracefully — it drops any lane that is unavailable (e.g. the vector lane without embeddings).
-    #[serde(default)]
-    pub mode: Option<String>,
-    /// Per-query override: run the cross-encoder rerank pass over the fused hits. Defaults to the
-    /// `[code_search.reranker] enabled` config knob. The first rerank downloads an ONNX model.
-    #[serde(default)]
-    pub reranker_enabled: Option<bool>,
-    /// Per-query override: the xberg reranker preset (e.g. `bge-reranker-base`).
-    #[serde(default)]
-    pub reranker_preset: Option<String>,
-    /// Per-query override: how many top fused hits to rerank.
-    #[serde(default)]
-    pub reranker_top_k: Option<usize>,
 }
 
 /// Params for `get_chunk` — fetch a chunk body by path (the `search_code` pointer).
@@ -62,7 +45,7 @@ pub struct GetChunkParams {
 /// One pointer hit from `search_code`. Deliberately carries NO body — call `get_chunk` for the
 /// source. Mirrors the `search_symbols`/`outline` → `expand` two-call token pattern.
 #[cfg(feature = "code-search")]
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CodeSearchHit {
     /// The first (sorted) indexed path holding this chunk's content now.
     pub path: String,
@@ -114,51 +97,90 @@ pub(crate) struct CodeSearchHit {
 
 /// A retrieval lane that did not run for a query, and why.
 #[cfg(feature = "code-search")]
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LaneUnavailable {
-    pub lane: &'static str,
+    pub lane: String,
     pub reason: String,
 }
 
+/// The ranked retrieval of one `code_search` query, which every page of it is cut from: the hits to
+/// the paging depth (and one more), and what the ranking says about itself.
 #[cfg(feature = "code-search")]
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct SearchCodeResponse {
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct CodeSearchRanking {
     pub query: String,
-    /// True when a `max_tokens` budget dropped trailing `hits`. No cursor — raise `max_tokens`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub budgeted: bool,
-    /// True when the ranking was cut by a hard bound, so better-matching hits may exist than the
-    /// ones that can be paged to. Narrow the query or the filters.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
-    /// What cut it: `stale_chunks` (ranked chunks no indexed file holds any more were dropped;
-    /// run `index_rescan`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `stale_chunks` when ranked chunks no indexed file holds any more were dropped.
     pub truncated_reason: Option<String>,
     /// Ranked chunks dropped because no indexed file holds their content any more.
-    #[serde(default, skip_serializing_if = "crate::engine::types::is_zero")]
     pub omitted: usize,
     pub hits: Vec<CodeSearchHit>,
     /// Lanes that produced a ranking for this query: `vector`, `keyword`, `exact`.
-    pub lanes_ran: Vec<&'static str>,
+    pub lanes_ran: Vec<String>,
     /// Lanes that did NOT run, each with why. Non-empty means `hits` is a PARTIAL result from the
     /// lanes that did run: a caller must be able to tell "searched and found nothing" from "could
     /// not search". When NO lane runs the call is an error instead, so this is never a labelled
     /// `[]`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lanes_unavailable: Vec<LaneUnavailable>,
+}
+
+/// One page of a `code_search` ranking.
+///
+/// Serialized by hand, in the key order the response has always had: the ranking's own fields
+/// (with a `stale_chunks` cut among them), the timing, the lanes, then the page and its cuts.
+#[cfg(feature = "code-search")]
+#[derive(Debug)]
+pub(crate) struct CodeSearchPage {
+    pub ranking: CodeSearchRanking,
+    /// True when a `max_tokens` budget dropped trailing `hits`.
+    pub budgeted: bool,
+    /// True when the ranking goes on past the paging depth (`truncated_reason: depth`).
+    pub depth_cut: bool,
+    pub next_cursor: Option<Cursor>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
     /// search + response construction), excluding MCP transport, argument
-    /// deserialization, and response serialization. A first call against a cold server also
-    /// includes index warm-up; such responses carry a `notice`. See
-    /// [`crate::mcp::helpers::timing`] for the full contract.
-    #[serde(default)]
+    /// deserialization, and response serialization. See [`crate::engine::timing`] for the full
+    /// contract.
     pub elapsed_us: u64,
+}
+
+#[cfg(feature = "code-search")]
+impl Serialize for CodeSearchPage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let ranking = &self.ranking;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("query", &ranking.query)?;
+        if let Some(reason) = &ranking.truncated_reason {
+            map.serialize_entry("truncated", &true)?;
+            map.serialize_entry("truncated_reason", reason)?;
+        }
+        if ranking.omitted > 0 {
+            map.serialize_entry("omitted", &ranking.omitted)?;
+        }
+        map.serialize_entry("elapsed_us", &self.elapsed_us)?;
+        map.serialize_entry("lanes_ran", &ranking.lanes_ran)?;
+        if !ranking.lanes_unavailable.is_empty() {
+            map.serialize_entry("lanes_unavailable", &ranking.lanes_unavailable)?;
+        }
+        map.serialize_entry("hits", &ranking.hits)?;
+        if self.budgeted {
+            map.serialize_entry("budgeted", &true)?;
+        }
+        if self.depth_cut && ranking.truncated_reason.is_none() {
+            map.serialize_entry("truncated", &true)?;
+            map.serialize_entry("truncated_reason", super::super::ranked::REASON_DEPTH)?;
+        }
+        if let Some(cursor) = &self.next_cursor {
+            map.serialize_entry("next_cursor", cursor)?;
+        }
+        map.end()
+    }
 }
 
 /// Response for `get_chunk` — the full chunk body plus its metadata.
 #[cfg(feature = "code-search")]
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize)]
 pub(crate) struct GetChunkResponse {
     pub path: String,
     pub chunk_id: String,
@@ -176,11 +198,7 @@ pub(crate) struct GetChunkResponse {
     pub byte_start: u32,
     pub byte_end: u32,
     pub text: String,
-    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
-    /// search + response construction), excluding MCP transport, argument
-    /// deserialization, and response serialization. A first call against a cold server also
-    /// includes index warm-up; such responses carry a `notice`. See
-    /// [`crate::mcp::helpers::timing`] for the full contract.
+    /// Server-side handler latency in microseconds. See [`crate::engine::timing`].
     #[serde(default)]
     pub elapsed_us: u64,
 }

@@ -40,7 +40,7 @@ impl From<EngineError> for McpError {
 
 /// Run `body` on a blocking thread: an operation reads the store, the disk and the in-RAM map
 /// synchronously, which must not park a runtime worker. A panic in it resumes on the caller.
-async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+pub(super) async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
     match tokio::task::spawn_blocking(body).await {
         Ok(value) => value,
         Err(join) => std::panic::resume_unwind(join.into_panic()),

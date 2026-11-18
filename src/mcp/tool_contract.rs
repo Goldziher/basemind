@@ -47,7 +47,7 @@ impl BasemindServer {
     }
 }
 
-#[cfg(any(feature = "code-search", feature = "documents"))]
+#[cfg(feature = "documents")]
 pub(super) use crate::engine::budget::budget;
 
 /// The error for a tool whose retrieval stack is not in this build.

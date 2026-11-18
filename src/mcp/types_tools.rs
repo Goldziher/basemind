@@ -63,27 +63,7 @@ pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
 pub use crate::engine::types::grep::CodeGrepParams;
 pub use crate::engine::types::refs::CodeRefsParams;
-
-/// Arguments of `code_search`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CodeSearchParams {
-    /// What the code does, in plain words.
-    pub query: String,
-    /// Retrieval lane (default `hybrid`).
-    #[serde(default)]
-    #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
-    pub lane: Option<String>,
-    /// Max hits (default 10).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
+pub use crate::engine::types::search::CodeSearchParams;
 
 /// Arguments of `docs_search`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

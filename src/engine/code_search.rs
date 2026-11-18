@@ -1,22 +1,18 @@
-//! Helper bodies for the `code` domain's retrieval modes (`semantic`, `chunk`).
+//! The retrieval lanes of `code_search`.
 //!
-//! Gated on `feature = "code-search"`. `run_search_code` dispatches by `lane`: `hybrid` (default)
-//! fuses the vector, keyword, and exact-symbol lanes via RRF ([`hybrid_hits`]); `semantic`
-//! ([`semantic_hits`]) is vector KNN over the LanceDB `code_chunks` table; `keyword`
-//! ([`keyword_hits`]) is native BM25 over the Fjall index. An optional cross-encoder [`rerank_hits`]
-//! pass reorders the result. `run_get_chunk` is the offline fetch half — it reads the file's
-//! content-addressed `.chunk` sidecar and returns one chunk's body, no LanceDB round-trip.
+//! [`retrieve`] dispatches by `lane`: `hybrid` (default) fuses the vector, keyword, and exact-symbol
+//! lanes via RRF ([`hybrid_hits`]); `semantic` ([`semantic_hits`]) is vector KNN over the LanceDB
+//! `code_chunks` table; `keyword` ([`keyword_hits`]) is native BM25 over the Fjall index. An
+//! optional cross-encoder [`rerank_hits`] pass reorders the result. The fetch half,
+//! `basemind code chunk`, reads the file's content-addressed `.chunk` sidecar and returns one
+//! chunk's body, no LanceDB round-trip (`ops::code_search`).
+
+#![cfg(feature = "code-search")]
 
 use ahash::AHashSet;
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
 
-use super::ServerState;
-use super::helpers::{elapsed_us, json_result};
-use super::memory::{embed_query, lance_store};
-use super::types_code::{
-    CodeSearchHit, GetChunkParams, GetChunkResponse, LaneUnavailable, SearchCodeParams, SearchCodeResponse,
-};
+use super::types::search::{CodeSearchHit, CodeSearchRanking, LaneUnavailable};
+use super::{EngineError, Workspace};
 use crate::search::bm25::bm25_search;
 use crate::search::exact::exact_lane_chunk_ids;
 use crate::search::hydrate::ChunkHydrator;
@@ -27,61 +23,31 @@ use crate::search::rrf::{
 };
 use crate::store::Store;
 
-/// Serialize a code-search response honoring the requested wire format. TOON is only available
-/// when the `documents` feature (which links `serde_toon`) is also compiled in; a `toon` request
-/// on a code-search-only build silently falls back to JSON.
-fn format_code_response<T: serde::Serialize>(value: &T, want_toon: bool) -> Result<CallToolResult, McpError> {
-    #[cfg(feature = "documents")]
-    if want_toon {
-        return super::helpers::format_response(value, crate::config::OutputFormat::Toon);
-    }
-    let _ = want_toon;
-    json_result(value)
-}
-
-/// Resolve whether the caller wants TOON output: an explicit `format` param wins; otherwise fall
-/// back to the `[documents.output] format` config knob.
-fn wants_toon(state: &ServerState, format: Option<&str>) -> bool {
-    match format.map(str::trim) {
-        Some(f) if f.eq_ignore_ascii_case("toon") => true,
-        Some(f) if f.eq_ignore_ascii_case("json") => false,
-        _ => matches!(
-            state.shared.config.documents.output.format,
-            crate::config::OutputFormat::Toon
-        ),
-    }
-}
-
-pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParams) -> Result<CallToolResult, McpError> {
-    let __body = std::time::Instant::now();
-    let limit = params.limit.unwrap_or(10).min(super::helpers_page::RANKED_FETCH) as usize;
-    let want_toon = wants_toon(state, params.format.as_deref());
-
-    let rr = &state.shared.config.code_search.reranker;
-    let rerank_enabled = params.reranker_enabled.unwrap_or(rr.enabled);
-    let rerank_preset = params.reranker_preset.clone().unwrap_or_else(|| rr.preset.clone());
-    let rerank_top_k = params.reranker_top_k.unwrap_or(rr.top_k);
-
+/// The ranking of `query` over `lane` (default `hybrid`), at most `limit` hits after hydration.
+pub(super) fn retrieve(
+    ws: &Workspace,
+    query: String,
+    lane: Option<&str>,
+    limit: usize,
+) -> Result<CodeSearchRanking, EngineError> {
+    let rr = &ws.config.code_search.reranker;
+    let (rerank_enabled, rerank_top_k) = (rr.enabled, rr.top_k);
     let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
 
-    let mode = params.mode.as_deref().map(str::trim).unwrap_or("hybrid");
+    let mode = lane.map(str::trim).unwrap_or("hybrid");
     let (seeds, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
-        hybrid_hits(state, &params.query, fetch_n).await?
+        hybrid_hits(ws, &query, fetch_n)?
     } else if mode.eq_ignore_ascii_case("semantic") {
         (
-            semantic_hits(state, &params.query, fetch_n, SEMANTIC_MEANWHILE).await?,
+            semantic_hits(ws, &query, fetch_n, SEMANTIC_MEANWHILE)?,
             LaneReport::ran_only("vector"),
         )
     } else if mode.eq_ignore_ascii_case("keyword") {
-        (
-            keyword_hits(state, &params.query, fetch_n).await?,
-            LaneReport::ran_only("keyword"),
-        )
+        (keyword_hits(ws, &query, fetch_n)?, LaneReport::ran_only("keyword"))
     } else {
-        return Err(McpError::invalid_request(
-            format!("`code_search`: unknown lane {mode:?}; expected \"hybrid\", \"semantic\", or \"keyword\""),
-            None,
-        ));
+        return Err(EngineError::unavailable(format!(
+            "`code_search`: unknown lane {mode:?}; expected \"hybrid\", \"semantic\", or \"keyword\""
+        )));
     };
 
     let keep_text = if rerank_enabled {
@@ -89,51 +55,38 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     } else {
         0
     };
-    let hydrated = {
-        let store = state.store_read().await;
-        hydrate_hits(&store, seeds, fetch_n, keep_text)
-    };
+    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text);
 
     // The reranker reorders the head of the ranking and drops nothing; a reranker that cannot run
     // leaves the fused order and says why, as a lane that did not run.
     let mut report = report;
     let hits = if rerank_enabled {
-        let (hits, failure) = rerank_hits(state, &params.query, hydrated.hits, hydrated.texts, &rerank_preset).await;
+        let (hits, failure) = rerank_hits(ws, &query, hydrated.hits, hydrated.texts, &rr.preset);
         if let Some(reason) = failure {
-            report.unavailable.push(LaneUnavailable { lane: "rerank", reason });
+            report.unavailable.push(LaneUnavailable {
+                lane: "rerank".to_string(),
+                reason,
+            });
         }
         hits
     } else {
         hydrated.hits
     };
-    let truncated_reason = (hydrated.omitted > 0).then(|| "stale_chunks".to_string());
-
-    let budget = crate::engine::budget::apply_budget(hits, params.max_tokens);
-    format_code_response(
-        &SearchCodeResponse {
-            query: params.query,
-            budgeted: budget.budgeted,
-            truncated: truncated_reason.is_some(),
-            truncated_reason,
-            omitted: hydrated.omitted,
-            hits: budget.items,
-            lanes_ran: report.ran,
-            lanes_unavailable: report.unavailable,
-            elapsed_us: elapsed_us(__body),
-        },
-        want_toon,
-    )
+    Ok(CodeSearchRanking {
+        query,
+        truncated_reason: (hydrated.omitted > 0).then(|| "stale_chunks".to_string()),
+        omitted: hydrated.omitted,
+        hits,
+        lanes_ran: report.ran.into_iter().map(str::to_string).collect(),
+        lanes_unavailable: report.unavailable,
+    })
 }
 
 /// Hybrid lane: run the vector, keyword, and exact lanes best-effort and fuse their rankings via RRF
 /// on the shared `chunk_id` key. Each lane is independent — a lane that is unavailable (no embedder,
 /// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
 /// query never fails on a single lane. The returned hits carry the fused RRF score in `score`.
-async fn hybrid_hits(
-    state: &ServerState,
-    query: &str,
-    limit: usize,
-) -> Result<(Vec<CodeSearchHit>, LaneReport), McpError> {
+fn hybrid_hits(ws: &Workspace, query: &str, limit: usize) -> Result<(Vec<CodeSearchHit>, LaneReport), EngineError> {
     let fuse_limit = (limit * 4).clamp(limit, 200);
 
     let mut report = LaneReport::default();
@@ -143,8 +96,8 @@ async fn hybrid_hits(
     // vector lane used to be reported as a complete result. With `embed` off the lane is not
     // degraded — it was never asked to run. ~keep
     let mut vector_ran = false;
-    let vector_ids: Vec<String> = if state.shared.config.code_search.embed {
-        match semantic_hits(state, query, fuse_limit, None).await {
+    let vector_ids: Vec<String> = if ws.config.code_search.embed {
+        match semantic_hits(ws, query, fuse_limit, None) {
             Ok(hits) => {
                 vector_ran = true;
                 report.ran.push("vector");
@@ -160,13 +113,13 @@ async fn hybrid_hits(
         // Not a failure, but the caller asked for a hybrid search and is getting a lexical one: a
         // result that silently lacks the vector lane reads as "nothing similar exists".
         report.unavailable.push(LaneUnavailable {
-            lane: "vector",
+            lane: "vector".to_string(),
             reason: "embeddings are off: set `[code_search] embed = true` and run `index_rescan`".to_string(),
         });
         Vec::new()
     };
 
-    let lanes = fjall_lanes(state, query, fuse_limit, true).await?;
+    let lanes = fjall_lanes(ws, query, fuse_limit, true);
     match &lanes.degraded {
         Some(degraded) => report.degrade(&["keyword", "exact"], degraded.reason.clone()),
         None => report.ran.extend(["keyword", "exact"]),
@@ -240,7 +193,7 @@ impl LaneReport {
     /// different causes in the same query and collapsing them would hide one.
     fn degrade(&mut self, lanes: &[&'static str], reason: String) {
         self.unavailable.extend(lanes.iter().map(|lane| LaneUnavailable {
-            lane,
+            lane: (*lane).to_string(),
             reason: reason.clone(),
         }));
         self.reason = Some(match self.reason.take() {
@@ -250,11 +203,12 @@ impl LaneReport {
     }
 }
 
-/// The error for lanes that did not run, on a call that has no other lane to answer with.
-fn lane_refusal(cause: LaneCause, message: String) -> McpError {
+/// The error for lanes that did not run, on a call that has no other lane to answer with: busy while
+/// another process holds the index, unavailable until a rescan rebuilds it.
+fn lane_refusal(cause: LaneCause, message: String) -> EngineError {
     match cause {
-        LaneCause::Held => McpError::invalid_request(message, Some(serde_json::json!({ super::BUSY_DATA: true }))),
-        LaneCause::RescanOwed => McpError::invalid_request(message, None),
+        LaneCause::Held => EngineError::Busy(message),
+        LaneCause::RescanOwed => EngineError::Unavailable(message),
     }
 }
 
@@ -264,14 +218,9 @@ fn lane_refusal(cause: LaneCause, message: String) -> McpError {
 /// command or a second `serve` beside a writer, with no daemon) cannot run them: the outcome names
 /// why and the fix ([`Degraded::unreachable`]). A daemon-hosted session borrows the pool writer's
 /// index handle, so it runs them like a writer. ~keep
-async fn fjall_lanes(
-    state: &ServerState,
-    query: &str,
-    limit: usize,
-    want_exact: bool,
-) -> Result<LaneOutcome, McpError> {
+fn fjall_lanes(ws: &Workspace, query: &str, limit: usize, want_exact: bool) -> LaneOutcome {
     let rescan_owed = {
-        let store = state.store_read().await;
+        let store = ws.store_read();
         if let Some(db) = store.read_index_view() {
             let keyword = bm25_search(&*db, query, limit)
                 .into_iter()
@@ -282,15 +231,15 @@ async fn fjall_lanes(
             } else {
                 Vec::new()
             };
-            return Ok(LaneOutcome {
+            return LaneOutcome {
                 keyword,
                 exact,
                 degraded: None,
-            });
+            };
         }
         store.rescan_owed()
     };
-    Ok(Degraded::unreachable(rescan_owed).into())
+    Degraded::unreachable(rescan_owed).into()
 }
 
 /// What a semantic-only `code_search` can do while the vector store is unavailable.
@@ -302,21 +251,19 @@ const SEMANTIC_MEANWHILE: Option<&str> = Some(
 /// Semantic lane: embed the query and run vector KNN over the scope-filtered LanceDB `code_chunks`
 /// table. Each hit carries an L2 `distance` (lower = closer) and no BM25 `score`. A vector store
 /// that is unavailable is refused, ending with `meanwhile`.
-async fn semantic_hits(
-    state: &ServerState,
+fn semantic_hits(
+    ws: &Workspace,
     query: &str,
     limit: usize,
     meanwhile: Option<&str>,
-) -> Result<Vec<CodeSearchHit>, McpError> {
-    let embedding = embed_query(state, query).await?;
-    let lance = lance_store(state)
-        .await
+) -> Result<Vec<CodeSearchHit>, EngineError> {
+    let embedding = ws.embed_query(query)?;
+    let lance = ws
+        .lance_store()
         .map_err(|unavailable| unavailable.refusal("code_search", meanwhile))?;
-    let scope = state.shared.scope.clone();
-    let hits_raw = tokio::task::spawn_blocking(move || lance.search_code_chunks(&scope, embedding, limit))
-        .await
-        .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-        .map_err(|e| McpError::internal_error(format!("search_code_chunks: {e}"), None))?;
+    let hits_raw = lance
+        .search_code_chunks(&ws.scope, embedding, limit)
+        .map_err(|e| EngineError::internal(format!("search_code_chunks: {e}")))?;
 
     // A row's own path and metadata are not used: the chunk and its live paths are resolved by
     // `hydrate_hits`, like every other lane's.
@@ -333,8 +280,8 @@ async fn semantic_hits(
 /// Keyword lane: native BM25 over the Fjall index, hydrating each ranked `chunk_id` into a pointer.
 /// Each hit carries a BM25 `score` (higher = better) and no `distance`. Refused, never an empty vec,
 /// when this session cannot read the index.
-async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Result<Vec<CodeSearchHit>, McpError> {
-    let lanes = fjall_lanes(state, query, limit, false).await?;
+fn keyword_hits(ws: &Workspace, query: &str, limit: usize) -> Result<Vec<CodeSearchHit>, EngineError> {
+    let lanes = fjall_lanes(ws, query, limit, false);
     // `lane: "keyword"` has no other lane to fall back on, so a degraded read is a hard error. There
     // is no honest partial here — an empty list would claim the BM25 index was searched. ~keep
     if let Some(Degraded { reason, cause }) = lanes.degraded {
@@ -443,8 +390,8 @@ const RERANK_CANDIDATES: usize = 50;
 /// Reorder the first hits, one per body in `texts` (at most [`RERANK_CANDIDATES`]), by the
 /// cross-encoder, the rest following in fused order. Nothing is dropped. A failure returns the hits
 /// as they came, with the reason.
-async fn rerank_hits(
-    state: &ServerState,
+fn rerank_hits(
+    ws: &Workspace,
     query: &str,
     mut hits: Vec<CodeSearchHit>,
     texts: Vec<String>,
@@ -462,10 +409,10 @@ async fn rerank_hits(
             name: preset.to_string(),
         },
         top_k: Some(candidates),
-        acceleration: crate::embeddings::acceleration(state.shared.config.resources.onnx_provider),
+        acceleration: crate::embeddings::acceleration(ws.config.resources.onnx_provider),
         ..Default::default()
     };
-    let scored = match xberg::rerank_async(query.to_string(), texts, &config).await {
+    let scored = match xberg::rerank(query.to_string(), texts, &config) {
         Ok(scored) => scored,
         Err(error) => return (hits, Some(format!("the reranker failed: {error}"))),
     };
@@ -482,83 +429,6 @@ async fn rerank_hits(
     (reordered, None)
 }
 
-pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {
-    let __body = std::time::Instant::now();
-    let blob = {
-        let store = state.store_read().await;
-        let entry = store.lookup(&params.path).ok_or_else(|| {
-            McpError::invalid_params(format!("`code chunk`: file not indexed: {}", params.path), None)
-        })?;
-        let hash_hex = entry.hash_hex.clone();
-        store
-            .read_chunks_by_hex(&hash_hex)
-            .map_err(|e| McpError::internal_error(format!("`code chunk`: read chunk blob: {e}"), None))?
-            .ok_or_else(|| {
-                McpError::invalid_params(
-                    format!(
-                        "`code chunk`: no code chunks indexed for {} (scan with --features code-search)",
-                        params.path
-                    ),
-                    None,
-                )
-            })?
-    };
-
-    let chunks = &blob.chunks;
-    if chunks.is_empty() {
-        return Err(McpError::invalid_params(
-            format!("`code chunk`: {} has no chunks", params.path),
-            None,
-        ));
-    }
-
-    let chunk = if let Some(id) = params.chunk_id.as_deref() {
-        chunks.iter().find(|c| c.chunk_id == id).ok_or_else(|| {
-            McpError::invalid_params(
-                format!("`code chunk`: chunk_id {id:?} not found in {}", params.path),
-                None,
-            )
-        })?
-    } else if let Some(bs) = params.byte_start {
-        chunks.iter().find(|c| c.byte_start == bs).ok_or_else(|| {
-            McpError::invalid_params(
-                format!("`code chunk`: no chunk at byte_start {bs} in {}", params.path),
-                None,
-            )
-        })?
-    } else if chunks.len() == 1 {
-        &chunks[0]
-    } else {
-        let ids: Vec<&str> = chunks.iter().map(|c| c.chunk_id.as_str()).collect();
-        return Err(McpError::invalid_params(
-            format!(
-                "`code chunk`: {} has {} chunks; pass `chunk_id` or `byte_start` to disambiguate: {}",
-                params.path,
-                chunks.len(),
-                ids.join(", ")
-            ),
-            None,
-        ));
-    };
-
-    // The sidecar is shared by every copy of this content and names the path chunked first.
-    json_result(&GetChunkResponse {
-        path: params.path.to_string(),
-        chunk_id: chunk.chunk_id.clone(),
-        symbol: chunk.symbol.clone(),
-        kind: chunk.kind.clone(),
-        lang: chunk.lang.clone(),
-        signature: chunk.signature.clone(),
-        doc: chunk.doc.clone(),
-        line_start: chunk.line_start,
-        line_end: chunk.line_end,
-        byte_start: chunk.byte_start,
-        byte_end: chunk.byte_end,
-        text: chunk.text.clone(),
-        elapsed_us: elapsed_us(__body),
-    })
-}
-
 #[cfg(test)]
-#[path = "helpers_code_search_tests.rs"]
+#[path = "code_search_tests.rs"]
 mod tests;
