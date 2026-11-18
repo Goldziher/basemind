@@ -78,10 +78,5 @@ pub(super) fn request(shared: &Workspace) {
             Ok(outcome) => tracing::info!(?outcome, "git-history index sync complete"),
             Err(error) => tracing::warn!(%error, "git-history index sync failed; tools live-walk"),
         }
-        // Fjall 3.1 can deadlock while dropping its final database handle after a background sync
-        // (fjall-rs/fjall#260). This path is only used by a standalone MCP process; the
-        // daemon-backed path above owns and closes the shared database. Keep this clone alive until
-        // process exit so Tokio runtime shutdown cannot hang.
-        std::mem::forget(git_history);
     });
 }

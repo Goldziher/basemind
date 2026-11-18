@@ -554,10 +554,6 @@ fn sync_git_history_after_scan(
         }
         Err(error) => tracing::warn!(?error, "git-history index sync failed"),
     }
-    // Fjall 3.1.9 can deadlock in `DatabaseInner::drop` even after writers stop
-    // (fjall-rs/fjall#260). A scan is a short-lived helper process, so let the OS close this
-    // already-persisted database at process exit instead of risking an indefinitely wedged CLI.
-    std::mem::forget(index);
 }
 
 /// Run a full scan, printing each file's line as the scan absorbs it.
@@ -574,6 +570,10 @@ fn scan_streaming(
     config: &basemind::config::Config,
     cancel: &basemind::scanner::ScanCancel,
 ) -> std::result::Result<basemind::scanner::ScanReport, basemind::scanner::ScanError> {
+    // The pass releases the process-wide embedding engine when the scan ends, so the model is not
+    // held through the git-history sync and until exit (the daemon does the same per full pass).
+    #[cfg(feature = "intelligence")]
+    let _embed_pass = basemind::embeddings::begin_embed_pass();
     let mut observer = render::ScanLineObserver::new(no_color, verbosity);
     let report = basemind::scanner::scan_with_observer(
         root,

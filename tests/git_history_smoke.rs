@@ -129,6 +129,35 @@ fn full_rebuild_then_fresh_then_incremental() {
     );
 }
 
+/// The scan and the standalone serve drop the index after a sync instead of leaking it (a leaked
+/// fjall database is a definite leak under valgrind and keeps its lock until exit). That is only
+/// sound if closing a just-synced database returns: fjall before 3.1.13 could block forever in
+/// `DatabaseInner::drop` on a full worker channel (fjall-rs/fjall#260).
+#[test]
+fn a_synced_index_closes_promptly_and_releases_its_lock() {
+    let dir = init_repo();
+    let root = dir.path();
+    for i in 0..20 {
+        commit_file(root, "a.rs", &format!("fn a{i}() {{}}\n"), &format!("c{i}"));
+    }
+    let (index, outcome) = sync(root);
+    assert!(
+        matches!(outcome, RebuildOutcome::FullRebuild { commits: 20, .. }),
+        "{outcome:?}"
+    );
+
+    let (done, closed) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(index);
+        let _ = done.send(());
+    });
+    closed
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("dropping a synced git-history index returns");
+    let reopened = GitHistoryIndex::open_once(&basemind_dir(root)).expect("the dropped index released its lock");
+    assert_eq!(reopened.commit_count(), 20);
+}
+
 #[test]
 fn history_rewrite_triggers_full_rebuild_no_stale_commits() {
     let dir = init_repo();
