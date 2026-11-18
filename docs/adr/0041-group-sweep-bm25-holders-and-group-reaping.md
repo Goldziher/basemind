@@ -98,7 +98,12 @@ versions) failed for BM25 (+142 % hot, +129 % rare in run 44163234234). Two caus
   (`retirement_gate_hold`, 40 terms per file, a second view of as many files kept): retiring a view
   of 4 000 files took 1.36 s with the gate held 1.29 s by the full posting sweep, and now takes
   1.24 s with the longest writer wait 56 ms; at 16 000 files, 9.8 s with a 9.5 s hold before, 4.6 s
-  with a 67 ms longest wait now.
+  with a 67 ms longest wait now. The read side is unchanged by these rules: `benches/index_read`
+  (quick, interleaved before, after, before, after, before, release build) passes the ADR-0028 p95
+  gate at three versions for every operation but `bm25/rare` (6.7-7.4 us before, 6.9-8.5 us after;
+  the before runs alone spread 11 %, so it is not judgeable), and the writer side indexes the 1x,
+  3x and 10x groups in 1.65-1.66, 1.88-1.91 and 2.97-3.11 s against 1.79-1.89, 1.64-1.79 and
+  3.03-3.08 s before (the first, cold before run left out: 3.39, 3.18 and 2.83 s).
 - A key's postings stay those of its first extraction (rule 7). When a tokenizer change keeps the
   key, a later view's forward rows list other terms, so retiring by those rows deletes only the
   terms it lists; the rest stay until a full posting sweep is owed.
