@@ -3,6 +3,7 @@
 //! or tokio types (ADR-0039); the MCP adapter and the CLI reach it from `src/mcp`.
 
 pub(crate) mod budget;
+pub(crate) mod by_path;
 pub(crate) mod cursor;
 pub(crate) mod definition;
 pub(crate) mod error;
@@ -10,12 +11,14 @@ pub(crate) mod files;
 pub(crate) mod filters;
 pub(crate) mod freshness;
 pub(crate) mod git;
+pub(crate) mod grep_text;
 pub(crate) mod l1_cache;
 pub(crate) mod map_cache;
 pub(crate) mod ops;
 pub(crate) mod outline_cache;
 pub(crate) mod pick;
 pub(crate) mod ranked_cache;
+pub(crate) mod refs;
 pub(crate) mod stale;
 pub(crate) mod term_index;
 pub(crate) mod timing;

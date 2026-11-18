@@ -1,8 +1,8 @@
 //! How the resolved refinement marks the hits of a name scan.
 
-use super::helpers_calls::{ResolvedCallers, merge_resolved};
-use super::helpers_calls_scan::CallScanPage;
-use super::types::ReferenceHit;
+use super::{ResolvedCallers, merge_resolved};
+use crate::engine::refs::calls_scan::CallScanPage;
+use crate::engine::types::refs::ReferenceHit;
 use crate::path::RelPath;
 
 fn page_of(paths: &[&str]) -> CallScanPage {

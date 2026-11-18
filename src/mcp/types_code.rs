@@ -136,7 +136,7 @@ pub(crate) struct SearchCodeResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<String>,
     /// Ranked chunks dropped because no indexed file holds their content any more.
-    #[serde(default, skip_serializing_if = "super::types::is_zero")]
+    #[serde(default, skip_serializing_if = "crate::engine::types::is_zero")]
     pub omitted: usize,
     pub hits: Vec<CodeSearchHit>,
     /// Lanes that produced a ranking for this query: `vector`, `keyword`, `exact`.

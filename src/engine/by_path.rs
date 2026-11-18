@@ -15,7 +15,7 @@ use serde::{Serialize, Serializer};
 use crate::path::RelPath;
 
 /// A row that belongs to one line of one file.
-pub(super) trait Located {
+pub(crate) trait Located {
     fn located(&self) -> &RelPath;
     /// 1-based line, `0` when the row has no recorded position.
     fn line(&self) -> u32;
@@ -42,7 +42,7 @@ impl<T: Located> Serialize for Listed<'_, T> {
 
 /// `serialize_with` for a row list: a map from each file to its rows. A path that is not UTF-8 is
 /// written lossily, since a JSON key is a string.
-pub(super) fn serialize<S: Serializer, T: Located>(rows: &[T], serializer: S) -> Result<S::Ok, S::Error> {
+pub(crate) fn serialize<S: Serializer, T: Located>(rows: &[T], serializer: S) -> Result<S::Ok, S::Error> {
     let mut on_line: ahash::AHashMap<(&RelPath, u32), usize> = ahash::AHashMap::new();
     for row in rows.iter().filter(|row| row.line() != 0) {
         *on_line.entry((row.located(), row.line())).or_default() += 1;
@@ -145,7 +145,7 @@ mod tests {
             .map(|i| row(&format!("src/some/deeply/nested/module_{i}/file.rs"), 3, 1))
             .collect();
         let budget = 100;
-        let kept = super::super::budget::apply_budget_by_path(rows, Some(budget));
+        let kept = crate::engine::budget::apply_budget_by_path(rows, Some(budget));
         assert!(kept.budgeted);
         assert!(kept.items.len() > 1, "more than the one row a page always keeps");
         let written = serde_json::to_string(&Page { hits: kept.items }).unwrap();

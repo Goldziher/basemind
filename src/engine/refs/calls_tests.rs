@@ -4,18 +4,9 @@ use crate::config::ConfigV1;
 use crate::scanner::{ScanSource, scan};
 use crate::store::{Store, VIEW_WORKING};
 
-/// Decode a `CallToolResult` back into JSON — the exact bytes an MCP client sees.
-fn decode(result: &rmcp::model::CallToolResult) -> serde_json::Value {
-    use rmcp::model::ContentBlock;
-    let text = result
-        .content
-        .iter()
-        .find_map(|c| match c {
-            ContentBlock::Text(t) => Some(t.text.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    serde_json::from_str(&text).expect("tool response is JSON")
+/// An answer as JSON: the body an MCP client reads.
+fn decode(response: &impl serde::Serialize) -> serde_json::Value {
+    serde_json::to_value(response).expect("the answer serializes")
 }
 
 /// The index a writer session reads: its own open fjall index.
@@ -24,7 +15,7 @@ fn local_index(store: &Store) -> crate::index::view::StandaloneView<crate::index
 }
 
 /// Scan `root` and return the store plus its map cache.
-fn scan_fixture(root: &std::path::Path) -> (Store, crate::mcp::MapCache) {
+fn scan_fixture(root: &std::path::Path) -> (Store, crate::engine::MapCache) {
     let mut store = Store::open(root, VIEW_WORKING).expect("open");
     scan(
         root,
@@ -34,7 +25,7 @@ fn scan_fixture(root: &std::path::Path) -> (Store, crate::mcp::MapCache) {
         crate::scanner::EmbedMode::Inline,
     )
     .expect("scan");
-    let cache = crate::mcp::MapCache::build(&store, 0);
+    let cache = crate::engine::MapCache::build(&store, 0);
     (store, cache)
 }
 
@@ -54,7 +45,7 @@ fn scan_fixture(root: &std::path::Path) -> (Store, crate::mcp::MapCache) {
 /// count for an unambiguous name, and merely *annotate* which hits resolution could prove.
 #[test]
 fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
-    use crate::mcp::types::{FindCallersParams, FindReferencesParams};
+    use crate::engine::types::refs::{FindCallersParams, FindReferencesParams};
     use crate::path::RelPath;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -78,27 +69,21 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
     .expect("caller_b.py");
 
     let (store, cache) = scan_fixture(root);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
 
     let references = decode(
-        &runtime
-            .block_on(super::run_find_references(
-                &local_index(&store),
-                FindReferencesParams {
-                    substring: false,
-                    name: "target".to_string(),
-                    limit: Some(500),
-                    max_tokens: None,
-                    format: None,
-                    cursor: None,
-                },
-                || None,
-                |_| {},
-            ))
-            .expect("find_references"),
+        &super::run_find_references(
+            &local_index(&store),
+            FindReferencesParams {
+                substring: false,
+                name: "target".to_string(),
+                limit: Some(500),
+                max_tokens: None,
+                cursor: None,
+            },
+            || None,
+            |_| {},
+        )
+        .expect("find_references"),
     );
     assert_eq!(
         references.get("total").and_then(serde_json::Value::as_u64),
@@ -107,25 +92,24 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
     );
 
     let callers = decode(
-        &runtime
-            .block_on(super::run_find_callers(
-                &store,
-                &local_index(&store),
-                crate::mcp::tool_contract::IndexedFiles::contained(root),
-                &cache,
-                FindCallersParams {
-                    substring: false,
-                    path: RelPath::from("pkg/mod.py".as_bytes()),
-                    name: "target".to_string(),
-                    kind: None,
-                    line: None,
-                    limit: Some(500),
-                    max_tokens: None,
-                    cursor: None,
-                },
-                || None,
-            ))
-            .expect("find_callers"),
+        &super::run_find_callers(
+            &store,
+            &local_index(&store),
+            crate::engine::files::IndexedFiles::contained(root),
+            &cache,
+            FindCallersParams {
+                substring: false,
+                path: RelPath::from("pkg/mod.py".as_bytes()),
+                name: "target".to_string(),
+                kind: None,
+                line: None,
+                limit: Some(500),
+                max_tokens: None,
+                cursor: None,
+            },
+            || None,
+        )
+        .expect("find_callers"),
     );
 
     assert_eq!(
@@ -173,7 +157,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
 #[cfg(feature = "code-intel-js")]
 #[test]
 fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
-    use crate::mcp::types::FindCallersParams;
+    use crate::engine::types::refs::FindCallersParams;
     use crate::path::RelPath;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -191,28 +175,24 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
     let (store, cache) = scan_fixture(root);
 
     let body = decode(
-        &tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(super::run_find_callers(
-                &store,
-                &local_index(&store),
-                crate::mcp::tool_contract::IndexedFiles::contained(root),
-                &cache,
-                FindCallersParams {
-                    substring: false,
-                    path: RelPath::from("util.ts".as_bytes()),
-                    name: "target".to_string(),
-                    kind: None,
-                    line: None,
-                    limit: Some(500),
-                    max_tokens: None,
-                    cursor: None,
-                },
-                || None,
-            ))
-            .expect("find_callers"),
+        &super::run_find_callers(
+            &store,
+            &local_index(&store),
+            crate::engine::files::IndexedFiles::contained(root),
+            &cache,
+            FindCallersParams {
+                substring: false,
+                path: RelPath::from("util.ts".as_bytes()),
+                name: "target".to_string(),
+                kind: None,
+                line: None,
+                limit: Some(500),
+                max_tokens: None,
+                cursor: None,
+            },
+            || None,
+        )
+        .expect("find_callers"),
     );
 
     assert_eq!(
@@ -259,7 +239,7 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
 #[cfg(feature = "code-intel-js")]
 #[test]
 fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
-    use crate::mcp::types::FindCallersParams;
+    use crate::engine::types::refs::FindCallersParams;
     use crate::path::RelPath;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -292,28 +272,24 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
     );
 
     let body = decode(
-        &tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(super::run_find_callers(
-                &store,
-                &local_index(&store),
-                crate::mcp::tool_contract::IndexedFiles::contained(root),
-                &cache,
-                FindCallersParams {
-                    substring: false,
-                    path: def_path.clone(),
-                    name: "target".to_string(),
-                    kind: None,
-                    line: None,
-                    limit: Some(100),
-                    max_tokens: None,
-                    cursor: None,
-                },
-                || None,
-            ))
-            .expect("find_callers"),
+        &super::run_find_callers(
+            &store,
+            &local_index(&store),
+            crate::engine::files::IndexedFiles::contained(root),
+            &cache,
+            FindCallersParams {
+                substring: false,
+                path: def_path.clone(),
+                name: "target".to_string(),
+                kind: None,
+                line: None,
+                limit: Some(100),
+                max_tokens: None,
+                cursor: None,
+            },
+            || None,
+        )
+        .expect("find_callers"),
     );
 
     assert_eq!(
@@ -367,7 +343,7 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
 #[test]
 fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
     use super::{ResolvedCallers, merge_resolved};
-    use crate::mcp::types::ReferenceHit;
+    use crate::engine::types::refs::ReferenceHit;
 
     let hit = || ReferenceHit {
         path: crate::path::RelPath::from("a.rs"),
@@ -409,7 +385,7 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
 #[cfg(feature = "code-intel-js")]
 #[test]
 fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
-    use crate::mcp::types::FindCallersParams;
+    use crate::engine::types::refs::FindCallersParams;
     use crate::path::RelPath;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -421,31 +397,26 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
     )
     .expect("consumer.ts");
     let (store, cache) = scan_fixture(root);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let callers = |cache: &crate::mcp::MapCache| {
+    let callers = |cache: &crate::engine::MapCache| {
         decode(
-            &runtime
-                .block_on(super::run_find_callers(
-                    &store,
-                    &local_index(&store),
-                    crate::mcp::tool_contract::IndexedFiles::contained(root),
-                    cache,
-                    FindCallersParams {
-                        substring: false,
-                        path: RelPath::from("util.ts".as_bytes()),
-                        name: "target".to_string(),
-                        kind: None,
-                        line: None,
-                        limit: Some(100),
-                        max_tokens: None,
-                        cursor: None,
-                    },
-                    || None,
-                ))
-                .expect("find_callers"),
+            &super::run_find_callers(
+                &store,
+                &local_index(&store),
+                crate::engine::files::IndexedFiles::contained(root),
+                cache,
+                FindCallersParams {
+                    substring: false,
+                    path: RelPath::from("util.ts".as_bytes()),
+                    name: "target".to_string(),
+                    kind: None,
+                    line: None,
+                    limit: Some(100),
+                    max_tokens: None,
+                    cursor: None,
+                },
+                || None,
+            )
+            .expect("find_callers"),
         )
     };
     let renamed = |body: &serde_json::Value| {
@@ -456,7 +427,7 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
 
     let full = callers(&cache);
     assert!(renamed(&full), "resolution lists the renamed caller: {full}");
-    let partial = callers(&crate::mcp::MapCache::empty());
+    let partial = callers(&crate::engine::MapCache::empty());
     assert!(renamed(&partial), "a map without the file still lists it: {partial}");
     assert_eq!(partial["total"], full["total"]);
 }
@@ -466,7 +437,7 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
 /// cursor is refused as stale instead.
 #[test]
 fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
-    use crate::mcp::types::FindReferencesParams;
+    use crate::engine::types::refs::FindReferencesParams;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -474,24 +445,19 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
     std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); }\n").expect("b.rs");
     std::fs::write(root.join("c.rs"), b"fn gamma() { alpha(); }\n").expect("c.rs");
     let (mut store, _) = scan_fixture(root);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
     let page = |store: &Store, cursor: Option<super::Cursor>| {
-        runtime.block_on(super::run_find_references(
+        super::run_find_references(
             &local_index(store),
             FindReferencesParams {
                 substring: false,
                 name: "alpha".to_string(),
                 limit: Some(1),
                 max_tokens: None,
-                format: None,
                 cursor,
             },
             || None,
             |_| {},
-        ))
+        )
     };
     let first = decode(&page(&store, None).expect("first page"));
     let cursor = super::Cursor(first["next_cursor"].as_str().expect("a second page").to_string());
@@ -511,66 +477,7 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
     .expect("rescan");
 
     let refused = page(&store, Some(cursor)).expect_err("a cursor cut before the edit");
-    assert!(refused.message.contains("changed since this cursor"), "{refused:?}");
-}
-
-/// A session that holds no index (another process holds the lock, no daemon serves this one: a CLI
-/// command beside a writer `serve`) refuses every `code_refs` relation that scans it, naming the fix
-/// and marked busy so the CLI exits `3`, instead of answering from a partial in-RAM projection.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_refs_without_an_index_is_refused_with_the_fix() {
-    use std::sync::Arc;
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
-    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
-    std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); }\n").expect("b.rs");
-    drop(scan_fixture(root));
-    let store = Store::open_read_only_no_index(root, VIEW_WORKING).expect("index-less store");
-    let telemetry_dir = store.basemind_dir.clone();
-    let shared = crate::mcp::Workspace::new(
-        store,
-        root.to_path_buf(),
-        Arc::new(ConfigV1::with_defaults()),
-        None,
-        Arc::new(crate::git_cache::GitCache::open(root, 1, false).expect("git cache")),
-        None,
-        crate::mcp::ServerOptions {
-            read_only: true,
-            ..crate::mcp::ServerOptions::default()
-        }
-        .into(),
-    );
-    let state = crate::mcp::ServerState::for_connection(
-        crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
-        "test".into(),
-    );
-    let refs = |relation: Option<&str>, path: Option<&str>| crate::mcp::params::CodeRefsParams {
-        name: "alpha".to_string(),
-        relation: relation.map(str::to_string),
-        path: path.map(crate::path::RelPath::from),
-        line: None,
-        column: None,
-        match_mode: None,
-        limit: None,
-        cursor: None,
-        max_tokens: None,
-    };
-    for params in [
-        refs(None, None),
-        refs(None, Some("a.rs")),
-        refs(Some("implementations"), None),
-    ] {
-        let refused = crate::mcp::helpers_code::code_refs(&state, params)
-            .await
-            .expect_err("a session with no index cannot scan references");
-        assert_eq!(refused.code, rmcp::model::ErrorCode::INVALID_REQUEST, "{refused:?}");
-        assert!(refused.message.contains("holds this workspace's index"), "{refused:?}");
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        assert!(refused.message.contains("`basemind comms start`"), "{refused:?}");
-        let exit = crate::cli::run_tool("code_refs", Err(refused)).expect_err("refused");
-        assert_eq!(crate::cli::exit::exit_code_for(&exit), crate::cli::exit::BUSY);
-    }
+    assert!(refused.to_string().contains("changed since this cursor"), "{refused:?}");
 }
 
 /// A daemon-hosted store whose index the daemon took back (a poisoned handle being reopened, or an
@@ -587,11 +494,10 @@ fn a_hosted_store_without_its_index_is_told_the_daemon_released_it() {
     let Err(refused) = super::index_for_refs(&store) else {
         panic!("no index to lend");
     };
-    assert!(refused.message.contains("the daemon released"), "{refused:?}");
-    assert!(!refused.message.contains("no daemon serves it"), "{refused:?}");
-    assert_eq!(
-        refused.data.as_ref().and_then(|data| data.get(crate::mcp::BUSY_DATA)),
-        Some(&serde_json::Value::Bool(true)),
-        "busy, so the CLI exits 3"
+    assert!(refused.to_string().contains("the daemon released"), "{refused:?}");
+    assert!(!refused.to_string().contains("no daemon serves it"), "{refused:?}");
+    assert!(
+        matches!(refused, crate::engine::EngineError::Busy(_)),
+        "busy, so the CLI exits 3: {refused:?}"
     );
 }

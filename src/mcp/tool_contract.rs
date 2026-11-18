@@ -8,9 +8,8 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::{CallToolResult, ContentBlock, MetaObject};
 use serde_json::Value;
 
+use super::BasemindServer;
 use super::strict::{Strict, ToolArgs};
-use super::{BasemindServer, ServerState};
-use crate::path::RelPath;
 
 /// `_meta` key that keeps a tool's schema loaded in hosts that defer MCP tools and load only names.
 pub(crate) const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
@@ -48,33 +47,8 @@ impl BasemindServer {
     }
 }
 
+#[cfg(any(feature = "code-search", feature = "documents"))]
 pub(super) use crate::engine::budget::budget;
-pub(super) use crate::engine::files::{IndexedFiles, Sweep, Unreadable};
-
-/// The error for a caller-supplied path that leaves the repository ([`crate::engine::files`]).
-pub(super) fn outside_repository(tool: &str, path: &RelPath) -> McpError {
-    crate::engine::files::outside_repository(tool, path).into()
-}
-
-/// [`IndexedFiles::file`] with its refusal phrased for the caller of `tool`.
-pub(super) fn indexed_file(
-    state: &ServerState,
-    store: &crate::store::Store,
-    tool: &str,
-    path: &RelPath,
-) -> Result<std::path::PathBuf, McpError> {
-    Ok(crate::engine::files::indexed_file(&state.shared, store, tool, path)?)
-}
-
-/// Why `path` cannot be served from the code map, phrased as the next call to make.
-pub(super) fn not_indexed_in(
-    store: &crate::store::Store,
-    root: &std::path::Path,
-    tool: &str,
-    path: &RelPath,
-) -> McpError {
-    crate::engine::files::not_indexed_in(store, root, tool, path).into()
-}
 
 /// The error for a tool whose retrieval stack is not in this build.
 #[cfg_attr(

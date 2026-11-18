@@ -1,0 +1,242 @@
+//! Body of `code_refs`: the usages of a name. Each relation is a read of the index
+//! (`crate::engine::refs`): call sites of a name, the callers of one definition, implementations,
+//! importers, or the definition a reference binds to.
+
+use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use crate::engine::budget::{apply_budget, budget};
+use crate::engine::cursor::Cursor;
+use crate::engine::error::EngineError;
+use crate::engine::files::IndexedFiles;
+use crate::engine::refs::calls::{index_for_refs, run_find_callers, run_find_references};
+use crate::engine::refs::impls::run_find_implementations;
+use crate::engine::refs::intel::run_goto_definition;
+use crate::engine::refs::matching::Matching;
+use crate::engine::stale::flag_call_sites;
+use crate::engine::types::refs::{
+    CodeRefsParams, CodeRefsResult, DependentsResponse, FindCallersParams, FindCallersResponse,
+    FindImplementationsParams, FindReferencesParams, GotoDefinitionParams,
+};
+use crate::engine::workspace::Workspace;
+
+/// What `code_refs` lists about a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Relation {
+    Callers,
+    Implementations,
+    Importers,
+    Definition,
+}
+
+impl Relation {
+    fn parse(raw: Option<&str>) -> Result<Self, EngineError> {
+        match raw.unwrap_or("callers") {
+            "callers" => Ok(Self::Callers),
+            "implementations" => Ok(Self::Implementations),
+            "importers" => Ok(Self::Importers),
+            "definition" => Ok(Self::Definition),
+            other => Err(EngineError::invalid_argument(format!(
+                "`code_refs`: unknown relation `{other}`; expected `callers`, `implementations`, \
+                 `importers` or `definition`"
+            ))),
+        }
+    }
+}
+
+/// The argument shapes `code_refs` accepts, quoted in every shape error.
+const REFS_SHAPES: &str = "accepted shapes: {name} (call sites of a name), {name, path} (callers of the definition in \
+     that file; add `line` when several there share the name), {name, relation:\"implementations\"}, \
+     {name, relation:\"importers\"}, {name, relation:\"definition\", path, line} (the definition a reference \
+     binds to)";
+
+impl Workspace {
+    /// `code_refs`: usages of a name: call sites, implementations, importers, or the definition a
+    /// reference binds to.
+    pub(crate) fn code_refs(&self, p: CodeRefsParams) -> Result<CodeRefsResult, EngineError> {
+        code_refs(self, p)
+    }
+}
+
+fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, EngineError> {
+    let relation = Relation::parse(p.relation.as_deref())?;
+    let substring = Matching::parse(p.match_mode.as_deref())? == Matching::Substring;
+    let shape_error = |problem: &str| EngineError::invalid_argument(format!("`code_refs`: {problem}; {REFS_SHAPES}"));
+    if relation != Relation::Definition && p.column.is_some() {
+        return Err(shape_error("`column` applies only to relation `definition`"));
+    }
+    if p.line.is_some() && (matches!(relation, Relation::Implementations | Relation::Importers) || p.path.is_none()) {
+        return Err(shape_error(
+            "`line` needs `path`: it picks one of several same-named definitions, or locates the reference \
+             for relation `definition`",
+        ));
+    }
+    match relation {
+        Relation::Callers => match p.path {
+            Some(path) => {
+                let callers = FindCallersParams {
+                    path,
+                    name: p.name,
+                    substring,
+                    kind: None,
+                    line: p.line,
+                    limit: p.limit,
+                    max_tokens: budget(p.max_tokens),
+                    cursor: p.cursor,
+                };
+                run_callers(ws, callers).map(CodeRefsResult::Callers)
+            }
+            None => {
+                ws.wait_map_ready();
+                let idx = index_for_refs(&ws.store_read())?;
+                let cache = ws.cache.load_full();
+                run_find_references(
+                    &*idx,
+                    FindReferencesParams {
+                        name: p.name,
+                        substring,
+                        limit: p.limit,
+                        max_tokens: budget(p.max_tokens),
+                        cursor: p.cursor,
+                    },
+                    || ws.lifecycle_notice(),
+                    |hits| flag_call_sites(ws, &cache, hits),
+                )
+                .map(CodeRefsResult::References)
+            }
+        },
+        Relation::Implementations => {
+            if p.path.is_some() {
+                return Err(shape_error("`path` does not apply to relation `implementations`"));
+            }
+            ws.wait_map_ready();
+            let idx = index_for_refs(&ws.store_read())?;
+            let cache = ws.cache.load_full();
+            run_find_implementations(
+                &*idx,
+                FindImplementationsParams {
+                    trait_name: p.name,
+                    substring,
+                    language: None,
+                    limit: p.limit,
+                    max_tokens: budget(p.max_tokens),
+                    cursor: p.cursor,
+                },
+                &cache,
+                || ws.lifecycle_notice(),
+            )
+            .map(CodeRefsResult::Implementations)
+        }
+        Relation::Importers => {
+            if p.path.is_some() {
+                return Err(shape_error("`path` does not apply to relation `importers`"));
+            }
+            if p.match_mode.is_some() {
+                return Err(shape_error(
+                    "relation `importers` matches `name` against import paths and takes no `match`",
+                ));
+            }
+            run_dependents(ws, p.name, p.limit, p.cursor, budget(p.max_tokens)).map(CodeRefsResult::Importers)
+        }
+        Relation::Definition => {
+            let (Some(path), Some(line)) = (p.path, p.line) else {
+                return Err(shape_error("relation `definition` needs `path` and `line`"));
+            };
+            if p.limit.is_some() || p.cursor.is_some() || p.max_tokens.is_some() || p.match_mode.is_some() {
+                return Err(shape_error(
+                    "relation `definition` returns one location and takes no `match`, `limit`, `cursor` or \
+                     `max_tokens`",
+                ));
+            }
+            let column = match p.column {
+                Some(0) => return Err(shape_error("`column` is 1-based")),
+                Some(column) => Some(column - 1),
+                None => None,
+            };
+            let reference = GotoDefinitionParams {
+                path,
+                line,
+                column,
+                name: p.name,
+            };
+            run_goto_definition(ws, reference).map(CodeRefsResult::Definition)
+        }
+    }
+}
+
+/// Body of the `callers` mode: the name scan and the resolved-reference join over this session's
+/// store ([`run_find_callers`]).
+fn run_callers(ws: &Workspace, params: FindCallersParams) -> Result<FindCallersResponse, EngineError> {
+    ws.wait_map_ready();
+    let store = ws.store_read();
+    let idx = index_for_refs(&store)?;
+    let cache = ws.cache.load_full();
+    run_find_callers(&store, &*idx, IndexedFiles::of(ws), &cache, params, || {
+        ws.lifecycle_notice()
+    })
+}
+
+/// Body of `code_refs` relation `importers`: a heuristic reverse lookup over every file's imports.
+///
+/// Streams the corpus instead of consulting a pre-flattened imports index. That index was a second
+/// full copy of every import held for the process lifetime, to save one pass over data this tool
+/// alone reads; the pass is now over outlines that the L1 cache serves and immediately drops.
+fn run_dependents(
+    ws: &Workspace,
+    module: String,
+    limit: Option<u32>,
+    cursor: Option<Cursor>,
+    max_tokens: Option<u32>,
+) -> Result<DependentsResponse, EngineError> {
+    use std::sync::atomic::Ordering;
+
+    ws.wait_map_ready();
+    let generation = ws.cache_generation.load(Ordering::Relaxed);
+    let skip = match cursor.as_ref() {
+        Some(cursor) => {
+            let (offset, snapshot) = cursor.decode_in_memory()?;
+            if snapshot != generation {
+                return Err(EngineError::invalid_argument(
+                    "`code_refs`: the index changed since this cursor was issued. Call again without `cursor`.",
+                ));
+            }
+            offset as usize
+        }
+        None => 0,
+    };
+    let limit = limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    if module.is_empty() {
+        return Err(EngineError::invalid_argument(
+            "`code_refs`: `name` is empty; pass the module or import path to look for.",
+        ));
+    }
+    let finder = memchr::memmem::Finder::new(module.as_bytes());
+    let mut paths: Vec<crate::path::RelPath> = Vec::new();
+    let cache = ws.cache.load_full();
+    if module.as_bytes().contains(&0) {
+        cache.for_each(|path, l1| {
+            if crate::extract::l3::imports_mention(&module, &finder, &l1.imports) {
+                paths.push(path.clone());
+            }
+        });
+        paths.sort_unstable();
+    } else {
+        // Path order, so `paths` comes out sorted.
+        paths.extend(
+            cache
+                .terms()
+                .iter()
+                .filter(|(_, t)| t.mentions_import(&finder))
+                .map(|(p, _)| p.clone()),
+        );
+    }
+    let total = paths.len();
+    let page: Vec<crate::path::RelPath> = paths.into_iter().skip(skip).take(limit).collect();
+    let budgeted = apply_budget(page, max_tokens);
+    let next = skip + budgeted.items.len();
+    Ok(DependentsResponse {
+        total,
+        budgeted: budgeted.budgeted,
+        paths: budgeted.items,
+        next_cursor: (next < total).then(|| Cursor::encode_in_memory(next as u64, generation)),
+        notice: ws.lifecycle_notice(),
+    })
+}

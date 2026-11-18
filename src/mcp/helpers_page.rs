@@ -121,7 +121,7 @@ pub(super) fn page_ranked(
     hits.truncate(RANKED_DEPTH as usize);
     let fetched = hits.len() as u32;
     let page: Vec<Value> = hits.into_iter().skip(offset as usize).take(limit as usize).collect();
-    let budgeted = super::budget::apply_budget(page, max_tokens);
+    let budgeted = crate::engine::budget::apply_budget(page, max_tokens);
     let next = offset + budgeted.items.len() as u32;
     let more = !budgeted.items.is_empty() && next < fetched;
     body.insert(list_key.to_string(), Value::Array(budgeted.items));

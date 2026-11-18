@@ -8,8 +8,20 @@ use crate::engine::MapCache;
 use crate::engine::files::IndexedFiles;
 use crate::engine::freshness::{self, IndexedStamp};
 use crate::engine::types::code::{SearchHitView, kind_to_str};
+use crate::engine::types::refs::ReferenceHit;
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
+
+/// Flag each call site listed in a file edited since the scan. Its line is the indexed one: a call
+/// site has no name of its own to find it again by. Blocking IO.
+pub(crate) fn flag_call_sites(ws: &Workspace, cache: &MapCache, hits: &mut [ReferenceHit]) {
+    let mut judged: AHashMap<RelPath, bool> = AHashMap::new();
+    for hit in hits {
+        hit.stale = *judged
+            .entry(hit.path.clone())
+            .or_insert_with(|| !matches!(disk(ws, cache, &hit.path), Disk::Fresh));
+    }
+}
 
 /// A listed file as it is on disk now.
 pub(crate) enum Disk {

@@ -27,6 +27,12 @@ use super::types_tools::{
 };
 use crate::engine::Workspace;
 
+tokio::task_local! {
+    /// The cancellation token of the MCP `code_grep` call running on this task. The sweep runs on
+    /// rayon threads that aborting the tool's task does not stop, so it checks the token per file.
+    static GREP_CANCEL: tokio_util::sync::CancellationToken;
+}
+
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
 impl BasemindServer {
     #[tool(
@@ -115,7 +121,7 @@ impl BasemindServer {
         Parameters(args): Parameters<Strict<CodeGrepParams>>,
         ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        super::helpers_grep::GREP_CANCEL
+        GREP_CANCEL
             .scope(ctx.ct, self.answer(args, |p| self.code_grep_call(p)))
             .await
     }
@@ -190,7 +196,11 @@ impl BasemindServer {
 impl BasemindServer {
     /// Run the engine operation `op` as a verb-tool call: the body both a `#[tool]` shim and the
     /// matching `basemind` command run ([`adapter::call`]).
-    pub(crate) async fn op<P, R>(&self, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+    pub(crate) async fn op<P, R>(
+        &self,
+        p: P,
+        op: impl FnOnce(&Workspace, P) -> Result<R, crate::engine::EngineError> + Send + 'static,
+    ) -> Result<CallToolResult, McpError>
     where
         P: super::cursor_bind::Paged + Send + 'static,
         R: serde::Serialize + 'static,
@@ -233,14 +243,18 @@ impl BasemindServer {
         self.op_unpaged(p, Workspace::code_read).await
     }
 
-    /// Body of `code_grep`, shared with `basemind code grep`.
+    /// Body of the `code_grep` tool: [`Workspace::code_grep`], stopped when the MCP request running
+    /// it is cancelled ([`GREP_CANCEL`]).
     pub(crate) async fn code_grep_call(&self, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_grep",
-            p,
-            bound(p, |p| helpers_code::code_grep(&self.state, p)).await
-        )
+        let cancel = GREP_CANCEL.try_with(Clone::clone).ok();
+        self.op(p, move |ws: &Workspace, p| {
+            ws.code_grep_until(p, &|| {
+                cancel
+                    .as_ref()
+                    .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+            })
+        })
+        .await
     }
 
     /// Body of `code_search`, shared with `basemind code search`.
@@ -253,14 +267,9 @@ impl BasemindServer {
         )
     }
 
-    /// Body of `code_refs`, shared with `basemind code refs`.
+    /// Body of the `code_refs` tool.
     pub(crate) async fn code_refs_call(&self, p: CodeRefsParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_refs",
-            p,
-            bound(p, |p| helpers_code::code_refs(&self.state, p)).await
-        )
+        self.op(p, Workspace::code_refs).await
     }
 
     /// Body of the `find_files` tool.

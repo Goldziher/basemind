@@ -1,16 +1,15 @@
 //! Call-scan primitives for `find_references` / `find_callers`: the `calls_by_callee`
 //! range scan, its token-budget re-anchoring, and the per-file call reads behind them.
 //!
-//! Extracted from `helpers_calls.rs` to keep that file within the per-file size budget.
+//! Extracted from `calls.rs` to keep that file within the per-file size budget.
 
 use std::ops::Bound;
 
-use rmcp::ErrorData as McpError;
-
-use super::cursor::Cursor;
-use super::helpers_calls::resolve_call_line_col;
-use super::helpers_refs_match::Matching;
-use super::types::ReferenceHit;
+use super::calls::resolve_call_line_col;
+use super::matching::Matching;
+use crate::engine::cursor::Cursor;
+use crate::engine::error::EngineError;
+use crate::engine::types::refs::ReferenceHit;
 use crate::index::keys::ContentKey;
 use crate::index::view::IndexView;
 use crate::path::RelPath;
@@ -30,24 +29,24 @@ pub(crate) struct CallRef {
 /// key order it was cut in: the fingerprint of the view's live keys. A `references` / `callers`
 /// cursor carries it, and is refused as stale once it changes, since an edit moves the edited
 /// file's hits in that order.
-pub(super) fn scan_calls(
+pub(crate) fn scan_calls(
     idx: &dyn IndexView,
     name: &str,
     matching: Matching,
     limit: usize,
     cursor_after: Option<&[u8]>,
-) -> Result<(CallScanPage, u64), McpError> {
+) -> Result<(CallScanPage, u64), EngineError> {
     let generation = idx.live_keys().fingerprint();
-    let page = super::blocking::blocking(|| scan_calls_by_name(idx, name, matching, limit, cursor_after))?;
+    let page = scan_calls_by_name(idx, name, matching, limit, cursor_after)?;
     Ok((page, generation))
 }
 
 /// One file's call sites with the content key they were read under.
-pub(super) type FileCalls = (ContentKey, Vec<CallRef>);
+pub(crate) type FileCalls = (ContentKey, Vec<CallRef>);
 
 /// The content key each of `paths` is read under, in request order, from one snapshot of the view's
 /// live keys; `None` for a path the view does not hold.
-pub(super) fn content_keys(idx: &dyn IndexView, paths: &[RelPath]) -> Vec<Option<ContentKey>> {
+pub(crate) fn content_keys(idx: &dyn IndexView, paths: &[RelPath]) -> Vec<Option<ContentKey>> {
     let live = idx.live_keys();
     paths.iter().map(|path| live.key_of(path).copied()).collect()
 }
@@ -55,10 +54,10 @@ pub(super) fn content_keys(idx: &dyn IndexView, paths: &[RelPath]) -> Vec<Option
 /// Every call site of each of `files`, in request order, with the content key it was read under
 /// (the key given with it): the order key of the file's calls, which places a resolved caller among
 /// the scan hits. `None` for a file read under no key, which has no calls.
-pub(super) fn calls_in_files(
+pub(crate) fn calls_in_files(
     idx: &dyn IndexView,
     files: &[(RelPath, Option<ContentKey>)],
-) -> Result<Vec<Option<FileCalls>>, McpError> {
+) -> Result<Vec<Option<FileCalls>>, EngineError> {
     files
         .iter()
         .map(|(_, content)| {
@@ -96,7 +95,7 @@ pub(crate) struct CallScanPage {
 impl CallScanPage {
     /// Assemble a scan's page. The cursor is the last hit's key when matches remain past the page
     /// (`has_more`), and otherwise the key the scan stopped after, if it stopped early.
-    pub(super) fn finish(
+    pub(crate) fn finish(
         total: u32,
         total_is_partial: bool,
         hits: Vec<ReferenceHit>,
@@ -124,7 +123,7 @@ impl CallScanPage {
 }
 
 /// Result of applying a `max_tokens` budget to a call-scan page.
-pub(super) struct BudgetedCallPage {
+pub(crate) struct BudgetedCallPage {
     pub hits: Vec<ReferenceHit>,
     pub next_cursor: Option<Cursor>,
     pub budgeted: bool,
@@ -140,7 +139,7 @@ pub(super) struct BudgetedCallPage {
 ///
 /// The kept hits are then sorted by path (ADR-0036 rule 6): the scan's key order is by content
 /// key, which says nothing to a reader. The sort is stable, so one file's hits stay in offset order.
-pub(super) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Option<u32>) -> BudgetedCallPage {
+pub(crate) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Option<u32>) -> BudgetedCallPage {
     let hits: Vec<ReferenceHit> = page.hits.into_iter().map(|hit| hit.named(name)).collect();
     let mut budgeted = if max_tokens.is_none() {
         BudgetedCallPage {
@@ -149,7 +148,7 @@ pub(super) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Optio
             budgeted: false,
         }
     } else {
-        let budget = super::budget::apply_budget_by_path(hits, max_tokens);
+        let budget = crate::engine::budget::apply_budget_by_path(hits, max_tokens);
         if budget.budgeted {
             let kept = budget.items.len();
             BudgetedCallPage {
@@ -175,7 +174,7 @@ pub(super) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Optio
 /// holding the content, so a file whose run lies inside the page holds every such site on the page.
 /// Only the files holding the content of the page's first or last hit can have a run cut by the
 /// page edge; their call sites are read whole.
-pub(super) fn mark_shared_lines(idx: &dyn IndexView, hits: &mut [ReferenceHit], hit_keys: &[Vec<u8>]) {
+pub(crate) fn mark_shared_lines(idx: &dyn IndexView, hits: &mut [ReferenceHit], hit_keys: &[Vec<u8>]) {
     let content = |key: Option<&Vec<u8>>| key.and_then(|key| crate::index::keys::call_by_callee_content(key));
     let edge_contents = [content(hit_keys.first()), content(hit_keys.last())];
     let mut edges: Vec<(crate::path::RelPath, Option<crate::index::keys::ContentKey>)> = Vec::new();
@@ -243,19 +242,19 @@ pub(crate) fn scan_calls_by_name(
     matching: Matching,
     limit: usize,
     cursor_after: Option<&[u8]>,
-) -> Result<CallScanPage, McpError> {
+) -> Result<CallScanPage, EngineError> {
     scan_calls_examining(idx, name, matching, limit, cursor_after, SCAN_KEYS_EXAMINED_MAX)
 }
 
 /// [`scan_calls_by_name`] with the examined-keys cap as an argument, so a test can reach it.
-pub(super) fn scan_calls_examining(
+pub(crate) fn scan_calls_examining(
     idx: &dyn crate::index::view::IndexView,
     name: &str,
     matching: Matching,
     limit: usize,
     cursor_after: Option<&[u8]>,
     examine_cap: usize,
-) -> Result<CallScanPage, McpError> {
+) -> Result<CallScanPage, EngineError> {
     // A page that examined nothing has no key to resume from.
     let examine_cap = examine_cap.max(1);
     let finder = memchr::memmem::Finder::new(name.as_bytes());
@@ -275,7 +274,7 @@ pub(super) fn scan_calls_examining(
     let mut last_examined: Option<crate::index::view::IndexBytes> = None;
     let mut stopped_after: Option<Vec<u8>> = None;
     for (examined, guard) in idx.callee_keys_matching(name, cursor_after, lower).enumerate() {
-        let (k, _) = guard.map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
+        let (k, _) = guard.map_err(|e| EngineError::internal(format!("index iter: {e}")))?;
         // Checked on the key that follows the cap, so a scan that ends exactly there is complete.
         if examined >= examine_cap {
             total_is_partial = true;
@@ -333,13 +332,13 @@ pub(super) fn scan_calls_examining(
 pub(crate) fn calls_in_content_fjall(
     idx: &dyn crate::index::view::IndexView,
     content: Option<&crate::index::keys::ContentKey>,
-) -> Result<Vec<CallRef>, McpError> {
+) -> Result<Vec<CallRef>, EngineError> {
     let Some(content) = content else {
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
     for guard in idx.calls_in_content(content) {
-        let (_, v) = guard.map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
+        let (_, v) = guard.map_err(|e| EngineError::internal(format!("index iter: {e}")))?;
         let call: crate::extract::Call = match rmp_serde::from_slice(&v) {
             Ok(c) => c,
             Err(_) => continue,
@@ -355,9 +354,9 @@ pub(crate) fn calls_in_content_fjall(
 }
 
 #[cfg(test)]
-#[path = "helpers_calls_scan_tests.rs"]
+#[path = "calls_scan_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "helpers_calls_group_tests.rs"]
+#[path = "calls_group_tests.rs"]
 mod group_tests;

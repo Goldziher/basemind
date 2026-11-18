@@ -15,15 +15,12 @@ pub(crate) mod admission;
 mod agent_context;
 pub mod agent_tools;
 mod background;
-mod budget;
-mod by_path;
 mod completions;
 pub mod lead_tools;
 pub(crate) use crate::engine::cursor;
 mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
-use crate::engine::freshness;
 mod helpers;
 pub(crate) use helpers::BUSY_DATA;
 
@@ -35,27 +32,21 @@ pub(crate) fn server_busy_for_cli() -> rmcp::ErrorData {
 #[cfg(test)]
 pub(crate) use helpers::rescan_error;
 mod blocking;
+#[cfg(all(test, feature = "comms", feature = "code-intel-js", any(unix, windows)))]
+mod code_refs_hosted_tests;
+#[cfg(test)]
+mod code_refs_tests;
 #[cfg(feature = "documents")]
 mod docs_pipeline;
 mod helpers_admin;
-pub(crate) mod helpers_calls;
-#[cfg(test)]
-mod helpers_calls_resolved_tests;
-mod helpers_calls_scan;
 mod helpers_code;
 #[cfg(feature = "code-search")]
 mod helpers_code_search;
 #[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
-mod helpers_grep;
-mod helpers_grep_text;
-pub(crate) mod helpers_impls;
-mod helpers_intel;
 mod helpers_memory;
 #[cfg(any(feature = "code-search", feature = "documents", test))]
 mod helpers_page;
-mod helpers_refs_match;
-mod helpers_stale;
 mod helpers_telemetry;
 mod history_sync;
 pub(crate) mod identity;
@@ -96,7 +87,6 @@ pub(crate) mod toon;
 mod types;
 mod types_code;
 mod types_documents;
-mod types_impls;
 pub(crate) mod types_memory;
 mod types_tools;
 

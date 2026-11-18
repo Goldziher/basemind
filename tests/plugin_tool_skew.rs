@@ -81,7 +81,7 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
     ),
     (
         "byte_budget",
-        "code_grep truncated_reason GrepTruncation::ByteBudget (src/mcp/helpers_grep.rs)",
+        "code_grep truncated_reason GrepTruncation::ByteBudget (src/engine/ops/code_grep.rs)",
     ),
     ("chunk_idx", "docs_search hits (src/mcp/types_documents.rs)"),
     ("lanes_ran", "code_search (src/mcp/types_code.rs)"),

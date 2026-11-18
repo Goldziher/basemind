@@ -8,8 +8,8 @@ use std::process::Command;
 
 use super::{budget_call_page, calls_in_content_fjall, scan_calls_by_name};
 use crate::config::ConfigV1;
+use crate::engine::refs::matching::Matching;
 use crate::index::view::IndexView;
-use crate::mcp::helpers_refs_match::Matching;
 use crate::path::RelPath;
 use crate::scanner::{EmbedMode, ScanSource, scan};
 use crate::store::{Store, VIEW_WORKING};

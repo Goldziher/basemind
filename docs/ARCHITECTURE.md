@@ -387,7 +387,7 @@ is not evidence a hit isn't a real caller — resolution can't see through a mod
 (`from pkg import mod` then `mod.f()`) or an unresolvable path alias — so a caller wanting
 completeness should trust `total`, not `resolved_total`; a caller wanting precision filters on
 `resolved`. `code_refs` with `relation: "definition"`
-(`src/mcp/helpers_intel.rs`) is the direct read surface over this tier: it resolves a
+(`src/engine/refs/intel.rs`) is the direct read surface over this tier: it resolves a
 `path:line:column` position (1-based) to its definition, following one cross-file hop when the in-file
 binding is an import, and returns no `definition` (not an error) when the position holds no
 resolved binding.

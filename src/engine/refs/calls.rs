@@ -1,19 +1,23 @@
-//! Helper bodies for the `find_references` / `find_callers` MCP tools.
-//!
-//! Extracted out of `helpers.rs` so the parent file stays under the 1000-line per-file
-//! cap. Both tools share the same `calls_by_callee` range scan; the only difference is
-//! `find_callers` resolves a definition first.
+//! Bodies of `code_refs` relation `callers`: the call sites of a name, and the callers of one
+//! definition. Both share the same `calls_by_callee` range scan; the second resolves the
+//! definition first.
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
-
-use super::cursor::Cursor;
-use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
-use super::helpers_calls_scan::{
+use super::calls_scan::{
     CallRef, CallScanPage, budget_call_page, calls_in_files, content_keys, mark_shared_lines, scan_calls,
 };
-use super::helpers_refs_match::Matching;
-use super::types::ReferenceHit;
+use super::matching::Matching;
+use crate::engine::MapCache;
+use crate::engine::cursor::{Cursor, stale_cursor};
+use crate::engine::error::EngineError;
+use crate::engine::files::{IndexedFiles, Unreadable, not_indexed_in, outside_repository};
+use crate::engine::freshness;
+use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use crate::engine::types::code::{kind_to_str, parse_kind};
+use crate::engine::types::refs::{
+    DefinitionView, FindCallersParams, FindCallersResponse, FindReferencesParams, FindReferencesResponse, NAME_ONLY,
+    ReferenceHit,
+};
+use crate::engine::types::{LifecycleNotice, SCAN_CAP};
 use crate::index::view::IndexView;
 
 /// The index `store` reads, for a `code_refs` relation that scans it (call sites, callers,
@@ -22,21 +26,19 @@ use crate::index::view::IndexView;
 /// writer), or when the index must be rebuilt. The first is marked busy, so the CLI exits `3`. A
 /// daemon-hosted session finds none while the daemon reopens a poisoned handle or after it evicted
 /// the workspace; that too is busy, and a rescan opens the workspace again.
-pub(super) fn index_for_refs(store: &crate::store::Store) -> Result<std::sync::Arc<dyn IndexView>, McpError> {
+pub(crate) fn index_for_refs(store: &crate::store::Store) -> Result<std::sync::Arc<dyn IndexView>, EngineError> {
     if let Some(idx) = store.read_index_view() {
         return Ok(idx);
     }
     if store.index_source.is_some() {
-        return Err(McpError::invalid_request(
+        return Err(EngineError::busy(
             "`code_refs`: the daemon released this workspace's index (it is reopening it, or evicted the \
              workspace): retry, or run `index_rescan` to open it again",
-            Some(serde_json::json!({ super::BUSY_DATA: true })),
         ));
     }
     if store.rescan_owed() {
-        return Err(McpError::invalid_request(
+        return Err(EngineError::index_unavailable(
             "`code_refs`: the index of this workspace must be rebuilt: run `basemind scan` (MCP: `index_rescan`)",
-            None,
         ));
     }
     #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -44,17 +46,16 @@ pub(super) fn index_for_refs(store: &crate::store::Store) -> Result<std::sync::A
                the process that holds the lock, then retry";
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let fix = "stop the process that holds the lock, then retry";
-    Err(McpError::invalid_request(
-        format!("`code_refs`: another basemind process holds this workspace's index and no daemon serves it: {fix}"),
-        Some(serde_json::json!({ super::BUSY_DATA: true })),
-    ))
+    Err(EngineError::busy(format!(
+        "`code_refs`: another basemind process holds this workspace's index and no daemon serves it: {fix}"
+    )))
 }
 
 /// Point-lookup a `Call` value in the index by `(content, start_byte)` and return its
 /// `(line, column)` as 1-based / 0-based respectively. The content key is the one the hit key
 /// carries, so no second live-key snapshot is taken mid-query. Falls back to `(0, 0)` when the
 /// row/col fields aren't populated (older L2 blobs predating the field's introduction).
-pub(super) fn resolve_call_line_col(
+pub(crate) fn resolve_call_line_col(
     idx: &dyn crate::index::view::IndexView,
     content: &crate::index::keys::ContentKey,
     start_byte: u32,
@@ -70,15 +71,13 @@ pub(super) fn resolve_call_line_col(
     (call.start_row + 1, call.start_col)
 }
 
-/// Body of the `code` tool's `references` mode: the `calls_by_callee` scan over `idx`.
-pub(super) async fn run_find_references(
+/// Call sites of a name (`code_refs` without `path`): the `calls_by_callee` scan over `idx`.
+pub(crate) fn run_find_references(
     idx: &dyn IndexView,
-    params: super::types::FindReferencesParams,
-    notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
+    params: FindReferencesParams,
+    notice: impl FnOnce() -> Option<LifecycleNotice>,
     flag_stale: impl FnOnce(&mut [ReferenceHit]),
-) -> Result<CallToolResult, McpError> {
-    use super::types::FindReferencesResponse;
-    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
+) -> Result<FindReferencesResponse, EngineError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
@@ -89,22 +88,19 @@ pub(super) async fn run_find_references(
     let total_is_partial = scan.total_is_partial;
     let mut budgeted = budget_call_page(scan, &params.name, params.max_tokens);
     flag_stale(&mut budgeted.hits);
-    super::toon::format_result(
-        &FindReferencesResponse {
-            resolution: super::types::NAME_ONLY,
-            total,
-            truncated: total_is_partial,
-            truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
-            budgeted: budgeted.budgeted,
-            hits: budgeted.hits,
-            next_cursor: stamp(budgeted.next_cursor, generation),
-            notice: notice(),
-        },
-        format,
-    )
+    Ok(FindReferencesResponse {
+        resolution: NAME_ONLY,
+        total,
+        truncated: total_is_partial,
+        truncated_reason: total_is_partial.then_some(SCAN_CAP),
+        budgeted: budgeted.budgeted,
+        hits: budgeted.hits,
+        next_cursor: stamp(budgeted.next_cursor, generation),
+        notice: notice(),
+    })
 }
 
-/// Body of the `code` tool's `callers` mode.
+/// Callers of one definition (`code_refs` with `path`).
 ///
 /// ## Semantics: the name scan is the floor, resolution is a refinement
 ///
@@ -129,33 +125,28 @@ pub(super) async fn run_find_references(
 ///
 /// Holds the store read guard for the call (like `goto_definition`): the resolution layer reads the
 /// concurrently-readable `.rref` blobs plus the Fjall index `idx`, which the scan reads too.
-pub(super) async fn run_find_callers(
+pub(crate) fn run_find_callers(
     store: &crate::store::Store,
     idx: &dyn IndexView,
-    files: super::tool_contract::IndexedFiles<'_>,
-    cache: &super::MapCache,
-    params: super::types::FindCallersParams,
-    notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
-) -> Result<CallToolResult, McpError> {
-    use super::types::{DefinitionView, FindCallersResponse};
+    files: IndexedFiles<'_>,
+    cache: &MapCache,
+    params: FindCallersParams,
+    notice: impl FnOnce() -> Option<LifecycleNotice>,
+) -> Result<FindCallersResponse, EngineError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
     // A pinned call that cannot be pinned is an error: answering with the unpinned name scan would
     // read as "these are the callers of the definition in that file".
-    let not_indexed = || super::tool_contract::not_indexed_in(store, files.root, "code_refs", &params.path);
+    let not_indexed = || not_indexed_in(store, files.root, "code_refs", &params.path);
     // One snapshot for the stamp, the outline and the resolution facts: all three follow the
     // store's entry, which this call holds a read guard on.
-    let (entry, l1) = super::freshness::indexed_outline(store, cache, &params.path).ok_or_else(not_indexed)?;
+    let (entry, l1) = freshness::indexed_outline(store, cache, &params.path).ok_or_else(not_indexed)?;
     let file = files.file(store, &params.path).map_err(|refusal| match refusal {
-        super::tool_contract::Unreadable::NotIndexed => not_indexed(),
-        super::tool_contract::Unreadable::Outside => {
-            super::tool_contract::outside_repository("code_refs", &params.path)
-        }
+        Unreadable::NotIndexed => not_indexed(),
+        Unreadable::Outside => outside_repository("code_refs", &params.path),
     })?;
     // The outline's spans and the resolution facts below are offsets into the indexed bytes.
-    let source = super::blocking::blocking(|| {
-        super::freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), files.max_file_bytes)
-    })?;
+    let source = freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), files.max_file_bytes)?;
     let symbol = crate::engine::pick::pick_symbol(
         "code_refs",
         &params.path,
@@ -182,7 +173,7 @@ pub(super) async fn run_find_callers(
 
     // Resolution facts are a per-file blob the scan writes only for a file that produced some. No
     // blob is not `resolved_total: 0`: the language has no resolution engine, the resolve pass did
-    // not finish, or this file bound nothing; `resolution` says which (`helpers_intel::resolution_gap`).
+    // not finish, or this file bound nothing; `resolution` says which (`intel::resolution_gap`).
     let resolution_ran = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten().is_some();
     let resolved = if resolution_ran {
         resolved_callers(store, idx, &params.path, &source, symbol, &params.name, limit)
@@ -193,11 +184,11 @@ pub(super) async fn run_find_callers(
     let resolution = if resolved.is_some() {
         None
     } else if resolution_ran {
-        Some(super::helpers_intel::NO_DEFINITION_FACTS.to_string())
+        Some(super::intel::NO_DEFINITION_FACTS.to_string())
     } else {
-        super::helpers_intel::resolution_gap(
+        super::intel::resolution_gap(
             cache.language_of(&params.path),
-            super::helpers_intel::resolve_pass_complete(store),
+            super::intel::resolve_pass_complete(store),
         )
     };
 
@@ -206,13 +197,13 @@ pub(super) async fn run_find_callers(
     let total = page.total;
     let total_is_partial = page.total_is_partial;
     let budgeted = budget_call_page(page, &params.name, params.max_tokens);
-    json_result(&FindCallersResponse {
+    Ok(FindCallersResponse {
         definition,
         resolution,
         resolved_total,
         total,
         truncated: total_is_partial,
-        truncated_reason: total_is_partial.then_some(super::types::SCAN_CAP),
+        truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: budgeted.budgeted,
         hits: budgeted.hits,
         next_cursor: stamp(budgeted.next_cursor, generation),
@@ -239,24 +230,22 @@ fn stamp(cursor: Option<Cursor>, generation: u64) -> Option<Cursor> {
 
 /// The generation a [`stamp`]ed cursor was cut in and the scan position it names; the stale-cursor
 /// error for a cursor too short to carry a generation.
-fn unstamp(cursor: Option<&Cursor>) -> Result<Option<Stamped>, McpError> {
+fn unstamp(cursor: Option<&Cursor>) -> Result<Option<Stamped>, EngineError> {
     let Some(cursor) = cursor else {
         return Ok(None);
     };
     let bytes = cursor.decode_fjall()?;
     match bytes.split_first_chunk::<GENERATION_LEN>() {
         Some((stamped, key)) => Ok(Some((*stamped, key.to_vec()))),
-        None => Err(super::cursor_bind::stale_cursor("code_refs").into()),
+        None => Err(stale_cursor("code_refs")),
     }
 }
 
 /// The stale-cursor error when the page continued a cursor cut in another generation than the one
 /// its scan ran in: the view changed since, so the page may skip or repeat hits.
-fn refuse_stale(stamped: Option<[u8; GENERATION_LEN]>, generation: u64) -> Result<(), McpError> {
+fn refuse_stale(stamped: Option<[u8; GENERATION_LEN]>, generation: u64) -> Result<(), EngineError> {
     match stamped {
-        Some(stamped) if stamped != generation.to_be_bytes() => {
-            Err(super::cursor_bind::stale_cursor("code_refs").into())
-        }
+        Some(stamped) if stamped != generation.to_be_bytes() => Err(stale_cursor("code_refs")),
         _ => Ok(()),
     }
 }
@@ -266,14 +255,14 @@ fn refuse_stale(stamped: Option<[u8; GENERATION_LEN]>, generation: u64) -> Resul
 /// Deliberately NOT a complete caller set: it is everything resolution can *prove*, which is a
 /// subset of the truth whose gap resolution cannot measure. See [`run_find_callers`].
 #[derive(Default)]
-pub(super) struct ResolvedCallers {
+pub(crate) struct ResolvedCallers {
     /// `path` → proven call-site start bytes. Probed per name-scan hit to set `resolved`.
     /// A map-of-sets rather than a set of `(RelPath, u32)` so probing borrows the hit's path
     /// instead of cloning it per hit on the scan's inner loop.
-    pub(super) sites: ahash::AHashMap<crate::path::RelPath, ahash::AHashSet<u32>>,
+    pub(crate) sites: ahash::AHashMap<crate::path::RelPath, ahash::AHashSet<u32>>,
     /// Files holding resolved uses that were past the probe cap: nothing is known about their call
     /// sites, so hits there stay unannotated.
-    pub(super) unprobed: ahash::AHashSet<crate::path::RelPath>,
+    pub(crate) unprobed: ahash::AHashSet<crate::path::RelPath>,
     /// Proven call sites the name scan structurally cannot reach: the callee identifier does not
     /// contain `name`, because the local binding was renamed at the import (`import { f as g }` →
     /// callee `g`). Carried with their `calls_by_callee` key so they merge into the scan's
@@ -347,7 +336,7 @@ fn resolved_callers(
     let push_candidate = |byte: u32, def_starts: &mut Vec<u32>| {
         if byte >= symbol.start_byte
             && byte < symbol.end_byte
-            && super::helpers_intel::identifier_at(def_source, byte) == symbol.name.as_str()
+            && super::intel::identifier_at(def_source, byte) == symbol.name.as_str()
             && !def_starts.contains(&byte)
         {
             def_starts.push(byte);
@@ -453,7 +442,7 @@ fn resolved_callers(
 /// page stays a contiguous prefix of one key-ordered stream and the cursor contract is unchanged:
 /// `next_cursor` is the last key emitted, and the next call resumes strictly after it. Aliased hits
 /// already emitted (key <= cursor) are filtered out, so paging never duplicates them.
-pub(super) fn merge_resolved(
+pub(crate) fn merge_resolved(
     mut page: CallScanPage,
     resolved: Option<ResolvedCallers>,
     limit: usize,
@@ -529,5 +518,9 @@ pub(super) fn merge_resolved(
 }
 
 #[cfg(test)]
-#[path = "helpers_calls_tests.rs"]
+#[path = "calls_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "calls_resolved_tests.rs"]
+mod resolved_tests;

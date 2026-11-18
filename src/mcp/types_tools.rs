@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use super::cursor::Cursor;
 use super::strict::ToolArgs;
 use super::types_memory::Visibility;
-use crate::path::RelPath;
 
 macro_rules! tool_args {
     ($($params:ident => $tool:literal),+ $(,)?) => {
@@ -62,35 +61,8 @@ tool_args! {
 pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymbolsParams};
 pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
-
-/// Arguments of `code_grep`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CodeGrepParams {
-    /// Text to find, not empty; a literal unless `regex` is true.
-    pub pattern: String,
-    /// Treat `pattern` as a Rust regex; `^` and `$` match at every line.
-    #[serde(default)]
-    pub regex: Option<bool>,
-    /// Literal substring of the repo-relative path, e.g. `src/mcp/`; not a glob.
-    #[serde(default)]
-    pub path: Option<String>,
-    /// Language filter, e.g. `rust`.
-    #[serde(default)]
-    pub language: Option<String>,
-    /// Add one line before and after each hit.
-    #[serde(default)]
-    pub context: Option<bool>,
-    /// Max hits (default 100).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
+pub use crate::engine::types::grep::CodeGrepParams;
+pub use crate::engine::types::refs::CodeRefsParams;
 
 /// Arguments of `code_search`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -109,42 +81,6 @@ pub struct CodeSearchParams {
     #[serde(default)]
     pub cursor: Option<Cursor>,
     /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
-
-/// Arguments of `code_refs`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CodeRefsParams {
-    /// Name called, implemented or defined; for `importers`, whole segments of the import path.
-    pub name: String,
-    /// What to list (default `callers`).
-    #[serde(default)]
-    #[schemars(extend("enum" = ["callers", "implementations", "importers", "definition"]))]
-    pub relation: Option<String>,
-    /// `callers`: file defining `name`, pinning that definition. `definition`: file holding the
-    /// reference (required). Not with `implementations` or `importers`.
-    #[serde(default)]
-    pub path: Option<RelPath>,
-    /// Needs `path`. `callers`: 1-based line inside the definition meant, when several share the
-    /// name. `definition`: line of the reference (required).
-    #[serde(default)]
-    pub line: Option<u32>,
-    /// `definition` only: 1-based column (default: where `name` occurs on the line).
-    #[serde(default)]
-    pub column: Option<u32>,
-    /// Name matching (default `exact`). Not with `importers` or `definition`.
-    #[serde(default, rename = "match")]
-    #[schemars(extend("enum" = ["exact", "substring"]))]
-    pub match_mode: Option<String>,
-    /// Max hits (default 100). Not with `definition`.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page. Not with `definition`.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000). Not with `definition`.
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }

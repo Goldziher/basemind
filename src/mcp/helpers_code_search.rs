@@ -108,7 +108,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     };
     let truncated_reason = (hydrated.omitted > 0).then(|| "stale_chunks".to_string());
 
-    let budget = super::budget::apply_budget(hits, params.max_tokens);
+    let budget = crate::engine::budget::apply_budget(hits, params.max_tokens);
     format_code_response(
         &SearchCodeResponse {
             query: params.query,

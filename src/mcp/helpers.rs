@@ -9,13 +9,11 @@ use serde::Serialize;
 
 use super::ServerState;
 
-pub(super) use super::helpers_calls::{run_find_callers, run_find_references};
 #[cfg(all(feature = "documents", feature = "code-search"))]
 pub(super) use super::helpers_documents::format_response;
-pub(super) use super::helpers_grep::run_workspace_grep;
-pub(super) use super::helpers_impls::run_find_implementations;
 pub(super) use super::helpers_telemetry::record_call;
 
+#[cfg(feature = "memory")]
 pub(super) use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 
 /// Wrap a tool-shim body with telemetry instrumentation.
@@ -40,8 +38,6 @@ macro_rules! instrument_tool {
         __result
     }};
 }
-
-pub(super) use crate::engine::types::code::{kind_to_str, parse_kind};
 
 /// Build a successful tool result carrying both a text mirror and SEP-2106 `structured_content`.
 ///

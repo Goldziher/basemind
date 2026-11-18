@@ -2,10 +2,10 @@
 //! each test hands the code under test a [`RecordingView`] and asserts on what was read. A layered
 //! implementation can therefore replace the view without touching a call site.
 
-use super::helpers_calls_scan::{calls_in_content_fjall, scan_calls_by_name};
-use super::helpers_impls::scan_impls_fjall;
-use super::helpers_refs_match::Matching;
 use crate::config::ConfigV1;
+use crate::engine::refs::calls_scan::{calls_in_content_fjall, scan_calls_by_name};
+use crate::engine::refs::impls::scan_impls_fjall;
+use crate::engine::refs::matching::Matching;
 use crate::index::grep_bloom::{GrepEntry, Needle};
 use crate::index::view::{IndexView, ReadLog, RecordingView};
 use crate::path::RelPath;
@@ -185,7 +185,7 @@ fn both_search_lanes_read_through_the_view() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_reference_read_answers_from_the_session_view() {
-    use super::helpers_calls_scan::{calls_in_files, content_keys, scan_calls};
+    use crate::engine::refs::calls_scan::{calls_in_files, content_keys, scan_calls};
 
     let dir = tempfile::tempdir().expect("tempdir");
     let store = scanned_store(dir.path());
@@ -205,15 +205,16 @@ async fn every_reference_read_answers_from_the_session_view() {
     assert_eq!(log.entries(), ["prefix:calls_by_path"], "resolved callers");
 
     log.clear();
-    let impls = super::helpers_impls::scan_impls_session(&*view, &cache, "Tr", Matching::Substring, None, 50, None)
-        .expect("impls");
+    let impls =
+        crate::engine::refs::impls::scan_impls_session(&*view, &cache, "Tr", Matching::Substring, None, 50, None)
+            .expect("impls");
     assert_eq!(impls.total, FILES);
     assert_eq!(log.entries(), ["trait_keys_matching"], "implementations");
 
     log.clear();
     let entries = grep_entries(&store);
-    let verdicts =
-        super::helpers_grep::grep_skip(Some(view), dir.path(), "zzz_definitely_absent", &entries).expect("verdicts");
+    let verdicts = crate::engine::ops::code_grep::grep_skip(Some(view), dir.path(), "zzz_definitely_absent", &entries)
+        .expect("verdicts");
     assert_eq!(verdicts.len(), entries.len());
     assert_eq!(sorted(log.entries()), bloom_reads(), "grep prefilter");
 }
