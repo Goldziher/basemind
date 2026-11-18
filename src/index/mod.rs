@@ -64,7 +64,8 @@ use thiserror::Error;
 /// default forever unless the schema mismatch forces it to be recreated; `+6` the LZ4-at-every-level
 /// block compression ([`index_keyspace_options`]), persisted at create time for the same reason;
 /// `+7` the key-per-restart data blocks of the scan-read keyspaces ([`DENSE_RESTART_KEYSPACES`]),
-/// persisted at create time too.
+/// persisted at create time too, and the write-only `imports_by_module` / `imports_by_path`
+/// partitions dropped (ADR-0028 rule 6).
 const INDEX_PARTITION_REVISION: u32 = 7;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
@@ -77,14 +78,12 @@ pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + INDEX_P
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 
 /// Every keyspace of an index database, as [`IndexDb::open`] opens them.
-const INDEX_KEYSPACES: [&str; 18] = [
+const INDEX_KEYSPACES: [&str; 16] = [
     "meta",
     "symbols_by_path",
     "symbols_by_name",
     "calls_by_path",
     "calls_by_callee",
-    "imports_by_module",
-    "imports_by_path",
     "implementations_by_trait",
     "implementations_by_path",
     "refs_by_def",
@@ -129,8 +128,6 @@ const KEYSPACE_MEMTABLE_BYTES: &[(&str, u64)] = &[
     ("symbols_by_name", MEMTABLE_WARM_BYTES),
     ("calls_by_path", MEMTABLE_WARM_BYTES),
     ("calls_by_callee", MEMTABLE_WARM_BYTES),
-    ("imports_by_module", MEMTABLE_COLD_BYTES),
-    ("imports_by_path", MEMTABLE_COLD_BYTES),
     ("implementations_by_trait", MEMTABLE_COLD_BYTES),
     ("implementations_by_path", MEMTABLE_COLD_BYTES),
     ("refs_by_def", MEMTABLE_WARM_BYTES),
@@ -455,12 +452,6 @@ pub struct IndexDb {
     /// Distinct callee names of `calls_by_callee`; lets the substring name scan range-scan only the
     /// matching names instead of walking the partition.
     pub(in crate::index) callee_names: std::sync::Arc<name_dict::NameDict>,
-    /// Reserved fast-path partition: written on every upsert so that future
-    /// `dependents`-by-module queries can use a prefix scan instead of iterating the
-    /// full import set. Not yet read by any MCP query path; kept to avoid a schema
-    /// migration when the read path lands.
-    pub(in crate::index) imports_by_module: scoped::Scoped,
-    pub(in crate::index) imports_by_path: scoped::Scoped,
     /// `implementations_by_trait`: prefix scans on trait name — backs `find_implementations`.
     pub(in crate::index) implementations_by_trait: scoped::Scoped,
     /// Distinct trait names of `implementations_by_trait`, as [`Self::callee_names`] is for callees.
@@ -766,8 +757,6 @@ impl IndexDb {
         let symbols_by_name = open_keyspace(&db, "symbols_by_name")?;
         let calls_by_path = open_keyspace(&db, "calls_by_path")?;
         let calls_by_callee = open_keyspace(&db, "calls_by_callee")?;
-        let imports_by_module = open_keyspace(&db, "imports_by_module")?;
-        let imports_by_path = open_keyspace(&db, "imports_by_path")?;
         let implementations_by_trait = open_keyspace(&db, "implementations_by_trait")?;
         let implementations_by_path = open_keyspace(&db, "implementations_by_path")?;
         let refs_by_def = open_keyspace(&db, "refs_by_def")?;
@@ -794,8 +783,6 @@ impl IndexDb {
                 &symbols_by_name,
                 &calls_by_path,
                 &calls_by_callee,
-                &imports_by_module,
-                &imports_by_path,
                 &implementations_by_trait,
                 &implementations_by_path,
                 &refs_by_def,
@@ -822,8 +809,6 @@ impl IndexDb {
             calls_by_path: whole(calls_by_path),
             calls_by_callee: whole(calls_by_callee),
             callee_names: std::sync::Arc::default(),
-            imports_by_module: whole(imports_by_module),
-            imports_by_path: whole(imports_by_path),
             implementations_by_trait: whole(implementations_by_trait),
             trait_names: std::sync::Arc::default(),
             implementations_by_path: whole(implementations_by_path),

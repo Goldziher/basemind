@@ -111,8 +111,6 @@ pub enum Part {
     SymbolsByName,
     CallsByPath,
     CallsByCallee,
-    ImportsByModule,
-    ImportsByPath,
     ImplementationsByTrait,
     ImplementationsByPath,
     RefsByDef,
@@ -128,14 +126,12 @@ pub enum Part {
 impl Part {
     /// Every keyspace a view reads, in declaration order. Checked against [`KEYSPACE_MEMTABLE_BYTES`] in
     /// `view_tests`, so a keyspace added to either list alone fails there.
-    pub(super) const ALL: [Part; 17] = [
+    pub(super) const ALL: [Part; 15] = [
         Part::Meta,
         Part::SymbolsByPath,
         Part::SymbolsByName,
         Part::CallsByPath,
         Part::CallsByCallee,
-        Part::ImportsByModule,
-        Part::ImportsByPath,
         Part::ImplementationsByTrait,
         Part::ImplementationsByPath,
         Part::RefsByDef,
@@ -156,8 +152,6 @@ impl Part {
             Part::SymbolsByName => "symbols_by_name",
             Part::CallsByPath => "calls_by_path",
             Part::CallsByCallee => "calls_by_callee",
-            Part::ImportsByModule => "imports_by_module",
-            Part::ImportsByPath => "imports_by_path",
             Part::ImplementationsByTrait => "implementations_by_trait",
             Part::ImplementationsByPath => "implementations_by_path",
             Part::RefsByDef => "refs_by_def",
@@ -180,8 +174,6 @@ impl IndexDb {
             Part::SymbolsByName => &self.symbols_by_name,
             Part::CallsByPath => &self.calls_by_path,
             Part::CallsByCallee => &self.calls_by_callee,
-            Part::ImportsByModule => &self.imports_by_module,
-            Part::ImportsByPath => &self.imports_by_path,
             Part::ImplementationsByTrait => &self.implementations_by_trait,
             Part::ImplementationsByPath => &self.implementations_by_path,
             Part::RefsByDef => &self.refs_by_def,

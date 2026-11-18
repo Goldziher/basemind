@@ -427,8 +427,6 @@ symbol and call rows of every content no view's file map names and no writer has
 | `symbols_by_name` | `name`-prefix range scans for symbol search; shared by the group. |
 | `calls_by_path` | One content's call sites, keyed by content key; shared by the group. |
 | `calls_by_callee` | `callee`-prefix range scans — drives the `code_refs` call-site lookup; shared by the group. |
-| `imports_by_module` | `module`-prefix range scans — drives `code_refs` with `relation: "importers"`. |
-| `imports_by_path` | Per-file import lookups. |
 | `implementations_by_trait` | `trait`-prefix range scans — drives `code_refs` with `relation: "implementations"`. |
 | `implementations_by_path` | Per-file implementation lookups. |
 | `refs_by_def` | Scope/import-resolved reference edges keyed by defining site — backs the `resolved` annotation on `code_refs` caller hits and the cross-file hop of `relation: "definition"`. |
@@ -459,7 +457,6 @@ symbols_by_path     ckey:16 ‖ start_byte:u32_be
 symbols_by_name     u16:len(name) ‖ name ‖ kind:u8 ‖ ckey:16 ‖ start_byte:u32_be
 calls_by_path       ckey:16 ‖ start_byte:u32_be
 calls_by_callee     u16:len(callee) ‖ callee ‖ ckey:16  →  start_byte:u32_be per call, ascending
-imports_by_module   u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
 refs_by_def         u16:len(def_path) ‖ def_path ‖ def_start:u32_be ‖ u16:len(use_path) ‖ use_path ‖ use_start:u32_be
 refs_by_path        u16:len(use_path) ‖ use_path ‖ use_start:u32_be ‖ u16:len(def_path) ‖ def_path ‖ def_start:u32_be
 import_targets      u16:len(importer) ‖ importer ‖ local_start:u32_be  →  u16:len(def_path) ‖ def_path ‖ def_start:u32_be

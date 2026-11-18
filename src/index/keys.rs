@@ -44,7 +44,7 @@ pub use crate::index::keys_probe::{
 /// Returns `None` when `bytes` exceeds 65535 bytes (the u16 ceiling). Path encoders that
 /// call this for `RelPath` components may ignore the return value with `let _ = …` — real
 /// file paths never hit 64 KiB. Identifier encoders (`symbol_by_name`, `call_by_callee`,
-/// `import_by_module`, `import_by_path`, `impl_by_trait`, `impl_by_path`) return `Option`
+/// `impl_by_trait`, `impl_by_path`) return `Option`
 /// and propagate `None` to their callers so that pathologically long tokens are silently
 /// skipped rather than panicking inside a rayon `par_iter`.
 pub(super) fn write_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Option<()> {
@@ -84,66 +84,6 @@ pub(super) fn read_len_prefixed_ref<'buf>(buf: &'buf [u8], cursor: &mut usize) -
     let out = &buf[*cursor..*cursor + len];
     *cursor += len;
     Some(out)
-}
-
-/// `imports_by_module`: `u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
-///
-/// Returns `None` when `module` exceeds 65535 bytes. The caller skips the secondary-index
-/// entry but still writes the primary `imports_by_path` entry so the import record stays complete.
-pub fn import_by_module(module: &str, rel: &RelPath, start_byte: u32) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(2 + module.len() + 2 + rel.as_bytes().len() + 4);
-    write_len_prefixed(&mut out, module.as_bytes())?;
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    out.extend_from_slice(&start_byte.to_be_bytes());
-    Some(out)
-}
-
-pub fn imports_by_module_prefix(module: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + module.len());
-    let _ = write_len_prefixed(&mut out, module.as_bytes());
-    out
-}
-
-pub fn parse_import_by_module(key: &[u8]) -> Option<(String, RelPath, u32)> {
-    let mut c = 0;
-    let module = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
-    let rel = read_len_prefixed_ref(key, &mut c)?;
-    if key.len() < c + 4 {
-        return None;
-    }
-    let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((module, RelPath::from(rel), start))
-}
-
-/// `imports_by_path`: same role as `symbols_by_path` for the imports keyspace —
-/// gives O(prefix) deletion when re-upserting a file. Shape:
-/// `u16:len(rel) ‖ rel ‖ u16:len(module) ‖ module ‖ start_byte:u32_be`.
-///
-/// Returns `None` when `module` exceeds 65535 bytes. The rel component is path-only
-/// and never reaches the 64 KiB ceiling.
-pub fn import_by_path(rel: &RelPath, module: &str, start_byte: u32) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 2 + module.len() + 4);
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    write_len_prefixed(&mut out, module.as_bytes())?;
-    out.extend_from_slice(&start_byte.to_be_bytes());
-    Some(out)
-}
-
-pub fn imports_by_path_prefix(rel: &RelPath) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    out
-}
-
-pub fn parse_import_by_path(key: &[u8]) -> Option<(RelPath, String, u32)> {
-    let mut c = 0;
-    let rel = read_len_prefixed_ref(key, &mut c)?;
-    let module = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
-    if key.len() < c + 4 {
-        return None;
-    }
-    let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((RelPath::from(rel), module, start))
 }
 
 /// `implementations_by_trait`: prefix-scan keyspace for `find_implementations`. Shape:
@@ -360,42 +300,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn import_by_module_roundtrips() {
-        let rel = RelPath::from("src/foo.py");
-        let key = import_by_module("os.path", &rel, 0).unwrap();
-        let (module, back, start) = parse_import_by_module(&key).unwrap();
-        assert_eq!(module, "os.path");
-        assert_eq!(back, rel);
-        assert_eq!(start, 0);
-    }
-
-    #[test]
-    fn import_by_path_roundtrips() {
-        let rel = RelPath::from("src/foo.py");
-        let key = import_by_path(&rel, "os.path", 42).unwrap();
-        let (back_rel, module, start) = parse_import_by_path(&key).unwrap();
-        assert_eq!(back_rel, rel);
-        assert_eq!(module, "os.path");
-        assert_eq!(start, 42);
-    }
-
-    /// `imports_by_path` prefix scan must isolate one file's entries from another file
-    /// whose path shares a leading substring (e.g. `src/foo.py` vs `src/foo.py.bak`).
-    #[test]
-    fn prefix_scan_isolates_imports_by_path() {
-        let rel_a = RelPath::from("src/foo.py");
-        let rel_b = RelPath::from("src/foo.py.bak");
-        let key_a = import_by_path(&rel_a, "os", 0).unwrap();
-        let key_b = import_by_path(&rel_b, "os", 0).unwrap();
-        let prefix_a = imports_by_path_prefix(&rel_a);
-        assert!(key_a.starts_with(&prefix_a), "rel_a's key must extend rel_a's prefix");
-        assert!(
-            !key_b.starts_with(&prefix_a),
-            "rel_b's key must NOT match rel_a's prefix"
-        );
-    }
-
-    #[test]
     fn impl_by_trait_roundtrips() {
         let rel = RelPath::from("src/foo.rs");
         let key = impl_by_trait("Display", "Foo", &rel, 42).unwrap();
@@ -527,8 +431,8 @@ mod tests {
     #[test]
     fn non_utf8_path_keys_roundtrip() {
         let rel = RelPath::from(b"f\xffoo.rs".as_slice());
-        let key = import_by_path(&rel, "m", 7).unwrap();
-        let (back, _, _) = parse_import_by_path(&key).unwrap();
+        let key = impl_by_path(&rel, "T", "U", 7).unwrap();
+        let (back, _, _, _) = parse_impl_by_path(&key).unwrap();
         assert_eq!(back.as_bytes(), rel.as_bytes());
     }
 
@@ -565,14 +469,6 @@ mod tests {
         let huge = "x".repeat(65536);
         let rel = RelPath::from("a.rs");
 
-        assert!(
-            import_by_module(&huge, &rel, 0).is_none(),
-            "import_by_module must return None for a 65536-byte module"
-        );
-        assert!(
-            import_by_path(&rel, &huge, 0).is_none(),
-            "import_by_path must return None for a 65536-byte module"
-        );
         assert!(
             impl_by_trait(&huge, "T", &rel, 0).is_none(),
             "impl_by_trait must return None for a 65536-byte trait name"

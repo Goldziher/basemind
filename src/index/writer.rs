@@ -516,21 +516,6 @@ impl IndexWriter {
 
     fn stage_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        let imp_path_prefix = keys::imports_by_path_prefix(rel);
-        let mut found_imports: Vec<(Vec<u8>, String, u32)> = Vec::new();
-        for row in db.imports_by_path.prefix(&imp_path_prefix) {
-            let (k, _) = row?;
-            if let Some((_, module, start_byte)) = keys::parse_import_by_path(&k) {
-                found_imports.push(((*k).to_vec(), module, start_byte));
-            }
-        }
-        for (path_key, module, start_byte) in found_imports {
-            stage_remove(batch, staged_bytes, &db.imports_by_path, path_key);
-            if let Some(module_key) = keys::import_by_module(&module, rel, start_byte) {
-                stage_remove(batch, staged_bytes, &db.imports_by_module, module_key);
-            }
-        }
-
         let impl_path_prefix = keys::impls_by_path_prefix(rel);
         let mut found_impls: Vec<(Vec<u8>, String, String, u32)> = Vec::new();
         for row in db.implementations_by_path.prefix(&impl_path_prefix) {
@@ -832,26 +817,6 @@ impl IndexWriter {
             });
         }
         symbol_family(db).stage(batch, staged_bytes, content, fresh)?;
-        for imp in &l1.imports {
-            if let Some(module) = &imp.module {
-                match (
-                    keys::import_by_module(module, rel, imp.start_byte),
-                    keys::import_by_path(rel, module, imp.start_byte),
-                ) {
-                    (Some(module_key), Some(path_key)) => {
-                        stage_insert(batch, staged_bytes, &db.imports_by_module, module_key, Vec::<u8>::new());
-                        stage_insert(batch, staged_bytes, &db.imports_by_path, path_key, Vec::<u8>::new());
-                    }
-                    _ => {
-                        tracing::debug!(
-                            path = %rel,
-                            module_len = module.len(),
-                            "index: import module name exceeds 64 KiB — skipping imports index entries"
-                        );
-                    }
-                }
-            }
-        }
         // Before the keys are staged: the dictionary must never miss a name that has a key.
         db.trait_names
             .record(l1.implementations.iter().map(|imp| imp.trait_name.as_str()));

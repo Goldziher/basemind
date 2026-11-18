@@ -71,8 +71,6 @@ code tools through the read stack it hosts):
 | `symbols_by_name` | Reserved name-prefix partition, written on every upsert; `code_symbols` is answered by the resident term index |
 | `calls_by_path` | Per-file call lookup |
 | `calls_by_callee` | Callee-keyed call sites; a resident dictionary of distinct names routes substring queries to the matching key ranges (drives `code_refs`) |
-| `imports_by_path` | Per-file import lookup |
-| `imports_by_module` | Reserved module-prefix partition; `dependents` is answered by the resident term index |
 | `implementations_by_path` | Per-file implementation lookup |
 | `implementations_by_trait` | Trait-keyed implementations, with its own name dictionary (drives `implementations`) |
 | `refs_by_def` / `refs_by_path` | Scope- and import-resolved reference edges, keyed by defining site and by use file |

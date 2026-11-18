@@ -1,7 +1,7 @@
 use basemind::extract::SymbolKind;
 use basemind::index::keys::{
-    call_by_callee_hit, content_key, impl_by_path, impl_by_trait, import_by_module, parse_call_by_callee,
-    parse_impl_by_path, parse_impl_by_trait, parse_import_by_module, parse_symbol_by_name, symbol_by_name_hit,
+    call_by_callee_hit, content_key, impl_by_path, impl_by_trait, parse_call_by_callee, parse_impl_by_path,
+    parse_impl_by_trait, parse_symbol_by_name, symbol_by_name_hit,
 };
 use basemind::path::RelPath;
 use proptest::prelude::*;
@@ -36,8 +36,8 @@ proptest! {
         );
     }
 
-    /// Round-trip five Fjall key encoders: the `symbol_by_name` and `call_by_callee` hit keys,
-    /// `import_by_module`, `impl_by_trait`, `impl_by_path`. Uses ASCII-safe names (the
+    /// Round-trip four Fjall key encoders: the `symbol_by_name` and `call_by_callee` hit keys,
+    /// `impl_by_trait`, `impl_by_path`. Uses ASCII-safe names (the
     /// encoders require valid UTF-8 for the name components) and arbitrary byte sequences
     /// for the path to exercise the non-UTF-8 `RelPath` path.
     #[test]
@@ -66,14 +66,6 @@ proptest! {
         prop_assert_eq!(&decoded_callee, &name);
         prop_assert_eq!(decoded_rel2.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start2, start_byte);
-
-        let key = import_by_module(&name, &rel, start_byte)
-            .expect("import_by_module: name is ≤64 chars so encoding cannot fail");
-        let (decoded_module, decoded_rel3, decoded_start3) =
-            parse_import_by_module(&key).expect("parse_import_by_module failed");
-        prop_assert_eq!(&decoded_module, &name);
-        prop_assert_eq!(decoded_rel3.as_bytes(), rel.as_bytes());
-        prop_assert_eq!(decoded_start3, start_byte);
 
         let key = impl_by_trait(&name, &impl_type, &rel, start_byte)
             .expect("impl_by_trait: name is ≤64 chars so encoding cannot fail");

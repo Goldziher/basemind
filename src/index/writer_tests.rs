@@ -1,5 +1,5 @@
 use super::*;
-use crate::extract::{Call, FileMapL2, Import, Symbol, SymbolKind};
+use crate::extract::{Call, FileMapL2, Symbol, SymbolKind};
 use crate::index::view::IndexView;
 use tempfile::TempDir;
 
@@ -341,40 +341,6 @@ fn calls_index_round_trip() {
     assert_eq!(view.calls_in_content(&other).count(), 0);
 }
 
-#[test]
-fn imports_by_module_round_trip() {
-    let (_d, db) = fresh_db();
-    let mut w = db.writer();
-    let rel = RelPath::from("src/foo.py");
-    let mut l1 = synthetic_l1(&[]);
-    l1.imports = vec![
-        Import {
-            module: Some("os".to_string()),
-            raw: "import os".to_string(),
-            start_byte: 0,
-            end_byte: 9,
-        },
-        Import {
-            module: Some("os.path".to_string()),
-            raw: "import os.path".to_string(),
-            start_byte: 10,
-            end_byte: 24,
-        },
-    ];
-    w.upsert_file(&rel, &content(), &l1, None).unwrap();
-    w.commit().unwrap();
-
-    let prefix = keys::imports_by_module_prefix("os");
-    let mut os_hits = 0;
-    for guard in db.imports_by_module.raw().prefix(prefix) {
-        let (k, _) = guard.into_inner().unwrap();
-        let (module, _, _) = keys::parse_import_by_module(&k).unwrap();
-        assert_eq!(module, "os");
-        os_hits += 1;
-    }
-    assert_eq!(os_hits, 1, "prefix scan must isolate `os` from `os.path`");
-}
-
 fn synthetic_l1_with_impls(impls: &[(&str, &str, u32)]) -> FileMapL1 {
     let mut l1 = synthetic_l1(&[]);
     l1.implementations = impls
@@ -390,8 +356,7 @@ fn synthetic_l1_with_impls(impls: &[(&str, &str, u32)]) -> FileMapL1 {
     l1
 }
 
-/// Iteration-3 dual-partition test for implementations. Mirrors
-/// `imports_by_path_roundtrip_and_dual_partition_consistency`: upsert two rows, verify
+/// Dual-partition test for implementations: upsert two rows, verify
 /// both partitions have 2 entries; re-upsert with one row dropped, verify both
 /// partitions have 1 entry; remove the file, verify both partitions empty.
 #[test]
@@ -443,64 +408,6 @@ fn implementations_dual_partition_consistency() {
 
     assert!(db.implementations_by_trait.iter().next().is_none());
     assert!(db.implementations_by_path.iter().next().is_none());
-}
-
-#[test]
-fn imports_by_path_roundtrip_and_dual_partition_consistency() {
-    let (_d, db) = fresh_db();
-    let mut w = db.writer();
-    let rel = RelPath::from("src/foo.py");
-    let mut l1 = synthetic_l1(&[]);
-    l1.imports = vec![
-        Import {
-            module: Some("os".to_string()),
-            raw: "import os".to_string(),
-            start_byte: 0,
-            end_byte: 9,
-        },
-        Import {
-            module: Some("os.path".to_string()),
-            raw: "import os.path".to_string(),
-            start_byte: 10,
-            end_byte: 24,
-        },
-    ];
-    w.upsert_file(&rel, &content(), &l1, None).unwrap();
-    w.commit().unwrap();
-
-    assert_eq!(db.imports_by_module.iter().count(), 2);
-    assert_eq!(db.imports_by_path.iter().count(), 2);
-
-    let prefix = keys::imports_by_path_prefix(&rel);
-    let mut path_hits = 0;
-    for guard in db.imports_by_path.raw().prefix(prefix) {
-        let (k, _) = guard.into_inner().unwrap();
-        let (back_rel, _, _) = keys::parse_import_by_path(&k).unwrap();
-        assert_eq!(back_rel, rel);
-        path_hits += 1;
-    }
-    assert_eq!(path_hits, 2);
-
-    let mut l1 = synthetic_l1(&[]);
-    l1.imports = vec![Import {
-        module: Some("os".to_string()),
-        raw: "import os".to_string(),
-        start_byte: 0,
-        end_byte: 9,
-    }];
-    let mut w = db.writer();
-    w.upsert_file(&rel, &content(), &l1, None).unwrap();
-    w.commit().unwrap();
-
-    assert_eq!(db.imports_by_module.iter().count(), 1);
-    assert_eq!(db.imports_by_path.iter().count(), 1);
-
-    let mut w = db.writer();
-    w.remove_file(&rel).unwrap();
-    w.commit().unwrap();
-
-    assert!(db.imports_by_module.iter().next().is_none());
-    assert!(db.imports_by_path.iter().next().is_none());
 }
 
 /// Mixed oversized/normal upsert: the normal symbol must land in both partitions, the

@@ -407,8 +407,6 @@ impl GroupDb {
             calls_by_path: scoped(Part::CallsByPath),
             calls_by_callee: scoped(Part::CallsByCallee),
             callee_names: Arc::clone(&self.callee_names),
-            imports_by_module: scoped(Part::ImportsByModule),
-            imports_by_path: scoped(Part::ImportsByPath),
             implementations_by_trait: scoped(Part::ImplementationsByTrait),
             trait_names: Arc::default(),
             implementations_by_path: scoped(Part::ImplementationsByPath),
