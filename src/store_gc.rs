@@ -60,13 +60,14 @@ const TMP_SUFFIX: &str = ".tmp";
 /// default protects entry-less blobs that a concurrent scan is about to reference.
 pub const BLOB_GC_GRACE_ENV: &str = "BASEMIND_BLOB_GC_GRACE_SECS";
 
-/// The grace the destructive sweeps apply: [`BLOB_GC_GRACE_ENV`] when set to a number, else
-/// [`BLOB_GC_GRACE`].
+/// The grace the destructive sweeps apply: the engine configuration's
+/// ([`crate::config::engine::GcPolicy::blob_grace`]).
 pub(crate) fn blob_gc_grace() -> Duration {
-    grace_from(std::env::var(BLOB_GC_GRACE_ENV).ok().as_deref())
+    crate::config::engine::with(|config| config.gc.blob_grace)
 }
 
-fn grace_from(raw: Option<&str>) -> Duration {
+/// A [`BLOB_GC_GRACE_ENV`] value in whole seconds; [`BLOB_GC_GRACE`] when unset or not a number.
+pub fn grace_from(raw: Option<&str>) -> Duration {
     raw.and_then(|raw| raw.trim().parse::<u64>().ok())
         .map_or(BLOB_GC_GRACE, Duration::from_secs)
 }

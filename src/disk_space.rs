@@ -36,7 +36,7 @@ pub struct InsufficientSpace {
 }
 
 /// Headroom in bytes from the raw [`MIN_FREE_ENV`] value.
-fn headroom_bytes(raw: Option<&str>) -> u64 {
+pub fn headroom_bytes(raw: Option<&str>) -> u64 {
     raw.and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_HEADROOM_MB)
         .saturating_mul(1 << 20)
@@ -86,7 +86,7 @@ pub fn ensure_free_space(group_dir: &Path) -> Result<(), InsufficientSpace> {
         return Ok(());
     };
     let index_bytes = dir_bytes(&group_dir.join(crate::index::INDEX_DIR));
-    let headroom = headroom_bytes(std::env::var(MIN_FREE_ENV).ok().as_deref());
+    let headroom = crate::config::engine::with(|config| config.min_free_bytes);
     evaluate(group_dir, index_bytes, headroom, free)
 }
 

@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `basemind::scanner::allow_extra_roots` is removed (set `trust.extra_roots`), and
   `config::trust::Grants::from_env` is `Grants::installed`. A set variable of a removed setting is now
   reported once when the process starts, not when a `basemind.toml` is loaded.
+- **BREAKING (library):** `BASEMIND_PARSE_TIMEOUT_MS`, `BASEMIND_GRAMMAR_OFFLINE`,
+  `BASEMIND_CACHE_BUDGET_MB`, `BASEMIND_CACHE_GRACE_MINUTES`, `BASEMIND_BLOB_GC_GRACE_SECS`,
+  `BASEMIND_MIN_FREE_MB` and `BASEMIND_MAX_DAEMONS` are `EngineConfig::{parse_timeout, grammars, gc,
+  min_free_bytes, max_live_daemons}`; the library reads the configuration, and the parse-timeout cache
+  static is gone.
 - A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
   result reading `tool task failed: …`, where it read `scan join: …` or
   `host rescan task panicked: …`.

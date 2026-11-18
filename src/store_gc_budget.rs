@@ -208,8 +208,13 @@ struct EvictionCandidate {
 /// [`DEFAULT_CACHE_BUDGET_MIB`]; `0` (or an unparseable value, which is logged) disables
 /// enforcement and returns `None`.
 pub fn cache_budget_bytes() -> Option<u64> {
-    let mib = match std::env::var(CACHE_BUDGET_ENV) {
-        Ok(raw) => match raw.trim().parse::<u64>() {
+    crate::config::engine::with(|config| config.gc.budget_bytes)
+}
+
+/// A [`CACHE_BUDGET_ENV`] value in MiB, read as [`cache_budget_bytes`] documents.
+pub fn cache_budget_from(raw: Option<&str>) -> Option<u64> {
+    let mib = match raw {
+        Some(raw) => match raw.trim().parse::<u64>() {
             Ok(mib) => mib,
             Err(_) => {
                 tracing::warn!(
@@ -219,7 +224,7 @@ pub fn cache_budget_bytes() -> Option<u64> {
                 return None;
             }
         },
-        Err(_) => DEFAULT_CACHE_BUDGET_MIB,
+        None => DEFAULT_CACHE_BUDGET_MIB,
     };
     (mib > 0).then_some(mib * 1024 * 1024)
 }

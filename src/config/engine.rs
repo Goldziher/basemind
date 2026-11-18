@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
+use std::time::Duration;
 
 use crate::data_root::DataRoot;
 
@@ -23,6 +24,17 @@ pub struct EngineConfig {
     pub data_root: DataRoot,
     /// What the operator lets a repository's `basemind.toml` reach outside the repository.
     pub trust: TrustPolicy,
+    /// Where tree-sitter grammars may come from.
+    pub grammars: GrammarPolicy,
+    /// How long one parse may run before it is abandoned (`BASEMIND_PARSE_TIMEOUT_MS`).
+    pub parse_timeout: Duration,
+    /// What the machine-wide cache sweeps keep.
+    pub gc: GcPolicy,
+    /// Free bytes a scan leaves on the index volume beyond its size estimate
+    /// (`BASEMIND_MIN_FREE_MB`).
+    pub min_free_bytes: u64,
+    /// Live daemons per kind before a spawn is refused (`BASEMIND_MAX_DAEMONS`).
+    pub max_live_daemons: usize,
 }
 
 impl Default for EngineConfig {
@@ -30,8 +42,43 @@ impl Default for EngineConfig {
         Self {
             data_root: DataRoot::platform_default(),
             trust: TrustPolicy::default(),
+            grammars: GrammarPolicy::default(),
+            parse_timeout: crate::lang::DEFAULT_PARSE_TIMEOUT,
+            gc: GcPolicy::default(),
+            min_free_bytes: crate::disk_space::headroom_bytes(None),
+            max_live_daemons: crate::daemon_lock::MAX_LIVE_DAEMONS,
         }
     }
+}
+
+/// What the machine-wide cache sweeps keep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GcPolicy {
+    /// Cache byte budget; `None` disables enforcement (`BASEMIND_CACHE_BUDGET_MB`).
+    pub budget_bytes: Option<u64>,
+    /// A workspace built this recently is not evicted for the budget (`BASEMIND_CACHE_GRACE_MINUTES`).
+    pub grace: Duration,
+    /// An unreferenced blob this young is kept (`BASEMIND_BLOB_GC_GRACE_SECS`).
+    pub blob_grace: Duration,
+}
+
+impl Default for GcPolicy {
+    fn default() -> Self {
+        Self {
+            budget_bytes: crate::store_gc_budget::cache_budget_from(None),
+            grace: crate::store_gc_protect::cache_grace_from(None),
+            blob_grace: crate::store_gc::grace_from(None),
+        }
+    }
+}
+
+/// Where tree-sitter grammars may come from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GrammarPolicy {
+    /// Never download a missing grammar; a scan that needs one fails (`BASEMIND_GRAMMAR_OFFLINE`).
+    pub offline: bool,
 }
 
 /// Operator grants. A repository's own `basemind.toml` can ask for each of these but never grant

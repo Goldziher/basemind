@@ -18,24 +18,15 @@ use crate::once_map::OnceMap;
 /// for the TypeScript compiler's biggest files) but reliably aborts known hangers.
 pub const DEFAULT_PARSE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
-/// Cache of the resolved parse timeout. Initialized once per process on first call to
-/// `parse_with_default_timeout`; eliminates a `std::env::var` syscall on every file parse
-/// (called ×2 per file when eager L2 is on — once for L1, once for L2).
-static PARSE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
-
-/// The per-parse timeout in effect: `BASEMIND_PARSE_TIMEOUT_MS`, else [`DEFAULT_PARSE_TIMEOUT`].
+/// The per-parse timeout in effect: the engine configuration's
+/// ([`crate::config::engine::EngineConfig::parse_timeout`]).
 pub fn parse_timeout() -> Duration {
-    parse_timeout_from_env()
+    crate::config::engine::with(|config| config.parse_timeout)
 }
 
-fn parse_timeout_from_env() -> Duration {
-    *PARSE_TIMEOUT.get_or_init(|| {
-        std::env::var("BASEMIND_PARSE_TIMEOUT_MS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(Duration::from_millis)
-            .unwrap_or(DEFAULT_PARSE_TIMEOUT)
-    })
+/// Whether grammars may not be downloaded ([`crate::config::engine::GrammarPolicy::offline`]).
+fn grammars_offline() -> bool {
+    crate::config::engine::with(|config| config.grammars.offline)
 }
 
 #[derive(Debug, Clone, Error)]
@@ -171,7 +162,7 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
                 }
             }
             if !missing.is_empty() {
-                if std::env::var("BASEMIND_GRAMMAR_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty()) {
+                if grammars_offline() {
                     return Err(Arc::new(LangError::Download(format!(
                         "offline mode: missing grammars {missing:?} and \
                          BASEMIND_GRAMMAR_OFFLINE is set",
@@ -204,7 +195,7 @@ pub fn ensure_extra_grammars(names: &[LangId]) -> Result<Vec<String>, LangError>
     if missing.is_empty() {
         return Ok(Vec::new());
     }
-    if std::env::var("BASEMIND_GRAMMAR_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty()) {
+    if grammars_offline() {
         return Err(LangError::Download(format!(
             "offline mode: missing grammars {missing:?} and BASEMIND_GRAMMAR_OFFLINE is set",
         )));
@@ -343,7 +334,7 @@ pub fn parse_timed(parser: &mut Parser, source: &[u8], timeout: Duration) -> Par
 
 /// Convenience: `parse_timed` with the env-configurable default timeout.
 pub fn parse_with_default_timeout(parser: &mut Parser, source: &[u8]) -> ParseOutcome {
-    parse_timed(parser, source, parse_timeout_from_env())
+    parse_timed(parser, source, parse_timeout())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
