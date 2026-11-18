@@ -10,8 +10,10 @@ x-ai-rulez:
 
 # Inverted Index (Fjall)
 
-The Fjall LSM keyspace is the secondary index over the canonical msgpack blob store.
-Lives at `.basemind/views/<view>/index.fjall/`. Source: `src/index/{mod,keys,writer}.rs`.
+The Fjall LSM keyspace is the secondary index over the canonical msgpack blob store. One database
+per repository group (ADR-0028) at `<data dir>/cache/groups/<group>/index.fjall/`, shared by every
+view of every worktree of the group; a view's own rows sit under its 4-byte view id. Source:
+`src/index/{mod,keys,writer,group,scoped}.rs`.
 
 ## Keyspaces
 
@@ -22,7 +24,10 @@ Lives at `.basemind/views/<view>/index.fjall/`. Source: `src/index/{mod,keys,wri
 | `symbols_by_name` | `name`-prefix range scans for symbol search; shared by the group. |
 | `calls_by_path` | One content's call sites, keyed by content key; shared by the group. |
 | `calls_by_callee` | `callee`-prefix range scans — drives `code_refs`; shared by the group. |
-| `imports_by_module` | Future fast-path for `code_refs` relation `importers`. |
+| `imports_by_module` | `module`-prefix range scans — drives `code_refs` relation `importers`. |
+| `code_bm25_postings` | BM25 postings shared by the group: `term ‖ key` → packed `ordinal ‖ tf ‖ doclen` per chunk. |
+| `code_bm25_by_path` | A view's per-file BM25 forward rows; their terms name the postings to retire. |
+| `code_bm25_holders` | `key ‖ view id ‖ path` per holder of a BM25 key; a posting goes once none names its key. |
 | `embeddings` | Reserved for vector search; empty today. |
 
 ### Key shape
@@ -46,6 +51,9 @@ the paths holding it; a name scan's hit key is the row key followed by one holde
   correct way to update on re-scan.
 - **Per-file commit**: `IndexWriter::commit` runs at the end of each `process_file`. Fjall handles
   cross-thread locking across the rayon workers.
+- **Group sweep** (ADR-0041, `src/index/group_sweep.rs`): at the end of a full pass it retires views
+  whose view directory is gone and, when the group owes it, deletes the symbol and call rows of
+  contents no file map names and no writer has pending. Shared rows are never deleted by a scan.
 - **`SymbolKind` ordinals are stable**: `symbol_kind_byte()` in `keys.rs` maps each variant to a
   fixed `u8`. Reordering would silently miscategorize cached entries; new variants extend the tail.
 

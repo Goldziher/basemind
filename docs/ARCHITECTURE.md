@@ -419,6 +419,10 @@ and its file map names the group's incarnation and its view id; a map that does 
 and only that view is rebuilt. Source: `src/index/{mod,keys,writer,group,scoped}.rs`,
 `src/store_group.rs`.
 
+The group sweep (ADR-0041, `src/index/group_sweep.rs`, `src/store_group_sweep.rs`) runs at the end of
+a full pass: it retires views whose view directory is gone, then, when the group owes it, deletes the
+symbol and call rows of every content no view's file map names and no writer has pending.
+
 | Keyspace | Purpose |
 |---|---|
 | `meta` | Constants (e.g. `schema_ver`). |
@@ -434,8 +438,9 @@ and only that view is rebuilt. Source: `src/index/{mod,keys,writer,group,scoped}
 | `refs_by_path` | `refs_by_def` companion keyed by the USE file — O(prefix) delete on re-resolve. |
 | `import_targets` | Stitch result per import binding (importer + binding offset → definition), plus one reserved probe-manifest row per importer; O(prefix) delete on re-stitch. |
 | `importers_by_probe` | Probed path hash → importers whose resolution consulted it; the affected-importer lookup of the incremental re-stitch. |
-| `code_bm25_postings` | Code-search BM25 keyword postings (feature `code-search`). |
-| `code_bm25_by_path` | Per-file companion of `code_bm25_postings` — O(prefix) delete on re-index. |
+| `code_bm25_postings` | Code-search BM25 keyword postings (feature `code-search`), shared by the group: `u16:len(term) ‖ term ‖ key` → `ordinal ‖ tf ‖ doclen` (12 bytes each) for every chunk of the content holding the term, sorted by ordinal. Written once per key. |
+| `code_bm25_by_path` | Per-file companion of `code_bm25_postings` — O(prefix) delete on re-index; its terms name the postings to retire. |
+| `code_bm25_holders` | `key ‖ view id ‖ path` for every path of every view holding a BM25 key, shared by the group: a posting is deleted only when no holder names its key (ADR-0041). |
 | `grep_bloom` | One trigram bloom filter per indexed file, keyed by path, with the `(size, mtime_ns)` it was built under; the `code_grep` prefilter ([ADR-0012](adr/0012-grep-content-prefilter.md)). |
 | `embeddings` | Reserved for in-Fjall vector index; LanceDB owns the live vectors. |
 
