@@ -45,6 +45,12 @@ impl ProbeSet {
         }
     }
 
+    /// Record the directory `dir` as listed; `""` is the repository root, which
+    /// [`Self::insert_rel`] does not record.
+    pub(crate) fn insert_dir(&mut self, dir: &str) {
+        self.0.insert(dir.to_string());
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

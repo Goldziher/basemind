@@ -6,8 +6,9 @@
 //! A path under the module with no such file is unresolved; any other path (the standard library,
 //! another module, `"C"`) is external. `replace` directives, `go.work` and `vendor/` are not read.
 //!
-//! The package directory is recorded as a probe, so a file added to or removed from it re-stitches
-//! the importer through `IndexView::importers_probing`'s ancestor lookup.
+//! The package directory is recorded as a probe (`""` for a package at the repository root), so a
+//! file added to or removed from it re-stitches the importer through
+//! `IndexView::importers_probing`'s ancestor lookup.
 
 use ahash::AHashMap;
 
@@ -48,7 +49,7 @@ impl GoModules {
             return ModuleTarget::External;
         };
         let package = join(module_dir, rest);
-        probe.record(&package);
+        probe.probes.insert_dir(&package);
         let root = probe.root;
         let names = self
             .packages
@@ -257,5 +258,26 @@ mod tests {
         let (resolved, probes) = resolve(&[("a/a.go", "")], "a/a.go", "import \"example.com/app/b\"");
         assert_eq!(resolved, [("example.com/app/b".to_string(), ModuleTarget::External)]);
         assert!(probes.contains("a/go.mod") && probes.contains("go.mod"));
+    }
+
+    #[test]
+    fn a_root_package_is_probed_as_the_root_directory() {
+        let (resolved, probes) = resolve(
+            &[
+                ("go.mod", "module example.com/app\n"),
+                ("app.go", ""),
+                ("cmd/main.go", ""),
+            ],
+            "cmd/main.go",
+            "import \"example.com/app\"",
+        );
+        assert_eq!(
+            resolved,
+            [(
+                "example.com/app".to_string(),
+                ModuleTarget::Files(vec!["app.go".to_string()])
+            )]
+        );
+        assert!(probes.contains(""), "the root package directory must be a probe");
     }
 }

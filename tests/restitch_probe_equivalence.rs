@@ -438,6 +438,23 @@ mod go {
     }
 
     #[test]
+    fn new_file_in_the_root_package() {
+        assert_incremental_equals_full(&Case {
+            before: &[
+                ("go.mod", GO_MOD),
+                ("demo.go", "package demo\n\nfunc Get() {}\n"),
+                (
+                    "cmd/run.go",
+                    "package main\n\nimport \"example.com/demo\"\n\nfunc main() { demo.Get() }\n",
+                ),
+            ],
+            edits: &[Edit::Write("other.go", "package demo\n\nfunc other() {}\n")],
+            grammar_probe: "demo.go",
+            expect: &[],
+        });
+    }
+
+    #[test]
     fn renamed_module_unresolves_the_import() {
         assert_incremental_equals_full(&Case {
             before: &[
