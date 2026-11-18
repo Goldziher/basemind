@@ -921,6 +921,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The daemon's exit path (shedding hosted stacks, the agent store's last flush) is bounded, and the
   waits on a draining predecessor cover the whole teardown.
 - A hosted workspace's file watcher no longer wakes five times a second while nothing changes.
+- A document over `[documents] max_chunks_per_document` is no longer embedded in full and then left
+  unsearchable: whichever chunker cut it, it is not embedded, and its chunks are indexed without
+  vectors, so `docs_search` finds it on the lexical lane. The scan summary counts such documents as
+  `docs_over_chunk_cap`.
+- A document blob another workspace rewrote under other `[documents]` settings or another model is no
+  longer turned into this workspace's rows (which lost their vectors for good and were rewritten on
+  every scan): the file is extracted again.
+- An incremental scan (a watcher batch) that touched no document no longer lists every document of
+  the store and runs index upkeep; upkeep runs only after rows were written or deleted. A full scan
+  that re-queued owed code rows sweeps dead document rows again.
+- `code_search` with `lane: "semantic"` refused with a fix naming `mode`, an argument it rejects; it
+  names `lane`.
+- A `code_search` ranking under the default `[code_search] embed = false` is kept for its pages and
+  repeats, like any other.
+- The cross-encoder reranker is released by the idle engine release like the embedder, and one that
+  failed to load is not retried by every `docs_search` and `code_search` for 60 s.
+- A `docs_search` reranker answer naming an unknown hit leaves the fused order as it was.
+- `[documents.reranker] top_k` above 50 is refused instead of silently capped.
+- An empty `memory_search` query is an invalid argument, and an embedding model that will not load
+  makes `memory_search` and `code_search` unavailable, not an internal error.
+- `docs_search` no longer wipes a document store of another model or version it cannot read: it
+  refuses it, and the scan that holds the store rebuilds it.
 
 ## [0.33.0] - 2026-11-14
 
