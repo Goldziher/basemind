@@ -213,8 +213,8 @@ println!("{} runs as {}", launched.id, launched.agent);
   alone, each checked again right before the signal (through a pidfd on Linux 5.3 and later;
   before that, and on macOS, a pid reused in that instant could be signalled). Nothing is killed
   without a listing, and the session is reported finished only then. `UserMcpServers` (OpenCode): the harness loads the user's
-  plugins, and MCP servers of a managed or organisation configuration, which nothing here can
-  switch off. The servers of its user configuration files are switched off by name, as are all of
+  plugins, and the MCP servers of a managed or organisation configuration and the permission
+  rules of a managed one, which nothing here can switch off or override. The servers of its user configuration files are switched off by name, as are all of
   Codex's (ADR-0044).
 
 ## Safety defaults
@@ -235,7 +235,8 @@ config is trusted.
   harness and its mode.
 - An ACP agent in any other mode needs an `UnverifiedModeOptIn` naming the harness and the mode:
   what it does unasked was not verified. OpenCode supervised needs none: every OpenCode launch
-  sets `OPENCODE_CONFIG_CONTENT={"permission":"ask"}`. An ACP agent that reports switching itself
+  sets `OPENCODE_CONFIG_CONTENT` with the permission `"*": "ask"`, `allow` only for the config's
+  pre-approved MCP tools, for the session and each of the user's agents. An ACP agent that reports switching itself
   to another session mode, as a mode or as its mode config option (OpenCode's `mode`), fails the
   session. Codex refuses `AcceptEdits`, whose nearest Codex mode
   also runs commands unasked.

@@ -65,7 +65,8 @@
 //! - **No unverified mode without consent.** An ACP agent in any other mode needs an
 //!   [`UnverifiedModeOptIn`] naming the harness and the mode, since what it does unasked was
 //!   not verified. OpenCode supervised needs none: every OpenCode launch is configured to ask
-//!   for every permission. An ACP agent that switches its own session mode fails the session.
+//!   for every permission but the config's pre-approved MCP tools, its user agents included. An
+//!   ACP agent that switches its own session mode fails the session.
 //! - **No free-form arguments.** A request names a model and an effort, which the adapter
 //!   turns into that harness's flags after checking their grammar; nothing else of a request
 //!   reaches the command line, its limits are clamped to the config's caps, and its brief is
@@ -76,7 +77,7 @@
 //!   `--mcp-config` and only built-in plugins (verified on Claude Code 2.1.325). Codex, Gemini,
 //!   Cursor and OpenCode are not launched over a project file of theirs (`.codex`, `.gemini`,
 //!   ...) in the working directory or above it. Only MCP tools the config names are
-//!   pre-approved, and only Claude Code can pre-approve.
+//!   pre-approved (Claude Code, Codex and OpenCode; other ACP agents refuse them).
 //! - **Executables.** The harness executable and the MCP server's command are resolved to
 //!   absolute paths outside the root, with no link on the way inside it; the child's `PATH`
 //!   keeps only absolute entries outside the root. A [`Supervisor`] takes absolute paths only.
