@@ -458,15 +458,30 @@ async fn concurrent_same_key_put_preserves_created_at() {
     let _ = service.cancel().await;
 }
 
-/// Multi-SESSION repro: two `serve` processes against the SAME repo. fjall is
-/// single-holder, so the second process can't open the index and falls back to
-/// read-only (`index_db = None`). It must STILL answer `code_refs` — from
-/// the in-RAM call index built off the shared, concurrently-readable blobs.
-///
-/// Before the fix this returned a `read_only_index_unavailable` error (the
-/// reported "blocked / not responsive"); now it resolves the references.
+/// The refusal a `code_refs` scan gives in a session that holds no index: an error result naming
+/// the fix, never an answer from anything but the index.
+fn assert_refused_for_lack_of_an_index(result: &CallToolResult, what: &str) {
+    use rmcp::model::ContentBlock;
+    assert_eq!(result.is_error, Some(true), "{what} must be refused: {result:?}");
+    let text: String = result
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            ContentBlock::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(text.contains("holds this workspace's index"), "{what}: {text}");
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    assert!(text.contains("`basemind comms start`"), "{what}: {text}");
+}
+
+/// Multi-SESSION: two `serve` processes against the SAME repo. fjall is single-holder, so the
+/// second process can't open the index and serves read-only (`index_db = None`). Its `code_refs`
+/// call sites are refused naming the fix (ADR-0041) rather than answered from a partial in-RAM
+/// projection of the blobs; it still answers, and does not block, on everything else.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn second_session_resolves_find_references_from_blobs() {
+async fn second_session_refuses_references_without_an_index() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
@@ -478,25 +493,22 @@ async fn second_session_resolves_find_references_from_blobs() {
     let result = peer2
         .call_tool(call_params("code_refs", json!({ "name": "alpha" })))
         .await
-        .expect("code_refs must succeed on the read-only 2nd session");
-    let body = decode_text(&result);
-    let total = body
-        .get("total")
-        .and_then(Value::as_u64)
-        .unwrap_or_else(|| panic!("code_refs response missing 'total': {body}"));
-    assert!(
-        total >= 3,
-        "2nd (read-only) session must resolve alpha()'s 3 call sites from blobs, got: {body}"
-    );
+        .expect("code_refs answers on the read-only 2nd session");
+    assert_refused_for_lack_of_an_index(&result, "code_refs on the 2nd session");
+    let symbols = peer2
+        .call_tool(call_params("code_symbols", json!({ "name": "alpha" })))
+        .await
+        .expect("code_symbols on the 2nd session");
+    assert_ne!(symbols.is_error, Some(true), "{symbols:?}");
 
     let _ = serve1.cancel().await;
     let _ = serve2.cancel().await;
 }
 
-/// The other Fjall-backed lookup, `code_refs` relation `implementations`, must also work on the read-only 2nd
-/// session, via the same in-RAM index built from the shared blobs.
+/// `code_refs` relation `implementations` scans the index too, and is refused the same way on the
+/// read-only 2nd session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn second_session_resolves_impls_from_blobs() {
+async fn second_session_refuses_implementations_without_an_index() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
@@ -512,15 +524,7 @@ async fn second_session_resolves_impls_from_blobs() {
         ))
         .await
         .expect("code_refs implementations on 2nd session");
-    let fi_body = decode_text(&fi);
-    let fi_total = fi_body
-        .get("total")
-        .and_then(Value::as_u64)
-        .unwrap_or_else(|| panic!("code_refs implementations missing total: {fi_body}"));
-    assert!(
-        fi_total >= 1,
-        "2nd session must resolve the Drawable impl from blobs, got: {fi_body}"
-    );
+    assert_refused_for_lack_of_an_index(&fi, "code_refs implementations on the 2nd session");
 
     let _ = serve1.cancel().await;
     let _ = serve2.cancel().await;
