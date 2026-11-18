@@ -478,6 +478,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `memory_search {key}` for a key no note has answers `{"key":…,"found":false}`. It answered
   `structuredContent: null`, which MCP types as an object, so a host that validates results
   rejected the routine "is there a note?" call.
+- A cancelled `code_search` or `docs_search` holds its heavy-call permit until its body, which runs
+  on the blocking pool, has ended. Before, the permit was released at the cancel while the
+  embedding and rerank kept running, so a client retrying a timed-out call ran one more model pass
+  per retry.
 - The daemon's memory no longer climbs under steady memory, document and code-search writes: every
   LanceDB store of a process caches through one session of 64 MiB (index) and 32 MiB (metadata)
   instead of Lance's default 6 GiB and 1 GiB per store, where each commit's manifest and file

@@ -42,7 +42,8 @@ impl ServerHandler for BasemindServer {
         )
     }
 
-    /// `tools/call`: dispatch through the static router as the macro would.
+    /// `tools/call`: dispatch through the static router as the macro would, under the call's
+    /// admission (see [`super::admission::holding`]).
     ///
     /// SEP-2663 Tasks: a call that can run long ([`tasks::SLOW_CALLS`]), made by a client that
     /// declared the tasks extension, is answered inline when it finishes within
@@ -64,9 +65,7 @@ impl ServerHandler for BasemindServer {
             Err(busy) => return Ok(rmcp::model::CallToolResponse::Complete(busy.into_tool_result())),
         };
         if self.cli && CLI_ONLY.contains(&request.name.as_ref()) {
-            let _admission = admission;
-            return self
-                .cli_only_call(&request.name, request.arguments)
+            return super::admission::holding(admission, self.cli_only_call(&request.name, request.arguments))
                 .await
                 .map(rmcp::model::CallToolResponse::Complete);
         }
@@ -75,16 +74,17 @@ impl ServerHandler for BasemindServer {
             return tasks::run_slow_tool(self, request, context, admission, self.task_threshold()).await;
         }
         let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
-        let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        // Pure read-only heavy calls race the client's cancellation: the handler future (and the
-        // admission permit it keeps alive alongside) is dropped the moment the request is cancelled.
+        // Pure read-only heavy calls race the client's cancellation: the handler future is dropped
+        // the moment the request is cancelled. The admission permit is held by the call's blocking
+        // work too, so it is released only once that work has ended.
         // Mutating calls never take this branch — see `tasks::CANCEL_AWARE_READS`.
+        let ct = tcc.request_context.ct.clone();
+        let call = super::admission::holding(admission, self.tool_router.call(tcc));
         let response = if cancel_aware {
-            let ct = tcc.request_context.ct.clone();
-            tasks::run_until_cancelled(ct.cancelled(), self.tool_router.call(tcc)).await?
+            tasks::run_until_cancelled(ct.cancelled(), call).await?
         } else {
-            self.tool_router.call(tcc).await?
+            call.await?
         };
         Ok(response)
     }
