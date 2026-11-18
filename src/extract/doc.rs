@@ -13,7 +13,7 @@
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use xberg::LanguageDetectionConfig;
@@ -461,31 +461,14 @@ impl DocConfig {
     }
 }
 
-/// Shared multi-thread Tokio runtime for driving xberg's async extraction API
-/// from the synchronous rayon scan path.
-///
-/// xberg 1.0 dropped its `extract_file_sync` wrapper — `extract` is async-only,
-/// so basemind owns the sync bridge. Built once and never dropped; rayon workers
-/// `block_on` it concurrently (each future is driven to completion on the shared
-/// worker pool).
+/// The runtime that drives xberg's async extraction API from the synchronous rayon scan path: the
+/// retrieval stack's shared one. xberg 1.0 dropped its `extract_file_sync` wrapper, so basemind owns
+/// the sync bridge; rayon workers `block_on` it concurrently.
 ///
 /// A failed build (thread exhaustion) surfaces as an [`ExtractError`] for the file at hand instead of
 /// panicking a scan worker; the failure is cached, so later files fail fast the same way.
 fn extraction_runtime() -> Result<&'static tokio::runtime::Runtime, ExtractError> {
-    static RT: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
-    RT.get_or_init(|| {
-        // Capped: the default is one worker per core plus a 512-thread blocking pool, on top of the
-        // scanner's own per-core rayon pool that drives it.
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4)))
-            .max_blocking_threads(16)
-            .thread_keep_alive(std::time::Duration::from_secs(5))
-            .enable_all()
-            .build()
-            .map_err(|e| format!("build xberg extraction runtime: {e}"))
-    })
-    .as_ref()
-    .map_err(|message| ExtractError::Document(message.clone()))
+    crate::lance::runtime::shared().map_err(ExtractError::Document)
 }
 
 /// One guarded xberg call. It runs on its own thread under the wall-clock budget, so the text/plain

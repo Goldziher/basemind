@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BASEMIND_GREP_BLOOM`) are `EngineConfig::{git, index_cache_bytes, grep_bloom}`, and the
   `BASEMIND_DAEMON_MAX_*` ceilings are `EngineConfig::daemon_caps` (`config::daemon::DaemonCaps`).
   The library reads none of them from the environment.
+- Every LanceDB vector store and the document extractor block on one shared tokio runtime
+  (`basemind::lance::runtime::shared`, 2 to 4 workers, a 32-thread blocking pool) instead of a
+  current-thread runtime per open store plus a separate extraction pool.
 - A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
   result reading `tool task failed: …`, where it read `scan join: …` or
   `host rescan task panicked: …`.

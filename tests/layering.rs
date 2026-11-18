@@ -1410,3 +1410,64 @@ fn the_env_read_check_flags_each_shape() {
         ]
     );
 }
+
+/// Collects the tokio runtime constructions (`runtime::Builder`, `Runtime::new`) outside test code.
+struct RuntimeBuilds {
+    test: bool,
+    found: usize,
+}
+
+impl<'ast> Visit<'ast> for RuntimeBuilds {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        let saved = self.test;
+        self.test |= is_cfg_test(item_attrs(item));
+        syn::visit::visit_item(self, item);
+        self.test = saved;
+    }
+
+    fn visit_item_mod(&mut self, _: &'ast syn::ItemMod) {}
+
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        let builds = segments
+            .windows(2)
+            .any(|pair| pair == ["runtime", "Builder"] || pair == ["Runtime", "new"]);
+        if builds && !self.test {
+            self.found += 1;
+        }
+        syn::visit::visit_path(self, path);
+    }
+}
+
+/// The library below the root layer builds exactly one tokio runtime, the retrieval stack's shared
+/// one (ADR-0023 rule 3); every vector store and document extraction blocks on it.
+#[test]
+fn runtime_builders() {
+    let root = manifest_dir();
+    let (modules, _) = load_modules(&root);
+    let mut files = BTreeSet::new();
+    for module in modules
+        .iter()
+        .filter(|m| !m.test && matches!(layer_of(&m.path), Some(Core | Retrieval | Engine)))
+    {
+        let mut builds = RuntimeBuilds { test: false, found: 0 };
+        for item in &module.items {
+            builds.visit_item(item);
+        }
+        if builds.found > 0 {
+            files.insert(
+                module
+                    .file
+                    .strip_prefix(&root)
+                    .unwrap_or(&module.file)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+    let expected: BTreeSet<String> = ["src/lance/runtime.rs".to_string()].into();
+    assert_eq!(
+        files, expected,
+        "tokio runtimes are built outside the shared retrieval runtime"
+    );
+}

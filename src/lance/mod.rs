@@ -6,8 +6,8 @@
 //! (mirroring the existing `INDEX_SCHEMA_VER`-mismatch flow in
 //! [`crate::store::Store::open`]).
 //!
-//! The LanceDB client is async. We block on a private current-thread tokio
-//! runtime so the scanner (rayon, sync) and the MCP server (multi-thread tokio)
+//! The LanceDB client is async. We block on the retrieval stack's shared runtime
+//! ([`runtime::shared`]) so the scanner (rayon, sync) and the MCP server (multi-thread tokio)
 //! can share the same sync API surface without each callsite worrying about
 //! runtime context.
 
@@ -23,6 +23,7 @@ pub mod docs_schema;
 #[cfg(feature = "documents")]
 pub mod docs_types;
 mod memory;
+pub mod runtime;
 pub mod schema;
 pub mod session;
 
@@ -212,9 +213,7 @@ pub struct LanceStore {
 }
 
 struct LanceStoreInner {
-    /// `Some` for the whole lifetime; taken in `Drop` so the runtime can be torn
-    /// down off the current async context (see the `Drop` impl).
-    runtime: Option<Runtime>,
+    runtime: &'static Runtime,
     connection: Connection,
     dim: u16,
     embedding_model: String,
@@ -224,17 +223,9 @@ struct LanceStoreInner {
 }
 
 impl LanceStoreInner {
-    /// The owned tokio runtime. Present until `Drop` takes it.
-    fn rt(&self) -> &Runtime {
-        self.runtime.as_ref().expect("LanceStore runtime is present until drop")
-    }
-}
-
-impl Drop for LanceStoreInner {
-    fn drop(&mut self) {
-        if let Some(runtime) = self.runtime.take() {
-            runtime.shutdown_background();
-        }
+    /// The shared retrieval runtime the store's futures run on.
+    fn rt(&self) -> &'static Runtime {
+        self.runtime
     }
 }
 
@@ -349,10 +340,7 @@ impl LanceStore {
         tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)],
         session: Arc<lancedb::Session>,
     ) -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build tokio runtime for LanceStore")?;
+        let runtime = runtime::shared().map_err(|message| anyhow!(message))?;
         let uri = dir.to_string_lossy().into_owned();
         let connection = runtime
             .block_on(async { lancedb::connect(&uri).session(session).execute().await })
@@ -367,7 +355,7 @@ impl LanceStore {
 
         Ok(Self {
             inner: Arc::new(LanceStoreInner {
-                runtime: Some(runtime),
+                runtime,
                 connection,
                 dim,
                 embedding_model: model_key.to_string(),
