@@ -57,7 +57,8 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 #### Global cache (`~/.local/share/basemind/`, created at scan time)
 
 - `cache/blobs/v<schema>/<hash>.{fm,chunk,rref,doc}.msgpack` — content-addressed extraction blobs (dedup across files / views), one namespace per blob schema so two installed versions never share a blob.
-- `cache/workspaces/<workspace_key>/views/<view>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs), beside `index.msgpack` (the file map) and `pending-vectors.msgpack` (paths owed vector rows).
+- `cache/groups/<group>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs), one per repository group and shared by every view of its worktrees (ADR-0028); `cache/groups/<group>/lance/` holds the group's document retrieval stores.
+- `cache/workspaces/<workspace_key>/views/<view>/` — the view's `index.msgpack` (the file map) and `pending-vectors.msgpack` (paths owed vector rows).
 
 #### Other
 

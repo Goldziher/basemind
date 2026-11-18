@@ -59,9 +59,9 @@ pub(crate) fn flush_vector_lanes(
 
 /// Put every indexed path back in the owed set when the rows the file map counts on may not be in
 /// the vector store: the store this view's rows were written to is gone or was replaced (wiped
-/// for another model or schema, deleted, its `meta.json` unreadable), or this is the pass that
-/// verifies blobs after the machine went down, when LanceDB commits made shortly before may not
-/// have reached the disk although their debts were settled. The re-queue rebuilds the rows from
+/// for another model or schema, deleted, its `meta.json` unreadable), the owed set itself could
+/// not be read, or this is the pass that verifies blobs after the machine went down, when LanceDB
+/// commits made shortly before may not have reached the disk although their debts were settled. The re-queue rebuilds the rows from
 /// the cached blobs and settles every path that has none.
 ///
 /// The set is written before the record of the lost store is dropped: between the two, a process
@@ -74,7 +74,7 @@ fn owe_rows_that_may_be_lost(store: &mut Store, filters: &Filters) -> Result<(),
     let lost = crate::store_pending::recorded_store(&store.view_dir).is_some_and(|recorded| {
         filters.retrieval.vectors.store_id_at(&lance_dir).as_deref() != Some(recorded.as_str())
     });
-    if !lost && !filters.vector_rows_unsure {
+    if !lost && !filters.vector_rows_unsure && !store.pending_vectors.unreadable() {
         return Ok(());
     }
     if lost {
@@ -93,6 +93,7 @@ fn owe_rows_that_may_be_lost(store: &mut Store, filters: &Filters) -> Result<(),
     for rel in store.index.files.keys() {
         store.pending_vectors.owe_code(&rel.to_str_lossy());
     }
+    store.pending_vectors.owed_everything();
     store.pending_vectors.persist(&store.view_dir)?;
     if lost {
         let _ = std::fs::remove_file(store.view_dir.join(crate::store_pending::STORE_ID_FILE));

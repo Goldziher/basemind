@@ -493,3 +493,36 @@ fn the_per_view_store_of_an_earlier_build_is_replaced_by_the_group_store() {
     sync_document_rows(&mut empty, &config, &filters, &AHashSet::new(), usize::MAX);
     assert!(!legacy.exists(), "a view without documents removes it too");
 }
+
+/// A scan's open stamps its own store and removes a sibling store of another model no scan has
+/// opened for the idle window, judged by the stamp or, before it, the directory's mtime.
+#[test]
+fn an_open_removes_retrieval_stores_of_models_no_scan_uses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().join("lance");
+    let now = std::time::SystemTime::now();
+    let old = now - IDLE_MODEL_STORE - std::time::Duration::from_secs(60);
+    let mk = |name: &str| {
+        let dir = parent.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("meta.json"), b"{}").unwrap();
+        dir
+    };
+    let current = mk("balanced-768-aaaaaaaa");
+    let stamped_old = mk("small-384-bbbbbbbb");
+    std::fs::File::create(stamped_old.join(LAST_USED_FILE))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let unstamped_old = mk("large-1024-cccccccc");
+    std::fs::File::open(&unstamped_old).unwrap().set_modified(old).unwrap();
+    let recent = mk("other-768-dddddddd");
+    std::fs::File::create(recent.join(LAST_USED_FILE)).unwrap();
+
+    prune_idle_model_stores(&current, now);
+
+    assert!(current.join(LAST_USED_FILE).exists(), "the open store is stamped");
+    assert!(!stamped_old.exists());
+    assert!(!unstamped_old.exists());
+    assert!(recent.exists(), "a store another worktree used lately stays");
+}
