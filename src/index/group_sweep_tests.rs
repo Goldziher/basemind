@@ -224,3 +224,29 @@ fn a_retirement_a_crash_cut_short_is_finished_by_the_next_sweep() {
     assert!(rows.is_empty().expect("read"));
     assert!(group.meta().get(&tombstone).expect("read").is_none());
 }
+
+#[test]
+fn a_view_claimed_for_an_open_is_not_retired_before_the_open_takes_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let a = open_view(&group, "ws-a", &memory);
+    // The worktree was recreated at a reaped path: its view directory is back, its record never left. ~keep
+    let claim = group.claim_view("ws-back", "working").expect("claim");
+    let id = claim.id();
+
+    let mut open = a.begin_group_sweep().expect("begin").expect("sweep");
+    let retired = open.retire_view("ws-back", "working", id).expect("retire");
+    drop(open);
+    let back = group.open_claimed(claim, &memory, true).expect("open");
+    back.keyspace(Part::RefsByPath).insert(b"row", "v").expect("insert");
+
+    assert!(!retired, "an id claimed by an open is in use");
+    assert_eq!(group.view_id("ws-back", "working").expect("read"), Some(id));
+    drop(back);
+    let mut open = a.begin_group_sweep().expect("begin").expect("sweep");
+    assert!(
+        open.retire_view("ws-back", "working", id).expect("retire"),
+        "once the open's handle is gone, the view can be retired"
+    );
+}

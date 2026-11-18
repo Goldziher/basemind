@@ -240,7 +240,8 @@ impl GroupSweep<'_> {
     }
 
     /// Retire the view `view_id` of `(workspace_key, view)` unless a handle of this process has it
-    /// open or its record changed. `true` when it was retired.
+    /// open, an open has claimed it ([`GroupDb::claim_view`]), or its record changed. `true` when it
+    /// was retired.
     pub(crate) fn retire_view(&mut self, workspace_key: &str, view: &str, view_id: u32) -> Result<bool, IndexError> {
         {
             let _serial = self.group.allocation.lock().expect("view allocation");

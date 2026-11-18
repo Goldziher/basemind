@@ -69,7 +69,8 @@ pub(crate) struct GroupDb {
     embeddings: Keyspace,
     incarnation: u64,
     /// Serialises view-id allocation within the process; the lock serialises it across processes.
-    /// A view's retirement holds it too, so no open allocates the id being retired.
+    /// A view's retirement holds it too, and so does every open's claim of an id
+    /// ([`Self::claim_view`]), so no open gets an id being retired.
     pub(super) allocation: Mutex<()>,
     /// Each view's BM25 live-key cache, shared by every handle on the view.
     bm25_live: Mutex<AHashMap<u32, Arc<Bm25LiveCache>>>,
@@ -93,6 +94,19 @@ pub(crate) struct GroupDb {
 pub(crate) struct GroupView {
     pub(crate) group: Arc<GroupDb>,
     pub(crate) view_id: u32,
+}
+
+/// A view id held for an open; see [`GroupDb::claim_view`].
+pub(crate) struct ViewClaim {
+    id: u32,
+    live: Arc<LiveKeysCell>,
+}
+
+impl ViewClaim {
+    /// The claimed view's id.
+    pub(crate) fn id(&self) -> u32 {
+        self.id
+    }
 }
 
 /// Every group database this process holds, by directory.
@@ -258,11 +272,40 @@ impl GroupDb {
             .and_then(read_u32))
     }
 
-    /// The id of `(workspace_key, view)`, allocating one with a synced commit when it has none. An id
-    /// is never reused: the counter only grows, and a record outlives the rows it names until the
-    /// group sweep removes both.
+    /// The id of `(workspace_key, view)`, allocating one when it has none, unclaimed: for tests. An
+    /// open takes [`Self::claim_view`].
+    #[cfg(test)]
     pub(crate) fn allocate_view_id(&self, workspace_key: &str, view: &str) -> Result<u32, IndexError> {
         let _serial = self.allocation.lock().expect("view allocation");
+        self.allocate_locked(workspace_key, view)
+    }
+
+    /// The id of `(workspace_key, view)`, allocated when it has none, claimed for an open: its
+    /// live-key cell is taken while the allocation lock is held, and the group sweep retires a view
+    /// only under that lock and only when no cell of it is held. So the id the open gets is never
+    /// retired under it.
+    pub(crate) fn claim_view(&self, workspace_key: &str, view: &str) -> Result<ViewClaim, IndexError> {
+        let _serial = self.allocation.lock().expect("view allocation");
+        let id = self.allocate_locked(workspace_key, view)?;
+        Ok(ViewClaim {
+            id,
+            live: self.live_keys_cell(id),
+        })
+    }
+
+    /// [`Self::claim_view`] for a reader: `None` when the view has no id, none is allocated.
+    pub(crate) fn claim_existing_view(&self, workspace_key: &str, view: &str) -> Result<Option<ViewClaim>, IndexError> {
+        let _serial = self.allocation.lock().expect("view allocation");
+        Ok(self.view_id(workspace_key, view)?.map(|id| ViewClaim {
+            id,
+            live: self.live_keys_cell(id),
+        }))
+    }
+
+    /// The id of `(workspace_key, view)`, allocating one with a synced commit when it has none. An id
+    /// is never reused: the counter only grows, and a record outlives the rows it names until the
+    /// group sweep removes both. The caller holds the allocation lock.
+    fn allocate_locked(&self, workspace_key: &str, view: &str) -> Result<u32, IndexError> {
         if let Some(id) = self.view_id(workspace_key, view)? {
             return Ok(id);
         }
@@ -302,14 +345,31 @@ impl GroupDb {
         Ok(views)
     }
 
-    /// A handle on the rows of view `view_id`, sharing this database. The memory store opens as
-    /// for a view database of its own.
+    /// A handle on the rows of view `view_id`, taking its live-key cell without the allocation lock:
+    /// for tests that open a view no sweep runs against.
+    #[cfg(test)]
     pub(crate) fn open_view(
         self: &Arc<Self>,
         view_id: u32,
         memory_dir: &Path,
         tolerate_held_memory: bool,
     ) -> Result<IndexDb, IndexError> {
+        let claim = ViewClaim {
+            id: view_id,
+            live: self.live_keys_cell(view_id),
+        };
+        self.open_claimed(claim, memory_dir, tolerate_held_memory)
+    }
+
+    /// A handle on the rows of the claimed view, sharing this database. The memory store opens as
+    /// for a view database of its own.
+    pub(crate) fn open_claimed(
+        self: &Arc<Self>,
+        claim: ViewClaim,
+        memory_dir: &Path,
+        tolerate_held_memory: bool,
+    ) -> Result<IndexDb, IndexError> {
+        let ViewClaim { id: view_id, live } = claim;
         let memory = super::open_memory(memory_dir, tolerate_held_memory)?;
         let scoped = |part: Part| {
             let keyspace = self.keyspaces[part.name()].clone();
@@ -347,7 +407,7 @@ impl GroupDb {
                     .or_default(),
             ),
             bm25_gate: Arc::clone(&self.bm25_gate),
-            live: self.live_keys_cell(view_id),
+            live,
             #[cfg(feature = "code-search")]
             bm25_pass: Arc::clone(
                 self.bm25_pass
