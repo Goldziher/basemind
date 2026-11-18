@@ -42,6 +42,12 @@ const RECLAIM_SEALED_JOURNALS: usize = 1;
 /// A soak of the daemon grew its heap by about 2.7 MiB/min in memtable entries this way.
 const SETTLED_WRITE_BUFFER_BYTES: u64 = 8 * 1_024 * 1_024;
 
+/// On-disk size up to which a keyspace [`IndexDb::settle_write_buffer`] flushed is compacted back
+/// into one table. Each flush adds a level-0 table, and leveled compaction merges them only at four,
+/// so a small keyspace flushed every few minutes would hold several tables, each an open descriptor
+/// and a set of cached blocks; at this size the rewrite costs less than the flush that preceded it.
+const SMALL_KEYSPACE_BYTES: u64 = 16 * 1_024 * 1_024;
+
 /// Flush the active memtable of each of `keyspaces` to disk and wait for it. Stops at the first
 /// error. A journal is deleted once every keyspace it covers has flushed past it, so this releases
 /// the sealed ones.
@@ -260,11 +266,12 @@ impl IndexDb {
         self.db.journal_count() > RECLAIM_SEALED_JOURNALS && self.reclaim_journal()
     }
 
-    /// Once more than [`SETTLED_WRITE_BUFFER_BYTES`] sit unflushed, hand the largest memtables to
-    /// fjall's flush worker until at most half of it is left, and return how many were handed over.
-    /// Call at the end of a pass: the rows are durable in the journal, and flushing only the big
-    /// memtables keeps the tables (and their open descriptors) few. Does not wait for the flushes;
-    /// a failure only logs, since the rows stay in the memtable and the journal.
+    /// Once more than [`SETTLED_WRITE_BUFFER_BYTES`] sit unflushed, flush the largest memtables
+    /// until at most half of it is left, compact each flushed keyspace still under
+    /// [`SMALL_KEYSPACE_BYTES`] into one table, and return how many were flushed. Call at the end of
+    /// a pass: the rows are durable in the journal, and flushing only the big memtables keeps the
+    /// tables (and their open descriptors) few. A failure only logs, since the rows stay in the
+    /// memtable and the journal.
     pub fn settle_write_buffer(&self) -> usize {
         use fjall::AbstractTree;
         let mut unflushed = self.db.write_buffer_size();
@@ -278,24 +285,25 @@ impl IndexDb {
             .map(|keyspace| (keyspace, keyspace.tree.active_memtable().size()))
             .collect();
         sized.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
-        let mut rotated = 0;
+        let mut flushed = 0;
         for (keyspace, size) in sized {
             if unflushed <= SETTLED_WRITE_BUFFER_BYTES / 2 || size == 0 {
                 break;
             }
-            match keyspace.rotate_memtable() {
-                Ok(true) => {
-                    rotated += 1;
-                    unflushed = unflushed.saturating_sub(size);
+            let settled = keyspace.rotate_memtable_and_wait().and_then(|()| {
+                if keyspace.table_count() > 1 && keyspace.disk_space() <= SMALL_KEYSPACE_BYTES {
+                    keyspace.major_compact()?;
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "index memtable flush failed; the rows stay in memory until the next pass");
-                    break;
-                }
+                Ok(())
+            });
+            if let Err(error) = settled {
+                tracing::warn!(%error, "index memtable flush failed; the rows stay in memory until the next pass");
+                break;
             }
+            flushed += 1;
+            unflushed = unflushed.saturating_sub(size);
         }
-        rotated
+        flushed
     }
 
     /// Whether no other clone of this handle is alive, so dropping it releases fjall's lock.
@@ -643,7 +651,8 @@ mod tests {
     }
 
     /// Past the budget the largest memtable is flushed until half the budget is left; the smaller
-    /// one stays in memory, and a buffer within the budget is left alone.
+    /// one stays in memory, a buffer within the budget is left alone, and a small keyspace flushed
+    /// twice keeps one table.
     #[test]
     fn settle_write_buffer_flushes_the_largest_memtables_down_to_half_the_budget() {
         use fjall::AbstractTree;
@@ -663,7 +672,16 @@ mod tests {
         assert_eq!(left(Part::SymbolsByPath), 0, "the largest memtable was flushed");
         assert!(left(Part::SymbolsByName) > 0, "the smaller one stays in memory");
         assert_eq!(db.settle_write_buffer(), 0, "within the budget nothing is flushed");
-        assert_eq!(db.keyspace(Part::SymbolsByPath).raw().iter().count(), 6 * 16);
+
+        buffer_rows(&db, Part::SymbolsByPath, 6, 3);
+        assert_eq!(db.settle_write_buffer(), 1);
+        let rows = db.keyspace(Part::SymbolsByPath).raw();
+        assert_eq!(
+            rows.table_count(),
+            1,
+            "the second flush was compacted into the first table"
+        );
+        assert_eq!(rows.iter().count(), 6 * 16, "the rewrite kept every row");
     }
 
     #[test]
