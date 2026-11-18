@@ -64,8 +64,10 @@ Tags MUST be `v<version>` (e.g. `v0.1.0`, `v0.1.0-rc.1`). The publish workflow
 (`.github/workflows/publish.yaml`) is gated on the `v[0-9]+.*` pattern and reads the version
 back from the tag. `workflow_dispatch` accepts a manual tag input for re-runs.
 
-Nothing publishes until the `ci_gate` job has seen a successful `ci` run, every test leg green,
-on the tagged commit. The `meta` job then checks every version surface, refuses a Git dependency,
+Nothing publishes until the `ci_gate` job has seen, on the tagged commit, a successful `ci` run
+with every test leg green, a scheduled or dispatched `ci` run whose harden harness, ignored tests
+and release build jobs all succeeded, and a successful scheduled or dispatched `hardening` run
+(ADR-0027 rule 5). Dispatch both workflows on the release commit before tagging. The `meta` job then checks every version surface, refuses a Git dependency,
 a vendored crate that differs from its published version and the unreleased-surface marker, and
 detects versions already on crates.io / npm / PyPI / the GitHub release, so a re-run of the same tag
 publishes only what is missing. Every archive is built and run on a clean runner
