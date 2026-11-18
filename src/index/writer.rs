@@ -694,9 +694,10 @@ impl IndexWriter {
         );
     }
 
-    /// Stage inserts for `rel`'s BM25 postings: one shared `code_bm25_postings` entry per
-    /// `(term, chunk)` carrying `tf ‖ doclen`, plus one `code_bm25_by_path` forward entry per chunk
-    /// carrying `doclen ‖ content hash ‖ terms`. A posting whose chunk id does not parse is skipped.
+    /// Stage inserts for `rel`'s BM25 postings: one shared `code_bm25_postings` row per term of the
+    /// content packing `ordinal ‖ tf ‖ doclen` of every chunk holding it (only when `write_postings`),
+    /// plus one `code_bm25_by_path` forward entry per chunk carrying `doclen ‖ content hash ‖ terms`.
+    /// A posting whose chunk id does not parse is skipped.
     #[cfg(feature = "code-search")]
     fn stage_bm25_inserts_for(
         &mut self,
@@ -706,6 +707,7 @@ impl IndexWriter {
         write_postings: bool,
     ) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        let mut by_term: ahash::AHashMap<&str, Vec<(u32, u32, u32)>> = ahash::AHashMap::new();
         for posting in postings {
             let Some((hash, ordinal)) = keys::split_chunk_id(&posting.chunk_id) else {
                 tracing::debug!(path = %rel, chunk = %posting.chunk_id, "index: unparsable chunk id; posting skipped");
@@ -713,15 +715,10 @@ impl IndexWriter {
             };
             // Another holder wrote this key's postings: they are a function of the key. ~keep
             for (term, tf) in posting.terms.iter().filter(|_| write_postings) {
-                if let Some(posting_key) = keys::code_bm25_posting(term, content, ordinal) {
-                    stage_insert(
-                        batch,
-                        staged_bytes,
-                        &db.code_bm25_postings,
-                        posting_key,
-                        keys::code_bm25_posting_value(*tf, posting.doclen),
-                    );
-                }
+                by_term
+                    .entry(term.as_str())
+                    .or_default()
+                    .push((ordinal, *tf, posting.doclen));
             }
             let mut term_names: Vec<&str> = posting.terms.iter().map(|(t, _)| t.as_str()).collect();
             term_names.sort_unstable();
@@ -742,6 +739,19 @@ impl IndexWriter {
             }
             self.writes_postings = true;
             self.changes_bm25_forward = true;
+        }
+        for (term, mut entries) in by_term {
+            entries.sort_unstable();
+            if let Some(posting_key) = keys::code_bm25_posting(term, content) {
+                stage_insert(
+                    batch,
+                    staged_bytes,
+                    &db.code_bm25_postings,
+                    posting_key,
+                    keys::code_bm25_posting_value(&entries),
+                );
+                self.writes_postings = true;
+            }
         }
         if self.changes_bm25_forward {
             self.mark_bm25_dirty_outside_pass();

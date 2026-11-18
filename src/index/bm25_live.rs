@@ -16,7 +16,7 @@ use super::IndexError;
 #[cfg(feature = "code-search")]
 use super::keys::BM25_KEY_LEN;
 #[cfg(feature = "code-search")]
-use super::keys::parse_code_bm25_posting_chunk;
+use super::keys::parse_code_bm25_posting_content;
 use super::keys::{Bm25Key, parse_code_bm25_by_path, parse_code_bm25_by_path_value};
 #[cfg(all(test, feature = "code-search"))]
 use super::keys::{code_bm25_by_path_prefix, code_bm25_posting};
@@ -250,14 +250,14 @@ impl super::IndexDb {
             let rel = crate::path::RelPath::from(path.as_str());
             for row in self.code_bm25_by_path.prefix(&code_bm25_by_path_prefix(&rel)) {
                 let (key, value) = row?;
-                let (Some((_, content, ordinal)), Some((_, _, terms))) =
+                let (Some((_, content, _)), Some((_, _, terms))) =
                     (parse_code_bm25_by_path(&key), parse_code_bm25_by_path_value(&value))
                 else {
                     continue;
                 };
                 let postings = candidates.0.entry(content).or_default();
                 for term in rmp_serde::from_slice::<Vec<String>>(terms)? {
-                    postings.extend(code_bm25_posting(&term, &content, ordinal));
+                    postings.extend(code_bm25_posting(&term, &content));
                 }
             }
         }
@@ -298,7 +298,7 @@ impl super::IndexDb {
         let mut writer = self.writer();
         for key in self.code_bm25_postings.keys() {
             let key = key?;
-            let held = parse_code_bm25_posting_chunk(&key).is_some_and(|(content, _)| live.contains(&content));
+            let held = parse_code_bm25_posting_content(&key).is_some_and(|content| live.contains(&content));
             if !held {
                 writer.remove_bm25_posting(&key);
                 if writer.staged_bytes() >= super::BM25_PRUNE_BATCH_BYTES {

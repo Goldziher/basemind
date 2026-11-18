@@ -54,8 +54,9 @@ const META_FORMAT: &[u8] = b"\xffgroup/format";
 /// within an unreleased minor: an open that finds another value (or none, in a database that has an
 /// incarnation) empties every keyspace and takes a new incarnation, so every view's file map names a
 /// gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content. 3:
-/// symbol and call rows shared, keyed by content. 4: BM25 holders; postings written once per key.
-const GROUP_FORMAT: u32 = 4;
+/// symbol and call rows shared, keyed by content. 4: BM25 holders; postings written once per key. 5: one posting row per term and
+/// content, packing its chunks (ADR-0041).
+const GROUP_FORMAT: u32 = 5;
 
 /// Keeps the cross-process group lock held for as long as the database is open.
 pub(crate) type GroupLock = Box<dyn Send + Sync>;

@@ -110,9 +110,9 @@ fn a_write_outside_a_pass_or_an_unfinished_pass_makes_the_next_pass_sweep() {
 
 /// A posting no forward row names: garbage only a sweep removes, so it shows which path ran.
 fn plant_orphan(db: &IndexDb) -> Vec<u8> {
-    let orphan = keys::code_bm25_posting("orphan", &keys::bm25_content_key("gone", "rust", "d"), 0).unwrap();
+    let orphan = keys::code_bm25_posting("orphan", &keys::bm25_content_key("gone", "rust", "d")).unwrap();
     db.code_bm25_postings
-        .insert(&orphan, keys::code_bm25_posting_value(1, 1))
+        .insert(&orphan, keys::code_bm25_posting_value(&[(0, 1, 1)]))
         .unwrap();
     orphan
 }
@@ -276,8 +276,8 @@ fn postings_of(db: &IndexDb, hash: &str) -> usize {
         .filter(|row| {
             row.as_ref()
                 .ok()
-                .and_then(|(key, _)| keys::parse_code_bm25_posting_chunk(key))
-                .is_some_and(|(key, _)| key == content)
+                .and_then(|(key, _)| keys::parse_code_bm25_posting_content(key))
+                .is_some_and(|key| key == content)
         })
         .count()
 }
@@ -574,7 +574,7 @@ fn a_second_holder_of_a_key_writes_no_postings() {
     let (a, b) = (&views[0], &views[1]);
     upsert(a, "src/a.rs", "a1", &["alpha", "beta"]);
     // Drop one posting: a second holder that rewrote the key's postings would bring it back. ~keep
-    let alpha = keys::code_bm25_posting("alpha", &keys::bm25_content_key("a1", "rust", "d"), 0).unwrap();
+    let alpha = keys::code_bm25_posting("alpha", &keys::bm25_content_key("a1", "rust", "d")).unwrap();
     a.code_bm25_postings.remove(&alpha).unwrap();
     upsert(b, "src/a.rs", "a1", &["alpha", "beta"]);
     upsert(b, "src/b.rs", "a1", &["alpha", "beta"]);

@@ -102,7 +102,7 @@ impl Bm25Delta {
     /// A forward row the batch deletes: its chunk leaves `N`, and its postings may now be dead. A
     /// row that does not decode still leaves `N`, uncounted, so it poisons the pass.
     pub(crate) fn remove_row(&mut self, ledger: &Bm25PassLedger, key: &[u8], value: &[u8]) {
-        let (Some((_, content, ordinal)), Some((doclen, _, terms))) = (
+        let (Some((_, content, _)), Some((doclen, _, terms))) = (
             keys::parse_code_bm25_by_path(key),
             keys::parse_code_bm25_by_path_value(value),
         ) else {
@@ -121,7 +121,7 @@ impl Bm25Delta {
         };
         let postings = self.retired.entry(content).or_default();
         for term in terms {
-            if let Some(posting) = keys::code_bm25_posting(&term, &content, ordinal) {
+            if let Some(posting) = keys::code_bm25_posting(&term, &content) {
                 self.retired_bytes += posting.len() as u64 + RETIRED_KEY_OVERHEAD;
                 postings.push(posting);
             }

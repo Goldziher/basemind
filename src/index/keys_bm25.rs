@@ -1,9 +1,10 @@
 //! Keys of the BM25 keyword lane (ADR-0028 rule 2).
 //!
-//! A posting is shared by every view of a repository group that holds the same chunk: it is keyed
-//! by term, then by a 16-byte [`Bm25Key`] of the content and everything else that shapes its chunks
-//! (language, extract epoch, chunk settings), then by the chunk's ordinal. Two worktrees with
-//! different `[code_search]` chunk settings therefore never overwrite each other's postings.
+//! A posting row is shared by every view of a repository group that holds the same content: it is
+//! keyed by term, then by a 16-byte [`Bm25Key`] of the content and everything else that shapes its
+//! chunks (language, extract epoch, chunk settings), and its value packs every chunk of that content
+//! holding the term (ADR-0041). Two worktrees with different `[code_search]` chunk settings
+//! therefore never overwrite each other's postings.
 //!
 //! Each view keeps its own forward rows in `code_bm25_by_path`, keyed by path: they say which
 //! chunks the view holds (the view's live keys, read through [`super::bm25_live`]), give the view
@@ -42,40 +43,38 @@ pub fn split_chunk_id(chunk_id: &str) -> Option<(&str, u32)> {
     Some((hash, ordinal.parse().ok()?))
 }
 
-/// `code_bm25_postings`: `u16:len(term) ‖ term ‖ key:16 ‖ ordinal:u32_be`.
+/// `code_bm25_postings`: `u16:len(term) ‖ term ‖ key:16`, one row per term and content.
 ///
 /// Returns `None` when `term` exceeds 65535 bytes (the tokenizer caps terms far below it; the guard
 /// skips a pathological token rather than panicking inside a rayon `par_iter`).
-pub fn code_bm25_posting(term: &str, key: &Bm25Key, ordinal: u32) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(2 + term.len() + BM25_KEY_LEN + 4);
+pub fn code_bm25_posting(term: &str, key: &Bm25Key) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(2 + term.len() + BM25_KEY_LEN);
     write_len_prefixed(&mut out, term.as_bytes())?;
     out.extend_from_slice(key);
-    out.extend_from_slice(&ordinal.to_be_bytes());
     Some(out)
 }
 
-/// Prefix bytes for "every chunk containing `term`".
+/// Prefix bytes for "every content containing `term`".
 pub fn code_bm25_postings_prefix(term: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + term.len());
     let _ = write_len_prefixed(&mut out, term.as_bytes());
     out
 }
 
-/// Decode `(key, ordinal)` from a `code_bm25_postings` key, skipping the term without allocating.
-pub fn parse_code_bm25_posting_chunk(key: &[u8]) -> Option<(Bm25Key, u32)> {
+/// Decode the content key of a `code_bm25_postings` key, skipping the term without allocating.
+pub fn parse_code_bm25_posting_content(key: &[u8]) -> Option<Bm25Key> {
     let mut c = 0;
     read_len_prefixed_ref(key, &mut c)?;
-    chunk_tail(key.get(c..)?)
+    key.get(c..)?.try_into().ok()
 }
 
-/// Decode `(term, key, ordinal)` from a `code_bm25_postings` key.
-pub fn parse_code_bm25_posting(key: &[u8]) -> Option<(String, Bm25Key, u32)> {
+/// Decode `(term, key)` from a `code_bm25_postings` key.
+pub fn parse_code_bm25_posting(key: &[u8]) -> Option<(String, Bm25Key)> {
     let mut c = 0;
     let term = std::str::from_utf8(read_len_prefixed_ref(key, &mut c)?)
         .ok()?
         .to_owned();
-    let (content, ordinal) = chunk_tail(key.get(c..)?)?;
-    Some((term, content, ordinal))
+    Some((term, key.get(c..)?.try_into().ok()?))
 }
 
 /// `key:16 ‖ ordinal:u32_be`, exactly.
@@ -88,23 +87,29 @@ fn chunk_tail(tail: &[u8]) -> Option<(Bm25Key, u32)> {
     Some((key, ordinal))
 }
 
-/// Encode a `code_bm25_postings` value: `tf:u32_be ‖ doclen:u32_be`, so one term-prefix scan
-/// carries everything the scorer needs.
-pub fn code_bm25_posting_value(tf: u32, doclen: u32) -> [u8; 8] {
-    let mut out = [0u8; 8];
-    out[..4].copy_from_slice(&tf.to_be_bytes());
-    out[4..].copy_from_slice(&doclen.to_be_bytes());
+/// Bytes of one chunk entry in a posting value.
+pub const POSTING_ENTRY_LEN: usize = 12;
+
+/// Encode a `code_bm25_postings` value: per chunk holding the term, `ordinal:u32_be ‖ tf:u32_be ‖
+/// doclen:u32_be`, in the order given (the writer sorts by ordinal). One prefix scan of a term carries
+/// everything the scorer needs.
+pub fn code_bm25_posting_value(entries: &[(u32, u32, u32)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(entries.len() * POSTING_ENTRY_LEN);
+    for (ordinal, tf, doclen) in entries {
+        out.extend_from_slice(&ordinal.to_be_bytes());
+        out.extend_from_slice(&tf.to_be_bytes());
+        out.extend_from_slice(&doclen.to_be_bytes());
+    }
     out
 }
 
-/// Decode `(tf, doclen)` from a `code_bm25_postings` value.
-pub fn parse_code_bm25_posting_value(value: &[u8]) -> Option<(u32, u32)> {
-    if value.len() < 8 {
-        return None;
-    }
-    let tf = u32::from_be_bytes([value[0], value[1], value[2], value[3]]);
-    let doclen = u32::from_be_bytes([value[4], value[5], value[6], value[7]]);
-    Some((tf, doclen))
+/// The `(ordinal, tf, doclen)` chunk entries of a `code_bm25_postings` value. A trailing partial
+/// entry is ignored.
+pub fn code_bm25_posting_entries(value: &[u8]) -> impl Iterator<Item = (u32, u32, u32)> + '_ {
+    value.as_chunks::<POSTING_ENTRY_LEN>().0.iter().map(|entry| {
+        let word = |at: usize| u32::from_be_bytes([entry[at], entry[at + 1], entry[at + 2], entry[at + 3]]);
+        (word(0), word(4), word(8))
+    })
 }
 
 /// `code_bm25_by_path`: `u16:len(rel) ‖ rel ‖ key:16 ‖ ordinal:u32_be`, one row per chunk the view
@@ -170,24 +175,32 @@ mod tests {
     #[test]
     fn code_bm25_posting_roundtrips() {
         let content = bm25_content_key("abcd", "rust", "digest");
-        let key = code_bm25_posting("spawn", &content, 3).unwrap();
-        assert_eq!(parse_code_bm25_posting(&key), Some(("spawn".to_string(), content, 3)));
-        assert_eq!(parse_code_bm25_posting_chunk(&key), Some((content, 3)));
+        let key = code_bm25_posting("spawn", &content).unwrap();
+        assert_eq!(parse_code_bm25_posting(&key), Some(("spawn".to_string(), content)));
+        assert_eq!(parse_code_bm25_posting_content(&key), Some(content));
     }
 
     #[test]
-    fn code_bm25_posting_value_roundtrips() {
-        let value = code_bm25_posting_value(7, 142);
-        assert_eq!(parse_code_bm25_posting_value(&value), Some((7, 142)));
-        assert_eq!(parse_code_bm25_posting_value(&value[..7]), None);
+    fn a_posting_value_packs_every_chunk_entry() {
+        let value = code_bm25_posting_value(&[(0, 7, 142), (3, 1, 9)]);
+        assert_eq!(value.len(), 2 * POSTING_ENTRY_LEN);
+        assert_eq!(
+            code_bm25_posting_entries(&value).collect::<Vec<_>>(),
+            vec![(0, 7, 142), (3, 1, 9)]
+        );
+        assert_eq!(
+            code_bm25_posting_entries(&value[..13]).count(),
+            1,
+            "a partial entry is ignored"
+        );
     }
 
     /// A `spawn` posting prefix must not bleed into `spawnblocking`.
     #[test]
     fn code_bm25_posting_prefix_isolates_terms() {
         let content = bm25_content_key("h", "rust", "d");
-        let key_spawn = code_bm25_posting("spawn", &content, 1).unwrap();
-        let key_spawn_blocking = code_bm25_posting("spawnblocking", &content, 1).unwrap();
+        let key_spawn = code_bm25_posting("spawn", &content).unwrap();
+        let key_spawn_blocking = code_bm25_posting("spawnblocking", &content).unwrap();
         let prefix = code_bm25_postings_prefix("spawn");
         assert!(key_spawn.starts_with(&prefix));
         assert!(!key_spawn_blocking.starts_with(&prefix));
