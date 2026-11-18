@@ -80,6 +80,7 @@ impl MapCache {
                 mtime_ns: 0,
                 extract_epoch: map.extract_epoch,
                 content_key: None,
+                lines: 0,
             };
             l1.seed(&hash_hex, Arc::new(map));
             metas.push((path, meta));

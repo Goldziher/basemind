@@ -71,6 +71,9 @@ pub(crate) struct FileMeta {
     /// The key the entry's symbol and call rows were written under
     /// ([`crate::store::FileEntry::content_key`]).
     pub(crate) content_key: Option<crate::index::keys::ContentKey>,
+    /// Lines in the file as indexed ([`crate::store::FileEntry::lines`]); 0 for a file the code
+    /// map does not hold.
+    pub(crate) lines: u32,
 }
 
 /// Sorted view of every indexed file that has a readable L1 blob.
@@ -194,6 +197,7 @@ impl FileMeta {
             && self.mtime_ns == entry.mtime
             && self.extract_epoch == entry.extract_epoch
             && self.content_key == entry.content_key
+            && self.lines == entry.lines
     }
 }
 
@@ -206,6 +210,7 @@ impl From<&crate::store::FileEntry> for FileMeta {
             mtime_ns: entry.mtime,
             extract_epoch: entry.extract_epoch,
             content_key: entry.content_key,
+            lines: entry.lines,
         }
     }
 }
@@ -219,6 +224,7 @@ impl Clone for FileMeta {
             mtime_ns: self.mtime_ns,
             extract_epoch: self.extract_epoch,
             content_key: self.content_key,
+            lines: self.lines,
         }
     }
 }

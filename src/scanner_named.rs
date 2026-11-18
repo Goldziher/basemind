@@ -149,6 +149,7 @@ mod tests {
             mtime: 0,
             extract_epoch: 0,
             content_key: None,
+            lines: 0,
         };
         index.files.insert(crate::path::RelPath::from("src/gone.rs"), entry);
 

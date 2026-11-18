@@ -335,6 +335,7 @@ fn a_pre_digest_index_decodes_with_neutral_defaults() {
             mtime: 7,
             extract_epoch: crate::extract::EXTRACT_EPOCH,
             content_key: None,
+            lines: 0,
         },
     );
     let mut doc_files = AHashMap::new();
