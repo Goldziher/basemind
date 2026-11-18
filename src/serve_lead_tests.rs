@@ -13,6 +13,8 @@ impl LeadCalls for Echo {
     fn call(self: Arc<Self>, name: String, arguments: Value) -> Pin<Box<dyn Future<Output = Value> + Send>> {
         Box::pin(async move { json!({ "answered_here": name, "arguments": arguments }) })
     }
+
+    fn shutdown(&self) {}
 }
 
 fn on() -> Mode {
