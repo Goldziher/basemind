@@ -8,7 +8,6 @@
 //! walk, so `scan.extra_roots` was an unbounded hole straight through the bound it advertises.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use ahash::AHashMap;
 
@@ -85,47 +84,10 @@ const ROOT_FILES_LABEL: &str = "(files in the root)";
 /// grant: the grant says "this operator uses extra roots", never "walk an entire volume".
 pub const ALLOW_EXTRA_ROOTS_ENV: &str = "BASEMIND_ALLOW_EXTRA_ROOTS";
 
-/// Process-wide programmatic form of [`ALLOW_EXTRA_ROOTS_ENV`], for embedders that configure
-/// basemind in code rather than through the environment (and for the test suite, which must not
-/// mutate the process environment out from under parallel threads).
-static EXTRA_ROOTS_GRANT: AtomicBool = AtomicBool::new(false);
-
-/// Grant or revoke `scan.extra_roots` for this process. Equivalent to [`ALLOW_EXTRA_ROOTS_ENV`],
-/// and equally out of reach of the scanned repository: it is an API call by the embedding program,
-/// never a config value. Idempotent.
-pub fn allow_extra_roots(allow: bool) {
-    EXTRA_ROOTS_GRANT.store(allow, Ordering::Relaxed);
-}
-
+/// Whether the operator's grant ([`crate::config::engine::TrustPolicy::extra_roots`], which the CLI
+/// reads from [`ALLOW_EXTRA_ROOTS_ENV`]) covers the workspace at `repo_root`.
 fn extra_roots_granted(repo_root: &Path) -> bool {
-    EXTRA_ROOTS_GRANT.load(Ordering::Relaxed)
-        || std::env::var(ALLOW_EXTRA_ROOTS_ENV).is_ok_and(|v| extra_roots_grant_covers(&v, repo_root))
-}
-
-/// Whether an [`ALLOW_EXTRA_ROOTS_ENV`] value covers `repo_root`. A truthy word (`1`, `true`, `yes`)
-/// grants every workspace this process scans; anything else is read as a path list (`:`-separated on
-/// Unix, `;` on Windows) of workspace roots, and the grant covers only those and their descendants.
-/// The list form matters for a daemon, which is one process serving many repositories: the bare
-/// word would let any later workspace's `extra_roots` through.
-fn extra_roots_grant_covers(value: &str, repo_root: &Path) -> bool {
-    if is_truthy(value) {
-        return true;
-    }
-    let repo_root = repo_root.canonicalize().unwrap_or_else(|_| repo_root.to_path_buf());
-    std::env::split_paths(value.trim())
-        .filter(|entry| {
-            // A relative entry would be canonicalised against the daemon's cwd (often `/`) and could
-            // cover every workspace, and `on` / `enabled` are not truthy words: say so once instead
-            // of silently granting nothing.
-            let absolute = entry.is_absolute();
-            if !absolute && !entry.as_os_str().is_empty() {
-                crate::config::trust::warn_once(format!(
-                    "{ALLOW_EXTRA_ROOTS_ENV} entry {entry:?} ignored: use 1/true/yes or a list of absolute workspace paths"
-                ));
-            }
-            absolute
-        })
-        .any(|entry| repo_root.starts_with(entry.canonicalize().unwrap_or(entry)))
+    crate::config::engine::with(|config| config.trust.extra_roots.covers(repo_root))
 }
 
 /// Directories an `extra_roots` entry may never name, grant or not: credential stores and system
@@ -137,14 +99,6 @@ fn is_sensitive_root(path: &Path) -> bool {
         || path
             .components()
             .any(|c| SENSITIVE_DIRS.iter().any(|d| c.as_os_str() == std::ffi::OsStr::new(d)))
-}
-
-/// `1` / `true` / `yes`, case- and whitespace-insensitive. Matches `root_guard`'s private
-/// equivalent; duplicated rather than shared because that module is a stable, narrowly-scoped
-/// public surface and its parser is not part of it.
-fn is_truthy(value: &str) -> bool {
-    let value = value.trim();
-    value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
 }
 
 /// Counts per contributor label, bounded by [`MAX_TALLY_KEYS`].
@@ -745,11 +699,15 @@ mod tests {
     #[test]
     fn truthy_grant_values() {
         for yes in ["1", "true", " TRUE ", "yes"] {
-            assert!(is_truthy(yes), "{yes:?}");
+            assert!(crate::config::engine::is_truthy(yes), "{yes:?}");
         }
         for no in ["0", "false", "no", ""] {
-            assert!(!is_truthy(no), "{no:?}");
+            assert!(!crate::config::engine::is_truthy(no), "{no:?}");
         }
+    }
+
+    fn covers(value: &str, repo_root: &Path) -> bool {
+        crate::config::engine::ExtraRootsGrant::parse(value, ALLOW_EXTRA_ROOTS_ENV).covers(repo_root)
     }
 
     #[test]
@@ -760,26 +718,17 @@ mod tests {
         std::fs::create_dir_all(allowed.join("sub")).expect("mkdir");
         std::fs::create_dir_all(&other).expect("mkdir");
 
-        assert!(
-            extra_roots_grant_covers("1", &other),
-            "the bare word grants every workspace"
-        );
+        assert!(covers("1", &other), "the bare word grants every workspace");
         let list = std::env::join_paths([&allowed, Path::new("/nonexistent/elsewhere")])
             .expect("join")
             .into_string()
             .expect("utf8");
-        assert!(extra_roots_grant_covers(&list, &allowed));
-        assert!(
-            extra_roots_grant_covers(&list, &allowed.join("sub")),
-            "descendants are covered"
-        );
-        assert!(!extra_roots_grant_covers(&list, &other), "an unlisted workspace is not");
-        assert!(!extra_roots_grant_covers("0", &allowed));
-        assert!(
-            !extra_roots_grant_covers(".", &allowed),
-            "a relative entry never grants"
-        );
-        assert!(!extra_roots_grant_covers("on", &allowed));
+        assert!(covers(&list, &allowed));
+        assert!(covers(&list, &allowed.join("sub")), "descendants are covered");
+        assert!(!covers(&list, &other), "an unlisted workspace is not");
+        assert!(!covers("0", &allowed));
+        assert!(!covers(".", &allowed), "a relative entry never grants");
+        assert!(!covers("on", &allowed));
         assert!(is_sensitive_root(Path::new("/home/u/.ssh")));
         assert!(is_sensitive_root(Path::new("/etc/ssl")));
         assert!(!is_sensitive_root(Path::new("/home/u/code/external")));

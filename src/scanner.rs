@@ -33,7 +33,7 @@ pub use crate::scanner_file::looks_binary;
 
 /// The `scan.extra_roots` operator grant lives with the candidate walk it gates; re-exported here
 /// so embedders reach it through the scanner's public surface.
-pub use crate::scanner_candidates::{ALLOW_EXTRA_ROOTS_ENV, allow_extra_roots};
+pub use crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV;
 
 /// The retrieval stack a scan writes through; this build's is `crate::retrieval_wiring::backend`.
 pub use crate::scan_retrieval::Retrieval;

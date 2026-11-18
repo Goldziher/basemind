@@ -10,6 +10,7 @@
 //! One configuration per process: the blob store, the daemon registry and the parser pool are
 //! process-wide, so a second engine with another data home in the same process is refused.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 use crate::data_root::DataRoot;
@@ -20,14 +21,91 @@ use crate::data_root::DataRoot;
 pub struct EngineConfig {
     /// Root of every piece of machine-global state (`BASEMIND_DATA_HOME`).
     pub data_root: DataRoot,
+    /// What the operator lets a repository's `basemind.toml` reach outside the repository.
+    pub trust: TrustPolicy,
 }
 
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             data_root: DataRoot::platform_default(),
+            trust: TrustPolicy::default(),
         }
     }
+}
+
+/// Operator grants. A repository's own `basemind.toml` can ask for each of these but never grant
+/// it, because the scanned repository authors that file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TrustPolicy {
+    /// Let `[scan] floor_allow` re-include credential material (`.env`, keys)
+    /// (`BASEMIND_ALLOW_REPO_CREDENTIALS`).
+    pub allow_repo_credentials: bool,
+    /// Admit a workspace root that is neither a git work tree nor a basemind project
+    /// (`BASEMIND_ALLOW_ANY_ROOT`).
+    pub allow_any_root: bool,
+    /// Honour `[scan] follow_symlinks = true` (`BASEMIND_ALLOW_FOLLOW_SYMLINKS`).
+    pub allow_follow_symlinks: bool,
+    /// The workspaces whose `[scan] extra_roots` are walked (`BASEMIND_ALLOW_EXTRA_ROOTS`).
+    pub extra_roots: ExtraRootsGrant,
+}
+
+/// Which workspaces may walk the `[scan] extra_roots` their `basemind.toml` names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ExtraRootsGrant {
+    /// None: the entries are ignored with a warning.
+    #[default]
+    Denied,
+    /// Every workspace this process scans.
+    Every,
+    /// These workspace roots (absolute) and their descendants. The form a daemon, one process
+    /// serving many repositories, needs: the blanket grant would let any later workspace through.
+    Workspaces(Vec<PathBuf>),
+}
+
+impl ExtraRootsGrant {
+    /// Read a grant written as `1` / `true` / `yes` (every workspace) or a path list (`:`-separated
+    /// on Unix, `;` on Windows) of absolute workspace roots. A relative entry is ignored with a
+    /// warning: canonicalised against a daemon's cwd (often `/`) it could cover every workspace.
+    pub fn parse(value: &str, name: &str) -> Self {
+        if is_truthy(value) {
+            return Self::Every;
+        }
+        let roots = std::env::split_paths(value.trim())
+            .filter(|entry| {
+                let absolute = entry.is_absolute();
+                if !absolute && !entry.as_os_str().is_empty() {
+                    super::trust::warn_once(format!(
+                        "{name} entry {entry:?} ignored: use 1/true/yes or a list of absolute workspace paths"
+                    ));
+                }
+                absolute
+            })
+            .collect();
+        Self::Workspaces(roots)
+    }
+
+    /// Whether the grant covers the workspace at `repo_root`.
+    pub fn covers(&self, repo_root: &Path) -> bool {
+        match self {
+            Self::Denied => false,
+            Self::Every => true,
+            Self::Workspaces(roots) => {
+                let repo_root = repo_root.canonicalize().unwrap_or_else(|_| repo_root.to_path_buf());
+                roots
+                    .iter()
+                    .any(|entry| repo_root.starts_with(entry.canonicalize().unwrap_or_else(|_| entry.clone())))
+            }
+        }
+    }
+}
+
+/// `1` / `true` / `yes`, case- and whitespace-insensitive: the grant words of every `BASEMIND_ALLOW_*`
+/// variable.
+pub fn is_truthy(value: &str) -> bool {
+    let value = value.trim();
+    value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
 }
 
 impl EngineConfig {
@@ -78,16 +156,24 @@ pub(crate) fn install(config: EngineConfig) -> Arc<EngineConfig> {
     config
 }
 
-/// Point the installed configuration (the default when none is) at `data_root`, keeping every other
-/// setting. The test-isolation helper's seam; it never reads the configuration through [`with`],
-/// which would re-enter it.
+/// Apply `change` to the installed configuration (the default when none is) and install the
+/// result, for a test that flips one setting. The read and the install are one step, so concurrent
+/// updates do not lose each other's changes.
 #[cfg(any(feature = "test-support", test))]
-pub(crate) fn set_data_root(data_root: DataRoot) {
+pub fn update(change: impl FnOnce(&mut EngineConfig)) {
     let mut installed = INSTALLED.write().unwrap_or_else(PoisonError::into_inner);
     let mut config = installed
         .as_deref()
         .cloned()
         .unwrap_or_else(|| EngineConfig::clone(default_config()));
-    config.data_root = data_root;
+    change(&mut config);
     *installed = Some(Arc::new(config));
+}
+
+/// Point the installed configuration (the default when none is) at `data_root`, keeping every other
+/// setting. The test-isolation helper's seam; it never reads the configuration through [`with`],
+/// which would re-enter it.
+#[cfg(any(feature = "test-support", test))]
+pub(crate) fn set_data_root(data_root: DataRoot) {
+    update(|config| config.data_root = data_root);
 }

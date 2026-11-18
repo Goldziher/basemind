@@ -210,7 +210,9 @@ fn floor_allow_lets_a_floor_directory_be_indexed() {
 #[test]
 fn extra_root_inside_a_floor_named_directory_is_still_indexed_and_matches_relatively() {
     basemind::store::init_isolated_cache();
-    basemind::scanner::allow_extra_roots(true);
+    basemind::config::engine::update(|engine| {
+        engine.trust.extra_roots = basemind::config::engine::ExtraRootsGrant::Every;
+    });
     let repo = tempfile::tempdir().unwrap();
     let outer = tempfile::tempdir().unwrap();
     let ext = outer.path().join("build").join("vendor").join("ext");

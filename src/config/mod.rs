@@ -91,7 +91,7 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
     }
     let raw = std::fs::read_to_string(&resolved).map_err(io_error)?;
     let mut config = parse_str(&raw).map_err(|e| annotate_path(e, &path))?;
-    trust::sanitize_repo_config(&mut config, trust::Grants::from_env());
+    trust::sanitize_repo_config(&mut config, trust::Grants::installed());
     trust::warn_inert_fields(&config);
     trust::warn_deprecated_sections(&config);
     Ok(config)

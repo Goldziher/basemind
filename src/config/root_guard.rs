@@ -108,6 +108,11 @@ struct RootAdmission {
 ///    hatch-admitted just because someone happened to have the variable set.
 /// 6. [`ALLOW_ANY_ROOT_ENV`] is truthy → allowed for this invocation only, and recorded as such.
 pub fn workspace_root_verdict(root: &Path) -> Result<PathBuf, RootRefusal> {
+    verdict(root, allow_any_root())
+}
+
+/// [`workspace_root_verdict`] with the operator's hatch given.
+fn verdict(root: &Path, allow_any_root: bool) -> Result<PathBuf, RootRefusal> {
     // A volume root that cannot be canonicalized (an offline drive letter) still deserves the
     // specific refusal rather than the generic "does not resolve" one. ~keep
     if is_filesystem_root(root) {
@@ -120,7 +125,7 @@ pub fn workspace_root_verdict(root: &Path) -> Result<PathBuf, RootRefusal> {
     if has_config_marker(&resolved) || is_git_workdir(&resolved) || is_grandfathered(&resolved) {
         return Ok(resolved);
     }
-    if allow_any_root() {
+    if allow_any_root {
         record_admission(&resolved, AdmissionReason::EnvHatch);
         return Ok(resolved);
     }
@@ -195,10 +200,7 @@ fn is_git_workdir(root: &Path) -> bool {
 }
 
 fn allow_any_root() -> bool {
-    std::env::var(ALLOW_ANY_ROOT_ENV).is_ok_and(|value| {
-        let value = value.trim();
-        value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-    })
+    super::engine::with(|config| config.trust.allow_any_root)
 }
 
 /// A root that carried a working-view index BEFORE the guard existed predates it and keeps working.
@@ -271,40 +273,6 @@ fn write_admission(workspace_dir: &Path, reason: AdmissionReason) {
 mod tests {
     use super::*;
 
-    /// The env hatch is process-global, so the tests that touch it run under one mutex and always
-    /// restore the prior value.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    struct AllowAnyRoot(Option<String>);
-
-    impl AllowAnyRoot {
-        fn set(value: &str) -> Self {
-            let prior = std::env::var(ALLOW_ANY_ROOT_ENV).ok();
-            // SAFETY: serialized by ENV_LOCK, which every env-touching test in this module holds.
-            unsafe { std::env::set_var(ALLOW_ANY_ROOT_ENV, value) };
-            Self(prior)
-        }
-
-        fn cleared() -> Self {
-            let prior = std::env::var(ALLOW_ANY_ROOT_ENV).ok();
-            // SAFETY: as above.
-            unsafe { std::env::remove_var(ALLOW_ANY_ROOT_ENV) };
-            Self(prior)
-        }
-    }
-
-    impl Drop for AllowAnyRoot {
-        fn drop(&mut self) {
-            // SAFETY: as above.
-            unsafe {
-                match self.0.take() {
-                    Some(prior) => std::env::set_var(ALLOW_ANY_ROOT_ENV, prior),
-                    None => std::env::remove_var(ALLOW_ANY_ROOT_ENV),
-                }
-            }
-        }
-    }
-
     fn plain_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
     }
@@ -331,7 +299,7 @@ mod tests {
 
     #[test]
     fn filesystem_root_is_refused() {
-        assert_eq!(workspace_root_verdict(Path::new("/")), Err(RootRefusal::FilesystemRoot));
+        assert_eq!(verdict(Path::new("/"), false), Err(RootRefusal::FilesystemRoot));
     }
 
     /// The defect this signature change exists to close: `std::path` normalizes neither `..` nor
@@ -339,13 +307,11 @@ mod tests {
     /// syntactic check. The env hatch is SET throughout — it must not unlock any of them.
     #[test]
     fn paths_that_resolve_to_the_filesystem_root_are_refused_even_under_the_env_hatch() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _env = AllowAnyRoot::set("1");
         crate::store::init_isolated_cache();
 
         for spelling in ["/..", "/../..", "/usr/..", "/tmp/../.."] {
             assert_eq!(
-                workspace_root_verdict(Path::new(spelling)),
+                verdict(Path::new(spelling), true),
                 Err(RootRefusal::FilesystemRoot),
                 "{spelling} resolves to the filesystem root"
             );
@@ -357,7 +323,7 @@ mod tests {
             let link = dir.path().join("slash");
             std::os::unix::fs::symlink("/", &link).expect("symlink to /");
             assert_eq!(
-                workspace_root_verdict(&link),
+                verdict(&link, true),
                 Err(RootRefusal::FilesystemRoot),
                 "a symlink whose target is / is still the filesystem root"
             );
@@ -371,7 +337,7 @@ mod tests {
         let (_dir, root) = git_repo();
         let unresolved = root.join("..").join(root.file_name().expect("leaf"));
         assert_eq!(
-            workspace_root_verdict(&unresolved).expect("the repo is allowed"),
+            verdict(&unresolved, false).expect("the repo is allowed"),
             root,
             "the `..` segment must be collapsed in the returned root"
         );
@@ -379,11 +345,9 @@ mod tests {
 
     #[test]
     fn a_relative_or_missing_root_is_unresolvable() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _env = AllowAnyRoot::set("1");
         let dir = plain_dir();
         assert_eq!(
-            workspace_root_verdict(&dir.path().join("no-such-child")),
+            verdict(&dir.path().join("no-such-child"), true),
             Err(RootRefusal::Unresolvable),
             "the env hatch cannot conjure a directory into existence"
         );
@@ -395,7 +359,7 @@ mod tests {
         for shape in [r"C:\", "C:/", r"\\?\C:\", r"\\server\share\", r"\\server\share"] {
             assert!(is_filesystem_root(Path::new(shape)), "{shape} is a volume/share root");
             assert_eq!(
-                workspace_root_verdict(Path::new(shape)),
+                verdict(Path::new(shape), false),
                 Err(RootRefusal::FilesystemRoot),
                 "{shape} must be refused"
             );
@@ -421,7 +385,7 @@ mod tests {
     #[test]
     fn a_git_repository_is_allowed() {
         let (_dir, root) = git_repo();
-        assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
+        assert_eq!(verdict(&root, false), Ok(root.clone()));
     }
 
     #[test]
@@ -429,7 +393,7 @@ mod tests {
         let dir = plain_dir();
         let root = dir.path().canonicalize().expect("canonicalize");
         std::fs::write(root.join(CONFIG_FILE_NAME), "\"$schema\" = \"v1\"\n").expect("write marker");
-        assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
+        assert_eq!(verdict(&root, false), Ok(root.clone()));
     }
 
     #[test]
@@ -439,62 +403,39 @@ mod tests {
         let path = crate::config::convention_nested_config_path(&root);
         std::fs::create_dir_all(path.parent().expect("convention dir")).expect("mkdir .config/basemind");
         std::fs::write(&path, "\"$schema\" = \"v1\"\n").expect("write marker");
-        assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
+        assert_eq!(verdict(&root, false), Ok(root.clone()));
     }
 
     #[test]
     fn a_plain_directory_is_refused() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _env = AllowAnyRoot::cleared();
         crate::store::init_isolated_cache();
         let dir = plain_dir();
         let root = dir.path().canonicalize().expect("canonicalize");
-        assert_eq!(workspace_root_verdict(&root), Err(RootRefusal::NotAProject));
+        assert_eq!(verdict(&root, false), Err(RootRefusal::NotAProject));
     }
 
     #[test]
     fn allow_any_root_env_permits_a_plain_directory_but_never_the_filesystem_root() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _env = AllowAnyRoot::set("1");
         crate::store::init_isolated_cache();
         let dir = plain_dir();
         let root = dir.path().canonicalize().expect("canonicalize");
-        assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
+        assert_eq!(verdict(&root, true), Ok(root.clone()));
         assert_eq!(
-            workspace_root_verdict(Path::new("/")),
+            verdict(Path::new("/"), true),
             Err(RootRefusal::FilesystemRoot),
             "the filesystem-root refusal is not overridable"
         );
     }
 
     #[test]
-    fn allow_any_root_env_accepts_true_and_yes_but_not_arbitrary_values() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for truthy in ["1", "true", "TRUE", "yes"] {
-            let _env = AllowAnyRoot::set(truthy);
-            assert!(allow_any_root(), "{truthy:?} is truthy");
-        }
-        for falsy in ["0", "false", "no", ""] {
-            let _env = AllowAnyRoot::set(falsy);
-            assert!(!allow_any_root(), "{falsy:?} is not truthy");
-        }
-    }
-
-    #[test]
     fn an_existing_working_index_grandfathers_a_plain_directory() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _env = AllowAnyRoot::cleared();
         crate::store::init_isolated_cache();
         let dir = plain_dir();
         let root = dir.path().canonicalize().expect("canonicalize");
-        assert_eq!(
-            workspace_root_verdict(&root),
-            Err(RootRefusal::NotAProject),
-            "no index yet"
-        );
+        assert_eq!(verdict(&root, false), Err(RootRefusal::NotAProject), "no index yet");
 
         write_working_index(&root);
-        assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
+        assert_eq!(verdict(&root, false), Ok(root.clone()));
         assert_eq!(
             read_admission(&crate::store::workspace_cache_dir(&root)).map(|r| r.reason),
             Some(AdmissionReason::PreExistingIndex),
@@ -507,21 +448,18 @@ mod tests {
     /// had just written.
     #[test]
     fn the_env_hatch_does_not_grandfather_the_index_it_produces() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::store::init_isolated_cache();
         let dir = plain_dir();
         let root = dir.path().canonicalize().expect("canonicalize");
 
         {
-            let _env = AllowAnyRoot::set("1");
-            assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
+            assert_eq!(verdict(&root, true), Ok(root.clone()));
         }
         // Stand in for the scan the hatch authorized.
         write_working_index(&root);
 
-        let _env = AllowAnyRoot::cleared();
         assert_eq!(
-            workspace_root_verdict(&root),
+            verdict(&root, false),
             Err(RootRefusal::NotAProject),
             "unsetting the hatch must re-refuse a root it only ever admitted"
         );
@@ -531,19 +469,16 @@ mod tests {
     /// admission just because the variable happened to be set on some later run.
     #[test]
     fn a_grandfathered_root_is_not_downgraded_by_a_later_hatched_run() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::store::init_isolated_cache();
         let dir = plain_dir();
         let root = dir.path().canonicalize().expect("canonicalize");
         write_working_index(&root);
 
         {
-            let _env = AllowAnyRoot::set("1");
-            assert_eq!(workspace_root_verdict(&root), Ok(root.clone()));
+            assert_eq!(verdict(&root, true), Ok(root.clone()));
         }
-        let _env = AllowAnyRoot::cleared();
         assert_eq!(
-            workspace_root_verdict(&root),
+            verdict(&root, false),
             Ok(root.clone()),
             "the pre-existing-index admission stands on its own"
         );

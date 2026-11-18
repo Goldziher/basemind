@@ -69,6 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the rest of that family, `scan_evidence::stale_inflight_scans`,
   `registry::Registry::from_data_home`) take a `&DataRoot`. The variable keeps its meaning for the CLI
   and the daemon.
+- **BREAKING (library):** the operator grants (`BASEMIND_ALLOW_REPO_CREDENTIALS`,
+  `BASEMIND_ALLOW_ANY_ROOT`, `BASEMIND_ALLOW_FOLLOW_SYMLINKS`, `BASEMIND_ALLOW_EXTRA_ROOTS`) are
+  `EngineConfig::trust`, which the library reads instead of the environment.
+  `basemind::scanner::allow_extra_roots` is removed (set `trust.extra_roots`), and
+  `config::trust::Grants::from_env` is `Grants::installed`. A set variable of a removed setting is now
+  reported once when the process starts, not when a `basemind.toml` is loaded.
 - A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
   result reading `tool task failed: …`, where it read `scan join: …` or
   `host rescan task panicked: …`.
