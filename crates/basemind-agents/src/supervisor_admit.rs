@@ -83,6 +83,9 @@ pub(crate) fn admit<'a>(
     if inner.exhausted.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(SupervisorError::AuditExhausted);
     }
+    if inner.closed.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(SupervisorError::ShuttingDown);
+    }
     // Until the caller resolves, a refusal names nobody and reports what was claimed.
     Asker::new(table, caller, None).stamp(refusal);
     let resolved = resolve(policy, table, caller)?;

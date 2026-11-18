@@ -344,6 +344,18 @@ enum Leader {
     Gone,
 }
 
+/// Waits up to `within` for the group leader `pid` to exit, without reaping it, so its group's
+/// id stays ours: `Some(true)` once it exited, `Some(false)` while it still runs, `None` when
+/// someone else reaped it.
+#[cfg(unix)]
+pub(crate) fn exited_within(pid: u32, within: Duration) -> Option<bool> {
+    match settle(pid, within, &AtomicBool::new(false)) {
+        Leader::Running => Some(false),
+        Leader::Exited => Some(true),
+        Leader::Gone => None,
+    }
+}
+
 /// The leader `pid`'s state now.
 #[cfg(unix)]
 fn leader(pid: u32) -> Leader {

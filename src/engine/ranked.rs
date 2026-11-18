@@ -33,8 +33,16 @@ pub(crate) const RANKED_LIMIT_DEFAULT: u32 = 10;
 pub(crate) const RANKED_DEPTH: u32 = 100;
 /// What a ranked tool asks its retrieval for: the depth, and one hit that only says whether the
 /// ranking continues past it.
+#[cfg_attr(
+    not(feature = "code-search"),
+    allow(dead_code, reason = "only `code_search` pages this way")
+)]
 pub(crate) const RANKED_FETCH: u32 = RANKED_DEPTH + 1;
 /// `truncated_reason` of a ranking that goes on past [`RANKED_DEPTH`].
+#[cfg_attr(
+    not(feature = "code-search"),
+    allow(dead_code, reason = "only `code_search` pages this way")
+)]
 pub(crate) const REASON_DEPTH: &str = "depth";
 
 /// The ranking of `tool` for `arguments` (every argument that shapes it): the one kept for it at
@@ -79,6 +87,10 @@ pub(crate) fn ranked_offset(tool: &str, cursor: Option<&Cursor>, generation: u32
 }
 
 /// One page cut out of a ranking.
+#[cfg_attr(
+    not(feature = "code-search"),
+    allow(dead_code, reason = "only `code_search` pages this way")
+)]
 #[derive(Debug)]
 pub(crate) struct RankedPage<T> {
     pub hits: Vec<T>,
@@ -92,6 +104,10 @@ pub(crate) struct RankedPage<T> {
 /// Cut the page `[offset, offset + limit)` out of `hits` (a retrieval of [`RANKED_FETCH`]), apply
 /// the token budget, and offer `next_cursor` when the list goes on. A retrieval that came back with
 /// more than [`RANKED_DEPTH`] hits is cut there, on every page.
+#[cfg_attr(
+    not(feature = "code-search"),
+    allow(dead_code, reason = "only `code_search` pages this way")
+)]
 pub(crate) fn page_ranked<T: Serialize>(
     mut hits: Vec<T>,
     offset: u32,

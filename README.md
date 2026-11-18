@@ -650,8 +650,9 @@ process, answers two more tools on its own stdio, never through the daemon:
 | `agent_stop` | stop an agent you launched, by `session` |
 
 Launching is off until the operator writes `agents.toml` in basemind's user configuration directory
-(`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS), owned by you
-and writable by nobody else. A repository's `basemind.toml` cannot turn it on, nor can the
+(`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS, under your
+account's home directory as the user database names it, whatever `HOME` or `XDG_CONFIG_HOME` say),
+owned by you and writable by nobody else. A repository's `basemind.toml` cannot turn it on, nor can the
 environment, a flag or a tool argument:
 
 ```toml
@@ -667,8 +668,14 @@ permission_mode = "supervised"              # supervised | read_only | accept_ed
 pass_env = ["ANTHROPIC_API_KEY"]            # read from the lead's environment
 ```
 
-A launched agent runs at depth 1 and cannot launch; every approval it asks for is denied; each
-`working_dir` is an existing directory under `worktrees_root` that no other live agent uses; every
+A launched agent runs at depth 1 and cannot launch; it may use the injected server's agent comms
+tools (`agent_inbox`, `agent_post`, `agent_threads`) unasked, and every other approval it asks for is
+denied ([ADR-0044](docs/adr/0044-launched-agent-comms-and-user-mcp-isolation.md)); its harness starts
+none of your own MCP servers but OpenCode's plugins and the servers of a managed or organisation
+OpenCode configuration; each `working_dir` is an existing directory
+under `worktrees_root` that no session of any lead of yours holds, and inside or around none that
+one holds (leads see each other through lock files in their data directory, so leads run with
+different `BASEMIND_DATA_HOME`s do not; a human's session there is not detected); every
 launch, stop and refusal is written to `<data dir>/agents/launch-audit-*.jsonl`. Without the file,
 `serve --lead` serves exactly like `serve` and says why in its instructions. This bounds what a model
 can do through MCP; it is no sandbox against a process of the same user. See

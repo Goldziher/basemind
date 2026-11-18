@@ -128,6 +128,24 @@ impl Daemon {
     }
 }
 
+/// Block until the daemon has loaded the workspace: until then a forwarded answer carries a
+/// `warming_up` notice the in-process call (which loads the map before answering) never shows.
+fn wait_until_warm(env: &Env) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let out = env.run(&["--json", "code", "outline", "a.rs"]);
+        if code(&out) == 0 && !answer(&out).contains("\"warming_up\"") {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon did not finish warming: {}",
+            answer(&out)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = Command::new(BIN)
@@ -391,6 +409,14 @@ fn a_forwarded_call_prints_exactly_what_the_in_process_call_prints() {
 
     let log = env.home.path().join("daemon-stderr.log");
     let _daemon = Daemon::start_logged(&env, &log);
+    wait_until_warm(&env);
+    let hosted_count = || {
+        std::fs::read_to_string(&log)
+            .expect("daemon log")
+            .matches("relay: hosting rmcp session")
+            .count()
+    };
+    let warm_up_calls = hosted_count();
     for (args, expected) in calls.iter().zip(&in_process) {
         let out = env.run(args);
         let forwarded = (code(&out), answer(&out), diagnostics(&out));
@@ -399,11 +425,11 @@ fn a_forwarded_call_prints_exactly_what_the_in_process_call_prints() {
             "basemind {args:?} answered differently through the daemon"
         );
     }
-    let hosted = std::fs::read_to_string(&log)
-        .expect("daemon log")
-        .matches("relay: hosting rmcp session")
-        .count();
-    assert_eq!(hosted, calls.len(), "every call is one forwarded relay session");
+    assert_eq!(
+        hosted_count() - warm_up_calls,
+        calls.len(),
+        "every call is one forwarded relay session"
+    );
 }
 
 /// A view the daemon does not host runs in process even with the daemon up.

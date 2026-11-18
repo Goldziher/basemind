@@ -212,9 +212,10 @@ println!("{} runs as {}", launched.id, launched.agent);
   member is the session's and the group is neither init's nor the launcher's, else each process
   alone, each checked again right before the signal (through a pidfd on Linux 5.3 and later;
   before that, and on macOS, a pid reused in that instant could be signalled). Nothing is killed
-  without a listing, and the session is reported finished only then. `UserMcpServers` (OpenCode, Codex): the harness starts the
-  user's own MCP servers and plugins from its user-level configuration even when the launch names
-  none (OpenCode with an empty `mcpServers`); nothing here can switch that off.
+  without a listing, and the session is reported finished only then. `UserMcpServers` (OpenCode): the harness loads the user's
+  plugins, and the MCP servers of a managed or organisation configuration and the permission
+  rules of a managed one, which nothing here can switch off or override. The servers of its user configuration files are switched off by name, as are all of
+  Codex's (ADR-0044).
 
 ## Safety defaults
 
@@ -234,7 +235,8 @@ config is trusted.
   harness and its mode.
 - An ACP agent in any other mode needs an `UnverifiedModeOptIn` naming the harness and the mode:
   what it does unasked was not verified. OpenCode supervised needs none: every OpenCode launch
-  sets `OPENCODE_CONFIG_CONTENT={"permission":"ask"}`. An ACP agent that reports switching itself
+  sets `OPENCODE_CONFIG_CONTENT` with the permission `"*": "ask"`, `allow` only for the config's
+  pre-approved MCP tools, for the session and each of the user's agents. An ACP agent that reports switching itself
   to another session mode, as a mode or as its mode config option (OpenCode's `mode`), fails the
   session. Codex refuses `AcceptEdits`, whose nearest Codex mode
   also runs commands unasked.
@@ -261,7 +263,14 @@ config is trusted.
   Codex, Gemini, Cursor and OpenCode are not launched over one of their project files in the
   working directory or above it, and Gemini, Cursor, Grok, Hermes and a generic ACP agent not over
   a `.env*` file there, which could redirect their endpoint or proxy and so their credentials. Only the MCP tools the config names are pre-approved (Claude
-  Code only). Claude Code's init frame is checked again every turn. A Codex turn notification
+  Code `--allowedTools`, Codex per-tool `approval_mode = "approve"`, OpenCode `allow` permissions;
+  other ACP agents refuse them). Codex and OpenCode start none of the user's own MCP servers: a
+  launch lists them (`codex mcp list --json` with plugins and apps off; OpenCode's
+  `opencode.json{,c}` of its user directory and of the working directory's ancestors and their
+  `.opencode`) and switches each off by name, or is refused. OpenCode's managed configuration and
+  its plugins are the exception (`UserMcpServers`). The user's OpenCode agents are given the
+  launch's permission rules too, since OpenCode applies an agent's own rules after the
+  top-level ones. Claude Code's init frame is checked again every turn. A Codex turn notification
   without the `threadId` its schema requires fails the session, so a sub-agent's turn can neither
   end the session's turn nor escape the turn count.
 - The harness executable and the MCP server's command resolve to absolute paths outside the root,
@@ -273,8 +282,10 @@ config is trusted.
 - Git run by the harness itself, outside any sandbox it gives the agent, is kept from running
   the repository's programs: every child gets `core.fsmonitor=false` through `GIT_CONFIG_COUNT`,
   and a repository whose own `config` or `config.worktree` sets a filter, a diff driver, an
-  external diff or an include is refused (Codex 0.169 ran a clean filter by `git status` when a
-  turn started; a Git LFS repository with a local `filter.lfs` is refused too).
+  external diff, a signature verifier (`gpg.program`, `gpg.<format>.program`) or an include, or
+  holds a section header the check cannot parse, is refused (Codex 0.169 ran a clean filter by
+  `git status` when a turn started; a Git LFS repository with a local `filter.lfs` is refused
+  too).
 - The root may not contain the launcher's `HOME`, `XDG_CONFIG_HOME` or `XDG_DATA_HOME`, and may not
   be, contain or lie inside a harness's directory (`~/.claude`, `~/.codex`, `~/.gemini`, ...) or
   basemind's store and comms directories: a harness lets the agent work in its root.
@@ -302,8 +313,8 @@ Limits:
   configuration must restrict them. The executable check is not atomic with the exec, and outside
   the root is not the same as not writable by the agent.
 - The harnesses' user-level configuration (`~/.codex`, `~/.gemini`, `~/.cursor`, OpenCode's and
-  Hermes's) still applies: Codex 0.169 started the user's own MCP servers and plugins next to the
-  injected one. Claude Code's managed settings and user `CLAUDE.md` were not checked.
+  Hermes's) still applies, but for Codex's and OpenCode's MCP servers, which a launch switches off
+  (OpenCode's plugins still load). Claude Code's managed settings and user `CLAUDE.md` were not checked.
 - What Cursor's, Gemini's, Grok's, Hermes's and a generic agent's modes ask for, and what
   OpenCode's plan mode blocks, were not run against a live harness.
 - `BASEMIND_AGENT_ID` is self-asserted: a launched agent with a shell can post as anyone over

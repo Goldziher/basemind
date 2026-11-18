@@ -231,3 +231,19 @@ fn a_process_below_a_sealed_host_is_nested_whatever_it_is_called() {
     assert_eq!(seen("unsealed"), "none");
     assert_eq!(seen("sealed"), "parent");
 }
+
+/// A supervisor that was shut down takes no further launch: an embedding whose input keeps
+/// arriving while it shuts down (a lead ended by a signal) would otherwise start a session after
+/// every session was stopped, which nothing would stop or record the exit of.
+#[test]
+fn a_shut_down_supervisor_launches_nothing() {
+    let scratch = Scratch::new();
+    let config = scratch.config(HarnessKind::ClaudeCode, &scratch.long());
+    let (supervisor, audit) = start(policy(&[HarnessKind::ClaudeCode]), vec![config]);
+    supervisor.shutdown();
+    let refused = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request());
+    assert!(matches!(refused, Err(SupervisorError::ShuttingDown)), "{refused:?}");
+    assert_eq!(refused.unwrap_err().code(), "shutting_down");
+    assert!(supervisor.list().is_empty());
+    assert_eq!(outcomes(&audit, AuditEvent::Refusal), ["shutting_down"]);
+}

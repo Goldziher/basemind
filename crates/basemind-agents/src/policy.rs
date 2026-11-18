@@ -36,10 +36,11 @@ pub enum Caveat {
     /// input closed and about 3 s with it open. The supervisor records such groups while the
     /// session runs, waits for them after it ends and kills what is left.
     DetachedServer,
-    /// The harness loads the user's own MCP servers and plugins from its user-level
-    /// configuration, beside the injected one, even when the launch names none: OpenCode 2.3.0
-    /// with an empty `mcpServers`, and Codex 0.169 from `~/.codex/config.toml`. What those
-    /// servers can do is outside the launch's control.
+    /// The harness loads some of the user's own extensions beside the injected server, and the
+    /// launch cannot switch them off: OpenCode 2.3.2 loads the user's plugins, and MCP servers
+    /// of a managed or organisation (well-known) configuration. The servers of its user
+    /// configuration files are switched off by name (ADR-0044), as are all of Codex's. What
+    /// those extensions can do is outside the launch's control.
     UserMcpServers,
 }
 
@@ -59,8 +60,7 @@ impl Caveat {
 pub fn caveats(kind: HarnessKind) -> &'static [Caveat] {
     match kind {
         HarnessKind::Acp(AcpFlavor::OpenCode) => &[Caveat::DetachedServer, Caveat::UserMcpServers],
-        HarnessKind::Codex => &[Caveat::UserMcpServers],
-        HarnessKind::ClaudeCode | HarnessKind::Acp(_) => &[],
+        HarnessKind::ClaudeCode | HarnessKind::Codex | HarnessKind::Acp(_) => &[],
     }
 }
 

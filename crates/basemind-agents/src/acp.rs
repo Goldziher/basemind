@@ -52,10 +52,18 @@ fn flavor(spec: &LaunchSpec) -> Result<AcpFlavor, LaunchError> {
     }
 }
 
-/// OpenCode's inline configuration that makes every permission `ask`. It takes precedence over
-/// the configuration files: OpenCode 2.3.0 asked under it even with a config file allowing
-/// edits and shell commands named by `OPENCODE_CONFIG`.
-pub(crate) const OPENCODE_ASK: (&str, &str) = ("OPENCODE_CONFIG_CONTENT", r#"{"permission":"ask"}"#);
+/// The variable through which OpenCode takes an inline configuration. OpenCode 2.3.2 merges it
+/// after the user's and the project's configuration files and before a managed one: its
+/// top-level permission rules come after theirs (OpenCode 2.3.0 asked under
+/// `{"permission":"ask"}` even with a config file allowing edits and shell commands named by
+/// `OPENCODE_CONFIG`), but an agent's own rules come after every top-level rule, so the user's
+/// agents are named in it too ([`crate::user_mcp::opencode_content`]).
+pub(crate) const OPENCODE_CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
+
+/// OpenCode's inline configuration without pre-approved tools or user servers: every
+/// permission `ask`.
+#[cfg(test)]
+pub(crate) const OPENCODE_ASK: (&str, &str) = (OPENCODE_CONFIG_CONTENT, r#"{"permission":"ask"}"#);
 
 /// The session mode to set after `session/new`, if the permission mode needs one.
 ///
@@ -64,8 +72,8 @@ pub(crate) const OPENCODE_ASK: (&str, &str) = ("OPENCODE_CONFIG_CONTENT", r#"{"p
 /// mode, Grok's and OpenCode's read-only modes and Hermes's accept-edits mode are monocode's
 /// names, and a generic agent is unknown. Each needs an [`UnverifiedModeOptIn`] naming the
 /// harness and the mode. OpenCode supervised needs none: its default wrote a file unasked,
-/// but under [`OPENCODE_ASK`] OpenCode 2.3.0 asked before an edit, a shell command and an
-/// MCP tool call.
+/// but under `{"permission":"ask"}` OpenCode 2.3.0 asked before an edit, a shell command and
+/// an MCP tool call.
 ///
 /// [`UnverifiedModeOptIn`]: crate::UnverifiedModeOptIn
 fn session_mode(spec: &LaunchSpec, prepared: &Prepared, flavor: AcpFlavor) -> Result<Option<String>, LaunchError> {
@@ -119,21 +127,33 @@ impl AcpAdapter {
         self.plan_prepared(spec).map(|(plan, _)| plan)
     }
 
-    /// The plan and the checked spec it was built from, checked once per launch.
+    /// The plan and the checked spec it was built from, checked once per launch, without the
+    /// user's own MCP servers, which only a launch reads.
     pub(crate) fn plan_prepared(&self, spec: &LaunchSpec) -> Result<(CommandPlan, Prepared), LaunchError> {
+        self.plan_with(spec, &crate::user_mcp::OpenCodeUser::default())
+    }
+
+    /// The plan with `user`, OpenCode's user MCP servers switched off and its agents given the
+    /// launch's permission rules.
+    fn plan_with(
+        &self,
+        spec: &LaunchSpec,
+        user: &crate::user_mcp::OpenCodeUser,
+    ) -> Result<(CommandPlan, Prepared), LaunchError> {
         let flavor = flavor(spec)?;
         let prepared = spec.prepare()?;
         session_mode(spec, &prepared, flavor)?;
-        if spec
+        let allow_tools = spec
             .mcp_server
             .as_ref()
-            .is_some_and(|server| !server.allow_tools.is_empty())
-        {
+            .map_or(&[][..], |server| &server.allow_tools[..]);
+        if flavor != AcpFlavor::OpenCode && !allow_tools.is_empty() {
             return Err(LaunchError::Unsupported {
                 harness: spec.harness.kind.id(),
                 feature: "pre-approving MCP tools",
             });
         }
+        let opencode_content;
         let mut env = Vec::new();
         let extra = prepared.model_args.iter().map(String::as_str);
         let args: Vec<&str> = match flavor {
@@ -141,8 +161,10 @@ impl AcpAdapter {
             AcpFlavor::Cursor | AcpFlavor::Hermes => vec!["acp"],
             AcpFlavor::OpenCode => {
                 // OpenCode's default edits files and runs commands unasked; it has no bypass
-                // mode here, so every launch asks.
-                env.push(OPENCODE_ASK);
+                // mode here, so every launch asks, but for the pre-approved tools.
+                let injected = spec.mcp_server.as_ref().map(|server| server.name.as_str());
+                opencode_content = crate::user_mcp::opencode_content(allow_tools, injected, user)?;
+                env.push((OPENCODE_CONFIG_CONTENT, opencode_content.as_str()));
                 vec!["acp"]
             }
             AcpFlavor::Gemini => vec!["--experimental-acp"],
@@ -174,7 +196,14 @@ impl AcpAdapter {
     }
 
     fn launch_spec(&self, spec: &LaunchSpec) -> Result<Session, LaunchError> {
-        let (plan, prepared) = self.plan_prepared(spec)?;
+        let (mut plan, mut prepared) = self.plan_prepared(spec)?;
+        if flavor(spec)? == AcpFlavor::OpenCode {
+            // OpenCode merges the inline configuration into the user's, whose servers stay
+            // unless each is switched off by name, and whose agents' own rules come after it.
+            let dir = crate::user_mcp::opencode_config_dir(&plan.env, &plan.cwd)?;
+            let user = crate::user_mcp::opencode_user(&dir, &plan.cwd)?;
+            (plan, prepared) = self.plan_with(spec, &user)?;
+        }
         let config = Config::new(spec, &plan, &prepared)?;
         let (tx, controls) = channel(CONTROL_QUEUE);
         let driver = Box::new(AcpDriver { config, controls });
