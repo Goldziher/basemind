@@ -620,11 +620,19 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
 
 /// The trailing serviceability verdict on a `doctor --probe` row. Empty when the row was not probed,
 /// so an unprobed row renders exactly as it did before.
+/// The agent-store state of a daemon that can serve agents. Any other (`opening`, `newer`, which is
+/// read-only, or `unreadable`) leaves the daemon serving code tools while agent requests fail.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+const AGENT_STORE_OPEN: &str = "open";
+
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn probe_label(verdict: &basemind::comms::singleton::DaemonProbe) -> String {
     use basemind::comms::singleton::DaemonProbe;
     match verdict {
-        DaemonProbe::Serving { agent_store } => format!(" serving(agent store {agent_store})"),
+        DaemonProbe::Serving { agent_store } if agent_store == AGENT_STORE_OPEN => {
+            format!(" serving(agent store {agent_store})")
+        }
+        DaemonProbe::Serving { agent_store } => format!(" DEGRADED: serving with agent store {agent_store}"),
         DaemonProbe::Failing { code, message } => format!(" LIVE BUT FAILING [{code}: {message}]"),
         DaemonProbe::Unreachable => " LIVE BUT NOT RESPONDING".to_string(),
     }
@@ -635,7 +643,12 @@ fn probe_json(verdict: &basemind::comms::singleton::DaemonProbe) -> serde_json::
     use basemind::comms::singleton::DaemonProbe;
     match verdict {
         DaemonProbe::Serving { agent_store } => {
-            serde_json::json!({ "state": "serving", "agent_store": agent_store })
+            let state = if agent_store == AGENT_STORE_OPEN {
+                "serving"
+            } else {
+                "degraded"
+            };
+            serde_json::json!({ "state": state, "agent_store": agent_store })
         }
         DaemonProbe::Failing { code, message } => {
             serde_json::json!({ "state": "failing", "code": code, "message": message })
@@ -685,5 +698,27 @@ mod statusline_tests {
     fn caps_the_name_list_with_an_overflow_marker() {
         let hot = [ws("/a/one"), ws("/a/two"), ws("/a/three"), ws("/a/four"), ws("/a/five")];
         assert_eq!(super::format_statusline(&hot), "bm: one · two · three +2 · 5 hot");
+    }
+}
+
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
+mod probe_tests {
+    use basemind::comms::singleton::DaemonProbe;
+
+    fn serving(agent_store: &str) -> DaemonProbe {
+        DaemonProbe::Serving {
+            agent_store: agent_store.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_daemon_whose_agent_store_is_not_open_reads_as_degraded() {
+        assert_eq!(super::probe_json(&serving("open"))["state"], "serving");
+        assert_eq!(super::probe_label(&serving("open")), " serving(agent store open)");
+        for state in ["unreadable", "newer", "opening"] {
+            assert_eq!(super::probe_json(&serving(state))["state"], "degraded", "{state}");
+            let label = super::probe_label(&serving(state));
+            assert!(label.contains("DEGRADED") && label.contains(state), "{label}");
+        }
     }
 }
