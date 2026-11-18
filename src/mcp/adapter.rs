@@ -50,6 +50,17 @@ pub(super) async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send 
     }
 }
 
+/// [`blocking`] for a tool body: a panic in it, or a runtime shutting down under it, comes back as an
+/// internal error the shim reports as an `isError` result, rather than unwinding into the request
+/// handler and leaving the client waiting on a response that never comes.
+async fn blocking_answer(
+    body: impl FnOnce() -> Result<CallToolResult, McpError> + Send + 'static,
+) -> Result<CallToolResult, McpError> {
+    tokio::task::spawn_blocking(body)
+        .await
+        .unwrap_or_else(|join| Err(McpError::internal_error(format!("tool task failed: {join}"), None)))
+}
+
 /// `op`'s answer as a tool result.
 fn answer<P, R: Serialize>(
     ws: &Workspace,
@@ -69,7 +80,7 @@ where
 {
     let ws = Arc::clone(&state.shared);
     let telemetry = Arc::clone(&state.telemetry);
-    blocking(move || call_blocking(&ws, &telemetry, p, op)).await
+    blocking_answer(move || call_blocking(&ws, &telemetry, p, op)).await
 }
 
 /// [`call`] for a verb tool that pages nothing: no `limit` to refuse, no cursor to bind; the same
@@ -82,7 +93,7 @@ where
 {
     let ws = Arc::clone(&state.shared);
     let telemetry = Arc::clone(&state.telemetry);
-    blocking(move || {
+    blocking_answer(move || {
         let started = std::time::Instant::now();
         let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
         let result = answer(&ws, p, op);
@@ -126,7 +137,7 @@ where
     R: Serialize + 'static,
 {
     let ws = Arc::clone(ws);
-    blocking(move || answer(&ws, p, op)).await
+    blocking_answer(move || answer(&ws, p, op)).await
 }
 
 #[cfg(test)]
@@ -134,6 +145,22 @@ mod tests {
     use rmcp::model::ErrorCode;
 
     use super::*;
+
+    /// A panic in a tool body (the `index_rescan` scan, say) is an internal error the shim reports as
+    /// an `isError` result, not an unwind into the request handler.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_tool_body_is_an_internal_error() {
+        let failed = blocking_answer(|| panic!("resolve pass exploded"))
+            .await
+            .expect_err("a panic is an error");
+        assert_eq!(failed.code, ErrorCode::INTERNAL_ERROR);
+        assert!(failed.message.starts_with("tool task failed: "), "{}", failed.message);
+        assert!(failed.message.contains("resolve pass exploded"), "{}", failed.message);
+        let answered = blocking_answer(|| Ok(CallToolResult::success(Vec::new())))
+            .await
+            .expect("a body that returns is answered");
+        assert_eq!(answered.is_error, Some(false));
+    }
 
     #[test]
     fn each_engine_error_keeps_its_message_and_maps_to_the_code_the_cli_reads() {

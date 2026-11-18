@@ -54,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
+  result reading `tool task failed: …`, where it read `scan join: …` or
+  `host rescan task panicked: …`.
 - `code_refs` call sites, `callers` (with `path`) and `implementations` in a session that holds no
   index — a CLI command or a second `serve` beside a writer, with no daemon — are refused as busy
   (exit `3`), naming `basemind comms start`, instead of answering from an in-RAM projection of the
