@@ -501,19 +501,19 @@ fn rerank(query: &str, settings: &RerankSettings, ranking: &mut DocsRanking) {
 }
 
 /// Put the first `candidates` hits in the order of `scored`, each scored hit carrying its score. A
-/// hit the reranker left out keeps its place after the scored ones.
+/// hit the reranker left out keeps its place after the scored ones. An answer naming a hit out of
+/// range is refused before anything moves, so the hits keep their fused order and no rerank score.
 fn reorder(hits: &mut Vec<RankedChunk>, candidates: usize, scored: &[xberg::RerankedDocument]) -> Result<(), String> {
+    if let Some(bad) = scored.iter().find(|result| result.index >= candidates) {
+        return Err(format!(
+            "the reranker returned index {} of {candidates} candidates",
+            bad.index
+        ));
+    }
     let mut head: Vec<Option<RankedChunk>> = hits.drain(..candidates).map(Some).collect();
     let mut reordered = Vec::with_capacity(candidates);
     for result in scored {
-        let Some(slot) = head.get_mut(result.index) else {
-            hits.splice(0..0, head.into_iter().flatten().chain(reordered));
-            return Err(format!(
-                "the reranker returned index {} of {candidates} candidates",
-                result.index
-            ));
-        };
-        if let Some(mut hit) = slot.take() {
+        if let Some(mut hit) = head[result.index].take() {
             hit.rerank_score = Some(result.score);
             reordered.push(hit);
         }
