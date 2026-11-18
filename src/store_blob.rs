@@ -565,6 +565,21 @@ impl Store {
         read_l2_blob_in(&self.blobs_dir, hash_hex)
     }
 
+    /// Whether the combined-filemap blob carries an L2 tier, read from its header without
+    /// decompressing or decoding the tier. `false` when the blob is absent or unreadable.
+    pub fn has_l2_by_hex(&self, hash_hex: &str) -> bool {
+        let path = self.blob_path_fm_hex(hash_hex);
+        let Ok(Some(bytes)) = read_if_exists(&path) else {
+            return false;
+        };
+        match envelope_prefix(&path, &bytes) {
+            Ok(Some(_)) => filemap_envelope(&path, &bytes)
+                .is_ok_and(|envelope| envelope.l2.uncompressed_len != 0 || !envelope.l2.bytes.is_empty()),
+            Ok(None) => frame_slices(&bytes).is_some_and(|(_, l2)| !l2.is_empty()),
+            Err(_) => false,
+        }
+    }
+
     /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed blob,
     /// with independently compressed L1 and L2 frames, so the default eager-L2 scan does one
     /// `open` + `write` + atomic `rename` per file without making L1-only reads decompress L2.

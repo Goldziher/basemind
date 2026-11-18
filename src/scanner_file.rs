@@ -456,7 +456,7 @@ fn process_file(
         match store.read_l1_by_hex(hash_hex_str) {
             Ok(Some(l1)) if l1.language == lang && l1.extract_epoch < extract::EXTRACT_EPOCH => {
                 stale_epoch = true;
-                stale_had_l2 = matches!(store.read_l2_by_hex(hash_hex_str), Ok(Some(_)));
+                stale_had_l2 = store.has_l2_by_hex(hash_hex_str);
                 None
             }
             Ok(Some(l1)) if l1.language == lang => {
