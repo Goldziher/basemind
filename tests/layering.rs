@@ -76,6 +76,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("intel", Core),
     ("lance", Retrieval),
     ("lang", Core),
+    ("lang_grammars", Core),
     ("lang_rules", Core),
     ("lead", Root),
     ("mcp", Root),

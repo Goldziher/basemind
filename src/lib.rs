@@ -34,6 +34,7 @@ pub mod intel;
 #[cfg(feature = "intelligence")]
 pub mod lance;
 pub mod lang;
+pub mod lang_grammars;
 pub mod lang_rules;
 /// `basemind serve --lead`, the agent-launch host (ADR-0040). Unix only, like launching itself.
 #[cfg(all(feature = "comms", unix))]
