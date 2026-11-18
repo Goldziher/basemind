@@ -160,6 +160,28 @@ async fn code_refs_flags_a_caller_in_a_file_edited_after_the_scan() {
     }
 }
 
+/// A page of an edited file's outline is a page of its symbols as parsed from the file now. A cursor
+/// into it is good only while the file holds those bytes: an edit between pages shifts the offset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_outline_cursor_into_an_edited_file_is_refused_once_the_file_changes_again() {
+    let (dir, client) = started().await;
+    let path = dir.path().join("src/outline.rs");
+    prepend(&path, "// one\n");
+    let first = call(&client, "code_outline", json!({ "path": "src/outline.rs", "limit": 1 })).await;
+    assert_eq!(first["stale"], true, "{first}");
+    let cursor = first["next_cursor"].as_str().expect("a second page").to_string();
+    let page = json!({ "path": "src/outline.rs", "limit": 1, "cursor": cursor });
+    let second = call(&client, "code_outline", page.clone()).await;
+    assert_eq!(
+        second["symbols"][0]["name"], "file_outline_l2",
+        "the file is unchanged since page 1: {second}"
+    );
+
+    prepend(&path, "pub fn inserted() -> u32 {\n    0\n}\n");
+    let moved = call_err(&client, "code_outline", page).await;
+    assert!(moved.contains("since this cursor was issued"), "{moved}");
+}
+
 const SHAPES_RS: &str = "pub trait Shape {\n    fn area(&self) -> u32;\n}\n\npub struct Square;\n\nimpl Shape for Square {\n    fn area(&self) -> u32 {\n        1\n    }\n}\n";
 const CIRCLE_RS: &str = "use crate::shapes::Shape;\n\npub struct Circle;\n\nimpl Shape for Circle {\n    fn area(&self) -> u32 {\n        3\n    }\n}\n";
 
