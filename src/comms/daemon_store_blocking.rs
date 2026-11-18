@@ -24,4 +24,41 @@ impl Broker {
             Err(_) => std::future::pending().await,
         }
     }
+
+    /// Run `read` against the machine registry once the rows of `repo_id`, or every row with
+    /// `None`, are reconciled with the disk, so a listing never shows a branch or worktree that is
+    /// gone or misses one that was added. The lock is taken once per repo, so a `Hello` waits for
+    /// one repository's enumeration at most. A failed reconciliation is logged and the rows are read
+    /// as they stand.
+    pub(crate) async fn refreshed_registry<T, F>(&self, repo_id: Option<String>, read: F) -> T
+    where
+        T: Send + 'static,
+        F: FnOnce(&MachineRegistry) -> T + Send + 'static,
+    {
+        let ids = match repo_id {
+            Some(id) => vec![id],
+            None => {
+                let (ids, outcome) = self
+                    .registry_blocking(|registry| {
+                        let outcome = registry.refresh_stale_workspaces();
+                        (registry.repo_ids(), outcome)
+                    })
+                    .await;
+                if let Err(error) = outcome {
+                    tracing::warn!(%error, "comms: machine registry workspace refresh failed");
+                }
+                ids
+            }
+        };
+        for id in ids {
+            let target = id.clone();
+            let outcome = self
+                .registry_blocking(move |registry| registry.refresh_stale_repo(&target))
+                .await;
+            if let Err(error) = outcome {
+                tracing::warn!(%error, repo_id = %id, "comms: machine registry refresh failed");
+            }
+        }
+        self.registry_blocking(move |registry| read(registry)).await
+    }
 }

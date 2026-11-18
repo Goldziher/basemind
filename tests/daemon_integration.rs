@@ -891,8 +891,9 @@ async fn should_converge_on_one_live_daemon_when_two_processes_race_a_cold_bind(
 }
 
 /// The registry's branch and worktree rows track real git state through the daemon's lifetime:
-/// creating a branch, adding a linked worktree, and removing it are all picked up on the NEXT
-/// Hello (`populate_git` re-enumerates from git plumbing), without restarting the daemon itself.
+/// creating a branch, adding a linked worktree, and removing it are all picked up by the next
+/// listing (a query re-enumerates a repository whose refs or worktrees changed), without restarting
+/// the daemon itself.
 #[tokio::test(flavor = "multi_thread")]
 async fn should_reflect_branch_creation_and_worktree_add_remove_on_fresh_connects() {
     let tmp = tempfile::tempdir().expect("tempdir");

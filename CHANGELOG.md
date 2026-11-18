@@ -953,9 +953,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   long session's read stack is no longer shed right after it closes.
 - A forwarded CLI command no longer counts as a second `serve` session of the agent's identity, which
   made agent replies warn of a shared identity.
-- A comms `Hello` refreshes the machine registry's rows for its root at most once every five minutes
-  instead of enumerating the repository's worktrees and branches and rewriting the registry on every
-  prompt hook. A root that resolves to the filesystem root is no longer registered.
+- A comms `Hello` from a registered root no longer enumerates the repository's worktrees and
+  branches and rewrites the machine registry on every prompt hook. `workspace workspaces`,
+  `worktrees` and `branches` reconcile the rows they list instead: a repository whose refs,
+  `packed-refs` or `worktrees/` changed since it was enumerated is enumerated again, and rows whose
+  path is gone are dropped. A root that resolves to the filesystem root is no longer registered.
 - A daemon serving the HTTP front-end is no longer stopped for idleness. It disappeared ten minutes
   after its last request, and no HTTP client could start another.
 - `basemind comms doctor --probe` reports a daemon whose agent store is not open as degraded.
