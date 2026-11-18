@@ -543,3 +543,20 @@ fn the_group_end_state_equals_a_sweep_after_every_step() {
     assert!(outcome.stats_from_ledger && !outcome.swept);
     assert_group_exact(&both, "a full scan of A after the watcher batch");
 }
+
+/// A rebuild that clears a view owes the group a sweep only when the view had forward rows whose
+/// postings it leaves behind: clearing an empty view (every new store's first open) must not cost
+/// the first full pass a walk of the posting list.
+#[test]
+fn clearing_a_view_owes_a_sweep_only_when_it_had_forward_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
+    let (a, b) = (&views[0], &views[1]);
+    b.clear_for_rebuild().unwrap();
+    assert!(!pass(a, PassKind::Full, |db| upsert(db, "src/a.rs", "a1", &["alpha"])).swept);
+
+    pass(b, PassKind::Full, |db| upsert(db, "src/x.rs", "x1", &["xray"]));
+    b.clear_for_rebuild().unwrap();
+    assert!(pass(a, PassKind::Full, |_| {}).swept, "x1's postings were left behind");
+    assert_eq!(postings_of(a, "x1"), 0);
+}
