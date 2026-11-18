@@ -56,6 +56,15 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_
 | `gen_find.py` | `find` | the source path of a basename / typo / consonant-skeleton query (ranked) |
 | `gen_git_search.py` | `git_search` | shas of all commits whose message tokens contain the query's rare subject tokens (ranked) |
 | `gen_docs.py` | `docs` | the markdown file holding a sentence that names backticked code (ranked) |
+| `gen_graph.py` | `impact`, `cycles` | file-level import edges from `mod` / `use` (Rust, `rust_gold`) or `import` (Python, `ast`), see `_edges.py`: importers within a depth, files of each import cycle |
+| `gen_changed.py` | `grep_changed` | the lines of the files changed since `HEAD~k` that hold a literal |
+| `gen_large.py` | `find_large` | files with at least N lines, counted as the scanner counts them (a final unterminated line counts) |
+| `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges |
+| `gen_explain.py` | `explain` | a Rust fn's definition, call sites and `->callee` names, from `rust_gold` |
+
+The last five cover the 0.34 analysis kinds (ADR-0047). Until the engine op or argument each one drives lands,
+`basemind admin eval` skips its tasks: they are reported under "Skipped" with the missing op, and kept out of every
+aggregate and of the gate.
 
 Each generator's docstring states the exact basemind semantics its gold encodes, measured against
 the real tools (for example: `references` counts call sites only and reports the line where the
@@ -160,7 +169,8 @@ over 1 ms), errors increase, or a mode disappeared. Use the same task file for b
 (throwaway git repositories with known gold, determinism across hash seeds, the cross-language guard). The harness is
 covered by `cargo test --lib eval::`, `cargo test --test eval_smoke` and `cargo test --test eval_gate_smoke` (every
 kind and its baseline on a hand-worked fixture, and the same tasks with a wrong gold scoring zero), `rust_gold` by
-`cargo test --offline --manifest-path benchmarks/eval/rust_gold/Cargo.toml`.
+`cargo test --offline --manifest-path benchmarks/eval/rust_gold/Cargo.toml`. `test_analysis_generators.py` covers the
+analysis kinds' gold, edge resolution and baselines on a fixture with a known module graph.
 
 ## Limitations
 
@@ -238,6 +248,12 @@ of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a target
 | `git_symbol` | `git log -s -L '/fn NAME[(<]/,/^INDENT}/:PATH'` |
 | `blame`, `blame_symbol` | `git blame -L A,B` / `git blame -L '/fn NAME[(<]/,/^INDENT}/'` |
 | `diff`, `diff_structural` | `git diff FROM TO -- PATH` / `git diff FROM -- PATH` |
+| `impact` | `git grep -l -E` for the target's `crate::a::b` path and its `mod b;` line, once more per depth-1 importer at depth 2 |
+| `cycles` | every import line of the language, `git grep -n` (tokens only) |
+| `grep_changed` | `git diff --name-only REV \| xargs git grep -n -F PATTERN` |
+| `find_large` | `git ls-files \| xargs awk ...` printing `<lines> <path>` (the `wc -l` listing with an unterminated last line counted) `\| sort -rn \| awk '$1>=N'` |
+| `read_around` | `git grep -n -F`, then `sed -n` over the same ranges per file (tokens only) |
+| `explain` | the file's definition lines, `git grep -n -w NAME`, and `sed -n` over the body (tokens only) |
 
 ### What the gold cannot cover
 
@@ -248,6 +264,9 @@ of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a target
 - Gold is Rust-only for the code kinds: hits in other languages cost the tool precision, never recall.
 - `git_path` and `git_symbol` do not follow renames; `git_symbol` skips merges and compares by name within one file.
 - `find` gold is every tracked file, including assets (`.png`, `.svg`) `find_files` does not index.
+- Import edges (`impact`, `cycles`) come from `use` and `mod` only: a path in an expression (`crate::a::f()`), a
+  sibling workspace crate and a `[lib] path` override are not edges; `#[cfg]` is ignored. In Rust a child's
+  `use super::` and its parent's `mod` declaration form a cycle, so most of a crate is one component.
 - `docs_search` and `code_search` are not run: both need an embedding model download, and this harness only uses the
   network to clone the corpus. `code_read` spans are judged against the definition's first non-attribute line to its
   last line.

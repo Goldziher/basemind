@@ -16,7 +16,10 @@
 //! - `call`: a call site. `name` is the callee's last path segment, the method name, or the macro
 //!   name; `line` is the line of that identifier; `via` is `call`, `method` or `macro`.
 //! - `impl`: a trait implementation, `trait` and `self_ty` by last path segment.
-//! - `use`: one leaf of a `use` tree as a full path (`module`, e.g. `crate::rt::spawn`).
+//! - `use`: one leaf of a `use` tree as a full path (`module`, e.g. `crate::rt::spawn`). `scope` is
+//!   the path of the inline modules (`mod a { .. }`) the `use` sits in, `a::b`, empty at file level.
+//! - `mod_file`: a `mod name;` declaration, whose body is another file. `scope` as for `use`;
+//!   `path_attr` is the value of a `#[path = "..."]` attribute, empty without one.
 //! - `opaque`: a macro invocation whose tokens parse neither as items, statements nor
 //!   comma-separated expressions. Calls inside it are found lexically (`ident(`, `ident!(`);
 //!   definitions inside it are not reported.
@@ -139,6 +142,8 @@ struct Extractor<'a> {
     out: String,
     /// Inside an `impl` or `trait` body: a fn there is a method.
     in_assoc: usize,
+    /// The inline modules enclosing the current item.
+    scope: Vec<String>,
 }
 
 impl Extractor<'_> {
@@ -327,9 +332,44 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
         visit::visit_item_static(self, i);
     }
     fn visit_item_mod(&mut self, i: &'ast syn::ItemMod) {
-        self.def(i, &i.ident.to_string(), i.ident.span(), "mod");
+        let name = i.ident.to_string();
+        self.def(i, &name, i.ident.span(), "mod");
+        if i.content.is_none() {
+            let first = without_attrs(i)
+                .first()
+                .map_or(line(i.ident.span()), |t| line(t.span()));
+            let path_attr = i
+                .attrs
+                .iter()
+                .filter(|a| a.path().is_ident("path"))
+                .find_map(|a| match &a.meta {
+                    syn::Meta::NameValue(syn::MetaNameValue {
+                        value:
+                            Expr::Lit(syn::ExprLit {
+                                lit: syn::Lit::Str(s), ..
+                            }),
+                        ..
+                    }) => Some(s.value()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let (path, scope) = (self.path, self.scope.join("::"));
+            record(
+                &mut self.out,
+                &[
+                    ("t", V::S("mod_file")),
+                    ("path", V::S(path)),
+                    ("name", V::S(&name)),
+                    ("line", V::N(first)),
+                    ("scope", V::S(&scope)),
+                    ("path_attr", V::S(&path_attr)),
+                ],
+            );
+        }
         let saved = std::mem::take(&mut self.in_assoc);
+        self.scope.push(name);
         visit::visit_item_mod(self, i);
+        self.scope.pop();
         self.in_assoc = saved;
     }
     fn visit_item_macro(&mut self, i: &'ast syn::ItemMacro) {
@@ -369,7 +409,7 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
             .map_or(line(i.use_token.span), |t| line(t.span()));
         let mut leaves = Vec::new();
         use_paths(&i.tree, String::new(), &mut leaves);
-        let path = self.path;
+        let (path, scope) = (self.path, self.scope.join("::"));
         for module in leaves {
             record(
                 &mut self.out,
@@ -378,6 +418,7 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
                     ("path", V::S(path)),
                     ("module", V::S(&module)),
                     ("line", V::N(first)),
+                    ("scope", V::S(&scope)),
                 ],
             );
         }
@@ -430,6 +471,7 @@ pub fn extract(path: &str, src: &str) -> String {
         path,
         out: String::new(),
         in_assoc: 0,
+        scope: Vec::new(),
     };
     match syn::parse_file(src) {
         Ok(file) => ex.visit_file(&file),
@@ -560,6 +602,32 @@ mod tests {
         })
         .collect();
         assert_eq!(modules.len(), 4, "{out}");
+    }
+
+    #[test]
+    fn reports_file_modules_with_their_inline_scope_and_path_attribute() {
+        let src = "pub mod rt;\nmod inline {\n    use super::rt::Id;\n    #[path = \"x/y.rs\"]\n    mod deep;\n}\ncfg_net! {\n    pub mod net;\n}\n";
+        let out = extract("src/lib.rs", src);
+        let mods = lines(&out, "mod_file");
+        assert_eq!(mods.len(), 3, "{out}");
+        assert!(
+            mods[0].contains("\"name\":\"rt\",\"line\":1,\"scope\":\"\",\"path_attr\":\"\""),
+            "{out}"
+        );
+        assert!(
+            mods[1].contains("\"name\":\"deep\",\"line\":5,\"scope\":\"inline\",\"path_attr\":\"x/y.rs\""),
+            "{out}"
+        );
+        assert!(mods[2].contains("\"name\":\"net\",\"line\":8,\"scope\":\"\""), "{out}");
+        let uses = lines(&out, "use");
+        assert!(
+            uses[0].contains("\"module\":\"super::rt::Id\",\"line\":3,\"scope\":\"inline\""),
+            "{out}"
+        );
+        assert!(
+            !out.contains("\"t\":\"mod_file\",\"path\":\"src/lib.rs\",\"name\":\"inline\""),
+            "{out}"
+        );
     }
 
     #[test]
