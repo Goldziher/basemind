@@ -73,11 +73,11 @@ pub(crate) struct GroupDb {
     /// A view's retirement holds it too, and so does every open's claim of an id
     /// ([`Self::claim_view`]), so no open gets an id being retired.
     pub(super) allocation: Mutex<()>,
-    /// Each view's BM25 live-key cache, shared by every handle on the view.
-    bm25_live: Mutex<AHashMap<u32, Arc<Bm25LiveCache>>>,
-    /// Each view's BM25 pass ledger, shared by every handle on the view as `bm25_live` is.
+    /// Each view's BM25 live-key cache, shared by every handle on the view and dropped with the last.
+    bm25_live: Mutex<AHashMap<u32, Weak<Bm25LiveCache>>>,
+    /// Each view's BM25 pass ledger, shared and dropped as `bm25_live` is.
     #[cfg(feature = "code-search")]
-    bm25_pass: Mutex<AHashMap<u32, Arc<super::bm25_pass::Bm25PassLedger>>>,
+    bm25_pass: Mutex<AHashMap<u32, Weak<super::bm25_pass::Bm25PassLedger>>>,
     /// Orders the BM25 posting sweep against posting commits, across every view of the group.
     bm25_gate: Bm25Gate,
     /// Each view's live content keys, shared by every handle on the view and dropped with the last.
@@ -400,23 +400,11 @@ impl GroupDb {
             code_bm25_postings: scoped(Part::CodeBm25Postings),
             code_bm25_by_path: scoped(Part::CodeBm25ByPath),
             code_bm25_holders: scoped(Part::CodeBm25Holders),
-            bm25_live: Arc::clone(
-                self.bm25_live
-                    .lock()
-                    .expect("bm25 live caches")
-                    .entry(view_id)
-                    .or_default(),
-            ),
+            bm25_live: per_view(&self.bm25_live, view_id),
             bm25_gate: Arc::clone(&self.bm25_gate),
             live,
             #[cfg(feature = "code-search")]
-            bm25_pass: Arc::clone(
-                self.bm25_pass
-                    .lock()
-                    .expect("bm25 pass ledgers")
-                    .entry(view_id)
-                    .or_default(),
-            ),
+            bm25_pass: per_view(&self.bm25_pass, view_id),
             grep_bloom: scoped(Part::GrepBloom),
             embeddings: self.embeddings.clone(),
             fault: Arc::default(),
@@ -432,18 +420,9 @@ impl GroupDb {
         })
     }
 
-    /// The live-key cell of view `view_id`: the one its open handles share, or a new one when none
-    /// is open. Cells of views with no open handle are dropped here, so a long-lived process does
-    /// not keep the keys of every view it ever opened.
+    /// The live-key cell of view `view_id`, as [`per_view`] hands it out.
     fn live_keys_cell(&self, view_id: u32) -> Arc<LiveKeysCell> {
-        let mut cells = self.live.lock().expect("live key cells");
-        cells.retain(|_, cell| cell.strong_count() > 0);
-        if let Some(cell) = cells.get(&view_id).and_then(Weak::upgrade) {
-            return cell;
-        }
-        let cell = Arc::default();
-        cells.insert(view_id, Arc::downgrade(&cell));
-        cell
+        per_view(&self.live, view_id)
     }
 
     /// Views whose live-key cell is still held by an open handle.
@@ -459,6 +438,28 @@ impl GroupDb {
         #[cfg(feature = "code-search")]
         self.bm25_pass.lock().expect("bm25 pass ledgers").remove(&view_id);
     }
+
+    /// Views whose BM25 live-key cache is still held by an open handle.
+    #[cfg(test)]
+    pub(crate) fn bm25_cache_views(&self) -> Vec<u32> {
+        let mut caches = self.bm25_live.lock().expect("bm25 live caches");
+        caches.retain(|_, cache| cache.strong_count() > 0);
+        caches.keys().copied().collect()
+    }
+}
+
+/// View `view_id`'s entry of a per-view map: the one its open handles share, or a new one when none
+/// is open. Entries no open handle holds are dropped here, so a long-lived process (the daemon,
+/// hosting one view of the group) does not keep the state of every view it ever opened.
+fn per_view<T: Default>(entries: &Mutex<AHashMap<u32, Weak<T>>>, view_id: u32) -> Arc<T> {
+    let mut entries = entries.lock().expect("per-view entries");
+    entries.retain(|_, entry| entry.strong_count() > 0);
+    if let Some(entry) = entries.get(&view_id).and_then(Weak::upgrade) {
+        return entry;
+    }
+    let entry = Arc::default();
+    entries.insert(view_id, Arc::downgrade(&entry));
+    entry
 }
 
 #[cfg(test)]

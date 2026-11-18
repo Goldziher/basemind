@@ -144,3 +144,26 @@ fn live_keys_are_shared_by_a_view_s_handles_and_dropped_with_the_last() {
     drop((a, again));
     assert!(group.live_key_views().is_empty());
 }
+
+/// A view's BM25 cache lives as long as a handle on the view: the daemon keeps the group open for
+/// its hosted view, and must not keep the cache of every other view a query ever opened.
+#[test]
+fn a_view_s_bm25_cache_is_dropped_with_its_last_handle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = open(&dir.path().join("group"));
+    let a = view(&group, "ws-a", "working", &memory);
+    let b = view(&group, "ws-b", "working", &memory);
+    let a_id = group.allocate_view_id("ws-a", "working").expect("id");
+    let again = group.open_view(a_id, &memory, true).expect("a second handle on a");
+    assert!(
+        Arc::ptr_eq(&a.bm25_live, &again.bm25_live),
+        "one view's handles share its cache"
+    );
+    assert!(!Arc::ptr_eq(&a.bm25_live, &b.bm25_live), "another view's is its own");
+
+    drop(b);
+    assert_eq!(group.bm25_cache_views(), [a_id], "the closed view's cache is gone");
+    drop((a, again));
+    assert!(group.bm25_cache_views().is_empty());
+}
