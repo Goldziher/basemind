@@ -4,6 +4,7 @@
 //! `String` / `PathBuf` / small structs so we can swap the underlying git library later
 //! without rewriting half of the codebase.
 
+mod changes;
 mod commit;
 #[cfg(test)]
 pub(crate) use commit::FILE_LISTINGS;

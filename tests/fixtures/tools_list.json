@@ -11,38 +11,31 @@
         },
         "regex": {
           "description": "Treat `pattern` as a Rust regex; `^` and `$` match at every line.",
-          "type": "boolean",
-          "default": null
+          "type": "boolean"
         },
         "path": {
           "description": "Literal substring of the repo-relative path, e.g. `src/mcp/`; not a glob.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "language": {
           "description": "Language filter, e.g. `rust`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "context": {
           "description": "Add one line before and after each hit.",
-          "type": "boolean",
-          "default": null
+          "type": "boolean"
         },
         "limit": {
           "description": "Max hits (default 100).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000).",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000).",
+          "type": "integer"
         }
       },
       "required": [
@@ -73,18 +66,15 @@
         },
         "limit": {
           "description": "Max symbols (default 500).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000).",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000).",
+          "type": "integer"
         }
       },
       "required": [
@@ -115,23 +105,19 @@
         },
         "symbol": {
           "description": "Symbol whose body to return (exact name).",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "kind": {
           "description": "With `symbol`: its kind, when several share the name.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "line": {
           "description": "First line of a span, 1-based. With `symbol`: a line inside the definition meant.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "end_line": {
           "description": "Last line of a span, inclusive (default: `line`). Not with `symbol`.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         }
       },
       "required": [
@@ -163,7 +149,6 @@
         "relation": {
           "description": "What to list (default `callers`).",
           "type": "string",
-          "default": null,
           "enum": [
             "callers",
             "implementations",
@@ -173,23 +158,19 @@
         },
         "path": {
           "description": "`callers`: file defining `name`, pinning that definition. `definition`: file holding the\nreference (required). Not with `implementations` or `importers`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "line": {
           "description": "Needs `path`. `callers`: 1-based line inside the definition meant, when several share the\nname. `definition`: line of the reference (required).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "column": {
           "description": "`definition` only: 1-based column (default: where `name` occurs on the line).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "match": {
           "description": "Name matching (default `exact`). Not with `importers` or `definition`.",
           "type": "string",
-          "default": null,
           "enum": [
             "exact",
             "substring"
@@ -197,18 +178,15 @@
         },
         "limit": {
           "description": "Max hits (default 100). Not with `definition`.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page. Not with `definition`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000). Not with `definition`.",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000). Not with `definition`.",
+          "type": "integer"
         }
       },
       "required": [
@@ -240,7 +218,6 @@
         "lane": {
           "description": "Retrieval lane (default `hybrid`).",
           "type": "string",
-          "default": null,
           "enum": [
             "hybrid",
             "semantic",
@@ -249,18 +226,15 @@
         },
         "limit": {
           "description": "Max hits (default 10).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000).",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000).",
+          "type": "integer"
         }
       },
       "required": [
@@ -291,28 +265,23 @@
         },
         "kind": {
           "description": "function, method, struct, enum, class, interface, trait, type, const, module, macro.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "fuzzy": {
           "description": "Also match the name as a fuzzy subsequence, ranked last.",
-          "type": "boolean",
-          "default": null
+          "type": "boolean"
         },
         "limit": {
           "description": "Max hits (default 100).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000).",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000).",
+          "type": "integer"
         }
       },
       "required": [
@@ -343,43 +312,35 @@
         },
         "mime_type": {
           "description": "Exact MIME filter, e.g. `application/pdf`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "kind": {
           "description": "Format: pdf, office, html, markdown, email, notebook, text or other.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "path": {
           "description": "Glob over document paths (`docs/**/*.md`).",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "keywords": {
           "description": "Whole keywords, comma-separated; any one matches.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "entity": {
           "description": "Keep chunks naming an entity of this category, e.g. `PERSON`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "limit": {
           "description": "Max hits (default 10).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000).",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000).",
+          "type": "integer"
         }
       },
       "required": [
@@ -408,33 +369,27 @@
       "properties": {
         "query": {
           "description": "Fuzzy fragment of a file name or path; omit to list.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "path_prefix": {
           "description": "Only paths starting with this, e.g. `src/mcp/`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "language": {
           "description": "Language filter, e.g. `rust`, `markdown`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "limit": {
           "description": "Max files (default 200).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000).",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000).",
+          "type": "integer"
         }
       }
     },
@@ -460,38 +415,31 @@
         },
         "line": {
           "description": "First line of a span, 1-based, as numbered at `rev`. With `symbol`: a line inside the\ndefinition meant.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "end_line": {
           "description": "Last line of a span, inclusive (default: `line`). Needs `line`; not with `symbol`.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "symbol": {
           "description": "Blame this symbol's lines, as they are at `rev`, instead of a span.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "rev": {
           "description": "Revision to blame at (default HEAD).",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "limit": {
           "description": "Max hunks (default 100).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000).",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000).",
+          "type": "integer"
         }
       },
       "required": [
@@ -520,23 +468,19 @@
       "properties": {
         "path": {
           "description": "File to diff, or a directory ending in `/` to narrow the status; omit every argument for\nthe whole working-tree status.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "from": {
           "description": "Old revision (default HEAD). Needs `path`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "to": {
           "description": "New revision (default: the working tree). Needs `path`; not with `structural`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "structural": {
           "description": "Symbol-level diff of `from` against the indexed working tree, instead of text hunks.",
-          "type": "boolean",
-          "default": null
+          "type": "boolean"
         }
       }
     },
@@ -560,48 +504,39 @@
       "properties": {
         "path": {
           "description": "Only commits touching this file; a trailing `/` means a directory (200 commits inspected per\npage; follow `next_cursor`). Not with `query` or `author`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "query": {
           "description": "Words the commit message must all contain. Combines with `author` only.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "author": {
           "description": "Words the author name or email must all contain. Combines with `query` only.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "symbol": {
           "description": "History of this symbol's body, one window of commits per page; needs `path`, combines\nwith nothing else but `line`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "line": {
           "description": "With `symbol`: 1-based line inside the definition meant, when several share the name.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "rev": {
           "description": "Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "limit": {
           "description": "Max commits (default 20).",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous page.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget for the list (default 6000).",
-          "type": "integer",
-          "default": null
+          "description": "Token budget (default 6000).",
+          "type": "integer"
         }
       }
     },
@@ -628,8 +563,7 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "default": null
+          }
         }
       }
     },
@@ -680,8 +614,7 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "default": null
+          }
         },
         "visibility": {
           "description": "Memory tier: `group` (default) is shared across agents; `individual` scopes the entry to the calling agent.",
@@ -689,8 +622,7 @@
           "enum": [
             "group",
             "individual"
-          ],
-          "default": null
+          ]
         }
       },
       "required": [
@@ -720,23 +652,19 @@
       "properties": {
         "query": {
           "description": "Search notes by meaning. At most one of `query`, `key`, `prefix`; none lists every note.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "key": {
           "description": "Read one note by exact key.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "prefix": {
           "description": "List notes whose key starts with this.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "tag": {
           "description": "Only notes carrying this tag. Not with `key`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "visibility": {
           "description": "Memory tier: `group` (default) is shared across agents; `individual` scopes the entry to the calling agent.",
@@ -744,18 +672,15 @@
           "enum": [
             "group",
             "individual"
-          ],
-          "default": null
+          ]
         },
         "limit": {
           "description": "Max notes (default 10 for `query`, 100 for a listing). Not with `key`.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "cursor": {
           "description": "`next_cursor` of the previous listing page. Not with `query` or `key`.",
-          "type": "string",
-          "default": null
+          "type": "string"
         }
       }
     },

@@ -269,6 +269,10 @@ pub(crate) fn sweep_grep_bloom_rows(store: &Store) {
     let Some(idx) = store.index_db.as_ref() else {
         return;
     };
+    // Held from before the file maps are read: see `IndexDb::grep_bloom_sweep_window`. ~keep
+    let Some(_window) = idx.grep_bloom_sweep_window() else {
+        return;
+    };
     let liveness = match store.content_liveness() {
         Ok(liveness) => liveness,
         Err(error) => {
@@ -293,6 +297,9 @@ pub(crate) fn drop_unheld_grep_bloom_rows(store: &Store, hashes: &[String]) {
     if hashes.iter().all(|hash| store.hash_is_held(hash)) {
         return;
     }
+    let Some(_window) = idx.grep_bloom_sweep_window() else {
+        return;
+    };
     let liveness = match store.content_liveness() {
         Ok(liveness) => liveness,
         Err(error) => {

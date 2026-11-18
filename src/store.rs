@@ -220,6 +220,11 @@ pub struct FileEntry {
         skip_serializing_if = "Option::is_none"
     )]
     pub content_key: Option<crate::index::keys::ContentKey>,
+    /// Lines in the file as scanned: every `\n` ends one, and a final unterminated line counts.
+    /// Additive within the minor: a map without the field decodes to `0` until the file is
+    /// extracted again; 0.34 rescans every workspace (ADR-0028), so no released map lacks it.
+    #[serde(default)]
+    pub lines: u32,
 }
 
 /// Per-document index entry — the doc-tier analogue of [`FileEntry`]. Records the content hash of

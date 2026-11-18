@@ -299,6 +299,7 @@ mod tests {
                     mtime: 0,
                     extract_epoch: 0,
                     content_key: None,
+                    lines: 0,
                 },
             );
         }

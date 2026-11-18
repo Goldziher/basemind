@@ -38,7 +38,7 @@ pub struct CodeRefsParams {
     /// `next_cursor` of the previous page. Not with `definition`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000). Not with `definition`.
+    /// Token budget (default 6000). Not with `definition`.
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }

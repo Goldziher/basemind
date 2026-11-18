@@ -62,8 +62,6 @@ fn dump_all(db: &IndexDb) -> Vec<Vec<(Vec<u8>, Vec<u8>)>> {
         dump(db.keyspace_for_test(crate::index::view::Part::SymbolsByName)),
         dump(db.keyspace_for_test(crate::index::view::Part::CallsByPath)),
         dump(db.keyspace_for_test(crate::index::view::Part::CallsByCallee)),
-        dump(db.keyspace_for_test(crate::index::view::Part::ImportsByModule)),
-        dump(db.keyspace_for_test(crate::index::view::Part::ImportsByPath)),
         dump(db.keyspace_for_test(crate::index::view::Part::ImplementationsByTrait)),
         dump(db.keyspace_for_test(crate::index::view::Part::ImplementationsByPath)),
         dump(db.keyspace_for_test(crate::index::view::Part::CodeBm25Postings)),
@@ -384,6 +382,7 @@ fn updated(path: &str) -> FileResult {
         mtime: 0,
         extract_epoch: crate::extract::EXTRACT_EPOCH,
         content_key: None,
+        lines: 0,
     });
     result
 }

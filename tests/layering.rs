@@ -102,6 +102,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("scanner_index_batch", Core),
     ("scanner_integrity", Core),
     ("scanner_lanes", Core),
+    ("scanner_lines", Core),
     ("scanner_named", Core),
     ("scanner_policy", Core),
     ("scanner_vectors", Retrieval),

@@ -14,6 +14,7 @@
 
 pub mod admin;
 pub mod agent;
+pub mod analysis;
 pub mod choices;
 pub mod code;
 #[cfg(all(feature = "comms", any(unix, windows)))]

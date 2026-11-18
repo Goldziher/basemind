@@ -575,6 +575,7 @@ fn process_file(
         mtime,
         extract_epoch: crate::extract::EXTRACT_EPOCH,
         content_key: Some(content),
+        lines: crate::scanner_lines::count_lines(&bytes),
     };
     FileResult {
         path: rel.to_string(),

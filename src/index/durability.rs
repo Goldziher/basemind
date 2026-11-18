@@ -165,7 +165,6 @@ impl IndexDb {
     pub(crate) fn indexed_paths(&self) -> Result<ahash::AHashSet<RelPath>, IndexError> {
         let mut paths = ahash::AHashSet::new();
         for keyspace in [
-            &self.imports_by_path,
             &self.implementations_by_path,
             &self.refs_by_path,
             &self.code_bm25_by_path,
@@ -450,7 +449,7 @@ mod tests {
     fn indexed_paths_reads_past_a_key_it_cannot_parse() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = IndexDb::open(dir.path()).expect("open");
-        let rows = db.keyspace(Part::ImportsByPath);
+        let rows = db.keyspace(Part::ImplementationsByPath);
         rows.insert(&[0u8], "a key too short for its length prefix")
             .expect("insert");
         rows.insert(&[0u8, 4, b'a', b'.', b'r', b's', 0, 0], "row")
