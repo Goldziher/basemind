@@ -200,6 +200,14 @@ impl Bm25PassLedger {
     }
 }
 
+/// Which pass a [`Bm25Pass`] ends: only a full pass pays the group's owed sweep. An incremental
+/// pass (a watcher batch) leaves a debt, or the garbage of an incomplete tally, owed to the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PassKind {
+    Full,
+    Incremental,
+}
+
 /// How a finished pass brought the BM25 state up to date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PassOutcome {
@@ -213,6 +221,7 @@ pub(crate) struct PassOutcome {
 /// closes the ledger and leaves the view's marker unset and the group's sweep owed.
 pub(crate) struct Bm25Pass {
     db: IndexDb,
+    kind: PassKind,
     /// Stored `(N, total_len)` when the pass began, when they were exact; `None` means recompute.
     base: Option<(u64, u64)>,
     /// The group's owed token as the pass found it: a debt this pass pays with a sweep.
@@ -257,7 +266,7 @@ impl IndexDb {
 
     /// Open a full pass: read whether the view's stats are exact, drop the view's marker, owe the
     /// group a sweep until the pass finishes, and start collecting.
-    pub(crate) fn begin_bm25_pass(&self) -> Result<Bm25Pass, IndexError> {
+    pub(crate) fn begin_bm25_pass(&self, kind: PassKind) -> Result<Bm25Pass, IndexError> {
         self.bm25_pass.reset();
         let stat = |key: &[u8]| -> Result<Option<u64>, IndexError> {
             Ok(self
@@ -289,6 +298,7 @@ impl IndexDb {
         self.bm25_pass.open.store(true, Ordering::Release);
         Ok(Bm25Pass {
             db: self.clone(),
+            kind,
             base,
             owed_before,
             owed_own,
@@ -320,7 +330,8 @@ impl Bm25Pass {
             });
         // Stats and postings fail over separately: inexact stats need only a recompute of this ~keep
         // view; the postings need the sweep only when a debt is owed or the tally is incomplete. ~keep
-        let sweep = self.owed_before.is_some() || state.overflowed || state.poisoned;
+        let complete = !state.overflowed && !state.poisoned;
+        let sweep = self.kind == PassKind::Full && (self.owed_before.is_some() || !complete);
         let outcome = PassOutcome {
             stats_from_ledger: exact.is_some(),
             swept: sweep,
@@ -332,7 +343,7 @@ impl Bm25Pass {
             if let Some(owed) = owed {
                 db.clear_sweep_owed_if(owed)?;
             }
-        } else {
+        } else if complete {
             db.retire_bm25_postings(Bm25Candidates(state.retired))?;
             if let Some(own) = self.owed_own {
                 db.clear_sweep_owed_if(own)?;
@@ -347,6 +358,14 @@ impl Bm25Pass {
         }
         db.meta.insert(META_BM25_EXACT, [1u8])?;
         Ok(outcome)
+    }
+}
+
+#[cfg(test)]
+impl IndexDb {
+    /// Every posting in the (group's) posting list.
+    pub(crate) fn posting_count_for_test(&self) -> usize {
+        self.code_bm25_postings.iter().count()
     }
 }
 

@@ -414,62 +414,57 @@ pub(crate) type Bm25PassOpt = Option<()>;
 /// stats from what it changed instead of walking both keyspaces at the end. `None` (the lanes then
 /// sweep and recompute as before) when chunking is off, the index is read-only, or the open failed.
 #[cfg(feature = "code-search")]
-pub(crate) fn begin_bm25_pass_if_any(store: &Store, config: &Config) -> Bm25PassOpt {
+pub(crate) fn begin_bm25_pass_if_any(store: &Store, config: &Config, full: bool) -> Bm25PassOpt {
     if !crate::scanner_code::should_chunk(config) {
         return None;
     }
     let db = store.index_db.as_ref()?;
-    db.begin_bm25_pass()
+    let kind = if full {
+        crate::index::bm25_pass::PassKind::Full
+    } else {
+        crate::index::bm25_pass::PassKind::Incremental
+    };
+    db.begin_bm25_pass(kind)
         .inspect_err(|error| tracing::warn!(%error, "open BM25 pass failed; the pass ends with a full sweep"))
         .ok()
 }
 
 #[cfg(not(feature = "code-search"))]
-pub(crate) fn begin_bm25_pass_if_any(_store: &Store, _config: &Config) -> Bm25PassOpt {
+pub(crate) fn begin_bm25_pass_if_any(_store: &Store, _config: &Config, _full: bool) -> Bm25PassOpt {
     None
 }
 
-/// End a full pass's BM25 upkeep: from its tally when it has one, else the full sweep and
-/// recompute of [`finalize_bm25_stats_if_any`].
+/// End a pass's BM25 upkeep: from its tally when it has one, else the recompute (and, for a full
+/// pass, the sweep) of [`finalize_bm25_stats_if_any`].
 #[cfg(feature = "code-search")]
-pub(crate) fn finish_bm25_pass(store: &Store, config: &Config, pass: Bm25PassOpt) {
+pub(crate) fn finish_bm25_pass(store: &Store, config: &Config, pass: Bm25PassOpt, full: bool) {
     let Some(pass) = pass else {
-        finalize_bm25_stats_if_any(store, config, true);
+        finalize_bm25_stats_if_any(store, config, full);
         return;
     };
-    if let Err(error) = pass.finish() {
-        tracing::warn!(?error, "finalize BM25 index failed; the next full pass sweeps");
+    match pass.finish() {
+        #[cfg(test)]
+        Ok(outcome) => LAST_BM25_OUTCOME.with(|last| last.set(Some(outcome))),
+        #[cfg(not(test))]
+        Ok(_) => {}
+        Err(error) => tracing::warn!(?error, "finalize BM25 index failed; the next full pass sweeps"),
     }
 }
+
+#[cfg(all(test, feature = "code-search"))]
+thread_local! {
+    /// How the last pass finished on this thread, for a test to pin which path a scan took.
+    pub(crate) static LAST_BM25_OUTCOME: std::cell::Cell<Option<crate::index::bm25_pass::PassOutcome>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(all(test, feature = "code-search"))]
+#[path = "scanner_bm25_tests.rs"]
+mod bm25_tests;
 
 #[cfg(not(feature = "code-search"))]
-pub(crate) fn finish_bm25_pass(store: &Store, config: &Config, _pass: Bm25PassOpt) {
-    finalize_bm25_stats_if_any(store, config, true);
-}
-
-#[cfg(feature = "code-search")]
-pub(crate) fn bm25_posting_candidates<'a>(
-    store: &Store,
-    paths: impl IntoIterator<Item = &'a String>,
-) -> crate::index::bm25_live::Bm25Candidates {
-    let Some(db) = store.index_db.as_ref() else {
-        return Default::default();
-    };
-    db.bm25_posting_candidates(paths).unwrap_or_else(|error| {
-        tracing::warn!(%error, "collect BM25 retirement candidates failed; retry on full scan");
-        Default::default()
-    })
-}
-
-/// Delete the postings of chunks the pass replaced or dropped that no view of the group holds.
-#[cfg(feature = "code-search")]
-pub(crate) fn retire_bm25_postings(store: &Store, candidates: crate::index::bm25_live::Bm25Candidates) {
-    let Some(db) = store.index_db.as_ref() else {
-        return;
-    };
-    if let Err(error) = db.retire_bm25_postings(candidates) {
-        tracing::warn!(%error, "retire BM25 postings failed; retry on full scan");
-    }
+pub(crate) fn finish_bm25_pass(store: &Store, config: &Config, _pass: Bm25PassOpt, full: bool) {
+    finalize_bm25_stats_if_any(store, config, full);
 }
 
 /// Compute the LanceDB scope key for this scan. Git sources reuse the existing remote-URL

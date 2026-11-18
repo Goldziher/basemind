@@ -38,7 +38,7 @@ fn swept(db: &IndexDb) -> (usize, Option<(u64, u64)>) {
 fn a_pass_over_an_empty_index_is_exact_and_needs_no_sweep() {
     let dir = tempfile::tempdir().unwrap();
     let db = IndexDb::open(dir.path()).unwrap();
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     assert!(pass.is_exact(), "an empty posting list is exact at zero");
     upsert(&db, "src/a.rs", "a1", &["alpha", "beta"]);
     upsert(&db, "src/b.rs", "b1", &["beta"]);
@@ -52,13 +52,13 @@ fn a_pass_over_an_empty_index_is_exact_and_needs_no_sweep() {
 fn a_pass_retires_exactly_the_postings_its_replaced_rows_named() {
     let dir = tempfile::tempdir().unwrap();
     let db = IndexDb::open(dir.path()).unwrap();
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     upsert(&db, "src/a.rs", "a1", &["alpha", "beta"]);
     upsert(&db, "src/b.rs", "b1", &["gamma"]);
     upsert(&db, "src/c.rs", "a1", &["alpha", "beta"]);
     pass.finish().unwrap();
 
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     assert!(
         pass.is_exact(),
         "the marker the last pass stamped vouches for the stored state"
@@ -83,12 +83,12 @@ fn a_pass_retires_exactly_the_postings_its_replaced_rows_named() {
 fn a_write_outside_a_pass_or_an_unfinished_pass_makes_the_next_pass_sweep() {
     let dir = tempfile::tempdir().unwrap();
     let db = IndexDb::open(dir.path()).unwrap();
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     upsert(&db, "src/a.rs", "a1", &["alpha"]);
     pass.finish().unwrap();
 
     upsert(&db, "src/a.rs", "a2", &["beta"]);
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     assert!(
         !pass.is_exact(),
         "an incremental write dropped the marker in its own batch"
@@ -97,12 +97,12 @@ fn a_write_outside_a_pass_or_an_unfinished_pass_makes_the_next_pass_sweep() {
     assert_eq!(posting_count(&db), 1, "the fallback sweep retired a1's posting");
     assert_eq!(db.view().bm25_stats(), Some((1, 1)));
 
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     assert!(pass.is_exact());
     upsert(&db, "src/a.rs", "a3", &["gamma"]);
     drop(pass);
     assert!(!db.bm25_pass.is_open(), "dropping the pass closes the ledger");
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     assert!(!pass.is_exact(), "a pass that never finished left the marker unset");
     pass.finish().unwrap();
     assert_eq!(posting_count(&db), 1);
@@ -120,7 +120,7 @@ fn plant_orphan(db: &IndexDb) -> Vec<u8> {
 fn exact_db_with(files: &[(&str, &str, &[&str])]) -> (tempfile::TempDir, IndexDb) {
     let dir = tempfile::tempdir().unwrap();
     let db = IndexDb::open(dir.path()).unwrap();
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     for (path, hash, terms) in files {
         upsert(&db, path, hash, terms);
     }
@@ -140,7 +140,7 @@ fn a_forward_read_error_mid_prefix_forces_the_fallback() {
     });
     let dir = tempfile::tempdir().unwrap();
     let db = IndexDb::open(dir.path()).unwrap();
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     upsert(&db, "src/b.rs", "b1", &["gamma"]);
     let mut writer = db.writer();
     writer
@@ -154,7 +154,7 @@ fn a_forward_read_error_mid_prefix_forces_the_fallback() {
     pass.finish().unwrap();
     let orphan = plant_orphan(&db);
 
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     let mut writer = db.writer();
     writer.fail_forward_read_after = Some(1);
     assert!(
@@ -199,7 +199,7 @@ fn an_undecodable_forward_row_forces_the_recompute() {
     db.recompute_bm25_stats().unwrap();
     assert_eq!(db.view().bm25_stats().map(|(n, _)| n), Some(2));
 
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     let mut writer = db.writer();
     writer.remove_bm25_file(&RelPath::from("src/c.rs")).unwrap();
     writer.commit().unwrap();
@@ -219,7 +219,7 @@ fn an_undecodable_forward_row_forces_the_recompute() {
 fn a_commit_error_during_a_pass_forces_the_fallback() {
     let (_dir, db) = exact_db_with(&[("src/a.rs", "a1", &["alpha"])]);
     let orphan = plant_orphan(&db);
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     let mut writer = db.writer();
     writer
         .upsert_bm25_file(
@@ -287,11 +287,11 @@ fn a_new_view_on_a_populated_group_takes_the_shortcut() {
     let dir = tempfile::tempdir().unwrap();
     let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
     let (a, b) = (&views[0], &views[1]);
-    let pass = a.begin_bm25_pass().unwrap();
+    let pass = a.begin_bm25_pass(PassKind::Full).unwrap();
     upsert(a, "src/a.rs", "a1", &["alpha", "beta"]);
     pass.finish().unwrap();
 
-    let pass = b.begin_bm25_pass().unwrap();
+    let pass = b.begin_bm25_pass(PassKind::Full).unwrap();
     assert!(pass.is_exact(), "a view with no forward rows is exact at zero");
     upsert(b, "src/a.rs", "a1", &["alpha", "beta"]);
     let outcome = pass.finish().unwrap();
@@ -309,23 +309,23 @@ fn garbage_a_sibling_left_is_collected_by_any_views_full_pass() {
     let (_group, views) = group_views(dir.path(), &["ws-a", "ws-b"]);
     let (a, b) = (&views[0], &views[1]);
     for db in [a, b] {
-        let pass = db.begin_bm25_pass().unwrap();
+        let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
         upsert(db, "src/a.rs", "a1", &["alpha"]);
         pass.finish().unwrap();
     }
-    let pass = b.begin_bm25_pass().unwrap();
+    let pass = b.begin_bm25_pass(PassKind::Full).unwrap();
     upsert(b, "src/x.rs", "x1", &["xray"]);
     pass.finish().unwrap();
     assert_eq!(postings_of(b, "x1"), 1);
 
     b.purge_paths(&[RelPath::from("src/x.rs")]).unwrap();
-    let pass = a.begin_bm25_pass().unwrap();
+    let pass = a.begin_bm25_pass(PassKind::Full).unwrap();
     let outcome = pass.finish().unwrap();
     assert!(outcome.swept, "the sweep a sibling's purge owed is paid by this view");
     assert_eq!(postings_of(a, "x1"), 0, "x1's postings, held by no view, are collected");
     assert_eq!(postings_of(a, "a1"), 1, "a posting both views hold stays");
 
-    let pass = b.begin_bm25_pass().unwrap();
+    let pass = b.begin_bm25_pass(PassKind::Full).unwrap();
     assert!(
         !pass.finish().unwrap().swept,
         "the debt was cleared by the sweep that paid it"
@@ -340,7 +340,7 @@ fn a_view_whose_chunks_have_no_terms_gets_the_right_n() {
     let db = IndexDb::open(dir.path()).unwrap();
     upsert(&db, "src/empty.rs", "e1", &[]);
     assert!(db.code_bm25_postings.iter().next().is_none(), "no term, no posting");
-    let pass = db.begin_bm25_pass().unwrap();
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
     upsert(&db, "src/a.rs", "a1", &["alpha"]);
     pass.finish().unwrap();
     assert_eq!(
