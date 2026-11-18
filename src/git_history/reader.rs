@@ -17,22 +17,18 @@ impl GitHistoryIndex {
     /// Commits that touched `rel`, newest-first, after skipping `skip` and taking at most `take`.
     /// Files are omitted (parity with the live `commits_touching`, which passes `include_files=false`).
     pub fn commits_touching(&self, rel: &RelPath, skip: usize, take: usize) -> Vec<CommitInfo> {
-        self.local()
-            .map(|db| db.commits_touching(rel, skip, take))
-            .unwrap_or_default()
+        self.local().commits_touching(rel, skip, take)
     }
 
     /// Newest-first global commit log (the source for `recent_changes`).
     pub fn recent_commits(&self, skip: usize, take: usize, include_files: bool) -> Vec<CommitInfo> {
-        self.local()
-            .map(|db| db.recent_commits(skip, take, include_files))
-            .unwrap_or_default()
+        self.local().recent_commits(skip, take, include_files)
     }
 
     /// The newest `window` commits, with files resolved — the input for `find_commits_by_path`
     /// (regex over paths) and `hot_files` (churn aggregation).
     pub fn window_commits(&self, window: usize) -> Vec<CommitInfo> {
-        self.local().map(|db| db.window_commits(window)).unwrap_or_default()
+        self.local().window_commits(window)
     }
 }
 

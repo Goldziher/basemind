@@ -41,7 +41,7 @@ pub enum RebuildOutcome {
 /// [`history_scope_ok`](super::history_scope_ok) refuses.
 pub fn sync(index: &GitHistoryIndex, repo: &Repo, _basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
     let _building = index
-        .require_local()?
+        .local()
         .build_lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -74,7 +74,6 @@ fn history_pool() -> Option<&'static rayon::ThreadPool> {
 }
 
 fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, GitHistoryError> {
-    index.require_local()?;
     if !super::history_scope_ok(repo) {
         return Err(GitHistoryError::ForeignHistory {
             root: repo.origin().to_path_buf(),
@@ -605,7 +604,7 @@ mod tests {
 
         sync(&index, &repo, cache.path()).expect("retry");
 
-        let local = index.local().expect("local");
+        let local = index.local();
         let paths: Vec<RelPath> = (0..index.next_path_id())
             .map(|id| local.path_for_id(id).expect("every id names a path"))
             .collect();

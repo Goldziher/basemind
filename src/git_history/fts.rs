@@ -156,9 +156,7 @@ impl GitHistoryIndex {
     /// queries; a very common single token over a huge repo pays for the whole posting list per
     /// page. Acceptable for now — revisit with a lazy/most-selective-term iterator if it bites.
     pub fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
-        self.local()
-            .map(|db| db.search_commits(query, scope, skip, take))
-            .unwrap_or_default()
+        self.local().search_commits(query, scope, skip, take)
     }
 }
 
