@@ -68,13 +68,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reap_gc_and_enforce_budget, reclaim_displaced_blobs, cache_stats, clear_component, read_gc_state}`
   and the rest of that family, `scan_evidence::stale_inflight_scans`,
   `registry::Registry::from_data_home`) take a `&DataRoot`. The variable keeps its meaning for the CLI
-  and the daemon.
+  and the daemon, except that a relative value is now resolved against the current directory when the
+  process starts, so a daemon it spawns (which runs in the comms dir) uses the same home. The
+  `basemind::engine` and `basemind::data_root` modules are public, and `Store` has a public
+  `data_root` field.
+- **BREAKING (library):** a process has one engine configuration (ADR-0050). A second
+  `Engine::new` with the installed configuration returns a handle on it; one with any other
+  configuration, or another data home, is refused with `EngineError::Unavailable`. Data homes are
+  compared as directories, so a symlinked spelling is the same home.
+- The comms daemon a process spawns, and an agent `serve --lead` launches
+  (`basemind_agents::LaunchConfig::data_home`), get the process's installed data home in
+  `BASEMIND_DATA_HOME` rather than inheriting the variable.
+- Downloaded tree-sitter grammars are cached under the data home (`<data home>/grammars`) instead of
+  the platform cache dir; `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` still moves them, and the grammars are
+  downloaded again once after the upgrade.
+- `mcp::serve_in_memory` refuses to run when `BASEMIND_DATA_HOME` names another data home than the
+  one the process installed.
 - **BREAKING (library):** the operator grants (`BASEMIND_ALLOW_REPO_CREDENTIALS`,
   `BASEMIND_ALLOW_ANY_ROOT`, `BASEMIND_ALLOW_FOLLOW_SYMLINKS`, `BASEMIND_ALLOW_EXTRA_ROOTS`) are
   `EngineConfig::trust`, which the library reads instead of the environment.
   `basemind::scanner::allow_extra_roots` is removed (set `trust.extra_roots`), and
-  `config::trust::Grants::from_env` is `Grants::installed`. A set variable of a removed setting is now
-  reported once when the process starts, not when a `basemind.toml` is loaded.
+  `config::trust::Grants::from_env` is `Grants::installed`. A set variable of a removed setting, an
+  unparseable `BASEMIND_CACHE_BUDGET_MB` or `BASEMIND_CACHE_GRACE_MINUTES`, and a relative
+  `BASEMIND_ALLOW_EXTRA_ROOTS` entry are now reported once when the process starts, not when a
+  `basemind.toml` is loaded or a sweep reads the value; `basemind statusline` and `basemind hook`
+  do not report them.
 - **BREAKING (library):** `BASEMIND_PARSE_TIMEOUT_MS`, `BASEMIND_GRAMMAR_OFFLINE`,
   `BASEMIND_CACHE_BUDGET_MB`, `BASEMIND_CACHE_GRACE_MINUTES`, `BASEMIND_BLOB_GC_GRACE_SECS`,
   `BASEMIND_MIN_FREE_MB` and `BASEMIND_MAX_DAEMONS` are `EngineConfig::{parse_timeout, grammars, gc,

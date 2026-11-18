@@ -522,10 +522,9 @@ pub fn reap_gc_and_enforce_budget(data: &DataRoot) -> Result<GcReport, GcError> 
 }
 
 /// Blob GC entry point for the offline CLI `cache gc`: the cross-workspace reference-counted sweep
-/// ([`gc_global_blobs`]). It reference-counts against EVERY workspace's indexes (not just
-/// `basemind_dir`'s), so it cannot reap a blob another workspace still needs, honours the same
+/// ([`gc_global_blobs`]) over every workspace under `data`. It reference-counts against every
+/// workspace's indexes, so it cannot reap a blob another workspace still needs, honours the same
 /// young-blob grace and machine-wide sweep lock as the daemon's, and reports what it removed.
-/// The sweep is machine-wide: every workspace under `data`.
 pub fn run_gc(data: &DataRoot) -> Result<GcReport, GcError> {
     let report = gc_global_blobs(data)?;
     persist_gc_state(data, &report);
