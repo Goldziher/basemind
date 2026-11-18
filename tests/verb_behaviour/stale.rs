@@ -133,6 +133,63 @@ async fn code_refs_refuses_positions_in_a_file_edited_after_the_scan() {
     }
 }
 
+/// The callers of a pinned definition are call sites listed from the index, like a name scan's: one
+/// in a file edited since the scan is flagged `stale`, since its `line` is where the call was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_flags_a_caller_in_a_file_edited_after_the_scan() {
+    let (dir, client) = started().await;
+    let pinned = json!({ "name": "file_outline", "path": "src/outline.rs" });
+    let fresh = call(&client, "code_refs", pinned.clone()).await;
+    assert_eq!(fresh["total"], 2, "{fresh}");
+    assert!(
+        super::rows(&fresh["hits"]).iter().all(|hit| hit.get("stale").is_none()),
+        "{fresh}"
+    );
+
+    prepend(&dir.path().join("src/callers.rs"), "// one\n// two\n");
+    let callers = call(&client, "code_refs", pinned).await;
+    let hits = super::rows(&callers["hits"]);
+    assert_eq!(hits.len(), 2, "{callers}");
+    for hit in hits {
+        let edited = hit["path"] == "src/callers.rs";
+        assert_eq!(
+            hit.get("stale").is_some(),
+            edited,
+            "only the edited file's caller is stale: {callers}"
+        );
+    }
+}
+
+const SHAPES_RS: &str = "pub trait Shape {\n    fn area(&self) -> u32;\n}\n\npub struct Square;\n\nimpl Shape for Square {\n    fn area(&self) -> u32 {\n        1\n    }\n}\n";
+const CIRCLE_RS: &str = "use crate::shapes::Shape;\n\npub struct Circle;\n\nimpl Shape for Circle {\n    fn area(&self) -> u32 {\n        3\n    }\n}\n";
+
+/// An implementation listed from the index in a file edited since the scan is flagged `stale`: its
+/// `line` is where the `impl` was when the file was scanned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_flags_an_implementation_in_a_file_edited_after_the_scan() {
+    let (dir, client) = started_with(&[("src/shapes.rs", SHAPES_RS), ("src/circle.rs", CIRCLE_RS)]).await;
+    let implementations = json!({ "name": "Shape", "relation": "implementations" });
+    let fresh = call(&client, "code_refs", implementations.clone()).await;
+    assert_eq!(fresh["total"], 2, "{fresh}");
+    assert!(
+        super::rows(&fresh["hits"]).iter().all(|hit| hit.get("stale").is_none()),
+        "{fresh}"
+    );
+
+    prepend(&dir.path().join("src/circle.rs"), "// one\n// two\n");
+    let edited = call(&client, "code_refs", implementations).await;
+    let hits = super::rows(&edited["hits"]);
+    assert_eq!(hits.len(), 2, "{edited}");
+    for hit in hits {
+        let stale = hit["path"] == "src/circle.rs";
+        assert_eq!(
+            hit.get("stale").is_some(),
+            stale,
+            "only the edited file's implementation is stale: {edited}"
+        );
+    }
+}
+
 /// A definition listed from the index in a file edited since the scan is reported where it is now,
 /// and flagged `stale`; one in an unedited file is not flagged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

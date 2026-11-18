@@ -1,6 +1,6 @@
-//! Hits that `code_symbols` and a `code_refs` name scan list from the index, laid against the file
-//! as it is now. Their positions belong to the scanned bytes: a hit in a file edited since the scan
-//! is flagged `stale`, and a definition is moved to where the file now has it.
+//! Hits that `code_symbols` and `code_refs` list from the index, laid against the file as it is now.
+//! Their positions belong to the scanned bytes: a hit in a file edited since the scan is flagged
+//! `stale`, and a definition is moved to where the file now has it.
 
 use ahash::AHashMap;
 
@@ -8,18 +8,46 @@ use crate::engine::MapCache;
 use crate::engine::files::IndexedFiles;
 use crate::engine::freshness::{self, IndexedStamp};
 use crate::engine::types::code::{SearchHitView, kind_to_str};
-use crate::engine::types::refs::ReferenceHit;
+use crate::engine::types::refs::{ImplementationHit, ReferenceHit};
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
-/// Flag each call site listed in a file edited since the scan. Its line is the indexed one: a call
-/// site has no name of its own to find it again by. Blocking IO.
-pub(crate) fn flag_call_sites(ws: &Workspace, cache: &MapCache, hits: &mut [ReferenceHit]) {
+/// A hit listed from the index at its indexed position, which [`flag_listed`] can mark `stale`.
+pub(crate) trait Listed {
+    fn path(&self) -> &RelPath;
+    fn set_stale(&mut self, stale: bool);
+}
+
+impl Listed for ReferenceHit {
+    fn path(&self) -> &RelPath {
+        &self.path
+    }
+
+    fn set_stale(&mut self, stale: bool) {
+        self.stale = stale;
+    }
+}
+
+impl Listed for ImplementationHit {
+    fn path(&self) -> &RelPath {
+        &self.path
+    }
+
+    fn set_stale(&mut self, stale: bool) {
+        self.stale = stale;
+    }
+}
+
+/// Flag each hit listed in a file edited since the scan: a call site of a name scan or of a pinned
+/// definition's callers, or an implementation. Its line is the indexed one: such a hit has no name
+/// of its own to find it again by. Blocking IO, one judgement per file.
+pub(crate) fn flag_listed<H: Listed>(ws: &Workspace, cache: &MapCache, hits: &mut [H]) {
     let mut judged: AHashMap<RelPath, bool> = AHashMap::new();
     for hit in hits {
-        hit.stale = *judged
-            .entry(hit.path.clone())
-            .or_insert_with(|| !matches!(disk(ws, cache, &hit.path), Disk::Fresh));
+        let stale = *judged
+            .entry(hit.path().clone())
+            .or_insert_with(|| !matches!(disk(ws, cache, hit.path()), Disk::Fresh));
+        hit.set_stale(stale);
     }
 }
 

@@ -177,6 +177,7 @@ pub(crate) fn scan_impls_examining(
                 impl_type,
                 start_row,
                 start_col,
+                stale: false,
             });
             hit_keys.push(k.to_vec());
         } else {

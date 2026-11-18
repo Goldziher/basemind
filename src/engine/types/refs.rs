@@ -379,6 +379,9 @@ pub struct ImplementationHit {
     /// Byte column from the start of the line: 0-based here, written 1-based as `column`, and only
     /// when another implementation is on the same line.
     pub start_col: u32,
+    /// The file changed since it was indexed, so `line` is where the declaration was when it was
+    /// scanned.
+    pub stale: bool,
 }
 
 impl ImplementationHit {
@@ -416,6 +419,9 @@ impl crate::engine::by_path::Located for ImplementationHit {
         if !self.trait_name.is_empty() {
             map.serialize_entry("trait_name", &self.trait_name)?;
         }
+        if self.stale {
+            map.serialize_entry("stale", &true)?;
+        }
         map.end()
     }
 }
@@ -452,6 +458,7 @@ mod tests {
             impl_type: "S".to_string(),
             start_row: 4,
             start_col: 0,
+            stale: false,
         };
         assert_eq!(
             serde_json::to_value(&implementation).unwrap(),
@@ -490,6 +497,7 @@ mod tests {
             impl_type: "S".to_string(),
             start_row: 0,
             start_col: 0,
+            stale: false,
         };
         assert_eq!(
             serde_json::to_value(&implementation).unwrap(),
