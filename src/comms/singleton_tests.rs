@@ -365,3 +365,22 @@ fn the_guard_accepts_the_longest_bindable_path_and_rejects_one_byte_more() {
         "one byte past the limit must be rejected"
     );
 }
+
+/// `BASEMIND_COMMS_DIR` names a directory the user chose; its mode is theirs. Only the generation
+/// directory inside it, which basemind owns, is made owner-only.
+#[cfg(unix)]
+#[test]
+fn an_overriding_comms_dir_keeps_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().join("shared");
+    std::fs::create_dir(&base).expect("mkdir");
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let generation = super::create_generation_dir(&base, true).expect("create the generation dir");
+
+    let mode = |path: &std::path::Path| std::fs::metadata(path).expect("stat").permissions().mode() & 0o777;
+    assert_eq!(mode(&base), 0o755, "the user's directory was chmodded");
+    assert_eq!(mode(&generation), 0o700);
+}

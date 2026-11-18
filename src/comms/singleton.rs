@@ -277,33 +277,52 @@ pub fn generation_dir(comms_base: &Path) -> PathBuf {
 /// The comms directory itself, which holds one subdirectory per generation: the [`COMMS_DIR_ENV`]
 /// override when set, else `comms/` under the per-user data directory. Creates nothing.
 pub fn comms_base_dir() -> Result<PathBuf, SingletonError> {
-    match std::env::var_os(COMMS_DIR_ENV) {
-        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir)),
-        _ => {
+    match comms_dir_override() {
+        Some(dir) => Ok(dir),
+        None => {
             let dirs = ProjectDirs::from("", "", "basemind").ok_or(SingletonError::NoDataDir)?;
             Ok(dirs.data_dir().join(COMMS_SUBDIR))
         }
     }
 }
 
+/// The [`COMMS_DIR_ENV`] override, when set.
+fn comms_dir_override() -> Option<PathBuf> {
+    std::env::var_os(COMMS_DIR_ENV)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+}
+
 /// Resolve the per-user comms paths: this generation's directory under
 /// `directories::ProjectDirs::from("", "", "basemind")`, or under the [`COMMS_DIR_ENV`] override
-/// when set. Creates the directories (mode 0700 on Unix) as a side effect.
+/// when set. Creates the directories as a side effect (see [`create_generation_dir`]).
 pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
     let comms_base = comms_base_dir()?;
-    let comms_dir = generation_dir(&comms_base);
+    let comms_dir = create_generation_dir(&comms_base, comms_dir_override().is_some())?;
+    let socket_path = comms_socket_path(&comms_dir);
+    Ok(CommsPaths { comms_dir, socket_path })
+}
+
+/// Create this generation's directory under `comms_base`, owner-only on Unix. An `overridden`
+/// base that already exists is the user's directory and keeps its mode; one this call creates, and
+/// the default base, are basemind's.
+fn create_generation_dir(comms_base: &Path, overridden: bool) -> Result<PathBuf, SingletonError> {
+    let owns_base = !overridden || !comms_base.exists();
+    let comms_dir = generation_dir(comms_base);
     std::fs::create_dir_all(&comms_dir).map_err(|source| SingletonError::Io {
         path: comms_dir.clone(),
         source,
     })?;
     #[cfg(unix)]
     {
-        set_mode(&comms_base, OWNER_ONLY_DIR)?;
+        if owns_base {
+            set_mode(comms_base, OWNER_ONLY_DIR)?;
+        }
         set_mode(&comms_dir, OWNER_ONLY_DIR)?;
     }
-
-    let socket_path = comms_socket_path(&comms_dir);
-    Ok(CommsPaths { comms_dir, socket_path })
+    #[cfg(not(unix))]
+    let _ = owns_base;
+    Ok(comms_dir)
 }
 
 /// The socket path for a generation directory (see [`generation_dir`]). On Unix,
