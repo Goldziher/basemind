@@ -3,35 +3,29 @@
 
 use std::sync::Arc;
 
-use super::super::{SNAPSHOT_REFUSED, run_goto_definition};
 use crate::comms::workspace_pool::WorkspacePool;
-use crate::mcp::types::GotoDefinitionParams;
+use crate::engine::Workspace;
+use crate::engine::definition::SNAPSHOT_REFUSED;
+use crate::engine::types::refs::CodeRefsParams;
 use crate::path::RelPath;
 
 const A_SRC: &str = "export function helper() {\n  return 1;\n}\n";
 const B_SRC: &str = "import { helper } from './a';\nexport function run() {\n  return helper();\n}\n";
 
-fn decode(result: &rmcp::model::CallToolResult) -> serde_json::Value {
-    use rmcp::model::ContentBlock;
-    let text = result
-        .content
-        .iter()
-        .find_map(|c| match c {
-            ContentBlock::Text(t) => Some(t.text.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    serde_json::from_str(&text).expect("tool response is JSON")
-}
-
-async fn goto(state: &crate::mcp::ServerState) -> serde_json::Value {
-    let params = GotoDefinitionParams {
-        path: RelPath::from("b.ts"),
-        line: 3,
-        column: None,
+/// `code_refs` relation `definition` for the use of `helper` in `b.ts`.
+fn goto(ws: &Workspace) -> serde_json::Value {
+    let params = CodeRefsParams {
         name: "helper".to_string(),
+        relation: Some("definition".to_string()),
+        path: Some(RelPath::from("b.ts")),
+        line: Some(3),
+        column: None,
+        match_mode: None,
+        limit: None,
+        cursor: None,
+        max_tokens: None,
     };
-    decode(&run_goto_definition(state, params).await.expect("goto"))
+    serde_json::to_value(ws.code_refs(params).expect("goto")).expect("the answer serializes")
 }
 
 /// While the writer's resolve pass is unsettled (running, cancelled after the flush, or aborted),
@@ -66,9 +60,7 @@ async fn a_hosted_cross_file_definition_is_refused_while_the_resolve_pass_is_uns
         );
         return;
     }
-    let state = crate::mcp::ServerState::for_connection(served.clone(), "test".into());
-
-    let settled = goto(&state).await;
+    let settled = goto(&served.workspace);
     assert_eq!(
         settled["definition"]["path"], "a.ts",
         "a settled pass serves the cross-file definition: {settled}"
@@ -79,7 +71,7 @@ async fn a_hosted_cross_file_definition_is_refused_while_the_resolve_pass_is_uns
         .store_lock()
         .read()
         .mark_status_health(&crate::store::ScanHealth::resolving());
-    let unsettled = goto(&state).await;
+    let unsettled = goto(&served.workspace);
     assert_eq!(
         unsettled["definition"]["path"], "b.ts",
         "only the import binding is served: {unsettled}"

@@ -8,7 +8,7 @@
 //! daemon read and the in-RAM fallback agree on what "exact" means and none of them can spend its
 //! cap on substring-only identifiers.
 
-use rmcp::ErrorData as McpError;
+use crate::engine::error::EngineError;
 
 /// How `code_refs` compares the requested name with an indexed identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,14 +28,13 @@ impl Matching {
         self == Self::Substring || trait_is(trait_name, name)
     }
 
-    pub(super) fn parse(raw: Option<&str>) -> Result<Self, McpError> {
+    pub(crate) fn parse(raw: Option<&str>) -> Result<Self, EngineError> {
         match raw.unwrap_or("exact") {
             "exact" => Ok(Self::Exact),
             "substring" => Ok(Self::Substring),
-            other => Err(McpError::invalid_params(
-                format!("`code_refs`: unknown match `{other}`; expected `exact` or `substring`"),
-                None,
-            )),
+            other => Err(EngineError::invalid_argument(format!(
+                "`code_refs`: unknown match `{other}`; expected `exact` or `substring`"
+            ))),
         }
     }
 

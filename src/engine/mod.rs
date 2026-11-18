@@ -18,6 +18,7 @@ pub(crate) mod ops;
 pub(crate) mod outline_cache;
 pub(crate) mod pick;
 pub(crate) mod ranked_cache;
+pub(crate) mod refs;
 pub(crate) mod stale;
 pub(crate) mod term_index;
 pub(crate) mod timing;

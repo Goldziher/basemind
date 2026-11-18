@@ -29,6 +29,9 @@ impl From<EngineError> for McpError {
             EngineError::Unavailable(message) | EngineError::IndexUnavailable(message) => {
                 McpError::invalid_request(message, None)
             }
+            EngineError::Busy(message) => {
+                McpError::invalid_request(message, Some(serde_json::json!({ super::BUSY_DATA: true })))
+            }
             EngineError::Cancelled => super::tasks::request_cancelled(),
             other => McpError::internal_error(other.to_string(), None),
         }
@@ -143,6 +146,14 @@ mod tests {
             assert_eq!(mapped.message, message);
             assert!(mapped.data.is_none());
         }
+        let busy = McpError::from(EngineError::busy("held"));
+        assert_eq!(busy.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(busy.message, "held");
+        assert_eq!(
+            busy.data.as_ref().and_then(|data| data.get(super::super::BUSY_DATA)),
+            Some(&serde_json::Value::Bool(true)),
+            "busy, so the CLI exits 3"
+        );
         let cancelled = McpError::from(EngineError::Cancelled);
         assert_eq!(cancelled.code, ErrorCode(-32800));
         assert_eq!(cancelled.message, "request_cancelled");

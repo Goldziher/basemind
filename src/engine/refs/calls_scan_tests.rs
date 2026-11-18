@@ -8,8 +8,8 @@ use crate::index::IndexDb;
 use crate::path::RelPath;
 
 use super::{scan_calls_by_name, scan_calls_examining};
-use crate::mcp::helpers_impls::{scan_impls_examining, scan_impls_fjall};
-use crate::mcp::helpers_refs_match::Matching;
+use crate::engine::refs::impls::{scan_impls_examining, scan_impls_fjall};
+use crate::engine::refs::matching::Matching;
 
 /// Deterministic xorshift, so a failure reproduces.
 struct Rng(u64);

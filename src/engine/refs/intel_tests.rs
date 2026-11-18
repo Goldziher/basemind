@@ -56,7 +56,3 @@ fn containing_edge_respects_spans() {
     assert!(containing_edge(std::slice::from_ref(&spanned), 24).is_some());
     assert!(containing_edge(std::slice::from_ref(&spanned), 25).is_none());
 }
-
-#[cfg(all(feature = "comms", feature = "code-intel-js", any(unix, windows)))]
-#[path = "helpers_intel_hosted_tests.rs"]
-mod hosted;

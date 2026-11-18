@@ -267,14 +267,9 @@ impl BasemindServer {
         )
     }
 
-    /// Body of `code_refs`, shared with `basemind code refs`.
+    /// Body of the `code_refs` tool.
     pub(crate) async fn code_refs_call(&self, p: CodeRefsParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_refs",
-            p,
-            bound(p, |p| helpers_code::code_refs(&self.state, p)).await
-        )
+        self.op(p, Workspace::code_refs).await
     }
 
     /// Body of the `find_files` tool.

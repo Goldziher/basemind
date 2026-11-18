@@ -391,7 +391,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             (
                 "code_refs",
                 tools
-                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .call("code_refs", refs, async |s, p| s.op(p, Workspace::code_refs).await)
                     .await,
             )
         }
@@ -416,7 +416,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             (
                 "code_refs",
                 tools
-                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .call("code_refs", refs, async |s, p| s.op(p, Workspace::code_refs).await)
                     .await,
             )
         }
@@ -437,7 +437,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             (
                 "code_refs",
                 tools
-                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .call("code_refs", refs, async |s, p| s.op(p, Workspace::code_refs).await)
                     .await,
             )
         }
@@ -456,7 +456,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             (
                 "code_refs",
                 tools
-                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .call("code_refs", refs, async |s, p| s.op(p, Workspace::code_refs).await)
                     .await,
             )
         }
@@ -475,7 +475,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             (
                 "code_refs",
                 tools
-                    .call("code_refs", refs, async |s, p| s.code_refs_call(p).await)
+                    .call("code_refs", refs, async |s, p| s.op(p, Workspace::code_refs).await)
                     .await,
             )
         }

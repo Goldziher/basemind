@@ -1,4 +1,4 @@
-//! Helper body for the `goto_definition` MCP tool — the read surface over the scanner's
+//! Body of `code_refs` relation `definition` — the read surface over the scanner's
 //! scope/import-resolved edges (the code-intelligence tier).
 //!
 //! Resolution facts live in the content-addressed `<hash>.rref.msgpack` blob
@@ -11,12 +11,11 @@
 //! cross-file hop reads the index when the session holds one (a writer, or a session the daemon
 //! hosts, which borrows the daemon's handle and checks each hop against its own file map).
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
-
-use super::ServerState;
-use super::helpers::json_result;
-use super::types::{DefinitionLocation, GotoDefinitionParams, GotoDefinitionResponse};
+use crate::engine::error::EngineError;
+use crate::engine::files::{IndexedFiles, indexed_file, not_indexed_in};
+use crate::engine::freshness::load_fresh;
+use crate::engine::types::refs::{DefinitionLocation, GotoDefinitionParams, GotoDefinitionResponse};
+use crate::engine::workspace::Workspace;
 use crate::intel::model::ResolvedEdge;
 use crate::path::RelPath;
 
@@ -31,41 +30,31 @@ use crate::path::RelPath;
 /// against, the resolution blob and a locally read cross-file edge then come from one scan, never
 /// from either side of a rescan that landed in between. A rescan waits for the reads, which are
 /// bounded by `scan.max_file_bytes`. A hosted session's hops are checked instead (`definition_of_use`).
-pub(super) async fn run_goto_definition(
-    state: &ServerState,
+pub(crate) fn run_goto_definition(
+    ws: &Workspace,
     params: GotoDefinitionParams,
-) -> Result<CallToolResult, McpError> {
-    let max_bytes = state.shared.config.scan.max_file_bytes;
+) -> Result<GotoDefinitionResponse, EngineError> {
+    let max_bytes = ws.config.scan.max_file_bytes;
     // The index is consulted before the file is read, so a path that is not indexed cannot be
     // probed for existence or contents through the errors below.
-    let store = state.store_read().await;
+    let store = ws.store_read();
     let Some(entry) = store.lookup(&params.path) else {
-        return Err(super::tool_contract::not_indexed_in(
-            &store,
-            &state.shared.root,
-            "code_refs",
-            &params.path,
-        ));
+        return Err(not_indexed_in(&store, &ws.root, "code_refs", &params.path));
     };
-    let file = super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?;
-    let source = super::blocking::blocking(|| {
-        super::freshness::load_fresh("code_refs", &params.path, &file, entry.into(), max_bytes)
-    })?;
+    let file = indexed_file(ws, &store, "code_refs", &params.path)?;
+    let source = load_fresh("code_refs", &params.path, &file, entry.into(), max_bytes)?;
     let column = match params.column {
         Some(column) => column,
         None => column_of(&source, &params.path, params.line, &params.name)?,
     };
 
     let pos = line_col_to_offset(&source, params.line, column).ok_or_else(|| {
-        McpError::invalid_params(
-            format!(
-                "`code_refs`: position {}:{} is out of range in `{}`",
-                params.line,
-                column + 1,
-                params.path
-            ),
-            None,
-        )
+        EngineError::invalid_argument(format!(
+            "`code_refs`: position {}:{} is out of range in `{}`",
+            params.line,
+            column + 1,
+            params.path
+        ))
     })?;
 
     let refs = store.read_resolved_by_hex(&entry.hash_hex).unwrap_or_else(|error| {
@@ -84,7 +73,7 @@ pub(super) async fn run_goto_definition(
     } = crate::engine::definition::definition_of_use(&store, &params.path, pos, intra_def);
 
     let definition = match resolved {
-        Some((def_path, def_start)) => definition_location(state, &store, &params.path, &source, def_path, def_start)?,
+        Some((def_path, def_start)) => definition_location(ws, &store, &params.path, &source, def_path, def_start)?,
         None => None,
     };
 
@@ -95,7 +84,7 @@ pub(super) async fn run_goto_definition(
         None if !resolution_ran => resolution_gap(Some(&entry.language), pass_complete),
         None => None,
     };
-    json_result(&GotoDefinitionResponse {
+    Ok(GotoDefinitionResponse {
         path: params.path,
         line,
         column: column + 1,
@@ -108,7 +97,7 @@ pub(super) async fn run_goto_definition(
 /// produced facts, so its absence means one of three things, each a different answer: the language
 /// has no resolution engine, the resolve pass has not finished for this index (`pass_complete` is
 /// false: every file lacks facts then), or the pass ran and this file bound nothing.
-pub(super) fn resolution_gap(language: Option<&str>, pass_complete: bool) -> Option<String> {
+pub(crate) fn resolution_gap(language: Option<&str>, pass_complete: bool) -> Option<String> {
     match language {
         Some(language) if crate::intel::resolve::supports(language) => Some(
             if pass_complete {
@@ -124,36 +113,33 @@ pub(super) fn resolution_gap(language: Option<&str>, pass_complete: bool) -> Opt
 }
 
 /// `resolution` value for a file of a supported language that produced no resolution facts.
-pub(super) const NO_RESOLUTION_FACTS: &str = "no resolution facts for this file";
+pub(crate) const NO_RESOLUTION_FACTS: &str = "no resolution facts for this file";
 
 /// `resolution` value when the file has resolution facts and none of them names the pinned
 /// definition (nothing in the file refers to it and it is not exported).
-pub(super) const NO_DEFINITION_FACTS: &str = "no resolution facts for this definition";
+pub(crate) const NO_DEFINITION_FACTS: &str = "no resolution facts for this definition";
 
 /// `resolution` value when the index's resolve pass did not run to completion.
-pub(super) const RESOLUTION_NOT_RUN: &str =
+pub(crate) const RESOLUTION_NOT_RUN: &str =
     "resolution has not finished for this index; a running scan will complete it, otherwise run `index_rescan`";
 
-pub(super) use crate::engine::definition::{Hop, SNAPSHOT_REFUSED, resolve_pass_complete};
+pub(crate) use crate::engine::definition::{Hop, SNAPSHOT_REFUSED, resolve_pass_complete};
 
 /// The 0-based byte column where `name` first occurs as a whole identifier on `line` of `source`
 /// (`get` in `budget.pop(get)` is the argument, not the tail of `budget`).
-fn column_of(source: &[u8], path: &RelPath, line: u32, name: &str) -> Result<u32, McpError> {
+fn column_of(source: &[u8], path: &RelPath, line: u32, name: &str) -> Result<u32, EngineError> {
     let text = source
         .split(|byte| *byte == b'\n')
         .nth(line.saturating_sub(1) as usize)
-        .ok_or_else(|| McpError::invalid_params(format!("`code_refs`: `{path}` has no line {line}"), None))?;
+        .ok_or_else(|| EngineError::invalid_argument(format!("`code_refs`: `{path}` has no line {line}")))?;
     let finder = memchr::memmem::Finder::new(name.as_bytes());
     crate::textmatch::find_whole(text, &finder)
         .map(|column| column as u32)
         .ok_or_else(|| {
-            McpError::invalid_params(
-                format!(
-                    "`code_refs`: `{name}` does not occur on line {line} of `{path}`. Pass the 1-based `column` \
-                     of the reference, or the line it is on."
-                ),
-                None,
-            )
+            EngineError::invalid_argument(format!(
+                "`code_refs`: `{name}` does not occur on line {line} of `{path}`. Pass the 1-based `column` \
+                 of the reference, or the line it is on."
+            ))
         })
 }
 
@@ -166,13 +152,13 @@ fn column_of(source: &[u8], path: &RelPath, line: u32, name: &str) -> Result<u32
 /// edited or deleted since the scan is an error: `def_start` is an offset into the indexed bytes.
 /// `store` is the guard the edge was resolved under, so the target's stamp is of the same scan.
 fn definition_location(
-    state: &ServerState,
+    ws: &Workspace,
     store: &crate::store::Store,
     query_path: &RelPath,
     query_source: &[u8],
     def_path: RelPath,
     def_start: u32,
-) -> Result<Option<DefinitionLocation>, McpError> {
+) -> Result<Option<DefinitionLocation>, EngineError> {
     let located = |source: &[u8], path: RelPath| {
         let (line, column) = offset_to_line_col(source, def_start);
         DefinitionLocation {
@@ -186,16 +172,14 @@ fn definition_location(
         return Ok(Some(located(query_source, def_path)));
     }
     let target = store.lookup(&def_path).and_then(|entry| {
-        let file = super::tool_contract::IndexedFiles::of(&state.shared).indexed_path(&def_path)?;
+        let file = IndexedFiles::of(ws).indexed_path(&def_path)?;
         Some((file, entry))
     });
     let Some((file, entry)) = target else {
         return Ok(None);
     };
-    let max_bytes = state.shared.config.scan.max_file_bytes;
-    let def_source = super::blocking::blocking(|| {
-        super::freshness::load_fresh("code_refs", &def_path, &file, entry.into(), max_bytes)
-    })?;
+    let max_bytes = ws.config.scan.max_file_bytes;
+    let def_source = load_fresh("code_refs", &def_path, &file, entry.into(), max_bytes)?;
     Ok(Some(located(&def_source, def_path)))
 }
 
@@ -234,7 +218,7 @@ fn line_col_to_offset(source: &[u8], line: u32, column: u32) -> Option<u32> {
 
 /// Convert an absolute byte offset into a 1-based line + 0-based byte column. Clamps to the source
 /// bounds so an out-of-range offset never panics.
-pub(super) fn offset_to_line_col(source: &[u8], offset: u32) -> (u32, u32) {
+pub(crate) fn offset_to_line_col(source: &[u8], offset: u32) -> (u32, u32) {
     let offset = (offset as usize).min(source.len());
     let before = &source[..offset];
     let line = 1 + memchr::memchr_iter(b'\n', before).count() as u32;
@@ -246,7 +230,7 @@ pub(super) fn offset_to_line_col(source: &[u8], offset: u32) -> (u32, u32) {
 /// definition whose end span isn't indexed — cross-file `refs_by_path` edges and zero-width `locals`
 /// spans both store only the start byte. Empty when `start` is out of range or not an identifier
 /// start (non-ASCII identifiers are best-effort: the leading ASCII run is returned).
-pub(super) fn identifier_at(source: &[u8], start: u32) -> String {
+pub(crate) fn identifier_at(source: &[u8], start: u32) -> String {
     let start = start as usize;
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
     if start >= source.len() || !is_ident(source[start]) {
@@ -260,5 +244,5 @@ pub(super) fn identifier_at(source: &[u8], start: u32) -> String {
 }
 
 #[cfg(test)]
-#[path = "helpers_intel_tests.rs"]
+#[path = "intel_tests.rs"]
 mod tests;

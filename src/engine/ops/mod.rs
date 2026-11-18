@@ -9,5 +9,6 @@ pub(crate) const SEARCH_LIMIT_MAX: u32 = 1000;
 pub(crate) mod code_grep;
 mod code_outline;
 mod code_read;
+mod code_refs;
 mod code_symbols;
 pub(crate) mod find_files;

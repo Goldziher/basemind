@@ -20,6 +20,10 @@ pub(crate) enum EngineError {
     /// The index cannot be read right now (empty, or held by another process); retry later.
     #[error("{0}")]
     IndexUnavailable(String),
+    /// Another process holds what the operation reads (the index, the writer lock): retry, or route
+    /// the call through the daemon. The CLI exits `3` for it.
+    #[error("{0}")]
+    Busy(String),
     /// The caller cancelled the operation before it finished.
     #[error("request_cancelled")]
     Cancelled,
@@ -51,6 +55,10 @@ impl EngineError {
 
     pub(crate) fn unavailable(message: impl Into<String>) -> Self {
         Self::Unavailable(message.into())
+    }
+
+    pub(crate) fn busy(message: impl Into<String>) -> Self {
+        Self::Busy(message.into())
     }
 
     pub(crate) fn index_unavailable(message: impl Into<String>) -> Self {
