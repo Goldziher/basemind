@@ -31,6 +31,8 @@ pub(crate) struct MapCache {
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
     /// (no blob or LanceDB read), so it is rebuilt with every cache build and delta.
     pub(crate) doc_paths: std::sync::Arc<[crate::path::RelPath]>,
+    /// See [`content_fingerprint`](Self::content_fingerprint); computed on first use.
+    fingerprint: std::sync::OnceLock<u64>,
 }
 
 /// The sorted document-tier paths of `store`'s index.
@@ -58,6 +60,7 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
+            fingerprint: Default::default(),
             doc_paths: doc_paths_of(store),
         }
     }
@@ -75,6 +78,7 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
+            fingerprint: Default::default(),
             doc_paths: Default::default(),
         }
     }
@@ -94,6 +98,7 @@ impl MapCache {
                 size_bytes: map.size_bytes,
                 mtime_ns: 0,
                 extract_epoch: map.extract_epoch,
+                content_key: None,
             };
             l1.seed(&hash_hex, Arc::new(map));
             metas.push((path, meta));
@@ -104,8 +109,23 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
+            fingerprint: Default::default(),
             doc_paths: Default::default(),
         }
+    }
+
+    /// A digest of every file's path and recorded content key
+    /// ([`crate::store::FileEntry::content_key`]), as [`crate::index::live_keys::LiveKeys`] digests
+    /// them: the generation a `references` / `callers` cursor carries when the scan is forwarded or
+    /// runs in RAM. Each delta builds a new map, so the value is computed once per map.
+    pub(crate) fn content_fingerprint(&self) -> u64 {
+        *self.fingerprint.get_or_init(|| {
+            crate::index::live_keys::fingerprint_of(
+                self.files
+                    .iter()
+                    .filter_map(|(path, meta)| Some((path.as_bytes(), meta.content_key.as_ref()?))),
+            )
+        })
     }
 
     /// The in-RAM call projection, built on first use. Only reached by a session with no reachable
@@ -278,6 +298,7 @@ impl MapCache {
             calls: Default::default(),
             impls: Default::default(),
             terms: Default::default(),
+            fingerprint: Default::default(),
             doc_paths: doc_paths_of(store),
         };
         self.l1.forget_superseded(superseded, &next.files);

@@ -349,42 +349,41 @@ pub(crate) fn upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The keys of `keyspace` whose leading name is one of `prefixes` (key-ordered, as returned by
-/// [`NameDict::matching_prefixes`]), strictly after `cursor_after`, in key order.
+/// [`NameDict::matching_prefixes`]), from `lower` on, in key order.
 pub(crate) fn scan_prefixes(
     keyspace: &Keyspace,
     prefixes: Vec<Vec<u8>>,
-    cursor_after: Option<Vec<u8>>,
+    lower: Bound<Vec<u8>>,
 ) -> impl Iterator<Item = super::view::KvResult> + '_ {
     prefixes.into_iter().flat_map(move |prefix| {
-        let lower = match &cursor_after {
-            // The cursor lies beyond this name's whole range.
-            Some(cursor) if cursor.as_slice() > prefix.as_slice() && !cursor.starts_with(&prefix) => None,
-            Some(cursor) if cursor.starts_with(&prefix) => Some(Bound::Excluded(cursor.clone())),
+        let start = match &lower {
+            Bound::Included(at) | Bound::Excluded(at) if at.starts_with(&prefix) => Some(lower.clone()),
+            // The bound lies beyond this name's whole range.
+            Bound::Included(at) | Bound::Excluded(at) if at.as_slice() > prefix.as_slice() => None,
             _ => Some(Bound::Included(prefix.clone())),
         };
         let upper = match upper_bound(&prefix) {
             Some(bound) => Bound::Excluded(bound),
             None => Bound::Unbounded,
         };
-        lower
-            .map(|lower| keyspace.range(as_ref(&lower), as_ref(&upper)))
+        start
+            .map(|start| keyspace.range(as_ref(&start), as_ref(&upper)))
             .into_iter()
             .flatten()
     })
 }
 
-/// Keys of `keyspace` after `lower`, in key order, whose leading name contains `needle`, plus
+/// Keys of `keyspace` from `lower` on, in key order, whose leading name contains `needle`, plus
 /// possibly other keys (callers still filter by name). Served from the dictionary when it is built,
 /// otherwise the whole partition from `lower` while the dictionary builds in the background.
 pub(crate) fn name_ordered_keys<'a>(
     keyspace: &'a Keyspace,
     dict: &Arc<NameDict>,
     needle: &str,
-    cursor_after: Option<&[u8]>,
     lower: Bound<Vec<u8>>,
 ) -> super::view::KvIter<'a> {
     match dict.matching_prefixes(keyspace, needle) {
-        Some(prefixes) => Box::new(scan_prefixes(keyspace, prefixes, cursor_after.map(<[u8]>::to_vec))),
+        Some(prefixes) => Box::new(scan_prefixes(keyspace, prefixes, lower)),
         None => keyspace.range(as_ref(&lower), Bound::Unbounded),
     }
 }

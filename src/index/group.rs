@@ -3,9 +3,10 @@
 //!
 //! A process holds at most one handle per group directory: [`GroupDb::shared`] hands out the live
 //! one, and only opens the database when no handle is alive. Each view of the group reads and writes
-//! its own rows under a 4-byte view id ([`super::scoped`]); the rows the group shares by content (the
-//! grep bloom) carry no prefix. The group's own rows live in `meta` under [`GROUP_META`], which no
-//! view prefix can start with: view ids are allocated upward from 1 and never reach `0xFF000000`.
+//! its own rows under a 4-byte view id ([`super::scoped`]); the rows the group shares by content
+//! (symbols, calls, BM25 postings, the grep bloom) carry no prefix. The group's own rows live in
+//! `meta` under [`GROUP_META`], which no view prefix can start with: view ids are allocated upward
+//! from 1 and never reach `0xFF000000`.
 //!
 //! Durability per view: the view's seal generation is a row under its prefix, so a lost journal
 //! tail is detected per view and never discards the group. A database that was wiped or replaced
@@ -18,6 +19,8 @@ use ahash::AHashMap;
 use fjall::{Database, Keyspace, PersistMode};
 
 use super::bm25_live::{Bm25Gate, Bm25LiveCache};
+use super::live_keys::LiveKeysCell;
+use super::name_dict::NameDict;
 use super::scoped::Scoped;
 use super::view::Part;
 use super::{IndexDb, IndexError};
@@ -34,15 +37,23 @@ const META_VIEW_RECORD: &[u8] = b"\xffgroup/view/";
 const FIRST_VIEW_ID: u32 = 1;
 
 /// Keyspaces the group shares by content: no view prefix.
-const SHARED_PARTS: [Part; 2] = [Part::GrepBloom, Part::CodeBm25Postings];
+const SHARED_PARTS: [Part; 6] = [
+    Part::SymbolsByPath,
+    Part::SymbolsByName,
+    Part::CallsByPath,
+    Part::CallsByCallee,
+    Part::GrepBloom,
+    Part::CodeBm25Postings,
+];
 
 /// `meta` row holding the layout of the group's rows ([`GROUP_FORMAT`]).
 const META_FORMAT: &[u8] = b"\xffgroup/format";
 /// The layout of the rows in a group database. Bumped when a stage of ADR-0028 changes a key shape
 /// within an unreleased minor: an open that finds another value (or none, in a database that has an
 /// incarnation) empties every keyspace and takes a new incarnation, so every view's file map names a
-/// gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content.
-const GROUP_FORMAT: u32 = 2;
+/// gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content. 3:
+/// symbol and call rows shared, keyed by content.
+const GROUP_FORMAT: u32 = 3;
 
 /// Keeps the cross-process group lock held for as long as the database is open.
 pub(crate) type GroupLock = Box<dyn Send + Sync>;
@@ -60,6 +71,10 @@ pub(crate) struct GroupDb {
     bm25_live: Mutex<AHashMap<u32, Arc<Bm25LiveCache>>>,
     /// Orders the BM25 posting sweep against posting commits, across every view of the group.
     bm25_gate: Bm25Gate,
+    /// Each view's live content keys, shared by every handle on the view and dropped with the last.
+    live: Mutex<AHashMap<u32, Weak<LiveKeysCell>>>,
+    /// Distinct callee names of the shared `calls_by_callee`, shared by every view.
+    callee_names: Arc<NameDict>,
     _lock: GroupLock,
 }
 
@@ -169,6 +184,8 @@ impl GroupDb {
             allocation: Mutex::new(()),
             bm25_live: Mutex::default(),
             bm25_gate: Bm25Gate::default(),
+            live: Mutex::default(),
+            callee_names: Arc::default(),
             _lock: lock,
         }
     }
@@ -286,7 +303,7 @@ impl GroupDb {
             symbols_by_name: scoped(Part::SymbolsByName),
             calls_by_path: scoped(Part::CallsByPath),
             calls_by_callee: scoped(Part::CallsByCallee),
-            callee_names: Arc::default(),
+            callee_names: Arc::clone(&self.callee_names),
             imports_by_module: scoped(Part::ImportsByModule),
             imports_by_path: scoped(Part::ImportsByPath),
             implementations_by_trait: scoped(Part::ImplementationsByTrait),
@@ -306,6 +323,7 @@ impl GroupDb {
                     .or_default(),
             ),
             bm25_gate: Arc::clone(&self.bm25_gate),
+            live: self.live_keys_cell(view_id),
             grep_bloom: scoped(Part::GrepBloom),
             embeddings: self.embeddings.clone(),
             fault: Arc::default(),
@@ -319,6 +337,28 @@ impl GroupDb {
                 view_id,
             }),
         })
+    }
+
+    /// The live-key cell of view `view_id`: the one its open handles share, or a new one when none
+    /// is open. Cells of views with no open handle are dropped here, so a long-lived process does
+    /// not keep the keys of every view it ever opened.
+    fn live_keys_cell(&self, view_id: u32) -> Arc<LiveKeysCell> {
+        let mut cells = self.live.lock().expect("live key cells");
+        cells.retain(|_, cell| cell.strong_count() > 0);
+        if let Some(cell) = cells.get(&view_id).and_then(Weak::upgrade) {
+            return cell;
+        }
+        let cell = Arc::default();
+        cells.insert(view_id, Arc::downgrade(&cell));
+        cell
+    }
+
+    /// Views whose live-key cell is still held by an open handle.
+    #[cfg(test)]
+    pub(crate) fn live_key_views(&self) -> Vec<u32> {
+        let mut cells = self.live.lock().expect("live key cells");
+        cells.retain(|_, cell| cell.strong_count() > 0);
+        cells.keys().copied().collect()
     }
 }
 

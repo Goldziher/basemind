@@ -5,9 +5,14 @@
 //! memory (see `scanner_index_batch`). These assertions pin the accounting itself: what charges
 //! the counter, and that a re-upsert's delete tombstones charge it too.
 
-use basemind::extract::{FileMapL1, SCHEMA_VER, Symbol, SymbolKind};
+use basemind::extract::{FileMapL1, Import, SCHEMA_VER, Symbol, SymbolKind};
 use basemind::index::IndexDb;
+use basemind::index::keys::{ContentKey, content_key};
 use basemind::path::RelPath;
+
+fn content() -> ContentKey {
+    content_key("hash", "rust", basemind::extract::EXTRACT_EPOCH)
+}
 
 fn synthetic_l1(names: &[&str]) -> FileMapL1 {
     FileMapL1 {
@@ -37,16 +42,24 @@ fn synthetic_l1(names: &[&str]) -> FileMapL1 {
     }
 }
 
+/// The path-keyed rows (imports) are replaced on a re-upsert; the content rows (symbols) are
+/// replaced when the extraction differs, and left alone when it is the same.
 #[test]
 fn staged_bytes_counts_inserts_and_deletes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = IndexDb::open(dir.path()).expect("open index");
     let rel = RelPath::from("src/a.rs");
-    let l1 = synthetic_l1(&["alpha", "beta"]);
+    let mut l1 = synthetic_l1(&["alpha", "beta"]);
+    l1.imports = vec![Import {
+        module: Some("std::fmt".to_string()),
+        raw: "use std::fmt;".to_string(),
+        start_byte: 0,
+        end_byte: 13,
+    }];
 
     let mut writer = db.writer();
     assert_eq!(writer.staged_bytes(), 0);
-    writer.upsert_file(&rel, &l1, None).unwrap();
+    writer.upsert_file(&rel, &content(), &l1, None).unwrap();
     let inserts_only = writer.staged_bytes();
     assert!(inserts_only > 0, "staging symbols must charge the byte counter");
     writer.commit().unwrap();
@@ -59,10 +72,19 @@ fn staged_bytes_counts_inserts_and_deletes() {
     );
 
     let mut writer = db.writer();
-    writer.upsert_file(&rel, &l1, None).unwrap();
+    writer.upsert_file(&rel, &content(), &l1, None).unwrap();
+    assert!(
+        writer.staged_bytes() < inserts_only,
+        "the same extraction again stages only the path-keyed rows"
+    );
+
+    let mut changed = synthetic_l1(&["gamma", "delta"]);
+    changed.imports = l1.imports.clone();
+    let mut writer = db.writer();
+    writer.upsert_file(&rel, &content(), &changed, None).unwrap();
     assert!(
         writer.staged_bytes() > inserts_only,
-        "a re-upsert stages the previous entries' deletes on top of the fresh inserts"
+        "a changed extraction stages the previous entries' deletes on top of the fresh inserts"
     );
 }
 
@@ -78,13 +100,18 @@ fn staged_bytes_scales_with_the_file_s_symbol_count() {
 
     let mut writer = db.writer();
     writer
-        .upsert_file(&RelPath::from("src/small.rs"), &synthetic_l1(&all[..4]), None)
+        .upsert_file(
+            &RelPath::from("src/small.rs"),
+            &content(),
+            &synthetic_l1(&all[..4]),
+            None,
+        )
         .unwrap();
     let small_bytes = writer.staged_bytes();
 
     let mut writer = db.writer();
     writer
-        .upsert_file(&RelPath::from("src/large.rs"), &synthetic_l1(&all), None)
+        .upsert_file(&RelPath::from("src/large.rs"), &content(), &synthetic_l1(&all), None)
         .unwrap();
     let large_bytes = writer.staged_bytes();
 
@@ -126,7 +153,9 @@ fn staged_bytes_charges_fjalls_per_entry_overhead_not_only_the_payload() {
         .collect();
 
     let mut writer = db.writer();
-    writer.upsert_file(&RelPath::from("s.rs"), &l1, None).unwrap();
+    writer
+        .upsert_file(&RelPath::from("s.rs"), &content(), &l1, None)
+        .unwrap();
 
     let floor = 2 * ITEM_BYTES * SYMBOLS;
     assert!(

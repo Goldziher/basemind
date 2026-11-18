@@ -102,6 +102,7 @@ pub(super) fn text_documents(
                 size_bytes: stat.len(),
                 mtime_ns: 0,
                 extract_epoch: 0,
+                content_key: None,
             };
             Some((path.clone(), meta))
         })

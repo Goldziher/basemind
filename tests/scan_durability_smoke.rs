@@ -146,6 +146,12 @@ fn forge_index_generation(root: &Path, generation: u64) {
         .expect("persist the forged stamp");
 }
 
+/// The content key `rel`'s symbol and call rows are written under.
+fn content_of(store: &Store, rel: &str) -> basemind::index::keys::ContentKey {
+    let entry = store.lookup(rel).expect("indexed");
+    basemind::index::keys::content_key(&entry.hash_hex, &entry.language, entry.extract_epoch)
+}
+
 /// Names of the symbols the Fjall index (not the blob store) holds for `name`.
 fn indexed_symbol_paths(store: &Store, name: &str) -> Vec<String> {
     use basemind::index::view::IndexView;
@@ -235,6 +241,9 @@ fn lost_rows_are_repaired_when_the_generation_fell_behind_and_only_then() {
     let drop_beta_rows = |store: &Store| {
         let mut writer = store.index_db.as_ref().unwrap().writer();
         writer.remove_file(&RelPath::from("beta.rs")).expect("stage the loss");
+        writer
+            .remove_content(&content_of(store, "beta.rs"))
+            .expect("stage the loss");
         writer.commit().expect("commit the loss");
     };
 
@@ -344,6 +353,9 @@ fn scanned_store_with_an_index_behind(root: &Path) -> (std::path::PathBuf, u64) 
     let mut writer = store.index_db.as_ref().unwrap().writer();
     writer
         .remove_file(&basemind::path::RelPath::from("beta.rs"))
+        .expect("stage the loss");
+    writer
+        .remove_content(&content_of(&store, "beta.rs"))
         .expect("stage the loss");
     writer.commit().expect("commit the loss");
     let (view_dir, sealed) = (store.view_dir.clone(), store.index.generation);

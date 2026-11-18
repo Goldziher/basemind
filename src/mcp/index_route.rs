@@ -21,10 +21,11 @@
 use rmcp::ErrorData as McpError;
 
 use super::MapCache;
-use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_file_fjall, scan_calls_by_name, scan_calls_in_ram};
+use super::helpers_calls_scan::{CallRef, CallScanPage, calls_in_content_fjall, scan_calls_by_name, scan_calls_in_ram};
 use super::helpers_impls::{ImplScanPage, scan_impls_in_ram, scan_impls_session};
 use super::helpers_refs_match::Matching;
 use crate::index::grep_bloom::GrepEntry;
+use crate::index::keys::ContentKey;
 use crate::index::view::{IndexView, StandaloneView};
 use crate::path::RelPath;
 
@@ -196,21 +197,53 @@ impl IndexRoute {
         }))
     }
 
-    /// Every call site of each of `paths`, in request order — the `callers` resolved refinement.
+    /// The content key each of `paths` is read under, in request order: from one snapshot of the
+    /// view's live keys on a local index, else the key the file map records for it (the in-RAM map's
+    /// copy, which may lack a file it has not loaded). The keys order resolved callers among the scan
+    /// hits.
+    pub(super) fn content_keys(&self, cache: &MapCache, paths: &[RelPath]) -> Vec<Option<ContentKey>> {
+        if let Self::Local(idx) = self {
+            let live = idx.live_keys();
+            return paths.iter().map(|path| live.key_of(path).copied()).collect();
+        }
+        paths
+            .iter()
+            .map(|path| cache.meta(path).and_then(|meta| meta.content_key))
+            .collect()
+    }
+
+    /// The digest a `references` / `callers` cursor carries: of the live keys on a local index, of
+    /// the in-RAM map's recorded keys otherwise. It changes when a file of the view changes content,
+    /// which moves that file's hits in the scan's key order.
+    pub(super) fn cursor_generation(&self, cache: &MapCache) -> u64 {
+        match self {
+            Self::Local(idx) => idx.live_keys().fingerprint(),
+            _ => cache.content_fingerprint(),
+        }
+    }
+
+    /// Every call site of each of `files`, in request order — the `callers` resolved refinement and
+    /// the shared-line marks. A local index reads each file's calls by the content key given with
+    /// it (a hit key's, or [`Self::content_keys`]'), none for `None`; the other routes read by path.
     pub(super) async fn calls_in_files(
         &self,
         cache: &MapCache,
-        paths: &[RelPath],
+        files: &[(RelPath, Option<ContentKey>)],
     ) -> Result<Vec<Vec<CallRef>>, McpError> {
         if let Self::Local(idx) = self {
-            return paths.iter().map(|path| calls_in_file_fjall(&**idx, path)).collect();
+            return files
+                .iter()
+                .map(|(_, content)| calls_in_content_fjall(&**idx, content.as_ref()))
+                .collect();
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         match self
-            .forward(IndexReadQuery::CallsInFiles { paths: paths.to_vec() })
+            .forward(IndexReadQuery::CallsInFiles {
+                paths: files.iter().map(|(path, _)| path.clone()).collect(),
+            })
             .await
         {
-            Some(Ok(IndexReadResult::CallsInFiles(per_file))) if per_file.len() == paths.len() => {
+            Some(Ok(IndexReadResult::CallsInFiles(per_file))) if per_file.len() == files.len() => {
                 return Ok(per_file.into_iter().map(super::index_read::calls_from_wire).collect());
             }
             Some(Ok(_)) => tracing::warn!(
@@ -221,9 +254,9 @@ impl IndexRoute {
         }
         Ok(blocking(|| {
             let projection = cache.calls_projection();
-            paths
+            files
                 .iter()
-                .map(|path| projection.calls_in_file(path).to_vec())
+                .map(|(path, _)| projection.calls_in_file(path).to_vec())
                 .collect()
         }))
     }

@@ -17,7 +17,7 @@ use basemind::config::ConfigV1;
 use basemind::extract::Call;
 use basemind::index::grep_bloom::{GrepEntry, Needle};
 use basemind::index::keys;
-use basemind::index::view::{IndexView, Part};
+use basemind::index::view::IndexView;
 use basemind::path::RelPath;
 use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
@@ -127,8 +127,8 @@ impl Worktree {
         self.store.basemind_dir.clone()
     }
 
-    /// `(path, start)` of every `calls_by_callee` row whose callee contains `name`. Not timed: it
-    /// sizes the rows a content-keyed group index would hold for the name.
+    /// `(path, start)` of every call site of this view whose callee contains `name`: one per live
+    /// holder of each content-keyed row. Not timed: it sizes the hits a scan of the name yields.
     pub fn callee_rows(&self, name: &str) -> Vec<(RelPath, u32)> {
         let finder = Finder::new(name.as_bytes());
         self.view()
@@ -198,7 +198,7 @@ impl Worktree {
                 break;
             }
             result.rows += 1;
-            let Some((callee, rel, start)) = keys::parse_call_by_callee(&key) else {
+            let Some((callee, _, start)) = keys::parse_call_by_callee(&key) else {
                 continue;
             };
             if finder.find(callee.as_bytes()).is_none() || (exact && !identifier_is(&callee, name)) {
@@ -207,7 +207,9 @@ impl Worktree {
             result.total += 1;
             if result.hits < limit {
                 // The page resolves each hit's line and column from its `calls_by_path` row.
-                if let Ok(Some(value)) = view.get(Part::CallsByPath, &keys::call_by_path(&rel, start)) {
+                if let Some(content) = keys::call_by_callee_content(&key)
+                    && let Ok(Some(value)) = view.call_at(&content, start)
+                {
                     result.rows += 1;
                     std::hint::black_box(rmp_serde::from_slice::<Call>(&value).ok());
                 }
@@ -237,10 +239,13 @@ impl Worktree {
         uses.sort_unstable();
         let probe_cap = limit.saturating_mul(8).max(SCAN_CAP_FLOOR);
         let mut proven = 0;
+        let live = view.live_keys();
         for run in uses.chunk_by(|a, b| a.0 == b.0).take(probe_cap) {
-            let prefix = keys::calls_by_path_prefix(&run[0].0);
             let mut calls: AHashMap<u32, Call> = AHashMap::new();
-            for row in view.prefix(Part::CallsByPath, &prefix) {
+            let Some(content) = live.key_of(&run[0].0) else {
+                continue;
+            };
+            for row in view.calls_in_content(content) {
                 let Ok((_, value)) = row else {
                     continue;
                 };

@@ -332,6 +332,7 @@ fn a_pre_digest_index_decodes_with_neutral_defaults() {
             size_bytes: 3,
             mtime: 7,
             extract_epoch: crate::extract::EXTRACT_EPOCH,
+            content_key: None,
         },
     );
     let mut doc_files = AHashMap::new();
@@ -883,5 +884,37 @@ fn the_writer_open_keeps_the_notes_of_an_older_view_index_it_deletes() {
     assert_eq!(
         notes.get(b"older-note").expect("read").as_deref(),
         Some(&b"kept across the upgrade"[..])
+    );
+}
+
+/// A reopened index handle publishes the live keys of the file map on disk. Entries the store holds
+/// but has not flushed name rows a reader must not see before the map listing them is written.
+#[test]
+fn a_reopened_index_publishes_the_written_file_map_not_the_unflushed_one() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("a.rs"), b"pub fn reopened_fixture() {}\n").expect("write");
+    let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("writer");
+    crate::scanner::scan(
+        tmp.path(),
+        &mut store,
+        &crate::config::ConfigV1::with_defaults(),
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Deferred,
+    )
+    .expect("scan");
+    let entry = store.lookup("a.rs").cloned().expect("indexed");
+    store.upsert("unflushed.rs", entry);
+
+    store.reopen_index_db().expect("reopen");
+
+    let live = store.index_db.as_ref().expect("reopened").live_keys();
+    assert!(
+        live.key_of(&RelPath::from("a.rs")).is_some(),
+        "the written map is published"
+    );
+    assert!(
+        live.key_of(&RelPath::from("unflushed.rs")).is_none(),
+        "an entry no written map lists is not"
     );
 }

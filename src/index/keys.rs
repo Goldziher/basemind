@@ -24,6 +24,11 @@ pub use crate::index::keys_bm25::{
     parse_code_bm25_by_path_value, parse_code_bm25_posting, parse_code_bm25_posting_chunk,
     parse_code_bm25_posting_value, split_chunk_id,
 };
+pub use crate::index::keys_content::{
+    CONTENT_KEY_LEN, ContentKey, NameRow, call_by_callee, call_by_callee_content, call_by_callee_hit,
+    calls_by_callee_prefix, content_key, content_row, parse_call_by_callee, parse_content_row, parse_symbol_by_name,
+    split_hit, symbol_by_name, symbol_by_name_hit, symbols_by_name_prefix,
+};
 pub use crate::index::keys_memory::{
     MEMORY_VIS_GROUP, MEMORY_VIS_INDIVIDUAL, memory_by_key, memory_by_key_ns_prefix, parse_memory_by_key,
     parse_memory_key_only,
@@ -79,111 +84,6 @@ pub(super) fn read_len_prefixed_ref<'buf>(buf: &'buf [u8], cursor: &mut usize) -
     let out = &buf[*cursor..*cursor + len];
     *cursor += len;
     Some(out)
-}
-
-/// `symbols_by_path`: `u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
-pub fn symbol_by_path(rel: &RelPath, start_byte: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 4);
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    out.extend_from_slice(&start_byte.to_be_bytes());
-    out
-}
-
-/// Prefix bytes for "all symbols in this file" — feed to `keyspace.prefix(..)`.
-pub fn symbols_by_path_prefix(rel: &RelPath) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    out
-}
-
-pub fn parse_symbol_by_path(key: &[u8]) -> Option<(RelPath, u32)> {
-    let mut c = 0;
-    let rel = read_len_prefixed_ref(key, &mut c)?;
-    if key.len() < c + 4 {
-        return None;
-    }
-    let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((RelPath::from(rel), start))
-}
-
-/// `symbols_by_name`: `u16:len(name) ‖ name ‖ kind:u8 ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
-///
-/// Returns `None` when `name` exceeds 65535 bytes. The caller skips the secondary-index
-/// entry but still writes the primary `symbols_by_path` entry so the outline stays complete.
-pub fn symbol_by_name(name: &str, kind: SymbolKind, rel: &RelPath, start_byte: u32) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(2 + name.len() + 1 + 2 + rel.as_bytes().len() + 4);
-    write_len_prefixed(&mut out, name.as_bytes())?;
-    out.push(symbol_kind_byte(kind));
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    out.extend_from_slice(&start_byte.to_be_bytes());
-    Some(out)
-}
-
-pub fn symbols_by_name_prefix(name: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + name.len());
-    let _ = write_len_prefixed(&mut out, name.as_bytes());
-    out
-}
-
-pub fn parse_symbol_by_name(key: &[u8]) -> Option<(String, SymbolKind, RelPath, u32)> {
-    let mut c = 0;
-    let name_bytes = read_len_prefixed(key, &mut c)?;
-    let name = String::from_utf8(name_bytes).ok()?;
-    if key.len() < c + 1 {
-        return None;
-    }
-    let kind = symbol_kind_from_byte(key[c]);
-    c += 1;
-    let rel = read_len_prefixed_ref(key, &mut c)?;
-    if key.len() < c + 4 {
-        return None;
-    }
-    let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((name, kind, RelPath::from(rel), start))
-}
-
-/// `calls_by_callee`: `u16:len(callee) ‖ callee ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
-///
-/// Returns `None` when `callee` exceeds 65535 bytes. The caller skips the secondary-index
-/// entry but still writes the primary `calls_by_path` entry so the call record stays complete.
-pub fn call_by_callee(callee: &str, rel: &RelPath, start_byte: u32) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(2 + callee.len() + 2 + rel.as_bytes().len() + 4);
-    write_len_prefixed(&mut out, callee.as_bytes())?;
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    out.extend_from_slice(&start_byte.to_be_bytes());
-    Some(out)
-}
-
-pub fn calls_by_callee_prefix(callee: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + callee.len());
-    let _ = write_len_prefixed(&mut out, callee.as_bytes());
-    out
-}
-
-pub fn parse_call_by_callee(key: &[u8]) -> Option<(String, RelPath, u32)> {
-    let mut c = 0;
-    let callee = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
-    let rel = read_len_prefixed_ref(key, &mut c)?;
-    if key.len() < c + 4 {
-        return None;
-    }
-    let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((callee, RelPath::from(rel), start))
-}
-
-/// `calls_by_path`: same shape as `symbols_by_path` so iterating "all calls in this file"
-/// works the same way.
-pub fn call_by_path(rel: &RelPath, start_byte: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 4);
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    out.extend_from_slice(&start_byte.to_be_bytes());
-    out
-}
-
-pub fn calls_by_path_prefix(rel: &RelPath) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
-    let _ = write_len_prefixed(&mut out, rel.as_bytes());
-    out
 }
 
 /// `imports_by_module`: `u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
@@ -401,7 +301,7 @@ pub fn parse_ref_by_path(key: &[u8]) -> Option<(RelPath, u32, RelPath, u32)> {
 /// One-byte ordinal for a `SymbolKind`. Stable across releases so existing keys stay valid;
 /// new variants extend the tail. Keep the explicit assignments — accidentally reordering
 /// would silently miscategorize cached entries.
-fn symbol_kind_byte(k: SymbolKind) -> u8 {
+pub(super) fn symbol_kind_byte(k: SymbolKind) -> u8 {
     match k {
         SymbolKind::Unknown => 0,
         SymbolKind::Function => 1,
@@ -428,7 +328,7 @@ fn symbol_kind_byte(k: SymbolKind) -> u8 {
     }
 }
 
-fn symbol_kind_from_byte(b: u8) -> SymbolKind {
+pub(super) fn symbol_kind_from_byte(b: u8) -> SymbolKind {
     match b {
         1 => SymbolKind::Function,
         2 => SymbolKind::Method,
@@ -460,36 +360,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn symbol_by_path_roundtrips() {
-        let rel = RelPath::from("src/lib.rs");
-        let key = symbol_by_path(&rel, 1234);
-        let (back, start) = parse_symbol_by_path(&key).unwrap();
-        assert_eq!(back, rel);
-        assert_eq!(start, 1234);
-    }
-
-    #[test]
-    fn symbol_by_name_roundtrips_with_kind() {
-        let rel = RelPath::from("src/foo.rs");
-        let key = symbol_by_name("alpha", SymbolKind::Function, &rel, 42).unwrap();
-        let (name, kind, back, start) = parse_symbol_by_name(&key).unwrap();
-        assert_eq!(name, "alpha");
-        assert_eq!(kind, SymbolKind::Function);
-        assert_eq!(back, rel);
-        assert_eq!(start, 42);
-    }
-
-    #[test]
-    fn call_by_callee_roundtrips() {
-        let rel = RelPath::from("src/main.rs");
-        let key = call_by_callee("spawn", &rel, 999).unwrap();
-        let (callee, back, start) = parse_call_by_callee(&key).unwrap();
-        assert_eq!(callee, "spawn");
-        assert_eq!(back, rel);
-        assert_eq!(start, 999);
-    }
-
-    #[test]
     fn import_by_module_roundtrips() {
         let rel = RelPath::from("src/foo.py");
         let key = import_by_module("os.path", &rel, 0).unwrap();
@@ -497,22 +367,6 @@ mod tests {
         assert_eq!(module, "os.path");
         assert_eq!(back, rel);
         assert_eq!(start, 0);
-    }
-
-    /// The whole point of length-prefixing: `Foo` and `Foobar` must never collide on
-    /// a prefix scan of `Foo`. Without length-prefixing, the simple `\0` separator would
-    /// fail for callee names containing embedded `\0` bytes (rare but possible).
-    #[test]
-    fn prefix_scan_isolates_callees() {
-        let rel = RelPath::from("a.rs");
-        let key_foo = call_by_callee("Foo", &rel, 1).unwrap();
-        let key_foobar = call_by_callee("Foobar", &rel, 1).unwrap();
-        let prefix_foo = calls_by_callee_prefix("Foo");
-        assert!(key_foo.starts_with(&prefix_foo), "Foo's key must extend the Foo prefix");
-        assert!(
-            !key_foobar.starts_with(&prefix_foo),
-            "Foobar's key must NOT match the Foo prefix"
-        );
     }
 
     #[test]
@@ -673,8 +527,8 @@ mod tests {
     #[test]
     fn non_utf8_path_keys_roundtrip() {
         let rel = RelPath::from(b"f\xffoo.rs".as_slice());
-        let key = symbol_by_path(&rel, 7);
-        let (back, _) = parse_symbol_by_path(&key).unwrap();
+        let key = import_by_path(&rel, "m", 7).unwrap();
+        let (back, _, _) = parse_import_by_path(&key).unwrap();
         assert_eq!(back.as_bytes(), rel.as_bytes());
     }
 
@@ -703,7 +557,7 @@ mod tests {
         }
     }
 
-    /// All six identifier-encoding functions must return `None` at the 65536-byte boundary
+    /// The identifier-encoding functions must return `None` at the 65536-byte boundary
     /// rather than panicking. This protects the rayon `par_iter` scan from being aborted
     /// by a single pathologically long token.
     #[test]
@@ -711,14 +565,6 @@ mod tests {
         let huge = "x".repeat(65536);
         let rel = RelPath::from("a.rs");
 
-        assert!(
-            symbol_by_name(&huge, SymbolKind::Function, &rel, 0).is_none(),
-            "symbol_by_name must return None for a 65536-byte name"
-        );
-        assert!(
-            call_by_callee(&huge, &rel, 0).is_none(),
-            "call_by_callee must return None for a 65536-byte callee"
-        );
         assert!(
             import_by_module(&huge, &rel, 0).is_none(),
             "import_by_module must return None for a 65536-byte module"

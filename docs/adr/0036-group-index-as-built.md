@@ -57,6 +57,32 @@ force for the clauses that changed. A clause not named here stands.
    `meta`. An open that finds another layout in a database with an incarnation empties every
    keyspace and takes a new incarnation, so every view's file map is emptied and rescanned. A
    read-only open of such a database answers from blobs. `INDEX_PARTITION_REVISION` is not touched.
+8. **ADR-0028 rules 2, 3 and 7, symbol and call rows, as built:** `symbols_by_path`,
+   `symbols_by_name`, `calls_by_path` and `calls_by_callee` are shared by every view of the group
+   and keyed by the 16-byte content key of content hash, language and extract epoch in place of
+   the path. Each file map entry records the key its rows were written under (`content_key`), and
+   a view reads only through those recorded keys, never recomputed ones: an entry marked for
+   extraction again keeps its rows read until the next pass replaces it, and an entry that records
+   no key is extracted again. A write of a content reconciles with the rows stored under its key:
+   an identical extraction writes nothing, a different one (an extractor change without an epoch
+   bump) removes the stored rows the fresh ones lack before writing them, so the two are never
+   served together. No scan deletes the rows of a content it stops holding; they wait for the group
+   sweep. A view reads through its live keys: the recorded key of each entry of its last written
+   file map, with the paths holding it, published each time the map is written, from the map on
+   disk when a handle is reopened, and dropped with the view's last handle. A row of a content
+   the view does not hold is examined but yields no hit; one held at several paths yields one hit
+   per path. The hit key is the row key followed by the path. A `references` or `callers` cursor
+   is that hit key behind a digest of the live keys it was cut from (of the in-RAM map's recorded
+   keys when the scan is forwarded or runs in RAM), and is refused as stale once they change,
+   since an edit moves the edited file's hits in key order. The key is a 16-byte blake3
+   truncation: a collision would merge two contents' rows and nothing detects it; at 2^-128 per
+   pair this is accepted.
+
+   Until the group sweep lands, every edit leaves a dead content's rows. They count toward a name
+   scan's examined-key cap, which stops the page with `truncated` and a cursor at the stop, so
+   paging still reaches every live hit, but a hot name in a long-lived daemon needs more pages
+   over time; the exact symbol lookup behind `code_search` has no examined cap and walks every
+   dead row of its name; and the rows cost disk. The sweep of ADR-0028 rule 10 removes all three.
 
 ## Consequences
 

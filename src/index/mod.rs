@@ -24,8 +24,10 @@ pub mod grep_bloom;
 pub(crate) mod group;
 pub mod keys;
 pub mod keys_bm25;
+pub mod keys_content;
 pub mod keys_memory;
 pub mod keys_probe;
+pub mod live_keys;
 pub(crate) mod memory_store;
 pub(crate) mod name_dict;
 pub mod scoped;
@@ -33,6 +35,7 @@ pub mod view;
 #[cfg(test)]
 mod view_tests;
 pub mod writer;
+mod writer_content;
 
 use std::path::{Path, PathBuf};
 
@@ -380,13 +383,18 @@ pub struct IndexDb {
     /// Carries the `schema_ver` row read + stamped in [`IndexDb::open`]; also read and written
     /// by the BM25 corpus-stats recompute.
     pub(in crate::index) meta: scoped::Scoped,
+    /// `symbols_by_path`: a content's symbols, keyed `content key ‖ start` ([`keys_content`]).
+    /// Shared by every view of a group; read through [`Self::live_keys`].
     pub(in crate::index) symbols_by_path: scoped::Scoped,
-    /// Reserved fast-path partition: written on every upsert so that future name-based
-    /// symbol search can skip the in-RAM linear scan. Not yet read by any MCP query path;
-    /// kept to avoid a schema migration when the read path lands.
+    /// `symbols_by_name`: `name ‖ kind ‖ content key ‖ start` — the code-search exact lane.
     pub(in crate::index) symbols_by_name: scoped::Scoped,
+    /// `calls_by_path`: a content's call sites, keyed `content key ‖ start`.
     pub(in crate::index) calls_by_path: scoped::Scoped,
+    /// `calls_by_callee`: `callee ‖ content key ‖ start` — `references` and `callers`.
     pub(in crate::index) calls_by_callee: scoped::Scoped,
+    /// This view's live content keys: which of its paths hold each content key. Published by the
+    /// store whenever it writes the view's file map, shared by every handle on the view.
+    pub(in crate::index) live: std::sync::Arc<live_keys::LiveKeysCell>,
     /// Distinct callee names of `calls_by_callee`; lets the substring name scan range-scan only the
     /// matching names instead of walking the partition.
     pub(in crate::index) callee_names: std::sync::Arc<name_dict::NameDict>,
@@ -744,6 +752,7 @@ impl IndexDb {
             code_bm25_by_path: whole(code_bm25_by_path),
             bm25_live: std::sync::Arc::default(),
             bm25_gate: bm25_live::Bm25Gate::default(),
+            live: std::sync::Arc::default(),
             grep_bloom: whole(grep_bloom),
             embeddings,
             group: None,

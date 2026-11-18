@@ -444,3 +444,139 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
         Some(super::Cursor::encode_fjall(&[5]).0)
     );
 }
+
+/// A caller that renamed the definition at its import (`import { target as g }`) is one the name
+/// scan cannot see; resolution adds it, keyed into the scan's order by its content key. That key
+/// comes from the index's live keys, so an in-RAM map that lacks the file (still warming, or its
+/// outline unreadable) no longer drops the caller.
+#[cfg(feature = "code-intel-js")]
+#[test]
+fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
+    use crate::mcp::types::FindCallersParams;
+    use crate::path::RelPath;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("util.ts"), b"export function target() { return 1; }\n").expect("util.ts");
+    std::fs::write(
+        root.join("consumer.ts"),
+        b"import { target as g } from './util';\ng();\n",
+    )
+    .expect("consumer.ts");
+    let (store, cache) = scan_fixture(root);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let callers = |cache: &crate::mcp::MapCache| {
+        decode(
+            &runtime
+                .block_on(super::run_find_callers(
+                    &store,
+                    super::RefsSource::Local(&store),
+                    &local_route(&store),
+                    crate::mcp::tool_contract::IndexedFiles::contained(root),
+                    cache,
+                    FindCallersParams {
+                        substring: false,
+                        path: RelPath::from("util.ts".as_bytes()),
+                        name: "target".to_string(),
+                        kind: None,
+                        line: None,
+                        limit: Some(100),
+                        max_tokens: None,
+                        cursor: None,
+                    },
+                    || None,
+                ))
+                .expect("find_callers"),
+        )
+    };
+    let renamed = |body: &serde_json::Value| {
+        body.pointer("/hits/consumer.ts")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|hits| hits.iter().any(|hit| hit["callee"] == "g"))
+    };
+
+    let full = callers(&cache);
+    assert!(renamed(&full), "resolution lists the renamed caller: {full}");
+    let partial = callers(&crate::mcp::MapCache::empty());
+    assert!(renamed(&partial), "a map without the file still lists it: {partial}");
+    assert_eq!(partial["total"], full["total"]);
+}
+
+/// A `references` cursor is a position in the view's key order, and an edit moves the edited
+/// file's hits within it: a page cut before the edit could skip or repeat them after it. The
+/// cursor is refused as stale instead.
+#[test]
+fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
+    use crate::mcp::types::FindReferencesParams;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
+    std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); }\n").expect("b.rs");
+    std::fs::write(root.join("c.rs"), b"fn gamma() { alpha(); }\n").expect("c.rs");
+    let (mut store, cache) = scan_fixture(root);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let page = |store: &Store, cursor: Option<super::Cursor>| {
+        runtime.block_on(super::run_find_references(
+            &local_route(store),
+            FindReferencesParams {
+                substring: false,
+                name: "alpha".to_string(),
+                limit: Some(1),
+                max_tokens: None,
+                format: None,
+                cursor,
+            },
+            &cache,
+            || None,
+            |_| {},
+        ))
+    };
+    let first = decode(&page(&store, None).expect("first page"));
+    let cursor = super::Cursor(first["next_cursor"].as_str().expect("a second page").to_string());
+    assert!(
+        page(&store, Some(cursor.clone())).is_ok(),
+        "an unchanged view continues"
+    );
+
+    std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); alpha(); }\n").expect("edit");
+    scan(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Inline,
+    )
+    .expect("rescan");
+
+    let refused = page(&store, Some(cursor)).expect_err("a cursor cut before the edit");
+    assert!(refused.message.contains("changed since this cursor"), "{refused:?}");
+}
+
+/// Where a renamed caller's position in the scan order cannot be known (a forwarded read whose
+/// in-RAM map lacks the file), the page says it is incomplete instead of dropping it in silence.
+#[test]
+fn a_renamed_caller_that_cannot_be_placed_marks_the_page_truncated() {
+    use super::{ResolvedCallers, merge_resolved};
+
+    let scan = scan_calls_in_ram(
+        &super::super::helpers_calls_scan::InRamCallIndex::empty(),
+        "f",
+        super::Matching::Exact,
+        10,
+        None,
+    );
+    let resolved = ResolvedCallers {
+        unplaced: 1,
+        ..ResolvedCallers::default()
+    };
+    let merged = merge_resolved(scan, Some(resolved), 10, None);
+    assert!(merged.total_is_partial, "a dropped caller is reported");
+    assert_eq!(merged.total, 1, "and counted");
+}

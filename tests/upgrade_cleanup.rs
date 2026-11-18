@@ -196,6 +196,7 @@ fn a_tier_migration_orphans_the_code_lane_blobs_and_the_cleanup_reclaims_only_th
             size_bytes: bytes.len() as u64,
             mtime: 0,
             extract_epoch: 0,
+            content_key: None,
         },
     );
 

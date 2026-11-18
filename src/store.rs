@@ -209,6 +209,17 @@ pub struct FileEntry {
     /// as unchanged, so the scan re-extracts it (see `process_file`).
     #[serde(default)]
     pub extract_epoch: u16,
+    /// The [`crate::index::keys::ContentKey`] the file's symbol and call rows were written under
+    /// (ADR-0028 rule 3): its view reads those rows by this key, never by one recomputed from the
+    /// other fields, which [`Store::extract_again`] changes while the rows stay. `None` for an entry
+    /// that names no rows; a scan never takes such an entry for unchanged. Additive within the
+    /// minor: a map without the field decodes to `None` and its files are extracted again.
+    #[serde(
+        default,
+        with = "crate::index::keys_content::opt_content_key",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_key: Option<crate::index::keys::ContentKey>,
 }
 
 /// Per-document index entry — the doc-tier analogue of [`FileEntry`]. Records the content hash of
@@ -398,6 +409,7 @@ impl Store {
             _lock: Some(lock),
         };
         store.persist_file_map_emptied_on_open()?;
+        store.publish_live_keys();
         Ok(store)
     }
 
@@ -501,7 +513,7 @@ impl Store {
             index_rebuild_needed = true;
         }
         let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);
-        Ok(Self {
+        let store = Self {
             root: root.to_path_buf(),
             basemind_dir,
             blobs_dir,
@@ -519,7 +531,9 @@ impl Store {
             index_rebuild_needed,
             pending_vectors,
             _lock: None,
-        })
+        };
+        store.publish_live_keys_if_unset();
+        Ok(store)
     }
 
     /// Lazy-open the LanceDB store at `.basemind/lance/`. Subsequent calls return
@@ -577,7 +591,8 @@ impl Store {
     }
 
     /// Have the next pass extract `rel` again although its content is unchanged: its entry's
-    /// extraction epoch is reset, which no pass takes for current.
+    /// extraction epoch is reset, which no pass takes for current. Its [`FileEntry::content_key`]
+    /// stays, so the view keeps reading the rows it names until that pass replaces the entry.
     #[cfg(feature = "code-search")]
     pub(crate) fn extract_again(&mut self, rel: &str) {
         if let Some(entry) = self.index.files.get_mut(bstr::BStr::new(rel.as_bytes())) {
@@ -639,7 +654,9 @@ impl Store {
                 db.seal_scan(self.index.generation)?
             };
         }
-        file_map::write_file_map(&self.view_dir, &self.index)
+        file_map::write_file_map(&self.view_dir, &self.index)?;
+        self.publish_live_keys();
+        Ok(())
     }
 
     /// Refresh the cheap `status.json` sidecar for a shell statusline (see [`StatusSidecar`]).
@@ -674,6 +691,7 @@ impl Store {
     pub fn reopen_index_db(&mut self) -> Result<(), IndexError> {
         if self.index_db.take().is_some() {
             self.index_db = Some(group::reopen_view(&self.root, &self.view)?);
+            self.publish_written_live_keys_if_unset();
         }
         Ok(())
     }

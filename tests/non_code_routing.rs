@@ -66,6 +66,7 @@ fn code_entry(language: &str) -> FileEntry {
         size_bytes: 1,
         mtime: 0,
         extract_epoch: basemind::extract::EXTRACT_EPOCH,
+        content_key: None,
     }
 }
 

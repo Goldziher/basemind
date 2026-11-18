@@ -484,9 +484,17 @@ fn callers_scan_and_file_batches_are_identical_on_every_route() {
             .map(|c| (c.start_byte, c.callee, c.line, c.column))
             .collect::<Vec<_>>()
     };
-    let local = block_on(fx.local.calls_in_files(&fx.cache, &paths)).expect("local batch");
-    let host = block_on(fx.host.calls_in_files(&fx.cache, &paths)).expect("host batch");
-    let in_ram = block_on(IndexRoute::InRam.calls_in_files(&fx.cache, &paths)).expect("in-ram batch");
+    let files = |route: &IndexRoute| -> Vec<(RelPath, Option<crate::index::keys::ContentKey>)> {
+        paths
+            .iter()
+            .cloned()
+            .zip(route.content_keys(&fx.cache, &paths))
+            .collect()
+    };
+    let local = block_on(fx.local.calls_in_files(&fx.cache, &files(&fx.local))).expect("local batch");
+    let host = block_on(fx.host.calls_in_files(&fx.cache, &files(&fx.host))).expect("host batch");
+    let in_ram =
+        block_on(IndexRoute::InRam.calls_in_files(&fx.cache, &files(&IndexRoute::InRam))).expect("in-ram batch");
     assert_eq!(local.len(), paths.len());
     assert!(local[0].len() >= 3, "m0.rs makes several calls");
     assert!(local[4].is_empty(), "an unindexed path has no calls");
