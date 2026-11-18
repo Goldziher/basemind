@@ -145,3 +145,18 @@ blake3 = "fc392a058af49cb6f601d353182e574f3889fa583e58bff861b61f0fb781a40b"
 number = 42
 status = "accepted"
 blake3 = "6e6122c04170303ae7eb3d00ef063e0f39bc3cc66a6f9362c61da90339814bec"
+
+[adrs."docs/adr/0043-packed-call-name-rows-and-cheaper-hit-expansion.md"]
+number = 43
+status = "accepted"
+blake3 = "4235171671d9f1c3d3f868f62b557d66c6318289fd220329150a145304bee1d4"
+
+[adrs."docs/adr/0044-launched-agent-comms-and-user-mcp-isolation.md"]
+number = 44
+status = "accepted"
+blake3 = "697c55ee948b7531f5b6d76f6c5fc43bf975f6ff23bb1ca8adde178e5ffc332a"
+
+[adrs."docs/adr/0045-daemon-stop-and-idle-rules-as-built.md"]
+number = 45
+status = "accepted"
+blake3 = "e4bc582c9a7bd40ee2d035278fd1b3d3c8f4e64aa138cc43597ea1c6ec92db80"

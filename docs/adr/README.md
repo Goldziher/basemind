@@ -107,26 +107,26 @@ them.
 | [0021](0021-agent-comms-v2.md) | Agent comms v2 — stable identity, per-actor delivery, three deferred tools | Accepted (amended by ADR-0027, ADR-0030) |
 | [0022](0022-surface-adr-amendments.md) | Surface ADR amendments — as-built facts and a measurable value gate | Accepted (amended by ADR-0027, ADR-0030, ADR-0031) |
 | [0023](0023-library-crate-layering-revised.md) | Library crate layering, revised | Accepted (amended by ADR-0027, ADR-0032, ADR-0039) |
-| [0024](0024-daemon-and-process-model.md) | Daemon and process model — rendezvous scoped by protocol generation | Accepted (amended by ADR-0028, ADR-0030) |
+| [0024](0024-daemon-and-process-model.md) | Daemon and process model — rendezvous scoped by protocol generation | Accepted (amended by ADR-0028, ADR-0030, ADR-0045) |
 | [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted (amended by ADR-0028, ADR-0030, ADR-0033, ADR-0037) |
 | [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Superseded by ADR-0027 |
 | [0027](0027-single-breaking-release.md) | Release and branch policy — trunk-based, one breaking release | Accepted (amended by ADR-0035) |
 | [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Accepted (amended by ADR-0036, ADR-0041) |
 | [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Accepted (amended by ADR-0037) |
-| [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted (amended by ADR-0033, ADR-0038) |
+| [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted (amended by ADR-0033, ADR-0038, ADR-0045) |
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted |
 | [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted (amended by ADR-0039) |
 | [0033](0033-store-evidence-collection-and-recovery-rules.md) | Store rules after the sixth storage review — evidence, collection, recovery | Accepted |
 | [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Accepted |
 | [0035](0035-unreleased-plugin-surface-marker.md) | A dated marker for plugin content ahead of its release | Accepted |
-| [0036](0036-group-index-as-built.md) | Group index as built — no rollout switch, the group lock, read-only opens | Accepted (amended by ADR-0041; ADR-0043, proposed, would amend it) |
+| [0036](0036-group-index-as-built.md) | Group index as built — no rollout switch, the group lock, read-only opens | Accepted (amended by ADR-0041, ADR-0043) |
 | [0037](0037-retrieval-store-amendments.md) | Retrieval store amendments — liveness list, store version, group location, model identity | Accepted |
 | [0038](0038-comms-cutover-as-built.md) | Comms v2 cutover as built — agent tool replay and the closed open items | Accepted |
 | [0039](0039-engine-unification-and-two-crates.md) | Engine unification first, then two crates | Accepted (amended by ADR-0040, ADR-0042) |
-| [0040](0040-cross-harness-agent-launch.md) | Cross-harness agent launch — `basemind-agents` and `serve --lead` | Accepted (ADR-0044, proposed, would amend it) |
-| [0041](0041-group-sweep-bm25-holders-and-group-reaping.md) | Group sweep, BM25 holders, packed postings and group reaping | Accepted (ADR-0043, proposed, would amend it) |
+| [0040](0040-cross-harness-agent-launch.md) | Cross-harness agent launch — `basemind-agents` and `serve --lead` | Accepted (amended by ADR-0044) |
+| [0041](0041-group-sweep-bm25-holders-and-group-reaping.md) | Group sweep, BM25 holders, packed postings and group reaping | Accepted (amended by ADR-0043) |
 | [0042](0042-hosted-workspaces-share-the-writers-handles.md) | Hosted workspaces share the writer's handles; no in-RAM reference fallback | Accepted |
-| [0043](0043-packed-call-name-rows-and-cheaper-hit-expansion.md) | Packed call name rows and cheaper hit expansion | Proposed |
-| [0044](0044-launched-agent-comms-and-user-mcp-isolation.md) | Launched agents use their comms thread, and start none of the user's MCP servers | Proposed |
-| [0045](0045-daemon-stop-and-idle-rules-as-built.md) | Daemon stop and idle rules as built after the comms v2 cutover | Proposed |
+| [0043](0043-packed-call-name-rows-and-cheaper-hit-expansion.md) | Packed call name rows and cheaper hit expansion | Accepted |
+| [0044](0044-launched-agent-comms-and-user-mcp-isolation.md) | Launched agents use their comms thread, and start none of the user's MCP servers | Accepted |
+| [0045](0045-daemon-stop-and-idle-rules-as-built.md) | Daemon stop and idle rules as built after the comms v2 cutover | Accepted |
 | [0046](0046-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Proposed |
