@@ -116,11 +116,11 @@ them.
 | [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted (amended by ADR-0033, ADR-0038) |
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted |
 | [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted (amended by ADR-0039) |
-| [0033](0033-store-evidence-collection-and-recovery-rules.md) | Store rules after the sixth storage review — evidence, collection, recovery | Proposed |
-| [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Proposed |
-| [0035](0035-unreleased-plugin-surface-marker.md) | A dated marker for plugin content ahead of its release | Proposed |
-| [0036](0036-group-index-as-built.md) | Group index as built — no rollout switch, the group lock, read-only opens | Proposed |
-| [0037](0037-retrieval-store-amendments.md) | Retrieval store amendments — liveness list, store version, group location, model identity | Proposed |
-| [0038](0038-comms-cutover-as-built.md) | Comms v2 cutover as built — agent tool replay and the closed open items | Proposed |
-| [0039](0039-engine-unification-and-two-crates.md) | Engine unification first, then two crates | Proposed (amended by ADR-0040) |
-| [0040](0040-cross-harness-agent-launch.md) | Cross-harness agent launch — `basemind-agents` and `serve --lead` | Proposed |
+| [0033](0033-store-evidence-collection-and-recovery-rules.md) | Store rules after the sixth storage review — evidence, collection, recovery | Accepted |
+| [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Accepted |
+| [0035](0035-unreleased-plugin-surface-marker.md) | A dated marker for plugin content ahead of its release | Accepted |
+| [0036](0036-group-index-as-built.md) | Group index as built — no rollout switch, the group lock, read-only opens | Accepted |
+| [0037](0037-retrieval-store-amendments.md) | Retrieval store amendments — liveness list, store version, group location, model identity | Accepted |
+| [0038](0038-comms-cutover-as-built.md) | Comms v2 cutover as built — agent tool replay and the closed open items | Accepted |
+| [0039](0039-engine-unification-and-two-crates.md) | Engine unification first, then two crates | Accepted (amended by ADR-0040) |
+| [0040](0040-cross-harness-agent-launch.md) | Cross-harness agent launch — `basemind-agents` and `serve --lead` | Accepted |

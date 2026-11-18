@@ -90,3 +90,43 @@ blake3 = "b92a42ca45370355e2ef40e70396c8c73f81bd23680368902dfad6d87af0ff6e"
 number = 32
 status = "accepted"
 blake3 = "ac2ac5737e8169dc7064cdac0447b6c3ab6cc59fa3a8c5b87edac2ac66bbec52"
+
+[adrs."docs/adr/0033-store-evidence-collection-and-recovery-rules.md"]
+number = 33
+status = "accepted"
+blake3 = "8240c762be489977b94142a08ac8fb5a02486d8490ab966dbe3663201f80263e"
+
+[adrs."docs/adr/0034-lean-locating-rows.md"]
+number = 34
+status = "accepted"
+blake3 = "5d5debe1c69d134c92dd926e29d80519ab69c8e5b6c57da7b547f62ae20fc756"
+
+[adrs."docs/adr/0035-unreleased-plugin-surface-marker.md"]
+number = 35
+status = "accepted"
+blake3 = "13f5c900fdec3e0bbc1cdb79ec3afeb6041088f635683e511db437c7d067d02c"
+
+[adrs."docs/adr/0036-group-index-as-built.md"]
+number = 36
+status = "accepted"
+blake3 = "3074f9d46eecd92b541115fb79bf37b50922337d0f72ab53a91b82c4af26f8d6"
+
+[adrs."docs/adr/0037-retrieval-store-amendments.md"]
+number = 37
+status = "accepted"
+blake3 = "6936ebc0cba2a254a3e5f929c572a7878eec163cd6977820aaa628e412d4dce1"
+
+[adrs."docs/adr/0038-comms-cutover-as-built.md"]
+number = 38
+status = "accepted"
+blake3 = "4212175a8e1765a31f157fff1395b50bbdc06c08367ed43c8b6a6d99f2938a84"
+
+[adrs."docs/adr/0039-engine-unification-and-two-crates.md"]
+number = 39
+status = "accepted"
+blake3 = "70322a40be20e795bb6f14f9edb69d8b14822cc66d86af646cbfe5feee752544"
+
+[adrs."docs/adr/0040-cross-harness-agent-launch.md"]
+number = 40
+status = "accepted"
+blake3 = "4e2dba0abbdcd9573a8bb2aed221771c39449c25355ff1f653467f4a54be6e66"
