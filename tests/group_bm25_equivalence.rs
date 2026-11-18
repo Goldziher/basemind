@@ -238,7 +238,7 @@ fn mirror_group(roots: &[&Path], at: &Path) -> Vec<PathBuf> {
     mirrored
 }
 
-fn group_rows(store: &Store) -> basemind::index::group_sweep::GroupRows {
+fn group_rows(store: &Store) -> basemind::index::GroupRows {
     store
         .index_db
         .as_ref()

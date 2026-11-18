@@ -24,7 +24,7 @@ pub(crate) mod durability;
 pub mod fault;
 pub mod grep_bloom;
 pub(crate) mod group;
-pub mod group_sweep;
+pub(crate) mod group_sweep;
 #[cfg(test)]
 mod group_sweep_tests;
 pub mod keys;
@@ -41,6 +41,9 @@ pub mod view;
 mod view_tests;
 pub mod writer;
 mod writer_content;
+
+#[cfg(any(feature = "test-support", test))]
+pub use group_sweep::{GroupRows, Rows};
 
 use std::path::{Path, PathBuf};
 
