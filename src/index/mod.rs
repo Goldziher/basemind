@@ -402,7 +402,8 @@ pub struct IndexDb {
     pub(in crate::index) symbols_by_name: scoped::Scoped,
     /// `calls_by_path`: a content's call sites, keyed `content key ‖ start`.
     pub(in crate::index) calls_by_path: scoped::Scoped,
-    /// `calls_by_callee`: `callee ‖ content key ‖ start` — `references` and `callers`.
+    /// `calls_by_callee`: `callee ‖ content key`, the value packing every start of that callee in the
+    /// content (ADR-0043) — `references` and `callers`.
     pub(in crate::index) calls_by_callee: scoped::Scoped,
     /// This view's live content keys: which of its paths hold each content key. Published by the
     /// store whenever it writes the view's file map, shared by every handle on the view.

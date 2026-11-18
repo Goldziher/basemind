@@ -5,12 +5,16 @@
 //! those three, never by path. A view reads them through its live keys
 //! ([`super::live_keys::LiveKeys`]), which map each content key to the view's paths holding it.
 //!
-//! Two shapes of key exist for the name-led keyspaces:
+//! Three shapes of key exist for the name-led keyspaces:
 //!
-//! - the stored ROW key: `u16:len(name) ‖ name ‖ [kind:u8] ‖ key:16 ‖ start:u32_be`;
-//! - the HIT key a view hands its readers: the row key followed by the path of one live holder.
+//! - the SITE key of one symbol or call site: `u16:len(name) ‖ name ‖ [kind:u8] ‖ key:16 ‖
+//!   start:u32_be`;
+//! - the stored ROW key: a `symbols_by_name` row is the site key; a `calls_by_callee` row is the
+//!   site key without its start, `u16:len(callee) ‖ callee ‖ key:16`, and its value packs the start
+//!   of every call of that callee in that content (ADR-0043);
+//! - the HIT key a view hands its readers: the site key followed by the path of one live holder.
 //!
-//! Hit keys of one row differ only in their path tail, and every row key of a name has the same
+//! Hit keys of one site differ only in their path tail, and every site key of a name has the same
 //! length, so hit keys sort by name, content key, offset, then path (ADR-0028 rule 7), and a hit key
 //! is a cursor that resumes inside its row.
 
@@ -111,16 +115,52 @@ pub fn parse_symbol_by_name(key: &[u8]) -> Option<(String, SymbolKind, RelPath, 
     Some((name, kind, RelPath::from(path), start))
 }
 
-/// `calls_by_callee` row: `u16:len(callee) ‖ callee ‖ key:16 ‖ start:u32_be`.
+/// Decode `(kind, content key, start)` from a stored `symbols_by_name` row; its name is the one the
+/// row was found under.
+pub fn parse_symbol_row(row: &[u8]) -> Option<(SymbolKind, ContentKey, u32)> {
+    let (head, content) = NameRow::Symbol.split_row(row)?;
+    let kind = symbol_kind_from_byte(head[head.len() - CONTENT_KEY_LEN - 1]);
+    let start = u32::from_be_bytes(row[row.len() - START_LEN..].try_into().ok()?);
+    Some((kind, content, start))
+}
+
+/// `calls_by_callee` site key of one call: `u16:len(callee) ‖ callee ‖ key:16 ‖ start:u32_be`. Not
+/// stored: the stored row is [`call_name_row`]. A view yields it for a call site no live path holds.
+///
+/// Returns `None` when `callee` exceeds 65535 bytes.
+pub fn call_by_callee(callee: &str, content: &ContentKey, start_byte: u32) -> Option<Vec<u8>> {
+    let mut out = call_name_row(callee, content)?;
+    out.extend_from_slice(&start_byte.to_be_bytes());
+    Some(out)
+}
+
+/// The stored `calls_by_callee` row of `callee` in `content`: `u16:len(callee) ‖ callee ‖ key:16`.
+/// Its value is [`pack_starts`] of every call of `callee` in the content.
 ///
 /// Returns `None` when `callee` exceeds 65535 bytes. The caller skips the name row but still writes
-/// the `calls_by_path` row, so the content's call sites stay complete.
-pub fn call_by_callee(callee: &str, content: &ContentKey, start_byte: u32) -> Option<Vec<u8>> {
+/// the `calls_by_path` rows, so the content's call sites stay complete.
+pub fn call_name_row(callee: &str, content: &ContentKey) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(2 + callee.len() + CONTENT_KEY_LEN + START_LEN);
     write_len_prefixed(&mut out, callee.as_bytes())?;
     out.extend_from_slice(content);
-    out.extend_from_slice(&start_byte.to_be_bytes());
     Some(out)
+}
+
+/// The value of a packed name row: each start as `u32_be`, ascending and distinct.
+pub fn pack_starts(starts: impl IntoIterator<Item = u32>) -> Vec<u8> {
+    let mut starts: Vec<u32> = starts.into_iter().collect();
+    starts.sort_unstable();
+    starts.dedup();
+    starts.iter().flat_map(|start| start.to_be_bytes()).collect()
+}
+
+/// The starts of a packed name row's value; a trailing partial entry is ignored.
+pub fn unpack_starts(value: &[u8]) -> impl Iterator<Item = u32> + '_ {
+    value
+        .as_chunks::<START_LEN>()
+        .0
+        .iter()
+        .map(|start| u32::from_be_bytes(*start))
 }
 
 /// Prefix bytes for "every call of `callee`".
@@ -130,7 +170,7 @@ pub fn calls_by_callee_prefix(callee: &str) -> Vec<u8> {
     out
 }
 
-/// The hit key of `calls_by_callee` for one holder: the row key followed by `rel`. The key a view
+/// The hit key of `calls_by_callee` for one holder: the site key followed by `rel`. The key a view
 /// yields for the call site, and the cursor that resumes after it.
 pub fn call_by_callee_hit(callee: &str, content: &ContentKey, start_byte: u32, rel: &RelPath) -> Option<Vec<u8>> {
     let mut out = call_by_callee(callee, content, start_byte)?;
@@ -138,7 +178,7 @@ pub fn call_by_callee_hit(callee: &str, content: &ContentKey, start_byte: u32, r
     Some(out)
 }
 
-/// Decode `(callee, path, start)` from a `calls_by_callee` HIT key. A row key, which names no path,
+/// Decode `(callee, path, start)` from a `calls_by_callee` HIT key. A site key, which names no path,
 /// does not decode.
 pub fn parse_call_by_callee(key: &[u8]) -> Option<(String, RelPath, u32)> {
     let (row, path) = split_hit(key, NameRow::Call)?;
@@ -153,17 +193,18 @@ pub fn parse_call_by_callee(key: &[u8]) -> Option<(String, RelPath, u32)> {
     Some((callee, RelPath::from(path), start))
 }
 
-/// The content key of a `calls_by_callee` key, row or hit.
+/// The content key of a `calls_by_callee` site or hit key.
 pub fn call_by_callee_content(key: &[u8]) -> Option<ContentKey> {
     NameRow::Call.content_of(split_hit(key, NameRow::Call)?.0)
 }
 
-/// Which name-led keyspace a key belongs to: the shapes differ by the kind byte.
+/// Which name-led keyspace a key belongs to: the shapes differ by the kind byte, and by whether a
+/// stored row holds one site or packs them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NameRow {
-    /// `symbols_by_name`.
+    /// `symbols_by_name`: one row per symbol, the row key is the site key.
     Symbol,
-    /// `calls_by_callee`.
+    /// `calls_by_callee`: one row per callee and content, its value packs the starts.
     Call,
 }
 
@@ -176,21 +217,54 @@ impl NameRow {
         }
     }
 
-    /// The content key of a row key of this shape.
-    pub fn content_of(self, row: &[u8]) -> Option<ContentKey> {
-        let end = row.len().checked_sub(START_LEN)?;
-        row.get(end.checked_sub(CONTENT_KEY_LEN)?..end)?.try_into().ok()
+    /// Whether a stored row packs its starts into its value rather than ending in one.
+    pub const fn packed(self) -> bool {
+        matches!(self, NameRow::Call)
+    }
+
+    /// The content key of a site key of this shape.
+    pub fn content_of(self, site: &[u8]) -> Option<ContentKey> {
+        let end = site.len().checked_sub(START_LEN)?;
+        site.get(end.checked_sub(CONTENT_KEY_LEN)?..end)?.try_into().ok()
+    }
+
+    /// Bytes of a stored row key of this shape: the site key, without its start when packed.
+    fn row_len(self, name_len: usize) -> usize {
+        let site = 2 + name_len + self.extra() + CONTENT_KEY_LEN + START_LEN;
+        if self.packed() { site - START_LEN } else { site }
+    }
+
+    /// Split a stored row key into the bytes every site key of the row starts with (name, kind,
+    /// content key), and the content key. `None` for a key not of this shape.
+    pub fn split_row(self, row: &[u8]) -> Option<(&[u8], ContentKey)> {
+        let name_len = usize::from(u16::from_be_bytes([*row.first()?, *row.get(1)?]));
+        if row.len() != self.row_len(name_len) {
+            return None;
+        }
+        let head_len = 2 + name_len + self.extra() + CONTENT_KEY_LEN;
+        let head = &row[..head_len];
+        let content = head[head_len - CONTENT_KEY_LEN..].try_into().ok()?;
+        Some((head, content))
+    }
+
+    /// The stored row key a site key of this shape lies in.
+    pub fn row_of(self, site: &[u8]) -> &[u8] {
+        if self.packed() {
+            &site[..site.len().saturating_sub(START_LEN)]
+        } else {
+            site
+        }
     }
 }
 
-/// Split a row or hit key of `shape` into its row key and its path tail (empty for a row key).
+/// Split a site or hit key of `shape` into its site key and its path tail (empty for a site key).
 pub fn split_hit(key: &[u8], shape: NameRow) -> Option<(&[u8], &[u8])> {
     let name_len = usize::from(u16::from_be_bytes([*key.first()?, *key.get(1)?]));
-    let row_len = 2 + name_len + shape.extra() + CONTENT_KEY_LEN + START_LEN;
-    if key.len() < row_len {
+    let site_len = 2 + name_len + shape.extra() + CONTENT_KEY_LEN + START_LEN;
+    if key.len() < site_len {
         return None;
     }
-    Some(key.split_at(row_len))
+    Some(key.split_at(site_len))
 }
 
 /// Serde for an optional [`ContentKey`] in the file map: a msgpack `bin` of 16 bytes, not an array
@@ -332,6 +406,8 @@ mod tests {
             Some(("alpha".to_string(), SymbolKind::Function, rel, 42))
         );
         assert_eq!(parse_symbol_by_name(&row), None, "a row names no holder");
+        assert_eq!(parse_symbol_row(&row), Some((SymbolKind::Function, content, 42)));
+        assert_eq!(parse_symbol_row(&hit), None, "a hit is not a stored row");
         assert_eq!(NameRow::Symbol.content_of(&row), Some(content));
     }
 

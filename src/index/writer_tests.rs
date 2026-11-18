@@ -247,6 +247,35 @@ fn writing_a_content_again_replaces_the_rows_of_its_earlier_extraction() {
     assert_eq!(db.calls_by_callee.iter().count(), 1);
 }
 
+/// A content whose calls of one callee moved keeps one row for that callee, packing the new starts.
+#[test]
+fn writing_a_content_again_repacks_a_callee_whose_calls_moved() {
+    let (_d, db) = fresh_db();
+    let rel = RelPath::from("src/a.rs");
+    let l1 = synthetic_l1(&[]);
+    for starts in [[3, 7], [7, 12]] {
+        let mut w = db.writer();
+        let sites: Vec<(&str, u32)> = starts.iter().map(|start| ("f", *start)).collect();
+        w.upsert_file(&rel, &content(), &l1, Some(&calls(&sites))).unwrap();
+        w.commit().unwrap();
+    }
+    let rows: Vec<(Vec<u8>, Vec<u8>)> = db
+        .calls_by_callee
+        .iter()
+        .map(|row| {
+            let (k, v) = row.unwrap();
+            (k.to_vec(), v.to_vec())
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(
+            keys::call_name_row("f", &content()).unwrap(),
+            keys::pack_starts([7, 12])
+        )]
+    );
+}
+
 #[test]
 fn calls_index_round_trip() {
     let (_d, db) = fresh_db();
@@ -285,15 +314,23 @@ fn calls_index_round_trip() {
     w.commit().unwrap();
 
     let prefix = keys::calls_by_callee_prefix("spawn");
-    let spawn_row_len = keys::call_by_callee("spawn", &content(), 0).unwrap().len();
-    let mut spawn_hits = 0;
-    for guard in db.calls_by_callee.raw().prefix(prefix) {
-        let (k, _) = guard.into_inner().unwrap();
-        assert_eq!(k.len(), spawn_row_len, "prefix scan must not bleed into spawn_blocking");
-        assert_eq!(keys::call_by_callee_content(&k), Some(content()));
-        spawn_hits += 1;
-    }
-    assert_eq!(spawn_hits, 2);
+    let rows: Vec<(Vec<u8>, Vec<u8>)> = db
+        .calls_by_callee
+        .raw()
+        .prefix(prefix)
+        .map(|guard| {
+            let (k, v) = guard.into_inner().unwrap();
+            (k.to_vec(), v.to_vec())
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(
+            keys::call_name_row("spawn", &content()).unwrap(),
+            keys::pack_starts([10, 30])
+        )],
+        "one row per callee and content packing its starts, not bleeding into spawn_blocking"
+    );
 
     hold(&db, &[&rel]);
     let view = db.view();

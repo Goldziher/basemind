@@ -33,8 +33,9 @@ pub struct IndexBytes(Repr);
 enum Repr {
     /// A fjall slice read from `offset` on: a view of a group index strips its key prefix this way.
     Fjall(fjall::Slice, usize),
-    /// Bytes the view composed: a content row's key followed by the path of one live holder.
-    Owned(std::sync::Arc<[u8]>),
+    /// Bytes the view composed (a site key followed by the path of one live holder), in a buffer it
+    /// writes again once no reader holds it.
+    Buffer(std::sync::Arc<Vec<u8>>),
 }
 
 impl IndexBytes {
@@ -48,9 +49,14 @@ impl IndexBytes {
         Self(Repr::Fjall(slice, offset))
     }
 
-    /// Bytes composed by the view rather than read.
-    pub(super) fn shared(bytes: std::sync::Arc<[u8]>) -> Self {
-        Self(Repr::Owned(bytes))
+    /// No bytes: the value of a hit, which names its row by key alone.
+    pub(super) fn empty() -> Self {
+        Self(Repr::Fjall(fjall::Slice::from(&[][..]), 0))
+    }
+
+    /// Bytes composed by the view in a reusable buffer.
+    pub(super) fn buffer(bytes: std::sync::Arc<Vec<u8>>) -> Self {
+        Self(Repr::Buffer(bytes))
     }
 }
 
@@ -60,7 +66,7 @@ impl Deref for IndexBytes {
     fn deref(&self) -> &[u8] {
         match &self.0 {
             Repr::Fjall(slice, offset) => &slice[*offset..],
-            Repr::Owned(bytes) => bytes,
+            Repr::Buffer(bytes) => bytes,
         }
     }
 }
@@ -235,10 +241,11 @@ pub trait IndexView: Send + Sync {
     /// content-keyed keyspace (`symbols_by_*`, `calls_by_*`) filters through them.
     fn live_keys(&self) -> std::sync::Arc<super::live_keys::LiveKeys>;
 
-    /// Hit keys of `calls_by_callee` after `cursor_after` (a hit key or a row key), in key order,
-    /// whose callee name may contain `needle` (callers still filter by name): each row once per live
-    /// holder, `row ‖ path` ([`super::keys_content`]); a row no holder is live for comes back as its
-    /// bare row key, which names no call site. `lower` is ignored: the position is the cursor's.
+    /// Hit keys of `calls_by_callee` after `cursor_after` (a hit or site key), in key order, whose
+    /// callee name may contain `needle` (callers still filter by name): each call site of each row
+    /// once per live holder, `site ‖ path` ([`super::keys_content`]); a site no holder is live for
+    /// comes back as its bare site key, which names no holder; values are empty. `lower` is ignored:
+    /// the position is the cursor's.
     /// Served from the callee-name dictionary when it is built.
     fn callee_keys_matching<'a>(
         &'a self,
@@ -368,16 +375,29 @@ pub trait IndexView: Send + Sync {
     /// symbol's owning chunk span.
     fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
         let prefix = keys::symbols_by_name_prefix(name);
-        let rows = self.prefix(Part::SymbolsByName, &prefix);
-        let mut out = Vec::new();
-        for row in super::live_keys::ExpandHits::new(rows, self.live_keys(), keys::NameRow::Symbol, None) {
+        if prefix.len() != 2 + name.len() {
+            // Longer than a key holds: no symbol is stored under it. ~keep
+            return Vec::new();
+        }
+        let live = self.live_keys();
+        let mut out = Vec::with_capacity(cap.min(256));
+        let mut hint = 0;
+        // One row per symbol and content, one hit per live holder: no hit key is composed, and a
+        // row no live path holds is skipped before anything is decoded. ~keep
+        for row in self.prefix(Part::SymbolsByName, &prefix) {
             if out.len() >= cap {
                 break;
             }
-            if let Ok((k, _)) = row
-                && let Some(symbol) = keys::parse_symbol_by_name(&k)
-            {
-                out.push(symbol);
+            let Some((kind, content, start)) = row.ok().and_then(|(key, _)| keys::parse_symbol_row(&key)) else {
+                continue;
+            };
+            let holders = live.holders_from(&content, &mut hint);
+            let holders = &holders[..holders.len().min(cap - out.len())];
+            if let Some(((_, last), rest)) = holders.split_last() {
+                // The length-prefixed name is the whole name: every row under it is named `name`. ~keep
+                let found = name.to_owned();
+                out.extend(rest.iter().map(|(_, path)| (found.clone(), kind, path.clone(), start)));
+                out.push((found, kind, last.clone(), start));
             }
         }
         out

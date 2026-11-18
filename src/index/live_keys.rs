@@ -8,15 +8,14 @@
 //! the last written map lists, never another view's and never a half-written scan's.
 //!
 //! [`ExpandHits`] walks a name-led keyspace in key order and yields one hit key per live holder of
-//! each row (row key ‖ path), in path order within the row. A row no live path holds is yielded as
-//! its bare row key, which names no holder and so decodes to no hit: it still counts toward a
-//! scan's examined-key cap, and a scan that stops on it resumes after it.
+//! each site of each row (site key ‖ path), in path order within the site; a packed row's sites in
+//! start order. A site no live path holds is yielded as its bare site key, which names no holder
+//! and so decodes to no hit: it still counts toward a scan's examined-key cap, and a scan that stops
+//! on it resumes after it.
 
 use std::cmp::Ordering;
 use std::ops::Bound;
 use std::sync::Arc;
-
-use ahash::AHashMap;
 
 use super::keys::{ContentKey, NameRow, split_hit};
 use super::view::{IndexBytes, KvIter, KvResult};
@@ -25,12 +24,16 @@ use crate::path::RelPath;
 /// The content keys a view holds. See the module docs.
 ///
 /// One copy of each path: `entries` holds every `(key, path)` sorted by key then path, so a key's
-/// holders are one run of it, and the two lookups index into it.
+/// holders are one run of it, and the two lookups index into it. The distinct keys are a sorted
+/// array, not a hash map: a name scan meets its rows' keys in ascending order and finds each by a
+/// short forward search from the last ([`ExpandHits`]).
 #[derive(Debug, Default)]
 pub struct LiveKeys {
     entries: Box<[(ContentKey, RelPath)]>,
-    /// Each live key's run in `entries`: `(start, end)`.
-    runs: AHashMap<ContentKey, (u32, u32)>,
+    /// Each distinct live key as a big-endian integer, ascending: comparable in one instruction.
+    run_keys: Box<[u128]>,
+    /// Where each key's run in `entries` ends; it starts where the previous one ends.
+    run_ends: Box<[u32]>,
     /// Indices into `entries`, sorted by path.
     by_path: Box<[u32]>,
     /// See [`Self::fingerprint`].
@@ -46,12 +49,12 @@ impl LiveKeys {
         entries.sort_by(|a, b| a.1.cmp(&b.1));
         entries.dedup_by(|later, kept| later.1 == kept.1);
         entries.sort_unstable();
-        let mut runs = AHashMap::with_capacity(entries.len());
-        let mut start = 0;
+        let (mut run_keys, mut run_ends) = (Vec::new(), Vec::new());
+        let mut end = 0;
         for run in entries.chunk_by(|a, b| a.0 == b.0) {
-            let end = start + run.len();
-            runs.insert(run[0].0, (index(start), index(end)));
-            start = end;
+            end += run.len();
+            run_keys.push(u128::from_be_bytes(run[0].0));
+            run_ends.push(index(end));
         }
         let mut by_path: Vec<u32> = (0..entries.len()).map(index).collect();
         by_path.sort_unstable_by(|a, b| entries[*a as usize].1.cmp(&entries[*b as usize].1));
@@ -61,7 +64,8 @@ impl LiveKeys {
         }));
         Self {
             entries: entries.into_boxed_slice(),
-            runs,
+            run_keys: run_keys.into_boxed_slice(),
+            run_ends: run_ends.into_boxed_slice(),
             by_path: by_path.into_boxed_slice(),
             fingerprint,
         }
@@ -69,9 +73,48 @@ impl LiveKeys {
 
     /// The view's paths holding `key`, sorted, each with the key; empty when the view holds none.
     pub fn holders(&self, key: &ContentKey) -> &[(ContentKey, RelPath)] {
-        self.runs
-            .get(key)
-            .map_or(&[], |(start, end)| &self.entries[*start as usize..*end as usize])
+        self.run_keys
+            .binary_search(&u128::from_be_bytes(*key))
+            .map_or(&[], |at| {
+                let (start, end) = self.run(at);
+                &self.entries[start as usize..end as usize]
+            })
+    }
+
+    /// [`Self::holders`] for keys looked up in ascending order: `hint` carries where the last one
+    /// was found, so each lookup searches forward from it (any order still answers correctly).
+    pub fn holders_from(&self, key: &ContentKey, hint: &mut usize) -> &[(ContentKey, RelPath)] {
+        let (at, run) = self.find_run(u128::from_be_bytes(*key), *hint);
+        *hint = at;
+        run.map_or(&[], |(start, end)| &self.entries[start as usize..end as usize])
+    }
+
+    /// Run `at` of the distinct keys as `(start, end)` in `entries`.
+    fn run(&self, at: usize) -> (u32, u32) {
+        let start = if at == 0 { 0 } else { self.run_ends[at - 1] };
+        (start, self.run_ends[at])
+    }
+
+    /// The run of `key`, and the hint for the next lookup: the index after the keys at or below
+    /// `key`. Searched forward from `hint` (from such a lookup) when every key before it is lower.
+    fn find_run(&self, key: u128, hint: usize) -> (usize, Option<(u32, u32)>) {
+        let keys = &self.run_keys;
+        let hint = hint.min(keys.len());
+        let from = if hint > 0 && keys[hint - 1] >= key { 0 } else { hint };
+        if keys.get(from) == Some(&key) {
+            return (from + 1, Some(self.run(from)));
+        }
+        // Gallop: double the step until it passes `key`, then search the last step. ~keep
+        let (mut lo, mut step) = (from, 1);
+        while lo + step <= keys.len() && keys[lo + step - 1] < key {
+            lo += step;
+            step *= 2;
+        }
+        let hi = (lo + step).min(keys.len());
+        match keys[lo..hi].binary_search(&key) {
+            Ok(found) => (lo + found + 1, Some(self.run(lo + found))),
+            Err(at) => (lo + at, None),
+        }
     }
 
     /// The content key the view holds at `rel`.
@@ -90,7 +133,7 @@ impl LiveKeys {
 
     /// Every live key.
     pub fn keys(&self) -> impl Iterator<Item = &ContentKey> {
-        self.runs.keys()
+        (0..self.run_ends.len()).map(|at| &self.entries[self.run(at).0 as usize].0)
     }
 
     /// Whether the view holds no content.
@@ -172,26 +215,63 @@ impl super::IndexDb {
     }
 }
 
-/// The row key and path a cursor names: holders of that row up to the path were already listed.
+/// The site key and path a cursor names: holders of that site up to the path were already listed.
 pub(crate) type Resume = Option<(Vec<u8>, Vec<u8>)>;
 
-/// Where a scan of a name-led keyspace resumes after `cursor`, a hit key or a bare row key: the
-/// lower bound in row keys, and the row and path the cursor names within it.
+/// Where a scan of a name-led keyspace resumes after `cursor`, a hit key or a bare site key: the
+/// lower bound in stored row keys, and the site and path the cursor names within it.
 pub(crate) fn resume_after(cursor: Option<&[u8]>, shape: NameRow) -> (Bound<Vec<u8>>, Resume) {
     match cursor.map(|cursor| (cursor, split_hit(cursor, shape))) {
         None => (Bound::Unbounded, None),
-        Some((_, Some((row, path)))) => (Bound::Included(row.to_vec()), Some((row.to_vec(), path.to_vec()))),
+        Some((_, Some((site, path)))) => (
+            Bound::Included(shape.row_of(site).to_vec()),
+            Some((site.to_vec(), path.to_vec())),
+        ),
         // Not of this keyspace's shape: step past it as a plain key. ~keep
         Some((cursor, None)) => (Bound::Excluded(cursor.to_vec()), None),
     }
 }
 
-/// A row being expanded into its holders: `entries[next..end]` of the live keys are still to come.
-struct Pending {
-    row: IndexBytes,
+/// Bytes of one start in a site key or a packed row value.
+const START_LEN: usize = 4;
+
+/// A stored row being expanded into its sites, and the current site into its holders.
+struct Row {
+    /// Which row of the scan this is: a buffer that already begins with its head keeps it.
+    id: u64,
+    /// The stored row key; its first `head_len` bytes begin every site key of the row.
+    key: IndexBytes,
     value: IndexBytes,
+    head_len: usize,
+    /// Whether the starts are packed in the value; otherwise the key's last four bytes are the one.
+    packed: bool,
+    /// Offset of the next start in the value or key.
+    at: usize,
+    /// The holders of the row's content, `None` when the view holds none.
+    run: Option<(u32, u32)>,
+    /// The current site's start, and its holders still to come: `entries[next..end]`.
+    start: [u8; START_LEN],
     next: usize,
     end: usize,
+}
+
+impl Row {
+    /// Step to the row's next site; false once its sites are done.
+    fn next_site(&mut self) -> bool {
+        let source: &[u8] = if self.packed { &self.value } else { &self.key };
+        match source.get(self.at..self.at + START_LEN) {
+            Some(start) => {
+                self.start.copy_from_slice(start);
+                self.at += START_LEN;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn head(&self) -> &[u8] {
+        &self.key[..self.head_len]
+    }
 }
 
 /// See the module docs.
@@ -199,9 +279,20 @@ pub(crate) struct ExpandHits<'a> {
     rows: KvIter<'a>,
     live: Arc<LiveKeys>,
     shape: NameRow,
-    /// The cursor's row and path: holders of that row up to the path were on an earlier page.
+    /// The cursor's site and path: holders of that site up to the path were on an earlier page.
     resume: Resume,
-    pending: Option<Pending>,
+    row: Option<Row>,
+    /// The last content looked up, its run in the live keys, and where among the distinct keys it
+    /// was found: a name's rows are in content-key order, so the next lookup searches forward.
+    last: Option<(u128, Option<(u32, u32)>)>,
+    hint: usize,
+    /// Two buffers hit keys are composed in. A reader that dropped the key it was handed leaves its
+    /// buffer to be written again, so a scan allocates per hit only while its reader keeps keys.
+    buffers: [Arc<Vec<u8>>; 2],
+    /// The row each buffer begins with the head of (see [`Row::id`]).
+    heads: [u64; 2],
+    /// Rows opened so far: the id of the next.
+    opened: u64,
 }
 
 impl<'a> ExpandHits<'a> {
@@ -211,9 +302,93 @@ impl<'a> ExpandHits<'a> {
             live,
             shape,
             resume,
-            pending: None,
+            row: None,
+            last: None,
+            hint: 0,
+            buffers: [Arc::new(Vec::new()), Arc::new(Vec::new())],
+            heads: [u64::MAX; 2],
+            opened: 0,
         }
     }
+
+    /// The run of `content`'s holders in the live keys.
+    fn run_of(&mut self, content: ContentKey) -> Option<(u32, u32)> {
+        let content = u128::from_be_bytes(content);
+        if let Some((last, run)) = &self.last
+            && *last == content
+        {
+            return *run;
+        }
+        let (hint, run) = self.live.find_run(content, self.hint);
+        self.hint = hint;
+        self.last = Some((content, run));
+        run
+    }
+
+    /// Open a stored row, or hand it back when its key is not of this keyspace's shape.
+    fn open(&mut self, key: IndexBytes, value: IndexBytes) -> Result<Row, (IndexBytes, IndexBytes)> {
+        let Some((head, content)) = self.shape.split_row(&key) else {
+            return Err((key, value));
+        };
+        let head_len = head.len();
+        let run = self.run_of(content);
+        let packed = self.shape.packed();
+        let id = self.opened;
+        self.opened += 1;
+        Ok(Row {
+            id,
+            key,
+            value,
+            head_len,
+            packed,
+            at: if packed { 0 } else { head_len },
+            run,
+            start: [0; START_LEN],
+            next: 0,
+            end: 0,
+        })
+    }
+}
+
+/// Where hit keys are composed: two buffers, and the row each begins with the head of.
+struct Buffers<'b> {
+    buffers: &'b mut [Arc<Vec<u8>>; 2],
+    heads: &'b mut [u64; 2],
+}
+
+impl Buffers<'_> {
+    /// `row`'s head, `start` and `path` composed into one key, in a buffer the reader no longer
+    /// holds when there is one. A buffer that already begins with the row's head keeps it.
+    fn compose(&mut self, row: &Row, path: &[u8]) -> IndexBytes {
+        let head = row.head();
+        let slot = match (0..2).find(|slot| Arc::get_mut(&mut self.buffers[*slot]).is_some()) {
+            Some(slot) => slot,
+            None => {
+                self.buffers.swap(0, 1);
+                self.heads.swap(0, 1);
+                self.buffers[0] = Arc::new(Vec::with_capacity(head.len() + START_LEN + path.len()));
+                self.heads[0] = u64::MAX;
+                0
+            }
+        };
+        let kept = self.heads[slot] == row.id;
+        let bytes = Arc::get_mut(&mut self.buffers[slot]).expect("a buffer only this scan holds");
+        if kept {
+            bytes.truncate(head.len());
+        } else {
+            bytes.clear();
+            bytes.extend_from_slice(head);
+        }
+        self.heads[slot] = row.id;
+        bytes.extend_from_slice(&row.start);
+        bytes.extend_from_slice(path);
+        IndexBytes::buffer(Arc::clone(&self.buffers[slot]))
+    }
+}
+
+/// How the site `head ‖ start` orders against the site key `site`.
+fn cmp_site(head: &[u8], start: &[u8; START_LEN], site: &[u8]) -> Ordering {
+    head.iter().chain(start.iter()).cmp(site.iter())
 }
 
 impl Iterator for ExpandHits<'_> {
@@ -221,47 +396,61 @@ impl Iterator for ExpandHits<'_> {
 
     fn next(&mut self) -> Option<KvResult> {
         loop {
-            if let Some(pending) = &mut self.pending {
-                if pending.next < pending.end {
-                    let path = self.live.entries[pending.next].1.as_bytes();
-                    pending.next += 1;
-                    let key: Arc<[u8]> = pending.row.iter().chain(path).copied().collect();
-                    return Some(Ok((IndexBytes::shared(key), pending.value.clone())));
+            let Some(row) = &mut self.row else {
+                let (key, value) = match self.rows.next()? {
+                    Ok(row) => row,
+                    Err(error) => return Some(Err(error)),
+                };
+                match self.open(key, value) {
+                    Ok(row) => self.row = Some(row),
+                    Err(unparsed) => return Some(Ok(unparsed)),
                 }
-                self.pending = None;
+                continue;
+            };
+            if row.next < row.end {
+                let path = self.live.entries[row.next].1.as_bytes();
+                row.next += 1;
+                let mut buffers = Buffers {
+                    buffers: &mut self.buffers,
+                    heads: &mut self.heads,
+                };
+                return Some(Ok((buffers.compose(row, path), IndexBytes::empty())));
             }
-            let (row, value) = match self.rows.next()? {
-                Ok(row) => row,
-                Err(error) => return Some(Err(error)),
-            };
-            let content = split_hit(&row, self.shape)
-                .filter(|(_, tail)| tail.is_empty())
-                .and_then(|(row, _)| self.shape.content_of(row));
-            let Some(content) = content else {
-                return Some(Ok((row, value)));
-            };
-            let Some(&(start, end)) = self.live.runs.get(&content) else {
-                if self.resume.as_ref().is_some_and(|(cursor_row, _)| *row <= **cursor_row) {
+            if !row.next_site() {
+                self.row = None;
+                continue;
+            }
+            let Some((first, end)) = row.run else {
+                if let Some((site, _)) = &self.resume
+                    && cmp_site(row.head(), &row.start, site) != Ordering::Greater
+                {
                     continue;
                 }
                 self.resume = None;
-                return Some(Ok((row, value)));
+                let key = if row.packed {
+                    let mut buffers = Buffers {
+                        buffers: &mut self.buffers,
+                        heads: &mut self.heads,
+                    };
+                    buffers.compose(row, &[])
+                } else {
+                    row.key.clone()
+                };
+                return Some(Ok((key, IndexBytes::empty())));
             };
-            let (mut next, end) = (start as usize, end as usize);
-            if let Some((cursor_row, cursor_path)) = &self.resume {
-                match (*row).cmp(cursor_row.as_slice()) {
-                    Ordering::Less => continue,
+            let (mut next, end) = (first as usize, end as usize);
+            if let Some((site, path)) = &self.resume {
+                match cmp_site(row.head(), &row.start, site) {
+                    Ordering::Less => next = end,
                     Ordering::Equal => {
                         let holders = &self.live.entries[next..end];
-                        next += holders.partition_point(|(_, path)| path.as_bytes() <= cursor_path.as_slice());
-                        if next >= end {
-                            continue;
-                        }
+                        next += holders.partition_point(|(_, held)| held.as_bytes() <= path.as_slice());
                     }
                     Ordering::Greater => self.resume = None,
                 }
             }
-            self.pending = Some(Pending { row, value, next, end });
+            row.next = next;
+            row.end = end;
         }
     }
 }
@@ -269,15 +458,19 @@ impl Iterator for ExpandHits<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::keys::{call_by_callee, call_by_callee_hit, content_key, parse_call_by_callee};
+    use crate::extract::SymbolKind;
+    use crate::index::keys::{
+        call_by_callee, call_by_callee_hit, call_name_row, content_key, pack_starts, parse_call_by_callee,
+        symbol_by_name, symbol_by_name_hit,
+    };
 
-    fn rows(keys: &[Vec<u8>]) -> KvIter<'static> {
-        let rows: Vec<KvResult> = keys
+    fn rows(rows: &[(Vec<u8>, Vec<u8>)]) -> KvIter<'static> {
+        let rows: Vec<KvResult> = rows
             .iter()
-            .map(|key| {
+            .map(|(key, value)| {
                 Ok((
-                    IndexBytes::shared(key.as_slice().into()),
-                    IndexBytes::shared(Arc::from([])),
+                    IndexBytes::buffer(Arc::new(key.clone())),
+                    IndexBytes::buffer(Arc::new(value.clone())),
                 ))
             })
             .collect();
@@ -288,8 +481,14 @@ mod tests {
         iter.map(|row| parse_call_by_callee(&row.expect("row").0)).collect()
     }
 
+    /// The keys a scan yields, as bytes: a reader that keeps every key it is handed.
+    fn keys(iter: ExpandHits<'_>) -> Vec<Vec<u8>> {
+        let held: Vec<IndexBytes> = iter.map(|row| row.expect("row").0).collect();
+        held.iter().map(|key| key.to_vec()).collect()
+    }
+
     #[test]
-    fn a_row_expands_to_its_live_holders_and_a_dead_row_to_no_hit() {
+    fn a_packed_row_expands_to_each_site_per_live_holder_and_a_dead_row_to_bare_sites() {
         let shared = content_key("a", "rust", 1);
         // Rows come in key order: the dead row sorts after the shared one. ~keep
         let dead = ["b", "c", "d", "e", "f", "g", "h"]
@@ -299,31 +498,95 @@ mod tests {
             .expect("a key above");
         let (x, y) = (RelPath::from("x.rs"), RelPath::from("y.rs"));
         let live = Arc::new(LiveKeys::from_entries([(y.clone(), shared), (x.clone(), shared)]));
-        let keys = [
-            call_by_callee("f", &shared, 1).unwrap(),
-            call_by_callee("f", &dead, 1).unwrap(),
+        let stored = [
+            (call_name_row("f", &shared).unwrap(), pack_starts([5, 1])),
+            (call_name_row("f", &dead).unwrap(), pack_starts([2, 1])),
         ];
+        let hit = |rel: &RelPath, start| Some(("f".to_string(), rel.clone(), start));
 
-        let got = hits(ExpandHits::new(rows(&keys), Arc::clone(&live), NameRow::Call, None));
-
+        let got = hits(ExpandHits::new(rows(&stored), Arc::clone(&live), NameRow::Call, None));
+        assert_eq!(got, vec![hit(&x, 1), hit(&y, 1), hit(&x, 5), hit(&y, 5), None, None]);
+        let all = keys(ExpandHits::new(rows(&stored), Arc::clone(&live), NameRow::Call, None));
         assert_eq!(
-            got,
+            all,
             vec![
-                Some(("f".to_string(), x.clone(), 1)),
-                Some(("f".to_string(), y.clone(), 1)),
-                None
-            ]
+                call_by_callee_hit("f", &shared, 1, &x).unwrap(),
+                call_by_callee_hit("f", &shared, 1, &y).unwrap(),
+                call_by_callee_hit("f", &shared, 5, &x).unwrap(),
+                call_by_callee_hit("f", &shared, 5, &y).unwrap(),
+                call_by_callee("f", &dead, 1).unwrap(),
+                call_by_callee("f", &dead, 2).unwrap(),
+            ],
+            "hit keys are site key and path; a dead site is its bare site key; kept keys stay intact"
         );
+
+        let mut last_only: Vec<Vec<u8>> = Vec::new();
+        let mut held: Option<IndexBytes> = None;
+        for row in ExpandHits::new(rows(&stored), Arc::clone(&live), NameRow::Call, None) {
+            let key = row.expect("row").0;
+            last_only.push(key.to_vec());
+            held = Some(key);
+        }
+        drop(held);
+        assert_eq!(last_only, all, "a reader holding the last key gets the same keys");
 
         let cursor = call_by_callee_hit("f", &shared, 1, &x).unwrap();
         let (lower, resume) = resume_after(Some(&cursor), NameRow::Call);
-        assert_eq!(lower, Bound::Included(keys[0].clone()));
-        let rest = hits(ExpandHits::new(rows(&keys), live, NameRow::Call, resume));
+        assert_eq!(lower, Bound::Included(stored[0].0.clone()));
+        let rest = hits(ExpandHits::new(rows(&stored), Arc::clone(&live), NameRow::Call, resume));
         assert_eq!(
             rest,
-            vec![Some(("f".to_string(), y, 1)), None],
+            vec![hit(&y, 1), hit(&x, 5), hit(&y, 5), None, None],
             "resumes inside the row"
         );
+
+        let cursor = call_by_callee("f", &dead, 1).unwrap();
+        let (lower, resume) = resume_after(Some(&cursor), NameRow::Call);
+        assert_eq!(lower, Bound::Included(stored[1].0.clone()));
+        let rest = keys(ExpandHits::new(rows(&stored[1..]), live, NameRow::Call, resume));
+        assert_eq!(
+            rest,
+            vec![call_by_callee("f", &dead, 2).unwrap()],
+            "a bare site cursor resumes after that site"
+        );
+    }
+
+    #[test]
+    fn a_symbol_row_is_its_own_site() {
+        let content = content_key("a", "rust", 1);
+        let (x, y) = (RelPath::from("x.rs"), RelPath::from("y.rs"));
+        let live = Arc::new(LiveKeys::from_entries([(x.clone(), content), (y.clone(), content)]));
+        let stored = [(
+            symbol_by_name("alpha", SymbolKind::Function, &content, 7).unwrap(),
+            Vec::new(),
+        )];
+        let got = keys(ExpandHits::new(rows(&stored), live, NameRow::Symbol, None));
+        assert_eq!(
+            got,
+            vec![
+                symbol_by_name_hit("alpha", SymbolKind::Function, &content, 7, &x).unwrap(),
+                symbol_by_name_hit("alpha", SymbolKind::Function, &content, 7, &y).unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_forward_search_from_any_hint_finds_what_a_binary_search_finds() {
+        let keys: Vec<ContentKey> = (0..40).map(|at| content_key(&format!("h{at}"), "rust", 1)).collect();
+        let live = LiveKeys::from_entries(
+            keys.iter()
+                .step_by(2)
+                .enumerate()
+                .map(|(at, key)| (RelPath::from(format!("f{at}.rs").as_str()), *key)),
+        );
+        for key in &keys {
+            let wanted = live.holders(key).first().map(|(found, _)| *found);
+            for hint in 0..=live.run_keys.len() + 1 {
+                let (_, run) = live.find_run(u128::from_be_bytes(*key), hint);
+                let got = run.map(|(start, _)| live.entries[start as usize].0);
+                assert_eq!(got, wanted, "hint {hint}");
+            }
+        }
     }
 
     #[test]

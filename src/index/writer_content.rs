@@ -16,21 +16,33 @@ use super::keys::ContentKey;
 use super::scoped::Scoped;
 use super::writer::{stage_insert, stage_remove};
 
-/// One fresh row of a family: its key (`content key ‖ start`), its msgpack value, and the key of
-/// its name row, when the name fits a key.
+/// One fresh row of a family: its key (`content key ‖ start`) and its msgpack value.
 pub(super) struct FreshRow {
     pub(super) row: Vec<u8>,
     pub(super) value: Vec<u8>,
-    pub(super) name_key: Option<Vec<u8>>,
 }
+
+/// The fresh rows of one content, with the name rows that point at them as `(key, value)`.
+#[derive(Default)]
+pub(super) struct Fresh {
+    pub(super) rows: Vec<FreshRow>,
+    pub(super) names: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+/// Stored `(key, value)` rows of one content.
+pub(super) type StoredRows = [(Vec<u8>, Vec<u8>)];
+
+/// The keys of the name rows stored rows point from, and how many rows did not decode.
+pub(super) type NameKeys = (AHashSet<Vec<u8>>, usize);
 
 /// One row family of a content: the rows keyed `content key ‖ start` and the name-led rows that
 /// point at them.
 pub(super) struct Family<'a> {
     pub(super) rows: &'a Scoped,
     pub(super) names: &'a Scoped,
-    /// The name row a stored value points from, re-derived to remove it.
-    pub(super) name_of: fn(&ContentKey, &[u8]) -> Option<Vec<u8>>,
+    /// The keys of the name rows stored values point from, re-derived to remove them, and how many
+    /// values did not decode.
+    pub(super) names_of: fn(&ContentKey, &StoredRows) -> NameKeys,
 }
 
 impl Family<'_> {
@@ -40,7 +52,7 @@ impl Family<'_> {
         batch: &mut OwnedWriteBatch,
         staged_bytes: &mut u64,
         content: &ContentKey,
-        fresh: Vec<FreshRow>,
+        fresh: Fresh,
     ) -> Result<(), IndexError> {
         let mut stored: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for row in self.rows.prefix(content) {
@@ -54,6 +66,7 @@ impl Family<'_> {
         }
         // A later row at the same start replaces an earlier one, as the batch would. ~keep
         let fresh_rows: AHashMap<&[u8], &[u8]> = fresh
+            .rows
             .iter()
             .map(|row| (row.row.as_slice(), row.value.as_slice()))
             .collect();
@@ -64,42 +77,69 @@ impl Family<'_> {
         {
             return Ok(());
         }
-        let fresh_names: AHashSet<&[u8]> = fresh.iter().filter_map(|row| row.name_key.as_deref()).collect();
-        for (key, value) in &stored {
+        let fresh_names: AHashSet<&[u8]> = fresh.names.iter().map(|(key, _)| key.as_slice()).collect();
+        for (key, _) in &stored {
             if !fresh_rows.contains_key(key.as_slice()) {
                 stage_remove(batch, staged_bytes, self.rows, key.clone());
             }
-            match (self.name_of)(content, value) {
-                Some(name_key) if !fresh_names.contains(name_key.as_slice()) => {
-                    stage_remove(batch, staged_bytes, self.names, name_key);
-                }
-                Some(_) => {}
-                None => tracing::warn!("index: a stored content row does not decode; its name row stays"),
+        }
+        let (stored_names, undecoded) = (self.names_of)(content, &stored);
+        if undecoded > 0 {
+            tracing::warn!(
+                undecoded,
+                "index: stored content rows do not decode; their name rows stay"
+            );
+        }
+        for name_key in stored_names {
+            if !fresh_names.contains(name_key.as_slice()) {
+                stage_remove(batch, staged_bytes, self.names, name_key);
             }
         }
+        drop(fresh_rows);
+        drop(fresh_names);
         self.insert(batch, staged_bytes, fresh);
         Ok(())
     }
 
-    /// Stage every row of `fresh` and its name row.
-    fn insert(&self, batch: &mut OwnedWriteBatch, staged_bytes: &mut u64, fresh: Vec<FreshRow>) {
-        for row in fresh {
+    /// Stage every row of `fresh` and every name row.
+    fn insert(&self, batch: &mut OwnedWriteBatch, staged_bytes: &mut u64, fresh: Fresh) {
+        for row in fresh.rows {
             stage_insert(batch, staged_bytes, self.rows, row.row, row.value);
-            if let Some(name_key) = row.name_key {
-                stage_insert(batch, staged_bytes, self.names, name_key, Vec::<u8>::new());
-            }
+        }
+        for (key, value) in fresh.names {
+            stage_insert(batch, staged_bytes, self.names, key, value);
         }
     }
 }
 
-/// The `symbols_by_name` key of a stored `symbols_by_path` value.
-pub(super) fn symbol_name_key(content: &ContentKey, value: &[u8]) -> Option<Vec<u8>> {
-    let symbol: crate::extract::Symbol = rmp_serde::from_slice(value).ok()?;
-    super::keys::symbol_by_name(&symbol.name, symbol.kind, content, symbol.start_byte)
+/// The `symbols_by_name` keys of stored `symbols_by_path` rows: one per symbol.
+pub(super) fn symbol_name_keys(content: &ContentKey, stored: &StoredRows) -> NameKeys {
+    let mut undecoded = 0;
+    let mut keys = AHashSet::with_capacity(stored.len());
+    for (_, value) in stored {
+        match rmp_serde::from_slice::<crate::extract::Symbol>(value) {
+            Ok(symbol) => keys.extend(super::keys::symbol_by_name(
+                &symbol.name,
+                symbol.kind,
+                content,
+                symbol.start_byte,
+            )),
+            Err(_) => undecoded += 1,
+        }
+    }
+    (keys, undecoded)
 }
 
-/// The `calls_by_callee` key of a stored `calls_by_path` value.
-pub(super) fn callee_key(content: &ContentKey, value: &[u8]) -> Option<Vec<u8>> {
-    let call: crate::extract::Call = rmp_serde::from_slice(value).ok()?;
-    super::keys::call_by_callee(&call.callee, content, call.start_byte)
+/// The `calls_by_callee` keys of stored `calls_by_path` rows: one per callee, its row packing every
+/// call of it in the content.
+pub(super) fn callee_name_keys(content: &ContentKey, stored: &StoredRows) -> NameKeys {
+    let mut undecoded = 0;
+    let mut keys = AHashSet::new();
+    for (_, value) in stored {
+        match rmp_serde::from_slice::<crate::extract::Call>(value) {
+            Ok(call) => keys.extend(super::keys::call_name_row(&call.callee, content)),
+            Err(_) => undecoded += 1,
+        }
+    }
+    (keys, undecoded)
 }

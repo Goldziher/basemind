@@ -456,7 +456,7 @@ Key shapes (length-prefixed, see `src/index/keys.rs` and `src/index/keys_content
 symbols_by_path     ckey:16 ‖ start_byte:u32_be
 symbols_by_name     u16:len(name) ‖ name ‖ kind:u8 ‖ ckey:16 ‖ start_byte:u32_be
 calls_by_path       ckey:16 ‖ start_byte:u32_be
-calls_by_callee     u16:len(callee) ‖ callee ‖ ckey:16 ‖ start_byte:u32_be
+calls_by_callee     u16:len(callee) ‖ callee ‖ ckey:16  →  start_byte:u32_be per call, ascending
 imports_by_module   u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
 refs_by_def         u16:len(def_path) ‖ def_path ‖ def_start:u32_be ‖ u16:len(use_path) ‖ use_path ‖ use_start:u32_be
 refs_by_path        u16:len(use_path) ‖ use_path ‖ use_start:u32_be ‖ u16:len(def_path) ‖ def_path ‖ def_start:u32_be
@@ -470,9 +470,10 @@ Length-prefixed components guarantee prefix-scan isolation: a `Foo` prefix never
 spills into `Foobar`. Every key above is stored under the view's 4-byte id, except `grep_bloom` and
 the four symbol and call keyspaces, which the group shares by content. A view reads the content-keyed
 rows only through its live keys: the content key each entry of its file map records, with the paths
-holding it (`src/index/live_keys.rs`). A name scan expands each row to one hit per live holder, the
-HIT key being the row key followed by that path; a row of a content the view does not hold yields no
-hit. Schema version is stamped in the `meta` keyspace; mismatch on
+holding it (`src/index/live_keys.rs`). A name scan expands each row into its sites (a
+`calls_by_callee` row packs every call of its callee in the content, ADR-0043) and each site to one
+hit per live holder, the HIT key being the site key (`… ‖ ckey ‖ start_byte`) followed by that path;
+a site of a content the view does not hold yields no hit. Schema version is stamped in the `meta` keyspace; mismatch on
 open drops the group's whole `index.fjall/` directory, and every view rebuilds on its next scan.
 
 ### Index reads and resident lookup structures

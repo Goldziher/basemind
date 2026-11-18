@@ -7,7 +7,7 @@ use fjall::{OwnedWriteBatch, Slice};
 use super::scoped::Scoped;
 
 use super::keys;
-use super::writer_content::{Family, FreshRow};
+use super::writer_content::{Family, Fresh, FreshRow};
 use super::{IndexDb, IndexError};
 use crate::extract::{FileMapL1, FileMapL2};
 use crate::intel::model::FileResolvedRefs;
@@ -20,7 +20,7 @@ fn symbol_family(db: &IndexDb) -> Family<'_> {
     Family {
         rows: &db.symbols_by_path,
         names: &db.symbols_by_name,
-        name_of: super::writer_content::symbol_name_key,
+        names_of: super::writer_content::symbol_name_keys,
     }
 }
 
@@ -29,7 +29,7 @@ fn call_family(db: &IndexDb) -> Family<'_> {
     Family {
         rows: &db.calls_by_path,
         names: &db.calls_by_callee,
-        name_of: super::writer_content::callee_key,
+        names_of: super::writer_content::callee_name_keys,
     }
 }
 
@@ -247,8 +247,8 @@ impl IndexWriter {
     /// content no view holds (the group sweep), or to model lost rows in a test.
     pub fn remove_content(&mut self, content: &keys::ContentKey) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        symbol_family(db).stage(batch, staged_bytes, content, Vec::new())?;
-        call_family(db).stage(batch, staged_bytes, content, Vec::new())
+        symbol_family(db).stage(batch, staged_bytes, content, Fresh::default())?;
+        call_family(db).stage(batch, staged_bytes, content, Fresh::default())
     }
 
     /// Store the grep bloom `row` (built by [`super::grep_bloom::build_row`] from the bytes the
@@ -778,21 +778,30 @@ impl IndexWriter {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         // Before the keys are staged: the dictionary must never miss a name that has a key.
         db.callee_names.record(l2.calls.iter().map(|call| call.callee.as_str()));
-        let mut fresh = Vec::with_capacity(l2.calls.len());
+        let mut fresh = Fresh {
+            rows: Vec::with_capacity(l2.calls.len()),
+            names: Vec::new(),
+        };
+        let mut starts_by_callee: ahash::AHashMap<&str, Vec<u32>> = ahash::AHashMap::new();
         for call in &l2.calls {
-            let name_key = keys::call_by_callee(&call.callee, content, call.start_byte);
-            if name_key.is_none() {
-                tracing::debug!(
-                    path = %rel,
-                    callee_len = call.callee.len(),
-                    "index: callee name exceeds 64 KiB — skipping calls_by_callee entry"
-                );
-            }
-            fresh.push(FreshRow {
+            starts_by_callee
+                .entry(call.callee.as_str())
+                .or_default()
+                .push(call.start_byte);
+            fresh.rows.push(FreshRow {
                 row: keys::content_row(content, call.start_byte),
                 value: rmp_serde::to_vec_named(call)?,
-                name_key,
             });
+        }
+        for (callee, starts) in starts_by_callee {
+            match keys::call_name_row(callee, content) {
+                Some(name_key) => fresh.names.push((name_key, keys::pack_starts(starts))),
+                None => tracing::debug!(
+                    path = %rel,
+                    callee_len = callee.len(),
+                    "index: callee name exceeds 64 KiB — skipping calls_by_callee entry"
+                ),
+            }
         }
         call_family(db).stage(batch, staged_bytes, content, fresh)
     }
@@ -804,20 +813,22 @@ impl IndexWriter {
         l1: &FileMapL1,
     ) -> Result<(), IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
-        let mut fresh = Vec::with_capacity(l1.symbols.len());
+        let mut fresh = Fresh {
+            rows: Vec::with_capacity(l1.symbols.len()),
+            names: Vec::with_capacity(l1.symbols.len()),
+        };
         for sym in &l1.symbols {
-            let name_key = keys::symbol_by_name(&sym.name, sym.kind, content, sym.start_byte);
-            if name_key.is_none() {
-                tracing::debug!(
+            match keys::symbol_by_name(&sym.name, sym.kind, content, sym.start_byte) {
+                Some(name_key) => fresh.names.push((name_key, Vec::new())),
+                None => tracing::debug!(
                     path = %rel,
                     name_len = sym.name.len(),
                     "index: symbol name exceeds 64 KiB — skipping symbols_by_name entry"
-                );
+                ),
             }
-            fresh.push(FreshRow {
+            fresh.rows.push(FreshRow {
                 row: keys::content_row(content, sym.start_byte),
                 value: rmp_serde::to_vec_named(sym)?,
-                name_key,
             });
         }
         symbol_family(db).stage(batch, staged_bytes, content, fresh)?;
