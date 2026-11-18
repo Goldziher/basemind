@@ -35,6 +35,16 @@ pub struct EngineConfig {
     pub min_free_bytes: u64,
     /// Live daemons per kind before a spawn is refused (`BASEMIND_MAX_DAEMONS`).
     pub max_live_daemons: usize,
+    /// Git resource caps and the git-history index.
+    pub git: GitLimits,
+    /// Fjall block cache of an opened index in bytes, replacing the size heuristic
+    /// (`BASEMIND_INDEX_CACHE_BYTES`).
+    pub index_cache_bytes: Option<u64>,
+    /// Let `code_grep` skip files by their trigram bloom; `false` forces the full sweep
+    /// (`BASEMIND_GREP_BLOOM=0`).
+    pub grep_bloom: bool,
+    /// Ceilings the daemon applies to every workspace's `basemind.toml`.
+    pub daemon_caps: super::daemon::DaemonCaps,
 }
 
 impl Default for EngineConfig {
@@ -47,6 +57,44 @@ impl Default for EngineConfig {
             gc: GcPolicy::default(),
             min_free_bytes: crate::disk_space::headroom_bytes(None),
             max_live_daemons: crate::daemon_lock::MAX_LIVE_DAEMONS,
+            git: GitLimits::default(),
+            index_cache_bytes: None,
+            grep_bloom: true,
+            daemon_caps: super::daemon::DaemonCaps::default(),
+        }
+    }
+}
+
+/// Git resource caps and the git-history index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GitLimits {
+    /// gix's per-repository delta-base cache in bytes; `0` disables it
+    /// (`BASEMIND_GIT_DELTA_CACHE_BYTES`).
+    pub delta_cache_bytes: usize,
+    /// A file larger than this is not blamed (`BASEMIND_BLAME_MAX_BYTES`).
+    pub blame_max_bytes: u64,
+    /// A file with more lines than this is not blamed (`BASEMIND_BLAME_MAX_LINES`).
+    pub blame_max_lines: u64,
+    /// Disk budget of each git-cache subdirectory; `0` disables eviction
+    /// (`BASEMIND_GIT_CACHE_LOG_MAX_BYTES`).
+    pub cache_max_bytes: u64,
+    /// Index an ancestor repository's history for a workspace that is a subdirectory of it
+    /// (`BASEMIND_GIT_DISCOVER_PARENTS`).
+    pub discover_parents: bool,
+    /// Build and read the git-history index (`BASEMIND_GH_INDEX`).
+    pub history_index: bool,
+}
+
+impl Default for GitLimits {
+    fn default() -> Self {
+        Self {
+            delta_cache_bytes: crate::git::DELTA_BASE_CACHE_BYTES,
+            blame_max_bytes: crate::git::BLAME_DEFAULT_MAX_BYTES,
+            blame_max_lines: crate::git::BLAME_DEFAULT_MAX_LINES,
+            cache_max_bytes: crate::git_cache::LOG_CACHE_DEFAULT_MAX_BYTES,
+            discover_parents: false,
+            history_index: true,
         }
     }
 }

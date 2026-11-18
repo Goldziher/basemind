@@ -872,9 +872,6 @@ fn a_changed_basemind_toml_replaces_the_cached_config_and_a_broken_one_keeps_it(
 
 #[test]
 fn pool_config_is_clamped_whatever_the_repo_asks_for() {
-    let _env = crate::config::daemon::TEST_ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let ws = workspace_with_sources();

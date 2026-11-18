@@ -80,6 +80,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BASEMIND_MIN_FREE_MB` and `BASEMIND_MAX_DAEMONS` are `EngineConfig::{parse_timeout, grammars, gc,
   min_free_bytes, max_live_daemons}`; the library reads the configuration, and the parse-timeout cache
   static is gone.
+- **BREAKING (library):** the git, index and grep knobs (`BASEMIND_GIT_DELTA_CACHE_BYTES`,
+  `BASEMIND_BLAME_MAX_BYTES`, `BASEMIND_BLAME_MAX_LINES`, `BASEMIND_GIT_CACHE_LOG_MAX_BYTES`,
+  `BASEMIND_GIT_DISCOVER_PARENTS`, `BASEMIND_GH_INDEX`, `BASEMIND_INDEX_CACHE_BYTES`,
+  `BASEMIND_GREP_BLOOM`) are `EngineConfig::{git, index_cache_bytes, grep_bloom}`, and the
+  `BASEMIND_DAEMON_MAX_*` ceilings are `EngineConfig::daemon_caps` (`config::daemon::DaemonCaps`).
+  The library reads none of them from the environment.
 - A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
   result reading `tool task failed: …`, where it read `scan join: …` or
   `host rescan task panicked: …`.

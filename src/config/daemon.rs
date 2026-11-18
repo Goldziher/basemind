@@ -4,7 +4,9 @@
 //! authored by that repository, not by the operator. The resource knobs are therefore CEILINGS the
 //! daemon applies on top of whatever the file says: the effective value is `min(file, cap)`, and a
 //! file value that means "no limit" (`0`, `"auto"`, `"off"`) resolves to the cap. The operator raises
-//! a cap through the daemon's own environment, which a repository cannot write.
+//! a cap through the daemon's own environment, which a repository cannot write: the CLI reads the
+//! `BASEMIND_DAEMON_MAX_*` variables into [`DaemonCaps`] ([`DaemonCaps::from_vars`]), which the
+//! engine configuration carries.
 //!
 //! Every daemon-side load (the scan pool and the hosted read stack) goes through [`load_daemon`] so a
 //! workspace never has two different configs in one process.
@@ -52,22 +54,59 @@ const DEFAULT_MAX_CHUNKS_PER_DOC: usize = 20_000;
 /// A `0` debounce makes every filesystem event trigger its own rescan.
 const DEFAULT_MIN_DEBOUNCE_MS: u64 = 50;
 
-/// Serialises every test that reads or writes the daemon-cap environment variables; `load_daemon`
-/// reads them, so any test that calls it concurrently with an env-mutating one must hold this too.
-#[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// A positive integer from the environment, else `default`.
-fn cap(name: &str, default: usize) -> usize {
-    cap_u64(name, default as u64) as usize
+/// The operator's ceilings on a daemon-loaded workspace config, each a `BASEMIND_DAEMON_MAX_*`
+/// variable (or `BASEMIND_DAEMON_MIN_DEBOUNCE_MS`, a floor).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DaemonCaps {
+    pub scan_threads: usize,
+    pub embed_threads: usize,
+    pub embed_batch: usize,
+    pub concurrent_documents: usize,
+    pub footprint_mb: usize,
+    pub map_cache_mb: usize,
+    pub candidates: usize,
+    pub file_bytes: u64,
+    pub document_bytes: u64,
+    pub document_pages: usize,
+    pub extraction_secs: u64,
+    pub chunks_per_document: usize,
+    pub min_debounce_ms: u64,
 }
 
-fn cap_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(default)
+impl Default for DaemonCaps {
+    fn default() -> Self {
+        Self::from_vars(|_| None)
+    }
+}
+
+impl DaemonCaps {
+    /// The caps `var` names, `var` returning a variable's value. A cap is a positive integer; an
+    /// unset, zero or unparseable one keeps its default.
+    pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Self {
+        let cap_u64 = |name: &str, default: u64| {
+            var(name)
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(default)
+        };
+        let cap = |name: &str, default: usize| cap_u64(name, default as u64) as usize;
+        Self {
+            scan_threads: cap(MAX_SCAN_THREADS_ENV, DEFAULT_MAX_SCAN_THREADS),
+            embed_threads: cap(MAX_EMBED_THREADS_ENV, DEFAULT_MAX_EMBED_THREADS),
+            embed_batch: cap(MAX_EMBED_BATCH_ENV, DEFAULT_MAX_EMBED_BATCH),
+            concurrent_documents: cap(MAX_CONCURRENT_DOCUMENTS_ENV, DEFAULT_MAX_CONCURRENT_DOCUMENTS),
+            footprint_mb: cap(MAX_FOOTPRINT_MB_ENV, DEFAULT_MAX_FOOTPRINT_MB),
+            map_cache_mb: cap(MAX_MAP_CACHE_MB_ENV, DEFAULT_MAX_MAP_CACHE_MB),
+            candidates: cap(MAX_CANDIDATES_ENV, DEFAULT_MAX_CANDIDATES),
+            file_bytes: cap_u64(MAX_FILE_BYTES_ENV, DEFAULT_MAX_FILE_BYTES),
+            document_bytes: cap_u64(MAX_DOC_BYTES_ENV, DEFAULT_MAX_DOC_BYTES),
+            document_pages: cap(MAX_DOC_PAGES_ENV, DEFAULT_MAX_DOC_PAGES),
+            extraction_secs: cap_u64(MAX_EXTRACTION_SECS_ENV, DEFAULT_MAX_EXTRACTION_SECS),
+            chunks_per_document: cap(MAX_CHUNKS_PER_DOC_ENV, DEFAULT_MAX_CHUNKS_PER_DOC),
+            min_debounce_ms: cap_u64(MIN_DEBOUNCE_MS_ENV, DEFAULT_MIN_DEBOUNCE_MS),
+        }
+    }
 }
 
 /// `min(value, cap)`, with `0` (the "unbounded / auto" sentinel) resolving to `cap`.
@@ -78,71 +117,55 @@ fn bounded(value: usize, cap: usize) -> usize {
     }
 }
 
-/// Apply the daemon caps to `config` in place.
+/// Apply the installed engine configuration's daemon caps to `config` in place.
 pub fn clamp_daemon_config(config: &mut Config) {
+    let caps = super::engine::with(|engine| engine.daemon_caps.clone());
+    clamp_with(config, &caps);
+}
+
+fn clamp_with(config: &mut Config, caps: &DaemonCaps) {
     let embed_threads = config
         .resources
         .effective_embed_threads(config.documents.embed_max_threads);
     let resources: &mut ResourcesConfig = &mut config.resources;
-    resources.scan_threads = bounded(
-        resources.scan_threads,
-        cap(MAX_SCAN_THREADS_ENV, DEFAULT_MAX_SCAN_THREADS),
-    );
-    resources.embed_threads = bounded(embed_threads, cap(MAX_EMBED_THREADS_ENV, DEFAULT_MAX_EMBED_THREADS));
-    resources.embed_batch_size = resources
-        .embed_batch_size
-        .clamp(1, cap(MAX_EMBED_BATCH_ENV, DEFAULT_MAX_EMBED_BATCH));
-    resources.max_concurrent_documents = bounded(
-        resources.max_concurrent_documents,
-        cap(MAX_CONCURRENT_DOCUMENTS_ENV, DEFAULT_MAX_CONCURRENT_DOCUMENTS),
-    );
+    resources.scan_threads = bounded(resources.scan_threads, caps.scan_threads);
+    resources.embed_threads = bounded(embed_threads, caps.embed_threads);
+    resources.embed_batch_size = resources.embed_batch_size.clamp(1, caps.embed_batch);
+    resources.max_concurrent_documents = bounded(resources.max_concurrent_documents, caps.concurrent_documents);
     resources.max_footprint_mb = MaxFootprint::Mebibytes(match resources.max_footprint_mb {
-        MaxFootprint::Mebibytes(mb) if mb > 0 => mb.min(cap(MAX_FOOTPRINT_MB_ENV, DEFAULT_MAX_FOOTPRINT_MB)),
-        _ => cap(MAX_FOOTPRINT_MB_ENV, DEFAULT_MAX_FOOTPRINT_MB),
+        MaxFootprint::Mebibytes(mb) if mb > 0 => mb.min(caps.footprint_mb),
+        _ => caps.footprint_mb,
     });
-    resources.max_map_cache_mb = bounded(
-        resources.max_map_cache_mb,
-        cap(MAX_MAP_CACHE_MB_ENV, DEFAULT_MAX_MAP_CACHE_MB),
-    );
-    config.scan.max_candidates = bounded(
-        config.scan.max_candidates,
-        cap(MAX_CANDIDATES_ENV, DEFAULT_MAX_CANDIDATES),
-    );
-    config.scan.max_file_bytes = config
-        .scan
-        .max_file_bytes
-        .min(cap_u64(MAX_FILE_BYTES_ENV, DEFAULT_MAX_FILE_BYTES));
+    resources.max_map_cache_mb = bounded(resources.max_map_cache_mb, caps.map_cache_mb);
+    config.scan.max_candidates = bounded(config.scan.max_candidates, caps.candidates);
+    config.scan.max_file_bytes = config.scan.max_file_bytes.min(caps.file_bytes);
 
     let docs = &mut config.documents;
-    docs.max_file_bytes = docs
-        .max_file_bytes
-        .min(cap_u64(MAX_DOC_BYTES_ENV, DEFAULT_MAX_DOC_BYTES));
-    docs.max_pages = docs.max_pages.min(cap(MAX_DOC_PAGES_ENV, DEFAULT_MAX_DOC_PAGES));
-    docs.extraction_timeout_secs = docs
-        .extraction_timeout_secs
-        .min(cap_u64(MAX_EXTRACTION_SECS_ENV, DEFAULT_MAX_EXTRACTION_SECS));
+    docs.max_file_bytes = docs.max_file_bytes.min(caps.document_bytes);
+    docs.max_pages = docs.max_pages.min(caps.document_pages);
+    docs.extraction_timeout_secs = docs.extraction_timeout_secs.min(caps.extraction_secs);
     docs.phase_budget_secs = docs.phase_budget_secs.min(DAEMON_MAX_PHASE_SECS);
     docs.max_abandoned_extractions = docs.max_abandoned_extractions.min(DAEMON_MAX_ABANDONED_EXTRACTIONS);
-    docs.max_chunks_per_document = docs
-        .max_chunks_per_document
-        .min(cap(MAX_CHUNKS_PER_DOC_ENV, DEFAULT_MAX_CHUNKS_PER_DOC));
+    docs.max_chunks_per_document = docs.max_chunks_per_document.min(caps.chunks_per_document);
 
-    config.watch.debounce_ms = config
-        .watch
-        .debounce_ms
-        .max(cap_u64(MIN_DEBOUNCE_MS_ENV, DEFAULT_MIN_DEBOUNCE_MS));
+    config.watch.debounce_ms = config.watch.debounce_ms.max(caps.min_debounce_ms);
 }
 
 /// Resolve a workspace's config for the daemon, mirroring the CLI's `load_or_default`: a missing
 /// `basemind.toml` falls back to defaults; only a genuine parse / IO / validation error propagates.
 /// The daemon caps are applied either way.
 pub fn load_daemon(root: &Path) -> Result<Config, ConfigError> {
+    let caps = super::engine::with(|engine| engine.daemon_caps.clone());
+    load_daemon_with(root, &caps)
+}
+
+fn load_daemon_with(root: &Path, caps: &DaemonCaps) -> Result<Config, ConfigError> {
     let mut config = match super::load_with_layers::<super::NoOverrides>(root, None, None) {
         Ok(loaded) => loaded.config,
         Err(ConfigError::NotFound(_)) => super::default_for_root(root),
         Err(error) => return Err(error),
     };
-    clamp_daemon_config(&mut config);
+    clamp_with(&mut config, caps);
     Ok(config)
 }
 
@@ -212,39 +235,12 @@ impl std::fmt::Display for ConfigStamp {
 mod tests {
     use super::*;
 
-    const DAEMON_ENVS: &[&str] = &[
-        MAX_SCAN_THREADS_ENV,
-        MAX_EMBED_THREADS_ENV,
-        MAX_EMBED_BATCH_ENV,
-        MAX_CONCURRENT_DOCUMENTS_ENV,
-        MAX_FOOTPRINT_MB_ENV,
-        MAX_MAP_CACHE_MB_ENV,
-        MAX_CANDIDATES_ENV,
-        MAX_FILE_BYTES_ENV,
-        MAX_DOC_BYTES_ENV,
-        MAX_DOC_PAGES_ENV,
-        MAX_EXTRACTION_SECS_ENV,
-        MAX_CHUNKS_PER_DOC_ENV,
-        MIN_DEBOUNCE_MS_ENV,
-    ];
-
-    use super::TEST_ENV_LOCK as ENV_LOCK;
-
-    fn clear_envs() {
-        for name in DAEMON_ENVS {
-            // SAFETY: every test touching these variables holds ENV_LOCK.
-            unsafe { std::env::remove_var(name) };
-        }
-    }
-
     fn write_toml(dir: &Path, body: &str) {
         std::fs::write(dir.join("basemind.toml"), format!("\"$schema\" = \"v1\"\n{body}")).expect("write toml");
     }
 
     #[test]
     fn unbounded_repo_values_resolve_to_the_caps_through_the_real_load_path() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        clear_envs();
         let dir = tempfile::tempdir().expect("tempdir");
         write_toml(
             dir.path(),
@@ -265,8 +261,6 @@ mod tests {
 
     #[test]
     fn repo_document_scan_and_watch_knobs_are_clamped() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        clear_envs();
         let dir = tempfile::tempdir().expect("tempdir");
         write_toml(
             dir.path(),
@@ -291,8 +285,6 @@ mod tests {
 
     #[test]
     fn small_repo_values_are_kept() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        clear_envs();
         let dir = tempfile::tempdir().expect("tempdir");
         write_toml(
             dir.path(),
@@ -305,8 +297,6 @@ mod tests {
 
     #[test]
     fn auto_and_huge_footprints_are_bounded_and_small_ones_kept() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        clear_envs();
         let dir = tempfile::tempdir().expect("tempdir");
         for (body, want) in [
             ("max_footprint_mb = \"auto\"", DEFAULT_MAX_FOOTPRINT_MB),
@@ -321,28 +311,23 @@ mod tests {
 
     #[test]
     fn operator_env_raises_the_caps() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        clear_envs();
-        // SAFETY: ENV_LOCK is held; cleared again below.
-        unsafe {
-            std::env::set_var(MAX_SCAN_THREADS_ENV, "12");
-            std::env::set_var(MAX_FOOTPRINT_MB_ENV, "8192");
-        }
+        let caps = DaemonCaps::from_vars(|name| match name {
+            MAX_SCAN_THREADS_ENV => Some("12".to_string()),
+            MAX_FOOTPRINT_MB_ENV => Some("8192".to_string()),
+            _ => None,
+        });
         let dir = tempfile::tempdir().expect("tempdir");
         write_toml(
             dir.path(),
             "[resources]\nscan_threads = 10\nmax_footprint_mb = \"off\"\n",
         );
-        let cfg = load_daemon(dir.path()).expect("load");
-        clear_envs();
+        let cfg = load_daemon_with(dir.path(), &caps).expect("load");
         assert_eq!(cfg.resources.scan_threads, 10);
         assert_eq!(cfg.resources.max_footprint_mb, MaxFootprint::Mebibytes(8192));
     }
 
     #[test]
     fn missing_config_still_gets_the_caps() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        clear_envs();
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg = load_daemon(dir.path()).expect("load");
         assert_eq!(cfg.resources.scan_threads, DEFAULT_MAX_SCAN_THREADS);

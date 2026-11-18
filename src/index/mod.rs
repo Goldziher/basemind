@@ -221,7 +221,7 @@ const INDEX_CACHE_DISK_FRACTION: f64 = 0.20;
 /// Overrides the computed Fjall block cache size outright (bytes), bypassing the floor/fraction/
 /// ceiling heuristic in [`index_cache_bytes`]. Mirrors the `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` /
 /// `BASEMIND_BLAME_MAX_BYTES` env-var escape hatches used elsewhere for cache/budget tuning.
-const INDEX_CACHE_BYTES_ENV: &str = "BASEMIND_INDEX_CACHE_BYTES";
+pub const INDEX_CACHE_BYTES_ENV: &str = "BASEMIND_INDEX_CACHE_BYTES";
 
 /// Best-effort recursive sum of file sizes under `dir`. Errors (directory not yet created,
 /// permission denied, a race with Fjall's own background compaction renaming/removing files
@@ -289,9 +289,7 @@ fn group_cache_bytes() -> u64 {
 }
 
 fn cache_bytes_override() -> Option<u64> {
-    std::env::var(INDEX_CACHE_BYTES_ENV)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
+    crate::config::engine::with(|config| config.index_cache_bytes)
 }
 
 /// `path` followed by each of its ancestor directories, innermost first.

@@ -8,12 +8,15 @@
 use std::ffi::OsString;
 use std::time::Duration;
 
+use crate::config::daemon::DaemonCaps;
 use crate::config::engine::{ExtraRootsGrant, is_truthy};
 use crate::config::root_guard::ALLOW_ANY_ROOT_ENV;
 use crate::config::trust::ALLOW_FOLLOW_SYMLINKS_ENV;
 use crate::daemon_lock::{MAX_LIVE_DAEMONS_ENV, max_live_daemons_from};
 use crate::disk_space::{MIN_FREE_ENV, headroom_bytes};
 use crate::engine::{DataRoot, Engine, EngineConfig, EngineError};
+use crate::git_history::{DISCOVER_PARENTS_ENV, HISTORY_INDEX_ENV};
+use crate::index::INDEX_CACHE_BYTES_ENV;
 use crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV;
 use crate::scanner_filter::ALLOW_REPO_CREDENTIALS_ENV;
 use crate::store_gc::{BLOB_GC_GRACE_ENV, grace_from};
@@ -23,6 +26,11 @@ use crate::store_layout::DATA_HOME_ENV;
 
 pub const PARSE_TIMEOUT_MS_ENV: &str = "BASEMIND_PARSE_TIMEOUT_MS";
 pub const GRAMMAR_OFFLINE_ENV: &str = "BASEMIND_GRAMMAR_OFFLINE";
+pub const GIT_DELTA_CACHE_BYTES_ENV: &str = "BASEMIND_GIT_DELTA_CACHE_BYTES";
+pub const BLAME_MAX_BYTES_ENV: &str = "BASEMIND_BLAME_MAX_BYTES";
+pub const BLAME_MAX_LINES_ENV: &str = "BASEMIND_BLAME_MAX_LINES";
+pub const GIT_CACHE_MAX_BYTES_ENV: &str = "BASEMIND_GIT_CACHE_LOG_MAX_BYTES";
+pub const GREP_BLOOM_ENV: &str = "BASEMIND_GREP_BLOOM";
 
 /// `lookup` with `std::env::var`'s reading: a value that is not Unicode counts as unset.
 fn text(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<String> {
@@ -60,7 +68,29 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     config.gc.blob_grace = grace_from(text(&lookup, BLOB_GC_GRACE_ENV).as_deref());
     config.min_free_bytes = headroom_bytes(text(&lookup, MIN_FREE_ENV).as_deref());
     config.max_live_daemons = max_live_daemons_from(text(&lookup, MAX_LIVE_DAEMONS_ENV).as_deref());
+    git(&lookup, &mut config);
+    config.index_cache_bytes = text(&lookup, INDEX_CACHE_BYTES_ENV).and_then(|raw| raw.parse::<u64>().ok());
+    config.grep_bloom = lookup(GREP_BLOOM_ENV).is_none_or(|value| value != "0");
+    config.daemon_caps = DaemonCaps::from_vars(|name| text(&lookup, name));
     config
+}
+
+fn git(lookup: &impl Fn(&str) -> Option<OsString>, config: &mut EngineConfig) {
+    let git = &mut config.git;
+    if let Some(bytes) = text(lookup, GIT_DELTA_CACHE_BYTES_ENV).and_then(|raw| raw.trim().parse::<usize>().ok()) {
+        git.delta_cache_bytes = bytes;
+    }
+    if let Some(bytes) = text(lookup, BLAME_MAX_BYTES_ENV).and_then(|raw| raw.parse::<u64>().ok()) {
+        git.blame_max_bytes = bytes;
+    }
+    if let Some(lines) = text(lookup, BLAME_MAX_LINES_ENV).and_then(|raw| raw.parse::<u64>().ok()) {
+        git.blame_max_lines = lines;
+    }
+    if let Some(bytes) = text(lookup, GIT_CACHE_MAX_BYTES_ENV).and_then(|raw| raw.parse::<u64>().ok()) {
+        git.cache_max_bytes = bytes;
+    }
+    git.discover_parents = lookup(DISCOVER_PARENTS_ENV).is_some_and(|value| value != "0");
+    git.history_index = text(lookup, HISTORY_INDEX_ENV).is_none_or(|value| value != "0");
 }
 
 /// Build this process's engine from its environment.
@@ -161,6 +191,57 @@ mod tests {
             config_of(&[(MAX_LIVE_DAEMONS_ENV, "0")]).max_live_daemons,
             MAX_LIVE_DAEMONS
         );
+    }
+
+    #[test]
+    fn the_git_index_and_grep_variables_reach_the_config() {
+        let config = config_of(&[
+            (GIT_DELTA_CACHE_BYTES_ENV, " 0 "),
+            (BLAME_MAX_BYTES_ENV, "4096"),
+            (BLAME_MAX_LINES_ENV, "10"),
+            (GIT_CACHE_MAX_BYTES_ENV, "0"),
+            (DISCOVER_PARENTS_ENV, "1"),
+            (HISTORY_INDEX_ENV, "0"),
+            (INDEX_CACHE_BYTES_ENV, "1048576"),
+            (GREP_BLOOM_ENV, "0"),
+        ]);
+        assert_eq!(config.git.delta_cache_bytes, 0);
+        assert_eq!(config.git.blame_max_bytes, 4096);
+        assert_eq!(config.git.blame_max_lines, 10);
+        assert_eq!(config.git.cache_max_bytes, 0);
+        assert!(config.git.discover_parents);
+        assert!(!config.git.history_index);
+        assert_eq!(config.index_cache_bytes, Some(1 << 20));
+        assert!(!config.grep_bloom);
+
+        let defaults = config_of(&[
+            (DISCOVER_PARENTS_ENV, "0"),
+            (HISTORY_INDEX_ENV, ""),
+            (GREP_BLOOM_ENV, "1"),
+        ]);
+        assert!(!defaults.git.discover_parents);
+        assert!(defaults.git.history_index, "only `0` turns the history index off");
+        assert!(defaults.grep_bloom);
+        assert_eq!(
+            config_of(&[(BLAME_MAX_BYTES_ENV, " 4096")]).git.blame_max_bytes,
+            1 << 20
+        );
+    }
+
+    #[test]
+    fn the_daemon_cap_variables_reach_the_daemon_caps() {
+        use crate::config::daemon::{MAX_FOOTPRINT_MB_ENV, MAX_SCAN_THREADS_ENV, MIN_DEBOUNCE_MS_ENV};
+        let caps = config_of(&[
+            (MAX_SCAN_THREADS_ENV, " 12 "),
+            (MAX_FOOTPRINT_MB_ENV, "0"),
+            (MIN_DEBOUNCE_MS_ENV, "500"),
+        ])
+        .daemon_caps;
+        let defaults = DaemonCaps::default();
+        assert_eq!(caps.scan_threads, 12);
+        assert_eq!(caps.footprint_mb, defaults.footprint_mb, "zero keeps the default");
+        assert_eq!(caps.min_debounce_ms, 500);
+        assert_eq!(caps.embed_threads, defaults.embed_threads);
     }
 
     #[test]
