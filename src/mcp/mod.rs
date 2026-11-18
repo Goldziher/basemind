@@ -15,6 +15,7 @@ pub(crate) mod admission;
 mod agent_context;
 pub mod agent_tools;
 mod background;
+mod cli_only;
 mod completions;
 pub mod lead_tools;
 pub(crate) use crate::engine::cursor;
@@ -438,7 +439,7 @@ impl BasemindServer {
 
     /// This session forwards a `basemind` CLI command: a failed call is answered as a JSON-RPC error
     /// carrying the code the CLI turns into its exit status, and the CLI-only commands
-    /// ([`server_handler::CLI_ONLY`]) are answered too, off `tools/list`. Only a CLI's hello on the
+    /// ([`cli_only::CLI_ONLY`]) are answered too, off `tools/list`. Only a CLI's hello on the
     /// daemon's local socket or pipe asks for it.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn for_cli(mut self) -> Self {
