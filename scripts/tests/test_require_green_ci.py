@@ -1,110 +1,118 @@
-"""The publish gate accepts only a CI run that ran the harden harness on the released commit."""
+"""Drive the publish gate (.github/scripts/require-green-ci.sh) against a stand-in `gh`.
+
+The stand-in answers `gh api <path> -q <filter>` by running the filter with `jq` over canned
+GitHub API responses, so the script's own queries decide every verdict.
+"""
 
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / ".github/scripts/require-green-ci.sh"
+SCRIPT = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "require-green-ci.sh"
 SHA = "a" * 40
 
-# `gh api [--paginate] <endpoint> -q <filter>`: answer from the JSON fixture the endpoint maps to.
-FAKE_GH = """#!/usr/bin/env bash
-set -euo pipefail
-[ "$1" = api ] || exit 2
-shift
-[ "$1" = --paginate ] && shift
-endpoint="$1"
-[ "$2" = -q ] || exit 2
-case "$endpoint" in
-*/actions/workflows/ci.yaml/runs*) fixture=runs.json ;;
-*/jobs*) fixture=jobs.json ;;
-*/check-runs*) fixture=checks.json ;;
-*) exit 3 ;;
-esac
-jq -r "$3" "$FIXTURES/$fixture"
+FAKE_GH = """#!/usr/bin/env python3
+import json, os, re, subprocess, sys
+args = [a for a in sys.argv[1:] if a != "--paginate"]
+assert args[0] == "api" and args[2] == "-q", args
+path, query = args[1], args[3]
+responses = json.loads(open(os.environ["FAKE_GH_RESPONSES"]).read())
+for pattern, body in responses.items():
+    if re.search(pattern, path):
+        sys.exit(subprocess.run(["jq", "-r", query], input=json.dumps(body), text=True).returncode)
+sys.exit(f"stand-in gh: no response for {path}")
 """
 
 
-def job(name: str, conclusion: str = "success") -> dict:
-    """One job row of the run's jobs listing."""
-    return {"name": name, "conclusion": conclusion}
+def run(id_: int, event: str, conclusion: str = "success") -> dict:
+    return {
+        "id": id_,
+        "event": event,
+        "status": "completed",
+        "conclusion": conclusion,
+        "created_at": f"2026-11-18T0{id_}:00:00Z",
+    }
 
 
-@unittest.skipUnless(shutil.which("jq"), "the fake gh answers through jq")
+def jobs(*pairs: tuple[str, str]) -> dict:
+    return {"jobs": [{"name": name, "conclusion": conclusion} for name, conclusion in pairs]}
+
+
+TEST_LEGS = (("test / ubuntu-latest", "success"), ("test / windows-latest", "success"))
+NIGHTLY_JOBS = (
+    *TEST_LEGS,
+    ("hardening harness (nightly)", "success"),
+    ("ignored tests (nightly)", "success"),
+    ("release build (nightly) / Smoke / x86_64-pc-windows-msvc", "success"),
+)
+
+
+def green() -> dict:
+    return {
+        r"workflows/ci\.yaml/runs": {"workflow_runs": [run(1, "push"), run(2, "workflow_dispatch")]},
+        r"workflows/hardening\.yaml/runs": {"workflow_runs": [run(3, "schedule")]},
+        r"runs/1/jobs": jobs(*TEST_LEGS),
+        r"runs/2/jobs": jobs(*NIGHTLY_JOBS),
+        r"check-runs": {"check_runs": []},
+    }
+
+
+@unittest.skipIf(os.name == "nt", "the gate runs on ubuntu-latest")
 class RequireGreenCiTests(unittest.TestCase):
-    """Each case writes the GitHub API answers for one commit and runs the gate against them."""
-
-    def setUp(self) -> None:
-        self.directory = tempfile.TemporaryDirectory(prefix="require-green-ci-")
-        self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
-        bin_dir = self.root / "bin"
-        bin_dir.mkdir()
-        gh = bin_dir / "gh"
-        gh.write_text(FAKE_GH)
-        gh.chmod(0o755)
-        self.env = {
-            **os.environ,
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-            "FIXTURES": str(self.root),
-            "GITHUB_REPOSITORY": "owner/repo",
-            "CI_GATE_WAIT_MINUTES": "0",
-            "CI_GATE_POLL_SECONDS": "0",
-        }
-        self.write("checks.json", {"check_runs": []})
-
-    def write(self, name: str, value: dict) -> None:
-        (self.root / name).write_text(json.dumps(value))
-
-    def runs(self, *events: str) -> None:
-        rows = [
-            {
-                "id": 100 + i,
-                "event": event,
-                "status": "completed",
-                "conclusion": "success",
-                "created_at": f"2026-11-18T0{i}:00:00Z",
+    def gate(self, responses: dict) -> subprocess.CompletedProcess:
+        self.assertIsNotNone(shutil.which("jq"), "jq is required")
+        with tempfile.TemporaryDirectory() as tmp:
+            gh = Path(tmp) / "gh"
+            gh.write_text(FAKE_GH, encoding="utf-8")
+            gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+            canned = Path(tmp) / "responses.json"
+            canned.write_text(json.dumps(responses), encoding="utf-8")
+            env = {
+                **os.environ,
+                "PATH": f"{tmp}{os.pathsep}{os.environ['PATH']}",
+                "FAKE_GH_RESPONSES": str(canned),
+                "GITHUB_REPOSITORY": "owner/repo",
+                "CI_GATE_WAIT_MINUTES": "0",
+                "CI_GATE_POLL_SECONDS": "0",
             }
-            for i, event in enumerate(events)
-        ]
-        self.write("runs.json", {"workflow_runs": rows})
+            return subprocess.run(["bash", str(SCRIPT), SHA], env=env, capture_output=True, text=True, timeout=60)
 
-    def gate(self) -> subprocess.CompletedProcess:
-        return subprocess.run(["bash", str(SCRIPT), SHA], env=self.env, capture_output=True, text=True, check=False)
+    def refused(self, responses: dict, reason: str) -> None:
+        done = self.gate(responses)
+        self.assertNotEqual(done.returncode, 0, done.stderr)
+        self.assertIn(reason, done.stderr)
 
-    def test_a_dispatched_run_with_a_green_harden_harness_passes(self) -> None:
-        self.runs("workflow_dispatch")
-        self.write("jobs.json", {"jobs": [job("test / linux (full)"), job("hardening harness (nightly)")]})
-        result = self.gate()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("the harden harness succeeded", result.stderr)
+    def test_all_release_gates_green_passes(self) -> None:
+        done = self.gate(green())
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("hardening run 3", done.stderr)
 
-    def test_a_push_run_does_not_vouch_for_a_release(self) -> None:
-        self.runs("push")
-        self.write("jobs.json", {"jobs": [job("test / linux (full)")]})
-        result = self.gate()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("no completed ci run", result.stderr)
+    def test_a_push_run_alone_is_refused(self) -> None:
+        responses = green()
+        responses[r"workflows/ci\.yaml/runs"] = {"workflow_runs": [run(1, "push")]}
+        self.refused(responses, "no scheduled or dispatched ci.yaml run")
 
     def test_a_skipped_harden_harness_is_refused(self) -> None:
-        self.runs("workflow_dispatch")
-        self.write("jobs.json", {"jobs": [job("test / linux (full)"), job("hardening harness (nightly)", "skipped")]})
-        result = self.gate()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("'hardening harness (nightly)' is 'skipped'", result.stderr)
+        responses = green()
+        responses[r"runs/2/jobs"] = jobs(
+            *NIGHTLY_JOBS[:2], ("hardening harness (nightly)", "skipped"), *NIGHTLY_JOBS[3:]
+        )
+        self.refused(responses, "hardening harness (nightly)")
 
-    def test_a_newer_push_run_does_not_hide_the_dispatched_one(self) -> None:
-        self.runs("workflow_dispatch", "push")
-        self.write("jobs.json", {"jobs": [job("test / linux (full)"), job("hardening harness (nightly)")]})
-        result = self.gate()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("newest ci run on", result.stderr)
-        self.assertIn(": 100 (success)", result.stderr)
+    def test_a_failed_hardening_workflow_is_refused(self) -> None:
+        responses = green()
+        responses[r"workflows/hardening\.yaml/runs"] = {"workflow_runs": [run(3, "schedule", "failure")]}
+        self.refused(responses, "hardening.yaml run 3")
+
+    def test_no_hardening_run_is_refused(self) -> None:
+        responses = green()
+        responses[r"workflows/hardening\.yaml/runs"] = {"workflow_runs": [run(3, "push")]}
+        self.refused(responses, "no scheduled or dispatched hardening.yaml run")
 
 
 if __name__ == "__main__":

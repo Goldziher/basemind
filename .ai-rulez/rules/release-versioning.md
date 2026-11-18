@@ -72,8 +72,8 @@ release is public. Nothing else lands on `main` while a release is in flight.
 1. On a branch `release/vX.Y.Z` cut from `main`: `mise run release:sync-version X.Y.Z`, remove
    `.github/unreleased-surface.toml`, move the changelog's `[Unreleased]` entries under the version.
    Commit, push the branch, never `main`.
-2. `gh workflow run ci.yaml --ref release/vX.Y.Z` and wait for it to go green, the harden harness
-   included.
+2. `gh workflow run ci.yaml --ref release/vX.Y.Z` and `gh workflow run hardening.yaml --ref
+   release/vX.Y.Z`, and wait for both to go green, the harden harness included.
 3. Tag that commit `vX.Y.Z` and push the tag.
 4. `publish.yaml` publishes, then its `advance_main` job fast-forwards `main` to the tag and
    dispatches `ci` on `main`. If `main` moved, that job fails: merge the tag into `main` by hand.
@@ -83,11 +83,13 @@ a crate only from a token-authenticated publish. Before tagging, publish its fir
 (`cargo publish -p <crate>` with an API token), then add `publish.yaml` as the crate's trusted
 publisher on crates.io. `meta` refuses a release while any such crate is missing.
 
-Nothing publishes until the `ci_gate` job has seen a successful dispatched or scheduled `ci` run on
-the tagged commit, every test leg and the harden harness green. The `meta` job then checks every
-version surface, refuses a Git dependency, a vendored crate that differs from its published version
-or that crates.io does not have, and the unreleased-surface marker, and detects versions already on
-crates.io / npm / PyPI / the GitHub release, so a re-run of the same tag publishes only what is
+Nothing publishes until the `ci_gate` job has seen, on the tagged commit, a successful `ci` run
+with every test leg green, a scheduled or dispatched `ci` run whose harden harness, ignored tests
+and release build jobs all succeeded, and a successful scheduled or dispatched `hardening` run
+(ADR-0027 rule 5). The `meta` job then checks every version surface, refuses a Git dependency, a
+vendored crate that differs from its published version or that crates.io does not have, and the
+unreleased-surface marker, and detects versions already on crates.io / npm / PyPI / the GitHub
+release, so a re-run of the same tag publishes only what is
 missing. Every archive is built and run on a clean runner
 (`.github/workflows/release-build.yaml`) before it is uploaded.
 
