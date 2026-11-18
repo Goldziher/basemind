@@ -1,0 +1,2 @@
+{"id":"cccc","timestamp":"2025-04-01T09:00:00.000Z","instructions":"SECRET-OLD-INSTRUCTIONS"}
+{"type":"message","role":"user","content":[{"type":"input_text","text":"SECRET-OLD-PROMPT"}]}
