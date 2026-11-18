@@ -76,6 +76,28 @@ pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + INDEX_P
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 
+/// Every keyspace of an index database, as [`IndexDb::open`] opens them.
+const INDEX_KEYSPACES: [&str; 18] = [
+    "meta",
+    "symbols_by_path",
+    "symbols_by_name",
+    "calls_by_path",
+    "calls_by_callee",
+    "imports_by_module",
+    "imports_by_path",
+    "implementations_by_trait",
+    "implementations_by_path",
+    "refs_by_def",
+    "refs_by_path",
+    "import_targets",
+    "importers_by_probe",
+    "code_bm25_postings",
+    "code_bm25_by_path",
+    "grep_bloom",
+    "code_bm25_holders",
+    "embeddings",
+];
+
 /// `meta` row stamping that `import_targets` / `importers_by_probe` describe EVERY importer, i.e. a
 /// wholesale resolve pass completed since they were created. An index that predates the two
 /// keyspaces (or a wholesale pass that never finished) lacks it, and the incremental pass then runs
@@ -637,7 +659,8 @@ impl IndexDb {
     }
 
     /// Open the group database at `dir` to read it, writing nothing: no schema stamp, no flush, no
-    /// wipe. An index of another schema is [`IndexError::NeedsRescan`].
+    /// wipe, no keyspace created. An index of another schema, or one missing a keyspace, is
+    /// [`IndexError::NeedsRescan`].
     pub(crate) fn open_group_for_reading(dir: &Path) -> Result<Self, IndexError> {
         Self::open_inner(dir, None, true, Some(group_cache_bytes()))
     }
@@ -680,6 +703,22 @@ impl IndexDb {
         };
         if let (Ok(memory), false) = (&memory, tolerate_held_memory) {
             memory_store::migrate_legacy(&db, memory)?;
+        }
+        // The read-only open of a group database creates no keyspace (ADR-0036 rule 3): one that is
+        // missing was never created by a writer of this layout, so the database is not read. ~keep
+        if tolerate_held_memory && memory_dir.is_none() && INDEX_KEYSPACES.iter().any(|name| !db.keyspace_exists(name))
+        {
+            let stored = match db.keyspace_exists("meta") {
+                true => open_keyspace(&db, "meta")?
+                    .get(META_SCHEMA_VER)?
+                    .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
+                    .map_or(0, u32::from_be_bytes),
+                false => 0,
+            };
+            return Err(IndexError::NeedsRescan {
+                stored,
+                current: INDEX_SCHEMA_VER,
+            });
         }
         let mut meta = open_keyspace(&db, "meta")?;
         let on_disk_ver = meta
