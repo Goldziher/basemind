@@ -252,9 +252,8 @@ mod tests {
         ] {
             assert!(listing_incomplete(&incomplete), "{}", incomplete.state);
         }
-        for whole in [of(Lifecycle::Rescanning), LifecycleNotice::projections_capped()] {
-            assert!(!listing_incomplete(&whole), "{}", whole.state);
-        }
+        let rescanning = of(Lifecycle::Rescanning);
+        assert!(!listing_incomplete(&rescanning), "{}", rescanning.state);
     }
 
     #[test]

@@ -3,7 +3,6 @@
 //! or tokio types (ADR-0039); the MCP adapter and the CLI reach it from `src/mcp`.
 
 pub(crate) mod budget;
-pub(crate) mod call_projection;
 pub(crate) mod cursor;
 pub(crate) mod error;
 pub(crate) mod files;

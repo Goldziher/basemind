@@ -48,7 +48,7 @@ pub(super) async fn run_goto_definition(
         ));
     };
     let file = super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?;
-    let source = super::index_route::blocking(|| {
+    let source = super::blocking::blocking(|| {
         super::freshness::load_fresh("code_refs", &params.path, &file, entry.into(), max_bytes)
     })?;
     let column = match params.column {
@@ -200,7 +200,7 @@ fn definition_location(
         return Ok(None);
     };
     let max_bytes = state.shared.config.scan.max_file_bytes;
-    let def_source = super::index_route::blocking(|| {
+    let def_source = super::blocking::blocking(|| {
         super::freshness::load_fresh("code_refs", &def_path, &file, entry.into(), max_bytes)
     })?;
     Ok(Some(located(&def_source, def_path)))

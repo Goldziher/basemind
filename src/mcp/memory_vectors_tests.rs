@@ -559,7 +559,7 @@ fn blocking_work_does_not_hold_the_only_worker_of_a_multi_thread_runtime() {
             tokio::spawn(async move {
                 let _ = ran.send(());
             });
-            crate::mcp::index_route::blocking(|| saw_it.recv_timeout(Duration::from_secs(10)).is_ok())
+            crate::mcp::blocking::blocking(|| saw_it.recv_timeout(Duration::from_secs(10)).is_ok())
         })
         .await
         .unwrap()
@@ -884,7 +884,7 @@ fn stamps_pick_the_notes_to_read_and_the_rows_to_refuse() {
 /// `blocking`. On this current-thread runtime that runs inline, on this thread.
 #[tokio::test]
 async fn a_save_and_a_delete_fsync_through_blocking() {
-    use crate::mcp::index_route::blocking_calls;
+    use crate::mcp::blocking::blocking_calls;
 
     let root = tempfile::tempdir().unwrap();
     let state = server(root.path(), "fake");

@@ -7,7 +7,7 @@ use crate::extract::{Call, FileMapL1, FileMapL2, Implementation};
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
-use super::{scan_calls_by_name, scan_calls_examining, scan_calls_in_ram_examining};
+use super::{scan_calls_by_name, scan_calls_examining};
 use crate::mcp::helpers_impls::{scan_impls_examining, scan_impls_fjall};
 use crate::mcp::helpers_refs_match::Matching;
 
@@ -554,49 +554,6 @@ fn an_exact_impl_scan_stops_at_the_examined_keys_cap_and_resumes() {
     assert_eq!(types, ["Exact0", "Exact1", "Exact2"]);
     assert_eq!(pages, STARVING_KEYS.div_ceil(EXAMINE_CAP));
     assert!(!page.total_is_partial);
-}
-
-/// The in-RAM projection a read-only session scans has the same bound and the same cursor.
-#[test]
-fn the_in_ram_call_scan_has_the_same_examined_keys_cap() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let mut source = String::from("fn caller() {\n");
-    source.push_str(&"    zapx();\n".repeat(300));
-    source.push_str("    ns::zap();\n    ns::zap();\n}\n");
-    std::fs::write(root.join("a.rs"), source).unwrap();
-    let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).unwrap();
-    crate::scanner::scan(
-        root,
-        &mut store,
-        &crate::config::ConfigV1::with_defaults(),
-        crate::scanner::ScanSource::WorkingTree,
-        crate::scanner::EmbedMode::Inline,
-    )
-    .unwrap();
-    let cache = crate::mcp::MapCache::build(&store, 0);
-    let scan = |cursor: Option<&[u8]>| {
-        scan_calls_in_ram_examining(cache.calls_projection(), "zap", Matching::Exact, 10, cursor, 100)
-    };
-
-    let mut page = scan(None);
-    assert!(page.total_is_partial && page.stopped_after.is_some());
-    let mut callees: Vec<String> = page.hits.iter().map(|hit| hit.callee.clone()).collect();
-    let mut pages = 1;
-    while let Some(cursor) = page.next_cursor.take() {
-        let after = cursor.decode_fjall().unwrap();
-        page = scan(Some(&after));
-        callees.extend(page.hits.iter().map(|hit| hit.callee.clone()));
-        pages += 1;
-        assert!(pages <= 10, "paging must terminate");
-    }
-    assert_eq!(callees.len(), 2, "both exact calls, once each: {callees:?}");
-    assert!(callees.iter().all(|callee| callee.ends_with("zap")), "{callees:?}");
-    assert_eq!(pages, 302usize.div_ceil(100));
-    assert!(!page.total_is_partial);
-
-    let zero = scan_calls_in_ram_examining(cache.calls_projection(), "zap", Matching::Exact, 10, None, 0);
-    assert!(zero.total_is_partial && zero.stopped_after.is_some());
 }
 
 /// A cap of zero would examine nothing and so have no key to resume from; it examines one.

@@ -121,14 +121,14 @@ impl ServerState {
         use std::sync::atomic::Ordering::Relaxed;
         if self.shared.lazy_cache {
             if self.shared.lazy_cache_built.get().is_none() {
-                super::index_route::blocking(|| self.build_cache_on_demand());
+                super::blocking::blocking(|| self.build_cache_on_demand());
             }
             return;
         }
         if !self.shared.cache_warming.load(Relaxed) {
             return;
         }
-        super::index_route::blocking(|| self.shared.wait_for_warm());
+        super::blocking::blocking(|| self.shared.wait_for_warm());
     }
 
     /// Build the whole-corpus in-RAM map and publish it — exactly once, however many callers race
@@ -136,7 +136,7 @@ impl ServerState {
     ///
     /// [`MapCache::build`] is IO-bound (a rayon `par_iter` probing every indexed file's blob), so it
     /// must not run on the async reactor: [`await_cache_ready`](Self::await_cache_ready) runs it
-    /// inside [`index_route::blocking`](super::index_route::blocking), which hands the worker over
+    /// inside [`blocking::blocking`](super::blocking::blocking), which hands the worker over
     /// on the multi-thread runtime the CLI builds and runs it in place on a `current_thread` test
     /// runtime, which has no other task to starve.
     fn build_cache_on_demand(&self) {

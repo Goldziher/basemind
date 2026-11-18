@@ -273,7 +273,7 @@ async fn memory_put_fjall(
     let store = state.store_read().await;
     let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
     // The put ends in an fsync: off the reactor, like every other blocking store call.
-    Ok(super::index_route::blocking(|| {
+    Ok(super::blocking::blocking(|| {
         super::memory_ops::put_core(idx, &state.shared.scope, vis_byte, owner, key, value, tags)
     })?)
 }
@@ -471,7 +471,7 @@ pub(super) async fn run_memory_delete(
 async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key: &str) -> Result<bool, McpError> {
     let store = state.store_read().await;
     let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
-    Ok(super::index_route::blocking(|| {
+    Ok(super::blocking::blocking(|| {
         super::memory_ops::delete_core(idx, &state.shared.scope, vis_byte, owner, key)
     })?)
 }

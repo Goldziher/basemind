@@ -34,6 +34,7 @@ pub(crate) fn server_busy_for_cli() -> rmcp::ErrorData {
 }
 #[cfg(test)]
 pub(crate) use helpers::rescan_error;
+mod blocking;
 #[cfg(feature = "documents")]
 mod docs_pipeline;
 mod helpers_admin;
@@ -60,7 +61,6 @@ mod history_sync;
 pub(crate) mod identity;
 #[cfg(feature = "test-support")]
 pub mod in_memory;
-mod index_route;
 #[cfg(test)]
 mod index_view_tests;
 pub(crate) use crate::engine::l1_cache;
@@ -635,20 +635,6 @@ mod map_cache_tests {
         assert!(types::LifecycleNotice::for_scan_status(None).is_none());
     }
 
-    /// A read-only session whose reference projections were truncated by the outline budget reports
-    /// it through the same channel — and does NOT ask for a retry, because rerunning the query
-    /// cannot widen a budget.
-    #[test]
-    fn capped_projection_notice_reports_truncation_without_asking_for_a_retry() {
-        let notice = types::LifecycleNotice::projections_capped();
-        assert_eq!(notice.state, "projections_capped");
-        assert!(!notice.retry);
-        assert!(
-            notice.message.contains("max_map_cache_mb"),
-            "the notice must name the knob that fixes it"
-        );
-    }
-
     /// `with_delta` must re-read only the changed blobs, preserve untouched entries, and drop
     /// removed ones — the incremental refresh the serve watcher uses instead of a whole-corpus
     /// rebuild (issue #33).
@@ -673,7 +659,6 @@ mod map_cache_tests {
         let cache = MapCache::build(&store, 0);
         assert_eq!(sym_names(&cache, "a.rs"), vec!["alpha".to_string()]);
         assert_eq!(sym_names(&cache, "b.rs"), vec!["beta".to_string()]);
-        assert!(!cache.projections_capped());
 
         fs::write(root.join("a.rs"), b"pub fn alpha2() {}\npub fn alpha3() {}\n").unwrap();
         let report = crate::scanner::scan_paths(

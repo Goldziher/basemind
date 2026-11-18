@@ -3,10 +3,8 @@
 
 use std::sync::Arc;
 
-use crate::engine::call_projection::InRamCallIndex;
 use crate::engine::l1_cache;
 use crate::extract::FileMapL1;
-use crate::mcp::helpers_impls;
 use crate::store::Store;
 
 pub(crate) struct MapCache {
@@ -16,13 +14,6 @@ pub(crate) struct MapCache {
     /// content hash. Shared with the snapshot this cache was derived from, so an incremental
     /// rescan is a refcount bump rather than a rebuild.
     l1: Arc<l1_cache::L1Cache>,
-    /// In-RAM callee index: the LAST-RESORT fallback for a session that has neither a Fjall index
-    /// nor a daemon to forward `references` / `callers` to.
-    /// Built on first use ([`calls_projection`](Self::calls_projection)) and never otherwise, so a
-    /// daemon-backed session that only asks point queries holds none of it.
-    calls: std::sync::OnceLock<InRamCallIndex>,
-    /// In-RAM trait→impl index, same lazy last-resort role as `calls` for `find_implementations`.
-    impls: std::sync::OnceLock<helpers_impls::InRamImplIndex>,
     /// Searchable symbol-name / import text of every file, built on first use (or by the cache
     /// warm) and patched rather than rebuilt by [`with_delta`](Self::with_delta). Backs the
     /// substring sweeps of `symbols` and `dependents`.
@@ -32,8 +23,6 @@ pub(crate) struct MapCache {
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
     /// (no blob or LanceDB read), so it is rebuilt with every cache build and delta.
     pub(crate) doc_paths: std::sync::Arc<[crate::path::RelPath]>,
-    /// See [`content_fingerprint`](Self::content_fingerprint); computed on first use.
-    fingerprint: std::sync::OnceLock<u64>,
 }
 
 /// The sorted document-tier paths of `store`'s index.
@@ -49,19 +38,13 @@ impl MapCache {
     ///
     /// Unlike the whole-corpus map this replaces, `build` decodes NO L1 blobs: it projects the
     /// index into [`l1_cache::FileIndexView`] and leaves the outlines to be faulted in on demand.
-    /// The read-only projections (`calls` / `impls`) are not built here either: they are the
-    /// last-resort fallback for a session that can reach no Fjall index, built lazily on first use
-    /// and charged against the same budget.
     pub(crate) fn build(store: &Store, budget_bytes: u64) -> Self {
         let files = l1_cache::FileIndexView::build(store);
         let l1 = Arc::new(l1_cache::L1Cache::from_store(store, budget_bytes));
         Self {
             files,
             l1,
-            calls: Default::default(),
-            impls: Default::default(),
             terms: Default::default(),
-            fingerprint: Default::default(),
             doc_paths: doc_paths_of(store),
         }
     }
@@ -76,10 +59,7 @@ impl MapCache {
         Self {
             files: l1_cache::FileIndexView::default(),
             l1: Arc::new(l1_cache::L1Cache::placeholder()),
-            calls: Default::default(),
-            impls: Default::default(),
             terms: Default::default(),
-            fingerprint: Default::default(),
             doc_paths: Default::default(),
         }
     }
@@ -107,50 +87,9 @@ impl MapCache {
         Self {
             files: l1_cache::FileIndexView::from_pairs(metas),
             l1,
-            calls: Default::default(),
-            impls: Default::default(),
             terms: Default::default(),
-            fingerprint: Default::default(),
             doc_paths: Default::default(),
         }
-    }
-
-    /// A digest of every file's path and order key ([`l1_cache::FileMeta::order_key`]), as
-    /// [`crate::index::live_keys::LiveKeys`] digests them: the generation a `references` / `callers`
-    /// cursor carries when the scan runs in RAM. Each delta builds a new map, so the value is
-    /// computed once per map.
-    pub(crate) fn content_fingerprint(&self) -> u64 {
-        *self.fingerprint.get_or_init(|| {
-            crate::index::live_keys::fingerprint_of(
-                self.files
-                    .iter()
-                    .map(|(path, meta)| (path.as_bytes(), meta.order_key())),
-            )
-        })
-    }
-
-    /// The in-RAM call projection, built on first use. Only reached by a session with no reachable
-    /// Fjall index (see [`calls`](Self::calls)); a build that hits the byte budget is truncated and
-    /// reports it through [`projections_capped`](Self::projections_capped).
-    pub(crate) fn calls_projection(&self) -> &InRamCallIndex {
-        self.calls
-            .get_or_init(|| InRamCallIndex::build(&self.files, self.l1.blobs_dir(), self.l1.budget_bytes()))
-    }
-
-    /// The in-RAM implementation projection, built on first use. See
-    /// [`calls_projection`](Self::calls_projection).
-    pub(crate) fn impls_projection(&self) -> &helpers_impls::InRamImplIndex {
-        self.impls
-            .get_or_init(|| helpers_impls::InRamImplIndex::build(&self.files, &self.l1, self.l1.budget_bytes()))
-    }
-
-    /// True when a projection this session has ALREADY built hit its byte cap, so the answers it
-    /// backed are incomplete. Surfaced through [`ServerState::lifecycle_notice`] rather than
-    /// silently degrading a result to "no matches". `false` until a projection exists, which is why
-    /// the handlers that fall back to one read the notice AFTER running the scan.
-    pub(crate) fn projections_capped(&self) -> bool {
-        self.calls.get().is_some_and(InRamCallIndex::capped)
-            || self.impls.get().is_some_and(helpers_impls::InRamImplIndex::capped)
     }
 
     /// Number of indexed files this map covers.
@@ -255,9 +194,6 @@ impl MapCache {
     /// the hash and rewrites the blob; the new view entry names the newer epoch, which the cache
     /// does not answer from an outline decoded under an older one.
     ///
-    /// The lazy `calls`/`impls` projections start empty on the derived snapshot, so they are
-    /// rebuilt from the post-rescan file view if ever needed and cannot drift out of sync.
-    ///
     /// The outlines of the content `updated` and `removed` paths named before are dropped from the
     /// shared L1 cache once no path of the new view names them (see
     /// [`L1Cache::forget_superseded`](l1_cache::L1Cache::forget_superseded)).
@@ -286,12 +222,7 @@ impl MapCache {
         let next = Self {
             files: self.files.with_delta(store, updated, removed),
             l1: Arc::clone(&self.l1),
-            // Fresh and empty: a derived snapshot rebuilds its projections lazily, so they can never
-            // describe the pre-rescan corpus.
-            calls: Default::default(),
-            impls: Default::default(),
             terms: Default::default(),
-            fingerprint: Default::default(),
             doc_paths: doc_paths_of(store),
         };
         self.l1.forget_superseded(superseded, &next.files);

@@ -1,6 +1,5 @@
 //! Call-scan primitives for `find_references` / `find_callers`: the `calls_by_callee`
-//! range scan, its token-budget re-anchoring, and the in-RAM call index built from L2
-//! blobs for read-only sessions that can't open the single-holder Fjall index.
+//! range scan, its token-budget re-anchoring, and the per-file call reads behind them.
 //!
 //! Extracted from `helpers_calls.rs` to keep that file within the per-file size budget.
 
@@ -12,7 +11,64 @@ use super::cursor::Cursor;
 use super::helpers_calls::resolve_call_line_col;
 use super::helpers_refs_match::Matching;
 use super::types::ReferenceHit;
-pub(crate) use crate::engine::call_projection::{CallRef, InRamCallIndex};
+use crate::index::keys::ContentKey;
+use crate::index::view::IndexView;
+use crate::path::RelPath;
+
+/// A call site within a file: the callee identifier, its start byte offset, and its position.
+#[derive(Clone)]
+pub(crate) struct CallRef {
+    pub callee: String,
+    pub start_byte: u32,
+    /// 1-based line (`start_row + 1`), matching `resolve_call_line_col`.
+    pub line: u32,
+    /// 0-based byte column.
+    pub column: u32,
+}
+
+/// The `calls_by_callee` name scan behind `references` and `callers`, with the generation of the
+/// key order it was cut in: the fingerprint of the view's live keys. A `references` / `callers`
+/// cursor carries it, and is refused as stale once it changes, since an edit moves the edited
+/// file's hits in that order.
+pub(super) fn scan_calls(
+    idx: &dyn IndexView,
+    name: &str,
+    matching: Matching,
+    limit: usize,
+    cursor_after: Option<&[u8]>,
+) -> Result<(CallScanPage, u64), McpError> {
+    let generation = idx.live_keys().fingerprint();
+    let page = super::blocking::blocking(|| scan_calls_by_name(idx, name, matching, limit, cursor_after))?;
+    Ok((page, generation))
+}
+
+/// One file's call sites with the content key they were read under.
+pub(super) type FileCalls = (ContentKey, Vec<CallRef>);
+
+/// The content key each of `paths` is read under, in request order, from one snapshot of the view's
+/// live keys; `None` for a path the view does not hold.
+pub(super) fn content_keys(idx: &dyn IndexView, paths: &[RelPath]) -> Vec<Option<ContentKey>> {
+    let live = idx.live_keys();
+    paths.iter().map(|path| live.key_of(path).copied()).collect()
+}
+
+/// Every call site of each of `files`, in request order, with the content key it was read under
+/// (the key given with it): the order key of the file's calls, which places a resolved caller among
+/// the scan hits. `None` for a file read under no key, which has no calls.
+pub(super) fn calls_in_files(
+    idx: &dyn IndexView,
+    files: &[(RelPath, Option<ContentKey>)],
+) -> Result<Vec<Option<FileCalls>>, McpError> {
+    files
+        .iter()
+        .map(|(_, content)| {
+            let Some(content) = content else {
+                return Ok(None);
+            };
+            calls_in_content_fjall(idx, Some(content)).map(|calls| Some((*content, calls)))
+        })
+        .collect()
+}
 
 /// Keys one name scan examines before it stops, whether or not they matched. `scan_cap` counts only
 /// accepted hits, so without this an exact scan for a name that is also a common fragment (`get`)
@@ -40,7 +96,7 @@ pub(crate) struct CallScanPage {
 impl CallScanPage {
     /// Assemble a scan's page. The cursor is the last hit's key when matches remain past the page
     /// (`has_more`), and otherwise the key the scan stopped after, if it stopped early.
-    fn finish(
+    pub(super) fn finish(
         total: u32,
         total_is_partial: bool,
         hits: Vec<ReferenceHit>,
@@ -119,12 +175,7 @@ pub(super) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Optio
 /// holding the content, so a file whose run lies inside the page holds every such site on the page.
 /// Only the files holding the content of the page's first or last hit can have a run cut by the
 /// page edge; their call sites are read whole.
-pub(super) async fn mark_shared_lines(
-    route: &super::index_route::IndexRoute,
-    cache: &super::MapCache,
-    hits: &mut [ReferenceHit],
-    hit_keys: &[Vec<u8>],
-) {
+pub(super) fn mark_shared_lines(idx: &dyn IndexView, hits: &mut [ReferenceHit], hit_keys: &[Vec<u8>]) {
     let content = |key: Option<&Vec<u8>>| key.and_then(|key| crate::index::keys::call_by_callee_content(key));
     let edge_contents = [content(hit_keys.first()), content(hit_keys.last())];
     let mut edges: Vec<(crate::path::RelPath, Option<crate::index::keys::ContentKey>)> = Vec::new();
@@ -136,9 +187,7 @@ pub(super) async fn mark_shared_lines(
             edges.push((hit.path.clone(), key));
         }
     }
-    let edge_calls: Vec<Vec<CallRef>> = route
-        .calls_in_files(cache, &edges)
-        .await
+    let edge_calls: Vec<Vec<CallRef>> = calls_in_files(idx, &edges)
         .unwrap_or_default()
         .into_iter()
         .map(|read| read.map(|(_, calls)| calls).unwrap_or_default())
@@ -303,86 +352,6 @@ pub(crate) fn calls_in_content_fjall(
         });
     }
     Ok(out)
-}
-
-/// In-RAM `scan_calls_by_name` twin over [`InRamCallIndex`]. Same case-sensitive
-/// `memmem` substring filter, same `matching` / `limit` / `scan_cap` / cursor semantics — the
-/// entries carry the exact Fjall key the writer would persist, so cursors and
-/// scan order round-trip identically between the two paths.
-pub(super) fn scan_calls_in_ram(
-    index: &InRamCallIndex,
-    name: &str,
-    matching: Matching,
-    limit: usize,
-    cursor_after: Option<&[u8]>,
-) -> CallScanPage {
-    scan_calls_in_ram_examining(index, name, matching, limit, cursor_after, SCAN_KEYS_EXAMINED_MAX)
-}
-
-/// [`scan_calls_in_ram`] with the examined-keys cap as an argument, so a test can reach it.
-pub(super) fn scan_calls_in_ram_examining(
-    index: &InRamCallIndex,
-    name: &str,
-    matching: Matching,
-    limit: usize,
-    cursor_after: Option<&[u8]>,
-    examine_cap: usize,
-) -> CallScanPage {
-    let examine_cap = examine_cap.max(1);
-    let finder = memchr::memmem::Finder::new(name.as_bytes());
-    let start = match cursor_after {
-        Some(cursor) => index.entries().partition_point(|e| e.key.as_slice() <= cursor),
-        None => 0,
-    };
-    let mut hits: Vec<ReferenceHit> = Vec::with_capacity(limit.min(64));
-    let mut hit_keys: Vec<Vec<u8>> = Vec::with_capacity(limit.min(64));
-    let mut hit_starts: Vec<u32> = Vec::with_capacity(limit.min(64));
-    let mut total: u32 = 0;
-    let mut total_is_partial = false;
-    let scan_cap = limit.saturating_mul(8).max(2_000);
-    let mut has_more = false;
-    let mut matched: usize = 0;
-    let mut stopped_after: Option<Vec<u8>> = None;
-    for (examined, entry) in index.entries()[start..].iter().enumerate() {
-        if examined >= examine_cap {
-            total_is_partial = true;
-            stopped_after = Some(index.entries()[start + examined - 1].key.clone());
-            break;
-        }
-        if finder.find(entry.callee.as_bytes()).is_none() || !matching.accepts_callee(&entry.callee, name) {
-            continue;
-        }
-        total += 1;
-        matched += 1;
-        if hits.len() < limit {
-            hits.push(ReferenceHit {
-                path: entry.rel.clone(),
-                line: entry.line,
-                column: entry.column,
-                callee: entry.callee.clone(),
-                resolved: None,
-                shared_line: false,
-                stale: false,
-            });
-            hit_keys.push(entry.key.clone());
-            hit_starts.push(entry.start_byte);
-        } else {
-            has_more = true;
-        }
-        if matched >= scan_cap {
-            total_is_partial = true;
-            break;
-        }
-    }
-    CallScanPage::finish(
-        total,
-        total_is_partial,
-        hits,
-        hit_keys,
-        hit_starts,
-        has_more,
-        stopped_after,
-    )
 }
 
 #[cfg(test)]

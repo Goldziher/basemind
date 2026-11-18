@@ -147,8 +147,6 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 /// step named beside it.
 const KNOWN_VIOLATIONS: &[&str] = &[
     "src/config/validate.rs -> extern jsonschema",
-    // S5 (one Workspace per pooled workspace) deletes the in-RAM call / impl projections.
-    "src/engine/map_cache.rs -> mcp::helpers_impls",
     // S7b (memory ops) replaces the embedder's async OnceCell.
     "src/engine/workspace.rs -> extern tokio",
     // S7b (memory ops) moves the memory owner, LanceCell and the vector backfill into the engine.

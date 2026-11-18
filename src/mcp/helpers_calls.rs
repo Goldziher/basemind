@@ -7,13 +7,39 @@
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
-use super::MapCache;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
-use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, mark_shared_lines};
+use super::helpers_calls_scan::{
+    CallRef, CallScanPage, budget_call_page, calls_in_files, content_keys, mark_shared_lines, scan_calls,
+};
 use super::helpers_refs_match::Matching;
-use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
+use crate::index::view::IndexView;
+
+/// The index `store` reads, for a `code_refs` relation that scans it (call sites, callers,
+/// implementations); otherwise the refusal naming the fix. A session holds no index when another
+/// process holds it and no daemon serves this one (a CLI command or a second `serve` beside a
+/// writer), or when the index must be rebuilt. The first is marked busy, so the CLI exits `3`.
+pub(super) fn index_for_refs(store: &crate::store::Store) -> Result<std::sync::Arc<dyn IndexView>, McpError> {
+    if let Some(idx) = store.read_index_view() {
+        return Ok(idx);
+    }
+    if store.rescan_owed() {
+        return Err(McpError::invalid_request(
+            "`code_refs`: the index of this workspace must be rebuilt: run `basemind scan` (MCP: `index_rescan`)",
+            None,
+        ));
+    }
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    let fix = "start the daemon (`basemind comms start`), which then serves the index to every session, or stop \
+               the process that holds the lock, then retry";
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
+    let fix = "stop the process that holds the lock, then retry";
+    Err(McpError::invalid_request(
+        format!("`code_refs`: another basemind process holds this workspace's index and no daemon serves it: {fix}"),
+        Some(serde_json::json!({ super::BUSY_DATA: true })),
+    ))
+}
 
 /// Point-lookup a `Call` value in the index by `(content, start_byte)` and return its
 /// `(line, column)` as 1-based / 0-based respectively. The content key is the one the hit key
@@ -35,12 +61,10 @@ pub(super) fn resolve_call_line_col(
     (call.start_row + 1, call.start_col)
 }
 
-/// Body of the `code` tool's `references` mode. `route` decides where the `calls_by_callee` scan
-/// runs; the caller releases the store lock before awaiting it.
+/// Body of the `code` tool's `references` mode: the `calls_by_callee` scan over `idx`.
 pub(super) async fn run_find_references(
-    route: &IndexRoute,
+    idx: &dyn IndexView,
     params: super::types::FindReferencesParams,
-    cache: &super::MapCache,
     notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
     flag_stale: impl FnOnce(&mut [ReferenceHit]),
 ) -> Result<CallToolResult, McpError> {
@@ -49,11 +73,9 @@ pub(super) async fn run_find_references(
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
-    let (mut scan, generation) = route
-        .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
-        .await?;
+    let (mut scan, generation) = scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref())?;
     refuse_stale(stamped, generation)?;
-    mark_shared_lines(route, cache, &mut scan.hits, &scan.hit_keys).await;
+    mark_shared_lines(idx, &mut scan.hits, &scan.hit_keys);
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let mut budgeted = budget_call_page(scan, &params.name, params.max_tokens);
@@ -97,12 +119,10 @@ pub(super) async fn run_find_references(
 /// instead of being silently handed a subset.
 ///
 /// Holds the store read guard for the call (like `goto_definition`): the resolution layer reads the
-/// concurrently-readable `.rref` blobs plus, when open, the Fjall index; the scan reads
-/// `store.index_db` or the in-RAM call cache for a read-only multi-session serve.
-#[allow(clippy::too_many_arguments)]
+/// concurrently-readable `.rref` blobs plus the Fjall index `idx`, which the scan reads too.
 pub(super) async fn run_find_callers(
     store: &crate::store::Store,
-    route: &IndexRoute,
+    idx: &dyn IndexView,
     files: super::tool_contract::IndexedFiles<'_>,
     cache: &super::MapCache,
     params: super::types::FindCallersParams,
@@ -124,7 +144,7 @@ pub(super) async fn run_find_callers(
         }
     })?;
     // The outline's spans and the resolution facts below are offsets into the indexed bytes.
-    let source = super::index_route::blocking(|| {
+    let source = super::blocking::blocking(|| {
         super::freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), files.max_file_bytes)
     })?;
     let symbol = crate::engine::pick::pick_symbol(
@@ -148,9 +168,7 @@ pub(super) async fn run_find_callers(
 
     let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
-    let (scan, generation) = route
-        .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
-        .await?;
+    let (scan, generation) = scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref())?;
     refuse_stale(stamped, generation)?;
 
     // Resolution facts are a per-file blob the scan writes only for a file that produced some. No
@@ -158,7 +176,7 @@ pub(super) async fn run_find_callers(
     // not finish, or this file bound nothing; `resolution` says which (`helpers_intel::resolution_gap`).
     let resolution_ran = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten().is_some();
     let resolved = if resolution_ran {
-        resolved_callers(store, route, cache, &params.path, &source, symbol, &params.name, limit).await
+        resolved_callers(store, idx, &params.path, &source, symbol, &params.name, limit)
     } else {
         None
     };
@@ -175,7 +193,7 @@ pub(super) async fn run_find_callers(
     };
 
     let mut page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());
-    mark_shared_lines(route, cache, &mut page.hits, &page.hit_keys).await;
+    mark_shared_lines(idx, &mut page.hits, &page.hit_keys);
     let total = page.total;
     let total_is_partial = page.total_is_partial;
     let budgeted = budget_call_page(page, &params.name, params.max_tokens);
@@ -200,7 +218,7 @@ const GENERATION_LEN: usize = 8;
 type Stamped = ([u8; GENERATION_LEN], Vec<u8>);
 
 /// The cursor of a name scan, prefixed with the generation of the key order it was cut in
-/// ([`IndexRoute::scan_calls`]). Hits are in content-key order, and an edit moves the edited file's
+/// ([`scan_calls`]). Hits are in content-key order, and an edit moves the edited file's
 /// hits, so a cursor continues only the view it was cut from.
 fn stamp(cursor: Option<Cursor>, generation: u64) -> Option<Cursor> {
     let key = cursor?.decode_fjall().ok()?;
@@ -304,11 +322,9 @@ const CALL_SITE_BATCH: usize = 128;
 /// cap the refinement simply stops proving things — hits stay unannotated and the floor stays
 /// complete. Degrading toward "unproven" is always safe; degrading toward "no callers" is what this
 /// function exists to prevent.
-#[allow(clippy::too_many_arguments)]
-async fn resolved_callers(
+fn resolved_callers(
     store: &crate::store::Store,
-    route: &IndexRoute,
-    cache: &MapCache,
+    idx: &dyn IndexView,
     def_path: &crate::path::RelPath,
     def_source: &[u8],
     symbol: &crate::extract::Symbol,
@@ -373,14 +389,14 @@ async fn resolved_callers(
     runs.truncate(probe_cap);
     let paths: Vec<crate::path::RelPath> = runs.iter().map(|(path, _)| (*path).clone()).collect();
     // One snapshot for every file, so the keys agree with each other and with the calls read. ~keep
-    let keys = route.content_keys(cache, &paths);
+    let keys = content_keys(idx, &paths);
     for (batch, batch_keys) in runs.chunks(CALL_SITE_BATCH).zip(keys.chunks(CALL_SITE_BATCH)) {
         let files: Vec<(crate::path::RelPath, Option<crate::index::keys::ContentKey>)> = batch
             .iter()
             .map(|(path, _)| (*path).clone())
             .zip(batch_keys.iter().copied())
             .collect();
-        let per_file = route.calls_in_files(cache, &files).await.ok()?;
+        let per_file = calls_in_files(idx, &files).ok()?;
         // A file read under no key has no calls, so every proven site below has its key. ~keep
         for ((use_path, run), (content, calls)) in
             batch.iter().zip(per_file).filter_map(|(run, read)| Some((run, read?)))

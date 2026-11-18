@@ -424,15 +424,6 @@ impl Workspace {
         LifecycleNotice::for_state(self.lifecycle())
             .or_else(|| self.index_rebuilding_notice())
             .or_else(|| self.empty_index_notice())
-            .or_else(|| {
-                // A read-only session whose projected call/impl indexes were capped answers reference
-                // queries from a truncated set. Reported through the same channel as the warming/
-                // rescanning states so a caller never reads an incomplete result as "no matches".
-                self.cache
-                    .load()
-                    .projections_capped()
-                    .then(LifecycleNotice::projections_capped)
-            })
     }
 }
 

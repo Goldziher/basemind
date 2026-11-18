@@ -15,7 +15,6 @@ use super::helpers::{
     SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_implementations,
     run_find_references, run_workspace_grep,
 };
-use super::index_route::IndexRoute;
 use super::tool_contract::budget;
 use super::types::{
     DependentsResponse, FindCallersParams, FindReferencesParams, GotoDefinitionParams, WorkspaceGrepParams,
@@ -151,10 +150,10 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
             }
             None => {
                 state.await_cache_ready().await;
-                let route = IndexRoute::resolve(state).await;
+                let idx = super::helpers_calls::index_for_refs(&*state.store_read().await)?;
                 let cache = state.shared.cache.load_full();
                 run_find_references(
-                    &route,
+                    &*idx,
                     FindReferencesParams {
                         name: p.name,
                         substring,
@@ -163,10 +162,9 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                         format: None,
                         cursor: p.cursor,
                     },
-                    &cache,
                     || state.lifecycle_notice(),
                     |hits| {
-                        super::index_route::blocking(|| super::helpers_stale::flag_call_sites(state, &cache, hits));
+                        super::blocking::blocking(|| super::helpers_stale::flag_call_sites(state, &cache, hits));
                     },
                 )
                 .await
@@ -177,10 +175,10 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
                 return Err(shape_error("`path` does not apply to relation `implementations`"));
             }
             state.await_cache_ready().await;
-            let route = IndexRoute::resolve(state).await;
+            let idx = super::helpers_calls::index_for_refs(&*state.store_read().await)?;
             let cache = state.shared.cache.load_full();
             run_find_implementations(
-                &route,
+                &*idx,
                 FindImplementationsParams {
                     trait_name: p.name,
                     substring,
@@ -235,12 +233,12 @@ pub(super) async fn code_refs(state: &ServerState, p: CodeRefsParams) -> Result<
 /// store ([`run_find_callers`]).
 async fn run_callers(state: &ServerState, params: FindCallersParams) -> Result<CallToolResult, McpError> {
     state.await_cache_ready().await;
-    let route = IndexRoute::resolve(state).await;
     let store = state.store_read().await;
+    let idx = super::helpers_calls::index_for_refs(&store)?;
     let cache = state.shared.cache.load_full();
     run_find_callers(
         &store,
-        &route,
+        &*idx,
         super::tool_contract::IndexedFiles::of(&state.shared),
         &cache,
         params,
