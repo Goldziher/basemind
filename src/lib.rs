@@ -15,10 +15,11 @@ pub mod config;
 /// Single-owner daemon lock + pidfile + the machine-wide, kind-tagged live-daemon registry and
 /// ceiling, shared by every daemon family.
 pub mod daemon_lock;
+pub mod data_root;
 pub mod disk_space;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
-pub(crate) mod engine;
+pub mod engine;
 pub mod eval;
 pub mod extract;
 pub mod git;

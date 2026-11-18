@@ -18,24 +18,39 @@ use crate::once_map::OnceMap;
 /// for the TypeScript compiler's biggest files) but reliably aborts known hangers.
 pub const DEFAULT_PARSE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
-/// Cache of the resolved parse timeout. Initialized once per process on first call to
-/// `parse_with_default_timeout`; eliminates a `std::env::var` syscall on every file parse
-/// (called ×2 per file when eager L2 is on — once for L1, once for L2).
-static PARSE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
-
-/// The per-parse timeout in effect: `BASEMIND_PARSE_TIMEOUT_MS`, else [`DEFAULT_PARSE_TIMEOUT`].
+/// The per-parse timeout in effect: the engine configuration's
+/// ([`crate::config::engine::EngineConfig::parse_timeout`]).
 pub fn parse_timeout() -> Duration {
-    parse_timeout_from_env()
+    crate::config::engine::with(|config| config.parse_timeout)
 }
 
-fn parse_timeout_from_env() -> Duration {
-    *PARSE_TIMEOUT.get_or_init(|| {
-        std::env::var("BASEMIND_PARSE_TIMEOUT_MS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(Duration::from_millis)
-            .unwrap_or(DEFAULT_PARSE_TIMEOUT)
-    })
+/// Whether grammars may not be downloaded ([`crate::config::engine::GrammarPolicy::offline`]).
+fn grammars_offline() -> bool {
+    crate::config::engine::with(|config| config.grammars.offline)
+}
+
+/// Point the language pack at this process's grammar cache, once, before its first use: the
+/// configured [`crate::config::engine::GrammarPolicy::cache_dir`], else
+/// [`crate::data_root::DataRoot::grammars_dir`]. Every entry into the pack that can load or
+/// download a grammar calls it.
+pub(crate) fn configure_grammar_dir() {
+    static CONFIGURED: OnceLock<()> = OnceLock::new();
+    CONFIGURED.get_or_init(|| {
+        let dir = crate::config::engine::with(|config| {
+            config
+                .grammars
+                .cache_dir
+                .clone()
+                .unwrap_or_else(|| config.data_root.grammars_dir())
+        });
+        let pack = tree_sitter_language_pack::PackConfig {
+            cache_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        if let Err(error) = tree_sitter_language_pack::configure(&pack) {
+            tracing::warn!(dir = %dir.display(), %error, "grammar cache directory not applied");
+        }
+    });
 }
 
 #[derive(Debug, Clone, Error)]
@@ -122,6 +137,7 @@ pub fn intern(name: &str) -> Option<LangId> {
     if let Some(&existing) = lock.read().expect("intern pool poisoned").get(name) {
         return Some(existing);
     }
+    configure_grammar_dir();
     if !tree_sitter_language_pack::has_language(name) {
         return None;
     }
@@ -164,6 +180,7 @@ static GRAMMAR_BOOTSTRAP: OnceLock<Result<Arc<BootstrapSummary>, Arc<LangError>>
 /// workaround for the pre-1.12 `download()` bug, where in-memory registry membership
 /// short-circuited the actual download (returned Ok with no disk side-effect).
 pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
+    configure_grammar_dir();
     GRAMMAR_BOOTSTRAP
         .get_or_init(|| {
             let cache_dir_str = tree_sitter_language_pack::cache_dir()
@@ -181,7 +198,7 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
                 }
             }
             if !missing.is_empty() {
-                if std::env::var("BASEMIND_GRAMMAR_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty()) {
+                if grammars_offline() {
                     return Err(Arc::new(LangError::Download(format!(
                         "offline mode: missing grammars {missing:?} and \
                          BASEMIND_GRAMMAR_OFFLINE is set",
@@ -203,6 +220,7 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
 /// cache. The shipped `OVERRIDE_LANGUAGES` are [`ensure_grammars`]'s job and are skipped here.
 /// Returns the names that were downloaded.
 pub fn ensure_extra_grammars(names: &[LangId]) -> Result<Vec<String>, LangError> {
+    configure_grammar_dir();
     let installed = tree_sitter_language_pack::downloaded_languages();
     let mut missing: Vec<&str> = names
         .iter()
@@ -214,7 +232,7 @@ pub fn ensure_extra_grammars(names: &[LangId]) -> Result<Vec<String>, LangError>
     if missing.is_empty() {
         return Ok(Vec::new());
     }
-    if std::env::var("BASEMIND_GRAMMAR_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty()) {
+    if grammars_offline() {
         return Err(LangError::Download(format!(
             "offline mode: missing grammars {missing:?} and BASEMIND_GRAMMAR_OFFLINE is set",
         )));
@@ -225,16 +243,19 @@ pub fn ensure_extra_grammars(names: &[LangId]) -> Result<Vec<String>, LangError>
 
 /// Languages currently downloaded in the tslp cache (does not hit the network).
 pub fn downloaded_languages() -> Vec<String> {
+    configure_grammar_dir();
     tree_sitter_language_pack::downloaded_languages()
 }
 
 /// Path to the tslp cache directory, if it can be resolved.
 pub fn grammar_cache_dir() -> Option<PathBuf> {
+    configure_grammar_dir();
     tree_sitter_language_pack::cache_dir().ok().map(PathBuf::from)
 }
 
 /// Clear the tslp grammar cache. Forces re-download on next use.
 pub fn clean_grammar_cache() -> Result<(), LangError> {
+    configure_grammar_dir();
     tree_sitter_language_pack::clean_cache().map_err(|e| LangError::Pack(format!("{e}")))
 }
 
@@ -282,6 +303,7 @@ pub fn is_document_markup(lang: &str, path: &Path) -> bool {
 
 /// Fetch the underlying tree-sitter Language for a given `LangId`.
 pub fn language(lang: LangId) -> Result<Language, LangError> {
+    configure_grammar_dir();
     tree_sitter_language_pack::get_language(lang).map_err(|e| LangError::Pack(format!("{e}")))
 }
 
@@ -353,7 +375,7 @@ pub fn parse_timed(parser: &mut Parser, source: &[u8], timeout: Duration) -> Par
 
 /// Convenience: `parse_timed` with the env-configurable default timeout.
 pub fn parse_with_default_timeout(parser: &mut Parser, source: &[u8]) -> ParseOutcome {
-    parse_timed(parser, source, parse_timeout_from_env())
+    parse_timed(parser, source, parse_timeout())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

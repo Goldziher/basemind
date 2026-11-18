@@ -15,7 +15,8 @@ use std::path::Path;
 
 use ahash::AHashSet;
 
-use crate::store::{CACHE_DIR, LockHolder, VIEWS_DIR, WORKSPACES_DIR, cache_root, read_workspace_marker};
+use crate::data_root::DataRoot;
+use crate::store::{LockHolder, VIEWS_DIR, WORKSPACES_DIR, read_workspace_marker};
 use crate::store_gc::{GcError, dir_size};
 use crate::store_layout::{GROUPS_DIR, group_of_workspace, repo_group_key};
 
@@ -29,8 +30,8 @@ pub struct GroupStoreReap {
 }
 
 /// Reap the directory of every group no workspace of the machine-global cache names.
-pub fn reap_orphaned_group_stores() -> Result<GroupStoreReap, GcError> {
-    reap_orphaned_group_stores_in(&cache_root().join(CACHE_DIR))
+pub fn reap_orphaned_group_stores(data: &DataRoot) -> Result<GroupStoreReap, GcError> {
+    reap_orphaned_group_stores_in(&data.cache_dir())
 }
 
 /// The groups the workspaces under `workspaces_dir` belong to; `None` when one of them could belong

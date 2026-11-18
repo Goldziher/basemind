@@ -212,7 +212,7 @@ impl GitCache {
             ensure_subdir(&root, "commit_files")?;
             ensure_subdir(&root, "log")?;
             ensure_subdir(&root, "blame")?;
-            evict_disk_cache(&root, log_cache_max_bytes_from_env());
+            evict_disk_cache(&root, log_cache_max_bytes());
             Some(root)
         } else {
             None
@@ -555,7 +555,7 @@ fn count_files(dir: &Path) -> usize {
 /// Default disk budget for each subdirectory of the cache (256 MiB). Tuneable via
 /// `BASEMIND_GIT_CACHE_LOG_MAX_BYTES`, which despite its name sets every subdirectory's budget;
 /// setting it to 0 disables eviction.
-const LOG_CACHE_DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
+pub const LOG_CACHE_DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 /// A `*.tmp` file older than this was left by a writer that died between its write and its rename.
 const STALE_TMP_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
@@ -563,11 +563,8 @@ const STALE_TMP_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 6
 /// The cache's subdirectories, each one flat directory of payload files.
 const DISK_SUBDIRS: [&str; 3] = ["log", "blame", "commit_files"];
 
-fn log_cache_max_bytes_from_env() -> u64 {
-    std::env::var("BASEMIND_GIT_CACHE_LOG_MAX_BYTES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(LOG_CACHE_DEFAULT_MAX_BYTES)
+fn log_cache_max_bytes() -> u64 {
+    crate::config::engine::with(|config| config.git.cache_max_bytes)
 }
 
 /// Mtime-LRU sweep of every cache subdirectory, a cheap one-shot pass at process start: stat every

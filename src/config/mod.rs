@@ -4,6 +4,7 @@ mod comms;
 pub mod daemon;
 mod documents;
 mod documents_validate;
+pub mod engine;
 pub(crate) mod layered;
 pub mod overrides;
 mod resources;
@@ -24,6 +25,8 @@ pub use documents::{
     ApiKey, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
     OcrBackend, OcrConfig, RerankerConfig, SecretString, SummarizationConfig, SummarizationStrategy,
 };
+#[cfg(feature = "intelligence")]
+pub(crate) use documents_validate::MAX_ABANDONED_EXTRACTIONS;
 pub use layered::{ConfigLayers, LoadedConfig, NoOverrides, OverrideLayer, defaults_only, merge_layers};
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
 pub use source::{ConfigSource, ProvenanceMap};
@@ -90,7 +93,7 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
     }
     let raw = std::fs::read_to_string(&resolved).map_err(io_error)?;
     let mut config = parse_str(&raw).map_err(|e| annotate_path(e, &path))?;
-    trust::sanitize_repo_config(&mut config, trust::Grants::from_env());
+    trust::sanitize_repo_config(&mut config, trust::Grants::installed());
     trust::warn_inert_fields(&config);
     trust::warn_deprecated_sections(&config);
     Ok(config)

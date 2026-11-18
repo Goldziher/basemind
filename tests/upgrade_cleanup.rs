@@ -228,14 +228,14 @@ fn a_tier_migration_orphans_the_code_lane_blobs_and_the_cleanup_reclaims_only_th
     );
 
     // Young blobs are protected: nothing is reclaimed inside the grace window.
-    let young = basemind::store_gc::reclaim_displaced_blobs().expect("sweep");
+    let young = basemind::store_gc::reclaim_displaced_blobs(&basemind::data_root::DataRoot::current()).expect("sweep");
     assert_eq!(young.removed, 0, "a blob younger than the grace window is kept");
     assert!(blob_exists(&store, &hash_hex, "fm"));
 
     age_past_grace(&store.blob_path_fm_hex(&hash_hex));
     #[cfg(feature = "code-search")]
     age_past_grace(&store.blob_path_chunk_hex(&hash_hex));
-    let report = basemind::store_gc::reclaim_displaced_blobs().expect("sweep");
+    let report = basemind::store_gc::reclaim_displaced_blobs(&basemind::data_root::DataRoot::current()).expect("sweep");
 
     let planted = if cfg!(feature = "code-search") { 2 } else { 1 };
     assert!(report.removed >= planted, "fm (+ chunk) reclaimed: {report:?}");

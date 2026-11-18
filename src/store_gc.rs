@@ -24,9 +24,8 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::store::{
-    CACHE_DIR, INDEX_FILE, StoreError, VIEWS_DIR, WORKSPACES_DIR, cache_root, global_blobs_dir, read_index,
-};
+use crate::data_root::DataRoot;
+use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR, WORKSPACES_DIR, global_blobs_dir, read_index};
 pub use crate::store_gc_live::LiveBlobs;
 use crate::store_gc_live::{SweepLock, is_rebuildable_view_error};
 
@@ -61,13 +60,14 @@ const TMP_SUFFIX: &str = ".tmp";
 /// default protects entry-less blobs that a concurrent scan is about to reference.
 pub const BLOB_GC_GRACE_ENV: &str = "BASEMIND_BLOB_GC_GRACE_SECS";
 
-/// The grace the destructive sweeps apply: [`BLOB_GC_GRACE_ENV`] when set to a number, else
-/// [`BLOB_GC_GRACE`].
+/// The grace the destructive sweeps apply: the engine configuration's
+/// ([`crate::config::engine::GcPolicy::blob_grace`]).
 pub(crate) fn blob_gc_grace() -> Duration {
-    grace_from(std::env::var(BLOB_GC_GRACE_ENV).ok().as_deref())
+    crate::config::engine::with(|config| config.gc.blob_grace)
 }
 
-fn grace_from(raw: Option<&str>) -> Duration {
+/// A [`BLOB_GC_GRACE_ENV`] value in whole seconds; [`BLOB_GC_GRACE`] when unset or not a number.
+pub fn grace_from(raw: Option<&str>) -> Duration {
     raw.and_then(|raw| raw.trim().parse::<u64>().ok())
         .map_or(BLOB_GC_GRACE, Duration::from_secs)
 }
@@ -372,14 +372,14 @@ fn sweep_stray_tmp(path: &Path, now: SystemTime, grace: Duration, report: &mut G
 /// Union the referenced blob stems across EVERY workspace index under the machine-global cache.
 ///
 /// The blob store is content-addressed and shared by every workspace, so a blob is live iff *any*
-/// workspace references it. This enumerates `cache_root()/cache/workspaces/<key>/` and unions
+/// workspace references it. This enumerates `<data home>/cache/workspaces/<key>/` and unions
 /// [`collect_referenced_hashes`] over each — the complete cross-workspace live set the daemon (the
 /// sole fjall writer, which alone sees every workspace) sweeps against. Schema-mismatched or corrupt
 /// view caches are passed over, not removed, and no workspace lock is taken, so a workspace another
 /// process holds cannot stop the sweep ([`collect_referenced_hashes_skipping_stale_views`]);
 /// transient I/O failures still abort it so an incomplete live set never drives a delete.
-pub fn collect_referenced_hashes_global() -> Result<LiveBlobs, GcError> {
-    collect_referenced_hashes_global_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR))
+pub fn collect_referenced_hashes_global(data: &DataRoot) -> Result<LiveBlobs, GcError> {
+    collect_referenced_hashes_global_in(&data.workspaces_dir())
 }
 
 /// [`collect_referenced_hashes_global`] against an explicit workspaces directory. Production passes
@@ -408,8 +408,8 @@ pub(crate) fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Resu
 /// EVERY workspace and reap blobs no workspace points at. This is the destructive counterpart to
 /// [`gc_report_only`] — safe ONLY because the daemon (the sole writer) is the single caller that can
 /// enumerate every workspace's references at once. Returns the sweep report.
-pub fn gc_global_blobs() -> Result<GcReport, GcError> {
-    let cache = cache_root().join(CACHE_DIR);
+pub fn gc_global_blobs(data: &DataRoot) -> Result<GcReport, GcError> {
+    let cache = data.cache_dir();
     // One destructive sweep at a time machine-wide: the daemon's maintenance tick and a CLI scan's
     // post-migration cleanup both build a whole-cache live set, so running two at once only doubles
     // the transient memory. A contended sweep is skipped (the holder is doing the same work).
@@ -419,7 +419,7 @@ pub fn gc_global_blobs() -> Result<GcReport, GcError> {
     };
     gc_blob_store_in(
         &cache.join(WORKSPACES_DIR),
-        &crate::store_layout::global_blobs_root(),
+        &data.global_blobs_root(),
         crate::extract::SCHEMA_VER,
         blob_gc_grace(),
     )
@@ -461,9 +461,9 @@ pub(crate) fn gc_blob_store_in(
 /// `admin cache_stats` reports it. The same bounded, grace-protected sweep the daemon runs, so it is
 /// safe against other workspaces' references and in-flight writes; unlike the daemon's it does not
 /// reap workspaces or enforce the size budget.
-pub fn reclaim_displaced_blobs() -> Result<GcReport, GcError> {
-    let report = gc_global_blobs()?;
-    persist_gc_state(&report);
+pub fn reclaim_displaced_blobs(data: &DataRoot) -> Result<GcReport, GcError> {
+    let report = gc_global_blobs(data)?;
+    persist_gc_state(data, &report);
     Ok(report)
 }
 
@@ -486,10 +486,10 @@ pub(crate) fn gc_global_blobs_in(
 /// cross-workspace live set, so every blob it references is pinned in the machine-global store
 /// forever — the cache can only grow. Reaping first drops those votes, so the very same sweep
 /// reclaims the blobs the orphan was pinning. The returned [`GcReport`] carries both halves.
-pub fn reap_and_gc_global() -> Result<GcReport, GcError> {
-    let reaped = reap_orphaned_workspaces()?;
-    let groups = crate::store_gc_groups::reap_orphaned_group_stores()?;
-    let mut report = gc_global_blobs()?;
+pub fn reap_and_gc_global(data: &DataRoot) -> Result<GcReport, GcError> {
+    let reaped = reap_orphaned_workspaces(data)?;
+    let groups = crate::store_gc_groups::reap_orphaned_group_stores(data)?;
+    let mut report = gc_global_blobs(data)?;
     report.workspaces_reaped = reaped.reaped;
     report.workspace_bytes_freed = reaped.bytes_freed;
     report.group_stores_reaped = groups.reaped;
@@ -500,10 +500,10 @@ pub fn reap_and_gc_global() -> Result<GcReport, GcError> {
 /// The daemon's complete maintenance sweep: [`reap_and_gc_global`], then cache-budget
 /// enforcement (preferring cold workspaces and reclaiming their orphaned blobs in the same pass),
 /// and finally persistence of the sweep's health and budget outcome to `gc-state.json`.
-pub fn reap_gc_and_enforce_budget() -> Result<GcReport, GcError> {
-    let mut report = reap_and_gc_global()?;
+pub fn reap_gc_and_enforce_budget(data: &DataRoot) -> Result<GcReport, GcError> {
+    let mut report = reap_and_gc_global(data)?;
     if let Some(budget) = cache_budget_bytes() {
-        let evicted = enforce_cache_budget(budget)?;
+        let evicted = enforce_cache_budget(data, budget)?;
         report.cache_budget_bytes = Some(budget);
         report.cache_bytes_after = Some(evicted.total_bytes_after);
         report.hot_workspaces_evicted = evicted.hot_evicted;
@@ -517,19 +517,17 @@ pub fn reap_gc_and_enforce_budget() -> Result<GcReport, GcError> {
             report.bytes_freed += evicted.blob_bytes_freed;
         }
     }
-    persist_gc_state(&report);
+    persist_gc_state(data, &report);
     Ok(report)
 }
 
 /// Blob GC entry point for the offline CLI `cache gc`: the cross-workspace reference-counted sweep
-/// ([`gc_global_blobs`]). It reference-counts against EVERY workspace's indexes (not just
-/// `basemind_dir`'s), so it cannot reap a blob another workspace still needs, honours the same
+/// ([`gc_global_blobs`]) over every workspace under `data`. It reference-counts against every
+/// workspace's indexes, so it cannot reap a blob another workspace still needs, honours the same
 /// young-blob grace and machine-wide sweep lock as the daemon's, and reports what it removed.
-/// `basemind_dir` is accepted for the call-site shape only: the sweep is machine-wide.
-pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
-    let _ = basemind_dir;
-    let report = gc_global_blobs()?;
-    persist_gc_state(&report);
+pub fn run_gc(data: &DataRoot) -> Result<GcReport, GcError> {
+    let report = gc_global_blobs(data)?;
+    persist_gc_state(data, &report);
     Ok(report)
 }
 
@@ -537,12 +535,12 @@ pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
 /// every namespace and beside them, and the marker-less workspace dirs the daemon's sweep would
 /// reap, and removes nothing. This is the safe standalone behavior while the blob store is
 /// machine-global (see [`run_gc`]). `bytes_freed` / `removed` are always `0`.
-pub fn gc_report_only() -> Result<GcReport, GcError> {
-    let candidates = markerless_workspace_candidates()?;
+pub fn gc_report_only(data: &DataRoot) -> Result<GcReport, GcError> {
+    let candidates = markerless_workspace_candidates(data)?;
     Ok(GcReport {
         markerless_workspaces_reapable: candidates.count,
         markerless_workspace_bytes_reapable: candidates.bytes,
-        scanned: count_blob_files(&crate::store_layout::global_blobs_root())?,
+        scanned: count_blob_files(&data.global_blobs_root())?,
         ..GcReport::default()
     })
 }

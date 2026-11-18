@@ -15,25 +15,19 @@ use super::v1::ConfigV1;
 /// point anywhere (`~/.ssh`), so following links is an operator decision, not a repo one.
 pub const ALLOW_FOLLOW_SYMLINKS_ENV: &str = "BASEMIND_ALLOW_FOLLOW_SYMLINKS";
 
-/// Operator-side grants, read from the process environment.
+/// Operator-side grants, from the engine configuration's trust policy.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Grants {
     pub follow_symlinks: bool,
 }
 
 impl Grants {
-    pub fn from_env() -> Self {
+    /// The grants of the installed engine configuration.
+    pub fn installed() -> Self {
         Self {
-            follow_symlinks: env_truthy(ALLOW_FOLLOW_SYMLINKS_ENV),
+            follow_symlinks: super::engine::with(|config| config.trust.allow_follow_symlinks),
         }
     }
-}
-
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|v| {
-        let v = v.trim();
-        v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
-    })
 }
 
 /// Strip from the repo-sourced config everything the operator has not granted.
@@ -115,7 +109,12 @@ pub fn warn_deprecated_sections(config: &ConfigV1) {
     for (_, message) in deprecated_settings(config) {
         warn_once(message.to_string());
     }
-    for name in deprecated_env_set(|name| std::env::var_os(name).is_some()) {
+}
+
+/// Warn once about each set variable of a removed setting; `is_set` reports whether one is set. The
+/// CLI passes the process environment when it builds the engine configuration.
+pub fn warn_removed_variables(is_set: impl Fn(&str) -> bool) {
+    for name in deprecated_env_set(is_set) {
         warn_once(format!(
             "{name} is set, but the setting it overrode was removed and the variable is ignored; unset it"
         ));

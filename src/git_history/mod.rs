@@ -149,7 +149,10 @@ pub fn shared_history_basemind_dir(root: &std::path::Path) -> std::path::PathBuf
 
 /// Escape hatch restoring the pre-#62 behaviour: index an ancestor repository's history for a
 /// workspace root that is merely a subdirectory of it.
-const DISCOVER_PARENTS_ENV: &str = "BASEMIND_GIT_DISCOVER_PARENTS";
+pub const DISCOVER_PARENTS_ENV: &str = "BASEMIND_GIT_DISCOVER_PARENTS";
+
+/// `0` turns the git-history index off.
+pub const HISTORY_INDEX_ENV: &str = "BASEMIND_GH_INDEX";
 
 /// Whether `repo`'s history may be indexed for the workspace it was discovered from.
 ///
@@ -171,7 +174,7 @@ const DISCOVER_PARENTS_ENV: &str = "BASEMIND_GIT_DISCOVER_PARENTS";
 /// 275 MiB of packs and 101 655 objects (issue #62). Set `BASEMIND_GIT_DISCOVER_PARENTS=1` to opt
 /// back in.
 pub fn history_scope_ok(repo: &crate::git::Repo) -> bool {
-    repo.origin_is_workdir() || std::env::var_os(DISCOVER_PARENTS_ENV).is_some_and(|v| v != "0")
+    repo.origin_is_workdir() || crate::config::engine::with(|config| config.git.discover_parents)
 }
 
 /// Retry budget + backoff for a transient fjall `Locked` when opening the git-history DB. The
@@ -184,7 +187,7 @@ const GH_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50
 /// `BASEMIND_GH_INDEX=0` to disable it (the history tools then fall back to the live walk). The
 /// `scan` / `rescan` CLIs additionally honor a `--no-git-history` flag.
 pub fn index_enabled() -> bool {
-    std::env::var("BASEMIND_GH_INDEX").map(|v| v != "0").unwrap_or(true)
+    crate::config::engine::with(|config| config.git.history_index)
 }
 
 #[derive(Debug, Error)]

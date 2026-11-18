@@ -34,14 +34,12 @@ pub(crate) struct BlobStorePaths {
 
 impl BlobStorePaths {
     /// The machine-global store.
-    pub(crate) fn global() -> Self {
+    pub(crate) fn global(data: &crate::data_root::DataRoot) -> Self {
         Self {
-            root: crate::store_layout::global_blobs_root(),
+            root: data.global_blobs_root(),
             schema: crate::extract::SCHEMA_VER,
-            gc_state: crate::store_gc_budget::gc_state_path(),
-            repos: crate::store_layout::cache_root()
-                .join(crate::store_layout::CACHE_DIR)
-                .join(crate::store::REPOS_DIR),
+            gc_state: crate::store_gc_budget::gc_state_path(data),
+            repos: data.cache_dir().join(crate::store::REPOS_DIR),
         }
     }
 
@@ -201,8 +199,12 @@ pub struct ClearReport {
 /// `Blobs` clears the machine-global blob store (shared by every workspace): the current
 /// namespace, the namespaces of older schemas and the un-namespaced blobs of older builds. All
 /// other components are per-workspace under `basemind_dir`.
-pub fn clear_component(basemind_dir: &Path, component: CacheComponent) -> Result<ClearReport, GcError> {
-    clear_component_in(basemind_dir, component, &BlobStorePaths::global())
+pub fn clear_component(
+    data: &crate::data_root::DataRoot,
+    basemind_dir: &Path,
+    component: CacheComponent,
+) -> Result<ClearReport, GcError> {
+    clear_component_in(basemind_dir, component, &BlobStorePaths::global(data))
 }
 
 /// [`clear_component`] against an explicit blob store (used for the `Blobs` branch). Production
@@ -312,8 +314,8 @@ pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError>
 
 /// Gather per-component sizes and blob accounting without mutating anything. The orphan
 /// count reuses [`collect_referenced_hashes`] but never deletes.
-pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
-    cache_stats_in(basemind_dir, &BlobStorePaths::global())
+pub fn cache_stats(data: &crate::data_root::DataRoot, basemind_dir: &Path) -> Result<CacheStats, GcError> {
+    cache_stats_in(basemind_dir, &BlobStorePaths::global(data))
 }
 
 /// [`cache_stats`] against an explicit blob store. Production passes the global store; unit

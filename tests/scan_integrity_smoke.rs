@@ -23,8 +23,7 @@ fn no_headroom() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         basemind::store::init_isolated_cache();
-        // SAFETY: set once, before any scan in this binary reads it.
-        unsafe { std::env::set_var(basemind::disk_space::MIN_FREE_ENV, "0") };
+        basemind::config::engine::update(|engine| engine.min_free_bytes = 0);
     });
 }
 

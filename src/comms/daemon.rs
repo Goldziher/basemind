@@ -221,13 +221,14 @@ impl Broker {
     /// at a throwaway path) rather than failing the daemon — coordination tools then return empty
     /// until a workspace registers. Use [`Broker::with_registry`] to inject a registry (tests).
     pub fn new(agents: AgentHub) -> Self {
-        let registry = MachineRegistry::from_data_home().unwrap_or_else(|error| {
-            tracing::warn!(%error, "comms: machine registry open failed; using an empty in-memory registry");
-            MachineRegistry::open(
-                &std::env::temp_dir().join(format!("basemind-registry-fallback-{}", std::process::id())),
-            )
-            .expect("open fallback registry in temp dir")
-        });
+        let registry =
+            MachineRegistry::from_data_home(&crate::data_root::DataRoot::current()).unwrap_or_else(|error| {
+                tracing::warn!(%error, "comms: machine registry open failed; using an empty in-memory registry");
+                MachineRegistry::open(
+                    &std::env::temp_dir().join(format!("basemind-registry-fallback-{}", std::process::id())),
+                )
+                .expect("open fallback registry in temp dir")
+            });
         Self::with_registry(agents, registry)
     }
 
@@ -664,14 +665,14 @@ impl Broker {
             let Some(_sweeping) = gate.try_sweep(lock_timeout) else {
                 return Err(crate::store_gc::GcError::Starved(lock_timeout));
             };
-            crate::store_gc::reap_gc_and_enforce_budget()
+            crate::store_gc::reap_gc_and_enforce_budget(&crate::data_root::DataRoot::current())
         });
         let result = match swept.await {
             Ok(result) => result,
             Err(join) => Err(crate::store_gc::GcError::Join(join.to_string())),
         };
         if let Err(error) = &result {
-            crate::store_gc::persist_gc_error(error);
+            crate::store_gc::persist_gc_error(&crate::data_root::DataRoot::current(), error);
         }
         result
     }

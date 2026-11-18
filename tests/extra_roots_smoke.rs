@@ -22,7 +22,9 @@ fn repo_with_external() -> (TempDir, TempDir, ConfigV1) {
     // This whole binary exercises the granted path; the refusal lives in
     // `tests/extra_roots_containment_smoke.rs`, which must stay in its own process to keep the
     // process-wide grant off.
-    basemind::scanner::allow_extra_roots(true);
+    basemind::config::engine::update(|engine| {
+        engine.trust.extra_roots = basemind::config::engine::ExtraRootsGrant::Every;
+    });
     let repo = tempfile::tempdir().expect("repo tempdir");
     let ext = tempfile::tempdir().expect("external tempdir");
 

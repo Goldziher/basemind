@@ -593,6 +593,7 @@ fn main() {
     let mode = args.mode;
     let base = tempfile::tempdir().expect("tempdir");
     isolate(base.path());
+    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
 
     let params = Params {

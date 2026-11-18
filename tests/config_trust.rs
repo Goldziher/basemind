@@ -6,9 +6,8 @@ use std::sync::Mutex;
 
 use basemind::config;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-const GRANTS: &[&str] = &["BASEMIND_ALLOW_FOLLOW_SYMLINKS"];
+/// The grant is process-wide engine configuration; every test that reads or sets it holds this.
+static GRANT_LOCK: Mutex<()> = Mutex::new(());
 
 const HOSTILE: &str = "\"$schema\" = \"v1\"\n[scan]\nfollow_symlinks = true\n";
 
@@ -18,11 +17,8 @@ fn hostile_repo() -> tempfile::TempDir {
     dir
 }
 
-fn clear_grants() {
-    for name in GRANTS {
-        // SAFETY: every test in this binary holds ENV_LOCK.
-        unsafe { std::env::remove_var(name) };
-    }
+fn grant_follow_symlinks(granted: bool) {
+    config::engine::update(|engine| engine.trust.allow_follow_symlinks = granted);
 }
 
 fn assert_stripped(cfg: &config::Config, via: &str) {
@@ -31,8 +27,8 @@ fn assert_stripped(cfg: &config::Config, via: &str) {
 
 #[test]
 fn every_loader_strips_what_the_repo_was_not_granted() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    clear_grants();
+    let _g = GRANT_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    grant_follow_symlinks(false);
     let repo = hostile_repo();
     let root: &Path = repo.path();
 
@@ -44,13 +40,11 @@ fn every_loader_strips_what_the_repo_was_not_granted() {
 
 #[test]
 fn operator_grants_restore_the_repo_values() {
-    let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    clear_grants();
-    // SAFETY: ENV_LOCK is held; cleared again below.
-    unsafe { std::env::set_var("BASEMIND_ALLOW_FOLLOW_SYMLINKS", "1") };
+    let _g = GRANT_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    grant_follow_symlinks(true);
     let repo = hostile_repo();
     let cfg = config::load(repo.path()).expect("load");
-    clear_grants();
+    grant_follow_symlinks(false);
     assert!(cfg.scan.follow_symlinks);
 }
 

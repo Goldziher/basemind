@@ -8,7 +8,7 @@
 
 use crate::index::IndexError;
 use crate::index::group_sweep::GroupSweepReport;
-use crate::store::{CACHE_DIR, Store, VIEWS_DIR, WORKSPACES_DIR, cache_root};
+use crate::store::{Store, VIEWS_DIR};
 
 impl Store {
     /// Retire the group's views that are gone, then, when the group owes it, delete the symbol and
@@ -22,7 +22,7 @@ impl Store {
         let Some(mut sweep) = db.begin_group_sweep()? else {
             return Ok(None);
         };
-        let workspaces = cache_root().join(CACHE_DIR).join(WORKSPACES_DIR);
+        let workspaces = self.data_root.workspaces_dir();
         for (workspace, view, view_id) in sweep.other_views()? {
             let view_dir = workspaces.join(&workspace).join(VIEWS_DIR).join(&view);
             // A directory whose existence cannot be told is kept. ~keep

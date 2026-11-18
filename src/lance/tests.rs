@@ -749,3 +749,65 @@ fn the_metadata_cache_stays_within_its_budget_under_steady_writes() {
     assert!(bounded > 0, "the store caches into the session it was opened with");
     assert!(bounded <= BUDGET, "{bounded} bytes cached over a {BUDGET}-byte budget");
 }
+
+/// The paths this process holds open under `dir`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let dir = dir.canonicalize().unwrap();
+    let mut open = Vec::new();
+    #[cfg(target_os = "linux")]
+    for entry in std::fs::read_dir("/proc/self/fd").unwrap().flatten() {
+        if let Ok(target) = std::fs::read_link(entry.path()) {
+            open.push(target);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `getdtablesize` has no preconditions. ~keep
+        let table = unsafe { libc::getdtablesize() };
+        for fd in 0..table {
+            let mut buf = [0u8; libc::PATH_MAX as usize];
+            // SAFETY: `F_GETPATH` writes at most `PATH_MAX` bytes into `buf`; a closed fd fails. ~keep
+            if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) } == 0 {
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                open.push(std::path::PathBuf::from(
+                    String::from_utf8_lossy(&buf[..len]).into_owned(),
+                ));
+            }
+        }
+    }
+    open.retain(|path| path.starts_with(&dir));
+    open
+}
+
+/// Dropping a store ends the tasks lance spawned for it, so nothing keeps a handle into its
+/// directory once the last clone is gone and the directory can be removed.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_dropped_store_leaves_no_open_handle_in_its_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let probe = std::fs::File::create(dir.path().join("probe")).unwrap();
+    assert_eq!(open_files_under(dir.path()).len(), 1, "an open file is seen");
+    drop(probe);
+    let store = LanceStore::open(dir.path(), 4, "test").unwrap();
+    let rows: Vec<MemoryRow> = (0..64).map(|i| memory_row(&format!("k{i}"), "text", i)).collect();
+    store.upsert_memory_rows(&rows).unwrap();
+    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, None).unwrap();
+    assert_eq!(hits.len(), 10, "the search read the table");
+    let runtime = store.inner.rt().handle().clone();
+    assert!(
+        runtime.metrics().num_alive_tasks() > 0,
+        "lance left tasks of its own on the store's runtime, which the drop has to end"
+    );
+    let reader = store.clone();
+    drop(store);
+    assert!(
+        runtime.metrics().num_alive_tasks() > 0,
+        "a live clone keeps the store's tasks"
+    );
+    drop(reader);
+
+    assert_eq!(runtime.metrics().num_alive_tasks(), 0, "the drop ended lance's tasks");
+    assert_eq!(open_files_under(dir.path()), Vec::<std::path::PathBuf>::new());
+    std::fs::remove_dir_all(dir.path()).unwrap();
+}

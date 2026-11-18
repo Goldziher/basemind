@@ -23,7 +23,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::store_layout::{CACHE_DIR, WORKSPACES_DIR, cache_root, workspace_cache_dir};
+use crate::data_root::DataRoot;
+use crate::store_layout::workspace_cache_dir;
 
 /// Filename of the in-flight-scan breadcrumb inside a workspace cache dir.
 const INFLIGHT_FILE: &str = "scan-inflight.json";
@@ -233,8 +234,8 @@ pub struct StaleScan {
 /// Reads only the filesystem — no daemon RPC, no index open — so it stays usable on a machine that
 /// is already wedged, which is the only machine anyone runs it on.
 #[cfg(any(unix, windows))]
-pub fn stale_inflight_scans() -> Vec<StaleScan> {
-    stale_inflight_scans_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR))
+pub fn stale_inflight_scans(data: &DataRoot) -> Vec<StaleScan> {
+    stale_inflight_scans_in(&data.workspaces_dir())
 }
 
 /// [`stale_inflight_scans`] against an explicit workspaces dir, so tests need no global cache root.

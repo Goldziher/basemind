@@ -816,7 +816,11 @@ fn git_first_line(repo: &Path, args: &[&str]) -> Option<String> {
 async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path, record: &mut RepoRecord) {
     // Cache accounting has no MCP tool; this is the call `basemind cache stats` makes.
     let cache_dir = basemind::store::workspace_cache_dir(repo_root);
-    if let Ok(Ok(stats)) = tokio::task::spawn_blocking(move || basemind::store_gc::cache_stats(&cache_dir)).await {
+    if let Ok(Ok(stats)) = tokio::task::spawn_blocking(move || {
+        basemind::store_gc::cache_stats(&basemind::data_root::DataRoot::current(), &cache_dir)
+    })
+    .await
+    {
         record
             .canaries
             .insert("stats_git_history_bytes".into(), json!(stats.git_history_bytes));
@@ -1301,6 +1305,13 @@ async fn harden_repo() {
     });
 
     eprintln!("[harden] repo={} ({})", repo_name, repo.display());
+    // Every index this run writes lands under the data home. Unset, that is the user's own cache;
+    // set but not installed, the library would still use the platform default.
+    assert!(
+        std::env::var_os(basemind::store::DATA_HOME_ENV).is_some() && std::env::var_os("BASEMIND_COMMS_DIR").is_some(),
+        "set BASEMIND_DATA_HOME and BASEMIND_COMMS_DIR to a throwaway directory (scripts/harden.sh does)"
+    );
+    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
 
     let scan = {
         let repo = repo.clone();

@@ -64,16 +64,23 @@ pub struct ProtectedWorkspace {
     pub reason: ProtectionReason,
 }
 
-/// The configured grace window: [`CACHE_GRACE_ENV`] in minutes, defaulting to 6 hours. An
-/// unparseable value is logged and falls back to the default (a typo must not silently remove a
-/// safety net).
+/// The configured grace window: the engine configuration's
+/// ([`crate::config::engine::GcPolicy::grace`]).
 pub fn cache_grace() -> Duration {
-    let minutes = match std::env::var(CACHE_GRACE_ENV) {
-        Ok(raw) => raw.trim().parse::<u64>().unwrap_or_else(|_| {
-            tracing::warn!(value = %raw, "{CACHE_GRACE_ENV} is not a number; using the default grace window");
+    crate::config::engine::with(|config| config.gc.grace)
+}
+
+/// A [`CACHE_GRACE_ENV`] value in minutes, defaulting to 6 hours. An unparseable value is logged and
+/// falls back to the default (a typo must not silently remove a safety net).
+pub fn cache_grace_from(raw: Option<&str>) -> Duration {
+    let minutes = match raw {
+        Some(raw) => raw.trim().parse::<u64>().unwrap_or_else(|_| {
+            crate::config::trust::warn_once(format!(
+                "{CACHE_GRACE_ENV}={raw:?} is not a number; using the default grace window"
+            ));
             DEFAULT_CACHE_GRACE_MINUTES
         }),
-        Err(_) => DEFAULT_CACHE_GRACE_MINUTES,
+        None => DEFAULT_CACHE_GRACE_MINUTES,
     };
     Duration::from_secs(minutes * 60)
 }
@@ -83,20 +90,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grace_env_parses_default_zero_and_garbage() {
-        // SAFETY: test-only env mutation; no other test in this binary reads this var
-        unsafe { std::env::remove_var(CACHE_GRACE_ENV) };
-        assert_eq!(cache_grace(), Duration::from_secs(6 * 3600));
-        unsafe { std::env::set_var(CACHE_GRACE_ENV, "0") };
-        assert_eq!(cache_grace(), Duration::ZERO, "0 disables the window");
-        unsafe { std::env::set_var(CACHE_GRACE_ENV, "30") };
-        assert_eq!(cache_grace(), Duration::from_secs(30 * 60));
-        unsafe { std::env::set_var(CACHE_GRACE_ENV, "soon") };
+    fn grace_parses_default_zero_and_garbage() {
+        assert_eq!(cache_grace_from(None), Duration::from_secs(6 * 3600));
+        assert_eq!(cache_grace_from(Some("0")), Duration::ZERO, "0 disables the window");
+        assert_eq!(cache_grace_from(Some("30")), Duration::from_secs(30 * 60));
         assert_eq!(
-            cache_grace(),
+            cache_grace_from(Some("soon")),
             Duration::from_secs(6 * 3600),
             "garbage keeps the default"
         );
-        unsafe { std::env::remove_var(CACHE_GRACE_ENV) };
     }
 }

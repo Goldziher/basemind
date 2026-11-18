@@ -35,7 +35,8 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::store_layout::{cache_root, workspace_key};
+use crate::data_root::DataRoot;
+use crate::store_layout::workspace_key;
 
 /// The flock file within a daemon dir. Distinct from a store's `.lock` — this one is held for the
 /// daemon-process lifetime and gates the singleton decision before bind. Deliberately not
@@ -86,14 +87,17 @@ pub const MAX_LIVE_DAEMONS: usize = 8;
 /// Env override for [`MAX_LIVE_DAEMONS`]. Zero or unparseable falls back to the default.
 pub const MAX_LIVE_DAEMONS_ENV: &str = "BASEMIND_MAX_DAEMONS";
 
-/// The effective ceiling: [`MAX_LIVE_DAEMONS`] unless [`MAX_LIVE_DAEMONS_ENV`] overrides it.
+/// The effective ceiling: the engine configuration's
+/// ([`crate::config::engine::EngineConfig::max_live_daemons`]).
 pub fn max_live_daemons() -> usize {
-    match std::env::var(MAX_LIVE_DAEMONS_ENV) {
-        Ok(raw) => match raw.trim().parse::<usize>() {
-            Ok(n) if n > 0 => n,
-            _ => MAX_LIVE_DAEMONS,
-        },
-        Err(_) => MAX_LIVE_DAEMONS,
+    crate::config::engine::with(|config| config.max_live_daemons)
+}
+
+/// A [`MAX_LIVE_DAEMONS_ENV`] value; zero or unparseable falls back to [`MAX_LIVE_DAEMONS`].
+pub fn max_live_daemons_from(raw: Option<&str>) -> usize {
+    match raw.map(|raw| raw.trim().parse::<usize>()) {
+        Some(Ok(n)) if n > 0 => n,
+        _ => MAX_LIVE_DAEMONS,
     }
 }
 
@@ -164,7 +168,7 @@ pub struct DaemonRecord {
 /// up to 0.33 keep their records directly in it; their scan reads only `*.pid` files there, so a
 /// generation subdirectory is invisible to them.
 fn daemons_root() -> PathBuf {
-    cache_root().join(DAEMONS_SUBDIR)
+    DataRoot::current().path().join(DAEMONS_SUBDIR)
 }
 
 /// This generation's registry directory (`<data_home>/daemons/g<N>/`): where this binary's daemons

@@ -1,0 +1,5 @@
+# Grammars are cached under the data home (ADR-0050). Tests and `cargo run` start basemind with
+# throwaway data homes, so share one grammar cache across them instead of downloading every grammar
+# again per data home. A value already set in the environment wins.
+[env]
+TREE_SITTER_LANGUAGE_PACK_CACHE_DIR = { value = "target/grammars", relative = true, force = false }

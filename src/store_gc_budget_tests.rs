@@ -465,18 +465,15 @@ fn legacy_gc_state_defaults_attempt_health_fields() {
 }
 
 #[test]
-fn cache_budget_env_parses_default_zero_and_garbage() {
-    const VAR: &str = CACHE_BUDGET_ENV;
-    // SAFETY: test-only env mutation; no other thread in this test binary reads this var
-    unsafe { std::env::remove_var(VAR) };
-    assert_eq!(cache_budget_bytes(), Some(DEFAULT_CACHE_BUDGET_MIB * 1024 * 1024));
-    unsafe { std::env::set_var(VAR, "0") };
-    assert_eq!(cache_budget_bytes(), None, "0 disables enforcement");
-    unsafe { std::env::set_var(VAR, "512") };
-    assert_eq!(cache_budget_bytes(), Some(512 * 1024 * 1024));
-    unsafe { std::env::set_var(VAR, "not-a-number") };
-    assert_eq!(cache_budget_bytes(), None, "garbage disables enforcement (logged)");
-    unsafe { std::env::remove_var(VAR) };
+fn cache_budget_parses_default_zero_and_garbage() {
+    assert_eq!(cache_budget_from(None), Some(DEFAULT_CACHE_BUDGET_MIB * 1024 * 1024));
+    assert_eq!(cache_budget_from(Some("0")), None, "0 disables enforcement");
+    assert_eq!(cache_budget_from(Some("512")), Some(512 * 1024 * 1024));
+    assert_eq!(
+        cache_budget_from(Some("not-a-number")),
+        None,
+        "garbage disables enforcement (logged)"
+    );
 }
 
 /// A pass within budget evicts nothing, so it has no reason to read any workspace's file map.

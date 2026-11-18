@@ -216,13 +216,10 @@ fn canonical(path: &Path) -> PathBuf {
 /// size, so the same host tops out near 256 MiB. 8 MiB comfortably holds a source-tree delta chain
 /// (chains are ≲50 deep and the bases are source blobs); the cost of undersizing it is re-decoding,
 /// not wrong answers.
-const DELTA_BASE_CACHE_BYTES: usize = 8 * 1024 * 1024;
+pub const DELTA_BASE_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
 fn delta_base_cache_bytes() -> usize {
-    std::env::var("BASEMIND_GIT_DELTA_CACHE_BYTES")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DELTA_BASE_CACHE_BYTES)
+    crate::config::engine::with(|config| config.git.delta_cache_bytes)
 }
 
 /// Trust-mapped open options carrying basemind's resource bounds, applied to every repository we
@@ -615,8 +612,8 @@ impl Repo {
         let local = self.local();
 
         let (size_bytes, line_count) = blob_size_and_line_count(&local, suspect_sha, path).unwrap_or((0, 0));
-        let max_bytes = blame_max_bytes_from_env();
-        let max_lines = blame_max_lines_from_env();
+        let (max_bytes, max_lines) =
+            crate::config::engine::with(|config| (config.git.blame_max_bytes, config.git.blame_max_lines));
         if size_bytes > max_bytes || line_count > max_lines {
             return Err(GitError::BlameTooLarge {
                 path: path.clone(),
@@ -758,24 +755,10 @@ impl Repo {
 }
 
 /// Default blame size cap in bytes (1 MiB) — protects against vendored bundles + lockfiles.
-const BLAME_DEFAULT_MAX_BYTES: u64 = 1 << 20;
+pub const BLAME_DEFAULT_MAX_BYTES: u64 = 1 << 20;
 /// Default blame line cap (5 000) — protects against generated single-line monsters that
 /// pass the byte cap.
-const BLAME_DEFAULT_MAX_LINES: u64 = 5_000;
-
-fn blame_max_bytes_from_env() -> u64 {
-    std::env::var("BASEMIND_BLAME_MAX_BYTES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(BLAME_DEFAULT_MAX_BYTES)
-}
-
-fn blame_max_lines_from_env() -> u64 {
-    std::env::var("BASEMIND_BLAME_MAX_LINES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(BLAME_DEFAULT_MAX_LINES)
-}
+pub const BLAME_DEFAULT_MAX_LINES: u64 = 5_000;
 
 /// Read the suspect-rev blob and compute `(bytes, lines)` for the size-cap pre-check.
 /// Failure is non-fatal — we return `None` and let the blame call fail with its own error.

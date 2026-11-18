@@ -27,6 +27,7 @@ fn a_scan_is_refused_when_the_volume_is_below_the_headroom() {
     fs::write(root.join("alpha.rs"), b"pub fn alpha() {}\n").unwrap();
     // SAFETY: the only test in this binary, and set before the scan reads it.
     unsafe { std::env::set_var(basemind::disk_space::MIN_FREE_ENV, "999999999999") };
+    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
 
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
     let outcome = scan(

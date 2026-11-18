@@ -7,7 +7,7 @@
 //! contents through the agent-facing search tools.
 //!
 //! This suite deliberately lives in its own test binary, and never touches the grant: the grant
-//! (`basemind::scanner::allow_extra_roots`) is process-wide, and `tests/extra_roots_smoke.rs` turns
+//! (`EngineConfig::trust.extra_roots`) is process-wide, and `tests/extra_roots_smoke.rs` turns
 //! it on for every test in *its* process — which is also where the granted path is covered, so
 //! that the containment cannot be mistaken for the feature simply being broken. Merging the two
 //! would make these assertions depend on test ordering.

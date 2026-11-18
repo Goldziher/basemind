@@ -251,6 +251,7 @@ fn a_full_scan_stays_inside_an_affine_memory_budget() {
     let data_home = tempfile::tempdir().expect("data home");
     // SAFETY: this binary contains exactly one test, so no other thread is reading the environment.
     unsafe { std::env::set_var("BASEMIND_DATA_HOME", data_home.path()) };
+    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
 
     warm_up();
     let baseline = peak_bytes();

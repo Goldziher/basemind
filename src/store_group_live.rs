@@ -140,9 +140,7 @@ impl Store {
             path: self.view_dir.clone(),
             source: error.into(),
         })?;
-        let workspaces = crate::store::cache_root()
-            .join(crate::store::CACHE_DIR)
-            .join(crate::store::WORKSPACES_DIR);
+        let workspaces = self.data_root.workspaces_dir();
         Ok(views
             .into_iter()
             .map(|(workspace, view)| workspaces.join(workspace).join(crate::store::VIEWS_DIR).join(view))

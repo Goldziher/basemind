@@ -38,6 +38,9 @@ fn module_source(index: usize) -> String {
 /// Scan a freshly-populated tempdir and return the open store. The `TempDir` is
 /// returned alongside so it outlives the store (drop order keeps blobs on disk).
 fn setup() -> (TempDir, Store) {
+    // The library reads its data home from the installed engine, never the environment; without
+    // this a `BASEMIND_DATA_HOME` the caller exported would be ignored.
+    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 

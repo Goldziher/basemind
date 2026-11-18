@@ -338,6 +338,7 @@ fn flavor_config(
         env.insert(variable, value);
     }
     config.env = env;
+    config.data_home = Some(crate::data_root::DataRoot::current().path().to_path_buf());
     let mut server = McpServerSpec::basemind_serve(context.mcp_command);
     server.allow_tools = comms_tools();
     config.mcp_server = Some(server);

@@ -5,12 +5,13 @@
 //! `%APPDATA%\basemind\data` on Windows, `$XDG_DATA_HOME` (or `~/.local/share/basemind`) on Linux.
 //! Forcing the Linux XDG path on macOS/Windows would be a regression — `dirs`/`directories` returning
 //! the native location there is CORRECT, not a bug to override. This test pins that per-platform, and
-//! that every cache subtree routes through `cache_root()` and honors the `BASEMIND_DATA_HOME` seam.
+//! that every cache subtree routes through the data home and honors the `BASEMIND_DATA_HOME` seam.
 //! It runs on the Linux/macOS/Windows CI matrix, on default features, so no heavy stack is required.
 
 use std::path::Path;
 
-use basemind::store::{cache_root, global_blobs_dir, workspace_cache_dir, workspace_key};
+use basemind::data_root::DataRoot;
+use basemind::store::{global_blobs_dir, workspace_cache_dir, workspace_key};
 
 /// Deliberately the ONLY test function in this binary. `std::env::{set_var, remove_var}` are unsound
 /// with a concurrent environment reader, and the integration-test harness runs distinct test fns on
@@ -26,22 +27,22 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
         std::env::remove_var("BASEMIND_DATA_HOME");
     }
 
-    let native = cache_root();
+    let native = DataRoot::current().path().to_path_buf();
     assert!(
         native.is_absolute(),
-        "cache_root() must be an absolute path, got {native:?}"
+        "the data home must be an absolute path, got {native:?}"
     );
     let native_str = native.to_string_lossy();
     assert!(
         native_str.contains("basemind"),
-        "cache_root() must be namespaced under `basemind`, got {native:?}"
+        "the data home must be namespaced under `basemind`, got {native:?}"
     );
 
     #[cfg(target_os = "macos")]
     {
         assert!(
             native_str.contains("Library/Application Support"),
-            "macOS cache_root() must use the native Application Support dir, got {native:?}"
+            "macOS the data home must use the native Application Support dir, got {native:?}"
         );
         assert!(
             !native_str.contains(".local/share"),
@@ -52,7 +53,7 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
     {
         assert!(
             native_str.contains("AppData"),
-            "Windows cache_root() must use the native AppData dir, got {native:?}"
+            "Windows the data home must use the native AppData dir, got {native:?}"
         );
         assert!(
             !native_str.contains(".local"),
@@ -64,23 +65,23 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
         match std::env::var_os("XDG_DATA_HOME") {
             Some(xdg) if !xdg.is_empty() => assert!(
                 native.starts_with(&xdg),
-                "Linux cache_root() must honor $XDG_DATA_HOME ({xdg:?}), got {native:?}"
+                "Linux the data home must honor $XDG_DATA_HOME ({xdg:?}), got {native:?}"
             ),
             _ => assert!(
                 native_str.contains(".local/share"),
-                "Linux cache_root() defaults under ~/.local/share, got {native:?}"
+                "Linux the data home defaults under ~/.local/share, got {native:?}"
             ),
         }
     }
 
     assert!(
         global_blobs_dir().starts_with(&native),
-        "the global blob store must live under cache_root(), got {:?}",
+        "the global blob store must live under the data home, got {:?}",
         global_blobs_dir()
     );
     assert!(
         workspace_cache_dir(manifest).starts_with(&native),
-        "the per-workspace cache dir must live under cache_root(), got {:?}",
+        "the per-workspace cache dir must live under the data home, got {:?}",
         workspace_cache_dir(manifest)
     );
 
@@ -97,10 +98,11 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
     unsafe {
         std::env::set_var("BASEMIND_DATA_HOME", temp.path());
     }
+    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
     assert_eq!(
-        cache_root(),
+        DataRoot::current().path(),
         temp.path(),
-        "BASEMIND_DATA_HOME must override cache_root() verbatim"
+        "BASEMIND_DATA_HOME must override the data home verbatim"
     );
     assert!(
         global_blobs_dir().starts_with(temp.path()),

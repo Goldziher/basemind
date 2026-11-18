@@ -153,7 +153,7 @@ fn check_hook(root: &Path) -> Check {
 /// in-use workspace (see `basemind::store_gc_protect`). Reads only the persisted `gc-state.json`.
 fn check_cache_budget() -> Check {
     use basemind::store_gc::{GcStatus, read_gc_state};
-    match read_gc_state() {
+    match read_gc_state(&basemind::data_root::DataRoot::current()) {
         Some(state) if state.status == GcStatus::OverBudget => {
             let kept: Vec<String> = state
                 .protected_workspaces

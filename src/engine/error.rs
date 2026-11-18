@@ -8,7 +8,7 @@
 /// Why an engine operation did not answer.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub(crate) enum EngineError {
+pub enum EngineError {
     /// The arguments cannot be answered as given: a path outside the repository or not in the
     /// index, a stale or foreign cursor, an unknown revision. The caller fixes the call.
     #[error("{0}")]

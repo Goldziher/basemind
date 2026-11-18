@@ -109,13 +109,10 @@ const FLOOR_CREDENTIALS: &[&str] = &[
 /// un-exclude the operator's untracked secrets and have them indexed.
 pub const ALLOW_REPO_CREDENTIALS_ENV: &str = "BASEMIND_ALLOW_REPO_CREDENTIALS";
 
-/// Whether the operator granted removal of credential-floor entries. Read from the process
-/// environment, which the operator supplies — never from the repository's `basemind.toml`.
+/// Whether the operator granted removal of credential-floor entries: the engine configuration's
+/// trust policy, never the repository's `basemind.toml`.
 fn repo_credentials_granted() -> bool {
-    std::env::var(ALLOW_REPO_CREDENTIALS_ENV).is_ok_and(|v| {
-        let v = v.trim();
-        v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
-    })
+    crate::config::engine::with(|config| config.trust.allow_repo_credentials)
 }
 
 /// Floor entries that `[scan] floor_allow` may never remove: indexing VCS internals or basemind's

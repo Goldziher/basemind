@@ -272,7 +272,7 @@ async fn a_lead_with_an_operator_policy_launches_into_a_worktree_and_stops() {
         .expect("agent_stop");
     assert_ne!(stopped.is_error, Some(true), "{stopped:?}");
 
-    let audit_dir = basemind::store::cache_root().join("agents");
+    let audit_dir = basemind::data_root::DataRoot::current().path().join("agents");
     let logs: Vec<_> = std::fs::read_dir(&audit_dir).expect("audit dir").flatten().collect();
     assert!(
         !logs.is_empty(),
@@ -509,7 +509,7 @@ fn a_lead_that_ends_stops_its_sessions_and_records_their_exit() {
         }
         assert!(!survived, "signal {by_signal}: the detached process outlived the lead");
 
-        let audit_dir = basemind::store::cache_root().join("agents");
+        let audit_dir = basemind::data_root::DataRoot::current().path().join("agents");
         let prefix = format!("launch-audit-{}-", lead.id());
         let log = std::fs::read_dir(&audit_dir)
             .expect("audit dir")

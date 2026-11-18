@@ -255,7 +255,7 @@ fn workspace_grep(
 /// Operator kill switch for the trigram-bloom prefilter: `BASEMIND_GREP_BLOOM=0` forces the full
 /// sweep. The prefilter never changes a result, so this exists for A/B timing and as an escape hatch.
 fn bloom_prefilter_enabled() -> bool {
-    std::env::var_os("BASEMIND_GREP_BLOOM").is_none_or(|v| v != "0")
+    crate::config::engine::with(|config| config.grep_bloom)
 }
 
 /// The in-memory cursor carries one `u64` offset, but grep must resume at a HIT, not at a file: a

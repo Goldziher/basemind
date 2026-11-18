@@ -191,6 +191,11 @@ pub struct LaunchConfig {
     /// trusted: a credential and the project and region names choose which account the
     /// harness bills and where its requests go.
     pub env: BTreeMap<String, String>,
+    /// basemind's data home, exported to the child as `BASEMIND_DATA_HOME` in place of the
+    /// launcher's variable and kept apart from the root as that variable is. A launcher that
+    /// set its data home in code rather than the environment names it here, or the child's
+    /// `basemind serve` would use another store. `None` passes the launcher's variable on.
+    pub data_home: Option<PathBuf>,
     /// The MCP server to inject, if any.
     pub mcp_server: Option<McpServerSpec>,
     /// The caps on wall time and turns, and the stop grace.
@@ -212,6 +217,7 @@ impl std::fmt::Debug for LaunchConfig {
             .field("root", &self.root)
             .field("identity", &self.identity)
             .field("env_names", &self.env.keys().collect::<Vec<_>>())
+            .field("data_home", &self.data_home)
             .field("mcp_server", &self.mcp_server.as_ref().map(|server| &server.name))
             .field("limits", &self.limits)
             .field("permission_mode", &self.permission_mode)
@@ -232,6 +238,7 @@ impl LaunchConfig {
             root: root.into(),
             identity,
             env: BTreeMap::new(),
+            data_home: None,
             mcp_server: None,
             limits: Limits::default(),
             permission_mode: PermissionMode::default(),
@@ -289,6 +296,7 @@ pub(crate) struct LaunchSpec {
     pub brief: String,
     pub identity: AgentIdentity,
     pub env: BTreeMap<String, String>,
+    pub data_home: Option<PathBuf>,
     pub mcp_server: Option<McpServerSpec>,
     pub limits: Limits,
     pub permission_mode: PermissionMode,
@@ -334,6 +342,7 @@ impl LaunchSpec {
             brief: request.brief.clone(),
             identity: config.identity.clone(),
             env: config.env.clone(),
+            data_home: config.data_home.clone(),
             mcp_server: config.mcp_server.clone(),
             limits,
             permission_mode: config.permission_mode,
@@ -389,7 +398,7 @@ impl LaunchSpec {
         }
         let model_args = model_args(kind, self.model.as_deref(), self.effort.as_deref())?;
         let (root, cwd) = confine(&self.root, self.working_dir.as_deref())?;
-        check_root(&root, &|name| std::env::var_os(name))?;
+        check_root(&root, &|name| self.launcher_env(name))?;
         check_project_config(kind, &cwd, std::env::var_os("HOME").as_deref().map(Path::new))?;
         crate::gitconfig::check_repository(&cwd)?;
         let search = std::env::var_os("PATH");
@@ -481,6 +490,15 @@ impl LaunchSpec {
             .collect()
     }
 
+    /// The launcher's variable `name`, with [`LaunchConfig::data_home`] standing in for
+    /// `BASEMIND_DATA_HOME`.
+    fn launcher_env(&self, name: &str) -> Option<OsString> {
+        match &self.data_home {
+            Some(home) if name == DATA_HOME_ENV => Some(home.clone().into_os_string()),
+            _ => std::env::var_os(name),
+        }
+    }
+
     /// The environment of the child: the allow-listed part of `parent`, then the additions,
     /// then the MCP server's variables, then the identity.
     pub fn child_env(&self, parent: impl IntoIterator<Item = (OsString, OsString)>) -> BTreeMap<String, OsString> {
@@ -495,6 +513,9 @@ impl LaunchSpec {
                 value
             };
             env.insert(name.to_owned(), value);
+        }
+        if let Some(home) = &self.data_home {
+            env.insert(DATA_HOME_ENV.to_owned(), home.into());
         }
         let server_env = self.mcp_server.iter().flat_map(|server| &server.env);
         for (name, value) in self.env.iter().chain(server_env) {
@@ -579,7 +600,9 @@ const GIT_OVERRIDES: &[(&str, &str)] = &[
 
 /// Where basemind keeps its store and its comms rendezvous. A launched agent has to see the
 /// launcher's values, or its `basemind serve` talks to a different daemon.
-const SHARED_STATE_ENV: &[&str] = &["BASEMIND_DATA_HOME", "BASEMIND_COMMS_DIR"];
+const SHARED_STATE_ENV: &[&str] = &[DATA_HOME_ENV, "BASEMIND_COMMS_DIR"];
+
+const DATA_HOME_ENV: &str = "BASEMIND_DATA_HOME";
 
 /// `path` as UTF-8, which every path written into a harness's protocol has to be.
 pub(crate) fn utf8(path: &Path) -> Result<&str, LaunchError> {
