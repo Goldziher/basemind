@@ -1100,7 +1100,7 @@
           "default": []
         },
         "reranker": {
-          "description": "Optional cross-encoder rerank of the fused `semantic` hits. Reuses the same xberg reranker\nas the documents tier. Off by default — the first call downloads an ONNX model. Enable via\n`[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.",
+          "description": "Optional cross-encoder rerank of the fused hits. Reuses the same xberg reranker as the\ndocuments tier. Off by default — the first call downloads an ONNX model. Enable via\n`[code_search.reranker] enabled = true`.",
           "$ref": "#/$defs/RerankerConfig",
           "default": {
             "enabled": false,

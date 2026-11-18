@@ -9,6 +9,10 @@ const MIN_MAX_CHARACTERS: usize = 64;
 /// Smallest accepted splitter cutover; mirrors the schema minimum of the `*_chunk_max_bytes` knobs.
 const MIN_CHUNK_CUTOVER_BYTES: u64 = 1024;
 
+/// Largest accepted `[documents.reranker] top_k`: the reranker scores at most this many hits
+/// (ADR-0037 rule 5). Not a schema bound, since `[code_search.reranker]` shares the type.
+const MAX_RERANK_TOP_K: usize = 50;
+
 /// Largest accepted `max_abandoned_extractions`; mirrors the schema maximum.
 pub const MAX_ABANDONED_EXTRACTIONS: usize = 64;
 
@@ -63,8 +67,11 @@ impl DocumentsConfig {
                 "[documents.language] min_confidence ({confidence}) must be between 0.0 and 1.0"
             ));
         }
-        if self.reranker.top_k == 0 {
-            return Err("[documents.reranker] top_k must be at least 1".to_string());
+        if !(1..=MAX_RERANK_TOP_K).contains(&self.reranker.top_k) {
+            return Err(format!(
+                "[documents.reranker] top_k ({}) must be between 1 and {MAX_RERANK_TOP_K}",
+                self.reranker.top_k
+            ));
         }
         if self.keywords.max_keywords == 0 {
             return Err("[documents.keywords] max_keywords must be at least 1".to_string());
@@ -115,6 +122,16 @@ mod tests {
             ..Default::default()
         };
         assert!(d.validate().unwrap_err().contains("min_confidence"));
+    }
+
+    /// ADR-0037 rule 5: the reranker reorders at most 50 hits; a larger `top_k` was silently clamped.
+    #[test]
+    fn rejects_a_rerank_depth_above_fifty() {
+        let mut d = DocumentsConfig::default();
+        d.reranker.top_k = 50;
+        d.validate().expect("50 is the limit");
+        d.reranker.top_k = 51;
+        assert!(d.validate().unwrap_err().contains("top_k"));
     }
 
     #[test]
