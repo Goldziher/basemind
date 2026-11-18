@@ -397,21 +397,39 @@ impl GroupSweep<'_> {
     }
 }
 
-/// The distinct content keys of a content-led keyspace (`content key ‖ start`), one seek each.
+/// The distinct content keys of a content-led keyspace (`content key ‖ start`), one seek each. A
+/// row too short to hold a content key is skipped with a warning, not taken for the end.
 fn distinct_contents(rows: &Scoped) -> impl Iterator<Item = Result<ContentKey, IndexError>> + '_ {
     let mut lower: Option<Vec<u8>> = Some(Vec::new());
     std::iter::from_fn(move || {
-        let from = lower.take()?;
-        let next = rows
-            .range(std::ops::Bound::Included(from.as_slice()), std::ops::Bound::Unbounded)
-            .next()?;
-        let key = match next {
-            Ok((key, _)) => key,
-            Err(error) => return Some(Err(error)),
-        };
-        let content: ContentKey = key.get(..CONTENT_KEY_LEN)?.try_into().ok()?;
-        lower = super::name_dict::upper_bound(&content);
-        Some(Ok(content))
+        loop {
+            let from = lower.take()?;
+            let next = rows
+                .range(std::ops::Bound::Included(from.as_slice()), std::ops::Bound::Unbounded)
+                .next()?;
+            let key = match next {
+                Ok((key, _)) => key,
+                Err(error) => return Some(Err(error)),
+            };
+            match key
+                .get(..CONTENT_KEY_LEN)
+                .and_then(|head| ContentKey::try_from(head).ok())
+            {
+                Some(content) => {
+                    lower = super::name_dict::upper_bound(&content);
+                    return Some(Ok(content));
+                }
+                None => {
+                    tracing::warn!(
+                        len = key.len(),
+                        "group sweep: a content row too short for a content key; skipped"
+                    );
+                    let mut after = key.to_vec();
+                    after.push(0);
+                    lower = Some(after);
+                }
+            }
+        }
     })
 }
 

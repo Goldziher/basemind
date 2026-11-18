@@ -478,3 +478,18 @@ fn the_pending_contents_of_a_view_no_handle_has_open_are_dropped_and_the_debt_pa
     assert_eq!(sweep(&a, &[]).contents_removed, 1);
     assert!(!a.content_sweep_owed_for_test());
 }
+
+#[test]
+fn a_short_row_does_not_end_the_sweep() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let (a, b) = (open_view(&group, "ws-a", &memory), open_view(&group, "ws-b", &memory));
+    a.symbols_by_path.insert(b"\x00", "corrupt").expect("insert");
+    a.calls_by_path.insert(b"\x00", "corrupt").expect("insert");
+    write(&b, "x.rs", "dead");
+    publish(&b, &[]);
+    publish(&a, &[]);
+
+    assert_eq!(sweep(&a, &[]).contents_removed, 1);
+}
