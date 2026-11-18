@@ -80,7 +80,12 @@ impl Scoped {
     }
 
     pub(crate) fn get(&self, key: &[u8]) -> Result<Option<IndexBytes>, IndexError> {
-        Ok(self.keyspace.get(self.full_key(key))?.map(IndexBytes::from_fjall))
+        // A whole keyspace reads the key as given, without copying it. ~keep
+        let found = match &self.prefix {
+            None => self.keyspace.get(key)?,
+            Some(_) => self.keyspace.get(self.full_key(key))?,
+        };
+        Ok(found.map(IndexBytes::from_fjall))
     }
 
     pub(crate) fn insert(&self, key: &[u8], value: impl Into<Slice>) -> Result<(), IndexError> {
@@ -109,7 +114,11 @@ impl Scoped {
 
     /// Rows whose key starts with `prefix`, in key order.
     pub(crate) fn prefix<'a>(&'a self, prefix: &[u8]) -> KvIter<'a> {
-        Box::new(self.keyspace.prefix(self.full_key(prefix)).map(|guard| self.row(guard)))
+        let rows = match &self.prefix {
+            None => self.keyspace.prefix(prefix),
+            Some(_) => self.keyspace.prefix(self.full_key(prefix)),
+        };
+        Box::new(rows.map(|guard| self.row(guard)))
     }
 
     /// Keys starting with `prefix`, in key order, without reading their values.
