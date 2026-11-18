@@ -80,7 +80,6 @@ mod relay_decline;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod singleton;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod store_health;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod transport;
 pub mod v2;

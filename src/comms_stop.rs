@@ -12,10 +12,6 @@ use basemind::comms::client::{ClientHello, CommsClient, CommsClientError};
 use basemind::comms::singleton::{self, CommsPaths, Liveness, ReclaimRules, Reclaimed, StopOutcome};
 use basemind::daemon_lock::{self, DaemonKind};
 
-/// The one refusal that is a symptom, not a decision: the daemon answers only to say its store is
-/// broken, so it does not protect itself from being reclaimed by an operator.
-const STORE_ERROR: &str = "store_error";
-
 /// Hard bound on the `Stop` RPC itself — connect plus request. A daemon wedged before its accept
 /// loop never completes the connect, which used to hang `basemind comms stop` indefinitely: the
 /// documented recovery path blocked on the very daemon it was meant to reclaim.
@@ -36,8 +32,6 @@ const TERM_GRACE: Duration = Duration::from_secs(3);
 enum Asked {
     /// The daemon took the request.
     Accepted,
-    /// The daemon answered that its store is broken.
-    BrokenStore,
     /// Nothing answered in time.
     Unanswered,
 }
@@ -48,7 +42,6 @@ impl Asked {
             exit: STOP_GRACE,
             term_grace: TERM_GRACE,
             probe_timeout: STOP_REPROBE_TIMEOUT,
-            store_error_is_silence: self == Self::BrokenStore,
         }
     }
 }
@@ -87,10 +80,8 @@ pub(crate) fn cmd_comms_stop(json: bool) -> Result<()> {
 /// Send the first `Stop`, through a full client so that a healthy daemon sees an ordinary request.
 ///
 /// The whole RPC is bounded and its failure is not always fatal. A daemon that cannot answer is
-/// precisely the one an operator is trying to stop, and it fails in two ways that both used to
-/// defeat `stop`: a poisoned store fails the Hello handshake, so the command aborted before doing
-/// anything; and a daemon wedged before its accept loop never completes `connect` at all, so the
-/// command hung indefinitely. A daemon that answered with a refusal made an informed decision —
+/// precisely the one an operator is trying to stop: a daemon wedged before its accept loop never
+/// completes `connect`, which used to hang the command indefinitely. A daemon that answered with a refusal made an informed decision —
 /// `daemon_busy` means persistent clients are still attached — so that is reported and nothing
 /// more is done.
 async fn ask_to_stop(paths: &CommsPaths) -> Result<Asked> {
@@ -107,10 +98,6 @@ async fn ask_to_stop(paths: &CommsPaths) -> Result<Asked> {
         // it is what the takeover errors tell the operator to do. Ask without the handshake; its
         // answer is honoured the same way.
         Ok(Err(error)) if is_proto_skew(&error) => stop_without_handshake(&paths.socket_path),
-        Ok(Err(error)) if is_broken_store_error(&error) => {
-            tracing::warn!(%error, "comms: daemon reports a broken store; it may be reclaimed by pid");
-            Ok(Asked::BrokenStore)
-        }
         Ok(Err(error)) => Err(anyhow::anyhow!("stop: {error}")),
         Err(_) => {
             tracing::warn!(
@@ -128,7 +115,6 @@ async fn ask_to_stop(paths: &CommsPaths) -> Result<Asked> {
 fn stop_without_handshake(socket_path: &std::path::Path) -> Result<Asked> {
     match singleton::request_stop_within(socket_path, STOP_RPC_TIMEOUT) {
         StopOutcome::Accepted => Ok(Asked::Accepted),
-        StopOutcome::Refused { code, .. } if code == STORE_ERROR => Ok(Asked::BrokenStore),
         StopOutcome::Refused { code, message } => Err(anyhow::anyhow!("stop: daemon refused [{code}]: {message}")),
         StopOutcome::Unreachable => after_unanswered_stop(singleton::probe_liveness(socket_path)),
     }
@@ -194,11 +180,6 @@ fn is_proto_skew(error: &CommsClientError) -> bool {
     }
 }
 
-/// Whether a failed `Stop` came back as the broker's `store_error`.
-fn is_broken_store_error(error: &CommsClientError) -> bool {
-    matches!(error, CommsClientError::Broker { code, .. } if code == STORE_ERROR)
-}
-
 /// `basemind comms stop --all`: ask every live comms daemon of this protocol generation on this
 /// machine to drain, addressing each by its own socket, and reclaim the ones that have stopped
 /// answering. Daemons of other generations are out of reach by design: their own version's
@@ -208,8 +189,8 @@ fn is_broken_store_error(error: &CommsClientError) -> bool {
 /// off as unreachable.
 ///
 /// A daemon that answered `daemon_busy` made an informed decision to protect the persistent
-/// clients attached to it, and is reported, never reclaimed. One that answered `store_error`, or
-/// nothing, goes through [`singleton::reclaim_holder`] like a single `stop`. The command fails
+/// clients attached to it, and is reported, never reclaimed. One that answered nothing goes
+/// through [`singleton::reclaim_holder`] like a single `stop`. The command fails
 /// when any daemon is still running afterwards, whether it refused or could not be reclaimed, and
 /// names each with its reason, as a single `stop` does for its one daemon.
 pub(crate) fn cmd_comms_stop_all(json: bool) -> Result<()> {
@@ -307,7 +288,6 @@ fn stop_one(dir: &std::path::Path) -> Result<Reclaimed, (String, String)> {
     let paths = paths_of(dir);
     let asked = match singleton::request_stop_within(&paths.socket_path, STOP_RPC_TIMEOUT) {
         StopOutcome::Accepted => Asked::Accepted,
-        StopOutcome::Refused { code, .. } if code == STORE_ERROR => Asked::BrokenStore,
         StopOutcome::Refused { code, message } => return Err((code, message)),
         StopOutcome::Unreachable => Asked::Unanswered,
     };

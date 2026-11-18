@@ -458,36 +458,17 @@ fn now_unix() -> i64 {
 /// unusable still holds its pid, its flock and its socket, and shows up in this list looking exactly
 /// like a healthy one. So every report says which question it answered, and `--probe` asks the other
 /// one — a bounded `Status` RPC per comms daemon, reported as a separate `serving` verdict.
-/// `--clear-fatal`: acknowledge both kinds of corpse the last run left behind.
-///
-/// They answer one question — "what killed the previous run?" — so one flag retires both, and no
-/// new CLI surface is added (the CLI↔MCP bijection in `tests/cli_parity/` is keyed on commands,
-/// not flags, and stays untouched). Only records whose pid is dead are removed, so a scan running
-/// right now keeps its claim.
+/// `--clear-fatal`: acknowledge the records of scans that died without unwinding. Only records
+/// whose pid is dead are removed, so a scan running right now keeps its claim.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn clear_recorded_failures(json: bool) -> Result<()> {
-    use basemind::comms::{singleton, store_health};
-
-    let paths = singleton::resolve_paths().context("resolve comms paths")?;
-    let cleared = store_health::clear(&paths.comms_dir);
     let cleared_scans = basemind::scan_evidence::stale_inflight_scans()
         .iter()
         .filter(|scan| basemind::scan_evidence::clear(&scan.cache_dir))
         .count();
     if json {
-        println!(
-            "{}",
-            serde_json::json!({ "cleared_fatal": cleared, "cleared_stale_scans": cleared_scans })
-        );
+        println!("{}", serde_json::json!({ "cleared_stale_scans": cleared_scans }));
         return Ok(());
-    }
-    if cleared {
-        println!(
-            "cleared the recorded fatal store error for {}",
-            paths.comms_dir.display()
-        );
-    } else {
-        println!("no recorded fatal store error for {}", paths.comms_dir.display());
     }
     println!("cleared {cleared_scans} stale scan-inflight record(s)");
     Ok(())
@@ -497,8 +478,7 @@ fn clear_recorded_failures(json: bool) -> Result<()> {
 ///
 /// The distinction the record exists to draw: a scan that fails normally unwinds and removes its
 /// own record, so a surviving one proves no destructor ran — a kill signal, and on a scan
-/// overwhelmingly the kernel's OOM killer. That is the case `last-fatal.json` structurally cannot
-/// report, because the code that writes it never runs.
+/// overwhelmingly the kernel's OOM killer.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn report_stale_scans(stale_scans: &[basemind::scan_evidence::StaleScan], now: i64) {
     if stale_scans.is_empty() {
@@ -529,7 +509,7 @@ fn report_stale_scans(stale_scans: &[basemind::scan_evidence::StaleScan], now: i
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
-    use basemind::comms::{singleton, store_health};
+    use basemind::comms::singleton;
     use basemind::daemon_lock::{self, DaemonKind};
 
     if clear_fatal {
@@ -554,13 +534,6 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
                 .then(|| singleton::probe_serving(&singleton::comms_socket_path(&record.dir)))
         })
         .collect();
-
-    // Scoped to THIS comms dir, not every registered daemon's: a fatal record means the daemon that
-    // wrote it has already exited, so it never has a row above to hang off. The dir is named in the
-    // output so an operator with several comms dirs knows which one the corpse belongs to.
-    let fatal = singleton::resolve_paths()
-        .ok()
-        .and_then(|paths| store_health::read(&paths.comms_dir).map(|record| (paths.comms_dir, record)));
 
     if json {
         let items: Vec<serde_json::Value> = daemons
@@ -588,10 +561,6 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
             "over_ceiling": daemons.len() + other_generations > ceiling,
             "checked": if probe { "registry+probe" } else { "registry" },
             "daemons": items,
-            "last_fatal_store_error": fatal.as_ref().map(|(dir, record)| serde_json::json!({
-                "comms_dir": dir,
-                "record": record,
-            })),
             "stale_scans": stale_scans.iter().map(|scan| serde_json::json!({
                 "cache_dir": scan.cache_dir,
                 "record": scan.record,
@@ -634,19 +603,6 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
             "{other_generations} more comms daemon(s) belong to other basemind versions' protocol generations. \
              They count toward the ceiling; this version does not list, probe or stop them."
         );
-    }
-
-    if let Some((dir, record)) = &fatal {
-        println!(
-            "\nlast fatal store error in {} (pid {}, {} ago, on `{}`, build {}):\n  {}",
-            dir.display(),
-            record.pid,
-            humanize_age(now.saturating_sub(record.epoch_secs as i64)),
-            record.request,
-            record.version,
-            record.error,
-        );
-        println!("  That daemon released its lock and exited. Acknowledge with `basemind comms doctor --clear-fatal`.");
     }
 
     report_stale_scans(&stale_scans, now);

@@ -39,7 +39,6 @@
 //! | Answer to `Stop` | Result |
 //! |---|---|
 //! | accepted | wait for it to exit, then spawn this binary's daemon |
-//! | refused with `store_error` | never signalled: fail with `FailingPredecessor`, which names the store |
 //! | refused (`daemon_busy`, or any other error) | never signalled: use it when the protocol matches, else fail with `BusyPredecessor` |
 //! | none, but it still answers `Ping` | never signalled: fail with `StalePredecessor` |
 //! | none, and `Ping` goes unanswered too | wait the exit window as for an accepted `Stop` |
@@ -175,26 +174,6 @@ pub enum SingletonError {
         /// The daemon's stable refusal token (`daemon_busy`, …).
         code: String,
         /// The daemon's rendered refusal.
-        message: String,
-    },
-    /// A daemon from an older build answered `Stop` with a store error: it holds this generation but
-    /// cannot serve from its store, and no session ending will change that. It is left running —
-    /// it answered — and the caller is told which store failed and how to reclaim the daemon.
-    #[error(
-        "a basemind comms daemon from another build (v{version}, pid {pid}) cannot serve: its \
-         store at {} failed with: {message}. It was left running and will not recover by itself; \
-         run `basemind comms doctor --probe` to confirm, then `basemind comms stop --all` to \
-         reclaim it, and retry",
-        store.display()
-    )]
-    FailingPredecessor {
-        /// The running daemon's build version.
-        version: String,
-        /// The running daemon's process id.
-        pid: u32,
-        /// The comms store the daemon could not use.
-        store: PathBuf,
-        /// The daemon's rendered store error.
         message: String,
     },
     /// A previous / incompatible daemon held the socket and would not stop, so we could not take

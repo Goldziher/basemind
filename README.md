@@ -1247,7 +1247,7 @@ checkout's principal.
 | Command | Purpose |
 |---|---|
 | `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon of this version's protocol generation on the machine), or inspect pid / version / uptime. |
-| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges a recorded fatal store error. |
+| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges the records of scans that died without unwinding. |
 | `cleanup [--dry-run --older-than <days>]` | Remove the comms files of other protocol generations and of releases up to 0.33 (including a pre-generation `store.fjall`) once no daemon holds their lock and they have been idle for 30 days. |
 
 **Workspace (`basemind workspace`, `--features comms`)**

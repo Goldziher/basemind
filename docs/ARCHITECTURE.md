@@ -959,7 +959,7 @@ comms/
     daemon.pid        the holder's record
     agents.fjall/     threads, messages, read marks, seen records (0.34 and later)
     store.fjall/      the agent store of earlier releases: no longer read, left in place
-    daemon.log  http.addr  last-fatal.json
+    daemon.log  http.addr
   comms.sock ...      releases up to 0.33: the same files, unscoped
 ```
 
@@ -1103,16 +1103,13 @@ backend_timeout`.
 
 ### Evidence a killed process leaves behind
 
-A daemon that *diagnoses* its own failure records it (`comms/store_health.rs` writes
-`last-fatal.json` before releasing the singleton) and `comms doctor` reports it. A `SIGKILL` reaches
-none of that, so the OOM case — the one issue #62 is about — used to leave nothing at all.
-
-`scan_evidence.rs` covers it from the other direction. A full-tree scan writes
+A `SIGKILL` runs none of a process's code, so the OOM case — the one issue #62 is about — used to
+leave nothing at all. `scan_evidence.rs` covers it: a full-tree scan writes
 `<workspace_cache_dir>/scan-inflight.json` before it starts and removes it on `Drop`, so a surviving
 file proves the process never ran its destructors; the record's `phase` says how far it had got and
 `root` names what it was scanning. `basemind comms doctor` lists every such record whose pid is dead
 (filesystem-only, no RPC, so it stays usable on a wedged machine) and `--clear-fatal` acknowledges
-them alongside the fatal-store record. Alongside it, a periodic `rss_mb` / `ceiling_mb` line makes
+them. Alongside it, a periodic `rss_mb` / `ceiling_mb` line makes
 the growth curve that led to the kill reconstructable from the log. The sampler reads the footprint
 every 200 ms and each line also carries `window_peak_mb` (the maximum since the previous line) and
 `process_peak_rss_mb`; a gibibyte jump above anything already logged writes a `spike=true` line at once,

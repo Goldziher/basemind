@@ -3,7 +3,7 @@
 //! that a daemon which answers, or could not be asked, is never signalled.
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::*;
@@ -90,10 +90,6 @@ impl Scripted {
 }
 
 impl Generation for Scripted {
-    fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     fn status(&self) -> Option<StatusReport> {
         self.asked.borrow_mut().push("status");
         self.version.map(|version| StatusReport {
@@ -168,7 +164,6 @@ fn operator() -> ReclaimRules {
         exit: Duration::from_millis(20),
         term_grace: Duration::from_millis(20),
         probe_timeout: Duration::from_millis(20),
-        store_error_is_silence: false,
     }
 }
 
@@ -256,15 +251,14 @@ async fn a_daemon_that_could_not_be_asked_is_neither_signalled_nor_replaced() {
     assert_eq!(generation.signalled.get(), None);
 }
 
-/// An answer to `Stop` spares the daemon, a refusal included. Only an operator's stop counts a
-/// `store_error` answer as silence.
+/// An answer to `Stop` spares the daemon, a refusal included, whatever its code.
 #[tokio::test]
-async fn a_daemon_that_answers_stop_is_not_signalled_unless_it_only_reports_a_broken_store() {
+async fn a_daemon_that_answers_stop_is_not_signalled() {
     let refusal = |code: &str| StopOutcome::Refused {
         code: code.to_string(),
         message: "no".to_string(),
     };
-    for stop in [StopOutcome::Accepted, refusal("daemon_busy"), refusal(STORE_ERROR)] {
+    for stop in [StopOutcome::Accepted, refusal("daemon_busy"), refusal("store_error")] {
         let generation = Scripted {
             stop: stop.clone(),
             ..Scripted::silent_holder()
@@ -275,19 +269,6 @@ async fn a_daemon_that_answers_stop_is_not_signalled_unless_it_only_reports_a_br
         );
         assert_eq!(generation.signalled.get(), None);
     }
-
-    let generation = Scripted {
-        stop: refusal(STORE_ERROR),
-        ..Scripted::silent_holder()
-    };
-    let rules = ReclaimRules {
-        store_error_is_silence: true,
-        ..operator()
-    };
-    assert_eq!(
-        reclaim(&generation, None, rules).await,
-        Reclaimed::Gone { forced: true }
-    );
 }
 
 /// A silent daemon is signalled only as the process the lock and the pidfile vouch for.
