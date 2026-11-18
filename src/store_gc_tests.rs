@@ -121,6 +121,7 @@ fn cache_stats_counts_git_history_and_reconciles_total() {
     );
     let component_sum = stats.blobs_bytes
         + stats.views_bytes
+        + stats.group_index_bytes
         + stats.lance_bytes
         + stats.memory_vectors_bytes
         + stats.git_cache_bytes

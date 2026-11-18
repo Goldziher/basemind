@@ -17,7 +17,7 @@ use ahash::AHashSet;
 
 use crate::store::{CACHE_DIR, LockHolder, VIEWS_DIR, WORKSPACES_DIR, cache_root, read_workspace_marker};
 use crate::store_gc::{GcError, dir_size};
-use crate::store_layout::{GROUPS_DIR, repo_group_key};
+use crate::store_layout::{GROUPS_DIR, group_of_workspace, repo_group_key};
 
 /// What a reap of the group directories removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -61,6 +61,68 @@ fn named_groups(workspaces_dir: &Path) -> Option<AHashSet<String>> {
         }
     }
     Some(named)
+}
+
+/// Whether a workspace under `workspaces_dir` that still holds a view belongs to `group`, or may:
+/// one whose group cannot be told could belong to any. A workspace with nothing under `views/`
+/// (evicted, or never scanned) has no file map naming the group's rows.
+pub(crate) fn group_in_use(workspaces_dir: &Path, group: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(workspaces_dir) else {
+        return workspaces_dir.exists();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|workspace| std::fs::read_dir(workspace.join(VIEWS_DIR)).is_ok_and(|mut views| views.next().is_some()))
+        .any(|workspace| group_of_workspace(&workspace).is_none_or(|named| named == group))
+}
+
+/// Remove the directory of `group` (its index and retrieval stores, all rebuildable) when no
+/// workspace that holds a view belongs to it, for cache-budget eviction. Taken under the group
+/// lock and checked again once it is held; a group whose lock another process holds, or that
+/// cannot be removed, is kept. Returns the bytes freed, `0` when kept.
+///
+/// The memory notes are not under it (`cache/repos/<group>/`). A workspace scanned later opens a
+/// new incarnation of the group, which no file map names, so nothing reads rows of the old one.
+pub(crate) fn evict_idle_group(workspaces_dir: &Path, group: &str) -> Result<u64, GcError> {
+    let Some(cache) = workspaces_dir.parent() else {
+        return Ok(0);
+    };
+    let group_dir = cache.join(GROUPS_DIR).join(group);
+    if !group_dir.is_dir() || group_in_use(workspaces_dir, group) {
+        return Ok(0);
+    }
+    let Ok(lock) = crate::store_lock::try_acquire_lock_as(&group_dir, LockHolder::Maintenance) else {
+        tracing::debug!(group = %group_dir.display(), "over-budget group is locked; keeping it");
+        return Ok(0);
+    };
+    // A scan may have written a view of the group between the check and the lock. ~keep
+    if group_in_use(workspaces_dir, group) {
+        return Ok(0);
+    }
+    let bytes = dir_size(&group_dir)?;
+    let removed = crate::store_lock::remove_dir_under_lock(&group_dir);
+    drop(lock);
+    match removed {
+        Ok(()) => {
+            tracing::info!(group = %group_dir.display(), bytes, "evicted a group no hosted view uses to enforce the size budget");
+            Ok(bytes)
+        }
+        Err(error) => {
+            tracing::warn!(group = %group_dir.display(), %error, "could not evict an idle group; kept");
+            Ok(0)
+        }
+    }
+}
+
+/// The group directories under `cache_dir` that the workspaces in `workspaces` belong to, each
+/// once.
+pub(crate) fn group_dirs_of(cache_dir: &Path, workspaces: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let groups: AHashSet<String> = workspaces.iter().filter_map(|ws| group_of_workspace(ws)).collect();
+    groups
+        .into_iter()
+        .map(|group| cache_dir.join(GROUPS_DIR).join(group))
+        .collect()
 }
 
 /// [`reap_orphaned_group_stores`] against an explicit `cache/` directory, so tests never touch the
@@ -201,6 +263,42 @@ mod tests {
         workspace(&cache, "old", Some(r#"{"root":"/no/such/root","updated_unix":0}"#));
         assert_eq!(reap_orphaned_group_stores_in(&cache).expect("reap").reaped, 0);
         assert!(store_of(&cache, "gone").exists());
+    }
+
+    /// `cache stats` counts the group's code index (ADR-0028 moved the code index out of the
+    /// workspace) in its own field and in the total, and the components still reconcile.
+    #[test]
+    fn cache_stats_count_the_group_index() {
+        use crate::store_cache_admin::{BlobStorePaths, cache_stats_in};
+        let (_tmp, cache) = cache_with_groups(&["g"]);
+        let index = cache.join(GROUPS_DIR).join("g").join(crate::index::INDEX_DIR);
+        fs::create_dir_all(&index).expect("mk group index");
+        fs::write(index.join("journal"), vec![7u8; 64 * 1024]).expect("write rows");
+        let basemind_dir = workspace(&cache, "w", Some(r#"{"root":"/gone","updated_unix":0,"group":"g"}"#));
+        let blobs = BlobStorePaths {
+            root: cache.join("blobs"),
+            schema: crate::extract::SCHEMA_VER,
+            gc_state: cache.join("gc-state.json"),
+            repos: cache.join("repos"),
+        };
+        let index_bytes = dir_size(&index).expect("size");
+
+        let stats = cache_stats_in(&basemind_dir, &blobs).expect("stats");
+
+        assert_eq!(stats.group_index_bytes, index_bytes, "{stats:?}");
+        assert!(
+            stats.total_bytes >= dir_size(&basemind_dir).expect("size") + index_bytes,
+            "{stats:?}"
+        );
+        let components = stats.blobs_bytes
+            + stats.views_bytes
+            + stats.group_index_bytes
+            + stats.lance_bytes
+            + stats.memory_vectors_bytes
+            + stats.git_cache_bytes
+            + stats.telemetry_bytes
+            + stats.git_history_bytes;
+        assert_eq!(stats.total_bytes, components + stats.other_bytes, "{stats:?}");
     }
 
     /// `cache stats` counts the group's retrieval store; `cache clear lance` and `cache clear all`

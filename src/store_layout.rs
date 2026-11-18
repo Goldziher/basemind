@@ -158,19 +158,31 @@ pub fn group_index_dir(root: &Path) -> PathBuf {
 /// `cache/groups/<group>/lance/`, one store per embedding model (`crate::lance::docs`).
 pub const GROUP_LANCE_DIR: &str = "lance";
 
-/// The group retrieval stores ([`GROUP_LANCE_DIR`]) of the workspace cache dir `basemind_dir`
-/// (`cache/workspaces/<key>`), found through the group its marker records, else the group of its
-/// root while the root exists. `None` when neither names a group, or the recorded group is not a
-/// single path component.
-pub fn group_lance_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
+/// The group key the workspace cache dir `basemind_dir` belongs to: the group its marker records,
+/// else the group of its root while the root exists. `None` when neither names a group, or the
+/// recorded group is not a single path component.
+pub fn group_of_workspace(basemind_dir: &Path) -> Option<String> {
     let marker = read_workspace_marker(basemind_dir)?;
     let group = match marker.group {
         Some(group) => group,
         None => marker.root.exists().then(|| repo_group_key(&marker.root))?,
     };
     let single = !group.is_empty() && group != "." && group != ".." && !group.contains(['/', '\\']);
+    single.then_some(group)
+}
+
+/// The group directory (`cache/groups/<group>/`) of the workspace cache dir `basemind_dir`
+/// (`cache/workspaces/<key>`), by [`group_of_workspace`].
+pub fn group_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
+    let group = group_of_workspace(basemind_dir)?;
     let cache = basemind_dir.parent()?.parent()?;
-    single.then(|| cache.join(GROUPS_DIR).join(group).join(GROUP_LANCE_DIR))
+    Some(cache.join(GROUPS_DIR).join(group))
+}
+
+/// The group retrieval stores ([`GROUP_LANCE_DIR`]) of the workspace cache dir `basemind_dir`, under
+/// its [`group_dir_of`].
+pub fn group_lance_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
+    group_dir_of(basemind_dir).map(|group| group.join(GROUP_LANCE_DIR))
 }
 
 /// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every

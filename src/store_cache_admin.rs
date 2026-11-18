@@ -121,6 +121,9 @@ pub struct CacheStats {
     pub blobs_current_bytes: u64,
     /// Recursive byte size of `views/`.
     pub views_bytes: u64,
+    /// Recursive byte size of the repository group's code index (`cache/groups/<group>/index.fjall`,
+    /// ADR-0028), shared with the group's other worktrees. `0` when the workspace's group is unknown.
+    pub group_index_bytes: u64,
     /// Recursive byte size of `lance/` and of the repository group's document retrieval stores
     /// (`cache/groups/<group>/lance/`, shared with the group's other worktrees).
     pub lance_bytes: u64,
@@ -141,8 +144,9 @@ pub struct CacheStats {
     /// deep-history repo) was omitted, so the reported total undercounted `du` — the bug this
     /// field fixes.
     pub git_history_bytes: u64,
-    /// Recursive byte size of the **entire** `.basemind/` tree, plus the blob store and the memory
-    /// vector stores, which live outside it. The per-component fields are a breakdown of it, and any bytes not
+    /// Recursive byte size of the **entire** `.basemind/` tree, plus the blob store, the memory
+    /// vector stores and the repository group's directory (`cache/groups/<group>/`), which live
+    /// outside it. The per-component fields are a breakdown of it, and any bytes not
     /// attributed to a named component land in [`Self::other_bytes`]. Computed from the whole
     /// tree so a future uncounted directory can never silently shrink the reported footprint.
     pub total_bytes: u64,
@@ -365,9 +369,14 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         None => 0,
     };
     let views_bytes = dir_size(&basemind_dir.join(VIEWS_DIR))?;
-    let group_lance_bytes = match crate::store_layout::group_lance_dir_of(basemind_dir) {
-        Some(dir) => dir_size(&dir)?,
-        None => 0,
+    let group_dir = crate::store_layout::group_dir_of(basemind_dir);
+    let (group_bytes, group_index_bytes, group_lance_bytes) = match &group_dir {
+        Some(dir) => (
+            dir_size(dir)?,
+            dir_size(&dir.join(crate::index::INDEX_DIR))?,
+            dir_size(&dir.join(crate::store_layout::GROUP_LANCE_DIR))?,
+        ),
+        None => (0, 0, 0),
     };
     let lance_bytes = dir_size(&basemind_dir.join("lance"))? + group_lance_bytes;
     let git_cache_bytes = dir_size(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?;
@@ -375,9 +384,10 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         file_size(&basemind_dir.join(TELEMETRY_FILENAME))? + file_size(&basemind_dir.join(TELEMETRY_ROTATED_FILENAME))?;
     let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
 
-    let total_bytes = dir_size(basemind_dir)? + blobs_bytes + memory_vectors_bytes + group_lance_bytes;
+    let total_bytes = dir_size(basemind_dir)? + blobs_bytes + memory_vectors_bytes + group_bytes;
     let accounted = blobs_bytes
         + views_bytes
+        + group_index_bytes
         + lance_bytes
         + memory_vectors_bytes
         + git_cache_bytes
@@ -392,6 +402,7 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         blobs_bytes,
         blobs_current_bytes,
         views_bytes,
+        group_index_bytes,
         lance_bytes,
         memory_vectors_bytes,
         git_cache_bytes,
