@@ -402,8 +402,8 @@ impl WorkspacePool {
         if cancel.is_cancelled() {
             return Ok((ScanStats::default(), true));
         }
-        // The daemon owns the embedding engine for forwarded and hosted passes alike: release it when
-        // the last concurrent full Inline pass ends. Incremental passes keep it warm for searches.
+        // The daemon owns the embedding engine for forwarded and hosted passes alike: a full Inline
+        // pass releases only an engine it loaded and no search used (see `EmbedPass`).
         #[cfg(feature = "intelligence")]
         let _embed_pass = (matches!(mode, EmbedMode::Inline) && !incremental).then(crate::embeddings::begin_embed_pass);
         let scanned = if incremental {
