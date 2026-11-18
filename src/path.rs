@@ -1,11 +1,9 @@
-//! `RelPath` — repository-relative path that survives non-UTF-8 bytes end to end.
+//! `RelPath` — repository-relative path that can carry non-UTF-8 bytes.
 //!
-//! basemind started life with `String` path fields throughout. That works for ~99% of OSS
-//! repositories but silently drops files on filesystems that store non-UTF-8 path bytes
-//! (Linux ext4 with deliberately exotic names, archives extracted with mixed encodings,
-//! etc.). This module replaces `String` at the path boundary with a typed wrapper around
-//! `BString` so the raw bytes flow through the scanner → store → MCP layer without a
-//! lossy round-trip.
+//! A typed wrapper around `BString`, so a path's raw bytes round-trip through the store, the
+//! index keys and the MCP layer without a lossy conversion. The scanner's candidate walk and its
+//! git path listings are UTF-8 only: a file whose repository-relative path is not valid UTF-8 is
+//! not indexed.
 //!
 //! ## Wire format
 //!

@@ -739,38 +739,6 @@ fn python_decorators_attach_to_symbol() {
     );
 }
 
-// Marked #[ignore] on Linux too: the GitHub-hosted Ubuntu runners' filesystem rejects
-#[cfg(target_os = "linux")]
-#[test]
-#[ignore = "non-UTF-8 filename indexing not reliable on GitHub-hosted Ubuntu runners"]
-fn scanner_preserves_non_utf8_filename_bytes() {
-    use std::os::unix::ffi::OsStrExt;
-
-    let (dir, cfg) = fresh_repo();
-    let root = dir.path();
-    let raw_bytes: &[u8] = b"f\xffoo.rs";
-    let bad_name = std::ffi::OsStr::from_bytes(raw_bytes);
-    fs::write(root.join(bad_name), b"pub fn from_bad_path() {}\n").unwrap();
-
-    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(
-        root,
-        &mut store,
-        &cfg,
-        basemind::scanner::ScanSource::WorkingTree,
-        basemind::scanner::EmbedMode::Inline,
-    )
-    .unwrap();
-    assert!(
-        report.stats.updated >= 1,
-        "scanner should index files with non-UTF-8 names; updated={}",
-        report.stats.updated
-    );
-    let key = basemind::path::RelPath::from(raw_bytes);
-    let entry = store.lookup(&key).expect("non-UTF-8 path should be in index");
-    assert_eq!(entry.language, "rust");
-}
-
 /// End-to-end check that xberg's `whatlang`-backed language detector is
 /// wired through `DocConfig::to_xberg`. The fixture is a short French
 /// paragraph; with `auto_detect = true` and the default 0.8 confidence floor,
