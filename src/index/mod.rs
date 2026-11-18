@@ -62,8 +62,10 @@ use thiserror::Error;
 /// into its meta keyspace at *create* time and recovers it on reopen, ignoring the create options
 /// for a keyspace that already exists, so an index built by an earlier build would keep the 64 MiB
 /// default forever unless the schema mismatch forces it to be recreated; `+6` the LZ4-at-every-level
-/// block compression ([`index_keyspace_options`]), persisted at create time for the same reason.
-const INDEX_PARTITION_REVISION: u32 = 6;
+/// block compression ([`index_keyspace_options`]), persisted at create time for the same reason;
+/// `+7` the key-per-restart data blocks of the scan-read keyspaces ([`DENSE_RESTART_KEYSPACES`]),
+/// persisted at create time too.
+const INDEX_PARTITION_REVISION: u32 = 7;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
 /// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
@@ -169,8 +171,28 @@ const fn memtable_ceiling_bytes() -> u64 {
 /// never pick the new sizes up.
 fn open_keyspace(db: &Database, name: &str) -> Result<Keyspace, IndexError> {
     let bytes = memtable_bytes_for(name);
-    Ok(db.keyspace(name, move || index_keyspace_options(bytes))?)
+    let dense = DENSE_RESTART_KEYSPACES.contains(&name);
+    Ok(db.keyspace(name, move || {
+        let options = index_keyspace_options(bytes);
+        if dense {
+            options.data_block_restart_interval_policy(fjall::config::RestartIntervalPolicy::all(1))
+        } else {
+            options
+        }
+    })?)
 }
+
+/// Keyspaces the name scans step through row by row (`symbols_by_name`, `calls_by_callee`,
+/// `implementations_by_trait`) and the per-hit point reads land in (`calls_by_path`). Their data
+/// blocks store every key whole: a key that shares a prefix with the one before it is otherwise
+/// rebuilt into a fresh allocation on every read, which a profile of the reference scan put at a
+/// third of each row's cost. The blocks grow before compression; LZ4 takes most of it back.
+const DENSE_RESTART_KEYSPACES: [&str; 4] = [
+    "symbols_by_name",
+    "calls_by_callee",
+    "calls_by_path",
+    "implementations_by_trait",
+];
 
 /// Create options shared by every index keyspace: the tiered memtable size plus LZ4 on data and
 /// index blocks at *every* level. fjall's default policy is `[None, None, Lz4]`, which leaves L0 and

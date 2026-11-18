@@ -38,11 +38,19 @@ A profile of `references/exact/hot` at three versions put it in two places:
 3. **Hit expansion composes keys into reused buffers.** A scan composes each hit key into one of
    two buffers it owns, writing a buffer again once its reader dropped the key; a reader that keeps
    keys gets a fresh buffer. The live keys hold their distinct content keys as a sorted array of
-   big-endian integers, searched forward from the last lookup (rows of one name come in content-key
-   order), instead of a hash map. The exact symbol lookup reads holders straight from the rows
-   without composing hit keys.
-4. **Group format 6.** A group database of format 5 is emptied on open and rebuilt by the next scan
-   (ADR-0028's rebuild path); no other schema moves.
+   big-endian integers indexed by their leading bits (content keys are uniform hashes, so a lookup
+   reads one bucket bound and about one key), instead of a hash map. The exact symbol lookup reads
+   holders straight from the rows without composing hit keys or decoding a row no live path holds.
+4. **Scan-read keyspaces store every key whole.** `symbols_by_name`, `calls_by_callee`,
+   `implementations_by_trait` and `calls_by_path` are created with a data-block restart interval of
+   one. With fjall's default (10 / 16) a key sharing a prefix with the one before it is rebuilt into
+   a fresh allocation on every read; whole keys are read as slices of the cached block. Measured on
+   the bench's symbol scan, a raw row read drops from about 120 ns to about 100 ns, under the
+   per-worktree baseline, which pays for the rows of other views' contents a group index reads.
+5. **Group format 6 and index revision 7.** A group database of format 5 is emptied on open and
+   rebuilt by the next scan (ADR-0028's rebuild path). The restart interval is persisted when a
+   keyspace is created, so `INDEX_PARTITION_REVISION` moves to 7 (as `+5` and `+6` did for other
+   create-time options): an index of the earlier revision is dropped and rebuilt.
 
 ## Consequences
 
@@ -53,6 +61,8 @@ A profile of `references/exact/hot` at three versions put it in two places:
   the content rows.
 - A packed row is read whole even when a page stops in its middle; a content with thousands of
   calls of one callee costs one larger value instead of thousands of keys.
+- The four scan-read keyspaces lose prefix truncation inside their data blocks; LZ4 recovers most
+  of it on disk, and the block cache holds somewhat larger blocks.
 - The bench gate result at 1x, 3x and 10x is recorded in the commit that lands this ADR.
 
 ## Alternatives considered
