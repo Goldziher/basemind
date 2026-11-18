@@ -255,10 +255,13 @@ pub fn leaves_the_held_history_alone(root: &std::path::Path, cli_path: &str, ope
 const BUSY_EXIT: &str = "exit Some(3): ";
 
 /// Whether the CLI refused a command beside the writer as the contract says: busy, naming the fix.
+/// The daemon is offered as the fix only in a build that has one (`comms` on Unix or Windows).
 pub fn refuses_beside_the_writer(cli: &Result<Value, String>) -> bool {
+    let daemon_fix = cfg!(all(feature = "comms", any(unix, windows)));
     matches!(cli, Err(message) if message.starts_with(BUSY_EXIT)
         && message.contains("holds this workspace's index")
-        && message.contains("`basemind comms start`"))
+        && message.contains("stop the process that holds the lock")
+        && message.contains("`basemind comms start`") == daemon_fix)
 }
 
 /// [`run_cli`] for a command issued right after the in-process server ended: its store lock is
