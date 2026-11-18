@@ -1196,3 +1196,217 @@ fn retired_symbols_stay_gone() {
     }
     assert!(found.is_empty(), "retired symbols are back:\n{}", found.join("\n"));
 }
+
+/// Environment reads allowed below the root layer, as `"<file> -> <path>"`, each with its count.
+/// `Env { env }` is a secret the operator names in `basemind.toml` by the variable that holds it
+/// (ADR-0039): the indirection is the configuration. Everything else reaches the library through
+/// the engine configuration, which `src/cli/env_config.rs` builds from the environment.
+const ALLOWED_ENV_READS: &[(&str, usize)] = &[("src/config/documents.rs -> std::env::var", 1)];
+
+const ENV_READS: &[&str] = &["var", "var_os", "vars", "vars_os"];
+
+/// Whether a `cfg` predicate holds only in test builds or with the `test-support` feature, which
+/// only the test suite enables: the hooks a test drives through the environment.
+fn cfg_is_test_hook(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::NameValue(nv) => {
+            nv.path.is_ident("feature")
+                && matches!(&nv.value, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) if s.value() == "test-support")
+        }
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let Ok(args) =
+                list.parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+            else {
+                return false;
+            };
+            if list.path.is_ident("all") {
+                args.iter().any(cfg_is_test_hook)
+            } else if list.path.is_ident("any") {
+                !args.is_empty() && args.iter().all(cfg_is_test_hook)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+fn is_test_hook(attrs: &[syn::Attribute]) -> bool {
+    is_cfg_test(attrs)
+        || attrs.iter().any(|attr| {
+            attr.path().is_ident("cfg") && attr.parse_args::<syn::Meta>().is_ok_and(|meta| cfg_is_test_hook(&meta))
+        })
+}
+
+/// Collects `env::var`-family paths outside test code and test hooks.
+struct EnvReads {
+    hook: bool,
+    found: Vec<String>,
+}
+
+impl EnvReads {
+    fn check(&mut self, segments: &[String]) {
+        if self.hook {
+            return;
+        }
+        let n = segments.len();
+        if n >= 2 && segments[n - 2] == "env" && ENV_READS.contains(&segments[n - 1].as_str()) {
+            self.found.push(segments.join("::"));
+        }
+    }
+
+    fn scoped(&mut self, attrs: &[syn::Attribute], visit: impl FnOnce(&mut Self)) {
+        let saved = self.hook;
+        self.hook |= is_test_hook(attrs);
+        visit(self);
+        self.hook = saved;
+    }
+}
+
+impl<'ast> Visit<'ast> for EnvReads {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        self.scoped(item_attrs(item), |v| syn::visit::visit_item(v, item));
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        self.scoped(&item.attrs, |v| syn::visit::visit_impl_item_fn(v, item));
+    }
+
+    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+        self.scoped(&item.attrs, |v| syn::visit::visit_trait_item_fn(v, item));
+    }
+
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        self.scoped(&local.attrs, |v| syn::visit::visit_local(v, local));
+    }
+
+    fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+        let attrs: &[syn::Attribute] = match expr {
+            syn::Expr::If(e) => &e.attrs,
+            syn::Expr::Block(e) => &e.attrs,
+            syn::Expr::Call(e) => &e.attrs,
+            syn::Expr::MethodCall(e) => &e.attrs,
+            syn::Expr::Match(e) => &e.attrs,
+            syn::Expr::Let(e) => &e.attrs,
+            syn::Expr::Unsafe(e) => &e.attrs,
+            syn::Expr::Macro(e) => &e.attrs,
+            _ => &[],
+        };
+        self.scoped(attrs, |v| syn::visit::visit_expr(v, expr));
+    }
+
+    fn visit_stmt_macro(&mut self, mac: &'ast syn::StmtMacro) {
+        self.scoped(&mac.attrs, |v| syn::visit::visit_stmt_macro(v, mac));
+    }
+
+    fn visit_arm(&mut self, arm: &'ast syn::Arm) {
+        self.scoped(&arm.attrs, |v| syn::visit::visit_arm(v, arm));
+    }
+
+    fn visit_item_mod(&mut self, _: &'ast syn::ItemMod) {}
+
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        if is_test_hook(&item.attrs) {
+            return;
+        }
+        let mut pairs = Vec::new();
+        use_pairs(&mut Vec::new(), &item.tree, &mut pairs);
+        for (_, segments) in pairs {
+            self.check(&segments);
+        }
+    }
+
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+        self.check(&segments);
+        syn::visit::visit_path(self, path);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let mut flat = Vec::new();
+        flatten(mac.tokens.clone(), &mut flat);
+        for window in flat.windows(4) {
+            if let [Some(env), Some(c1), Some(c2), Some(read)] = window
+                && env == "env"
+                && c1 == ":"
+                && c2 == ":"
+                && ENV_READS.contains(&read.as_str())
+            {
+                self.check(&["env".to_string(), read.clone()]);
+            }
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+fn env_reads(items: &[syn::Item]) -> Vec<String> {
+    let mut reads = EnvReads {
+        hook: false,
+        found: Vec::new(),
+    };
+    for item in items {
+        reads.visit_item(item);
+    }
+    reads.found
+}
+
+/// Core, retrieval and engine code read no environment variable (ADR-0039): the operator's settings
+/// arrive as the engine configuration, so an embedder configures the library in code and the CLI
+/// keeps every variable's meaning in one place.
+#[test]
+fn no_env_reads_below_root() {
+    let root = manifest_dir();
+    let (modules, _) = load_modules(&root);
+    let mut checked = 0;
+    let mut found: BTreeMap<String, usize> = BTreeMap::new();
+    for module in modules
+        .iter()
+        .filter(|m| !m.test && matches!(layer_of(&m.path), Some(Core | Retrieval | Engine)))
+    {
+        checked += 1;
+        let file = module
+            .file
+            .strip_prefix(&root)
+            .unwrap_or(&module.file)
+            .display()
+            .to_string();
+        for read in env_reads(&module.items) {
+            *found.entry(format!("{file} -> {read}")).or_default() += 1;
+        }
+    }
+    assert!(checked >= 150, "checked only {checked} modules below the root layer");
+    let allowed: BTreeMap<String, usize> = ALLOWED_ENV_READS.iter().map(|(k, n)| ((*k).to_string(), *n)).collect();
+    assert_eq!(
+        found, allowed,
+        "environment reads below the root layer differ from ALLOWED_ENV_READS; map the variable onto \
+         EngineConfig in src/cli/env_config.rs instead"
+    );
+}
+
+/// The check sees each spelling of a read, and leaves test code and test hooks alone.
+#[test]
+fn the_env_read_check_flags_each_shape() {
+    let file = syn::parse_file(
+        "use std::env;\n\
+         use std::env::var_os;\n\
+         fn a() { std::env::var(\"A\"); }\n\
+         fn b() { env::var_os(\"B\"); }\n\
+         fn c() { let _ = format!(\"{:?}\", std::env::vars()); }\n\
+         fn d() { #[cfg(test)] if std::env::var_os(\"D\").is_some() {} }\n\
+         #[cfg(any(test, feature = \"test-support\"))] fn e() { std::env::var(\"E\"); }\n\
+         #[cfg(feature = \"test-support\")] fn f() { std::env::var(\"F\"); }\n\
+         #[cfg(feature = \"documents\")] fn g() { std::env::var(\"G\"); }\n\
+         fn h() { std::env::temp_dir(); std::env::split_paths(\"\"); }\n",
+    )
+    .expect("parse");
+    assert_eq!(
+        env_reads(&file.items),
+        [
+            "std::env::var_os",
+            "std::env::var",
+            "env::var_os",
+            "env::vars",
+            "std::env::var"
+        ]
+    );
+}
