@@ -173,7 +173,9 @@ fn a_newer_blob_namespace_is_outside_the_budget_and_costs_no_workspace() {
         Duration::from_secs(3 * 24 * 3600),
     );
 
-    let budget = 128 * 1024;
+    // Exactly this version's bytes, as measured here: allocation differs between file systems.
+    let budget = dir_size(&workspaces).expect("size") + dir_size(&root).expect("size")
+        - dir_size(&root.join("v8")).expect("size");
     let report =
         enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, budget, DAY, Duration::ZERO).expect("enforce");
 
@@ -258,7 +260,9 @@ fn a_newer_baseminds_workspace_is_outside_the_budget_and_costs_no_workspace() {
     let idle = seed_workspace_aged(&workspaces, "key-idle", &"c".repeat(64), 9 * DAY);
     seed_workspace_aged(&workspaces, "key-mru", &"b".repeat(64), 3 * DAY);
 
-    let budget = 128 * 1024;
+    // Exactly this version's bytes, as measured here: allocation differs between file systems.
+    let budget =
+        dir_size(&workspaces).expect("size") + dir_size(&blobs).expect("size") - dir_size(&newer).expect("size");
     let report = enforce_cache_budget_in(&workspaces, &blobs, budget, DAY, Duration::ZERO).expect("enforce");
 
     assert!(
