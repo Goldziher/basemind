@@ -12,7 +12,7 @@ they have no `mode` either.
 
 Every tool definition carries `_meta["anthropic/alwaysLoad"]: true`, so a host that defers MCP tools
 loads the schemas at session start: the tools are always loaded and are called directly, with no
-tool-search round trip. `tools/list` for the fifteen tools is about 17 KB (about 4.2k tokens), down
+tool-search round trip. `tools/list` for the fifteen tools is about 20 KB (about 5k tokens), down
 from about 25 KB (about 6.3k tokens) for the four domain tools they replace; a test holds it under
 20,000 bytes.
 

@@ -23,8 +23,8 @@ tokens, because every tool is always loaded and costs bytes in every session.
 The three agent tools (`--features comms`) are verb tools too, but deferred and specified in
 `docs/comms-v2.md` (ADR-0021).
 
-Every file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — split a helper into
-`helpers_<area>.rs` rather than raising it.
+Every file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — split an operation
+into a submodule of `src/engine/` rather than raising it.
 
 ## Steps
 
@@ -78,17 +78,21 @@ Every file stays under the **1000-line cap** enforced by `tests/max_lines.rs` �
    `Strict<T>` (`src/mcp/strict.rs`) rejects an unknown argument with a did-you-mean and the
    accepted list; `answer` (`src/mcp/tool_contract.rs`) reports that, and any `McpError` the body
    returns, as an `isError` tool result. Beside the router block add the `<tool>_call` method both
-   the shim and the CLI run, wrapping the helper in
-   `crate::instrument_tool!(&self.state, "code_outline", p, …)`: the telemetry key is the tool name.
+   the shim and the CLI run: `self.op(p, Workspace::code_outline).await`, or `op_unpaged` for a
+   tool that pages nothing. `src/mcp/adapter.rs` runs the operation on a blocking thread, binds its
+   cursor and records the telemetry row under the tool name.
    Set all four annotations to what this tool does; a tool that writes sets
    `read_only_hint = false`. `finalize_router` adds `_meta["anthropic/alwaysLoad"]` to every tool,
    so do not set it per tool.
 
-3. **`src/mcp/helpers_*.rs`** — write the body. Return `McpError::invalid_params` with text that
-   names the fix for anything the caller can correct; use `tool_contract::not_indexed` for a path
-   the code map cannot serve and `tool_contract::feature_missing` for a compiled-out feature.
+3. **`src/engine/ops/<tool>.rs`** (git tools: `src/engine/git/`) — write the body as a synchronous
+   `impl Workspace` method returning `Result<Response, EngineError>`; it names no rmcp type
+   (ADR-0039), and response types live in `src/engine/types/<area>.rs`. Return
+   `EngineError::invalid_argument` with text that names the fix for anything the caller can
+   correct; use `engine::files::not_indexed_in` (or `indexed_file`) for a path the code map cannot
+   serve and `EngineError::feature_missing` for a compiled-out feature.
    Check shapes the schema cannot state ("exactly one of `symbol` or `line`") here and quote the
-   accepted shapes in the error. Default the budget with `tool_contract::budget(p.max_tokens)`.
+   accepted shapes in the error. Default the budget with `engine::budget::budget(p.max_tokens)`.
    Positions in a response are 1-based.
 
 4. **`src/cli/`** — add the clap subcommand in the matching group (`code.rs`, `git.rs`,

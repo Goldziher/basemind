@@ -196,6 +196,10 @@ jobs:
       # ~keep The same legs compile tests/plugin_tool_skew.rs, whose second test checks the plugin
       # ~keep content against the release the plugin manifests pin. A pinned version with no release
       # ~keep yet must be this tree's own version, whose binary is the tree build ("unreleased").
+      # ~keep "Released" means the checksums file downloads, as the plugin launcher decides: the tag
+      # ~keep page answers 200 for a bare tag or a draft, whose assets are not public, and reading
+      # ~keep that as a release failed these legs, and with them the publish's ci_gate, until the
+      # ~keep release the gate was holding back existed.
       - name: Fetch release binaries for the upgrade test and the skew gate
         if: (runner.os == 'Linux' || runner.os == 'macOS') && (matrix.features == 'full' || matrix.features == 'comms documents')
         shell: bash
@@ -208,7 +212,8 @@ jobs:
           list="$(scripts/fetch-release-binaries.sh "$RUNNER_TEMP/release-binaries" "$triple" 0.28.0 latest)"
           echo "BASEMIND_UPGRADE_FROM_BIN=$list" >> "$GITHUB_ENV"
           pinned="$(jq -r .version plugin/.claude-plugin/plugin.json)"
-          if curl -fsSIL -o /dev/null "https://github.com/Goldziher/basemind/releases/tag/v$pinned"; then
+          checksums="https://github.com/Goldziher/basemind/releases/download/v$pinned/basemind_${pinned}_checksums.txt"
+          if curl -fsSL --retry 3 -o /dev/null "$checksums"; then
             pinned_bin="$(scripts/fetch-release-binaries.sh "$RUNNER_TEMP/release-binaries" "$triple" "$pinned")"
           else
             cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
@@ -342,7 +347,7 @@ jobs:
           command -v jq
           mise run plugin:pytest
       - name: node (npm wrapper installer)
-        run: node --test tests/npm_install_https.test.cjs
+        run: node --test tests/npm_install_https.test.cjs tests/npm_install_staging.test.cjs
 
   hermes:
     name: hermes plugin package

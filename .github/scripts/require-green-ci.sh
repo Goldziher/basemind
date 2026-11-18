@@ -4,11 +4,13 @@
 # usage: require-green-ci.sh <commit-sha>
 #
 # A tag push starts publish.yaml on its own; nothing else ties a release to the CI verdict for the
-# tagged commit. This waits for the newest `ci` workflow run on that exact commit to finish and then
-# requires:
+# tagged commit. This waits for the newest dispatched or scheduled `ci` workflow run on that exact
+# commit to finish and then requires:
 #   - its conclusion is `success` (a cancelled, failed or timed-out run is a refusal, not a retry);
 #   - it ran at least one `test / ...` matrix leg, all of them successful (a run that skipped the
 #     matrix would otherwise read as green);
+#   - its harden harness job succeeded (ADR-0027 rule 5). A push run never has it: the job runs only
+#     on dispatch and schedule, and a skipped job leaves the run's conclusion `success`;
 #   - no other check run on the commit (the path-filtered AI-Rulez validation, for one) concluded
 #     failure, cancelled, timed_out or action_required.
 #
@@ -32,11 +34,13 @@ POLL_SECONDS="${CI_GATE_POLL_SECONDS:-60}"
 
 deadline=$(($(date +%s) + WAIT_MINUTES * 60))
 
-# Newest ci run on SHA as "<id> <status> <conclusion>", or nothing. Push, dispatch and schedule runs
-# all test the same tree; pull_request runs test a merge commit, never SHA itself.
+HARDEN_JOB="hardening harness (nightly)"
+
+# Newest ci run on SHA as "<id> <status> <conclusion>", or nothing. Only dispatch and schedule runs
+# carry the harden harness; pull_request runs test a merge commit, never SHA itself.
 newest_run() {
   gh api "repos/$REPO/actions/workflows/ci.yaml/runs?head_sha=$SHA&per_page=100" \
-    -q '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch" or .event == "schedule")]
+    -q '[.workflow_runs[] | select(.event == "workflow_dispatch" or .event == "schedule")]
         | sort_by(.created_at) | last | select(. != null)
         | "\(.id) \(.status) \(.conclusion // "none")"'
 }
@@ -48,7 +52,7 @@ while :; do
     [ "$status" = "completed" ] && break
     log "ci run $run_id on $SHA is $status; waiting"
   else
-    log "no ci run on $SHA yet; waiting (push the commit to main, or dispatch ci on it)"
+    log "no dispatched ci run on $SHA yet; waiting (gh workflow run ci.yaml --ref <release branch>)"
   fi
   [ "$(date +%s)" -lt "$deadline" ] || die "no completed ci run on $SHA within ${WAIT_MINUTES} minutes"
   sleep "$POLL_SECONDS"
@@ -58,14 +62,20 @@ log "newest ci run on $SHA: $run_id ($conclusion)"
 [ "$conclusion" = "success" ] ||
   die "ci run $run_id on $SHA concluded '$conclusion'; https://github.com/$REPO/actions/runs/$run_id"
 
-legs="$(gh api --paginate "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
-  -q '.jobs[] | select(.name | startswith("test / ")) | "\(.conclusion // "none")\t\(.name)"')"
+jobs="$(gh api --paginate "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
+  -q '.jobs[] | "\(.conclusion // "none")\t\(.name)"')"
+legs="$(printf '%s\n' "$jobs" | awk -F '\t' '$2 ~ /^test \/ /' || true)"
 total="$(printf '%s\n' "$legs" | grep -c . || true)"
 bad="$(printf '%s\n' "$legs" | awk -F '\t' 'NF && $1 != "success"' || true)"
 [ "$total" -gt 0 ] || die "ci run $run_id ran no 'test / ...' leg, so it vouches for nothing"
 [ -z "$bad" ] || die "ci run $run_id has test legs that did not succeed:
 $bad"
 log "ci run $run_id: $total of $total test legs succeeded"
+
+harden="$(printf '%s\n' "$jobs" | awk -F '\t' -v job="$HARDEN_JOB" '$2 == job {print $1}')"
+[ "$harden" = "success" ] ||
+  die "ci run $run_id: '$HARDEN_JOB' is '${harden:-absent}', and the harden harness gates every release"
+log "ci run $run_id: the harden harness succeeded"
 
 failing="$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
   -q '.check_runs[]

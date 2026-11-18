@@ -15,7 +15,7 @@ Use this when adding a new Fjall keyspace, extending an existing key encoding, o
 
 ## Decide if you need a schema bump
 
-Bumping `INDEX_SCHEMA_VER` triggers auto-wipe of the group index (`<data dir>/cache/groups/<group>/index.fjall/`) on the user's next scan. The next scan rebuilds from the msgpack blobs — no data loss, but a one-time scan cost. Bump when:
+Bumping `INDEX_SCHEMA_VER` triggers auto-wipe of the group index, `<data dir>/cache/groups/<group>/index.fjall/` (ADR-0028), on the user's next scan. The next scan rebuilds from the msgpack blobs — no data loss, but a one-time scan cost. Bump when:
 
 - The byte layout of an existing key changes.
 - A `SymbolKind` ordinal would shift (you reordered the enum — don't).
@@ -44,7 +44,7 @@ Do **not** bump when:
    - Extend the read-before-write deletion to enumerate the partition under the file's primary key and stage deletes for those secondary keys.
    - Add integration tests covering upsert-then-remove leaves the partition empty.
 
-4. **Reader in `src/mcp/helpers.rs` (and/or `query.rs`)**
+4. **Reader in `src/engine/` (and/or `query.rs`)**
    - Add a `scan_<partition>_by_<key>` helper that range-scans the prefix and decodes values.
    - Apply `scan_cap = limit * 8`.
 

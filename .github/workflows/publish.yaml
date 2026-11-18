@@ -148,7 +148,7 @@ jobs:
         uses: ./.github/actions/setup-rust
 
       - name: Require vendored crates to match their crates.io versions
-        run: python3 scripts/check_vendored_crates.py
+        run: python3 scripts/check_vendored_crates.py --release
 
       - name: Detect already-published versions
         id: published
@@ -477,6 +477,48 @@ jobs:
           # Idempotent — a PATCH to draft=false on a published release is a no-op.
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false >/dev/null
           echo "promoted release $release_id (tag $tag) to published"
+
+  # The marketplaces serve ./plugin from main (ADR-0035), so a host takes the release's plugin, and
+  # the binary version its launcher pins, as soon as the release commit is on main. That commit
+  # therefore waits on its release branch until the release is public, and only this job moves main
+  # onto it (ADR-0046).
+  advance_main:
+    name: Fast-forward main to the release
+    needs: [meta, finalize_release]
+    if: >-
+      ${{ !inputs.plugins-only && (always() && needs.finalize_release.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.meta.outputs.tag }}
+
+      - name: Fast-forward main onto the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if git merge-base --is-ancestor "$sha" origin/main; then
+            echo "main already contains $TAG ($sha)"
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor origin/main "$sha"; then
+            echo "::error::main moved during the release and cannot fast-forward to $TAG; merge $TAG into main by hand"
+            exit 1
+          fi
+          # A plain push: GitHub refuses it unless it is still a fast-forward when it arrives.
+          git push origin "$sha:refs/heads/main"
+          # A push made with the workflow token starts no workflow, so ci on main is started here.
+          gh workflow run ci.yaml --ref main
+          echo "main fast-forwarded to $TAG ($sha); ci dispatched on main"
 
   publish_crates:
     name: Publish crates.io

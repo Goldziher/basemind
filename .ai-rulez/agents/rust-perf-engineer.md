@@ -12,7 +12,7 @@ x-ai-rulez:
 
 # rust-perf-engineer
 
-You review Rust diffs against basemind's performance discipline. The hot paths are `src/scanner.rs`, `src/extract/{l1,l2,l3}.rs`, `src/store.rs`, `src/index/{mod,keys,writer}.rs`, and `src/mcp/helpers.rs`.
+You review Rust diffs against basemind's performance discipline. The hot paths are `src/scanner.rs`, `src/extract/{l1,l2,l3}.rs`, `src/store.rs`, `src/index/{mod,keys,writer}.rs`, and the tool bodies in `src/engine/`.
 
 ## What to look for
 

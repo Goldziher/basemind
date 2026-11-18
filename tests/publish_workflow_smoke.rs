@@ -86,8 +86,9 @@ fn a_crates_io_blocker_fails_the_release_instead_of_skipping_it() {
         "meta must fail, not skip, on a Git-pinned dependency",
     );
     assert!(
-        meta.contains("scripts/check_vendored_crates.py"),
-        "meta must refuse vendored crates that drifted from their published version",
+        meta.contains("scripts/check_vendored_crates.py --release"),
+        "meta must refuse vendored crates that drifted from their published version, and a crate \
+         crates.io does not have: trusted publishing cannot create one",
     );
     assert!(
         !publish.contains("crates_publishable"),
@@ -297,4 +298,45 @@ fn plugins_only_dispatch_publishes_only_from_its_release_tag() {
             "{job} must refuse a tag that does not name the plugin version"
         );
     }
+}
+
+/// CI decides whether the pinned version is released by its checksums file, as the plugin launcher
+/// does. The tag page answers 200 for a bare tag or a draft release, whose assets are not public:
+/// reading that as a release failed the skew legs, and with them the publish's ci_gate, for as long
+/// as the release that gate held back did not exist.
+#[test]
+fn the_skew_gate_reads_a_release_from_its_checksums_not_its_tag() {
+    let ci = read_workflow("ci.yaml");
+    let start = ci
+        .find("- name: Fetch release binaries for the upgrade test and the skew gate")
+        .expect("the skew gate's fetch step");
+    let rest = &ci[start + 1..];
+    let step = &rest[..rest.find("\n      - name:").unwrap_or(rest.len())];
+    assert!(
+        !step.contains("/releases/tag/"),
+        "a tag page exists before the release is public:\n{step}"
+    );
+    assert!(
+        step.contains("/releases/download/v$pinned/basemind_${pinned}_checksums.txt"),
+        "the pinned release must be detected by its checksums file:\n{step}",
+    );
+}
+
+/// The marketplaces serve `./plugin` from main, so main reaches the release commit only once the
+/// release is public (ADR-0045): earlier, every auto-updating host pinned a binary with no assets.
+#[test]
+fn main_advances_to_the_release_only_after_it_is_public() {
+    let workflow = workflow();
+    let block = job_block(&workflow, "advance_main");
+    assert_gated_on_finalize(&workflow, "advance_main");
+    assert!(
+        block.contains("git merge-base --is-ancestor origin/main \"$sha\"")
+            && block.contains("git push origin \"$sha:refs/heads/main\"")
+            && !block.contains("--force"),
+        "advance_main must only fast-forward main:\n{block}"
+    );
+    assert!(
+        block.contains("gh workflow run ci.yaml --ref main") && block.contains("actions: write"),
+        "a push with the workflow token starts no ci run, so advance_main must dispatch one:\n{block}"
+    );
 }

@@ -13,6 +13,12 @@ die() {
   exit 1
 }
 
+# Neither the latest-release redirect nor the releases list answered: the download failed because ~keep
+# GitHub is out of reach, not because the release is broken. ~keep
+die_unreachable() {
+  die "$1 — could not reach GitHub to download basemind v${VERSION} (offline, or a proxy or firewall blocks github.com). Connect and start the session again; the binary is cached after its first download"
+}
+
 die_incomplete_release() {
   die "$1 — the basemind v${VERSION} release looks incomplete (a missing platform asset or checksums file). Update the basemind plugin to a complete release (Claude Code: run \`/plugin update\`); if it persists, report it at https://github.com/Goldziher/basemind/issues"
 }
@@ -458,13 +464,16 @@ release_is_installable() {
 # Steps 1 and 2 both refuse anything below MIN_SAFE_VERSION. A fallback exists to preserve a ~keep
 # session's tooling, and no amount of tooling is worth OOM-ing the machine. ~keep
 fallback_or_die() {
-  local reason="$1" cand fb tried="" attempts=0
+  local reason="$1" cand fb tried="" attempts=0 latest="" published="" reached=1
   if [ -z "$FORCED_VERSION" ]; then
+    latest="$(resolve_latest_tag | sed 's/^v//')"
+    published="$(published_versions)"
+    [ -n "$latest" ] || [ -n "$published" ] || reached=""
     # Newest-first, `latest` before the rest because it is the only candidate GitHub guarantees ~keep
     # is neither a draft nor a prerelease. Several candidates rather than just `latest`: `latest` ~keep
     # is exactly what was broken in the v0.27.0 incident, and with one candidate a bad `latest` ~keep
     # left every session with no server at all. ~keep
-    for cand in "$(resolve_latest_tag | sed 's/^v//')" $(published_versions); do
+    for cand in "$latest" $published; do
       [ -n "$cand" ] || continue
       [ "$cand" = "$VERSION" ] && continue
       case " $tried " in *" $cand "*) continue ;; esac
@@ -491,6 +500,7 @@ fallback_or_die() {
     cleanup_stale_state
     exec "$fb" "${ARGS[@]}"
   fi
+  [ -n "$reached" ] || die_unreachable "$reason"
   die_incomplete_release "$reason"
 }
 

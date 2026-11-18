@@ -38,6 +38,8 @@ while i < len(args):
         i += 1; continue
     url = a; i += 1
 root = os.environ["FAKE_GITHUB"]
+if os.environ.get("FAKE_OFFLINE"):
+    sys.exit(6)
 with open(os.path.join(root, "requests.log"), "a") as log:
     log.write(url + "\n")
 if url.endswith("/releases/latest") and write_out:
@@ -112,7 +114,7 @@ class DownloadTests(unittest.TestCase):
         api.parent.mkdir(parents=True, exist_ok=True)
         api.write_text(json.dumps([{"tag_name": f"v{v}"} for v in self.releases], indent=1))
 
-    def launch(self, *args: str, latest: str = "") -> subprocess.CompletedProcess:
+    def launch(self, *args: str, latest: str = "", offline: bool = False) -> subprocess.CompletedProcess:
         env = {
             "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
             "HOME": str(self.root / "home"),
@@ -120,6 +122,7 @@ class DownloadTests(unittest.TestCase):
             "CLAUDE_PLUGIN_ROOT": str(self.plugin),
             "FAKE_GITHUB": str(self.github),
             "FAKE_LATEST": latest,
+            "FAKE_OFFLINE": "1" if offline else "",
         }
         self.github.mkdir(parents=True, exist_ok=True)
         return subprocess.run(
@@ -158,6 +161,14 @@ class DownloadTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("ran 9.8.7", result.stdout)
         self.assertIn("v9.9.0", result.stderr)
+
+    def test_an_offline_first_run_blames_the_network_not_the_release(self) -> None:
+        self.pin("9.9.0")
+        self.publish("9.9.0")
+        result = self.launch("serve", offline=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not reach GitHub", result.stderr)
+        self.assertNotIn("release looks incomplete", result.stderr)
 
     def test_an_unsupported_linux_architecture_is_refused_by_name(self) -> None:
         uname = self.bin / "uname"

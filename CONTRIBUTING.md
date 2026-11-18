@@ -53,7 +53,7 @@ the commit-msg hook validates the message. Run all hooks manually with
 
 basemind is a hot-path scanner. Before merging diffs that touch
 `src/scanner.rs`, `src/extract/`, `src/store.rs`, `src/index/`, or
-`src/mcp/helpers.rs`:
+`src/engine/`:
 
 - Use `ahash::AHashMap` / `AHashSet`, never `std::collections::HashMap` on the
   scanner / extract / index paths.
@@ -74,11 +74,11 @@ so a new grammar of that kind belongs in that list rather than getting a code-ma
 ## Adding an MCP tool
 
 See [`.ai-rulez/skills/mcp-tool-checklist/SKILL.md`](.ai-rulez/skills/mcp-tool-checklist/SKILL.md).
-Every new tool needs: a `<Tool>Params` / `<Tool>Response` in `src/mcp/types.rs`
-(or the matching `types_<area>.rs`), a thin shim in `src/mcp/tools.rs` (or
-`tools_<area>.rs`), a helper body in the matching `src/mcp/helpers*.rs`, a
-smoke assertion in `tests/mcp_smoke.rs`, and (when meaningful) a per-repo
-canary in `tests/harden.rs`.
+Every new tool needs: a `<Tool>Params` in `src/mcp/types_tools.rs`, a thin shim
+in `src/mcp/tools.rs` (or `tools_<area>.rs`), its body as an engine operation in
+`src/engine/ops/<tool>.rs` with its response in `src/engine/types/`, a smoke
+assertion in `tests/mcp_smoke.rs`, and (when meaningful) a per-repo canary in
+`tests/harden.rs`.
 
 ## Schema bumps
 

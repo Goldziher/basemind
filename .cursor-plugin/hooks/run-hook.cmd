@@ -24,7 +24,7 @@ set "HOOK_ARGS="
 shift
 :collect_args
 if "%~1"=="" goto run_hook
-set "HOOK_ARGS=%HOOK_ARGS% %1"
+set "HOOK_ARGS=%HOOK_ARGS% "%~1""
 shift
 goto collect_args
 

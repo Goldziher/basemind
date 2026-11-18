@@ -56,23 +56,23 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   is also a clause on the field's doc.
 - **Paths and positions.** `path` is a `RelPath` (repo-relative, forward slashes), never an arbitrary
   `String`. `RelPath` does not normalise, so a body that reads the working tree goes through
-  `tool_contract::working_file` / `indexed_file`, which refuse an absolute path, a `..` component and
-  a symlink leaving the repository, and consult the index first. `line`,
+  `engine::files::indexed_file` (`IndexedFiles`), which refuses an absolute path, a `..` component
+  and a symlink leaving the repository, and consults the index first. `line`,
   `end_line` and `column` are 1-based; a position the index does not hold is omitted, never 0.
 - **Lists.** Every list takes `limit` and `cursor` and returns `next_cursor`. A list is trimmed to
   a default budget of 6000 tokens (`DEFAULT_MAX_TOKENS`) and then sets `budgeted`. `limit: 0` is
   refused in `cursor_bind::bound`, once for every tool that takes `limit`.
 - **Cuts.** A `limit` cut is paging: `next_cursor` alone. A cut the caller did not ask for sets
   `truncated` + `truncated_reason` (+ `omitted`, items); the token budget sets `budgeted`. Add no
-  other name. A filter no file passes is an error (`helpers_filters`).
-- **Files changed since the scan.** Load through `freshness::load` (re-extract and set `stale`, else
+  other name. A filter no file passes is an error (`engine::filters`).
+- **Files changed since the scan.** Load through `engine::freshness::load` (re-extract and set `stale`, else
   `freshness::edited`; a deleted file is `freshness::unloadable`).
 - **Cursors are bound to their query.** Every paginated `*_call` runs through `cursor_bind::bound`,
   which prefixes `next_cursor` with a hash of the tool name and list-selecting arguments. A cursor
   used on another query, or after its index or HEAD moved, is an `isError` result saying to call
   again without `cursor`; never an empty page.
 - **Pinned symbols.** `code_refs` with `path`, `code_read`, `git_blame` and `git_log` with `symbol`
-  resolve through `helpers_pick::pick_symbol`: a missing file or symbol is an error, and a name
+  resolve through `engine::pick::pick_symbol`: a missing file or symbol is an error, and a name
   several definitions share is an error listing each until `line` picks one.
 - **Failures are results.** `BasemindServer::answer` (`src/mcp/tool_contract.rs`) turns an `McpError`
   into an `isError: true` result whose text names the fix; an overloaded server answers the same way
@@ -97,7 +97,7 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
 ## Layout
 
 Params structs and `VERB_TOOLS`: `src/mcp/types_tools.rs`. Shims and `<tool>_call`:
-`src/mcp/tools*.rs`. Bodies: `src/mcp/helpers_*.rs`. The CLI (`src/cli/`) calls the same
+`src/mcp/tools*.rs`. Bodies: `src/engine/ops/<tool>.rs` and `src/engine/git/`. The CLI (`src/cli/`) calls the same
 `<tool>_call` (`tests/cli_parity/`).
 
 ## Agent tools (`--features comms`)

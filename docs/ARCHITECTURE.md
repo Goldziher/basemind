@@ -170,10 +170,12 @@ src/
 │   ├── strict.rs           — Strict<T>: exact argument validation; an unknown or malformed
 │   │                         argument becomes an isError result naming the closest accepted
 │   │                         field and the accepted set
-│   ├── tool_contract.rs    — the contract every tool shares: answer(), isError results that
-│   │                         name the fix (not indexed, empty index, feature compiled out),
-│   │                         the default max_tokens budget, the alwaysLoad meta and schema
-│   │                         compaction applied to every advertised definition
+│   ├── tool_contract.rs    — answer(): a body's error becomes an isError result naming the
+│   │                         fix; the alwaysLoad meta and schema compaction applied to every
+│   │                         advertised definition
+│   ├── adapter.rs          — runs an engine operation for a shim or a CLI command: a blocking
+│   │                         thread, EngineError → McpError, the cursor bound to its query
+│   │                         (cursor_bind.rs), the telemetry row
 │   ├── tools.rs            — #[tool] shims of code_outline, code_symbols, code_read,
 │   │                         code_grep, code_search, code_refs, find_files (thin wrappers;
 │   │                         1000-line cap)
@@ -182,29 +184,29 @@ src/
 │   │                         (index_status, index_rescan), comms (→ `agent_post`, `agent_inbox`, `agent_threads`)
 │   ├── tasks.rs            — Tasks extension: results are inline; index_rescan, code_search
 │   │                         and docs_search become a task only if still running after 3 s
-│   ├── term_index.rs       — resident term index (symbol names + import strings) behind
-│   │                         `code_symbols` and the `code_refs` importer lookup
-│   ├── l1_cache.rs         — byte-budgeted read-through cache of decoded outlines (max_map_cache_mb)
-│   ├── helpers.rs          — tool bodies; shared scan / decode helpers
-│   ├── helpers_<area>.rs   — the tool bodies, area-sliced: admin (index_status,
-│   │                         index_rescan), calls, calls_scan, code, code_search (feature
-│   │                         code-search), comms, documents, expand (code_read), files,
-│   │                         fingerprint, git, git_file, git_show, grep, impls, intel (the
-│   │                         code_refs definition body), memory, page (offset paging for
-│   │                         the ranked code_search / docs_search), registry, telemetry
-│   ├── memory.rs           — search_documents + memory_* bodies behind docs_search,
-│   │                         memory_save and memory_search
-│   ├── types.rs, types_<area>.rs — internal request shapes and response structs of the
-│   │                         bodies (code, documents, git, impls, memory, comms, registry);
-│   │                         the wire arguments are in types_tools.rs
-│   ├── cursor.rs           — cursor encoding for paginated tools
+│   ├── helpers.rs, helpers_admin.rs, helpers_telemetry.rs — what stays on the MCP side: the
+│   │                         index_status / index_rescan bodies and the telemetry hook; every
+│   │                         other body is an engine operation (engine/ below)
+│   ├── agent_tools/        — the agent_post / agent_inbox / agent_threads bodies (comms)
 │   ├── savings.rs          — token-savings heuristics, keyed by tool name (rows recorded
 │   │                         under the old domain:mode keys are mapped to it)
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer; the key is the tool name
-│   └── budget.rs, toon.rs, lean.rs, lenient.rs, notifications.rs,
-│       completions.rs, prompts.rs, tokens.rs, background.rs, daemon_forward.rs,
-│       identity.rs — response budgeting, TOON/lean output
-│       shaping, request leniency, daemon-forward plumbing for Seam B
+│   └── toon.rs, lean.rs, notifications.rs, completions.rs, prompts.rs, background.rs,
+│       daemon_forward.rs, identity.rs — TOON/lean output shaping, notifications,
+│       daemon-forward plumbing for Seam B
+├── engine/                 — the engine API (ADR-0039): no rmcp type; the MCP shims and the CLI
+│   │                         both run these operations through mcp/adapter.rs
+│   ├── ops/<tool>.rs       — one synchronous `impl Workspace` method per verb tool
+│   ├── git/                — the git_log / git_blame / git_diff operations
+│   ├── types/<area>.rs     — the operations' responses (code, files, git, grep, memory, refs,
+│   │                         search)
+│   ├── refs/, memory/      — code_refs resolution; memory notes and their vectors
+│   ├── term_index.rs, l1_cache.rs, map_cache.rs — resident term index, decoded-outline and
+│   │                         file-map caches (max_map_cache_mb)
+│   └── budget.rs, cursor.rs, filters.rs, freshness.rs, pick.rs, files.rs, error.rs — the
+│                             contract every body shares: token budget, cursors, refused
+│                             filters, files changed since the scan, pinned symbols, indexed
+│                             paths, EngineError
 ├── stdio_relay.rs          — protocol-aware stdio relay behind `basemind serve`; survives a
 │                             daemon replacement without closing the host's pipes
 ├── comms/                  — agent-comms daemon: broker, memory, worktree registry; `comms/v2/` is
@@ -706,11 +708,11 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
   tool name and the arguments that select the list, hashed. Passed to another query, or used after
   the index or HEAD moved, it is an `isError` result saying to call again without `cursor`.
 - **Paths.** A caller-supplied path is read from the working tree only after it is found in the
-  index and shown to stay inside the repository (`tool_contract::working_file`): an absolute path, a
+  index and shown to stay inside the repository (`engine::files::indexed_file`): an absolute path, a
   `..` component and a symlink pointing outside are refused.
 - **Annotations.** Exact per tool: everything is read-only except `memory_save` and `index_rescan`,
   and nothing is destructive. No `output_schema`.
-- **Size.** `tools/list` for the 15 tools is about 18 KB (about 4.5k tokens), down from about 25 KB
+- **Size.** `tools/list` for the 15 tools is about 20 KB (about 5k tokens), down from about 25 KB
   (about 6.3k tokens) for the four domain tools they replace. `tests/mcp_schema_wire.rs` enforces a
   20,000-byte ceiling; a description that pushes past it is shortened, the ceiling is not raised.
 - **Descriptions.** Each description says when to use the tool and carries one example call; field
@@ -719,9 +721,9 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
 - **CLI parity.** Every MCP tool has a CLI command, checked by `tests/cli_parity/`
   ([ADR-0014](adr/0014-cli-mcp-parity-guard.md), amended by ADR-0018); the CLI also has shorthands and
   administrative commands with no tool.
-- **Layout.** Tool bodies live in `src/mcp/helpers*.rs`, area-sliced (see
-  [Source layout](#source-layout)); `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]`
-  shims only.
+- **Layout.** Tool bodies are engine operations in `src/engine/ops/` and `src/engine/git/` (see
+  [Source layout](#source-layout), ADR-0039); `tools.rs` and the `tools_<area>.rs` siblings contain
+  `#[tool]` shims only.
 
 ## Git layer
 
@@ -1040,7 +1042,7 @@ ceiling is real rather than merely configured — ships at `docs/systemd/basemin
 ### Request correlation, timeouts and the daemon log
 
 Every client request after `Hello` travels as a `Call { id, request }` and is answered by a
-`Reply { id, response }` (since protocol version 4; the current version is 6, which added the batched
+`Reply { id, response }` (since protocol version 4; the current version is 7, which among its changes added the batched
 memory reads `MemoryOp::GetMany`, at most 256 keys and 8 MiB of notes per reply, and
 `MemoryOp::Stamps`, and the `verify` flag of `Rescan`; `ensure_daemon` asks an older daemon to stop
 on its version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a
