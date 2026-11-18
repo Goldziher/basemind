@@ -341,6 +341,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `BASEMIND_MCP_LEAN` and its three wrapper tools (`list_tools`, `get_tool_schema`,
+  `invoke_tool`). The verb tools are the surface (ADR-0018); the wrapper path skipped the task
+  offload and cancel handling of a direct call and advertised no `destructiveHint`.
 - The `store_error` exception of `basemind comms stop` and the takeover, and the `last-fatal.json`
   record `basemind comms doctor` reported. No daemon of this generation answers `store_error` or
   writes the record: a broken agent store shows as `agent_store` in `Status`. `--clear-fatal` now

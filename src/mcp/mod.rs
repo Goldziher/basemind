@@ -41,7 +41,6 @@ pub mod in_memory;
 #[cfg(test)]
 mod index_view_tests;
 pub(crate) use crate::engine::l1_cache;
-mod lean;
 #[cfg(all(test, feature = "memory"))]
 mod memory_tests;
 mod notifications;
@@ -82,7 +81,7 @@ pub(crate) use crate::engine::Workspace;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub use agent_context::AgentContext;
 #[cfg(feature = "test-support")]
-pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
+pub use in_memory::{serve_in_memory, serve_in_memory_with_task_threshold};
 pub(crate) use state::{ServedWorkspace, ServerState};
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -381,13 +380,6 @@ impl BasemindServer {
         std::time::Duration::from_millis(self.state.task_threshold_ms.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    /// Whether this server advertises the lean three-tool surface. Resolved once at construction
-    /// (see [`ServerState::lean`]) and read here per request, so the decision is per-server rather
-    /// than a global-env read.
-    pub(crate) fn lean_enabled(&self) -> bool {
-        self.state.lean.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
     /// Assemble the full tool router (every feature-gated tool group). Pure and argument-free —
     /// its output is invariant for the life of the process, so [`new_with_options`]
     /// (Self::new_with_options) and [`from_shared`](Self::from_shared) never call this directly;
@@ -506,9 +498,9 @@ impl BasemindServer {
         }
     }
 
-    /// Names of every tool this server advertises via `tools/list` (the full router, ignoring the
-    /// `BASEMIND_MCP_LEAN` wrapper mode). Exposed for the `tests/cli_parity/` guard, which asserts
-    /// each advertised tool has a CLI counterpart. The set follows the compiled feature flags.
+    /// Names of every tool this server advertises via `tools/list`. Exposed for the
+    /// `tests/cli_parity/` guard, which asserts each advertised tool has a CLI counterpart. The set
+    /// follows the compiled feature flags.
     pub fn tool_names(&self) -> Vec<String> {
         self.tool_router
             .list_all()

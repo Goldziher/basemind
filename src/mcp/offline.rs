@@ -5,15 +5,14 @@
 //! answers `initialize` and `tools/list` from here, so the session starts and its tool calls can
 //! say why they fail instead of the host giving the server up. The daemon the relay starts is this
 //! same binary, so what is answered here is what that daemon answers. One the relay did not start
-//! may differ (another release in the same generation, or one started with the lean surface),
-//! which is why the capabilities here promise `tools.listChanged` and the relay sends that
+//! may differ (another release in the same generation), which is why the capabilities here promise `tools.listChanged` and the relay sends that
 //! notification once it connects.
 
 use rmcp::ServerHandler;
 use rmcp::model::{ErrorData, InitializeRequestParams, ListToolsResult, ServerConfig};
 use serde_json::Value;
 
-use super::{lean, router_cache, server_handler};
+use super::{router_cache, server_handler};
 
 /// The server as it describes itself before any workspace is open.
 struct Unconnected;
@@ -37,25 +36,14 @@ pub fn initialize(params: Value) -> Result<Value, Value> {
     }
 }
 
-/// The `result` of `tools/list`: every tool this binary serves, or the lean wrappers when the lean
-/// surface is on. Without the cache hints the daemon's answer carries, since this one is a
+/// The `result` of `tools/list`: every tool this binary serves. Without the cache hints the daemon's answer carries, since this one is a
 /// stand-in the host should let go of when told the list changed.
 pub fn tools_list() -> Value {
     as_json(&tool_list())
 }
 
 fn tool_list() -> ListToolsResult {
-    tool_list_for(lean::lean_mode_enabled())
-}
-
-/// [`tool_list`] for the lean surface or the full one.
-fn tool_list_for(lean: bool) -> ListToolsResult {
-    let tools = if lean {
-        lean::lean_list_tools().tools
-    } else {
-        router_cache::cached_tool_router().list_all()
-    };
-    ListToolsResult::with_all_items(tools)
+    ListToolsResult::with_all_items(router_cache::cached_tool_router().list_all())
 }
 
 /// The always-loaded verb tools this binary annotates `readOnlyHint: true`, in `VERB_TOOLS` order.
@@ -116,20 +104,15 @@ mod tests {
         assert_eq!(error["code"], -32602, "{error}");
     }
 
-    /// Independent of `BASEMIND_MCP_LEAN` in the environment the tests run in: the full surface
-    /// is asked for by name, and the answer sent is the list for the surface the switch selects.
     #[test]
     fn the_tool_list_is_the_advertised_one_without_cache_hints() {
-        let listed = tool_list_for(false);
+        let listed = tool_list();
         assert!(listed.ttl_ms.is_none() && listed.cache_scope.is_none());
         let names: Vec<&str> = listed.tools.iter().map(|tool| tool.name.as_ref()).collect();
         for tool in crate::mcp::params::VERB_TOOLS {
             assert!(names.contains(tool), "`{tool}` is missing from {names:?}");
         }
-        let (full, lean) = (as_json(&listed), as_json(&tool_list_for(true)));
-        assert_ne!(full, lean, "the switch selects between two surfaces");
-        let sent = tools_list();
-        assert!(sent == full || sent == lean, "the list sent is one of them: {sent}");
+        assert_eq!(tools_list(), as_json(&listed), "the list sent is the advertised one");
     }
 
     #[test]
