@@ -543,7 +543,11 @@ fn a_workspace_a_newer_basemind_took_during_the_pass_costs_no_other_workspace() 
         }));
     });
 
-    let report = enforce_cache_budget_in(&workspaces, &blobs, 128 * 1024, DAY_AGO, Duration::ZERO);
+    // Exactly this version's bytes, as measured here: allocation differs between file systems.
+    let budget =
+        dir_size(&workspaces).expect("size") + dir_size(&blobs).expect("size") - dir_size(&taken).expect("size");
+
+    let report = enforce_cache_budget_in(&workspaces, &blobs, budget, DAY_AGO, Duration::ZERO);
     BEFORE_EVICT.with(|hook| hook.borrow_mut().take());
     let report = report.expect("enforce");
 
@@ -560,7 +564,7 @@ fn a_workspace_a_newer_basemind_took_during_the_pass_costs_no_other_workspace() 
         "within budget once the taken workspace is not counted"
     );
     assert!(idle.join(VIEWS_DIR).exists(), "the idle workspace keeps its index");
-    assert!(report.total_bytes_after <= 128 * 1024, "{}", report.total_bytes_after);
+    assert!(report.total_bytes_after <= budget, "{}", report.total_bytes_after);
 }
 
 /// A file map of this schema but a newer blob layout is a newer basemind's live view, which every
