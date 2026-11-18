@@ -248,6 +248,11 @@ impl Drop for FirstRead<'_> {
     }
 }
 
+/// Roots [`AgentHub::repo_for`] remembers. Every `Hello` names a root off the wire, so a daemon
+/// that lives for days would otherwise keep one entry per root it was ever told; past the cap the
+/// cache starts over, and a root named again pays one repository discovery.
+const REPO_CACHE_CAP: usize = 1024;
+
 /// The agent store as the daemon serves it.
 pub struct AgentHub {
     dir: PathBuf,
@@ -374,7 +379,11 @@ impl AgentHub {
             Err(_) => format!("{}{}", super::v2::api::PATH_REPO_PREFIX, root.display()),
         };
         let repo = RepoKey::parse(key)?;
-        lock(&self.repos).insert(root.to_path_buf(), repo.clone());
+        let mut repos = lock(&self.repos);
+        if repos.len() >= REPO_CACHE_CAP {
+            repos.clear();
+        }
+        repos.insert(root.to_path_buf(), repo.clone());
         Ok(repo)
     }
 

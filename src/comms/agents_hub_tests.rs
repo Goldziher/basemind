@@ -700,3 +700,13 @@ async fn a_store_held_past_the_opens_patience_is_tried_again_on_the_next_request
         .expect("the next request opens the released store");
     assert_eq!(hub.status(None, None).state, "open");
 }
+
+/// Each `Hello` names a root off the wire; the repository cache holds at most its cap of them.
+#[test]
+fn the_repository_cache_is_bounded() {
+    let (hub, dir) = hub();
+    for n in 0..=REPO_CACHE_CAP {
+        hub.repo_for(&dir.path().join(format!("root-{n}"))).expect("repository");
+    }
+    assert!(lock(&hub.repos).len() <= REPO_CACHE_CAP);
+}
