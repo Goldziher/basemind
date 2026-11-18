@@ -457,6 +457,7 @@ fn extract_imports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out
             imported,
             is_type: false,
             local_start: local_node.start_byte() as u32,
+            module_only: false,
         });
     }
 }

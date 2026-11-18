@@ -104,8 +104,8 @@ const INDEX_KEYSPACES: [&str; 16] = [
 const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
 
 /// Layout revision of the probe keyspaces; bump to force one wholesale resolve pass. Revision 2 added
-/// the file-edge row ([`keys::FILE_EDGES_START`]).
-const IMPORT_PROBE_VER: u8 = 2;
+/// the file-edge row ([`keys::FILE_EDGES_START`]); revision 3 added JS/TS module-only imports to it.
+const IMPORT_PROBE_VER: u8 = 3;
 
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
 /// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;

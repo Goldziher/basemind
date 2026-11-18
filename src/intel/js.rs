@@ -39,14 +39,17 @@ pub struct JsImport {
     /// Module specifier, e.g. `./bar` or `react`.
     pub specifier: String,
     /// Name exported by the source module: `Some("baz")` for `import { baz }`; `None` for
-    /// `import x` (default). Namespace imports (`import * as ns`) are dropped entirely — a namespace
-    /// object has no single export site to bind to — so they never produce a `JsImport`.
+    /// `import x` (default). A namespace import (`import * as ns`) has no single export site to bind
+    /// to, so it produces no binding `JsImport`; its module request is a `module_only` one.
     pub imported: Option<String>,
     /// True for type-only imports (`import type { Foo }`, `import { type Foo }`). These are
     /// erased at runtime, so the cross-file stitch must not treat them as runtime reference edges.
     pub is_type: bool,
-    /// Start byte of the local binding identifier.
+    /// Start byte of the local binding identifier, or of the specifier for a module-only import.
     pub local_start: u32,
+    /// A module request that binds no name (side-effect import, namespace import, re-export): a file
+    /// edge only. `local` is empty and `imported` is `None`.
+    pub module_only: bool,
 }
 
 /// A name this module exports (for the cross-file stitch: an importer binds to one of these).
@@ -107,7 +110,7 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         }
     }
 
-    let imports = parsed
+    let mut imports: Vec<JsImport> = parsed
         .module_record
         .import_entries
         .iter()
@@ -123,9 +126,11 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
                 imported,
                 is_type: entry.is_type,
                 local_start: entry.local_name.span.start,
+                module_only: false,
             })
         })
         .collect();
+    imports.extend(module_only_imports(&parsed.module_record, &imports));
 
     let exports = parsed
         .module_record
@@ -146,6 +151,30 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         exports,
         had_errors: parsed.fatal_error || !parsed.diagnostics.is_empty(),
     }
+}
+
+/// One `module_only` import per requested module that no binding import already names: side-effect
+/// imports, namespace-only imports and `export … from` re-exports, which the import graph needs as
+/// file edges. Anchored at the first request of the specifier; type-only when every request is.
+fn module_only_imports(record: &oxc_syntax::module_record::ModuleRecord<'_>, bound: &[JsImport]) -> Vec<JsImport> {
+    let mut out: Vec<JsImport> = record
+        .requested_modules
+        .iter()
+        .filter(|(specifier, _)| !bound.iter().any(|import| import.specifier == specifier.as_str()))
+        .filter_map(|(specifier, requests)| {
+            let first = requests.iter().min_by_key(|request| request.span.start)?;
+            Some(JsImport {
+                local: String::new(),
+                specifier: specifier.as_str().to_string(),
+                imported: None,
+                is_type: requests.iter().all(|request| request.is_type),
+                local_start: first.span.start,
+                module_only: true,
+            })
+        })
+        .collect();
+    out.sort_unstable_by_key(|import| import.local_start);
+    out
 }
 
 #[cfg(test)]
@@ -216,7 +245,50 @@ mod tests {
 
         assert!(
             by_local("ns").is_none(),
-            "namespace import is dropped — no single export site to stitch"
+            "namespace import binds no export site to stitch"
+        );
+        let pkg = a
+            .imports
+            .iter()
+            .find(|i| i.specifier == "pkg")
+            .expect("namespace import is a module-only import");
+        assert!(pkg.module_only && pkg.local.is_empty() && pkg.imported.is_none());
+        assert_eq!(
+            a.imports.iter().filter(|i| i.module_only).count(),
+            1,
+            "a specifier with a binding import gets no module-only import"
+        );
+    }
+
+    #[test]
+    fn side_effect_imports_and_reexports_are_module_only_imports() {
+        let src = "import './polyfill';
+export * from './all';
+export { a as b } from './named';
+export type { T } from './types';
+import { x } from './x';
+export { x } from './x';
+";
+        let a = ts(src);
+        let module_only: Vec<(&str, bool, u32)> = a
+            .imports
+            .iter()
+            .filter(|i| i.module_only)
+            .map(|i| (i.specifier.as_str(), i.is_type, i.local_start))
+            .collect();
+        let at = |needle: &str| src.find(needle).unwrap() as u32;
+        assert_eq!(
+            module_only,
+            [
+                ("./polyfill", false, at("'./polyfill'")),
+                ("./all", false, at("'./all'")),
+                ("./named", false, at("'./named'")),
+                ("./types", true, at("'./types'")),
+            ]
+        );
+        assert!(
+            a.imports.iter().any(|i| i.specifier == "./x" && !i.module_only),
+            "a specifier with a binding keeps only its binding import"
         );
     }
 

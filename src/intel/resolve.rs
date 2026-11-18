@@ -96,6 +96,7 @@ fn resolve_js(lang: LangId, path: &Path, source: &[u8]) -> Option<FileResolvedRe
             imported: i.imported,
             is_type: i.is_type,
             local_start: i.local_start,
+            module_only: i.module_only,
         })
         .collect();
     out.exports = analysis

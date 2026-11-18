@@ -23,8 +23,9 @@
 //! map is what lets the incremental pass re-stitch exactly the importers a changed path can affect.
 //! It also records the importer's file-level edges ([`FileEdges`]): every indexed file an import
 //! resolves to at the first hop, type-only imports included and flagged, whether or not the name
-//! binds an export there (a barrel forwards it), plus the imports that resolved to none. Only the
-//! imports the extractor records count: a JS namespace or side-effect import has no binding there.
+//! binds an export there (a barrel forwards it), plus the imports that resolved to none. A JS
+//! side-effect import, namespace import or `export … from` re-export is a `module_only` import: it
+//! counts as a file edge and joins no export.
 //!
 //! Best-effort: any resolver miss or unindexed target is logged at debug and skipped; a commit
 //! failure warns but never aborts the scan. Idempotency across re-scans is documented on
@@ -185,7 +186,7 @@ fn resolve_export_transitively(
         let reexport = facts
             .imports
             .iter()
-            .find(|import| !import.is_type && import.local == wanted)?;
+            .find(|import| !import.is_type && !import.module_only && import.local == wanted)?;
         let next_rel = resolver.resolve(root, &current_key, reexport, probes)?;
         store.lookup(&next_rel)?;
         wanted = reexport.imported.clone().unwrap_or(wanted);
@@ -259,7 +260,7 @@ pub fn stitch_cross_file_edges(
                 continue;
             }
             file_edges.hit(target_rel.clone(), import);
-            if import.is_type {
+            if import.is_type || import.module_only {
                 continue;
             }
 

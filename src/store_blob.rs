@@ -16,8 +16,6 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
 use crate::extract::SCHEMA_VER;
 use crate::extract::{FileMapL1, FileMapL2};
 use crate::hashing::{self, Hash};
@@ -56,7 +54,8 @@ struct ChunkEnvelopePeek {
     extract_epoch: u16,
 }
 
-#[derive(Deserialize)]
+#[cfg(feature = "documents")]
+#[derive(serde::Deserialize)]
 struct BlobSchemaPeek {
     schema_ver: u16,
 }
@@ -236,6 +235,7 @@ fn decode_single_or_legacy<'a>(path: &Path, bytes: &'a [u8], expected: BlobKind)
     }
 }
 
+#[cfg(feature = "documents")]
 fn is_current_single_blob(path: &Path) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return false;
@@ -461,7 +461,7 @@ thread_local! {
 
 /// Atomic blob write: stream `bytes` to a per-thread-unique tmp file, then POSIX-rename it
 /// over `path`. The rename is atomic and safely clobbers any blob that raced in. Shared by
-/// the framed-filemap writer and the doc-tier [`write_blob`].
+/// the framed-filemap writer and the single-map [`write_blob_overwrite`].
 pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), StoreError> {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -489,22 +489,10 @@ pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), Stor
     Ok(())
 }
 
-/// Compressed single-map blob write (doc tier + resolution tier): content-addressed skip on a
-/// current envelope, else serialize + atomic write. The combined-filemap blobs go through
-/// `Store::write_filemap_hex` instead; a legacy raw blob is rewritten on its next write.
-pub(crate) fn write_blob<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
-    if is_current_single_blob(&path) {
-        return Ok(());
-    }
-    let bytes = rmp_serde::to_vec_named(value)?;
-    let encoded = encode_single_blob(&bytes, SCHEMA_VER)?;
-    write_bytes_atomic(path, &encoded)
-}
-
-/// Like [`write_blob`] but always (re)writes, even when a same-schema document blob already exists.
-/// A vectorless `Deferred` blob (`embedding_dim: 0`) can later be upgraded to an embedded `Inline`
-/// blob for the same content hash, so a schema-only skip would preserve stale embedding state.
-#[cfg(feature = "documents")]
+/// Compressed single-map blob write (doc tier + resolution tier). Always (re)writes, even when a
+/// same-schema blob already exists: a vectorless `Deferred` document blob (`embedding_dim: 0`) can
+/// later be upgraded to an embedded `Inline` blob for the same content hash, and a resolution blob
+/// from an older resolver epoch is replaced, so a schema-only skip would preserve stale state.
 pub(crate) fn write_blob_overwrite<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
     let bytes = rmp_serde::to_vec_named(value)?;
     let encoded = encode_single_blob(&bytes, SCHEMA_VER)?;
@@ -666,19 +654,21 @@ impl Store {
         self.blobs_dir.join(format!("{hash_hex}.rref.msgpack"))
     }
 
-    /// Write a file's resolution facts. Content-addressed skip on matching schema (identical
-    /// source bytes already analyzed), else serialize + atomic write — mirrors `write_doc`.
+    /// Write a file's resolution facts. Always overwrites: the resolve pass writes only after a
+    /// cache miss, and a miss includes a current-schema blob from an older
+    /// [`crate::intel::model::RESOLVE_EPOCH`], which a schema-only skip would keep forever.
     pub fn write_resolved_hex(
         &self,
         hash_hex: &str,
         refs: &crate::intel::model::FileResolvedRefs,
     ) -> Result<(), StoreError> {
-        write_blob(self.blob_path_rref_hex(hash_hex), refs)
+        write_blob_overwrite(self.blob_path_rref_hex(hash_hex), refs)
     }
 
     /// Read a file's resolution facts. `Ok(None)` when the file has no resolution blob (never
-    /// analyzed, or produced no facts). A schema mismatch surfaces as an error so the second pass
-    /// recomputes rather than trusting a stale blob.
+    /// analyzed, or produced no facts) or its blob predates [`crate::intel::model::RESOLVE_EPOCH`].
+    /// A schema mismatch surfaces as an error so the second pass recomputes rather than trusting a
+    /// stale blob.
     pub fn read_resolved_by_hex(
         &self,
         hash_hex: &str,
@@ -690,6 +680,9 @@ impl Store {
         let decoded = decode_single_or_legacy(&path, &bytes, BlobKind::Single)?;
         let refs: crate::intel::model::FileResolvedRefs = rmp_serde::from_slice(&decoded)?;
         check_schema(refs.schema_ver)?;
+        if refs.resolve_epoch < crate::intel::model::RESOLVE_EPOCH {
+            return Ok(None);
+        }
         Ok(Some(refs))
     }
 

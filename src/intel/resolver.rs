@@ -610,6 +610,7 @@ mod stack_tests {
             imported: imported.map(str::to_string),
             is_type: false,
             local_start: 0,
+            module_only: false,
         }
     }
 
@@ -879,6 +880,7 @@ mod js_tests {
             imported: Some("x".to_string()),
             is_type: false,
             local_start: 0,
+            module_only: false,
         }
     }
 

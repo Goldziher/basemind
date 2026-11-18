@@ -509,6 +509,7 @@ mod tests {
             imported: Some("useThing".to_string()),
             is_type: false,
             local_start: 7,
+            module_only: false,
         }];
         refs.intra = (0..256)
             .map(|i| ResolvedEdge {
@@ -558,6 +559,7 @@ mod tests {
                 imported: Some("useThing".to_string()),
                 is_type: false,
                 local_start: 7,
+                module_only: false,
             }];
             refs.intra = (0..EDGES_PER_FILE)
                 .map(|i| ResolvedEdge {
