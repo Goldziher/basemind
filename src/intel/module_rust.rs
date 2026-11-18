@@ -5,7 +5,9 @@
 //! - A `use` path starting with `crate::`, `self::`, `super::` or a module the file declares maps to
 //!   the longest prefix of it that is a module file under the crate root, the crate root being
 //!   found from the nearest `Cargo.toml` (`src/`, `src/bin/*`, `tests/*`, `examples/*`,
-//!   `benches/*`). With no module file at all, the path names an item of the crate root file.
+//!   `benches/*`; a file in `tests/x/` belongs to `tests/x/main.rs`, else to `tests/x.rs`, which
+//!   loads it through `#[path]`). With no module file at all, the path names an item of the crate
+//!   root file.
 //! - Anything else (`std::`, a dependency, `::x`) is external.
 //!
 //! Inline modules (`mod tests { … }`) are scopes inside one file: `use super::*` in one resolves to
@@ -118,11 +120,10 @@ impl RustModules {
                 },
                 Some((target, _)) => {
                     let dir = join(&top_dir, target);
-                    let main = join(&dir, "main.rs");
-                    CrateLayout {
-                        root_file: probe.indexed(&main).then_some(main),
-                        dir,
-                    }
+                    let root_file = [join(&dir, "main.rs"), format!("{dir}.rs")]
+                        .into_iter()
+                        .find(|file| probe.indexed(file));
+                    CrateLayout { dir, root_file }
                 }
             });
         }
@@ -761,6 +762,19 @@ mod tests {
             resolved,
             [("mod common".to_string(), files(&["tool/tests/common/mod.rs"]))]
         );
+
+        let (resolved, _) = resolve(
+            &[
+                ("Cargo.toml", MANIFEST),
+                (
+                    "tests/suite.rs",
+                    "#[path = \"suite/case.rs\"]\nmod case;\nfn shared() {}\n",
+                ),
+                ("tests/suite/case.rs", "use super::shared;\n"),
+            ],
+            "tests/suite/case.rs",
+        );
+        assert_eq!(resolved, [("super::shared".to_string(), files(&["tests/suite.rs"]))]);
 
         let (resolved, _) = resolve(&[("loose/x.rs", "use crate::y::Z;\n")], "loose/x.rs");
         assert_eq!(resolved, [("crate::y::Z".to_string(), ModuleTarget::Unresolved)]);
