@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-11-16
+status: accepted
+date: 2026-11-18
 ---
 
 # ADR-0034: Lean rows for the locating tools
