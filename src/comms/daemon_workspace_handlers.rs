@@ -105,28 +105,30 @@ impl Broker {
         }
     }
 
-    /// List every registered workspace in the machine registry.
+    /// List every registered workspace in the machine registry, reconciled with the disk first.
     pub(super) async fn on_workspaces_list(&self) -> CommsResponse {
-        let registry = self.machine_registry.lock().await;
-        CommsResponse::Workspaces {
-            workspaces: registry.workspaces(),
-        }
+        let workspaces = self.refreshed_registry(None, MachineRegistry::workspaces).await;
+        CommsResponse::Workspaces { workspaces }
     }
 
-    /// List a registered repo's worktrees. An unknown repo id yields an empty list.
+    /// List a registered repo's worktrees, reconciled with the repository first. An unknown repo id
+    /// yields an empty list.
     pub(super) async fn on_worktrees_list(&self, repo_id: String) -> CommsResponse {
-        let registry = self.machine_registry.lock().await;
-        CommsResponse::Worktrees {
-            worktrees: registry.worktrees(&repo_id),
-        }
+        let id = repo_id.clone();
+        let worktrees = self
+            .refreshed_registry(Some(repo_id), move |registry| registry.worktrees(&id))
+            .await;
+        CommsResponse::Worktrees { worktrees }
     }
 
-    /// List a registered repo's local branches. An unknown repo id yields an empty list.
+    /// List a registered repo's local branches, reconciled with the repository first. An unknown
+    /// repo id yields an empty list.
     pub(super) async fn on_branches_list(&self, repo_id: String) -> CommsResponse {
-        let registry = self.machine_registry.lock().await;
-        CommsResponse::Branches {
-            branches: registry.branches(&repo_id),
-        }
+        let id = repo_id.clone();
+        let branches = self
+            .refreshed_registry(Some(repo_id), move |registry| registry.branches(&id))
+            .await;
+        CommsResponse::Branches { branches }
     }
 
     /// Drop machine-registry rows whose on-disk path is gone, returning how many were removed.

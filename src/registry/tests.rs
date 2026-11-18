@@ -277,3 +277,140 @@ fn snapshot_with_a_retired_claim_field_still_loads() {
     assert_eq!(worktrees.len(), 1, "the pre-removal worktree row survives the upgrade");
     assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
 }
+
+/// Whether `registry` holds a settled stamp for every clone of `repo_id`.
+fn stamp_trusted(registry: &Registry, repo_id: &RepoId) -> bool {
+    registry
+        .stamps
+        .get(repo_id)
+        .is_some_and(|clones| !clones.is_empty() && clones.values().all(Option::is_some))
+}
+
+/// The branch names `registry` holds for `repo_id`.
+fn branch_names(registry: &Registry, repo_id: &RepoId) -> Vec<String> {
+    registry.branches(repo_id).into_iter().map(|b| b.name).collect()
+}
+
+/// The worktree names `registry` holds for `repo_id`.
+fn worktree_names(registry: &Registry, repo_id: &RepoId) -> Vec<String> {
+    registry.worktrees(repo_id).into_iter().map(|w| w.name).collect()
+}
+
+/// A query reconciles the rows it reads: a branch created or deleted and a worktree added or
+/// removed since registration show on the next `refresh_stale`, detected through the repo's stamp.
+#[test]
+fn refresh_stale_reflects_branch_and_worktree_changes() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let main = tmp.path().canonicalize().expect("canonicalize tmp").join("main");
+    init_repo(&main);
+
+    let mut registry = Registry::open(&tmp.path().join("registry")).expect("open registry");
+    registry.racy_margin = std::time::Duration::ZERO;
+    let key = registry.register_workspace(&main).expect("register");
+    let repo_id = registry.get_workspace(&key).expect("row").repo_id.expect("repo id");
+    assert!(
+        stamp_trusted(&registry, &repo_id),
+        "a settled stamp is kept, so the refreshes below go through the stamp comparison"
+    );
+
+    git(&["branch", "feature"], &main);
+    registry
+        .refresh_stale(Some(&repo_id))
+        .expect("refresh after branch create");
+    assert_eq!(branch_names(&registry, &repo_id), ["feature", "main"]);
+
+    let wt = tmp.path().join("wt");
+    git(&["worktree", "add", "-q", wt.to_str().expect("utf8"), "feature"], &main);
+    registry
+        .refresh_stale(Some(&repo_id))
+        .expect("refresh after worktree add");
+    assert_eq!(worktree_names(&registry, &repo_id), ["(main)", "wt"]);
+
+    git(&["worktree", "remove", wt.to_str().expect("utf8")], &main);
+    registry.refresh_stale(None).expect("refresh after worktree remove");
+    assert_eq!(worktree_names(&registry, &repo_id), ["(main)"]);
+
+    git(&["branch", "-D", "feature"], &main);
+    registry.refresh_stale(None).expect("refresh after branch delete");
+    assert_eq!(branch_names(&registry, &repo_id), ["main"]);
+
+    let reopened = Registry::open(&tmp.path().join("registry")).expect("reopen registry");
+    assert_eq!(branch_names(&reopened, &repo_id), ["main"], "the refresh was persisted");
+}
+
+/// A query over a repository whose stamp has not moved neither re-enumerates nor rewrites the
+/// snapshot.
+#[test]
+fn refresh_stale_leaves_an_unchanged_repo_alone() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let main = tmp.path().canonicalize().expect("canonicalize tmp").join("main");
+    init_repo(&main);
+
+    let mut registry = Registry::open(&tmp.path().join("registry")).expect("open registry");
+    registry.racy_margin = std::time::Duration::ZERO;
+    registry.register_workspace(&main).expect("register");
+    let snapshot = tmp.path().join("registry").join(SNAPSHOT_FILE);
+    std::fs::remove_file(&snapshot).expect("remove snapshot");
+
+    registry.refresh_stale(None).expect("refresh");
+    assert!(
+        !snapshot.exists(),
+        "an unchanged repo was re-enumerated and the snapshot rewritten"
+    );
+}
+
+/// A stamp taken within the racy margin of the stamped writes says nothing about a change in the
+/// same filesystem tick, so it is not kept: the next query re-enumerates.
+#[test]
+fn a_stamp_of_just_written_refs_is_not_trusted() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let main = tmp.path().join("main");
+    init_repo(&main);
+
+    let mut registry = Registry::open(&tmp.path().join("registry")).expect("open registry");
+    let key = registry.register_workspace(&main).expect("register");
+    let repo_id = registry.get_workspace(&key).expect("row").repo_id.expect("repo id");
+    assert!(!stamp_trusted(&registry, &repo_id), "a racy stamp was trusted");
+}
+
+/// A plain workspace that a repository now contains is a git workspace on the next query.
+#[test]
+fn refresh_stale_turns_a_plain_workspace_that_became_a_repo_into_a_git_one() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize tmp").join("docs");
+    std::fs::create_dir_all(&root).expect("mkdir docs");
+
+    let mut registry = Registry::open(&tmp.path().join("registry")).expect("open registry");
+    let key = registry.register_workspace(&root).expect("register");
+    assert_eq!(registry.get_workspace(&key).expect("row").kind, WorkspaceKind::Plain);
+
+    init_repo(&root);
+    registry.refresh_stale(None).expect("refresh");
+    let row = registry.get_workspace(&key).expect("row");
+    assert_eq!(row.kind, WorkspaceKind::Git);
+    let repo_id = row.repo_id.expect("repo id");
+    assert_eq!(branch_names(&registry, &repo_id), ["main"]);
+}
+
+/// A repo re-enumerated because its stamp is not settled rewrites the snapshot only when a row
+/// changed, not to bump `last_seen`.
+#[test]
+fn a_re_enumeration_that_changes_no_row_rewrites_nothing() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let main = tmp.path().join("main");
+    init_repo(&main);
+
+    let mut registry = Registry::open(&tmp.path().join("registry")).expect("open registry");
+    registry.racy_margin = std::time::Duration::from_secs(3600);
+    registry.register_workspace(&main).expect("register");
+    let snapshot = tmp.path().join("registry").join(SNAPSHOT_FILE);
+    std::fs::remove_file(&snapshot).expect("remove snapshot");
+
+    registry.refresh_stale(None).expect("refresh");
+    assert!(!snapshot.exists(), "an unchanged re-enumeration rewrote the snapshot");
+}

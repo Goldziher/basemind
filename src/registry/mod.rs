@@ -11,6 +11,13 @@
 //! in-file locking is needed; readers load a fresh [`Registry`] or share one behind the daemon's own
 //! synchronization. This module is the persistence + population layer only — daemon wiring, watchers,
 //! and MCP tools live in later slices.
+//!
+//! A workspace is enumerated when it is first registered; the rows a query reads are brought up to
+//! date by [`Registry::refresh_stale`], which re-enumerates a clone only when a [`stamp::RepoStamp`]
+//! of its refs and worktrees moved.
+
+mod refresh;
+mod stamp;
 
 use std::path::{Path, PathBuf};
 
@@ -158,6 +165,13 @@ pub struct Registry {
     worktrees: AHashMap<String, WorktreeRecord>,
     /// Keyed by [`composite_key`]`(repo_id, name)`.
     branches: AHashMap<String, BranchRecord>,
+    /// Per repo, the stamp of each clone's common git directory, taken just before the clone was
+    /// last enumerated; `None` when it was not settled. Separate clones of one remote share a repo
+    /// id, hence one per directory. Held in memory only: a repo without one is re-enumerated on
+    /// its next query.
+    stamps: AHashMap<RepoId, AHashMap<PathBuf, Option<stamp::RepoStamp>>>,
+    /// How recent a stamped time may be before the stamp is not trusted ([`stamp::RACY_MARGIN`]).
+    racy_margin: std::time::Duration,
 }
 
 /// Composite `repo_id ‖ name` key. The `\0` separator can appear in neither a scope-key nor a git
@@ -189,6 +203,8 @@ impl Registry {
             repos: AHashMap::new(),
             worktrees: AHashMap::new(),
             branches: AHashMap::new(),
+            stamps: AHashMap::new(),
+            racy_margin: stamp::RACY_MARGIN,
         };
         for record in snapshot.workspaces {
             registry.workspaces.insert(record.key.clone(), record);
@@ -214,21 +230,13 @@ impl Registry {
         Self::open(&crate::store::cache_root().join("registry"))
     }
 
-    /// [`Self::register_workspace`], unless `root`'s row was refreshed within `fresh_for`: the
-    /// daemon registers the root of every comms `Hello`, and every prompt hook says one, so a
-    /// re-enumeration of the repository and a rewrite of the snapshot each time would be wasted.
-    pub fn register_workspace_unless_fresh(
-        &mut self,
-        root: &Path,
-        fresh_for: std::time::Duration,
-    ) -> Result<WorkspaceKey, RegistryError> {
+    /// [`Self::register_workspace`] for a `root` with no row yet; a registered one is left as it is.
+    /// The daemon registers the root of every comms `Hello`, and every prompt hook says one, so it
+    /// must not enumerate the repository and rewrite the snapshot each time: the rows a query reads
+    /// are kept current by [`Self::refresh_stale`] instead.
+    pub fn register_workspace_if_new(&mut self, root: &Path) -> Result<WorkspaceKey, RegistryError> {
         let key = crate::store::workspace_key(root);
-        let window = i64::try_from(fresh_for.as_micros()).unwrap_or(i64::MAX);
-        let fresh = self
-            .workspaces
-            .get(&key)
-            .is_some_and(|row| row.root == root && now_micros().saturating_sub(row.last_seen) < window);
-        if fresh {
+        if self.workspaces.get(&key).is_some_and(|row| row.root == root) {
             return Ok(key);
         }
         self.register_workspace(root)
@@ -239,12 +247,26 @@ impl Registry {
     /// Idempotent: re-registering refreshes `last_seen` and reconciles worktree/branch rows. Returns
     /// the workspace key.
     pub fn register_workspace(&mut self, root: &Path) -> Result<WorkspaceKey, RegistryError> {
+        let key = self.upsert_workspace(root, &mut ahash::AHashSet::new())?;
+        self.persist()?;
+        Ok(key)
+    }
+
+    /// [`Self::register_workspace`] without persisting the snapshot. A clone whose common git
+    /// directory is in `enumerated` is not enumerated again; one that is not is added to it.
+    fn upsert_workspace(
+        &mut self,
+        root: &Path,
+        enumerated: &mut ahash::AHashSet<PathBuf>,
+    ) -> Result<WorkspaceKey, RegistryError> {
         let key = crate::store::workspace_key(root);
         let now = now_micros();
         let record = match git::Repo::discover(root) {
             Ok(repository) => {
                 let repo_id = scope_key(&repository);
-                self.populate_git(&repository, &repo_id, now)?;
+                if enumerated.insert(repository.common_dir()) {
+                    self.populate_git(&repository, &repo_id, now)?;
+                }
                 WorkspaceRecord {
                     key: key.clone(),
                     kind: WorkspaceKind::Git,
@@ -264,7 +286,6 @@ impl Registry {
             },
         };
         self.workspaces.insert(key.clone(), record);
-        self.persist()?;
         Ok(key)
     }
 
@@ -292,9 +313,15 @@ impl Registry {
 
     /// Enumerate `repository`'s worktrees + local branches and upsert the repo/worktree/branch rows.
     /// Rows for this repo that are no longer present upstream are pruned so a removed worktree or
-    /// deleted branch does not linger.
+    /// deleted branch does not linger. The repo's stamp is taken before the enumeration, so a change
+    /// racing it moves the stamp, and is trusted only when it is settled. A linked worktree whose
+    /// checkout is gone (not yet pruned by git) gets no row.
     fn populate_git(&mut self, repository: &git::Repo, repo_id: &RepoId, now: i64) -> Result<(), RegistryError> {
-        let worktrees = repository.list_worktrees()?;
+        let common_dir = repository.common_dir();
+        let stamped_at = std::time::SystemTime::now();
+        let stamp = stamp::RepoStamp::of(&common_dir);
+        let mut worktrees = repository.list_worktrees()?;
+        worktrees.retain(|worktree| worktree.path.exists());
         let branches = repository.list_local_branches()?;
 
         let seen_worktrees: ahash::AHashSet<String> = worktrees.iter().map(|w| w.name.clone()).collect();
@@ -342,6 +369,11 @@ impl Registry {
                 last_seen: now,
             },
         );
+        let settled = stamp.settled(stamped_at, self.racy_margin).then_some(stamp);
+        self.stamps
+            .entry(repo_id.clone())
+            .or_default()
+            .insert(common_dir, settled);
         Ok(())
     }
 
@@ -391,6 +423,15 @@ impl Registry {
     /// gone, repos whose main root is gone, and branches orphaned by a pruned repo. Returns the total
     /// number of rows removed. Persists only when something changed.
     pub fn prune_missing(&mut self) -> Result<usize, RegistryError> {
+        let removed = self.retain_present();
+        if removed > 0 {
+            self.persist()?;
+        }
+        Ok(removed)
+    }
+
+    /// [`Self::prune_missing`] without persisting the snapshot.
+    fn retain_present(&mut self) -> usize {
         let before = self.total_rows();
 
         self.worktrees.retain(|_, r| r.path.exists());
@@ -398,12 +439,9 @@ impl Registry {
         self.repos.retain(|_, r| r.main_root.exists());
         let live_repos: ahash::AHashSet<RepoId> = self.repos.keys().cloned().collect();
         self.branches.retain(|_, r| live_repos.contains(&r.repo_id));
+        self.stamps.retain(|repo_id, _| live_repos.contains(repo_id));
 
-        let removed = before - self.total_rows();
-        if removed > 0 {
-            self.persist()?;
-        }
-        Ok(removed)
+        before - self.total_rows()
     }
 
     /// Total row count across every keyspace (diagnostics + prune accounting).

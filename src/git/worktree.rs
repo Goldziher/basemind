@@ -97,8 +97,7 @@ impl Repo {
     pub fn list_worktrees(&self) -> Result<Vec<WorktreeInfo>, GitError> {
         let mut out = vec![self.main_worktree_info()?];
 
-        let common = anchor_git_path(&self.workdir, self.local().common_dir());
-        let worktrees_dir = common.join("worktrees");
+        let worktrees_dir = self.common_dir().join("worktrees");
         if let Ok(entries) = std::fs::read_dir(&worktrees_dir) {
             let mut linked: Vec<WorktreeInfo> = entries
                 .filter_map(Result::ok)
@@ -109,6 +108,12 @@ impl Repo {
             out.extend(linked);
         }
         Ok(out)
+    }
+
+    /// The clone's common git directory, shared by every worktree: where its refs, `packed-refs`
+    /// and `worktrees/` live. Absolute and canonicalized.
+    pub fn common_dir(&self) -> PathBuf {
+        anchor_git_path(&self.workdir, self.local().common_dir())
     }
 
     /// Build the [`WorktreeInfo`] for the main worktree from its identity snapshot.

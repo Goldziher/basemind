@@ -250,30 +250,88 @@ fn broker_with_registry(dir: &std::path::Path) -> Broker {
     Broker::with_registry(agents, registry)
 }
 
-/// Every `basemind agent` call says hello, the prompt hook included, so a hello must not
-/// re-enumerate the repository and rewrite the machine registry each time.
+/// Run git in `cwd`, asserting success.
+fn git(args: &[&str], cwd: &std::path::Path) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// The local branch names a `BranchesList` query on `broker` answers for `repo_id`.
+async fn listed_branches(broker: &Broker, repo_id: &str) -> Vec<String> {
+    let request = CommsRequest::BranchesList {
+        repo_id: repo_id.to_string(),
+    };
+    match broker
+        .handle(request, &mut Session::default(), &CancellationToken::new())
+        .await
+    {
+        CommsResponse::Branches { branches } => branches.into_iter().map(|branch| branch.name).collect(),
+        other => panic!("BranchesList answered {other:?}"),
+    }
+}
+
+/// Every `basemind agent` call says hello, the prompt hook included, so a hello from a registered
+/// root must neither enumerate the repository nor rewrite the machine registry; the next query
+/// still sees what changed in between.
 #[tokio::test]
-async fn a_hello_from_a_freshly_registered_root_rewrites_nothing() {
+async fn a_hello_from_a_registered_root_enumerates_nothing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = broker_with_registry(dir.path());
     let checkout = dir.path().join("checkout");
     std::fs::create_dir_all(&checkout).expect("mkdir checkout");
-    let init = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(&checkout)
-        .status()
-        .expect("git init");
-    assert!(init.success());
+    git(&["init", "-q", "-b", "main"], &checkout);
+    git(
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        &checkout,
+    );
 
     hello(&broker, "alice", &checkout).await;
     let snapshot = dir.path().join("registry").join("registry.msgpack");
     assert!(snapshot.is_file(), "the first hello registers the checkout");
+    let repo_id = broker.machine_registry.lock().await.workspaces()[0]
+        .repo_id
+        .clone()
+        .expect("a git workspace has a repo id");
     std::fs::remove_file(&snapshot).expect("remove snapshot");
 
+    git(&["branch", "feature"], &checkout);
     hello(&broker, "alice", &checkout).await;
     assert!(
         !snapshot.exists(),
-        "a hello within the refresh window rewrote the registry"
+        "a hello from a registered root rewrote the registry"
+    );
+    let held: Vec<String> = broker
+        .machine_registry
+        .lock()
+        .await
+        .branches(&repo_id)
+        .into_iter()
+        .map(|branch| branch.name)
+        .collect();
+    assert_eq!(
+        held,
+        ["main"],
+        "a hello from a registered root re-enumerated its branches"
+    );
+
+    assert_eq!(
+        listed_branches(&broker, &repo_id).await,
+        ["feature", "main"],
+        "the query after the hello missed the new branch"
     );
 }
 
