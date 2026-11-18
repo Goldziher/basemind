@@ -13,9 +13,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ahash::AHashMap;
 
 use super::IndexError;
-use super::keys::{Bm25Key, parse_code_bm25_by_path, parse_code_bm25_by_path_value};
 #[cfg(feature = "code-search")]
-use super::keys::{code_bm25_by_path_prefix, code_bm25_posting, parse_code_bm25_posting_chunk};
+use super::keys::parse_code_bm25_posting_chunk;
+use super::keys::{Bm25Key, parse_code_bm25_by_path, parse_code_bm25_by_path_value};
+#[cfg(all(test, feature = "code-search"))]
+use super::keys::{code_bm25_by_path_prefix, code_bm25_posting};
 use super::view::KvResult;
 
 /// The keys of the BM25 chunks a view holds, each with the content hash it was written for.
@@ -122,8 +124,9 @@ impl super::IndexDb {
     }
 
     /// The postings this view's chunks at `paths` name, by key: read before a pass replaces or drops
-    /// those paths, for [`Self::retire_bm25_postings`] after it.
-    #[cfg(feature = "code-search")]
+    /// those paths, for [`Self::retire_bm25_postings`] after it. Passes collect these through their
+    /// ledger (`index::bm25_pass`); tests still build them directly.
+    #[cfg(all(test, feature = "code-search"))]
     pub(crate) fn bm25_posting_candidates<'a>(
         &self,
         paths: impl IntoIterator<Item = &'a String>,

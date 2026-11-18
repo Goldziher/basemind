@@ -58,6 +58,9 @@ pub(crate) struct GroupDb {
     allocation: Mutex<()>,
     /// Each view's BM25 live-key cache, shared by every handle on the view.
     bm25_live: Mutex<AHashMap<u32, Arc<Bm25LiveCache>>>,
+    /// Each view's BM25 pass ledger, shared by every handle on the view as `bm25_live` is.
+    #[cfg(feature = "code-search")]
+    bm25_pass: Mutex<AHashMap<u32, Arc<super::bm25_pass::Bm25PassLedger>>>,
     /// Orders the BM25 posting sweep against posting commits, across every view of the group.
     bm25_gate: Bm25Gate,
     _lock: GroupLock,
@@ -168,6 +171,8 @@ impl GroupDb {
             incarnation,
             allocation: Mutex::new(()),
             bm25_live: Mutex::default(),
+            #[cfg(feature = "code-search")]
+            bm25_pass: Mutex::default(),
             bm25_gate: Bm25Gate::default(),
             _lock: lock,
         }
@@ -307,7 +312,13 @@ impl GroupDb {
             ),
             bm25_gate: Arc::clone(&self.bm25_gate),
             #[cfg(feature = "code-search")]
-            bm25_pass: Arc::default(),
+            bm25_pass: Arc::clone(
+                self.bm25_pass
+                    .lock()
+                    .expect("bm25 pass ledgers")
+                    .entry(view_id)
+                    .or_default(),
+            ),
             grep_bloom: scoped(Part::GrepBloom),
             embeddings: self.embeddings.clone(),
             fault: Arc::default(),

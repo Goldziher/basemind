@@ -279,6 +279,29 @@ fn a_full_scan_stays_inside_an_affine_memory_budget() {
         baseline / (1 << 20),
         unflushed_high / (1 << 20),
     ));
+    report_phases(&report, baseline);
+    assert_within(delta, budget);
+
+    // A one-file edit followed by a full pass: the common rescan. Its BM25 upkeep retires the edited
+    // file's postings, which costs a liveness check over the group's forward keys but must not walk
+    // the posting list or grow the peak.
+    let edited = root.join("src/module_00000.rs");
+    let mut body = std::fs::read_to_string(&edited).expect("read edited module");
+    body.push_str("pub fn edited_after_the_first_pass() -> usize { 1 }\n");
+    std::fs::write(&edited, body).expect("edit module");
+    let started = Instant::now();
+    let rescan = scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("rescan");
+    let rescan_secs = started.elapsed().as_secs_f64();
+    let delta = peak_bytes().saturating_sub(baseline);
+    report_line(&format!(
+        "rescan after a one-file edit in {rescan_secs:.1}s, peak delta now {} MiB",
+        delta / (1 << 20)
+    ));
+    report_phases(&rescan, baseline);
+    assert_within(delta, budget);
+}
+
+fn report_phases(report: &basemind::scanner::ScanReport, baseline: u64) {
     for phase in &report.phase_peaks {
         report_line(&format!(
             "  phase {:<10} footprint peak {:>5} MiB ({:>+5} MiB over baseline peak), {:>7.1}s",
@@ -288,7 +311,9 @@ fn a_full_scan_stays_inside_an_affine_memory_budget() {
             phase.millis as f64 / 1000.0,
         ));
     }
+}
 
+fn assert_within(delta: u64, budget: u64) {
     assert!(
         delta <= budget,
         "a {FILES}-file scan grew peak RSS by {delta_mb} MiB, over its {budget_mb} MiB budget \

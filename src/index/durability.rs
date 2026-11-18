@@ -278,6 +278,8 @@ impl IndexDb {
     /// group's schema stamp, belong to every view.
     pub(crate) fn clear_for_rebuild(&self) -> Result<(), IndexError> {
         let shared = self.group.is_some();
+        #[cfg(feature = "code-search")]
+        let leaves_postings = shared && self.code_bm25_by_path.keys().next().is_some();
         self.meta.clear(&self.db)?;
         self.db.persist(PersistMode::SyncAll)?;
         for part in Part::ALL.into_iter().filter(|part| *part != Part::Meta) {
@@ -288,6 +290,11 @@ impl IndexDb {
             keyspace.clear(&self.db)?;
         }
         self.bm25_live.invalidate();
+        // The view's forward rows went without the writer; the shared postings they named stay. ~keep
+        #[cfg(feature = "code-search")]
+        if leaves_postings {
+            self.mark_bm25_sweep_owed()?;
+        }
         if !shared {
             self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
         }
