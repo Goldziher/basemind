@@ -337,9 +337,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- The `[documents.output] format` setting, `--documents-output-format` and
-  `BASEMIND_DOCUMENTS_OUTPUT_FORMAT`. No tool read them: the verb tools answer in JSON. A
-  `[documents.output]` table still loads, with a warning to delete it.
+- **BREAKING: the `[documents.output] format` setting, `--documents-output-format` and
+  `BASEMIND_DOCUMENTS_OUTPUT_FORMAT`.** No tool read them: the verb tools answer in JSON. The flag is
+  now rejected, so a host config that still passes it fails to start `basemind serve`. A
+  `[documents.output]` table still loads, and a set `BASEMIND_DOCUMENTS_OUTPUT_FORMAT` is ignored;
+  each logs a warning to remove it.
 - The daemon socket's forwarded `memory`, `resolved_refs`, `index_read` and `code_search_lanes`
   requests. No process sends them any more: a CLI next to the daemon forwards its whole call, and a
   daemon-hosted session reads through the daemon's pool in process. The comms protocol version stays
