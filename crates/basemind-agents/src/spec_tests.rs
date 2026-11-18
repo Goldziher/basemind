@@ -581,3 +581,33 @@ fn the_launchers_home_or_the_filesystem_root_is_no_root() {
         );
     }
 }
+
+#[test]
+fn a_configured_data_home_replaces_the_launchers_variable() {
+    let root = tempfile::tempdir().unwrap();
+    let mut launched = spec(HarnessKind::Codex, root.path());
+    launched.data_home = Some(PathBuf::from("/embedder/data"));
+    let env = launched.child_env(os(&[("BASEMIND_DATA_HOME", "/launcher/data")]));
+    assert_eq!(env.get("BASEMIND_DATA_HOME"), Some(&OsString::from("/embedder/data")));
+    let env = launched.child_env(Vec::new());
+    assert_eq!(
+        env.get("BASEMIND_DATA_HOME"),
+        Some(&OsString::from("/embedder/data")),
+        "set even when the launcher has no variable"
+    );
+}
+
+#[test]
+fn a_root_inside_the_configured_data_home_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("cache/repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut launched = spec(HarnessKind::Codex, &root);
+    launched.data_home = Some(home.path().to_path_buf());
+    let result = launched.prepare();
+    assert!(
+        matches!(result, Err(LaunchError::RootNotAllowed { .. })),
+        "{:?}",
+        result.err()
+    );
+}

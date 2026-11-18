@@ -6,6 +6,7 @@
 //! directly.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::daemon::DaemonCaps;
@@ -51,7 +52,7 @@ pub fn engine_config_from_env() -> EngineConfig {
 pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineConfig {
     let mut config = EngineConfig::default();
     if let Some(home) = lookup(DATA_HOME_ENV) {
-        config.data_root = DataRoot::new(home);
+        config.data_root = data_root_from(home);
     }
     config.trust.allow_repo_credentials = grant(&lookup, ALLOW_REPO_CREDENTIALS_ENV);
     config.trust.allow_any_root = grant(&lookup, ALLOW_ANY_ROOT_ENV);
@@ -93,9 +94,62 @@ fn git(lookup: &impl Fn(&str) -> Option<OsString>, config: &mut EngineConfig) {
     git.history_index = text(lookup, HISTORY_INDEX_ENV).is_none_or(|value| value != "0");
 }
 
-/// Build this process's engine from its environment.
+/// `BASEMIND_DATA_HOME`'s value as a data home. A relative value is resolved against the current
+/// directory here, once: the comms daemon runs in the comms dir, so a child that resolved it again
+/// would use another home. An empty value is the current directory, as it was when the relative
+/// value was joined as is.
+fn data_root_from(value: OsString) -> DataRoot {
+    DataRoot::new(absolute(value))
+}
+
+/// `value` as a path, a relative one resolved against the current directory.
+fn absolute(value: OsString) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        return path;
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path,
+    }
+}
+
+/// Build this process's engine from its environment. A variable with a value it cannot use, or
+/// one of a removed setting, is warned about once per process.
 pub fn install_from_env() -> Result<Engine, EngineError> {
     Engine::new(engine_config_from_env())
+}
+
+/// [`install_from_env`] without its warnings, for a command that runs on every prompt or tool
+/// call (the status line, the hooks): a misset variable would print on each one. The warnings are
+/// still spent, so a later install in the process does not print them either.
+pub fn install_from_env_quietly() -> Result<Engine, EngineError> {
+    tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), install_from_env)
+}
+
+/// Refuse to run an in-process entry point (`mcp::serve_in_memory`, a harness, a bench) whose
+/// installed data home is not the one `BASEMIND_DATA_HOME` names. Without it, a caller that exported
+/// the variable but never installed the engine writes into the platform default, the user's live
+/// cache, while believing it is isolated.
+pub fn ensure_env_data_home_installed() -> Result<(), String> {
+    check_data_home_installed(std::env::var_os(DATA_HOME_ENV), &DataRoot::current())
+}
+
+fn check_data_home_installed(value: Option<OsString>, installed: &DataRoot) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let named = data_root_from(value);
+    if installed.same_home(&named) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{DATA_HOME_ENV} names {} but this process uses the data home {}; install the engine \
+             first (basemind::cli::env_config::install_from_env)",
+            named.path().display(),
+            installed.path().display()
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -114,12 +168,40 @@ mod tests {
     }
 
     #[test]
-    fn the_data_home_variable_sets_the_data_root_verbatim() {
+    fn the_data_home_variable_sets_an_absolute_data_root() {
+        // An absolute path is spelled differently on Windows. ~keep
+        #[cfg(unix)]
         assert_eq!(
             config_of(&[(DATA_HOME_ENV, "/srv/basemind")]).data_root,
             DataRoot::new("/srv/basemind")
         );
+        let cwd = std::env::current_dir().expect("cwd");
+        assert_eq!(
+            config_of(&[(DATA_HOME_ENV, "bm/data")]).data_root,
+            DataRoot::new(cwd.join("bm/data")),
+            "a relative value is resolved against the current directory once"
+        );
+        let empty = config_of(&[(DATA_HOME_ENV, "")]).data_root;
+        assert!(empty.path().is_absolute(), "{empty:?}");
+        assert!(
+            empty.same_home(&DataRoot::new(&cwd)),
+            "an empty value is the current directory"
+        );
         assert_eq!(config_of(&[]).data_root, DataRoot::platform_default());
+    }
+
+    #[test]
+    fn an_entry_point_refuses_a_data_home_it_did_not_install() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let installed = DataRoot::new(home.path());
+        assert_eq!(check_data_home_installed(None, &installed), Ok(()));
+        assert_eq!(
+            check_data_home_installed(Some(home.path().as_os_str().to_owned()), &installed),
+            Ok(())
+        );
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let refused = check_data_home_installed(Some(elsewhere.path().as_os_str().to_owned()), &installed);
+        assert!(refused.is_err_and(|message| message.contains("install_from_env")));
     }
 
     #[test]

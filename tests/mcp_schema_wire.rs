@@ -26,6 +26,7 @@ const FORBIDDEN: [&str; 5] = ["$ref", "$defs", "oneOf", "anyOf", "allOf"];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_tool_input_schema_is_flat_and_inlined() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(root.join("lib.rs"), "pub fn seed() {}\n").expect("seed file");
@@ -95,6 +96,7 @@ const REQUIRED: [(&str, &[&str]); 15] = [
 ];
 
 async fn list_tools() -> (tempfile::TempDir, Vec<rmcp::model::Tool>, String) {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("lib.rs"), "pub fn seed() {}\n").expect("seed file");
     let transport = basemind::mcp::serve_in_memory(dir.path(), "working")

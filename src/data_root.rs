@@ -14,6 +14,8 @@ use crate::store_layout::{
     workspace_key,
 };
 
+const GRAMMARS_DIR: &str = "grammars";
+
 /// Root of basemind's global on-disk state, shared by every workspace on the machine. Everything
 /// rebuildable sits under [`DataRoot::cache_dir`]: a global `blobs/` (content-addressed) plus
 /// per-workspace state under `workspaces/<workspace_key>/`.
@@ -44,6 +46,24 @@ impl DataRoot {
 
     pub fn path(&self) -> &Path {
         &self.0
+    }
+
+    /// Whether `self` and `other` are one directory: equal paths, or paths that canonicalise to the
+    /// same one, so a symlinked spelling of a home is that home.
+    pub fn same_home(&self, other: &DataRoot) -> bool {
+        if self.0 == other.0 {
+            return true;
+        }
+        match (self.0.canonicalize(), other.0.canonicalize()) {
+            (Ok(mine), Ok(theirs)) => mine == theirs,
+            _ => false,
+        }
+    }
+
+    /// `<data home>/grammars`: the base of the downloaded tree-sitter grammar cache, unless the
+    /// operator names another (`EngineConfig::grammars`).
+    pub fn grammars_dir(&self) -> PathBuf {
+        self.0.join(GRAMMARS_DIR)
     }
 
     /// `<data home>/cache`: all rebuildable state.

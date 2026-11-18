@@ -88,6 +88,7 @@ async fn serve_in_memory_configured(
     view: &str,
     task_threshold: Option<std::time::Duration>,
 ) -> Result<tokio::io::DuplexStream> {
+    crate::cli::env_config::ensure_env_data_home_installed().map_err(anyhow::Error::msg)?;
     // Mirror the old in-process `serve` fallback: hold the write lock when free, else open read-only
     // so a SECOND in-memory server on the same repo (e.g. a lean vs full comparison in one test
     // process) still reads the shared index instead of hard-failing on lock contention.

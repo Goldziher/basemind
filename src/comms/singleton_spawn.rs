@@ -192,6 +192,12 @@ fn daemon_command(exe: &Path, paths: &CommsPaths, grants: Grants) -> std::proces
             command.env_remove(key);
         }
     }
+    // The daemon serves this process's data home. An embedder sets it through `Engine::new`, not
+    // the environment, so an inherited variable may be unset or name another home.
+    command.env(
+        crate::store::DATA_HOME_ENV,
+        crate::data_root::DataRoot::current().path(),
+    );
     command
 }
 
@@ -440,15 +446,38 @@ mod tests {
                 "{key} must not reach the daemon; removed: {removed:?}"
             );
         }
-        assert!(
-            command.get_envs().all(|(_, value)| value.is_none()),
-            "only removals belong here — an override would mean the parent env is being rebuilt"
+        let set: Vec<&std::ffi::OsStr> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_some())
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(
+            set,
+            [std::ffi::OsStr::new(crate::store::DATA_HOME_ENV)],
+            "only removals and the data home belong here — another override would mean the parent env \
+             is being rebuilt"
         );
         assert_eq!(
             removed.len(),
             INHERITED_IDENTITY_VARS.len() + INHERITED_CWD_VARS.len() + INHERITED_GRANT_VARS.len(),
             "nothing the daemon needs (PATH, HOME, XDG, proxy, model vars) may be swept up: {removed:?}"
         );
+    }
+
+    /// The daemon gets the spawner's installed data home, whatever the inherited variable says.
+    #[test]
+    fn the_daemon_is_given_the_installed_data_home() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let command = daemon_command(
+            std::path::Path::new("/usr/local/bin/basemind"),
+            &paths_at(dir.path()),
+            Grants::Withheld,
+        );
+        let home = command
+            .get_envs()
+            .find(|(key, _)| *key == crate::store::DATA_HOME_ENV)
+            .and_then(|(_, value)| value);
+        assert_eq!(home, Some(crate::data_root::DataRoot::current().path().as_os_str()));
     }
 
     /// A daemon spawned from inside a launched session carries neither its token nor its depth.

@@ -1305,6 +1305,13 @@ async fn harden_repo() {
     });
 
     eprintln!("[harden] repo={} ({})", repo_name, repo.display());
+    // Every index this run writes lands under the data home. Unset, that is the user's own cache;
+    // set but not installed, the library would still use the platform default.
+    assert!(
+        std::env::var_os(basemind::store::DATA_HOME_ENV).is_some() && std::env::var_os("BASEMIND_COMMS_DIR").is_some(),
+        "set BASEMIND_DATA_HOME and BASEMIND_COMMS_DIR to a throwaway directory (scripts/harden.sh does)"
+    );
+    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
 
     let scan = {
         let repo = repo.clone();
