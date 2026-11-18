@@ -160,6 +160,7 @@ fn code_grep_searches_the_text_documents_the_document_tier_indexed() {
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .expect("scan");
     }

@@ -11,7 +11,7 @@ fn filter_for(body: impl FnOnce(&Path)) -> (IndexFilter, PathBuf, tempfile::Temp
     fs::create_dir_all(root.join(".git")).expect("mkdir .git");
     body(&root);
     let config = crate::config::default_for_root(&root);
-    let filter = IndexFilter::new(&root, &config).expect("build filter");
+    let filter = IndexFilter::new(&root, &config, crate::scan_retrieval::Retrieval::inert()).expect("build filter");
     (filter, root, tmp)
 }
 
@@ -73,7 +73,8 @@ fn should_reject_root_and_nested_basemind_via_default_exclude() {
 #[test]
 fn embed_gates_compose_include_and_exclude_with_exclude_winning() {
     let mut config = crate::config::default_for_root(Path::new("."));
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     assert!(filters.code_embed_allowed("src/lib.rs"), "empty lists allow everything");
     assert!(filters.doc_embed_allowed("docs/a.pdf"));
     assert!(filters.doc_allowed("docs/a.pdf"));
@@ -84,7 +85,8 @@ fn embed_gates_compose_include_and_exclude_with_exclude_winning() {
     config.documents.exclude = vec!["**/draft*".to_string()];
     config.documents.embed_include = vec!["**/*.pdf".to_string()];
     config.documents.embed_exclude = vec!["docs/huge".to_string()];
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
 
     assert!(filters.code_embed_allowed("src/lib.rs"));
     assert!(!filters.code_embed_allowed("tools/x.rs"), "outside embed_include");
@@ -113,13 +115,13 @@ fn invalid_globs_fail_filter_construction() {
     let mut config = crate::config::default_for_root(Path::new("."));
     config.documents.embed_exclude = vec!["a/[".to_string()];
     assert!(matches!(
-        Filters::build(&config, Vec::new()),
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()),
         Err(ScanError::BadGlob(_))
     ));
     let mut config = crate::config::default_for_root(Path::new("."));
     config.documents.include = vec!["a/[".to_string()];
     assert!(matches!(
-        Filters::build(&config, Vec::new()),
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()),
         Err(ScanError::BadGlob(_))
     ));
 }
@@ -128,7 +130,8 @@ fn invalid_globs_fail_filter_construction() {
 fn bare_exclude_name_excludes_the_subtree_and_prunes_the_directory() {
     let mut config = crate::config::default_for_root(Path::new("."));
     config.scan.exclude = vec!["generated".to_string()];
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     assert!(!filters.allows("generated/schema.rs"));
     assert!(!filters.allows("pkg/generated/deep/schema.rs"));
     assert!(filters.allows("pkg/generated_code/schema.rs"));
@@ -142,7 +145,8 @@ fn bare_exclude_name_excludes_the_subtree_and_prunes_the_directory() {
 #[test]
 fn floor_allow_removes_named_floor_entries_but_never_git_or_basemind() {
     let mut config = crate::config::default_for_root(Path::new("."));
-    let baseline = Filters::build(&config, Vec::new()).expect("build filters");
+    let baseline =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     assert!(!baseline.allows("build/gen.rs"));
     assert!(!baseline.allows("vendor/dep/lib.go"));
 
@@ -152,7 +156,8 @@ fn floor_allow_removes_named_floor_entries_but_never_git_or_basemind() {
         ".git".to_string(),
         "no-such-entry".to_string(),
     ];
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     assert!(filters.allows("build/gen.rs"), "named by directory");
     assert!(filters.allows("vendor/dep/lib.go"), "named by floor pattern");
     assert!(
@@ -166,7 +171,8 @@ fn floor_allow_removes_named_floor_entries_but_never_git_or_basemind() {
 #[test]
 fn secrets_are_excluded_by_default_and_opt_back_in_needs_the_grant() {
     let config = crate::config::default_for_root(Path::new("."));
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     for secret in [
         ".env",
         "svc/.env.production",
@@ -215,7 +221,8 @@ fn credential_floor_is_a_subset_of_the_exclude_floor() {
 #[test]
 fn extra_root_files_match_globs_relative_to_the_root() {
     let config = crate::config::default_for_root(Path::new("."));
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     assert!(
         filters.allows_in_extra_root("src/lib.rs"),
         "root-relative path is judged on its own, not on where the root lives"
@@ -238,7 +245,8 @@ fn nested_extra_roots_scope_a_key_to_the_longest_matching_root() {
     }
     let mut config = crate::config::default_for_root(Path::new("."));
     config.scan.extra_roots = vec![base.join("ext"), base.join("ext/inner"), base.join("extra")];
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     let key = |rel: &str| format!("{}/{rel}", base.display());
 
     assert_eq!(filters.scoped(&key("ext/a.md")), "a.md");
@@ -257,7 +265,7 @@ fn should_apply_exclude_floor_even_with_a_narrow_user_exclude() {
     fs::create_dir_all(root.join(".git")).expect("mkdir .git");
     let mut config = crate::config::default_for_root(&root);
     config.scan.exclude = vec!["**/mycustom/**".to_string()];
-    let filter = IndexFilter::new(&root, &config).expect("build filter");
+    let filter = IndexFilter::new(&root, &config, crate::scan_retrieval::Retrieval::inert()).expect("build filter");
 
     assert!(
         !filter.allows_glob("node_modules/react/index.js"),
@@ -292,7 +300,7 @@ fn allows_dir_prunes_by_exclude_globs_only() {
     fs::create_dir_all(root.join(".git")).expect("mkdir .git");
     let mut config = crate::config::default_for_root(&root);
     config.scan.exclude = vec!["**/generated/**".to_string()];
-    let filter = IndexFilter::new(&root, &config).expect("build filter");
+    let filter = IndexFilter::new(&root, &config, crate::scan_retrieval::Retrieval::inert()).expect("build filter");
     let filters = filter.filters();
 
     // Directories under the user exclude glob are pruned. The glob `**/generated/**` matches
@@ -331,7 +339,7 @@ fn a_file_shaped_exclude_never_prunes_the_directory_it_names() {
     fs::create_dir_all(root.join(".git")).expect("mkdir .git");
     let mut config = crate::config::default_for_root(&root);
     config.scan.exclude = vec!["**/generated".to_string(), "**/cache/**".to_string()];
-    let filter = IndexFilter::new(&root, &config).expect("build filter");
+    let filter = IndexFilter::new(&root, &config, crate::scan_retrieval::Retrieval::inert()).expect("build filter");
     let filters = filter.filters();
 
     assert!(
@@ -359,7 +367,8 @@ fn dir_pruner_keeps_the_walk_root_even_when_named_target() {
     fs::write(root.join("a.rs"), b"fn a() {}\n").expect("write a.rs");
     fs::write(root.join("node_modules/pkg/i.js"), b"//\n").expect("write i.js");
     let config = crate::config::default_for_root(&root);
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     let pruner = filters.dir_pruner(Some(&root));
 
     let kept: Vec<String> = ignore_walk_builder(&root, false, false)
@@ -403,7 +412,8 @@ fn the_dir_pruner_stops_the_walk_descending_into_a_non_gitignored_node_modules()
         }
     }
     let config = crate::config::default_for_root(&root);
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
 
     let visited = |pruner: Option<DirPruner>| -> Vec<String> {
         let mut builder = ignore_walk_builder(&root, false, false);
@@ -448,7 +458,8 @@ fn the_dir_pruner_stops_the_walk_descending_into_a_non_gitignored_node_modules()
 #[test]
 fn default_document_excludes_drop_vectors_lockfiles_and_test_data() {
     let config = crate::config::default_for_root(Path::new("."));
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     for dropped in [
         "public/assets/svg/logo.svg",
         "icon.svg",
@@ -474,11 +485,13 @@ fn default_document_excludes_drop_vectors_lockfiles_and_test_data() {
 fn user_document_excludes_replace_the_defaults_so_they_can_reinclude() {
     let mut config = crate::config::default_for_root(Path::new("."));
     config.documents.exclude = Vec::new();
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     assert!(filters.doc_allowed("svc/test_data/a.yaml"));
 
     config.documents.exclude = vec!["*.svg".to_string()];
-    let filters = Filters::build(&config, Vec::new()).expect("build filters");
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     assert!(
         !filters.doc_allowed("icon.svg"),
         "a custom list can repeat a default entry"

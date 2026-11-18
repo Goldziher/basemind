@@ -621,6 +621,7 @@ mod map_cache_tests {
             &cfg,
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
         )
         .unwrap();
 
@@ -635,6 +636,7 @@ mod map_cache_tests {
             &cfg,
             &[root.join("a.rs")],
             crate::scanner::EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
         )
         .unwrap();
         assert_eq!(report.stats.updated, 1);
@@ -682,6 +684,7 @@ mod map_cache_tests {
             &cfg,
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Inline,
+            crate::retrieval_wiring::backend(),
         )
         .unwrap();
 

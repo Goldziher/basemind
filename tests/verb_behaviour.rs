@@ -141,6 +141,7 @@ fn scan(root: &Path) {
                 &cfg,
                 basemind::scanner::ScanSource::WorkingTree,
                 basemind::scanner::EmbedMode::Inline,
+                basemind::retrieval_wiring::backend(),
             )
             .expect("scan");
         });
@@ -673,6 +674,7 @@ fn find_files_returns_a_markdown_file() {
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .expect("scan");
     }
@@ -734,6 +736,7 @@ fn docs_search_answers_lexically_and_names_documents_embed_when_embedding_is_off
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .expect("scan");
     }
@@ -800,6 +803,7 @@ fn docs_search_pages_as_json_when_the_config_asks_for_toon() {
             &cfg,
             basemind::scanner::ScanSource::WorkingTree,
             basemind::scanner::EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
         )
         .expect("scan");
     }

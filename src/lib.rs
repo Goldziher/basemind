@@ -44,7 +44,7 @@ pub mod process_start;
 pub mod query;
 pub mod registry;
 pub mod render;
-pub(crate) mod retrieval_wiring;
+pub mod retrieval_wiring;
 pub mod scan_evidence;
 mod scan_evidence_hosts;
 pub mod scan_phase_peaks;

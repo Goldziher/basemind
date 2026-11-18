@@ -30,7 +30,15 @@ fn write(root: &Path, rel: &str, body: &str) {
 }
 
 fn run_scan(root: &Path, store: &mut Store, cfg: &ConfigV1) -> ScanReport {
-    scan(root, store, cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan")
+    scan(
+        root,
+        store,
+        cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan")
 }
 
 fn language(extensions: &[&str], filenames: &[&str], enabled: bool) -> LanguageConfig {
@@ -434,6 +442,7 @@ mod documents {
             EmbedMode::Inline,
             &basemind::scanner::ScanCancel::new(),
             &mut observer,
+            basemind::retrieval_wiring::backend(),
         )
         .unwrap();
         assert_eq!(

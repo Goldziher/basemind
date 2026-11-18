@@ -141,7 +141,16 @@ impl Workspace {
             } else {
                 crate::scanner::scan_paths_with_observer
             };
-            scan(root, &mut store, config, &paths, embed, &cancel, &mut observer)
+            scan(
+                root,
+                &mut store,
+                config,
+                &paths,
+                embed,
+                &cancel,
+                &mut observer,
+                crate::retrieval_wiring::backend(),
+            )
         } else {
             crate::scanner::scan_with_observer(
                 root,
@@ -151,6 +160,7 @@ impl Workspace {
                 embed,
                 &cancel,
                 &mut observer,
+                crate::retrieval_wiring::backend(),
             )
         };
         report.map(|report| (report, observer))

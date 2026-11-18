@@ -160,7 +160,15 @@ fn extraction_past_its_wall_clock_budget_is_abandoned() {
 
 fn scan_once(root: &Path, cfg: &ConfigV1) -> basemind::scanner::ScanReport {
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    scan(root, &mut store, cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan")
+    scan(
+        root,
+        &mut store,
+        cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan")
 }
 
 fn offline_scan_config() -> ConfigV1 {

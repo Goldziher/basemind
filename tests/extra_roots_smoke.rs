@@ -62,6 +62,7 @@ fn extra_root_files_indexed_under_absolute_keys() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -92,6 +93,7 @@ fn search_symbols_returns_external_symbol_with_absolute_path() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -114,6 +116,7 @@ fn outline_and_calls_resolve_for_external_file() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -140,6 +143,7 @@ fn removing_extra_root_prunes_external_files() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     let ext_key = abs_key(&ext, "pkg/lib.rs");
@@ -153,6 +157,7 @@ fn removing_extra_root_prunes_external_files() {
         &cfg2,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(
@@ -181,6 +186,7 @@ fn missing_and_inside_repo_extra_roots_are_skipped_without_failing() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -209,6 +215,7 @@ fn extra_root_at_the_filesystem_root_is_refused() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("the filesystem root is skipped, not indexed");
 
@@ -246,6 +253,7 @@ fn extra_root_candidates_count_toward_max_candidates() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect_err("extra-root files must count toward the ceiling");
 
@@ -290,6 +298,7 @@ fn symlink_out_of_an_extra_root_is_followed_only_when_configured() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(store.lookup(abs_key(&ext, "pkg/lib.rs").as_bytes()).is_some());
@@ -306,6 +315,7 @@ fn symlink_out_of_an_extra_root_is_followed_only_when_configured() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
     assert!(

@@ -59,6 +59,7 @@ fn pruning_a_non_gitignored_node_modules_leaves_the_indexed_set_unchanged() {
         EmbedMode::Inline,
         &basemind::scanner::ScanCancel::new(),
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -88,8 +89,15 @@ fn candidate_cap_aborts_the_scan_before_any_write() {
     cfg.scan.max_candidates = 20;
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let err = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline)
-        .expect_err("the cap must abort the scan");
+    let err = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect_err("the cap must abort the scan");
 
     match &err {
         ScanError::TooManyCandidates {
@@ -130,8 +138,15 @@ fn exactly_max_candidates_is_not_a_breach() {
     cfg.scan.max_candidates = 20;
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline)
-        .expect("exactly max_candidates candidates is within the ceiling");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("exactly max_candidates candidates is within the ceiling");
     assert_eq!(store.index.files.len(), 20);
 }
 
@@ -147,8 +162,15 @@ fn the_contributor_list_names_the_heaviest_tree_not_the_first_one() {
     cfg.scan.max_candidates = 20;
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let err = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline)
-        .expect_err("the cap must abort the scan");
+    let err = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect_err("the cap must abort the scan");
 
     match &err {
         ScanError::TooManyCandidates { top_dirs, .. } => {
@@ -170,6 +192,14 @@ fn candidate_cap_of_zero_is_unlimited() {
     cfg.scan.max_candidates = 0;
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("0 disables the ceiling");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("0 disables the ceiling");
     assert_eq!(store.index.files.len(), 40);
 }

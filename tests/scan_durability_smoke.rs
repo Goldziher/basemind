@@ -120,6 +120,7 @@ fn scanned_store(root: &Path) -> Store {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
     assert_eq!(report.stats.updated, 3);
@@ -171,6 +172,7 @@ fn rescan(root: &Path, store: &mut Store) -> basemind::scanner::ScanReport {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("rescan")
 }
@@ -441,6 +443,7 @@ fn an_incremental_scan_over_an_index_behind_its_file_map_runs_the_full_rebuild()
         &ConfigV1::with_defaults(),
         &[root.join("alpha.rs")],
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("incremental scan");
 

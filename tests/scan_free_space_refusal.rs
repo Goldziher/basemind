@@ -35,6 +35,7 @@ fn a_scan_is_refused_when_the_volume_is_below_the_headroom() {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     );
 
     match outcome {

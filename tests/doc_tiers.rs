@@ -31,6 +31,7 @@ fn scan_collecting(root: &Path, cfg: &ConfigV1) -> (basemind::scanner::ScanRepor
         EmbedMode::Inline,
         &ScanCancel::new(),
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
     (report, observer)
@@ -220,7 +221,15 @@ fn staged_and_rev_views_index_no_documents() {
     ];
     for (view, source) in views {
         let mut store = Store::open(root, &view).expect("open view");
-        let report = basemind::scanner::scan(root, &mut store, &cfg, source, EmbedMode::Inline).expect("scan");
+        let report = basemind::scanner::scan(
+            root,
+            &mut store,
+            &cfg,
+            source,
+            EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
+        )
+        .expect("scan");
         assert_eq!(report.stats.docs_indexed, 0, "{view}: {:?}", report.stats);
         assert!(store.lookup("a.rs").is_some(), "{view} indexes code");
         assert!(

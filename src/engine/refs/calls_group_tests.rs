@@ -93,7 +93,15 @@ fn config() -> ConfigV1 {
 
 fn scan_working(root: &Path) -> Store {
     let mut store = Store::open(root, VIEW_WORKING).expect("open");
-    scan(root, &mut store, &config(), ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    scan(
+        root,
+        &mut store,
+        &config(),
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        crate::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     store
 }
 
@@ -289,6 +297,7 @@ fn every_view_of_a_group_answers_like_a_standalone_index_of_its_tree() {
         &config(),
         &[roots[0].join("f0.rs")],
         EmbedMode::Inline,
+        crate::retrieval_wiring::backend(),
     )
     .expect("incremental rescan");
     drop(main);

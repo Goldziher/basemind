@@ -58,6 +58,7 @@ pub(super) fn cmd_rescan(
             basemind::scanner::EmbedMode::Inline,
             &cancel,
             &mut observer,
+            basemind::retrieval_wiring::backend(),
         );
         observer.finish();
         report.context("rescan (paths)")?

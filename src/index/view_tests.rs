@@ -29,6 +29,7 @@ pub(super) fn scanned_store(root: &std::path::Path) -> Store {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Inline,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     store

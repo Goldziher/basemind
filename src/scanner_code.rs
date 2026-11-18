@@ -601,7 +601,7 @@ mod tests {
 
         let mut config = crate::config::default_for_root(std::path::Path::new("."));
         config.code_search.enabled = false;
-        let filters = Filters::build(&config, Vec::new()).unwrap();
+        let filters = Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).unwrap();
         purge_unembedded_code(&mut store, &config, &filters, "repo:s");
         let db = store.index_db.as_ref().unwrap();
         assert_eq!(
@@ -654,7 +654,7 @@ mod tests {
         let store = Store::open(tmp.path(), crate::store::VIEW_WORKING).unwrap();
         let mut config = crate::config::default_for_root(std::path::Path::new("."));
         config.code_search.embed = true;
-        let mut filters = Filters::build(&config, Vec::new()).unwrap();
+        let mut filters = Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).unwrap();
         filters.retrieval.embedder = &UNLOADABLE;
         for (i, src) in ["pub fn alpha() -> u32 { 1 }\n", "pub fn beta() -> u32 { 2 }\n"]
             .iter()

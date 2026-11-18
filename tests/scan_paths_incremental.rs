@@ -32,7 +32,15 @@ fn write(root: &Path, rel: &str, body: &str) -> PathBuf {
 
 fn incremental(root: &Path, store: &mut Store, cfg: &ConfigV1, rels: &[&str]) -> basemind::scanner::ScanReport {
     let abs: Vec<PathBuf> = rels.iter().map(|r| root.join(r)).collect();
-    scan_paths(root, store, cfg, &abs, EmbedMode::Inline).expect("scan_paths")
+    scan_paths(
+        root,
+        store,
+        cfg,
+        &abs,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan_paths")
 }
 
 #[cfg(unix)]
@@ -77,7 +85,15 @@ mod symlinks {
         let (dir, _outside, cfg) = linked_repo();
         let root = dir.path();
         let mut full = Store::open(root, VIEW_WORKING).unwrap();
-        scan(root, &mut full, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+        scan(
+            root,
+            &mut full,
+            &cfg,
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
+        )
+        .unwrap();
         assert!(full.lookup("real.py").is_some(), "full scan indexes the regular file");
         assert!(full.lookup("leak.py").is_none(), "full scan skips the symlink");
     }

@@ -1,10 +1,8 @@
 //! Binds the scan's retrieval seams ([`crate::scan_retrieval`]) to the implementations this build
 //! compiles in. It belongs to the engine layer (ADR-0023): the engine is what chooses whether an
-//! embedding application gets the document and vector stack. The core scan names only its own
-//! [`Retrieval`] type and takes [`Retrieval::default`], which this module provides, so no core module
+//! embedding application gets the document and vector stack. Every scan entry point takes the
+//! binding as an argument, and the engine and the binaries pass [`backend`], so no core module
 //! reaches the retrieval layer to pick an implementation.
-
-#![cfg(any(feature = "documents", feature = "code-search"))]
 
 use crate::scan_retrieval::Retrieval;
 
@@ -14,17 +12,17 @@ fn model_key(preset: &str) -> String {
     crate::embeddings::model_key(preset).into_owned()
 }
 
-/// The retrieval implementations of this build.
-impl Default for Retrieval {
-    fn default() -> Self {
-        Self {
-            #[cfg(feature = "code-search")]
-            embedder: &crate::embeddings::ScanEmbedder,
-            #[cfg(feature = "code-search")]
-            model_key,
-            vectors: &crate::scanner_vectors::LanceVectors,
-            #[cfg(feature = "documents")]
-            documents: &crate::scanner_docs_lane::DocumentLane,
-        }
+/// The retrieval implementations of this build: the embedder, vector store and document lane its
+/// features compile in, or none.
+pub fn backend() -> Retrieval {
+    Retrieval {
+        #[cfg(feature = "code-search")]
+        embedder: &crate::embeddings::ScanEmbedder,
+        #[cfg(feature = "code-search")]
+        model_key,
+        #[cfg(any(feature = "documents", feature = "code-search"))]
+        vectors: &crate::scanner_vectors::LanceVectors,
+        #[cfg(feature = "documents")]
+        documents: &crate::scanner_docs_lane::DocumentLane,
     }
 }

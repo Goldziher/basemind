@@ -818,7 +818,15 @@ fn full_scan_restores_missing_legacy_bm25_postings() {
     config.code_search.embed = false;
     config.documents.enabled = false;
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
-    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    scan(
+        root,
+        &mut store,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        crate::scan_retrieval::Retrieval::inert(),
+    )
+    .unwrap();
 
     let db = store.index_db.as_ref().unwrap();
     let (key, value) = db.code_bm25_postings.iter().next().unwrap().unwrap();
@@ -826,7 +834,15 @@ fn full_scan_restores_missing_legacy_bm25_postings() {
     assert!(db.code_bm25_postings.get(&key).unwrap().is_none());
     store.index.embed_policy = "legacy-embed-policy".into();
 
-    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    scan(
+        root,
+        &mut store,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        crate::scan_retrieval::Retrieval::inert(),
+    )
+    .unwrap();
     let db = store.index_db.as_ref().unwrap();
     assert_eq!(db.code_bm25_postings.get(&key).unwrap(), Some(value));
 }

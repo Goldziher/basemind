@@ -13,6 +13,7 @@ fn scan_fixture(root: &std::path::Path) -> Store {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Inline,
+        crate::retrieval_wiring::backend(),
     )
     .expect("scan");
     store

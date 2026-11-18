@@ -52,7 +52,15 @@ fn setup() -> (TempDir, Store) {
 
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
     let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     (dir, store)
 }
 

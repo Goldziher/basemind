@@ -81,7 +81,7 @@ mod tests {
 
     fn expand(root: &Path, index: &Index, named: &str) -> Vec<String> {
         let config = crate::config::default_for_root(root);
-        let filters = Filters::build(&config, Vec::new()).expect("filters");
+        let filters = Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("filters");
         let mut got: Vec<String> = expand_named_dirs(root, index, &config, &filters, &[root.join(named)])
             .iter()
             .filter_map(|abs| rel_key(root, abs))

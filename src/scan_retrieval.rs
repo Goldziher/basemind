@@ -6,11 +6,15 @@
 //!
 //! The traits are synchronous and carry no runtime type: whatever the retrieval side runs on (its
 //! own tokio runtime) stays behind them.
+//!
+//! The scan takes the implementations as a [`Retrieval`] argument: the engine layer binds this
+//! build's (`crate::retrieval_wiring::backend`), so no core module picks one. A build without
+//! `documents` or `code-search` has no retrieval stack, and its `Retrieval` carries nothing.
 
-#![cfg(any(feature = "documents", feature = "code-search"))]
-
+#[cfg(any(feature = "documents", feature = "code-search"))]
 use std::path::Path;
 
+#[cfg(any(feature = "documents", feature = "code-search"))]
 use crate::config::Config;
 #[cfg(feature = "documents")]
 use crate::config::DocumentsConfig;
@@ -22,10 +26,12 @@ use crate::scanner::{EmbedMode, FileResult};
 use crate::scanner_code::PendingCodeBatch;
 #[cfg(feature = "documents")]
 use crate::scanner_filter::Filters;
+#[cfg(any(feature = "documents", feature = "code-search"))]
 use crate::store::Store;
 
 /// A failure of the retrieval side, as text: the scan only logs it. Built from an `anyhow` error
 /// with `{:#}`, so the text carries the whole cause chain; log it with `%`.
+#[cfg(any(feature = "documents", feature = "code-search"))]
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct RetrievalError(pub String);
@@ -56,6 +62,7 @@ pub trait Embedder: Sync {
 
 /// The vector store a scan writes chunk rows to. Each method logs its own failures where the
 /// scan has nothing to do with them.
+#[cfg(any(feature = "documents", feature = "code-search"))]
 pub trait VectorStore: Sync {
     /// Open the store for the configured preset (creating it when absent). An error means no row
     /// can be written this scan.
@@ -186,18 +193,19 @@ pub trait DocumentSink: Sync {
     fn purge_unembedded(&self, store: &mut Store, config: &Config, filters: &Filters, scope: &str) -> bool;
 }
 
-/// The retrieval implementations a scan runs with. [`Default`] is this build's, which the engine
-/// layer provides (`crate::retrieval_wiring`).
+/// The retrieval implementations a scan runs with, passed to every scan entry point. The engine
+/// layer binds this build's (`crate::retrieval_wiring::backend`).
 #[derive(Clone, Copy)]
 pub struct Retrieval {
     #[cfg(feature = "code-search")]
-    pub embedder: &'static dyn Embedder,
+    pub(crate) embedder: &'static dyn Embedder,
     /// The identity of a preset's model that stored vectors carry.
     #[cfg(feature = "code-search")]
-    pub model_key: fn(&str) -> String,
-    pub vectors: &'static dyn VectorStore,
+    pub(crate) model_key: fn(&str) -> String,
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    pub(crate) vectors: &'static dyn VectorStore,
     #[cfg(feature = "documents")]
-    pub documents: &'static dyn DocumentSink,
+    pub(crate) documents: &'static dyn DocumentSink,
 }
 
 impl std::fmt::Debug for Retrieval {
@@ -205,3 +213,7 @@ impl std::fmt::Debug for Retrieval {
         f.debug_struct("Retrieval").finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+#[path = "scan_retrieval_inert.rs"]
+mod inert;

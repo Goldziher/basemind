@@ -35,6 +35,7 @@ fn scan_cancellable(root: &Path, cancel: &ScanCancel) -> Store {
             ScanSource::WorkingTree,
             EmbedMode::Inline,
             cancel,
+            basemind::retrieval_wiring::backend(),
         )
         .expect("scan");
         store
@@ -49,7 +50,17 @@ fn scan(root: &Path) -> Store {
 fn scan_paths(root: &Path, store: &mut Store, rels: &[&str]) {
     let cfg = config(root);
     let paths: Vec<_> = rels.iter().map(|rel| root.join(rel)).collect();
-    off_main(|| basemind::scanner::scan_paths(root, store, &cfg, &paths, EmbedMode::Inline).expect("scan_paths"));
+    off_main(|| {
+        basemind::scanner::scan_paths(
+            root,
+            store,
+            &cfg,
+            &paths,
+            EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
+        )
+        .expect("scan_paths")
+    });
 }
 
 /// Move a file's mtime an hour back, past the window in which its stamp is too fresh to trust.

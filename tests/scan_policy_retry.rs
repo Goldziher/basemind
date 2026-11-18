@@ -18,14 +18,30 @@ fn a_failed_policy_purge_is_not_recorded_and_is_retried() {
 
     // SAFETY: this binary holds exactly one test, so nothing else reads the environment concurrently.
     unsafe { std::env::set_var(TEST_FAULT_LANE_ENV, LANE_EMBED_POLICY) };
-    scan(dir.path(), &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    scan(
+        dir.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
     assert!(
         store.index.embed_policy.is_empty(),
         "the purge lane died, so the policy must stay unrecorded"
     );
 
     unsafe { std::env::remove_var(TEST_FAULT_LANE_ENV) };
-    scan(dir.path(), &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
+    scan(
+        dir.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
     assert!(
         !store.index.embed_policy.is_empty(),
         "the retry completes and records the policy"

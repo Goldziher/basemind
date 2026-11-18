@@ -171,7 +171,7 @@ pub fn watch_paths_reloading(
         NotifyConfig::default(),
     )?;
 
-    let mut filter = crate::scanner_filter::IndexFilter::new(root, config)?;
+    let mut filter = crate::scanner_filter::IndexFilter::new(root, config, crate::retrieval_wiring::backend())?;
 
     #[cfg(target_os = "linux")]
     {
@@ -310,7 +310,7 @@ pub fn watch_paths_reloading(
         }
 
         if let Some(fresh) = reload() {
-            match crate::scanner_filter::IndexFilter::new(root, &fresh) {
+            match crate::scanner_filter::IndexFilter::new(root, &fresh, crate::retrieval_wiring::backend()) {
                 Ok(rebuilt) => {
                     info!("config changed; watcher filter rebuilt");
                     filter = rebuilt;
@@ -362,6 +362,7 @@ pub fn watch(
             crate::scanner::EmbedMode::Inline,
             &crate::scanner::ScanCancel::new(),
             &mut observer,
+            crate::retrieval_wiring::backend(),
         )?;
         on_batch(WatchBatch {
             kind: BatchKind::InitialScan,
@@ -396,6 +397,7 @@ pub fn watch(
                 crate::scanner::EmbedMode::Inline,
                 &crate::scanner::ScanCancel::new(),
                 &mut observer,
+                crate::retrieval_wiring::backend(),
             ) {
                 Ok(report) => {
                     on_batch(WatchBatch {

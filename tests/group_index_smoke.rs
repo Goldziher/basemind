@@ -54,7 +54,15 @@ fn scan_working(root: &Path) -> Store {
     let mut store = Store::open(root, VIEW_WORKING).expect("open");
     let mut config = ConfigV1::with_defaults();
     config.documents.enabled = false;
-    scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+    scan(
+        root,
+        &mut store,
+        &config,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     store
 }
 

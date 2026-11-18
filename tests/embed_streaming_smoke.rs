@@ -96,7 +96,15 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
     let cfg = embed_config();
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
 
-    let p1 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline scan 1");
+    let p1 = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("inline scan 1");
     assert!(
         p1.stats.updated >= code_files,
         "pass 1 must index every source file: updated={} code_files={code_files}",
@@ -108,7 +116,15 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
         p1.stats.docs_indexed
     );
 
-    let p2 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline scan 2");
+    let p2 = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("inline scan 2");
     assert_eq!(
         p2.stats.updated, 0,
         "pass 2 must not re-index any unchanged source file"
@@ -197,7 +213,15 @@ fn embed_pass_footprint_does_not_ratchet_across_rescans() {
     let cfg = embed_config();
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
 
-    let warm = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("warm inline scan");
+    let warm = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("warm inline scan");
     eprintln!(
         "warm pass: updated={} docs_indexed={} files={total}",
         warm.stats.updated, warm.stats.docs_indexed
@@ -212,7 +236,15 @@ fn embed_pass_footprint_does_not_ratchet_across_rescans() {
 
     let mut currents = Vec::new();
     for pass in 0..5 {
-        let report = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline rescan");
+        let report = scan(
+            root,
+            &mut store,
+            &cfg,
+            ScanSource::WorkingTree,
+            EmbedMode::Inline,
+            basemind::retrieval_wiring::backend(),
+        )
+        .expect("inline rescan");
         let current = phys_footprint_mb().expect("read phys_footprint on macOS");
         let peak = phys_footprint_peak_mb().unwrap_or(0.0);
         eprintln!(

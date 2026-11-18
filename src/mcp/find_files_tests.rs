@@ -41,7 +41,15 @@ fn server_with(root: &std::path::Path, repo: Option<Arc<crate::git::Repo>>) -> B
     std::thread::scope(|s| {
         s.spawn(|| {
             let mut store = Store::open(root, VIEW_WORKING).expect("open rw");
-            scan(root, &mut store, &config, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
+            scan(
+                root,
+                &mut store,
+                &config,
+                ScanSource::WorkingTree,
+                EmbedMode::Inline,
+                crate::retrieval_wiring::backend(),
+            )
+            .expect("scan");
         })
         .join()
         .expect("scan thread");

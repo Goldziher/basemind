@@ -23,6 +23,7 @@ fn scan_fixture(root: &std::path::Path) -> (Store, crate::engine::MapCache) {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Inline,
+        crate::retrieval_wiring::backend(),
     )
     .expect("scan");
     let cache = crate::engine::MapCache::build(&store, 0);
@@ -473,6 +474,7 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Inline,
+        crate::retrieval_wiring::backend(),
     )
     .expect("rescan");
 

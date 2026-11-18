@@ -46,6 +46,7 @@ fn scan_oversized_corpus(root: &std::path::Path) -> Store {
         &cfg,
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Inline,
+        crate::retrieval_wiring::backend(),
     )
     .expect("scan");
     store

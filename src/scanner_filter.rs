@@ -280,7 +280,11 @@ pub(crate) struct Filters {
 }
 
 impl Filters {
-    pub(crate) fn build(config: &Config, submodule_roots: Vec<String>) -> Result<Self, ScanError> {
+    pub(crate) fn build(
+        config: &Config,
+        submodule_roots: Vec<String>,
+        retrieval: crate::scan_retrieval::Retrieval,
+    ) -> Result<Self, ScanError> {
         let include_patterns: Vec<String> = config.scan.include.iter().flat_map(|p| expand_pattern(p)).collect();
         let include = compile_globs(include_patterns.iter().map(String::as_str))?;
         let exclude_patterns: Vec<String> = effective_floor(&config.scan.floor_allow, repo_credentials_granted())
@@ -310,8 +314,8 @@ impl Filters {
                     .map(|s| format!("{}/", s.replace('\\', "/").trim_end_matches('/')))
             })
             .collect();
-        #[cfg(any(feature = "documents", feature = "code-search"))]
-        let retrieval = crate::scan_retrieval::Retrieval::default();
+        #[cfg(not(any(feature = "documents", feature = "code-search")))]
+        let _ = retrieval;
         #[cfg(feature = "documents")]
         retrieval.documents.warn_unavailable_settings(&config.documents);
         let doc_digest = crate::config::rules::doc_digest(&config.documents, &config.resources);
@@ -594,9 +598,13 @@ pub(crate) struct IndexFilter {
 }
 
 impl IndexFilter {
-    pub(crate) fn new(root: &Path, config: &Config) -> Result<Self, ScanError> {
+    pub(crate) fn new(
+        root: &Path,
+        config: &Config,
+        retrieval: crate::scan_retrieval::Retrieval,
+    ) -> Result<Self, ScanError> {
         let submodule_roots = submodule_roots_for_source(root, &ScanSource::WorkingTree);
-        let filters = Filters::build(config, submodule_roots)?;
+        let filters = Filters::build(config, submodule_roots, retrieval)?;
         Ok(Self {
             filters,
             root: root.to_path_buf(),

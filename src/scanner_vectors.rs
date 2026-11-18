@@ -18,6 +18,21 @@ use crate::store::Store;
 /// The scan's vector store: the per-view LanceDB store a [`Store`] keeps open.
 pub(crate) struct LanceVectors;
 
+/// This build's retrieval stack, for the retrieval layer's own tests, which may not reach the engine
+/// layer's binding (`crate::retrieval_wiring::backend`, which binds the same implementations).
+#[cfg(test)]
+pub(crate) fn test_retrieval() -> crate::scan_retrieval::Retrieval {
+    crate::scan_retrieval::Retrieval {
+        #[cfg(feature = "code-search")]
+        embedder: &crate::embeddings::ScanEmbedder,
+        #[cfg(feature = "code-search")]
+        model_key: |preset| crate::embeddings::model_key(preset).into_owned(),
+        vectors: &LanceVectors,
+        #[cfg(feature = "documents")]
+        documents: &crate::scanner_docs_lane::DocumentLane,
+    }
+}
+
 impl VectorStore for LanceVectors {
     fn open(&self, store: &mut Store, config: &Config) -> Result<(), RetrievalError> {
         let preset = &config.documents.embedding_preset;
@@ -299,12 +314,12 @@ mod tests {
         let mut config = crate::config::default_for_root(std::path::Path::new("."));
         config.code_search.embed = true;
         config.code_search.embed_exclude = vec!["**/generated/**".to_string()];
-        let filters = Filters::build(&config, Vec::new()).unwrap();
+        let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
         purge_unembedded_code(&mut store, &config, &filters, "repo:s");
         assert_eq!(code_rows(&lance), vec!["lib/c.rs".to_string(), "src/a.rs".to_string()]);
 
         config.code_search.embed_include = vec!["src/**".to_string()];
-        let filters = Filters::build(&config, Vec::new()).unwrap();
+        let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
         purge_unembedded_code(&mut store, &config, &filters, "repo:s");
         assert_eq!(
             code_rows(&lance),
@@ -313,7 +328,7 @@ mod tests {
         );
 
         config.code_search.embed = false;
-        let filters = Filters::build(&config, Vec::new()).unwrap();
+        let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
         purge_unembedded_code(&mut store, &config, &filters, "repo:s");
         assert!(code_rows(&lance).is_empty(), "embed = false removes every vector row");
         assert!(store.lookup("src/a.rs").is_some(), "files stay indexed");
@@ -328,7 +343,7 @@ mod tests {
 
         let mut config = crate::config::default_for_root(std::path::Path::new("."));
         config.code_search.embed = false;
-        let filters = Filters::build(&config, Vec::new()).unwrap();
+        let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).unwrap();
 
         config.documents.embedding_preset = "no-such-preset".to_string();
         assert!(

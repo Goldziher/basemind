@@ -84,6 +84,7 @@ fn a_read_only_open_shares_the_group_index_only_when_its_process_holds_it() {
         &crate::config::ConfigV1::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
 
@@ -122,6 +123,7 @@ fn a_query_open_reads_the_group_index_under_a_free_group_lock() {
         &crate::config::ConfigV1::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     drop(writer);
@@ -402,6 +404,7 @@ fn a_sealed_index_without_symbols_is_not_rebuilt_on_every_open() {
             &crate::config::ConfigV1::with_defaults(),
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Deferred,
+            crate::scan_retrieval::Retrieval::inert(),
         )
         .expect("scan");
         assert_eq!(store.index.files.len(), 1, "the fixture file must be indexed");
@@ -452,6 +455,7 @@ fn a_writer_open_rebuilds_a_damaged_index_and_a_read_only_open_leaves_it() {
             &crate::config::ConfigV1::with_defaults(),
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Deferred,
+            crate::scan_retrieval::Retrieval::inert(),
         )
         .expect("scan");
         assert!(
@@ -500,6 +504,7 @@ fn rescan(root: &Path, store: &mut Store) -> Result<crate::scanner::ScanReport, 
         &crate::config::ConfigV1::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
 }
 
@@ -611,6 +616,7 @@ fn a_file_map_from_before_the_blob_namespaces_is_discarded_by_the_writer_open() 
             &crate::config::Config::with_defaults(),
             crate::scanner::ScanSource::WorkingTree,
             crate::scanner::EmbedMode::Deferred,
+            crate::scan_retrieval::Retrieval::inert(),
         )
         .expect("scan")
     };
@@ -666,6 +672,7 @@ fn a_file_map_from_before_the_blob_namespaces_reads_as_a_rescan_owed() {
         &crate::config::Config::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     let view_dir = store.view_dir.clone();
@@ -713,6 +720,7 @@ fn a_vector_store_that_would_not_open_is_tried_once_per_scan_pass() {
         &crate::config::Config::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     assert!(store.lance_or_open(4, "model").is_ok(), "the next pass opens it");
@@ -901,6 +909,7 @@ fn a_reopened_index_publishes_the_written_file_map_not_the_unflushed_one() {
         &crate::config::ConfigV1::with_defaults(),
         crate::scanner::ScanSource::WorkingTree,
         crate::scanner::EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .expect("scan");
     let entry = store.lookup("a.rs").cloned().expect("indexed");

@@ -69,6 +69,7 @@ fn scan_with_injected(store: &mut Store, root: &Path, error: IndexError) -> Resu
         EmbedMode::Deferred,
         &ScanCancel::new(),
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .map(|_| ())
 }
@@ -85,6 +86,7 @@ fn a_clean_scan_records_a_complete_resolved_index() {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
     let status = read_status_sidecar(&store.basemind_dir).expect("sidecar");
@@ -117,6 +119,7 @@ fn a_full_disk_mid_scan_aborts_and_the_status_reads_not_complete() {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("rescan after space is freed");
     let status = read_status_sidecar(&store.basemind_dir).expect("sidecar");
@@ -143,6 +146,7 @@ fn a_poisoned_handle_keeps_refusing_scans_until_it_is_reopened() {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     );
     assert!(
         matches!(again, Err(ScanError::IndexFault(_))),
@@ -157,6 +161,7 @@ fn a_poisoned_handle_keeps_refusing_scans_until_it_is_reopened() {
         &ConfigV1::with_defaults(),
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("a reopened handle scans again");
     assert!(!read_status_sidecar(&store.basemind_dir).expect("sidecar").is_degraded());
@@ -179,6 +184,7 @@ fn a_cancelled_scan_is_recorded_as_partial_until_a_full_scan_completes() {
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
         &cancel,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("a cancelled scan still returns a report");
     assert!(report.cancelled);
@@ -195,6 +201,7 @@ fn a_cancelled_scan_is_recorded_as_partial_until_a_full_scan_completes() {
         &cfg,
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("full scan");
     let status = read_status_sidecar(&store.basemind_dir).expect("sidecar");

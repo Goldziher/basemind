@@ -51,6 +51,7 @@ fn repo_supplied_extra_roots_cannot_index_an_out_of_repo_directory() {
         &cfg,
         ScanSource::WorkingTree,
         EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("an ungranted extra root is ignored, not a scan failure");
 
