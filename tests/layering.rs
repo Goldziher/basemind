@@ -1200,11 +1200,21 @@ fn retired_symbols_stay_gone() {
 
 /// Environment reads allowed below the root layer, as `"<file> -> <path>"`, each with its count.
 /// `Env { env }` is a secret the operator names in `basemind.toml` by the variable that holds it
-/// (ADR-0039): the indirection is the configuration. Everything else reaches the library through
+/// (ADR-0050): the indirection is the configuration. Everything else reaches the library through
 /// the engine configuration, which `src/cli/env_config.rs` builds from the environment.
-const ALLOWED_ENV_READS: &[(&str, usize)] = &[("src/config/documents.rs -> std::env::var", 1)];
+/// The two `ProjectDirs` lookups resolve the documented platform defaults (the data home of a process
+/// that installed none, the user-level agents policy) from `HOME` / `XDG_*`, which is their
+/// definition; an embedder overrides both in code.
+const ALLOWED_ENV_READS: &[(&str, usize)] = &[
+    ("src/config/agents_policy.rs -> directories::ProjectDirs::from", 1),
+    ("src/config/documents.rs -> std::env::var", 1),
+    ("src/data_root.rs -> directories::ProjectDirs::from", 1),
+];
 
 const ENV_READS: &[&str] = &["var", "var_os", "vars", "vars_os"];
+
+/// The `directories` types whose constructors read `HOME` and the `XDG_*` variables.
+const ENV_DIRS: &[&str] = &["ProjectDirs", "BaseDirs", "UserDirs"];
 
 /// Whether a `cfg` predicate holds only in test builds or with the `test-support` feature, which
 /// only the test suite enables: the hooks a test drives through the environment.
@@ -1239,10 +1249,13 @@ fn is_test_hook(attrs: &[syn::Attribute]) -> bool {
         })
 }
 
-/// Collects `env::var`-family paths outside test code and test hooks.
+/// Collects `env::var`-family paths, through `std::env` under any alias, and the `directories`
+/// constructors that read the environment implicitly, outside test code and test hooks.
 struct EnvReads {
     hook: bool,
     found: Vec<String>,
+    /// Names `std::env` is imported under (`use std::env as e;`).
+    aliases: BTreeSet<String>,
 }
 
 impl EnvReads {
@@ -1251,8 +1264,29 @@ impl EnvReads {
             return;
         }
         let n = segments.len();
-        if n >= 2 && segments[n - 2] == "env" && ENV_READS.contains(&segments[n - 1].as_str()) {
+        let reads_env = n >= 2
+            && (segments[n - 2] == "env" || self.aliases.contains(&segments[n - 2]))
+            && ENV_READS.contains(&segments[n - 1].as_str());
+        let resolves_dirs = segments[..n.saturating_sub(1)]
+            .iter()
+            .any(|segment| ENV_DIRS.contains(&segment.as_str()));
+        if reads_env || resolves_dirs {
             self.found.push(segments.join("::"));
+        }
+    }
+
+    /// Record the names `tree` imports `std::env` (or `core::env`) under.
+    fn note_aliases(&mut self, tree: &syn::UseTree) {
+        let mut pairs = Vec::new();
+        use_pairs(&mut Vec::new(), tree, &mut pairs);
+        for (name, segments) in pairs {
+            if let Some(name) = name
+                && segments.len() == 2
+                && matches!(segments[0].as_str(), "std" | "core")
+                && segments[1] == "env"
+            {
+                self.aliases.insert(name);
+            }
         }
     }
 
@@ -1310,6 +1344,7 @@ impl<'ast> Visit<'ast> for EnvReads {
         if is_test_hook(&item.attrs) {
             return;
         }
+        self.note_aliases(&item.tree);
         let mut pairs = Vec::new();
         use_pairs(&mut Vec::new(), &item.tree, &mut pairs);
         for (_, segments) in pairs {
@@ -1344,14 +1379,23 @@ fn env_reads(items: &[syn::Item]) -> Vec<String> {
     let mut reads = EnvReads {
         hook: false,
         found: Vec::new(),
+        aliases: BTreeSet::new(),
     };
+    // A module-level alias may be declared below its first use.
+    for item in items {
+        if let syn::Item::Use(item) = item
+            && !is_test_hook(&item.attrs)
+        {
+            reads.note_aliases(&item.tree);
+        }
+    }
     for item in items {
         reads.visit_item(item);
     }
     reads.found
 }
 
-/// Core, retrieval and engine code read no environment variable (ADR-0039): the operator's settings
+/// Core, retrieval and engine code read no environment variable (ADR-0050): the operator's settings
 /// arrive as the engine configuration, so an embedder configures the library in code and the CLI
 /// keeps every variable's meaning in one place.
 #[test]
@@ -1397,7 +1441,12 @@ fn the_env_read_check_flags_each_shape() {
          #[cfg(any(test, feature = \"test-support\"))] fn e() { std::env::var(\"E\"); }\n\
          #[cfg(feature = \"test-support\")] fn f() { std::env::var(\"F\"); }\n\
          #[cfg(feature = \"documents\")] fn g() { std::env::var(\"G\"); }\n\
-         fn h() { std::env::temp_dir(); std::env::split_paths(\"\"); }\n",
+         fn h() { std::env::temp_dir(); std::env::split_paths(\"\"); }\n\
+         fn i() { e::var(\"I\"); }\n\
+         use std::env as e;\n\
+         use directories::BaseDirs;\n\
+         fn j() { directories::ProjectDirs::from(\"\", \"\", \"x\"); BaseDirs::new(); }\n\
+         fn k(dirs: &directories::BaseDirs) -> std::path::PathBuf { dirs.cache_dir().to_path_buf() }\n",
     )
     .expect("parse");
     assert_eq!(
@@ -1407,7 +1456,10 @@ fn the_env_read_check_flags_each_shape() {
             "std::env::var",
             "env::var_os",
             "env::vars",
-            "std::env::var"
+            "std::env::var",
+            "e::var",
+            "directories::ProjectDirs::from",
+            "BaseDirs::new"
         ]
     );
 }
