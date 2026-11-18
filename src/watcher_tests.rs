@@ -642,7 +642,8 @@ fn dir_watches_follow_a_renamed_directory_subtree() {
     std::fs::create_dir_all(root.join("oldish")).expect("mkdir");
     std::fs::create_dir_all(root.join("target/debug")).expect("mkdir");
     let config = crate::config::default_for_root(&root);
-    let filter = crate::scanner_filter::IndexFilter::new(&root, &config).expect("filter");
+    let filter =
+        crate::scanner_filter::IndexFilter::new(&root, &config, crate::retrieval_wiring::backend()).expect("filter");
     let mut watches = DirWatches::default();
     let mut registry = Recorder::default();
     watches.sync(&mut registry, &filter, &[root.join("old"), root.join("oldish")]);

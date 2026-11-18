@@ -23,6 +23,7 @@ fn scan_status(root: &Path, cfg: &ConfigV1, rel: &str) -> FileStatus {
         EmbedMode::Inline,
         &ScanCancel::new(),
         &mut observer,
+        basemind::retrieval_wiring::backend(),
     )
     .expect("scan");
     observer
