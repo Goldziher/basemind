@@ -1,7 +1,7 @@
 //! The documented `BASEMIND_*` environment variables, mapped onto the engine configuration.
 //!
 //! This is the one place the library reads them: the binary installs the result before any command
-//! runs, and core, retrieval and engine code read the installed [`EngineConfig`] (ADR-0039). Each
+//! runs, and core, retrieval and engine code read the installed [`EngineConfig`] (ADR-0050). Each
 //! variable keeps the meaning, defaults and parsing it had when the code that uses it read it
 //! directly.
 

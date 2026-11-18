@@ -587,7 +587,7 @@ pub fn init_isolated_cache() {
             }
         };
         let comms_dir = root.join("comms");
-        crate::config::engine::set_data_root(crate::data_root::DataRoot::new(root.clone()));
+        crate::config::engine::update(|config| config.data_root = crate::data_root::DataRoot::new(root.clone()));
         // SAFETY: set exactly once, inside `Once::call_once`, before any test thread reads
         unsafe {
             std::env::set_var(DATA_HOME_ENV, root);

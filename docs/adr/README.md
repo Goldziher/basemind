@@ -122,7 +122,7 @@ them.
 | [0036](0036-group-index-as-built.md) | Group index as built — no rollout switch, the group lock, read-only opens | Accepted (amended by ADR-0041, ADR-0043) |
 | [0037](0037-retrieval-store-amendments.md) | Retrieval store amendments — liveness list, store version, group location, model identity | Accepted |
 | [0038](0038-comms-cutover-as-built.md) | Comms v2 cutover as built — agent tool replay and the closed open items | Accepted |
-| [0039](0039-engine-unification-and-two-crates.md) | Engine unification first, then two crates | Accepted (amended by ADR-0040, ADR-0042) |
+| [0039](0039-engine-unification-and-two-crates.md) | Engine unification first, then two crates | Accepted (amended by ADR-0040, ADR-0042, ADR-0050) |
 | [0040](0040-cross-harness-agent-launch.md) | Cross-harness agent launch — `basemind-agents` and `serve --lead` | Accepted (amended by ADR-0044) |
 | [0041](0041-group-sweep-bm25-holders-and-group-reaping.md) | Group sweep, BM25 holders, packed postings and group reaping | Accepted (amended by ADR-0043) |
 | [0042](0042-hosted-workspaces-share-the-writers-handles.md) | Hosted workspaces share the writer's handles; no in-RAM reference fallback | Accepted |
@@ -133,3 +133,4 @@ them.
 | [0047](0047-analysis-commands-and-the-import-graph.md) | Analyses ship as daemon-answered CLI commands; the file-level import graph | Proposed |
 | [0048](0048-http-routes-and-client-calls.md) | HTTP routes as symbols, client calls as call rows, linked by path | Proposed |
 | [0049](0049-reading-outside-the-repository.md) | Reading outside the repository — session transcripts and dependency documentation | Proposed |
+| [0050](0050-one-engine-configuration-per-process.md) | One engine configuration per process, and no environment below the root layer | Proposed |

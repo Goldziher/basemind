@@ -114,13 +114,13 @@ fn subdirectory_workspace_never_inherits_the_parent_repositories_history() {
     );
 
     // The escape hatch restores the pre-#62 behaviour.
-    unsafe { std::env::set_var(HATCH, "1") };
-    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
+    // `cli::env_config` maps the variable to this setting. A process installs one engine, so the
+    // test flips the installed configuration instead of installing a second one. ~keep
+    basemind::config::engine::update(|engine| engine.git.discover_parents = true);
     let hatch_dir = index_dir(&scratch, "hatch");
     let hatch_index = GitHistoryIndex::open(&hatch_dir).expect("open index");
     let outcome = builder::sync(&hatch_index, &inherited, &hatch_dir).expect("hatch sync");
-    unsafe { std::env::remove_var(HATCH) };
-    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
+    basemind::config::engine::update(|engine| engine.git.discover_parents = false);
     assert!(
         matches!(outcome, RebuildOutcome::FullRebuild { commits: 2, .. }),
         "{HATCH}=1 opts back into indexing the ancestor repository, got {outcome:?}"
