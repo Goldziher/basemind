@@ -122,14 +122,15 @@ impl Scoped {
     }
 
     /// Keys starting with `prefix`, in key order, without reading their values.
-    #[cfg(feature = "code-search")]
     pub(crate) fn prefix_keys<'a>(
         &'a self,
         prefix: &[u8],
     ) -> impl Iterator<Item = Result<IndexBytes, IndexError>> + 'a {
-        self.keyspace
-            .prefix(self.full_key(prefix))
-            .map(|guard| self.key_only(guard))
+        let rows = match &self.prefix {
+            None => self.keyspace.prefix(prefix),
+            Some(_) => self.keyspace.prefix(self.full_key(prefix)),
+        };
+        rows.map(|guard| self.key_only(guard))
     }
 
     /// The stored bounds of a range given in view keys. An unbounded side stays inside the prefix.

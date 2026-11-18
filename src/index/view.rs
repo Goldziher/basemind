@@ -375,31 +375,10 @@ pub trait IndexView: Send + Sync {
     /// symbol's owning chunk span.
     fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
         let prefix = keys::symbols_by_name_prefix(name);
-        if prefix.len() != 2 + name.len() {
-            // Longer than a key holds: no symbol is stored under it. ~keep
-            return Vec::new();
-        }
-        let live = self.live_keys();
-        let mut out = Vec::with_capacity(cap.min(256));
-        // One row per symbol and content, one hit per live holder: no hit key is composed, and a
-        // row no live path holds is skipped before anything is decoded. ~keep
-        for row in self.prefix(Part::SymbolsByName, &prefix) {
-            if out.len() >= cap {
-                break;
-            }
-            let Some((kind, content, start)) = row.ok().and_then(|(key, _)| keys::parse_symbol_row(&key)) else {
-                continue;
-            };
-            let holders = live.holders(&content);
-            let holders = &holders[..holders.len().min(cap - out.len())];
-            if let Some(((_, last), rest)) = holders.split_last() {
-                // The length-prefixed name is the whole name: every row under it is named `name`. ~keep
-                let found = name.to_owned();
-                out.extend(rest.iter().map(|(_, path)| (found.clone(), kind, path.clone(), start)));
-                out.push((found, kind, last.clone(), start));
-            }
-        }
-        out
+        let rows = self
+            .prefix(Part::SymbolsByName, &prefix)
+            .map(|row| row.map(|(key, _)| key));
+        symbols_from_rows(rows, &self.live_keys(), name, &prefix, cap)
     }
 
     /// Corpus-global BM25 stats for the code-search keyword lane: `(N, total_len)` where `N` is the
@@ -438,6 +417,40 @@ pub trait IndexView: Send + Sync {
     }
 }
 
+/// [`IndexView::symbols_by_name_lookup`] over the keys of the `symbols_by_name` rows under
+/// `prefix`: one hit per live holder of each row, no hit key composed, and a row no live path holds
+/// skipped before anything is decoded.
+fn symbols_from_rows(
+    rows: impl Iterator<Item = Result<IndexBytes, IndexError>>,
+    live: &super::live_keys::LiveKeys,
+    name: &str,
+    prefix: &[u8],
+    cap: usize,
+) -> Vec<(String, SymbolKind, RelPath, u32)> {
+    if prefix.len() != 2 + name.len() {
+        // Longer than a key holds: no symbol is stored under it. ~keep
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(cap.min(256));
+    for row in rows {
+        if out.len() >= cap {
+            break;
+        }
+        let Some((kind, content, start)) = row.ok().and_then(|key| keys::parse_symbol_row(&key)) else {
+            continue;
+        };
+        let holders = live.holders(&content);
+        let holders = &holders[..holders.len().min(cap - out.len())];
+        if let Some(((_, last), rest)) = holders.split_last() {
+            // The length-prefixed name is the whole name: every row under it is named `name`. ~keep
+            let found = name.to_owned();
+            out.extend(rest.iter().map(|(_, path)| (found.clone(), kind, path.clone(), start)));
+            out.push((found, kind, last.clone(), start));
+        }
+    }
+    out
+}
+
 /// The view of one [`IndexDb`] handle, read as is. `T` is `&IndexDb` to borrow it or `IndexDb` to
 /// own a handle (clones share the same keyspaces).
 pub struct StandaloneView<T = IndexDb>(pub(crate) T);
@@ -471,6 +484,19 @@ impl<T: Borrow<IndexDb> + Send + Sync> IndexView for StandaloneView<T> {
 
     fn live_keys(&self) -> std::sync::Arc<super::live_keys::LiveKeys> {
         self.db().live_keys()
+    }
+
+    fn symbols_by_name_lookup(&self, name: &str, cap: usize) -> Vec<(String, SymbolKind, RelPath, u32)> {
+        let prefix = keys::symbols_by_name_prefix(name);
+        let db = self.db();
+        // Keys only, statically dispatched: the rows' values are empty. ~keep
+        symbols_from_rows(
+            db.symbols_by_name.prefix_keys(&prefix),
+            &db.live_keys(),
+            name,
+            &prefix,
+            cap,
+        )
     }
 
     fn callee_keys_matching<'a>(

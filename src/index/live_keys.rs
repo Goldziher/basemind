@@ -31,11 +31,9 @@ use crate::path::RelPath;
 #[derive(Debug, Default)]
 pub struct LiveKeys {
     entries: Box<[(ContentKey, RelPath)]>,
-    /// Each distinct live key as a big-endian integer, ascending: comparable in one instruction.
-    run_keys: Box<[u128]>,
-    /// Where each key's run in `entries` ends; it starts where the previous one ends.
-    run_ends: Box<[u32]>,
-    /// `buckets[b]` is the first index into `run_keys` whose leading `bucket_bits` bits are at
+    /// Each distinct live key with its run in `entries`, ascending by key: one cache line per key.
+    runs: Box<[Run]>,
+    /// `buckets[b]` is the first index into `runs` whose key's leading `bucket_bits` bits are at
     /// least `b`; one trailing entry holds the key count.
     buckets: Box<[u32]>,
     bucket_bits: u32,
@@ -54,14 +52,18 @@ impl LiveKeys {
         entries.sort_by(|a, b| a.1.cmp(&b.1));
         entries.dedup_by(|later, kept| later.1 == kept.1);
         entries.sort_unstable();
-        let (mut run_keys, mut run_ends) = (Vec::new(), Vec::new());
-        let mut end = 0;
+        let mut runs = Vec::new();
+        let mut start = 0;
         for run in entries.chunk_by(|a, b| a.0 == b.0) {
-            end += run.len();
-            run_keys.push(u128::from_be_bytes(run[0].0));
-            run_ends.push(index(end));
+            let end = start + run.len();
+            runs.push(Run {
+                key: u128::from_be_bytes(run[0].0),
+                start: index(start),
+                end: index(end),
+            });
+            start = end;
         }
-        let (buckets, bucket_bits) = bucket_index(&run_keys);
+        let (buckets, bucket_bits) = bucket_index(&runs);
         let mut by_path: Vec<u32> = (0..entries.len()).map(index).collect();
         by_path.sort_unstable_by(|a, b| entries[*a as usize].1.cmp(&entries[*b as usize].1));
         let fingerprint = fingerprint_of(by_path.iter().map(|at| {
@@ -70,8 +72,7 @@ impl LiveKeys {
         }));
         Self {
             entries: entries.into_boxed_slice(),
-            run_keys: run_keys.into_boxed_slice(),
-            run_ends: run_ends.into_boxed_slice(),
+            runs: runs.into_boxed_slice(),
             buckets,
             bucket_bits,
             by_path: by_path.into_boxed_slice(),
@@ -85,12 +86,6 @@ impl LiveKeys {
             .map_or(&[], |(start, end)| &self.entries[start as usize..end as usize])
     }
 
-    /// Run `at` of the distinct keys as `(start, end)` in `entries`.
-    fn run(&self, at: usize) -> (u32, u32) {
-        let start = if at == 0 { 0 } else { self.run_ends[at - 1] };
-        (start, self.run_ends[at])
-    }
-
     /// The run of `key` in `entries`: searched within the bucket of its leading bits.
     fn find_run(&self, key: u128) -> Option<(u32, u32)> {
         let bucket = bucket_of(key, self.bucket_bits);
@@ -99,8 +94,8 @@ impl LiveKeys {
             *self.buckets.get(bucket)? as usize,
             *self.buckets.get(bucket + 1)? as usize,
         );
-        let at = from + self.run_keys[from..to].iter().position(|held| *held >= key)?;
-        (self.run_keys[at] == key).then(|| self.run(at))
+        let run = self.runs[from..to].iter().find(|run| run.key >= key)?;
+        (run.key == key).then_some((run.start, run.end))
     }
 
     /// The content key the view holds at `rel`.
@@ -119,7 +114,7 @@ impl LiveKeys {
 
     /// Every live key.
     pub fn keys(&self) -> impl Iterator<Item = &ContentKey> {
-        (0..self.run_ends.len()).map(|at| &self.entries[self.run(at).0 as usize].0)
+        self.runs.iter().map(|run| &self.entries[run.start as usize].0)
     }
 
     /// Whether the view holds no content.
@@ -161,13 +156,21 @@ fn bucket_of(key: u128, bits: u32) -> usize {
     key.checked_shr(128 - bits).unwrap_or(0) as usize
 }
 
-/// The bucket bounds of sorted `keys`: about one key per bucket.
-fn bucket_index(keys: &[u128]) -> (Box<[u32]>, u32) {
-    let bits = usize::BITS - keys.len().leading_zeros();
+/// One distinct live key and its run `entries[start..end]`.
+#[derive(Debug)]
+struct Run {
+    key: u128,
+    start: u32,
+    end: u32,
+}
+
+/// The bucket bounds of `runs`, sorted by key: about one key per bucket.
+fn bucket_index(runs: &[Run]) -> (Box<[u32]>, u32) {
+    let bits = usize::BITS - runs.len().leading_zeros();
     let mut buckets = vec![0u32; (1usize << bits) + 1];
     let mut at = 0;
     for (bucket, bound) in buckets.iter_mut().enumerate() {
-        while at < keys.len() && bucket_of(keys[at], bits) < bucket {
+        while at < runs.len() && bucket_of(runs[at].key, bits) < bucket {
             at += 1;
         }
         *bound = index(at);
