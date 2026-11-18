@@ -190,6 +190,44 @@ fn scan_indexes_dynamic_language_without_override_queries() {
 }
 
 #[test]
+fn scan_records_each_file_line_count() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+
+    let files: [(&str, &[u8], u32); 5] = [
+        ("empty.rs", b"", 0),
+        ("terminated.rs", b"fn a() {}\nfn b() {}\n", 2),
+        ("unterminated.rs", b"fn a() {}\nfn b() {}", 2),
+        ("crlf.rs", b"fn a() {}\r\nfn b() {}\r\nfn c() {}\r\n", 3),
+        ("blank_lines.rs", b"\n\nfn a() {}\n\n", 4),
+    ];
+    for (name, contents, _) in files {
+        fs::write(root.join(name), contents).unwrap();
+    }
+
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
+    )
+    .unwrap();
+    assert_eq!(report.stats.updated, files.len());
+
+    for (name, _, lines) in files {
+        let entry = store.lookup(name).unwrap_or_else(|| panic!("{name} indexed"));
+        assert_eq!(entry.lines, lines, "{name}");
+    }
+    drop(store);
+
+    let store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    assert_eq!(store.lookup("crlf.rs").expect("crlf.rs persisted").lines, 3);
+}
+
+#[test]
 fn rescan_is_idempotent_and_uses_cache() {
     let (dir, cfg) = fresh_repo();
     let root = dir.path();

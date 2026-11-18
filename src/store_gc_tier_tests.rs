@@ -22,6 +22,7 @@ pub(super) fn write_index_with(fx: &Fixture, code_hash: Option<&str>, doc_hash: 
                 mtime: 0,
                 extract_epoch: crate::extract::EXTRACT_EPOCH,
                 content_key: None,
+                lines: 0,
             },
         );
     }

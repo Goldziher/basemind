@@ -382,6 +382,7 @@ fn updated(path: &str) -> FileResult {
         mtime: 0,
         extract_epoch: crate::extract::EXTRACT_EPOCH,
         content_key: None,
+        lines: 0,
     });
     result
 }
