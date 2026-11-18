@@ -36,6 +36,7 @@ pub mod memory;
 pub mod registry;
 pub mod render;
 pub mod rescan;
+pub mod sessions;
 
 use std::io::Write;
 use std::path::Path;
