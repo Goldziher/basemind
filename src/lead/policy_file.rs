@@ -305,12 +305,11 @@ fn flavor_config(
     let name = kind.id();
     // Modes the adapter refuses at every launch: Codex has no accept-edits mode, and OpenCode's
     // other modes need an unverified-mode opt-in the file cannot express.
-    let launchable = match (kind, table.permission_mode) {
-        (HarnessKind::Codex, ModeName::AcceptEdits) => false,
-        (HarnessKind::Acp(_), ModeName::ReadOnly | ModeName::AcceptEdits) => false,
-        _ => true,
-    };
-    if !launchable {
+    let unlaunchable = matches!(
+        (kind, table.permission_mode),
+        (HarnessKind::Codex, ModeName::AcceptEdits) | (HarnessKind::Acp(_), ModeName::ReadOnly | ModeName::AcceptEdits)
+    );
+    if unlaunchable {
         return Err(format!(
             "harness.{name}.permission_mode {:?} is a mode {name} is never launched in",
             table.permission_mode
