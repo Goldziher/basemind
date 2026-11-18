@@ -461,14 +461,15 @@ impl DocConfig {
     }
 }
 
-/// The runtime that drives xberg's async extraction API from the synchronous rayon scan path: the
-/// retrieval stack's shared one. xberg 1.0 dropped its `extract_file_sync` wrapper, so basemind owns
-/// the sync bridge; rayon workers `block_on` it concurrently.
+/// The runtime that drives xberg's async extraction API from the synchronous rayon scan path, with
+/// a blocking pool of its own ([`crate::lance::runtime::extraction`]). xberg 1.0 dropped its
+/// `extract_file_sync` wrapper, so basemind owns the sync bridge; rayon workers `block_on` it
+/// concurrently.
 ///
 /// A failed build (thread exhaustion) surfaces as an [`ExtractError`] for the file at hand instead of
 /// panicking a scan worker; the failure is cached, so later files fail fast the same way.
 fn extraction_runtime() -> Result<&'static tokio::runtime::Runtime, ExtractError> {
-    crate::lance::runtime::shared().map_err(ExtractError::Document)
+    crate::lance::runtime::extraction().map_err(ExtractError::Document)
 }
 
 /// One guarded xberg call. It runs on its own thread under the wall-clock budget, so the text/plain

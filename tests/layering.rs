@@ -1440,8 +1440,8 @@ impl<'ast> Visit<'ast> for RuntimeBuilds {
     }
 }
 
-/// The library below the root layer builds exactly one tokio runtime, the retrieval stack's shared
-/// one (ADR-0023 rule 3); every vector store and document extraction blocks on it.
+/// The library below the root layer builds tokio runtimes in one module, the retrieval stack's
+/// (ADR-0023 rule 3, ADR-0050): document extraction's, and the one each vector store owns.
 #[test]
 fn runtime_builders() {
     let root = manifest_dir();
@@ -1469,6 +1469,6 @@ fn runtime_builders() {
     let expected: BTreeSet<String> = ["src/lance/runtime.rs".to_string()].into();
     assert_eq!(
         files, expected,
-        "tokio runtimes are built outside the shared retrieval runtime"
+        "tokio runtimes are built outside the retrieval runtime module"
     );
 }
