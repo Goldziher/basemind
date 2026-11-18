@@ -456,6 +456,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The daemon's memory no longer climbs under steady memory, document and code-search writes: every
+  LanceDB store of a process caches through one session of 64 MiB (index) and 32 MiB (metadata)
+  instead of Lance's default 6 GiB and 1 GiB per store, where each commit's manifest and file
+  metadata stayed cached after its version was pruned.
 - A root commit's file list (`git_log` `files`, a directory's history, `basemind git churn` and
   `git by-path`) names its files only, no longer every directory of its tree. The git-history index
   rebuilds once and the cached file lists are recomputed.

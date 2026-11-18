@@ -709,3 +709,43 @@ fn a_read_side_open_refuses_a_newer_store() {
     assert!(refused.to_string().contains("newer"), "{refused}");
     assert!(keep.exists());
 }
+
+/// Bytes the metadata cache of `session` holds after `writes` memory upserts and searches by a
+/// store opened through it.
+fn metadata_cached_after_writes(session: Arc<lancedb::Session>, writes: i64) -> usize {
+    let dir = tempfile::tempdir().unwrap();
+    let tables = [(MEMORY_TABLE, memory_schema(4))];
+    let store = LanceStore::open_with(dir.path(), 4, "test", OPEN_LOCK_WAIT, &tables, Arc::clone(&session)).unwrap();
+    for i in 0..writes {
+        store.upsert_memory(memory_row(&format!("k{}", i % 4), "", i)).unwrap();
+        store.search_memory("s", "group", "", vec![0.0; 4], 4, None).unwrap();
+    }
+    store.inner.rt().block_on(session.metadata_cache_stats()).size_bytes
+}
+
+/// Every store of the process caches into one session, so the daemon's Lance caches have one
+/// bound however many stores it holds open.
+#[test]
+fn every_store_shares_the_process_session() {
+    assert!(Arc::ptr_eq(&session::shared(), &session::shared()));
+    const { assert!(session::INDEX_CACHE_BYTES + session::METADATA_CACHE_BYTES <= 128 << 20) };
+}
+
+/// Each commit caches its version's manifest and file metadata, and a pruned version's entries
+/// stay until the budget evicts them: under Lance's 1 GiB default the cache grows with every write
+/// (a daemon soak grew by about 4 MiB/min this way). A bounded session holds at most its budget.
+#[test]
+fn the_metadata_cache_stays_within_its_budget_under_steady_writes() {
+    const BUDGET: usize = 256 << 10;
+    const WRITES: i64 = 120;
+
+    let unbounded = metadata_cached_after_writes(session::bounded(64 << 20, 1 << 30), WRITES);
+    assert!(
+        unbounded > 2 * BUDGET,
+        "under the default budget the writes cache more than the bound under test: {unbounded}"
+    );
+
+    let bounded = metadata_cached_after_writes(session::bounded(64 << 20, BUDGET), WRITES);
+    assert!(bounded > 0, "the store caches into the session it was opened with");
+    assert!(bounded <= BUDGET, "{bounded} bytes cached over a {BUDGET}-byte budget");
+}
