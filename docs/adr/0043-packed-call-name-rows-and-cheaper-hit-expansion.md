@@ -61,8 +61,9 @@ A profile of `references/exact/hot` at three versions put it in two places:
   the content rows.
 - A packed row is read whole even when a page stops in its middle; a content with thousands of
   calls of one callee costs one larger value instead of thousands of keys.
-- The four scan-read keyspaces lose prefix truncation inside their data blocks; LZ4 recovers most
-  of it on disk, and the block cache holds somewhat larger blocks.
+- The four scan-read keyspaces lose prefix truncation inside their data blocks; LZ4 takes it back
+  on disk (the bench's three-version group index: 78.2 MiB before, 78.4 MiB after), though the
+  block cache holds somewhat larger decompressed blocks.
 - The bench gate result at 1x, 3x and 10x is recorded in the commit that lands this ADR.
 
 ## Alternatives considered
