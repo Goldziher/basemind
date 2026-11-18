@@ -127,3 +127,4 @@ them.
 | [0041](0041-group-sweep-bm25-holders-and-group-reaping.md) | Group sweep, BM25 holders, packed postings and group reaping | Accepted |
 | [0042](0042-hosted-workspaces-share-the-writers-handles.md) | Hosted workspaces share the writer's handles; no in-RAM reference fallback | Accepted |
 | [0044](0044-launched-agent-comms-and-user-mcp-isolation.md) | Launched agents use their comms thread, and start none of the user's MCP servers | Proposed |
+| [0045](0045-daemon-stop-and-idle-rules-as-built.md) | Daemon stop and idle rules as built after the comms v2 cutover | Proposed |

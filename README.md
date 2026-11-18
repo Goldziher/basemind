@@ -590,7 +590,10 @@ The daemon can additionally serve MCP over streamable HTTP on loopback, but that
 request must then present the bearer token published as the second line of `<comms_dir>/http.addr`
 (mode `0600`; `<comms_dir>` is the generation directory, `comms/g1/` under the data directory). The
 first line of that file is the bound address: the default port is `51786`, but a daemon that finds it
-in use binds another. Plugin manifests and the CLI use the stdio transport and need none of this.
+in use binds another. A daemon serving HTTP is not stopped for idleness, because no HTTP client can
+start one and a daemon started implicitly never serves HTTP: start it with `basemind comms start`
+(or the systemd unit) and stop it with `basemind comms stop`. Plugin manifests and the CLI use the
+stdio transport and need none of this.
 
 </details>
 
@@ -1254,7 +1257,7 @@ checkout's principal.
 | Command | Purpose |
 |---|---|
 | `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon of this version's protocol generation on the machine), or inspect pid / version / uptime. |
-| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges a recorded fatal store error. |
+| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges the records of scans that died without unwinding. |
 | `cleanup [--dry-run --older-than <days>]` | Remove the comms files of other protocol generations and of releases up to 0.33 (including a pre-generation `store.fjall`) once no daemon holds their lock and they have been idle for 30 days. |
 
 **Workspace (`basemind workspace`, `--features comms`)**

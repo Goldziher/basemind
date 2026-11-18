@@ -87,7 +87,6 @@ impl ReconnectError for anyhow::Error {
             Some(
                 SingletonError::BusyPredecessor { .. }
                 | SingletonError::StalePredecessor { .. }
-                | SingletonError::FailingPredecessor { .. }
                 | SingletonError::TooManyDaemons { .. }
                 | SingletonError::AutospawnDisabled { .. },
             ) => ReconnectFailure::Blocked,

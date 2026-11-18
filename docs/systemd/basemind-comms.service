@@ -67,13 +67,13 @@ Environment=BASEMIND_COMMS_IDLE_REAP_SECS=31536000
 Environment=BASEMIND_COMMS_BOOTSTRAP_SECS=31536000
 
 # Restart on an OOM kill or a crash, but never faster than this — a daemon that dies immediately on
-# every start (an unusable store, say) must stop and be visible in `systemctl --user status`, not
-# spin. `comms doctor` reads the record it left behind.
+# every start must stop and be visible in `systemctl --user status`, not spin. Its log is
+# `daemon.log` in the comms directory, which `basemind comms doctor` names.
 Restart=on-failure
 RestartSec=5s
 
-# A clean shutdown drains in-flight links; the daemon bounds its own teardown, so this only has to
-# outlast that.
+# A clean shutdown drains in-flight links; the daemon bounds its own teardown to 28 seconds
+# (TEARDOWN_MAX), so this only has to outlast that.
 KillSignal=SIGTERM
 TimeoutStopSec=30
 

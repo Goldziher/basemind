@@ -200,7 +200,7 @@ enum CommsLifecycleCmd {
         /// row. Off by default so the plain report stays RPC-free and safe on a wedged machine.
         #[arg(long)]
         probe: bool,
-        /// Acknowledge and delete the recorded fatal store error for this comms dir.
+        /// Acknowledge and delete the records of scans whose process died without unwinding.
         #[arg(long)]
         clear_fatal: bool,
     },

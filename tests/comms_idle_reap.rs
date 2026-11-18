@@ -47,8 +47,14 @@ struct Daemon {
 impl Daemon {
     /// Spawn `basemind comms daemon` against a private comms dir with a short idle window.
     fn start(comms_dir: &Path) -> Self {
+        Self::start_with(comms_dir, &[])
+    }
+
+    /// [`Self::start`] with `env` added to the daemon's environment.
+    fn start_with(comms_dir: &Path, env: &[(&str, &str)]) -> Self {
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
+            .envs(env.iter().copied())
             .env("BASEMIND_COMMS_DIR", comms_dir)
             .env("BASEMIND_DATA_HOME", comms_dir)
             .env(IDLE_REAP_AFTER_ENV, TEST_REAP_AFTER.as_secs().to_string())
@@ -181,3 +187,37 @@ fn daemon_with_a_connected_client_does_not_reap() {
 }
 
 // NOTE: the third hazard — a LONG forwarded RPC (a scan / git-history build that runs for seconds
+
+/// An operator who enables the HTTP front-end runs a service for clients that cannot start one: no
+/// HTTP client can spawn a daemon, and an implicit respawn withholds the HTTP grant. So a daemon
+/// serving HTTP is not reaped for idleness, by either reaper, and stays until it is stopped.
+#[test]
+fn a_daemon_serving_http_is_not_reaped_when_idle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let comms_dir = dir.path().join("comms");
+    std::fs::create_dir_all(&comms_dir).expect("create comms dir");
+
+    let bootstrap = TEST_REAP_AFTER.as_secs().to_string();
+    let mut daemon = Daemon::start_with(
+        &comms_dir,
+        &[
+            ("BASEMIND_ALLOW_HTTP", "1"),
+            ("BASEMIND_HTTP_ADDR", "127.0.0.1:0"),
+            (basemind::comms::daemon::BOOTSTRAP_TIMEOUT_ENV, bootstrap.as_str()),
+        ],
+    );
+    let portfile = generation_dir(&comms_dir).join("http.addr");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !portfile.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(portfile.exists(), "the HTTP front-end never published its address");
+
+    let quiet_for = TEST_REAP_AFTER * 4 + TEST_REAP_CHECK_EVERY * 2;
+    std::thread::sleep(quiet_for);
+    assert!(
+        daemon.is_running(),
+        "a daemon serving HTTP exited after {quiet_for:?} without a client"
+    );
+    assert!(portfile.exists(), "the HTTP front-end went away");
+}

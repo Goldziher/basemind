@@ -82,24 +82,27 @@ impl PendingPaths {
     }
 
     /// Take everything coalesced so far, leaving the set empty. The consumer calls this on every
-    /// loop iteration — including the idle timeout — so a set that filled up during a long rescan is
-    /// processed as soon as that rescan returns.
+    /// loop iteration, so a set that filled up during a long rescan is processed as soon as that
+    /// rescan returns.
     fn take(&self) -> Vec<PathBuf> {
         let mut set = self.0.lock().expect("pending paths poisoned");
         std::mem::take(&mut *set).into_iter().collect()
     }
 }
 
+/// What the consumer loop receives: a debounced batch, or the caller's shutdown. Shutdown rides the
+/// same queue so the loop can block on it instead of polling for the signal.
+enum WatchMsg {
+    Batch(DebounceEventResult),
+    Shutdown,
+}
+
 /// Debouncer callback body: hand the batch to the consumer, or coalesce it when the queue is full.
 /// Never blocks, never discards a path.
-fn dispatch_debounced(
-    tx: &std::sync::mpsc::SyncSender<DebounceEventResult>,
-    pending: &PendingPaths,
-    res: DebounceEventResult,
-) {
-    match tx.try_send(res) {
+fn dispatch_debounced(tx: &std::sync::mpsc::SyncSender<WatchMsg>, pending: &PendingPaths, res: DebounceEventResult) {
+    match tx.try_send(WatchMsg::Batch(res)) {
         Ok(()) => {}
-        Err(std::sync::mpsc::TrySendError::Full(Ok(events))) => {
+        Err(std::sync::mpsc::TrySendError::Full(WatchMsg::Batch(Ok(events)))) => {
             debug!(
                 n = events.len(),
                 "debounce queue full; coalescing batch into the pending set"
@@ -107,13 +110,30 @@ fn dispatch_debounced(
             pending.coalesce(&events);
         }
         // Errors carry no path, so there is nothing to coalesce; log them here instead of queueing.
-        Err(std::sync::mpsc::TrySendError::Full(Err(errors))) => {
+        Err(std::sync::mpsc::TrySendError::Full(WatchMsg::Batch(Err(errors)))) => {
             for e in errors {
                 warn!(error = %e, "watch error (debounce queue full)");
             }
         }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+        Err(
+            std::sync::mpsc::TrySendError::Full(WatchMsg::Shutdown) | std::sync::mpsc::TrySendError::Disconnected(_),
+        ) => {}
     }
+}
+
+/// Forward `shutdown` into the consumer's queue from a thread of its own, which sleeps until the
+/// signal fires or its sender is dropped; either ends the watcher.
+fn forward_shutdown(
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+    tx: std::sync::mpsc::SyncSender<WatchMsg>,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("basemind-watch-stop".to_string())
+        .spawn(move || {
+            let _ = shutdown.blocking_recv();
+            let _ = tx.send(WatchMsg::Shutdown);
+        })
+        .map(drop)
 }
 
 /// Path-emitting primitive at the core of every watcher. Runs the
@@ -148,10 +168,11 @@ pub fn watch_paths_reloading(
     root: &Path,
     config: &Config,
     mut reload: impl FnMut() -> Option<Arc<Config>>,
-    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
     mut on_change: impl FnMut(Vec<PathBuf>, BatchKind),
 ) -> Result<(), WatchError> {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<WatchMsg>(DEBOUNCE_QUEUE_CAPACITY);
+    let stop_tx = tx.clone();
     let pending = Arc::new(PendingPaths::default());
     let pending_producer = Arc::clone(&pending);
     let debounce = Duration::from_millis(config.watch.debounce_ms);
@@ -225,43 +246,34 @@ pub fn watch_paths_reloading(
         debouncer.watch(root, RecursiveMode::Recursive)?;
     }
 
+    forward_shutdown(shutdown, stop_tx)?;
+
     loop {
-        if !matches!(
-            shutdown.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ) {
-            info!("shutdown requested; exiting watcher");
-            return Ok(());
-        }
         // One generation of work: the batch we just received, every other batch already queued, and
         // whatever the callback coalesced aside while the last rescan was running. Rescanning those
         // one at a time is what lets a backlog outlive the burst that produced it, so they are merged
         // into a single union of paths instead.
         let mut queued: Vec<Vec<DebouncedEvent>> = Vec::new();
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(Ok(events)) => queued.push(events),
-            Ok(Err(errors)) => {
-                for e in errors {
-                    warn!(error = %e, "watch error");
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                info!("debouncer channel closed; exiting watcher");
-                return Ok(());
-            }
-        }
-        // Bounded by the queue's own capacity so a sustained event stream can never keep the drain
-        // spinning past the next shutdown check.
-        for _ in 1..DEBOUNCE_QUEUE_CAPACITY {
-            match rx.try_recv() {
-                Ok(Ok(events)) => queued.push(events),
-                Ok(Err(errors)) => {
+        // Blocks: an idle watcher wakes only for a batch or the shutdown, never on a timer.
+        let Ok(first) = rx.recv() else {
+            info!("watch channel closed; exiting watcher");
+            return Ok(());
+        };
+        // Bounded by the queue's own capacity so a sustained event stream cannot keep the drain
+        // spinning while a shutdown waits behind it.
+        let rest = (1..DEBOUNCE_QUEUE_CAPACITY).map_while(|_| rx.try_recv().ok());
+        for message in std::iter::once(first).chain(rest) {
+            match message {
+                WatchMsg::Batch(Ok(events)) => queued.push(events),
+                WatchMsg::Batch(Err(errors)) => {
                     for e in errors {
                         warn!(error = %e, "watch error");
                     }
                 }
-                Err(_) => break,
+                WatchMsg::Shutdown => {
+                    info!("shutdown requested; exiting watcher");
+                    return Ok(());
+                }
             }
         }
 

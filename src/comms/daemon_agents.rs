@@ -25,6 +25,18 @@ fn anonymous_link() -> CommsError {
     }
 }
 
+/// How long a `Hello` from a registered root leaves its registry rows as they are. Every prompt
+/// hook says hello, and a refresh enumerates the repository's worktrees and branches and rewrites
+/// the machine-wide snapshot.
+const REGISTRY_REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// The resolved path a `Hello`'s root registers as: none when it does not resolve or resolves to
+/// a filesystem root, which is no workspace.
+fn registrable(root: &std::path::Path) -> Option<PathBuf> {
+    let resolved = root.canonicalize().ok()?;
+    resolved.parent().is_some().then_some(resolved)
+}
+
 fn refused(error: CommsError) -> CommsResponse {
     CommsResponse::AgentRefused(error)
 }
@@ -63,7 +75,15 @@ impl Broker {
                 Err(join) => session.repo_error = Some(join.to_string()),
             }
             let target = root.clone();
-            if let Err(error) = self.registry_blocking(move |reg| reg.register_workspace(&target)).await {
+            let registered = self
+                .registry_blocking(move |reg| match registrable(&target) {
+                    Some(resolved) => reg
+                        .register_workspace_unless_fresh(&resolved, REGISTRY_REFRESH_AFTER)
+                        .map(drop),
+                    None => Ok(()),
+                })
+                .await;
+            if let Err(error) = registered {
                 tracing::warn!(%error, root = %root.display(), "comms: registry auto-register failed");
             }
         }

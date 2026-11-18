@@ -313,6 +313,20 @@ fn spawn_ready_timeout_covers_a_cold_full_feature_start() {
     );
 }
 
+/// A successor spawned while its predecessor drains waits for the lock through the predecessor's
+/// whole teardown, and the client that spawned it waits for the successor past that.
+#[test]
+fn the_waits_on_a_draining_daemon_cover_its_teardown() {
+    use crate::comms::daemon::{HOLDER_DRAIN_WAIT, TEARDOWN_MAX};
+
+    assert!(HOLDER_DRAIN_WAIT > TEARDOWN_MAX);
+    assert!(SPAWN_READY_TIMEOUT > HOLDER_DRAIN_WAIT);
+    assert!(
+        TEARDOWN_MAX <= Duration::from_secs(30),
+        "docs/systemd/basemind-comms.service stops the unit after TimeoutStopSec=30"
+    );
+}
+
 /// A socket path past `sun_path` can never be bound, so the caller must be told that — not
 /// left to wait out the readiness timeout and report a hang. Asserting the error is NOT
 /// `SpawnTimeout` is the point: that is the misleading message this replaces.
@@ -364,4 +378,23 @@ fn the_guard_accepts_the_longest_bindable_path_and_rejects_one_byte_more() {
         ),
         "one byte past the limit must be rejected"
     );
+}
+
+/// `BASEMIND_COMMS_DIR` names a directory the user chose; its mode is theirs. Only the generation
+/// directory inside it, which basemind owns, is made owner-only.
+#[cfg(unix)]
+#[test]
+fn an_overriding_comms_dir_keeps_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().join("shared");
+    std::fs::create_dir(&base).expect("mkdir");
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let generation = super::create_generation_dir(&base, true).expect("create the generation dir");
+
+    let mode = |path: &std::path::Path| std::fs::metadata(path).expect("stat").permissions().mode() & 0o777;
+    assert_eq!(mode(&base), 0o755, "the user's directory was chmodded");
+    assert_eq!(mode(&generation), 0o700);
 }
