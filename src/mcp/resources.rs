@@ -194,8 +194,13 @@ impl BasemindServer {
                 let params: super::types_tools::MemorySearchToolParams = from_args(json!({ "key": key }))?;
                 let result =
                     super::adapter::run(&state.shared, params, crate::engine::Workspace::memory_search).await?;
+                let missing = result
+                    .structured_content
+                    .as_ref()
+                    .and_then(|body| body.get("found"))
+                    .is_some_and(|found| found == &serde_json::Value::Bool(false));
                 let text = tool_text(result, uri)?;
-                if text.trim() == "null" {
+                if missing {
                     return Err(McpError::resource_not_found(
                         format!("no memory entry {key:?}"),
                         Some(json!({ "uri": uri })),

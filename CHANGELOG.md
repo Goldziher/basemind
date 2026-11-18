@@ -475,6 +475,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `memory_search {key}` for a key no note has answers `{"key":…,"found":false}`. It answered
+  `structuredContent: null`, which MCP types as an object, so a host that validates results
+  rejected the routine "is there a note?" call.
 - The daemon's memory no longer climbs under steady memory, document and code-search writes: every
   LanceDB store of a process caches through one session of 64 MiB (index) and 32 MiB (metadata)
   instead of Lance's default 6 GiB and 1 GiB per store, where each commit's manifest and file

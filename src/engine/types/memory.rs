@@ -57,15 +57,26 @@ pub struct MemorySearchToolParams {
     pub cursor: Option<Cursor>,
 }
 
-/// What `memory_search` answers, by the shape of its arguments: hits by meaning, one note (or
-/// `null`), or a listing.
+/// What `memory_search` answers, by the shape of its arguments: hits by meaning, one note, the
+/// absence of the note asked for, or a listing. Every variant is an object: MCP types
+/// `structuredContent` as one, so a missing note is never `null`.
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum MemorySearchAnswer {
     Search(MemorySearchResponse),
-    Get(Option<MemoryEntry>),
+    Get(MemoryEntry),
+    Missing(MemoryMissing),
     List(MemoryListResponse),
+}
+
+/// `memory_search {key}` for a key no note has.
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryMissing {
+    pub key: String,
+    /// Always `false`: no note has this key in the tier read.
+    pub found: bool,
 }
 
 #[cfg(feature = "memory")]

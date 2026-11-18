@@ -890,9 +890,29 @@ async fn mcp_server_exercises_representative_tools() {
             json!({ "key": "smoke_key", "value": "hello" }),
         ))
         .await;
-    let _ = service
+    let read = service
         .call_tool(call_params("memory_search", json!({ "key": "smoke_key" })))
-        .await;
+        .await
+        .expect("memory_search key");
+    let missing = service
+        .call_tool(call_params("memory_search", json!({ "key": "decision/nope" })))
+        .await
+        .expect("memory_search missing key");
+    #[cfg(feature = "memory")]
+    {
+        assert_eq!(
+            read.structured_content.as_ref().map(|note| &note["value"]),
+            Some(&json!("hello"))
+        );
+        assert_eq!(
+            missing.structured_content,
+            Some(json!({ "key": "decision/nope", "found": false })),
+            "a missing note is an object, never `null`: MCP types structuredContent as an object"
+        );
+        assert_structured_matches_text(&missing);
+    }
+    #[cfg(not(feature = "memory"))]
+    let _ = (read, missing);
     let listing = service
         .call_tool(call_params("memory_search", json!({})))
         .await
@@ -1945,6 +1965,65 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
     } else {
         skip_without_embedder(&format!("the vector lane did not run: {}", body["lanes_unavailable"]));
     }
+    let _ = service.cancel().await;
+}
+
+/// MCP types `structuredContent` as an object. A host that validates the result schema rejects any
+/// other value, so every answer of every verb tool must be one, including "nothing found" answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_answer_carries_an_object_as_structured_content() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+    let _ = service
+        .call_tool(call_params("memory_save", json!({ "key": "k/one", "value": "v" })))
+        .await;
+    let calls = [
+        ("code_outline", json!({ "path": "a.rs" })),
+        ("code_symbols", json!({ "name": "alpha" })),
+        ("code_symbols", json!({ "name": "no_such_symbol_anywhere" })),
+        ("code_read", json!({ "path": "a.rs", "symbol": "alpha" })),
+        ("code_grep", json!({ "pattern": "alpha" })),
+        ("code_grep", json!({ "pattern": "no such text anywhere" })),
+        ("code_search", json!({ "query": "alpha" })),
+        ("code_refs", json!({ "name": "alpha" })),
+        (
+            "code_refs",
+            json!({ "name": "Drawable", "relation": "implementations" }),
+        ),
+        ("find_files", json!({ "query": "a.rs" })),
+        ("docs_search", json!({ "query": "alpha" })),
+        ("git_log", json!({})),
+        ("git_blame", json!({ "path": "a.rs" })),
+        ("git_diff", json!({})),
+        ("memory_search", json!({ "key": "k/one" })),
+        ("memory_search", json!({ "key": "k/none" })),
+        ("memory_search", json!({ "prefix": "k/" })),
+        ("memory_search", json!({ "query": "v" })),
+        ("index_status", json!({})),
+        ("index_rescan", json!({ "paths": ["a.rs"] })),
+    ];
+    let mut answered = 0;
+    for (tool, args) in calls {
+        let result = service
+            .call_tool(call_params(tool, args.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("{tool} {args}: {error}"));
+        if result.is_error == Some(true) {
+            continue;
+        }
+        answered += 1;
+        assert!(
+            result.structured_content.as_ref().is_some_and(Value::is_object),
+            "{tool} {args}: structuredContent must be an object: {:?}",
+            result.structured_content
+        );
+    }
+    assert!(
+        answered >= 14,
+        "the sweep must reach the tools every build serves: {answered}"
+    );
     let _ = service.cancel().await;
 }
 

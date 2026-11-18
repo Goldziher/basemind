@@ -30,7 +30,7 @@ impl Workspace {
 mod enabled {
     use super::*;
     use crate::engine::types::memory::{
-        MemoryDeleteResponse, MemoryGetParams, MemoryListParams, MemoryPutParams, MemoryPutResponse,
+        MemoryDeleteResponse, MemoryGetParams, MemoryListParams, MemoryMissing, MemoryPutParams, MemoryPutResponse,
         MemorySearchAnswer, MemorySearchParams,
     };
 
@@ -77,8 +77,13 @@ mod enabled {
                             "a `key` read returns one note and takes no `tag`, `limit` or `cursor`",
                         ));
                     }
-                    self.memory_get(MemoryGetParams { key, visibility })
-                        .map(MemorySearchAnswer::Get)
+                    let missing = MemoryMissing {
+                        key: key.clone(),
+                        found: false,
+                    };
+                    Ok(self
+                        .memory_get(MemoryGetParams { key, visibility })?
+                        .map_or(MemorySearchAnswer::Missing(missing), MemorySearchAnswer::Get))
                 }
                 (None, None, prefix) => self
                     .memory_list(MemoryListParams {
