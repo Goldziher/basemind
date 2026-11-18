@@ -1264,10 +1264,35 @@ fn hosted_payload(response: &Value) -> Value {
     serde_json::from_str(text).unwrap_or_else(|error| panic!("hosted payload is not JSON ({error}): {text}"))
 }
 
-/// Page through a hosted `code_refs` query via `next_cursor`, returning the reported total and every hit.
-async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value) -> (Value, Vec<Value>) {
+/// Page through a writer-session `--json` CLI query via `--cursor`, returning the first page's total
+/// and each page's hits. Run it before a daemon is up: with one up the CLI forwards to it.
+fn writer_paginated(repo: &Path, comms_dir: &Path, args: &[&str]) -> (Value, Vec<Vec<Value>>) {
+    let mut pages: Vec<Vec<Value>> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut total = Value::Null;
+    for page in 0..200usize {
+        let mut page_args: Vec<&str> = args.to_vec();
+        if let Some(cursor) = &cursor {
+            page_args.extend(["--cursor", cursor.as_str()]);
+        }
+        let payload = writer_truth(repo, comms_dir, &page_args);
+        if page == 0 {
+            total = payload["total"].clone();
+        }
+        pages.push(hit_rows(&payload));
+        cursor = payload["next_cursor"].as_str().map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    (total, pages)
+}
+
+/// Page through a hosted `code_refs` query via `next_cursor`, returning the reported total and each
+/// page's hits.
+async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value) -> (Value, Vec<Vec<Value>>) {
     const HOSTED_CALL_BOUND: Duration = Duration::from_secs(30);
-    let mut hits: Vec<Value> = Vec::new();
+    let mut pages: Vec<Vec<Value>> = Vec::new();
     let mut cursor: Option<String> = None;
     let mut total = Value::Null;
     for id in 1..200usize {
@@ -1295,20 +1320,22 @@ async fn hosted_paginated(addr: &str, token: &str, repo: &Path, tool_args: Value
             payload.get("notice").is_none() || payload["notice"].is_null(),
             "a complete answer carries no truncation notice: {payload}"
         );
-        hits.extend(hit_rows(&payload));
+        pages.push(hit_rows(&payload));
         cursor = payload["next_cursor"].as_str().map(str::to_string);
         if cursor.is_none() {
             break;
         }
     }
-    (total, hits)
+    (total, pages)
 }
 
 /// The bug this pins: a daemon-backed session used to answer `references` / `implementations` from
 /// an in-RAM projection capped at `max_map_cache_mb`, so on a big corpus the result was a silently
 /// truncated lower bound. Both daemon-backed shapes — a CLI call forwarded to the daemon and a
 /// daemon-hosted connection — must now return exactly what a writer session returns, cursor
-/// pagination included.
+/// pagination included. A name scan runs in content-key order and only each page is sorted by path
+/// (ADR-0036 decision 6), so a paginated answer is held page by page to the writer session paged
+/// with the same arguments, never to the concatenation of one big page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn daemon_backed_references_and_implementations_equal_the_writer_session() {
     const FILES: usize = 150;
@@ -1386,6 +1413,35 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         "ground truth sees every Tr1 impl"
     );
 
+    // The writer session paged exactly as the hosted calls below page: taken before the daemon is
+    // up, since with one up the CLI forwards to it.
+    let refs_args = ["code", "references", "get_arg", "--limit", "40"];
+    let (truth_refs_total, truth_refs_pages) = writer_paginated(&repo, &comms_dir, &refs_args);
+    let impls_args = ["code", "implementations", "Tr1", "--limit", "9"];
+    let (truth_impls_total, truth_impls_pages) = writer_paginated(&repo, &comms_dir, &impls_args);
+    assert_eq!(
+        truth_refs_total, truth_refs["total"],
+        "a paged writer session reports the whole total"
+    );
+    assert_eq!(
+        truth_impls_total, truth_impls["total"],
+        "a paged writer session reports the whole total"
+    );
+    assert!(
+        truth_refs_pages.len() > 1 && truth_impls_pages.len() > 1,
+        "the fixture spans several pages: {} / {}",
+        truth_refs_pages.len(),
+        truth_impls_pages.len()
+    );
+    for (pages, truth) in [(&truth_refs_pages, &truth_refs), (&truth_impls_pages, &truth_impls)] {
+        let mut paged: Vec<Value> = pages.iter().flatten().cloned().collect();
+        let mut whole = hit_rows(truth);
+        let key = |row: &Value| (row["path"].to_string(), row["line"].as_u64(), row["column"].as_u64());
+        paged.sort_by_key(key);
+        whole.sort_by_key(key);
+        assert_eq!(paged, whole, "the writer's pages together hold its single-page answer");
+    }
+
     let daemon = Daemon::start(&comms_dir);
 
     // A CLI next to the daemon: the whole call is forwarded over a relay session.
@@ -1415,17 +1471,16 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         .expect("daemon-hosted MCP transport ready");
     let token =
         http_frontend::published_token(&generation_dir(&comms_dir)).expect("the daemon publishes its bearer token");
-    let (total, hits) = hosted_paginated(&addr, &token, &repo, json!({"name": "get_arg", "limit": 40})).await;
+    let (total, pages) = hosted_paginated(&addr, &token, &repo, json!({"name": "get_arg", "limit": 40})).await;
     assert_eq!(
         total, truth_refs["total"],
         "hosted references total equals the writer's"
     );
     assert_eq!(
-        hits,
-        hit_rows(&truth_refs),
-        "hosted references, paginated, equal the writer's hits in order"
+        pages, truth_refs_pages,
+        "hosted references, paginated, equal the writer's pages, each in order"
     );
-    let (total, hits) = hosted_paginated(
+    let (total, pages) = hosted_paginated(
         &addr,
         &token,
         &repo,
@@ -1437,9 +1492,8 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         "hosted implementations total equals the writer's"
     );
     assert_eq!(
-        hits,
-        hit_rows(&truth_impls),
-        "hosted implementations, paginated, equal the writer's hits in order"
+        pages, truth_impls_pages,
+        "hosted implementations, paginated, equal the writer's pages, each in order"
     );
 
     daemon.stop();
