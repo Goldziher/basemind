@@ -240,15 +240,19 @@ pub struct WorkspaceMarker {
 
 /// Idempotently record `root` in `basemind_dir/workspace.json`.
 ///
-/// A no-op when the marker already names the same canonical root, so the frequent read-only opens
-/// don't rewrite it on every MCP call. Best-effort: an I/O failure (or a root path that is not valid
-/// UTF-8, which JSON cannot encode) leaves the dir unverifiable, which the reaper treats as
-/// "keep" — never as "delete". Errors are swallowed deliberately, mirroring the `.lock.meta` writer.
+/// A no-op when the marker already names the same canonical root and the group that root resolves
+/// to now, so the frequent read-only opens don't rewrite it on every MCP call. The group is
+/// compared, not only recorded once: it moves when the main clone moves or git discovery starts or
+/// stops failing, and the group reaper deletes any group no marker names. Best-effort: an I/O
+/// failure (or a root path that is not valid UTF-8, which JSON cannot encode) leaves the dir
+/// unverifiable, which the reaper treats as "keep" — never as "delete". Errors are swallowed
+/// deliberately, mirroring the `.lock.meta` writer.
 pub fn ensure_workspace_marker(basemind_dir: &Path, root: &Path) {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let group = repo_group_key(&canonical);
     if let Some(existing) = read_workspace_marker(basemind_dir)
         && existing.root == canonical
-        && existing.group.is_some()
+        && existing.group.as_deref() == Some(group.as_str())
     {
         return;
     }
@@ -256,11 +260,10 @@ pub fn ensure_workspace_marker(basemind_dir: &Path, root: &Path) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let group = Some(repo_group_key(&canonical));
     let marker = WorkspaceMarker {
         root: canonical,
         updated_unix,
-        group,
+        group: Some(group),
     };
     let Ok(bytes) = serde_json::to_vec(&marker) else {
         return;
@@ -759,6 +762,38 @@ mod daemon_isolation_tests {
             fresh.exists(),
             "a fresh marked cache belongs to a live process and must stay"
         );
+    }
+}
+
+#[cfg(test)]
+mod workspace_marker_tests {
+    use super::*;
+
+    /// A marker whose recorded group is no longer the root's group (the main clone moved, or git
+    /// discovery failed when the marker was written) is rewritten: the group reaper trusts it, and a
+    /// stale one gets the group in use deleted.
+    #[test]
+    fn a_marker_naming_another_group_is_rewritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).expect("mk root");
+        let canonical = root.canonicalize().expect("canonical root");
+        let stale = WorkspaceMarker {
+            root: canonical.clone(),
+            updated_unix: 0,
+            group: Some("old-group".to_string()),
+        };
+        std::fs::write(
+            dir.path().join(WORKSPACE_MARKER_FILE),
+            serde_json::to_vec(&stale).expect("encode marker"),
+        )
+        .expect("write marker");
+
+        ensure_workspace_marker(dir.path(), &root);
+
+        let marker = read_workspace_marker(dir.path()).expect("marker");
+        assert_eq!(marker.root, canonical);
+        assert_eq!(marker.group, Some(repo_group_key(&canonical)));
     }
 }
 
