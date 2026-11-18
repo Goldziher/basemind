@@ -22,6 +22,7 @@ pub(crate) mod memory;
 pub(crate) mod ops;
 pub(crate) mod outline_cache;
 pub(crate) mod pick;
+pub(crate) mod ranges;
 pub(crate) mod ranked;
 pub(crate) mod ranked_cache;
 pub(crate) mod refs;
