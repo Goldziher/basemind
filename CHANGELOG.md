@@ -334,6 +334,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The `store_error` exception of `basemind comms stop` and the takeover, and the `last-fatal.json`
+  record `basemind comms doctor` reported. No daemon of this generation answers `store_error` or
+  writes the record: a broken agent store shows as `agent_store` in `Status`. `--clear-fatal` now
+  acknowledges only the records of scans that died without unwinding.
 - The daemon socket's forwarded `memory`, `resolved_refs`, `index_read` and `code_search_lanes`
   requests. No process sends them any more: a CLI next to the daemon forwards its whole call, and a
   daemon-hosted session reads through the daemon's pool in process. The comms protocol version stays
@@ -882,6 +886,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `symbol_history` with a structural `hash_mode` fingerprints a symbol declared inside a macro body on
   its own instead of hashing the whole macro body.
 - A parse that hit its timeout no longer leaves the pooled parser to resume it on the next file.
+- The git-history index runs on fixed memory, journal and open-file budgets (8 MiB memtables, a
+  16 MiB cache, a 64 MiB journal, 64 cached files) instead of fjall's defaults of 64 MiB memtables,
+  a 512 MiB journal and up to 900 cached files per repository the daemon holds. The index rebuilds
+  once.
+- A hosted workspace's idle clocks start when its last session ends, not when it connected, so a
+  long session's read stack is no longer shed right after it closes.
+- A forwarded CLI command no longer counts as a second `serve` session of the agent's identity, which
+  made agent replies warn of a shared identity.
+- A comms `Hello` refreshes the machine registry's rows for its root at most once every five minutes
+  instead of enumerating the repository's worktrees and branches and rewriting the registry on every
+  prompt hook. A root that resolves to the filesystem root is no longer registered.
+- A daemon serving the HTTP front-end is no longer stopped for idleness. It disappeared ten minutes
+  after its last request, and no HTTP client could start another.
+- `basemind comms doctor --probe` reports a daemon whose agent store is not open as degraded.
+- `BASEMIND_COMMS_DIR` naming an existing directory no longer has its mode changed to 0700; only the
+  generation directory inside it is made owner-only.
+- The daemon's exit path (shedding hosted stacks, the agent store's last flush) is bounded, and the
+  waits on a draining predecessor cover the whole teardown.
+- A hosted workspace's file watcher no longer wakes five times a second while nothing changes.
 
 ## [0.33.0] - 2026-11-14
 
