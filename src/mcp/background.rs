@@ -155,6 +155,55 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     });
 }
 
+/// Boot-time catch-up of a daemon-hosted stack built over a populated index
+/// ([`BootScan::CatchUp`](crate::engine::workspace::BootScan::CatchUp)): the edits made while no
+/// watcher ran (the stack shed, the daemon gone, a `git checkout` in between) are indexed without
+/// anyone calling `index_rescan`.
+///
+/// The map warm (`warm_first`) runs first so the pass refreshes a full map, then a whole-tree pass
+/// through the pool, which judges every file by its stat and hash as `index_rescan {}` does and
+/// coalesces with a client's rescan of the same tree. The workspace reports `rescanning` from the
+/// moment the stack is served until that pass has published its file map; a pass that changed
+/// anything is followed, as the initial scan is, by a detached embedding pass. The host's work pin
+/// keeps the daemon up meanwhile; its drain token stops the pass.
+pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
+    let writer = Writer::of(&state);
+    let rescanning = writer.ws.mark_rescan();
+    let pin = writer.ws.work_pin.as_ref().map(|pin| pin());
+    spawn_logged("catch-up scan task panicked", move || {
+        if warm_first {
+            writer.ws.warm();
+        }
+        let started = std::time::Instant::now();
+        let outcome = writer.scan(None, EmbedMode::Deferred);
+        drop(rescanning);
+        let changed = match outcome {
+            Ok((scanned, updated, removed)) => {
+                tracing::info!(
+                    scanned,
+                    updated,
+                    removed,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "catch-up scan complete"
+                );
+                updated + removed > 0
+            }
+            Err(error) => {
+                tracing::warn!(%error, "catch-up scan failed");
+                false
+            }
+        };
+        if changed {
+            spawn_logged("catch-up embedding pass task panicked", move || {
+                let _pin = pin;
+                if let Err(error) = writer.scan(None, EmbedMode::Inline) {
+                    tracing::warn!(%error, "catch-up embedding pass failed");
+                }
+            });
+        }
+    });
+}
+
 /// Boot-time in-RAM code-map preload, spawned once from `BasemindServer::new_with_options` when the
 /// index is already populated (no initial scan needed) on the background `serve` path.
 ///
@@ -248,10 +297,9 @@ fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync:
             let _runtime = handle.enter();
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
             let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
-                use std::sync::atomic::Ordering;
-                writer.ws.rescan_active.store(true, Ordering::Relaxed);
+                let rescanning = writer.ws.mark_rescan();
                 let outcome = writer.scan(Some(paths), EmbedMode::Inline);
-                writer.ws.rescan_active.store(false, Ordering::Relaxed);
+                drop(rescanning);
                 match outcome {
                     Ok((scanned, updated, removed)) => {
                         tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")

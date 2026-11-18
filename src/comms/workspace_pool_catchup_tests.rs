@@ -1,0 +1,106 @@
+//! The catch-up pass a hosted read stack runs when it is built over a populated index: edits made
+//! while no watcher ran (the stack shed, the daemon gone, a `git checkout` in between) are indexed
+//! without anyone calling `index_rescan`. Included from `workspace_pool_tests.rs`, whose fixtures
+//! `super` resolves to.
+
+use std::sync::atomic::Ordering;
+
+use super::*;
+
+/// `code_symbols {name}` against `shared`, as a client of the hosted stack reads it.
+async fn symbols(shared: &crate::mcp::ServedWorkspace, name: &str) -> serde_json::Value {
+    let server = crate::mcp::BasemindServer::from_shared(
+        shared.clone(),
+        "catch-up-tester".to_string(),
+        std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
+        None,
+    );
+    let result = server
+        .code_symbols_call(crate::mcp::params::CodeSymbolsParams {
+            name: name.to_string(),
+            kind: None,
+            fuzzy: None,
+            limit: None,
+            cursor: None,
+            max_tokens: None,
+        })
+        .await
+        .expect("code_symbols answers");
+    result.structured_content.expect("structured content")
+}
+
+/// A stack the warm cap or idle clock shed runs no watcher until it is rebuilt. A file added in
+/// between is found by the rebuilt stack without a rescan call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuilt_read_stack_catches_up_on_a_file_added_while_it_was_shed() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+    drop(hosted_stack(&pool, workspace.path()).await);
+    assert_eq!(pool.evict_idle_read_stacks(Duration::ZERO), 1, "the stack is shed");
+
+    std::fs::write(
+        workspace.path().join("gamma.rs"),
+        "pub fn gamma_added_while_shed() -> u32 { 3 }\n",
+    )
+    .expect("write gamma");
+    let rebuilt = hosted_stack(&pool, workspace.path()).await;
+    let found = symbols(&rebuilt, "gamma_added_while_shed").await;
+    assert_eq!(found["total"], 1, "{found}");
+}
+
+/// A workspace the daemon dropped altogether (the idle sweep, or a daemon exit) reopens over its
+/// committed index, which a file added meanwhile is missing from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reopened_workspace_catches_up_on_a_file_added_while_it_was_closed() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+    drop(hosted_stack(&pool, workspace.path()).await);
+    assert_eq!(pool.evict_idle(Duration::ZERO), 1, "the workspace is closed");
+
+    std::fs::remove_file(workspace.path().join("beta.rs")).expect("remove beta");
+    std::fs::write(
+        workspace.path().join("gamma.rs"),
+        "pub fn gamma_added_while_closed() -> u32 { 3 }\n",
+    )
+    .expect("write gamma");
+    let reopened = hosted_stack(&pool, workspace.path()).await;
+    assert_eq!(symbols(&reopened, "gamma_added_while_closed").await["total"], 1);
+    assert_eq!(
+        symbols(&reopened, "beta").await["total"],
+        0,
+        "the deleted file is pruned"
+    );
+}
+
+/// The catch-up is the stat-and-hash pass of `index_rescan {}`: over a tree nothing changed in, it
+/// re-extracts no file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_catch_up_over_an_unchanged_tree_extracts_nothing() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+    let entry = pool.get_or_open(workspace.path()).expect("hot entry");
+    let before = entry.full_scan_gen.load(Ordering::Acquire);
+
+    let _shared = hosted_stack(&pool, workspace.path()).await;
+    assert_eq!(
+        entry.full_scan_gen.load(Ordering::Acquire),
+        before + 1,
+        "building the stack ran one whole-tree pass"
+    );
+    let last = *entry.last_full.lock().unwrap_or_else(PoisonError::into_inner);
+    let (_, _, stats) = last.expect("the pass recorded its stats");
+    assert_eq!(
+        (stats.scanned, stats.updated, stats.removed, stats.skipped_unchanged),
+        (2, 0, 0, 2),
+        "every file was judged unchanged and none re-extracted"
+    );
+}

@@ -9,7 +9,7 @@
 //! per-file size budget.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use arc_swap::ArcSwap;
@@ -129,10 +129,12 @@ pub(crate) struct Workspace {
     /// the cache wait on it (bounded by [`CACHE_WARM_WAIT_CAP`]) so a query issued during the warmup
     /// window returns COMPLETE data rather than an empty snapshot.
     warm_gate: WarmGate,
-    /// True while a watcher-driven incremental rescan (`Workspace::rescan` from the active filesystem
-    /// watcher) is in flight. Surfaced as the `Rescanning` lifecycle so a client sees "results may be
-    /// a moment stale" rather than treating a mid-rescan snapshot as final.
-    pub(crate) rescan_active: AtomicBool,
+    /// Background rescans in flight: a watcher batch, or the catch-up pass of a stack opened over a
+    /// populated index ([`BootScan::CatchUp`]). Non-zero surfaces as the `Rescanning` lifecycle so a
+    /// client sees "results may be a moment stale" rather than treating a mid-rescan snapshot as
+    /// final. A count, not a flag: a watcher batch that ends must not clear a catch-up still running.
+    /// Held through [`RescanMark`].
+    rescans_active: AtomicUsize,
     /// True when the in-RAM code map is built ON DEMAND — at the first
     /// [`await_cache_ready`](crate::mcp::ServerState::await_cache_ready) barrier — instead of at construction.
     ///
@@ -200,24 +202,65 @@ pub(crate) struct OpenOptions {
     pub(crate) memory_owner: fn(&std::path::Path) -> String,
 }
 
-/// Boot decisions derived purely from the opened store + [`OpenOptions`]: whether an initial scan
-/// is needed (an empty index, or one whose last full scan was cancelled / aborted before covering the
-/// workspace or finishing its resolve pass: issues #79, #84), and whether the in-RAM cache preload is deferred to the background.
+/// The scan a workspace owes when it is opened, per [`boot_plan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BootScan {
+    /// None: the host keeps the index fresh from here (a watcher), or never writes it.
+    None,
+    /// A from-scratch scan: the index is empty, or its last full scan was cancelled or aborted
+    /// before covering the workspace or finishing its resolve pass (issues #79, #84).
+    Initial,
+    /// The index is populated, but nothing watched the tree since it was written: a daemon-hosted
+    /// stack is built after the daemon started, after its stack was shed, or after the daemon exited,
+    /// and a `git checkout` or an edit in between is in no index. A whole-tree incremental pass (the
+    /// stat-and-hash compare of `index_rescan {}`) brings it up to date.
+    CatchUp,
+}
+
+/// Boot decisions derived purely from the opened store + [`OpenOptions`]: the scan the workspace
+/// owes ([`BootScan`]), and whether the in-RAM cache preload is deferred to the background.
+///
+/// A catch-up is owed only by a daemon-hosted stack (`forwards_writes`): an in-process server is
+/// the test-support in-memory one or a one-shot CLI call, since `basemind serve` relays to the
+/// daemon and has no in-process path.
 ///
 /// Factored out so [`Workspace::new`] (which sets the `cache_warming` atomic + eager/deferred
 /// cache) and `BasemindServer::new_with_options` (which spawns the matching background tasks) agree
 /// by construction rather than by duplicated expressions.
-pub(crate) fn boot_plan(store: &Store, options: &OpenOptions) -> (bool, bool) {
+pub(crate) fn boot_plan(store: &Store, options: &OpenOptions) -> BootPlan {
     let view_is_working = store.view == crate::store::VIEW_WORKING;
     let fjall_index_empty = store
         .index_handle()
         .map(|db| db.view().symbols_index_is_empty())
         .unwrap_or(false);
-    let needs_initial_scan = (options.forwards_writes || !options.read_only)
-        && view_is_working
-        && (store.index.files.is_empty() || fjall_index_empty || last_scan_degraded(store));
-    let defer_warm = options.background && !needs_initial_scan;
-    (needs_initial_scan, defer_warm)
+    let writes = (options.forwards_writes || !options.read_only) && view_is_working;
+    let scan = if writes && (store.index.files.is_empty() || fjall_index_empty || last_scan_degraded(store)) {
+        BootScan::Initial
+    } else if writes && options.forwards_writes && options.background {
+        BootScan::CatchUp
+    } else {
+        BootScan::None
+    };
+    BootPlan {
+        scan,
+        defer_warm: options.background && scan != BootScan::Initial,
+    }
+}
+
+/// What [`boot_plan`] decided.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BootPlan {
+    pub(crate) scan: BootScan,
+    pub(crate) defer_warm: bool,
+}
+
+/// One background rescan in flight on a [`Workspace`], counted in its lifecycle until dropped.
+pub(crate) struct RescanMark(Arc<Workspace>);
+
+impl Drop for RescanMark {
+    fn drop(&mut self) {
+        self.0.rescans_active.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Workspace {
@@ -242,7 +285,7 @@ impl Workspace {
             .map(|r| crate::git::scope_key(r))
             .unwrap_or_else(|| format!("path:{}", root.display()));
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
-        let (_needs_initial_scan, defer_warm) = boot_plan(&store, &options);
+        let defer_warm = boot_plan(&store, &options).defer_warm;
         let cache = if defer_warm || options.lazy_cache {
             Arc::new(MapCache::empty())
         } else {
@@ -295,7 +338,7 @@ impl Workspace {
             cache_warming: AtomicBool::new(defer_warm),
             cache_warm_ms: AtomicU64::new(0),
             warm_gate: WarmGate::default(),
-            rescan_active: AtomicBool::new(false),
+            rescans_active: AtomicUsize::new(0),
             lazy_cache: options.lazy_cache,
             lazy_cache_built: std::sync::OnceLock::new(),
             read_only: options.read_only,
@@ -402,12 +445,18 @@ impl Workspace {
         self.lang_rules().detect(std::path::Path::new(path.as_ref())).lang()
     }
 
+    /// Count a background rescan in the lifecycle until the returned mark is dropped.
+    pub(crate) fn mark_rescan(self: &Arc<Self>) -> RescanMark {
+        self.rescans_active.fetch_add(1, Ordering::Relaxed);
+        RescanMark(Arc::clone(self))
+    }
+
     /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
     pub(crate) fn lifecycle(&self) -> Lifecycle {
         Lifecycle::from_flags(
             self.initial_scan_active.load(Ordering::Relaxed),
             self.cache_warming.load(Ordering::Relaxed),
-            self.rescan_active.load(Ordering::Relaxed),
+            self.rescans_active.load(Ordering::Relaxed) > 0,
         )
     }
 

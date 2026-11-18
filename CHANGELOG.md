@@ -477,6 +477,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A daemon-hosted workspace opened over a populated index catches up on the edits made while no
+  watcher ran (the daemon's idle exit, a shed read stack, a `git checkout` or `git pull` in
+  between): building the read stack runs the whole-tree stat-and-hash pass of `index_rescan {}` in
+  the background, reporting `rescanning` until it commits. Before, those edits were served stale,
+  unflagged, until each file changed again or someone ran `index_rescan`.
 - `memory_search {key}` for a key no note has answers `{"key":…,"found":false}`. It answered
   `structuredContent: null`, which MCP types as an object, so a host that validates results
   rejected the routine "is there a note?" call.

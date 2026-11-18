@@ -74,6 +74,7 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::task_manager::TaskManager;
 
+use crate::engine::workspace::BootScan;
 use crate::store::Store;
 
 pub(crate) use crate::engine::MapCache;
@@ -127,7 +128,7 @@ impl HostedReadStack {
             forwards_writes: true,
             ..options.into()
         };
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &open);
+        let plan = crate::engine::workspace::boot_plan(&store, &open);
         let agent_id = identity::resolve_agent_id(&store.root);
         let telemetry_dir = store.basemind_dir.clone();
         let (git_history, work_pin) =
@@ -143,12 +144,13 @@ impl HostedReadStack {
         let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
         history_sync::request(&warden.shared);
-        if needs_initial_scan {
-            background::spawn_initial_scan(Arc::clone(&warden));
-        } else if defer_warm {
-            background::spawn_cache_warm(Arc::clone(&warden));
+        match plan.scan {
+            BootScan::Initial => background::spawn_initial_scan(Arc::clone(&warden)),
+            BootScan::CatchUp => background::spawn_catch_up(Arc::clone(&warden), plan.defer_warm),
+            BootScan::None if plan.defer_warm => background::spawn_cache_warm(Arc::clone(&warden)),
+            BootScan::None => {}
         }
-        tracing::info!(root = %root.display(), needs_initial_scan, "daemon hosting read stack for workspace");
+        tracing::info!(root = %root.display(), scan = ?plan.scan, "daemon hosting read stack for workspace");
         Self {
             _watcher: watcher,
             shared,
@@ -327,7 +329,7 @@ impl BasemindServer {
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
         let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
+        let plan = crate::engine::workspace::boot_plan(&store, &options.into());
         let basemind_dir = store.basemind_dir.clone();
         let shared = Arc::new(Workspace::new(
             store,
@@ -355,10 +357,10 @@ impl BasemindServer {
             };
             watcher = Some(Arc::new(watcher_guard));
             history_sync::request(&state.shared);
-            if needs_initial_scan {
+            if plan.scan == BootScan::Initial {
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
-                if defer_warm {
+                if plan.defer_warm {
                     background::spawn_cache_warm(Arc::clone(&state));
                 }
                 background::spawn_background_gc(Arc::clone(&state.shared));
