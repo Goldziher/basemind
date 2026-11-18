@@ -379,7 +379,12 @@ impl Broker {
 
         let principal = hello.principal.clone();
         tracing::info!(principal = %principal, host = ?hello.host, root = %hello.root.display(), "relay: hosting rmcp session");
-        let agents = {
+        // ~keep Only an agent's session is a live `serve` session of its identity: a CLI command's
+        // ~keep would make the agent's replies warn of a second session sharing it. The CLI's agent
+        // ~keep verbs use a comms link, not a relay, so its session needs no agent context.
+        let agents = if hello.client == relay::RelayClient::Cli {
+            None
+        } else {
             let (hub, root) = (Arc::clone(&self.agents), hello.root.clone());
             let repo = tokio::task::spawn_blocking(move || hub.repo_for(&root)).await;
             match repo {
