@@ -213,3 +213,39 @@ fn the_semantic_refusal_names_the_lane_argument() {
         serde_json::from_value(serde_json::json!({"query": "retry", "lane": "keyword"}));
     assert!(followed.is_ok(), "the call the refusal suggests is accepted");
 }
+
+fn ranking(unavailable: Vec<LaneUnavailable>) -> CodeSearchRanking {
+    CodeSearchRanking {
+        query: "q".to_string(),
+        truncated_reason: None,
+        omitted: 0,
+        hits: vec![seed("c".to_string())],
+        lanes_ran: vec!["keyword".to_string(), "exact".to_string()],
+        lanes_unavailable: unavailable,
+    }
+}
+
+/// A lane the configuration turned off is not a degraded answer: with the default `embed = false`
+/// a hybrid ranking is kept for its pages and repeats. A lane that failed, or a reranker that did
+/// not run, still is (review 3 S6).
+#[test]
+fn a_ranking_without_the_lane_the_config_turned_off_is_kept() {
+    let off = LaneUnavailable {
+        lane: "vector".to_string(),
+        reason: EMBEDDINGS_OFF.to_string(),
+    };
+    assert!(is_cacheable(&ranking(vec![off])));
+    let failed = LaneUnavailable {
+        lane: "vector".to_string(),
+        reason: "the vector lane failed (no model)".to_string(),
+    };
+    assert!(!is_cacheable(&ranking(vec![failed])));
+    let rerank = LaneUnavailable {
+        lane: "rerank".to_string(),
+        reason: "the reranker failed: offline".to_string(),
+    };
+    assert!(!is_cacheable(&ranking(vec![rerank])));
+    let mut empty = ranking(Vec::new());
+    empty.hits.clear();
+    assert!(!is_cacheable(&empty));
+}
