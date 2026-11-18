@@ -26,7 +26,7 @@ pub struct FindFilesToolParams {
     /// `next_cursor` of the previous page.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
+    /// Token budget (default 6000).
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }
