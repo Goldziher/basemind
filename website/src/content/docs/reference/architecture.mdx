@@ -55,7 +55,9 @@ Blobs are immutable and content-addressed, so they can be safely shared across m
 
 ### Fjall LSM Inverted Index
 
-Location: `~/.local/share/basemind/cache/workspaces/<workspace_key>/views/<view>/index.fjall/`
+Location: `~/.local/share/basemind/cache/groups/<group>/index.fjall/`, one per repository group:
+every worktree and view of a repository shares it, and each view keeps its file map in its own
+workspace directory.
 
 A disk-backed, append-only LSM tree (Fjall) provides fast lookups. Fjall admits one holder per
 directory, so the daemon is the only process that opens it: it writes, and it answers the index
@@ -85,7 +87,9 @@ Schema version is stamped in `meta`. On version mismatch, the next `basemind sca
 
 ### LanceDB Vector Store
 
-Location: `~/.local/share/basemind/cache/workspaces/<workspace_key>/lance/`
+Locations: code-chunk vectors in `~/.local/share/basemind/cache/workspaces/<workspace_key>/lance/`,
+document chunks in `~/.local/share/basemind/cache/groups/<group>/lance/` (one store per embedding
+model), memory notes in `~/.local/share/basemind/cache/repos/<group>/memory.lance/`.
 
 Powers semantic search (code search, document search, memory search). Vectors are indexed for fast KNN queries; on-disk format is LanceDB's columnar structure. Writes go through the daemon.
 
@@ -236,14 +240,18 @@ Global cache at `~/.local/share/basemind/` (or `$BASEMIND_DATA_HOME`):
 │   ├── abc123….l2.msgpack      # Calls (if eager_l2=true)
 │   ├── abc123….l3.msgpack      # Structural hashes
 │   └── (shared across all repos/worktrees via content hash)
+├── groups/
+│   └── <group>/                # blake3 of the main worktree root: one per repository
+│       ├── index.fjall/        # Fjall LSM index, shared by every worktree and view
+│       ├── lance/              # Document retrieval stores, one per embedding model
+│       └── .lock, .lock.meta   # The group lock: one process writes the index
 └── workspaces/
     └── <workspace_key>/        # blake3 of the canonical worktree root
         ├── views/<view>/
-        │   ├── index.msgpack
-        │   └── index.fjall/    # Fjall LSM index (one writer per workspace)
+        │   └── index.msgpack   # The view's file map
         ├── git-history.fjall/  # Precomputed git-history index
         ├── git-cache/          # Cached git payloads
-        ├── lance/              # Vector store (documents, memory, code search)
+        ├── lance/              # Code-search vector store
         ├── workspace.json      # Worktree root this key was derived from
         ├── status.json         # File counts + scan age for the statusline
         └── .lock, .lock.meta   # Writer lock and its holder
