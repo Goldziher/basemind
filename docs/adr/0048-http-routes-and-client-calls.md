@@ -30,10 +30,10 @@ answer it today. What exists:
 ## Decision
 
 1. **A route is a symbol.** A new tail `SymbolKind::Route` (ordinal 22). Its `name` is the method
-   and the normalized path, `"GET /users/:id"`, with a router mount prefix folded in when it is a
+   and the normalized path, `"GET /users/:param"`, with a router mount prefix folded in when it is a
    literal in the same file. Its `signature` is the handler's name.
 2. **A client call is a call row.** A call whose URL is a literal (or a template with literal
-   segments) becomes a `Call` whose `callee` is `"GET /users/:id"`. Path normalization keeps
+   segments) becomes a `Call` whose `callee` is `"GET /users/:param"`. Path normalization keeps
    literal segments and turns `${…}`, `{…}` and `:x` parameters into `:param` form, so both sides
    compare equal.
 3. **Extraction.** Two new query sections, `;; section: routes` and `;; section: http_calls`, with
