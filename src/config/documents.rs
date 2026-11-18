@@ -49,8 +49,8 @@ pub struct DocumentsConfig {
     pub extension_denylist: Vec<String>,
     /// Hard cap on chunks embedded per document. A pathological input (huge generated file, an
     /// archive that slipped the denylist) can otherwise explode into tens of thousands of ONNX
-    /// embeds. Documents exceeding the cap are extracted but not embedded (blob written, no vector
-    /// rows) with a warning.
+    /// embeds. Documents exceeding the cap are extracted but not embedded, with a warning: their
+    /// chunks are indexed without vectors, so the lexical lane still finds them.
     #[serde(default = "DocumentsConfig::default_max_chunks_per_document")]
     #[schemars(range(min = 1))]
     pub max_chunks_per_document: usize,

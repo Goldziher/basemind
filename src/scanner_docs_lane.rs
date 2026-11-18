@@ -238,6 +238,7 @@ fn process_doc(
                 reused: batch.reused,
                 degraded: batch.degraded,
                 text_fallback: batch.text_fallback,
+                over_chunk_cap: batch.over_chunk_cap,
                 elapsed_ms: u64::try_from(doc_started.elapsed().as_millis()).unwrap_or(u64::MAX),
             };
             let doc_entry = crate::store::DocEntry {

@@ -131,10 +131,10 @@ fn live_docs(store: &Store, config: &Config, filters: &Filters) -> AHashMap<Stri
     live
 }
 
-/// The rows of one document. Over `max_chunks` chunks only the document row is written (no chunk
-/// row, as before: such a document is tracked but not searched). A chunk carries its vector when
-/// `with_vectors` and the vector is whole.
-pub(crate) fn build_doc_rows(doc: FileMapDoc, key: String, with_vectors: bool, max_chunks: usize) -> DocRows {
+/// The rows of one document: its document row and one row per chunk. A chunk carries its vector when
+/// `with_vectors` and the vector is whole. A document over `[documents] max_chunks_per_document` keeps
+/// every chunk row: the cap bounds embedding, not search, so the lexical lane still finds it.
+pub(crate) fn build_doc_rows(doc: FileMapDoc, key: String, with_vectors: bool) -> DocRows {
     let title = doc
         .metadata
         .iter()
@@ -146,44 +146,40 @@ pub(crate) fn build_doc_rows(doc: FileMapDoc, key: String, with_vectors: bool, m
     keywords.sort_unstable();
     keywords.dedup();
     let dim = usize::from(doc.embedding_dim);
-    let over_cap = doc.chunks.len() > max_chunks;
     let entities = &doc.entities;
-    let chunks = if over_cap {
-        Vec::new()
-    } else {
-        doc.chunks
-            .into_iter()
-            .enumerate()
-            .map(|(ord, chunk)| {
-                let mut entity_cats: Vec<String> = entities
-                    .iter()
-                    .filter(|e| e.start < chunk.byte_end && e.end > chunk.byte_start)
-                    .map(|e| e.category.to_lowercase())
-                    .collect();
-                entity_cats.sort_unstable();
-                entity_cats.dedup();
-                let embedding = (with_vectors && dim > 0 && chunk.embedding.len() == dim).then_some(chunk.embedding);
-                DocChunkRow {
-                    chunk_ord: u32::try_from(ord).unwrap_or(u32::MAX),
-                    chunk_kind: if chunk.kind.is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        chunk.kind
-                    },
-                    page_start: chunk.page_start,
-                    page_end: chunk.page_end,
-                    section: (!chunk.section.is_empty()).then(|| chunk.section.join(SECTION_SEPARATOR)),
-                    line_start: chunk.line_start,
-                    line_end: chunk.line_end,
-                    byte_start: chunk.byte_start,
-                    byte_end: chunk.byte_end,
-                    entity_cats,
-                    text: chunk.text,
-                    embedding,
-                }
-            })
-            .collect()
-    };
+    let chunks = doc
+        .chunks
+        .into_iter()
+        .enumerate()
+        .map(|(ord, chunk)| {
+            let mut entity_cats: Vec<String> = entities
+                .iter()
+                .filter(|e| e.start < chunk.byte_end && e.end > chunk.byte_start)
+                .map(|e| e.category.to_lowercase())
+                .collect();
+            entity_cats.sort_unstable();
+            entity_cats.dedup();
+            let embedding = (with_vectors && dim > 0 && chunk.embedding.len() == dim).then_some(chunk.embedding);
+            DocChunkRow {
+                chunk_ord: u32::try_from(ord).unwrap_or(u32::MAX),
+                chunk_kind: if chunk.kind.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    chunk.kind
+                },
+                page_start: chunk.page_start,
+                page_end: chunk.page_end,
+                section: (!chunk.section.is_empty()).then(|| chunk.section.join(SECTION_SEPARATOR)),
+                line_start: chunk.line_start,
+                line_end: chunk.line_end,
+                byte_start: chunk.byte_start,
+                byte_end: chunk.byte_end,
+                entity_cats,
+                text: chunk.text,
+                embedding,
+            }
+        })
+        .collect();
     DocRows {
         doc_key: key,
         mime_group: mime_group(&doc.mime_type).to_string(),
@@ -252,7 +248,6 @@ pub(crate) fn sync_document_rows(
         }
     }
     let preset = config.documents.embedding_preset.clone();
-    let max_chunks = config.documents.max_chunks_per_document;
     let mut written = 0usize;
     // Paths whose rows are in the store and need no rewrite owe nothing; the rest settle once written.
     let queued: AHashSet<&String> = todo.iter().copied().chain(beyond.iter().copied()).collect();
@@ -293,7 +288,7 @@ pub(crate) fn sync_document_rows(
         match store.read_doc_by_hex(&doc.blob) {
             Ok(Some(blob)) => {
                 let with_vectors = doc.want_vectors && super::doc_has_vectors_of(&blob, &preset);
-                let built = build_doc_rows(blob, key.clone(), with_vectors, max_chunks);
+                let built = build_doc_rows(blob, key.clone(), with_vectors);
                 rows += built.chunks.len();
                 pending.push(built);
                 pending_paths.extend(doc.paths.iter().cloned());
@@ -476,11 +471,10 @@ pub(crate) fn strip_unwanted_vectors(store: &Store, config: &Config, filters: &F
             return false;
         }
     };
-    let max_chunks = config.documents.max_chunks_per_document;
     let mut rewrite = Vec::new();
     for key in unwanted.iter().filter(|key| present.get(*key) == Some(&true)) {
         if let Ok(Some(blob)) = store.read_doc_by_hex(&live[key].blob) {
-            rewrite.push(build_doc_rows(blob, key.clone(), false, max_chunks));
+            rewrite.push(build_doc_rows(blob, key.clone(), false));
         }
     }
     let mut applied = true;

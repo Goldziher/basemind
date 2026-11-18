@@ -87,6 +87,7 @@ fn pending_doc_batch_is_metadata_only() {
         reused: false,
         degraded: false,
         text_fallback: false,
+        over_chunk_cap: false,
     };
     assert!(batch.emit_rows);
     assert_eq!(batch.chunk_count, 3);
@@ -559,4 +560,23 @@ fn file_stamp_matches_the_read_until_the_file_changes() {
     std::fs::write(&abs, b"# Notes, edited\n").unwrap();
     assert_ne!(file_stamp(&abs), Some((size, mtime)));
     assert_eq!(file_stamp(&dir.path().join("gone.md")), None);
+}
+
+/// A document over the chunk cap is never embedded: it counts as attempted, so the unchanged fast
+/// path settles it, and its blob is reusable without vectors, so a rename does not extract it again.
+#[test]
+fn a_document_over_the_chunk_cap_is_settled_without_vectors() {
+    let cfg = DocumentsConfig {
+        max_chunks_per_document: 2,
+        ..DocumentsConfig::default()
+    };
+    let over = doc_fixture(3, 0);
+    for reused in [false, true] {
+        let batch = pending_from_doc(&over, "docs/big.pdf", &cfg, true, reused);
+        assert!(batch.over_chunk_cap);
+        assert!(batch.embed_attempted, "reused={reused}: nothing is owed");
+        assert!(!batch.embedded && !batch.emit_rows);
+    }
+    assert!(cached_doc_is_reusable(&over, &cfg, true, ""));
+    assert!(!pending_from_doc(&doc_fixture(2, 0), "docs/a.pdf", &cfg, true, false).over_chunk_cap);
 }

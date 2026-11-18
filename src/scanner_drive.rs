@@ -460,6 +460,7 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
                 reused,
                 degraded,
                 text_fallback,
+                over_chunk_cap,
                 ..
             } => {
                 ctx.stats.docs_indexed += 1;
@@ -471,6 +472,9 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
                 }
                 if *text_fallback {
                     ctx.stats.docs_text_fallback += 1;
+                }
+                if *over_chunk_cap {
+                    ctx.stats.docs_over_chunk_cap += 1;
                 }
                 ctx.store.remove_doc_tombstone(&o.path);
             }

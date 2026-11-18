@@ -101,9 +101,9 @@ pub(crate) struct PendingDocBatch {
     pub chunk_count: usize,
     /// Length of each chunk's embedding vector. Zero when embeddings are off.
     pub embedding_dim: u16,
-    /// Whether this file should emit LanceDB rows at flush time. False for the no-embed, empty, and
-    /// over-`max_chunks_per_document` cases — the blob is still tracked, but nothing lands in LanceDB
-    /// (mirrors the old rows-empty batch). Decided at construction, where the document is in hand.
+    /// Whether this file owes vector rows at flush time. False for the no-embed, empty, and
+    /// over-`max_chunks_per_document` cases, whose rows carry no vectors. Decided at construction,
+    /// where the document is in hand.
     pub emit_rows: bool,
     /// Whether the doc leaves this pass with its embedding requirement satisfied — persisted onto
     /// the [`crate::store::DocEntry`] so the next pass's unchanged fast path can tell a fully
@@ -126,6 +126,9 @@ pub(crate) struct PendingDocBatch {
     /// True when structured extraction failed and the file was re-read as `text/plain` (implies
     /// `degraded`). Drives the `docs_text_fallback` scan counter.
     pub text_fallback: bool,
+    /// True when the document has more chunks than `[documents] max_chunks_per_document`, so it was
+    /// not embedded and is found by the lexical lane only. Drives the `docs_over_chunk_cap` counter.
+    pub over_chunk_cap: bool,
 }
 
 /// Where the scan hands a document: extraction, its blob, its chunk rows and their removal.

@@ -281,8 +281,9 @@ fn the_owed_set_is_written_before_the_file_map_that_claims_its_files() {
 }
 
 /// A path no rows can come of leaves the owed set instead of failing its whole batch on every
-/// scan: a blob re-extracted without vectors, a blob that is gone, a document the embed policy or
-/// the chunk cap now excludes. The document beside them still gets its rows.
+/// scan: a blob re-extracted without vectors, a blob that is gone, a document the embed policy now
+/// excludes. A document over the chunk cap keeps the vectors its blob already holds. The document
+/// beside them still gets its rows.
 #[test]
 fn a_document_no_rows_can_come_of_is_settled_and_does_not_fail_the_others() {
     let tmp = tempfile::tempdir().unwrap();
@@ -300,7 +301,7 @@ fn a_document_no_rows_can_come_of_is_settled_and_does_not_fail_the_others() {
 
     lanes(&mut store, &config, usize::MAX);
 
-    assert_eq!(doc_rows(&mut store, SCOPE), ["docs/good.txt"]);
+    assert_eq!(doc_rows(&mut store, SCOPE), ["docs/good.txt", "docs/too-many-chunks.txt"]);
     assert!(store.pending_vectors.is_empty(), "{:?}", store.pending_vectors);
 }
 
@@ -324,6 +325,7 @@ fn a_batch_whose_blob_holds_other_vectors_is_settled_not_written() {
         reused: true,
         degraded: false,
         text_fallback: false,
+        over_chunk_cap: false,
     };
     let batches = vec![batch("docs/good.txt"), batch("docs/other-dim.txt")];
 
