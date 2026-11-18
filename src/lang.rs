@@ -372,6 +372,10 @@ pub enum QueryKind {
     /// or from `@reference.implementation` captures in TSLP `tags.scm` files adapted by
     /// `adapt_tslp_tags`. One `(trait_name, implementor)` pair per inheritance edge.
     Implementations,
+    /// Captures: @route.*, @mount.* (ADR-0048). Folded into the combined L1 query.
+    Routes,
+    /// Captures: @http.* (ADR-0048). Folded into the calls query, so client calls cost no walk.
+    HttpCalls,
 }
 
 impl QueryKind {
@@ -382,6 +386,8 @@ impl QueryKind {
             QueryKind::Calls => "calls",
             QueryKind::Docs => "docs",
             QueryKind::Implementations => "implementations",
+            QueryKind::Routes => "routes",
+            QueryKind::HttpCalls => "http_calls",
         }
     }
 }
@@ -408,6 +414,7 @@ pub enum CaptureClass {
     Symbol,
     Import,
     Impl,
+    Route,
     Other,
 }
 
@@ -706,7 +713,8 @@ fn combined_l1_source(lang: LangId) -> Option<String> {
         let sym = extract_section(raw, "symbols").unwrap_or_default();
         let imp = extract_section(raw, "imports").unwrap_or_default();
         let imp_l = extract_section(raw, "implementations").unwrap_or_default();
-        let combined = format!("{sym}\n{imp}\n{imp_l}");
+        let routes = extract_section(raw, QueryKind::Routes.name()).unwrap_or_default();
+        let combined = format!("{sym}\n{imp}\n{imp_l}\n{routes}");
         if combined.trim().is_empty() {
             None
         } else {
@@ -755,6 +763,8 @@ fn classify_combined_l1(lang: LangId) -> Result<ClassifiedOutcome, LangError> {
                         CaptureClass::Import
                     } else if name.starts_with("impl.") {
                         CaptureClass::Impl
+                    } else if name.starts_with("route.") || name.starts_with("mount.") {
+                        CaptureClass::Route
                     } else {
                         CaptureClass::Other
                     }
@@ -798,7 +808,14 @@ pub fn try_get_query(lang: LangId, kind: QueryKind) -> Result<CachedQuery, LangE
 /// `lang`'s source for the `kind` section: its override, else the adapted TSLP `tags.scm`.
 fn query_source(lang: LangId, kind: QueryKind) -> Option<String> {
     if let Some(raw) = override_query_source(lang) {
-        extract_section(raw, kind.name())
+        let section = extract_section(raw, kind.name());
+        match (kind, section) {
+            (QueryKind::Calls, Some(calls)) => {
+                Some(calls + &extract_section(raw, QueryKind::HttpCalls.name()).unwrap_or_default())
+            }
+            (QueryKind::Calls, None) => extract_section(raw, QueryKind::HttpCalls.name()),
+            (_, section) => section,
+        }
     } else if matches!(kind, QueryKind::Symbols | QueryKind::Calls | QueryKind::Implementations) {
         tslp_tags_adapted(lang).and_then(|adapted| extract_section(&adapted, kind.name()))
     } else {

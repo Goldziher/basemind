@@ -27,6 +27,42 @@
 (call_expression
   function: (selector_expression field: (field_identifier) @call.callee)) @call.range
 
+;; section: routes
+;;
+;; HTTP routes and the mounts that prefix them (ADR-0048, `src/extract/http.rs`).
+;; gin: `r.GET("/users/:id", auth, handler)`; the last argument is the handler.
+
+(call_expression
+  function: (selector_expression
+    operand: (_) @route.receiver
+    field: (field_identifier) @route.method)
+  arguments: (argument_list . (interpreted_string_literal) @route.path (_) @route.handler .)
+  (#any-of? @route.method "GET" "POST" "PUT" "DELETE" "PATCH" "HEAD" "OPTIONS" "Any")
+  (#match? @route.path "^\"/")) @route.range
+
+;; `v1 := r.Group("/v1")` mounts `v1` under `/v1` of `r`.
+(short_var_declaration
+  left: (expression_list . (identifier) @mount.name)
+  right: (expression_list
+    . (call_expression
+      function: (selector_expression
+        operand: (identifier) @mount.parent
+        field: (field_identifier) @_group)
+      arguments: (argument_list . (interpreted_string_literal) @mount.path)))
+  (#eq? @_group "Group"))
+
+;; section: http_calls
+;;
+;; Literal-URL requests through net/http: `http.Get(url)`, `http.Post(url, ..)`,
+;; `http.NewRequest("GET", url, body)`. Through any other receiver the URL must be absolute.
+
+(call_expression
+  function: (selector_expression
+    operand: (_) @http.receiver
+    field: (field_identifier) @http.method)
+  arguments: (argument_list) @http.args
+  (#any-of? @http.method "Get" "Head" "Post" "PostForm" "NewRequest" "NewRequestWithContext")) @http.range
+
 ;; section: docs
 
 (comment) @doc.text

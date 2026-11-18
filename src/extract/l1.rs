@@ -98,6 +98,7 @@ pub(super) fn run_combined(
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut implementations = Vec::new();
+    let mut routes = super::http::Routes::default();
     let dropped = super::query_walk::for_each_match(q, root, source, |m| {
         let class = m
             .captures()
@@ -120,6 +121,7 @@ pub(super) fn run_combined(
                     implementations.push(imp);
                 }
             }
+            Some(CaptureClass::Route) => routes.push_match(q, m, source),
             Some(CaptureClass::Other) | None => {}
         }
     })?;
@@ -128,6 +130,7 @@ pub(super) fn run_combined(
     for sym in &mut symbols {
         trim_signature(sym);
     }
+    symbols.extend(routes.finish());
     Ok((symbols, imports, implementations))
 }
 

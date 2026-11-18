@@ -52,6 +52,56 @@
 (call function: (identifier) @call.callee) @call.range
 (call function: (attribute attribute: (identifier) @call.callee)) @call.range
 
+;; section: routes
+;;
+;; HTTP routes and the mounts that prefix them (ADR-0048, `src/extract/http.rs`).
+;; FastAPI `@app.get("/users/{id}")` and Flask `@app.route("/users/<int:id>", methods=[..])` on a
+;; function: the function is the handler.
+
+(decorated_definition
+  (decorator
+    (call
+      function: (attribute
+        object: (identifier) @route.receiver
+        attribute: (identifier) @route.method)
+      arguments: (argument_list . (string) @route.path) @route.args))
+  definition: (function_definition name: (identifier) @route.handler)
+  (#any-of? @route.method "get" "post" "put" "delete" "patch" "head" "options" "route" "api_route"))
+  @route.range
+
+;; `router = APIRouter(prefix="/users")`, `bp = Blueprint("bp", __name__, url_prefix="/bp")`.
+(assignment
+  left: (identifier) @mount.name
+  right: (call
+    function: [(identifier) (attribute)] @_ctor
+    arguments: (argument_list
+      (keyword_argument name: (identifier) @_kw value: (string) @mount.path)))
+  (#match? @_ctor "(^|[.])(APIRouter|Blueprint)$")
+  (#any-of? @_kw "prefix" "url_prefix"))
+
+;; `app.include_router(router, prefix="/api")`, `app.register_blueprint(bp, url_prefix="/x")`.
+(call
+  function: (attribute
+    object: (identifier) @mount.parent
+    attribute: (identifier) @_inc)
+  arguments: (argument_list
+    . (identifier) @mount.name
+    (keyword_argument name: (identifier) @_kw value: (string) @mount.path))
+  (#any-of? @_inc "include_router" "register_blueprint")
+  (#any-of? @_kw "prefix" "url_prefix"))
+
+;; section: http_calls
+;;
+;; Literal-URL requests: `requests.get(url)`, `httpx.post(url)`, `requests.request("PUT", url)`.
+;; Through any other receiver (a client or session) the URL must be absolute http(s).
+
+(call
+  function: (attribute
+    object: (_) @http.receiver
+    attribute: (identifier) @http.method)
+  arguments: (argument_list) @http.args
+  (#any-of? @http.method "get" "post" "put" "delete" "patch" "head" "options" "request")) @http.range
+
 ;; section: docs
 
 (comment) @doc.text

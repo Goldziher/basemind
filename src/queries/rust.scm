@@ -90,6 +90,39 @@
     ])
   ]) @impl.range
 
+;; section: routes
+;;
+;; HTTP routes (ADR-0048, `src/extract/http.rs`). axum: `.route("/users/:id", get(show).post(update))`;
+;; the method router names a method and a handler per link. The route starts at `route`, not at the
+;; start of the `Router::new()` chain it sits in.
+
+(call_expression
+  function: (field_expression field: (field_identifier) @route.anchor)
+  arguments: (arguments
+    . [(string_literal) (raw_string_literal)] @route.path
+    . (_) @route.method_router)
+  (#eq? @route.anchor "route")) @route.range
+
+;; section: http_calls
+;;
+;; Literal-URL requests: `reqwest::get(url)`, `client.get(url)`, `client.request(Method::PUT, url)`.
+;; Through a receiver other than `reqwest` the URL must be absolute http(s).
+
+(call_expression
+  function: (scoped_identifier
+    path: (identifier) @http.receiver
+    name: (identifier) @http.method)
+  arguments: (arguments) @http.args
+  (#eq? @http.receiver "reqwest")
+  (#eq? @http.method "get")) @http.range
+
+(call_expression
+  function: (field_expression
+    value: (_) @http.receiver
+    field: (field_identifier) @http.method)
+  arguments: (arguments) @http.args
+  (#any-of? @http.method "get" "post" "put" "delete" "patch" "head" "request")) @http.range
+
 ;; section: docs
 
 ((line_comment) @doc.text

@@ -8,6 +8,7 @@ pub mod doc_fallback;
 pub mod doc_guard;
 #[cfg(feature = "documents")]
 pub mod doc_tiers;
+mod http;
 #[cfg(test)]
 mod java_parity_tests;
 pub mod l1;
@@ -94,7 +95,9 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 /// - 2: Rust outlines gain bodiless trait methods, nested `fn` items, items inside item-position
 ///   macro bodies, and trait impls written with a path or generic trait.
 /// - 3: the BM25 keyword postings split camelCase and PascalCase identifiers into their words.
-pub const EXTRACT_EPOCH: u16 = 3;
+/// - 4: HTTP routes become `Route` symbols and literal-URL client calls become call rows (ADR-0048);
+///   Java gains its own query override.
+pub const EXTRACT_EPOCH: u16 = 4;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

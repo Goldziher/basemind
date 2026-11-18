@@ -92,6 +92,7 @@ fn build_call(q: &Query, m: &QueryMatch, source: &[u8], skip_lexical: &dyn Fn(us
             "call.range" => range_node = Some(cap.node),
             "call.lexical_callee" => lexical.0 = Some(cap.node),
             "call.lexical_args" => lexical.1 = Some(cap.node),
+            name if name.starts_with("http.") => return super::http::client_call(q, m, source),
             _ => {}
         }
     }

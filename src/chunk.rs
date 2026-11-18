@@ -297,6 +297,11 @@ pub fn chunk_file(
 
     let mut intervals: Vec<(usize, usize)> = Vec::with_capacity(l1.symbols.len());
     for sym in &l1.symbols {
+        // A route's span is its handler's definition or a one-line registration (ADR-0048): a
+        // chunk of its own would only repeat code another chunk already holds.
+        if sym.kind == SymbolKind::Route {
+            continue;
+        }
         let s = sym.start_byte as usize;
         let e = (sym.end_byte as usize).min(len);
         if s >= e {
@@ -496,6 +501,20 @@ mod tests {
         assert_eq!(symbol_chunks[0].signature.as_deref(), Some("fn alpha()"));
         assert_eq!(symbol_chunks[0].chunk_id, "deadbeef:0");
         assert!(symbol_chunks[0].text.contains("alpha"));
+    }
+
+    #[test]
+    fn route_symbols_add_no_chunk() {
+        let source = "fn show() {\n    1\n}\n";
+        let end = source.len() as u32 - 1;
+        let symbols = vec![sym("show", SymbolKind::Function, 0, end, 0, None)];
+        let mut with_route = symbols.clone();
+        with_route.push(sym("GET /users", SymbolKind::Route, 0, end, 0, Some("show")));
+        let chunk = |l1: &FileMapL1| chunk_file("a.rs", "ab", l1, None, source.as_bytes(), ChunkOptions::default());
+        let (plain, routed) = (chunk(&l1_with(symbols, source)), chunk(&l1_with(with_route, source)));
+        assert_eq!(routed.len(), 1);
+        assert_eq!(routed.len(), plain.len());
+        assert_eq!(routed[0].symbol.as_deref(), Some("show"));
     }
 
     #[test]
