@@ -71,11 +71,14 @@ impl CodexAdapter {
                     feature: "pre-approving single MCP tools",
                 });
             }
-            // Codex hands a server only the variables named in `env_vars`.
+            // Codex hands a server only the variables named in `env_vars`. Without an explicit
+            // `prompt`, Codex 0.169 (`untrusted`, code mode) ran the server's non-read-only tools
+            // unasked, so no call reached the approval policy.
             let settings = [
                 ("command", toml_string(utf8(command)?)),
                 ("args", toml_array(&server.args)),
                 ("env_vars", toml_array(&spec.mcp_env_names())),
+                ("default_tools_approval_mode", toml_string("prompt")),
             ];
             for (key, value) in settings {
                 server_args.extend(["-c".to_owned(), format!("mcp_servers.{}.{key}={value}", server.name)]);
