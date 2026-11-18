@@ -47,6 +47,11 @@ impl Family<'_> {
             let (key, value) = row?;
             stored.push((key.to_vec(), value.to_vec()));
         }
+        // A content new to the group, as on a cold scan: nothing to reconcile, so no set is built. ~keep
+        if stored.is_empty() {
+            self.insert(batch, staged_bytes, fresh);
+            return Ok(());
+        }
         // A later row at the same start replaces an earlier one, as the batch would. ~keep
         let fresh_rows: AHashMap<&[u8], &[u8]> = fresh
             .iter()
@@ -72,13 +77,18 @@ impl Family<'_> {
                 None => tracing::warn!("index: a stored content row does not decode; its name row stays"),
             }
         }
+        self.insert(batch, staged_bytes, fresh);
+        Ok(())
+    }
+
+    /// Stage every row of `fresh` and its name row.
+    fn insert(&self, batch: &mut OwnedWriteBatch, staged_bytes: &mut u64, fresh: Vec<FreshRow>) {
         for row in fresh {
             stage_insert(batch, staged_bytes, self.rows, row.row, row.value);
             if let Some(name_key) = row.name_key {
                 stage_insert(batch, staged_bytes, self.names, name_key, Vec::<u8>::new());
             }
         }
-        Ok(())
     }
 }
 
