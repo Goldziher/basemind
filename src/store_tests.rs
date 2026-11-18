@@ -918,3 +918,34 @@ fn a_reopened_index_publishes_the_written_file_map_not_the_unflushed_one() {
         "an entry no written map lists is not"
     );
 }
+
+/// A view whose file map does not decode, over a per-view index that still holds the memory notes a
+/// release before 0.30 kept there: the writer open moves the notes to the group store before the
+/// per-view index goes. Discarding it with the map lost the only copy.
+#[test]
+fn a_torn_file_map_does_not_discard_the_notes_of_its_per_view_index() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let working = workspace_cache_dir(root).join(VIEWS_DIR).join(VIEW_WORKING);
+    std::fs::create_dir_all(&working).expect("mk view");
+    {
+        let db = fjall::Database::builder(working.join(crate::index::INDEX_DIR))
+            .open()
+            .expect("open the view's index");
+        let notes = db
+            .keyspace("memory_by_key", fjall::KeyspaceCreateOptions::default)
+            .expect("the notes keyspace of a 0.29 view");
+        notes
+            .insert(b"k".to_vec(), b"only copy".to_vec())
+            .expect("write a note");
+    }
+    std::fs::write(working.join(INDEX_FILE), b"\xff\xff torn \x00").expect("tear the file map");
+
+    let store = Store::open(root, VIEW_WORKING).expect("the writer open rebuilds the view");
+    drop(store);
+
+    let reader = dir.path().join("reader");
+    let db = crate::index::IndexDb::open_with_memory(&reader, &memory_store_dir(root)).expect("open the group store");
+    assert_eq!(db.notes().get(b"k").expect("read").as_deref(), Some(&b"only copy"[..]));
+}
