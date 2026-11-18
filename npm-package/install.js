@@ -20,10 +20,7 @@ function isAppleSilicon() {
   return sysctl("sysctl.proc_translated") === "1" || sysctl("hw.optional.arm64") === "1";
 }
 
-function getPlatformTriple() {
-  const type = os.type();
-  const arch = os.arch();
-
+function getPlatformTriple(type = os.type(), arch = os.arch()) {
   if (type === "Windows_NT") {
     if (arch === "x64") return "x86_64-pc-windows-msvc";
     if (arch === "ia32") throw new Error("32-bit Windows is not supported");
@@ -32,7 +29,7 @@ function getPlatformTriple() {
   if (type === "Linux") {
     if (arch === "x64") return "x86_64-unknown-linux-gnu";
     if (arch === "arm64") return "aarch64-unknown-linux-gnu";
-    return "x86_64-unknown-linux-gnu";
+    throw new Error(`Linux on ${arch} is not supported; basemind publishes x86_64 and aarch64 Linux binaries`);
   }
 
   if (type === "Darwin") {
@@ -245,12 +242,57 @@ async function verifyChecksum(archivePath, assetName, checksumsUrl) {
   console.log("Checksum verified.");
 }
 
+async function extractArchive(archivePath, destination) {
+  if (archivePath.endsWith(".zip")) {
+    const AdmZip = require("adm-zip");
+    new AdmZip(archivePath).extractAllTo(destination, true);
+  } else {
+    const { extract } = await import("tar");
+    await extract({ file: archivePath, cwd: destination });
+  }
+}
+
+// Move every extracted entry into `destination`, each file by an atomic rename, and the binary last:
+// a reader that finds the binary (bin/basemind.js checks only that) finds its libraries beside it.
+function placeEntries(source, destination, binaryName) {
+  let binary = null;
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    const from = path.join(source, entry.name);
+    const to = path.join(destination, entry.name);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(to, { recursive: true });
+      placeEntries(from, to, null);
+    } else if (entry.name === binaryName) {
+      binary = from;
+    } else {
+      fs.renameSync(from, to);
+    }
+  }
+  if (binary) fs.renameSync(binary, path.join(destination, binaryName));
+}
+
+// Unpack the verified archive into a directory of this run's own and move the result into binDir only
+// once it is complete. Extracting straight into binDir left a truncated binary behind an install that
+// was killed mid-way, which every later run executed, and two first runs (`npx`) wrote the same files.
+async function installFromArchive(archivePath, binDir, binaryName, staging, extract = extractArchive) {
+  const unpacked = path.join(staging, "unpacked");
+  fs.mkdirSync(unpacked);
+  await extract(archivePath, unpacked);
+  const staged = path.join(unpacked, binaryName);
+  if (!fs.existsSync(staged)) {
+    throw new Error(`binary ${binaryName} not found in ${path.basename(archivePath)}`);
+  }
+  if (os.type() !== "Windows_NT") {
+    fs.chmodSync(staged, 0o755);
+  }
+  placeEntries(unpacked, binDir, binaryName);
+}
+
 async function installBinary() {
+  let staging = null;
   try {
     const { assetName, archiveUrl, checksumsUrl } = getReleaseAssets();
-    const isZip = archiveUrl.endsWith(".zip");
     const binDir = path.join(__dirname, "bin");
-    const archivePath = path.join(binDir, assetName);
     const binaryName = os.type() === "Windows_NT" ? "basemind.exe" : "basemind";
     const binaryPath = path.join(binDir, binaryName);
 
@@ -262,6 +304,10 @@ async function installBinary() {
       return;
     }
 
+    // Inside binDir, so every rename into it stays on one filesystem.
+    staging = fs.mkdtempSync(path.join(binDir, ".install-"));
+    const archivePath = path.join(staging, assetName);
+
     console.log(`Downloading basemind binary from ${archiveUrl}...`);
 
     await retryWithBackoff(() => downloadWithRedirects(archiveUrl, archivePath));
@@ -270,32 +316,14 @@ async function installBinary() {
 
     console.log("Extracting archive (binary + bundled libraries)...");
 
-    if (isZip) {
-      const AdmZip = require("adm-zip");
-      const zip = new AdmZip(archivePath);
-      zip.extractAllTo(binDir, true);
-    } else {
-      const { extract } = await import("tar");
-      await extract({
-        file: archivePath,
-        cwd: binDir,
-      });
-    }
-
-    fs.unlinkSync(archivePath);
-
-    if (!fs.existsSync(binaryPath)) {
-      throw new Error(`binary ${binaryName} not found after extracting ${assetName}`);
-    }
-
-    if (os.type() !== "Windows_NT") {
-      fs.chmodSync(binaryPath, 0o755);
-    }
+    await installFromArchive(archivePath, binDir, binaryName, staging);
 
     console.log("basemind binary installed successfully!");
   } catch (error) {
     console.error("Error installing basemind binary:", error.message);
-    process.exit(1);
+    process.exitCode = 1;
+  } finally {
+    if (staging) fs.rmSync(staging, { recursive: true, force: true });
   }
 }
 
@@ -303,4 +331,4 @@ if (require.main === module) {
   installBinary();
 }
 
-module.exports = { downloadWithRedirects, fetchTextWithRedirects };
+module.exports = { downloadWithRedirects, fetchTextWithRedirects, getPlatformTriple, installFromArchive };
