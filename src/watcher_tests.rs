@@ -23,8 +23,8 @@ fn arm_watcher(root: &Path, path_rx: &mpsc::Receiver<Vec<PathBuf>>) {
         }
     }
     std::fs::remove_file(&probe).expect("remove probe file");
-    // Drain the arming batches (and the probe's own removal) so they cannot be mistaken for
-    // an emission the assertion under test is meant to rule out.
+    // Drain the arming batches (and the probe's own removal). A late one can still arrive after the
+    // drain, so the assertions under test match the paths they rule out, not any emission.
     while path_rx.recv_timeout(Duration::from_millis(300)).is_ok() {}
 }
 
@@ -283,8 +283,13 @@ fn should_ignore_changes_under_basemind_dir() {
     std::fs::write(root.join(crate::config::BASEMIND_DIR).join("noise.txt"), b"ignored\n")
         .expect("write basemind file");
 
-    let result = path_rx.recv_timeout(Duration::from_millis(800));
-    assert!(result.is_err(), "expected no emission, got {result:?}");
+    let basemind = root.join(crate::config::BASEMIND_DIR);
+    while let Ok(paths) = path_rx.recv_timeout(Duration::from_millis(800)) {
+        assert!(
+            !paths.iter().any(|p| p.starts_with(&basemind)),
+            "expected no emission under .basemind/, got {paths:?}"
+        );
+    }
 
     let _ = shutdown_tx.send(());
     let _ = handle.join();
@@ -324,11 +329,13 @@ fn should_ignore_nested_basemind_and_gitignored_paths() {
     .expect("write nested basemind file");
     std::fs::write(root.join("build").join("out.o"), b"\x00").expect("write gitignored file");
 
-    let result = path_rx.recv_timeout(Duration::from_millis(800));
-    assert!(
-        result.is_err(),
-        "expected no emission for nested-.basemind / gitignored churn, got {result:?}"
-    );
+    let (nested, ignored) = (root.join("child"), root.join("build"));
+    while let Ok(paths) = path_rx.recv_timeout(Duration::from_millis(800)) {
+        assert!(
+            !paths.iter().any(|p| p.starts_with(&nested) || p.starts_with(&ignored)),
+            "expected no emission for nested-.basemind / gitignored churn, got {paths:?}"
+        );
+    }
 
     let _ = shutdown_tx.send(());
     let _ = handle.join();
