@@ -487,6 +487,8 @@ mod tests {
             .with_max_level(tracing::Level::INFO)
             .with_test_writer()
             .finish();
+        residency::state().begin_use();
+        residency::end_use(Use::Request, true);
         let before = engine_releases();
         tracing::subscriber::with_default(subscriber, || {
             drop(begin_embed_pass());
