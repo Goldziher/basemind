@@ -31,7 +31,13 @@ pub(crate) enum LaneCause {
     Held,
     /// The index must be rebuilt before it can be read.
     RescanOwed,
-    /// The read itself failed.
+    /// The daemon's read for a hosted session failed. A session's own read cannot fail, so without a
+    /// daemon to host sessions nothing constructs it. The variant stays (rather than a `cfg` on it)
+    /// because its match arm in the MCP adapter would grow `src/mcp` past the layering ratchet.
+    #[cfg_attr(
+        not(all(feature = "comms", any(unix, windows))),
+        expect(dead_code, reason = "only a daemon-hosted session's read can fail")
+    )]
     Failed,
 }
 
