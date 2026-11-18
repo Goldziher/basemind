@@ -187,9 +187,11 @@ fn rows_of_another_layout_never_survive_the_rebuild() {
                 meta.remove(META_INCARNATION).expect("lose the incarnation");
                 meta.remove(META_FORMAT).expect("lose the format");
                 meta.remove(META_NEXT_VIEW).expect("lose the view counter");
-                meta.remove(view_record("ws-a", "working")).expect("lose the view record");
+                meta.remove(view_record("ws-a", "working"))
+                    .expect("lose the view record");
             } else {
-                meta.insert(META_FORMAT, (GROUP_FORMAT - 1).to_be_bytes()).expect("older format");
+                meta.insert(META_FORMAT, (GROUP_FORMAT - 1).to_be_bytes())
+                    .expect("older format");
             }
             group.incarnation()
         };
@@ -197,7 +199,13 @@ fn rows_of_another_layout_never_survive_the_rebuild() {
         let group = open(&group_dir);
         assert_ne!(group.incarnation(), first, "crashed mid-clear: {crashed_mid_clear}");
         let a = view(&group, "ws-a", "working", &memory);
-        assert!(a.keyspace(Part::RefsByPath).is_empty().expect("read"), "{crashed_mid_clear}");
-        assert!(a.keyspace(Part::GrepBloom).is_empty().expect("read"), "{crashed_mid_clear}");
+        assert!(
+            a.keyspace(Part::RefsByPath).is_empty().expect("read"),
+            "{crashed_mid_clear}"
+        );
+        assert!(
+            a.keyspace(Part::GrepBloom).is_empty().expect("read"),
+            "{crashed_mid_clear}"
+        );
     }
 }
