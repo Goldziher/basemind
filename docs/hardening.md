@@ -211,8 +211,9 @@ gh workflow run hardening.yaml --ref main -f soak_self=true       # soak a clone
 CI soaks the generated fixture (`--fixture`): a `full` scan of this repository did not finish in
 30 minutes on the Linux and Windows runners.
 
-The binary is `cargo build --release --features <features>`; when that fails on a runner the leg
-retries with `comms` and says so in a warning and in the summary title. A leg fails when any step
+The binary is `cargo build --release --features <features>`. When `full` (what ships) fails to
+build, the leg fails; for any other requested set it retries with `comms` and says so in a warning
+and in the summary title. A leg fails when any step
 fails: a selftest case, a sweep case, a soak rule, or a leak. Each leg writes a table (rule,
 value, threshold, verdict) to the run's summary page and uploads its report directory as the
 `hardening-<os>` artifact, also on failure: `selftest/`, `sweep/sweep.report.md`,

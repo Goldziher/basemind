@@ -144,6 +144,11 @@ jobs:
           set -uo pipefail
           built="$FEATURES"
           if ! cargo build --locked --release --bin basemind --features "$FEATURES"; then
+            # ~keep `full` is what ships: a leg that cannot build it must fail, not harden another binary.
+            if [ "$FEATURES" = full ]; then
+              echo "::error title=Build failed::cargo build --features full failed on $RUNNER_OS"
+              exit 1
+            fi
             echo "::warning title=Feature fallback::cargo build --features '$FEATURES' failed on $RUNNER_OS; retrying with 'comms'"
             built=comms
             cargo build --locked --release --bin basemind --features comms || exit 1

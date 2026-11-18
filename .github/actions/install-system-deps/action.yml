@@ -110,6 +110,12 @@ runs:
         Write-Host "Installing protobuf..."
         choco install -y protoc --no-progress
         if ($LASTEXITCODE -ne 0) { throw "choco install protoc failed ($LASTEXITCODE)" }
+        # choco exits 0 having installed nothing when its feed fails ("Chocolatey installed 0/0
+        # packages"), so check that protoc exists and pin it for prost-build by path.
+        $protoc = Get-Command protoc -ErrorAction SilentlyContinue
+        if (-not $protoc) { throw "choco install protoc left no protoc on PATH" }
+        & $protoc.Source --version
+        Add-Content -Path $env:GITHUB_ENV -Value "PROTOC=$($protoc.Source)"
 
         # Install tesseract
         Write-Host "Installing Tesseract..."
