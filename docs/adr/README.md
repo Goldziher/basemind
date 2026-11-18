@@ -131,3 +131,4 @@ them.
 | [0045](0045-daemon-stop-and-idle-rules-as-built.md) | Daemon stop and idle rules as built after the comms v2 cutover | Accepted |
 | [0046](0046-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Accepted |
 | [0047](0047-analysis-commands-and-the-import-graph.md) | Analyses ship as daemon-answered CLI commands; the file-level import graph | Proposed |
+| [0048](0048-http-routes-and-client-calls.md) | HTTP routes as symbols, client calls as call rows, linked by path | Proposed |
