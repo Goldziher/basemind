@@ -192,7 +192,7 @@ async fn the_local_route_answers_every_read_from_its_view() {
     let (view, log) = recording(&store);
     let route = IndexRoute::Local(Box::new(view));
 
-    let page = route
+    let (page, _) = route
         .scan_calls(&cache, "shared_helper", Matching::Substring, 50, None)
         .await
         .expect("scan");
@@ -203,7 +203,7 @@ async fn the_local_route_answers_every_read_from_its_view() {
     let paths = vec![RelPath::from("m1.rs")];
     let files: Vec<_> = paths.iter().cloned().zip(route.content_keys(&cache, &paths)).collect();
     let per_file = route.calls_in_files(&cache, &files).await.expect("calls");
-    assert!(!per_file[0].is_empty());
+    assert!(per_file[0].as_ref().is_some_and(|(_, calls)| !calls.is_empty()));
     assert_eq!(log.entries(), ["prefix:calls_by_path"], "resolved callers");
 
     log.clear();

@@ -80,7 +80,7 @@ pub enum IndexReadResult {
     /// Reply to [`IndexReadQuery::CallScan`].
     CallScan(WireCallScan),
     /// Reply to [`IndexReadQuery::CallsInFiles`]: one entry per requested path, in request order.
-    CallsInFiles(Vec<Vec<WireCall>>),
+    CallsInFiles(Vec<WireFileCalls>),
     /// Reply to [`IndexReadQuery::ImplScan`].
     ImplScan(WireImplScan),
     /// Reply to [`IndexReadQuery::GrepBloom`]: one flag per requested path, in request order; `true`
@@ -103,6 +103,20 @@ pub struct WireCallScan {
     pub resume_after: Option<Vec<u8>>,
     /// The page's hits, in key order.
     pub hits: Vec<WireCallHit>,
+    /// The fingerprint of the live keys the scan ran under
+    /// ([`LiveKeys::fingerprint`](crate::index::live_keys::LiveKeys::fingerprint)): the generation
+    /// of the key order the page was cut in, which the client's cursor carries.
+    pub generation: u64,
+}
+
+/// The call sites of one file of a [`IndexReadQuery::CallsInFiles`], with the content key they
+/// were read under: the file's place in the key order of the daemon's scan.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireFileCalls {
+    /// The file's live content key; `None` for a file the daemon's view does not hold.
+    pub content: Option<crate::index::keys::ContentKey>,
+    /// Its call sites, in start-byte order; empty without a key.
+    pub calls: Vec<WireCall>,
 }
 
 /// A call-site hit with the index key it was read under (the cursor / budget re-anchor material).

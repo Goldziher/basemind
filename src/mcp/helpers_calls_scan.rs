@@ -155,7 +155,13 @@ pub(super) async fn mark_shared_lines(
             edges.push((hit.path.clone(), key));
         }
     }
-    let edge_calls = route.calls_in_files(cache, &edges).await.unwrap_or_default();
+    let edge_calls: Vec<Vec<CallRef>> = route
+        .calls_in_files(cache, &edges)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|read| read.map(|(_, calls)| calls).unwrap_or_default())
+        .collect();
     let edges: Vec<crate::path::RelPath> = edges.into_iter().map(|(path, _)| path).collect();
     let flags: Vec<bool> = {
         let mut on_page: ahash::AHashMap<(&crate::path::RelPath, u32, &str), usize> = ahash::AHashMap::new();
@@ -456,14 +462,7 @@ impl InRamCallIndex {
         use rayon::prelude::*;
         let paths: Vec<(&crate::path::RelPath, &str, crate::index::keys::ContentKey)> = files
             .iter()
-            .map(|(rel, meta)| {
-                // The key the index view yields for this file, so cursors round-trip between the
-                // two paths. An entry that records none has no rows; any stable key orders it. ~keep
-                let content = meta.content_key.unwrap_or_else(|| {
-                    crate::index::keys::content_key(&meta.hash_hex, &meta.language, meta.extract_epoch)
-                });
-                (rel, &*meta.hash_hex, content)
-            })
+            .map(|(rel, meta)| (rel, &*meta.hash_hex, meta.order_key()))
             .collect();
         let mut entries: Vec<InRamCall> = Vec::new();
         let mut by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>> =

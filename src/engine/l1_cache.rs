@@ -195,6 +195,14 @@ impl FileMeta {
             && self.extract_epoch == entry.extract_epoch
             && self.content_key == entry.content_key
     }
+
+    /// The content key this file's calls are ordered under where no index is read: the recorded
+    /// [`content_key`](Self::content_key), else the key its content would be written under. The
+    /// in-RAM projection, its cursor generation and its placement of resolved callers all use it.
+    pub(crate) fn order_key(&self) -> crate::index::keys::ContentKey {
+        self.content_key
+            .unwrap_or_else(|| crate::index::keys::content_key(&self.hash_hex, &self.language, self.extract_epoch))
+    }
 }
 
 impl From<&crate::store::FileEntry> for FileMeta {

@@ -114,16 +114,16 @@ impl MapCache {
         }
     }
 
-    /// A digest of every file's path and recorded content key
-    /// ([`crate::store::FileEntry::content_key`]), as [`crate::index::live_keys::LiveKeys`] digests
-    /// them: the generation a `references` / `callers` cursor carries when the scan is forwarded or
-    /// runs in RAM. Each delta builds a new map, so the value is computed once per map.
+    /// A digest of every file's path and order key ([`l1_cache::FileMeta::order_key`]), as
+    /// [`crate::index::live_keys::LiveKeys`] digests them: the generation a `references` / `callers`
+    /// cursor carries when the scan runs in RAM. Each delta builds a new map, so the value is
+    /// computed once per map.
     pub(crate) fn content_fingerprint(&self) -> u64 {
         *self.fingerprint.get_or_init(|| {
             crate::index::live_keys::fingerprint_of(
                 self.files
                     .iter()
-                    .filter_map(|(path, meta)| Some((path.as_bytes(), meta.content_key.as_ref()?))),
+                    .map(|(path, meta)| (path.as_bytes(), meta.order_key())),
             )
         })
     }

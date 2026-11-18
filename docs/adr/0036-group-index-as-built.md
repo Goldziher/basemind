@@ -83,9 +83,12 @@ force for the clauses that changed. A clause not named here stands.
    disk when a handle is reopened, and dropped with the view's last handle. A row of a content
    the view does not hold is examined but yields no hit; one held at several paths yields one hit
    per path. The hit key is the row key followed by the path. A `references` or `callers` cursor
-   is that hit key behind a digest of the live keys it was cut from (of the in-RAM map's recorded
-   keys when the scan is forwarded or runs in RAM), and is refused as stale once they change,
-   since an edit moves the edited file's hits in key order. The key is a 16-byte blake3
+   is that hit key behind a digest of the live keys the scan ran under (the daemon's when the scan
+   is forwarded; when the in-RAM projection runs it, of the map's keys, each entry's recorded key
+   or else the key its content would be written under), and is refused as stale once they change,
+   since an edit moves the edited file's hits in key order. A resolved caller the name scan cannot
+   see is placed in that order by the content key its file was read under, so it always has a
+   place and no new truncation reason is needed. The key is a 16-byte blake3
    truncation: a collision would merge two contents' rows and nothing detects it; at 2^-128 per
    pair this is accepted.
 

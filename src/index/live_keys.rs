@@ -57,7 +57,7 @@ impl LiveKeys {
         by_path.sort_unstable_by(|a, b| entries[*a as usize].1.cmp(&entries[*b as usize].1));
         let fingerprint = fingerprint_of(by_path.iter().map(|at| {
             let (key, path) = &entries[*at as usize];
-            (path.as_bytes(), key)
+            (path.as_bytes(), *key)
         }));
         Self {
             entries: entries.into_boxed_slice(),
@@ -107,13 +107,13 @@ impl LiveKeys {
 }
 
 /// The digest of `(path, key)` pairs given in path order ([`LiveKeys::fingerprint`]). The in-RAM map
-/// digests its recorded keys the same way, so the two agree whenever they map the same paths alike.
-pub(crate) fn fingerprint_of<'a>(pairs: impl Iterator<Item = (&'a [u8], &'a ContentKey)>) -> u64 {
+/// digests its order keys the same way, so the two agree whenever they map the same paths alike.
+pub(crate) fn fingerprint_of<'a>(pairs: impl Iterator<Item = (&'a [u8], ContentKey)>) -> u64 {
     let mut hasher = blake3::Hasher::new();
     for (path, key) in pairs {
         hasher.update(&u32::try_from(path.len()).unwrap_or(u32::MAX).to_be_bytes());
         hasher.update(path);
-        hasher.update(key);
+        hasher.update(&key);
     }
     let digest = hasher.finalize();
     let mut head = [0u8; 8];

@@ -558,25 +558,3 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
     let refused = page(&store, Some(cursor)).expect_err("a cursor cut before the edit");
     assert!(refused.message.contains("changed since this cursor"), "{refused:?}");
 }
-
-/// Where a renamed caller's position in the scan order cannot be known (a forwarded read whose
-/// in-RAM map lacks the file), the page says it is incomplete instead of dropping it in silence.
-#[test]
-fn a_renamed_caller_that_cannot_be_placed_marks_the_page_truncated() {
-    use super::{ResolvedCallers, merge_resolved};
-
-    let scan = scan_calls_in_ram(
-        &super::super::helpers_calls_scan::InRamCallIndex::empty(),
-        "f",
-        super::Matching::Exact,
-        10,
-        None,
-    );
-    let resolved = ResolvedCallers {
-        unplaced: 1,
-        ..ResolvedCallers::default()
-    };
-    let merged = merge_resolved(scan, Some(resolved), 10, None);
-    assert!(merged.total_is_partial, "a dropped caller is reported");
-    assert_eq!(merged.total, 1, "and counted");
-}
