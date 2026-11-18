@@ -367,7 +367,7 @@ fn scanned_store_with_an_index_behind(root: &Path) -> (std::path::PathBuf, u64) 
 }
 
 /// A store opened read-only never ran the writer open's generation check, yet a scan can run into it
-/// in place (`mcp::helpers::scan_and_refresh`). Skipping the file map's files as unchanged and then
+/// in place (`Workspace::rescan`, behind `index_rescan`). Skipping the file map's files as unchanged and then
 /// sealing past the file map would make the two sides agree over the lost rows for good.
 #[test]
 fn a_scan_into_a_read_only_opened_store_rebuilds_an_index_behind_its_file_map() {
