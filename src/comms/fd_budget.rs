@@ -17,8 +17,8 @@ const FJALL_FILES_PER_DB: u64 = 900;
 /// Open-file cache of the comms store, which holds a few small keyspaces.
 pub const COMMS_STORE_CACHED_FILES: usize = 32;
 
-/// Git-history databases the budget assumes open at once.
-const GIT_HISTORIES: u64 = 8;
+/// Git-history databases open at once: the daemon closes the least recently used past this cap.
+const GIT_HISTORIES: u64 = super::git_history_ops::MAX_OPEN_HISTORIES as u64;
 /// Front-ends that accept connections: the socket or pipe, and HTTP.
 const FRONT_ENDS: u64 = 2;
 /// Descriptors for everything else: logs, lock files, watchers, the runtime, child pipes.
