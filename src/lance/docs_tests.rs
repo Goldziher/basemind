@@ -264,3 +264,24 @@ fn live_keys_and_metadata_filters_apply_together() {
     assert!(lexical.iter().all(|h| h.doc_key == "pdf"), "{lexical:?}");
     assert!(!lexical.is_empty());
 }
+
+/// A search opens the store without the group lock: a store of another model or version is refused
+/// and left as it is, never wiped from under the scan that writes it.
+#[test]
+fn a_search_side_open_of_a_mismatched_store_refuses_and_wipes_nothing() {
+    let (dir, store) = store();
+    store
+        .write(&[doc("kept", "text/markdown", &[], vec![chunk(0, "kept", None, &[])])])
+        .unwrap();
+    drop(store);
+    let path = dir.path().join("docs");
+    let meta = std::fs::read(path.join(crate::lance::META_FILE)).unwrap();
+
+    let refused = DocStore::shared_existing(&path, DIM, "another-model");
+    assert!(refused.is_err(), "another model is refused");
+    assert_eq!(std::fs::read(path.join(crate::lance::META_FILE)).unwrap(), meta);
+    let reopened = DocStore::shared_existing(&path, DIM, "test-model")
+        .unwrap()
+        .expect("store exists");
+    assert!(reopened.present(&["kept".to_string()]).unwrap().contains_key("kept"));
+}

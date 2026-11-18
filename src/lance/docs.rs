@@ -174,6 +174,9 @@ fn index_for(column: &str) -> Index {
 pub struct DocStore {
     lance: LanceStore,
     gate: SweepGate,
+    /// Opened by [`Self::open`], which creates missing tables: a writer may reuse the handle. One
+    /// [`Self::shared_existing`] opened has only the tables it found.
+    created: bool,
 }
 
 /// Orders the dead-row sweep against row writes of one store directory, across every view of the
@@ -193,6 +196,12 @@ fn sweep_gate(dir: &Path) -> SweepGate {
     std::sync::Arc::clone(gates.entry(dir.to_path_buf()).or_default())
 }
 
+/// The process's open document stores, by directory.
+fn handles() -> &'static std::sync::Mutex<AHashMap<PathBuf, DocStore>> {
+    static HANDLES: std::sync::OnceLock<std::sync::Mutex<AHashMap<PathBuf, DocStore>>> = std::sync::OnceLock::new();
+    HANDLES.get_or_init(Default::default)
+}
+
 impl DocStore {
     /// Open (or create) the store at `dir` for vectors of `model` at `dim`. A store of another
     /// model, dimension or table version is wiped; one of a newer version is refused.
@@ -206,6 +215,7 @@ impl DocStore {
         Ok(Self {
             lance,
             gate: sweep_gate(dir),
+            created: true,
         })
     }
 
@@ -213,10 +223,9 @@ impl DocStore {
     /// one process share it. A handle whose directory was removed since is dropped and the store
     /// opened again.
     pub fn shared(dir: &Path, dim: u16, model: &str) -> Result<Self> {
-        static HANDLES: std::sync::OnceLock<std::sync::Mutex<AHashMap<PathBuf, DocStore>>> = std::sync::OnceLock::new();
-        let handles = HANDLES.get_or_init(Default::default);
-        let mut handles = handles.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut handles = handles().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(store) = handles.get(dir)
+            && store.created
             && store.dim() == dim
             && store.lance.embedding_model() == crate::embeddings::model_key(model)
             && dir.join(super::META_FILE).exists()
@@ -228,12 +237,33 @@ impl DocStore {
         Ok(store)
     }
 
-    /// [`Self::shared`] when a store exists at `dir`; `None` when none was ever written there.
+    /// Whether a store was ever written at `dir`.
+    pub fn exists(dir: &Path) -> bool {
+        dir.join(super::META_FILE).exists()
+    }
+
+    /// The process's handle on the store at `dir` when one exists; `None` when none was ever written
+    /// there. Unlike [`Self::shared`] it never wipes or creates: a store of another model, dimension or
+    /// version is refused and left as it is ([`LanceStore::open_existing`]). A search holds no group
+    /// lock, so wiping here would destroy the tables a scan of another binary is writing.
     pub fn shared_existing(dir: &Path, dim: u16, model: &str) -> Result<Option<Self>> {
-        if !dir.join(super::META_FILE).exists() {
+        if !Self::exists(dir) {
             return Ok(None);
         }
-        Self::shared(dir, dim, model).map(Some)
+        let mut handles = handles().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(store) = handles.get(dir)
+            && store.dim() == dim
+            && store.lance.embedding_model() == crate::embeddings::model_key(model)
+        {
+            return Ok(Some(store.clone()));
+        }
+        let store = Self {
+            lance: LanceStore::open_existing(dir, dim, model)?,
+            gate: sweep_gate(dir),
+            created: false,
+        };
+        handles.insert(dir.to_path_buf(), store.clone());
+        Ok(Some(store))
     }
 
     pub fn dim(&self) -> u16 {
