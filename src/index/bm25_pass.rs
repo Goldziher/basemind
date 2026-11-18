@@ -396,6 +396,18 @@ impl Bm25Pass {
             stats_from_ledger: exact.is_some(),
             swept: sweep,
         };
+        // The stats first: they do not depend on the retirement, and a retirement that fails then ~keep
+        // costs only garbage, still owed to the next full pass. ~keep
+        match exact {
+            Some((n, len)) => {
+                db.meta.insert(META_BM25_DOC_COUNT, n.to_be_bytes())?;
+                db.meta.insert(META_BM25_TOTAL_LEN, len.to_be_bytes())?;
+            }
+            None => db.recompute_bm25_stats()?,
+        }
+        if db.bm25_stat(META_BM25_DIRTY)? == Some(self.token) {
+            db.meta.insert(META_BM25_EXACT, self.token.to_be_bytes())?;
+        }
         if sweep {
             let owed = db.sweep_owed_token()?;
             drop(state);
@@ -408,16 +420,6 @@ impl Bm25Pass {
             if let Some(own) = self.owed_own {
                 db.clear_sweep_owed_if(own)?;
             }
-        }
-        match exact {
-            Some((n, len)) => {
-                db.meta.insert(META_BM25_DOC_COUNT, n.to_be_bytes())?;
-                db.meta.insert(META_BM25_TOTAL_LEN, len.to_be_bytes())?;
-            }
-            None => db.recompute_bm25_stats()?,
-        }
-        if db.bm25_stat(META_BM25_DIRTY)? == Some(self.token) {
-            db.meta.insert(META_BM25_EXACT, self.token.to_be_bytes())?;
         }
         Ok(outcome)
     }

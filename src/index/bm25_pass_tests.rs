@@ -402,3 +402,23 @@ fn a_batch_staged_before_the_pass_and_committed_during_it_is_not_lost() {
     pass.finish().unwrap();
     assert_eq!(swept(&db).1, db.view().bm25_stats(), "and the next pass still agrees");
 }
+
+/// S5: the stats do not depend on the retirement, so a retirement that fails must still leave the
+/// pass's stats written, and the garbage owed to the next full pass.
+#[test]
+fn a_failed_retirement_still_writes_the_stats_and_owes_the_sweep() {
+    let (_dir, db) = exact_db_with(&[("src/a.rs", "a1", &["alpha"])]);
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
+    upsert(&db, "src/a.rs", "a2", &["beta", "gamma"]);
+    upsert(&db, "src/b.rs", "b1", &["delta"]);
+    db.fault.inject_commit_failures(1);
+    assert!(pass.finish().is_err(), "the retirement's commit failed");
+    assert_eq!(db.view().bm25_stats(), Some((2, 3)), "the stats were written first");
+
+    let pass = db.begin_bm25_pass(PassKind::Full).unwrap();
+    assert!(
+        pass.finish().unwrap().swept,
+        "the failed retirement's garbage is still owed"
+    );
+    assert_eq!(postings_of(&db, "a1"), 0);
+}
