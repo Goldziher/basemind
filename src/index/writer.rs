@@ -222,6 +222,10 @@ impl IndexWriter {
     /// Drop the path-keyed rows of `rel`. Used when a file is removed from the scan set. Its content
     /// rows stay for the views that hold the content; the group sweep collects them.
     pub fn remove_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
+        // The view is unsettled until its file map drops `rel` (see `group_sweep`). ~keep
+        if let Some(own) = &self.db.group {
+            own.group.register_path_write(own.view_id);
+        }
         self.owe_content_sweep();
         self.stage_deletes_for(rel)
     }

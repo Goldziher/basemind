@@ -15,8 +15,14 @@
 //!   check, and its content is kept, or reads the rows after the delete and writes them again.
 //! - A file map written while a sweep runs may name a content the sweep read no map naming: its
 //!   pending entry outlives that write until the sweep ends ([`PendingContents::settle`]).
-//! - The debt is cleared only when no view has a pending content: a pass still running may write a
-//!   file map that drops one.
+//! - A view is unsettled from its first path write (an upsert or a removal) until it writes its
+//!   file map. The debt is cleared only when no view is unsettled: a pass still running may write a
+//!   file map that drops a content the sweep found named.
+//! - A sweep that kept the debt for that reason is not repeated while nothing it depended on
+//!   changed: the debt token is the one it read, and no view settled or was dropped since
+//!   ([`PendingContents::deferred`]). A pass that failed before writing its file map keeps its view
+//!   unsettled for as long as a handle holds it open, and would otherwise cost every full pass of
+//!   the group the whole content sweep.
 //!
 //! A view is retired when its view directory is gone (the workspace reaper or the cache budget
 //! removed it) and no handle of this process has it open or claimed. Its record is replaced by a
@@ -43,50 +49,90 @@ const META_RETIRED_VIEW: &[u8] = b"\xffgroup/retired_view/";
 /// Contents deleted per commit, each batch under the gate held exclusively.
 const SWEEP_BATCH_CONTENTS: usize = 256;
 
-/// Content keys staged by each view's writer that no file map the view wrote names yet. See the
-/// module docs.
+/// The path writes of one unsettled view: see [`PendingContents`].
+#[derive(Default)]
+struct ViewPending {
+    /// Each content key the view's writer staged, with the sequence number of its latest
+    /// registration.
+    keys: AHashMap<ContentKey, u64>,
+    /// The sequence number of the view's latest path write.
+    last_write: u64,
+}
+
+/// The path writes each view's writer made that no file map the view wrote reflects yet: the
+/// content keys it staged, which are live, and whether it is unsettled at all. See the module docs.
 #[derive(Default)]
 pub(crate) struct PendingContents {
     seq: u64,
-    /// Per view: each pending key with the sequence number of its latest registration.
-    by_view: AHashMap<u32, AHashMap<ContentKey, u64>>,
+    /// The unsettled views.
+    by_view: AHashMap<u32, ViewPending>,
     sweeping: bool,
-    /// Views that wrote a file map while the sweep ran, with the sequence number then: their keys
-    /// registered up to it are settled when the sweep ends.
+    /// Views that wrote a file map while the sweep ran, with the sequence number then: their writes
+    /// up to it are settled when the sweep ends.
     settled_while_sweeping: AHashMap<u32, u64>,
+    /// Bumped whenever a view's writes are settled or dropped: a sweep may then find a content dead
+    /// that the last one kept.
+    changes: u64,
+    /// The debt token a sweep kept only because a view was unsettled, with [`Self::changes`] then.
+    deferred: Option<(u64, u64)>,
 }
 
 impl PendingContents {
-    fn register(&mut self, view_id: u32, key: ContentKey) {
+    fn write(&mut self, view_id: u32) -> &mut ViewPending {
         self.seq += 1;
-        self.by_view.entry(view_id).or_default().insert(key, self.seq);
+        let pending = self.by_view.entry(view_id).or_default();
+        pending.last_write = self.seq;
+        pending
+    }
+
+    fn register(&mut self, view_id: u32, key: ContentKey) {
+        let seq = self.seq + 1;
+        self.write(view_id).keys.insert(key, seq);
     }
 
     /// The view wrote its file map: every key it staged so far is named by it, or was dropped.
     fn settle(&mut self, view_id: u32) {
         if self.sweeping {
             self.settled_while_sweeping.insert(view_id, self.seq);
-        } else {
-            self.by_view.remove(&view_id);
+        } else if self.by_view.remove(&view_id).is_some() {
+            self.changes += 1;
+        }
+    }
+
+    /// Drop the writes of every view `keep` rejects.
+    fn drop_views(&mut self, keep: impl Fn(u32) -> bool) {
+        let before = self.by_view.len();
+        self.by_view.retain(|view_id, _| keep(*view_id));
+        if self.by_view.len() != before {
+            self.changes += 1;
         }
     }
 
     fn holds(&self, key: &ContentKey) -> bool {
-        self.by_view.values().any(|keys| keys.contains_key(key))
+        self.by_view.values().any(|pending| pending.keys.contains_key(key))
     }
 
     fn is_empty(&self) -> bool {
-        self.by_view.values().all(|keys| keys.is_empty())
+        self.by_view.is_empty()
     }
 
     fn end_sweep(&mut self) {
         self.sweeping = false;
         for (view_id, upto) in std::mem::take(&mut self.settled_while_sweeping) {
-            if let Some(keys) = self.by_view.get_mut(&view_id) {
-                keys.retain(|_, seq| *seq > upto);
+            let Some(pending) = self.by_view.get_mut(&view_id) else {
+                continue;
+            };
+            let before = pending.keys.len();
+            pending.keys.retain(|_, seq| *seq > upto);
+            let shrank = pending.keys.len() != before;
+            let settled = pending.last_write <= upto;
+            if settled {
+                self.by_view.remove(&view_id);
+            }
+            if settled || shrank {
+                self.changes += 1;
             }
         }
-        self.by_view.retain(|_, keys| !keys.is_empty());
     }
 }
 
@@ -98,6 +144,11 @@ impl GroupDb {
     /// `key` was staged by view `view_id`'s writer.
     pub(crate) fn register_pending(&self, view_id: u32, key: ContentKey) {
         self.pending().register(view_id, key);
+    }
+
+    /// View `view_id`'s writer staged a path write that stages no content (a removal).
+    pub(crate) fn register_path_write(&self, view_id: u32) {
+        self.pending().write(view_id);
     }
 
     /// View `view_id` wrote its file map.
@@ -114,7 +165,7 @@ impl GroupDb {
         if pending.sweeping {
             return None;
         }
-        pending.by_view.retain(|view_id, _| open.contains(view_id));
+        pending.drop_views(|view_id| open.contains(&view_id));
         pending.sweeping = true;
         Some(SweepWindow {
             group: Arc::clone(self),
@@ -152,6 +203,8 @@ pub(crate) struct GroupSweep<'a> {
     _window: SweepWindow,
     /// The debt as the sweep found it.
     owed: Option<u64>,
+    /// The debt is one an earlier sweep kept only for an unsettled view, and nothing changed since.
+    deferred: bool,
     report: GroupSweepReport,
     /// A retired view held a BM25 forward row that did not decode, so the posting list owes a sweep.
     postings_owed: bool,
@@ -199,11 +252,17 @@ impl IndexDb {
         let Some(window) = own.group.begin_sweep() else {
             return Ok(None);
         };
+        let owed = self.content_sweep_owed()?;
+        let deferred = {
+            let pending = own.group.pending();
+            owed.is_some_and(|owed| pending.deferred == Some((owed, pending.changes)))
+        };
         let mut sweep = GroupSweep {
             db: self,
             group: Arc::clone(&own.group),
             _window: window,
-            owed: self.content_sweep_owed()?,
+            owed,
+            deferred,
             report: GroupSweepReport::default(),
             postings_owed: false,
         };
@@ -237,9 +296,10 @@ impl GroupSweep<'_> {
             .collect())
     }
 
-    /// Whether the group owes a sweep of its content rows, or this sweep retired a view.
+    /// Whether the group owes a sweep of its content rows that could find something the last one
+    /// did not, or this sweep retired a view.
     pub(crate) fn owes_contents(&self) -> bool {
-        self.owed.is_some() || self.report.views_retired > 0
+        (self.owed.is_some() && !self.deferred) || self.report.views_retired > 0
     }
 
     /// Retire the view `view_id` of `(workspace_key, view)` unless a handle of this process has it
@@ -318,8 +378,14 @@ impl GroupSweep<'_> {
     pub(crate) fn finish(mut self, contents_swept: bool) -> Result<GroupSweepReport, IndexError> {
         if contents_swept && let Some(owed) = self.owed {
             let _exclusive = self.db.bm25_gate.write();
-            if self.db.content_sweep_owed()? == Some(owed) && self.group.pending().is_empty() {
-                self.db.meta.raw().remove(META_CONTENT_SWEEP_OWED)?;
+            if self.db.content_sweep_owed()? == Some(owed) {
+                let mut pending = self.group.pending();
+                if pending.is_empty() {
+                    self.db.meta.raw().remove(META_CONTENT_SWEEP_OWED)?;
+                    pending.deferred = None;
+                } else {
+                    pending.deferred = Some((owed, pending.changes));
+                }
             }
         }
         if std::mem::take(&mut self.postings_owed) {

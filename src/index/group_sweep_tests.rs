@@ -400,3 +400,81 @@ fn a_rebuilt_view_that_held_rows_owes_the_content_sweep() {
         "contents only the rebuilt view held are dead"
     );
 }
+
+#[test]
+fn a_sweep_left_owing_for_an_unsettled_view_is_not_repeated_until_something_changes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let (a, b) = (open_view(&group, "ws-a", &memory), open_view(&group, "ws-b", &memory));
+    publish(&a, &[]);
+    // b's pass failed before its file map: its handle stays open, its content pending. ~keep
+    write(&b, "x.rs", "stuck");
+    assert_eq!(sweep(&a, &[]).contents_removed, 0);
+    assert!(a.content_sweep_owed_for_test());
+
+    let again = a.begin_group_sweep().expect("begin").expect("sweep");
+    assert!(
+        !again.owes_contents(),
+        "nothing changed: the sweep would find what the last one found"
+    );
+    drop(again);
+
+    write(&a, "y.rs", "fresh");
+    publish(&a, &[("y.rs", "fresh")]);
+    let after_write = a.begin_group_sweep().expect("begin").expect("sweep");
+    assert!(after_write.owes_contents(), "a path write owes it again");
+    drop(after_write);
+    sweep(&a, &["fresh"]);
+
+    publish(&b, &[]);
+    let after = a.begin_group_sweep().expect("begin").expect("sweep");
+    assert!(after.owes_contents(), "b's file map settled its pending content");
+    after.finish(false).expect("finish");
+    assert_eq!(sweep(&a, &["fresh"]).contents_removed, 1);
+    assert!(!a.content_sweep_owed_for_test());
+}
+
+#[test]
+fn a_pass_that_only_removes_paths_keeps_the_debt_until_its_file_map_is_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let (a, b) = (open_view(&group, "ws-a", &memory), open_view(&group, "ws-b", &memory));
+    write(&b, "x.rs", "dropped");
+    publish(&b, &[("x.rs", "dropped")]);
+    publish(&a, &[]);
+    let mut writer = b.writer();
+    writer.remove_file(&RelPath::from("x.rs")).expect("remove");
+    writer.commit().expect("commit");
+
+    // b's map on disk still names the content. ~keep
+    assert_eq!(sweep(&a, &["dropped"]).contents_removed, 0);
+    assert!(a.content_sweep_owed_for_test(), "b's next file map drops it");
+
+    publish(&b, &[]);
+    assert_eq!(sweep(&a, &[]).contents_removed, 1);
+    assert!(!a.content_sweep_owed_for_test());
+}
+
+#[test]
+fn the_pending_contents_of_a_view_no_handle_has_open_are_dropped_and_the_debt_paid() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), no_lock).expect("group");
+    let (a, b) = (open_view(&group, "ws-a", &memory), open_view(&group, "ws-b", &memory));
+    publish(&a, &[]);
+    // b's pass ends without writing its file map, and its handle closes. ~keep
+    write(&b, "x.rs", "orphan");
+    assert_eq!(sweep(&a, &[]).contents_removed, 0, "pending while b is open");
+    drop(b);
+
+    let open = a.begin_group_sweep().expect("begin").expect("sweep");
+    assert!(
+        open.owes_contents(),
+        "dropping b's pending content changed what a sweep finds"
+    );
+    drop(open);
+    assert_eq!(sweep(&a, &[]).contents_removed, 1);
+    assert!(!a.content_sweep_owed_for_test());
+}
