@@ -51,7 +51,7 @@ pub fn extract_l1_l2(
         ParseOutcome::Ok(t) => t,
         ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
         ParseOutcome::TimedOut => {
-            return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
+            return Err(ExtractError::ParseTimeout(crate::lang::parse_timeout()));
         }
     };
     let bodies = rust_macro_items::MacroBodies::collect(lang, tree.root_node(), source)?;

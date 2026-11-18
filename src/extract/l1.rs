@@ -12,7 +12,7 @@ pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError
         ParseOutcome::Ok(t) => t,
         ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
         ParseOutcome::TimedOut => {
-            return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
+            return Err(ExtractError::ParseTimeout(crate::lang::parse_timeout()));
         }
     };
     let bodies = MacroBodies::collect(lang, tree.root_node(), source)?;
