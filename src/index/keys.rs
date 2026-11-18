@@ -34,8 +34,9 @@ pub use crate::index::keys_memory::{
     parse_memory_key_only,
 };
 pub use crate::index::keys_probe::{
-    PROBE_HASH_LEN, PROBE_MANIFEST_START, ProbeHash, import_target, import_target_value, import_targets_prefix,
-    importer_by_probe, importers_by_probe_prefix, parse_import_target, parse_importer_by_probe, parse_probe_manifest,
+    FILE_EDGES_START, FileEdge, FileEdges, MAX_UNRESOLVED_SPECIFIERS, PROBE_HASH_LEN, PROBE_MANIFEST_START, ProbeHash,
+    file_edges_value, import_target, import_target_value, import_targets_prefix, importer_by_probe,
+    importers_by_probe_prefix, parse_file_edges, parse_import_target, parse_importer_by_probe, parse_probe_manifest,
     probe_hash, probe_manifest_value,
 };
 

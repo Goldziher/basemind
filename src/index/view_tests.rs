@@ -187,3 +187,51 @@ fn named_reads_follow_the_data_they_derive_from() {
         "the cap truncates in key order"
     );
 }
+
+/// File edges are rows of a view, not of a content: two views of one group holding the same
+/// importer each read their own, and one view's re-resolve or removal leaves the other's whole.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn file_edges_are_per_view_in_a_group() {
+    use super::group::GroupDb;
+    use super::keys::{FileEdge, FileEdges};
+    use crate::path::RelPath;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = GroupDb::open_shared(&dir.path().join("group"), || Ok(Box::new(()))).expect("open group");
+    let open = |workspace: &str| {
+        let id = group.allocate_view_id(workspace, VIEW_WORKING).expect("allocate");
+        group.open_view(id, &memory, false).expect("open view")
+    };
+    let (a, b) = (open("ws-a"), open("ws-b"));
+    let app = RelPath::from("src/app.ts");
+    let to = |target: &str| FileEdges {
+        edges: vec![FileEdge {
+            target: RelPath::from(target),
+            local_start: 0,
+            type_only: false,
+        }],
+        ..FileEdges::default()
+    };
+
+    let mut w = a.writer();
+    w.upsert_file_edges(&app, &to("src/one.ts"));
+    w.commit().expect("commit a");
+    let mut w = b.writer();
+    w.upsert_file_edges(&app, &to("src/two.ts"));
+    w.commit().expect("commit b");
+
+    assert_eq!(a.view().file_edges(), vec![(app.clone(), to("src/one.ts"))]);
+    assert_eq!(b.view().file_edges(), vec![(app.clone(), to("src/two.ts"))]);
+
+    let mut w = a.writer();
+    w.remove_resolved_file(&app).expect("remove");
+    w.commit().expect("commit removal");
+    assert!(a.view().file_edges().is_empty(), "the removal clears its own view");
+    assert_eq!(
+        b.view().file_edges(),
+        vec![(app, to("src/two.ts"))],
+        "and leaves the other view's row"
+    );
+}

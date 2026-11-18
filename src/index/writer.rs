@@ -479,6 +479,21 @@ impl IndexWriter {
         );
     }
 
+    /// Record `importer`'s file-level import edges in its reserved `import_targets` row
+    /// ([`keys::FILE_EDGES_START`]). Like [`Self::upsert_import_probes`] it stages no delete: the
+    /// importer's previous row was purged with the rest of its prefix by the `upsert_resolved_file`
+    /// (or `remove_resolved_file`) that preceded the stitch, and goes the same way when it is removed.
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+    pub fn upsert_file_edges(&mut self, importer: &RelPath, edges: &keys::FileEdges) {
+        stage_insert(
+            &mut self.batch,
+            &mut self.staged_bytes,
+            &self.db.import_targets,
+            keys::import_target(importer, keys::FILE_EDGES_START),
+            keys::file_edges_value(edges),
+        );
+    }
+
     /// Flush this batch to disk atomically. Consumes the writer.
     ///
     /// `WriteBatch::commit` journals every staged item, then applies it to the memtables and runs
