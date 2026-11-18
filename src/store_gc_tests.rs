@@ -944,3 +944,38 @@ fn cache_stats_report_the_repository_groups_without_counting_them_in_the_total()
         "only the marker the test wrote grew the total; the groups are not in it"
     );
 }
+
+/// A clear holds the workspace lock through the delete instead of probing it first: under a live
+/// writer every workspace component is refused, naming the lock, and nothing is removed.
+#[test]
+fn a_clear_under_a_held_workspace_lock_is_refused() {
+    let fx = build_fixture();
+    fs::write(fx.basemind_dir.join(TELEMETRY_FILENAME), b"{}\n").expect("telemetry");
+    let _writer = crate::store_lock::acquire_lock(&fx.basemind_dir).expect("writer lock");
+
+    for component in [
+        CacheComponent::Views,
+        CacheComponent::Telemetry,
+        CacheComponent::Lance,
+        CacheComponent::All,
+    ] {
+        let refused = clear_component_in(&fx.basemind_dir, component, &fx.blobs());
+        assert!(
+            matches!(refused, Err(GcError::Store(StoreError::Locked { .. }))),
+            "{component:?}: {refused:?}"
+        );
+    }
+    let refused = clear_single_view(&fx.basemind_dir, "working");
+    assert!(
+        matches!(refused, Err(GcError::Store(StoreError::Locked { .. }))),
+        "{refused:?}"
+    );
+    assert!(
+        fx.basemind_dir
+            .join(VIEWS_DIR)
+            .join("working")
+            .join(INDEX_FILE)
+            .exists()
+    );
+    assert!(fx.basemind_dir.join(TELEMETRY_FILENAME).exists());
+}

@@ -210,6 +210,10 @@ pub(crate) fn clear_component_in(
     blobs: &BlobStorePaths,
 ) -> Result<ClearReport, GcError> {
     let mut report = ClearReport::default();
+    let _workspace = match component {
+        CacheComponent::Blobs | CacheComponent::GitCache => None,
+        _ => lock_workspace(basemind_dir)?,
+    };
     match component {
         CacheComponent::Blobs => report.spared_newer_blob_namespaces = clear_blobs(blobs)?,
         CacheComponent::Views => remove_dir_if_exists(&basemind_dir.join(VIEWS_DIR))?,
@@ -221,10 +225,29 @@ pub(crate) fn clear_component_in(
         }
         CacheComponent::All => {
             clear_lance(basemind_dir)?;
-            remove_dir_if_exists(basemind_dir)?;
+            if basemind_dir.exists() {
+                crate::store_lock::remove_dir_under_lock(basemind_dir).map_err(|source| GcError::Io {
+                    path: basemind_dir.to_path_buf(),
+                    source,
+                })?;
+            }
         }
     }
     Ok(report)
+}
+
+/// The workspace lock of `basemind_dir`, held through a clear of its components, so no writer
+/// opens the index between the check and the delete. `None` when there is no workspace directory
+/// (nothing of it to clear, and locking would create one); [`crate::store::StoreError::Locked`],
+/// naming the holder, when a live writer holds it.
+fn lock_workspace(basemind_dir: &Path) -> Result<Option<crate::store_lock::LockGuard>, GcError> {
+    if !basemind_dir.exists() {
+        return Ok(None);
+    }
+    Ok(Some(crate::store_lock::try_acquire_lock_as(
+        basemind_dir,
+        crate::store::LockHolder::Maintenance,
+    )?))
 }
 
 /// Empty the current namespace (keeping its directory), remove the namespaces of older schemas
@@ -279,6 +302,7 @@ pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError>
             ),
         });
     }
+    let _workspace = lock_workspace(basemind_dir)?;
     remove_dir_if_exists(&basemind_dir.join(VIEWS_DIR).join(name))
 }
 
@@ -456,6 +480,10 @@ fn per_view_file_count(basemind_dir: &Path) -> Result<Vec<(String, usize)>, GcEr
 /// stores (shared with the group's other worktrees, whose next scans rebuild the rows from the
 /// cached blobs) and the per-view stores of earlier builds. Feature-gated: the stores only exist
 /// in intelligence builds, so on a code-only build this is a no-op.
+///
+/// The group stores are written by whichever process holds the group lock, for any worktree of the
+/// group, so they are removed under that lock, and a live holder refuses the clear
+/// ([`crate::store::StoreError::Locked`]). The caller holds this workspace's lock.
 #[cfg(feature = "intelligence")]
 fn clear_lance(basemind_dir: &Path) -> Result<(), GcError> {
     #[cfg(feature = "documents")]
@@ -464,7 +492,11 @@ fn clear_lance(basemind_dir: &Path) -> Result<(), GcError> {
             remove_dir_if_exists(&view.path().join(crate::store_layout::RETRIEVAL_DIR))?;
         }
     }
-    if let Some(group_lance) = crate::store_layout::group_lance_dir_of(basemind_dir) {
+    if let Some(group_lance) = crate::store_layout::group_lance_dir_of(basemind_dir)
+        && group_lance.exists()
+        && let Some(group_dir) = group_lance.parent()
+    {
+        let _group = crate::store_lock::try_acquire_lock_as(group_dir, crate::store::LockHolder::Maintenance)?;
         remove_dir_if_exists(&group_lance)?;
     }
     remove_dir_if_exists(&basemind_dir.join(crate::store::LANCE_DIR))

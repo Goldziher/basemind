@@ -232,6 +232,35 @@ mod tests {
         }
     }
 
+    /// The group's retrieval store is written by whichever process holds the group lock, for any
+    /// worktree of the group: a clear from a sibling worktree whose own lock is free is refused
+    /// while that lock is held, and the store stays.
+    #[cfg(feature = "intelligence")]
+    #[test]
+    fn a_clear_of_the_group_store_under_a_held_group_lock_is_refused() {
+        use crate::store_cache_admin::{BlobStorePaths, CacheComponent, clear_component_in};
+        for component in [CacheComponent::Lance, CacheComponent::All] {
+            let (_tmp, cache) = cache_with_groups(&["g"]);
+            let basemind_dir = workspace(&cache, "w", Some(r#"{"root":"/gone","updated_unix":0,"group":"g"}"#));
+            let blobs = BlobStorePaths {
+                root: cache.join("blobs"),
+                schema: crate::extract::SCHEMA_VER,
+                gc_state: cache.join("gc-state.json"),
+                repos: cache.join("repos"),
+            };
+            let _host = crate::store_lock::acquire_lock(&cache.join(GROUPS_DIR).join("g")).expect("group lock");
+
+            let refused = clear_component_in(&basemind_dir, component, &blobs);
+
+            assert!(
+                matches!(refused, Err(GcError::Store(crate::store::StoreError::Locked { .. }))),
+                "{component:?}: {refused:?}"
+            );
+            assert!(store_of(&cache, "g").exists(), "{component:?} kept the group store");
+            assert!(basemind_dir.exists(), "{component:?} kept the workspace");
+        }
+    }
+
     /// A group that cannot be removed (a held file on Windows, a protected directory) is logged and
     /// left; the reaper goes on with the others and the caller's blob GC still runs.
     #[cfg(unix)]
