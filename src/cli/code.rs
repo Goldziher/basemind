@@ -340,7 +340,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         cursor: cursor.map(Cursor),
                         max_tokens,
                     },
-                    async |s, p| s.code_grep_call(p).await,
+                    async |s, p| s.op(p, Workspace::code_grep).await,
                 )
                 .await,
         ),

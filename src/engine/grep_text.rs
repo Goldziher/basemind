@@ -1,15 +1,18 @@
 //! What a `code_grep` hit shows of its line and of the symbol it sits in.
 //!
-//! Split from `helpers_grep.rs` (the sweep) for the 1000-line cap.
+//! Split from `ops/code_grep.rs` (the sweep) for the 1000-line cap.
 
-use super::types::GrepHit;
+use crate::engine::MapCache;
+use crate::engine::l1_cache::FileMeta;
+use crate::engine::types::grep::GrepHit;
+use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
 /// Longest line text a hit carries. A hit in a minified bundle would otherwise ship the bundle.
-pub(super) const LINE_TEXT_MAX: usize = 400;
+pub(crate) const LINE_TEXT_MAX: usize = 400;
 
 /// Line `line_idx` of `source` without its line terminator, borrowed.
-pub(super) fn line_text<'a>(source: &'a str, line_starts: &[usize], line_idx: usize) -> &'a str {
+pub(crate) fn line_text<'a>(source: &'a str, line_starts: &[usize], line_idx: usize) -> &'a str {
     let start = line_starts[line_idx];
     let end = line_starts.get(line_idx + 1).copied().unwrap_or(source.len());
     source[start..end].trim_end_matches('\n').trim_end_matches('\r')
@@ -21,7 +24,7 @@ pub(super) fn line_text<'a>(source: &'a str, line_starts: &[usize], line_idx: us
 ///
 /// The window is centred on the match rather than anchored at the start of the line: a hit far into
 /// a minified line would otherwise show 400 bytes that do not contain what was searched for.
-pub(super) fn clip_line(line: &str, match_start: usize, match_len: usize) -> String {
+pub(crate) fn clip_line(line: &str, match_start: usize, match_len: usize) -> String {
     if line.len() <= LINE_TEXT_MAX {
         return line.to_owned();
     }
@@ -50,7 +53,7 @@ pub(super) fn clip_line(line: &str, match_start: usize, match_len: usize) -> Str
 /// The outline's byte spans describe the file as it was indexed. A file edited since then gets no
 /// annotation: its hits come from the bytes on disk, and a span laid over different bytes names the
 /// wrong symbol.
-pub(super) fn annotate_symbols(cache: &super::MapCache, hits: &mut [GrepHit]) {
+pub(crate) fn annotate_symbols(cache: &MapCache, hits: &mut [GrepHit]) {
     let mut current: Option<(RelPath, Option<std::sync::Arc<crate::extract::FileMapL1>>)> = None;
     for hit in hits {
         if current.as_ref().is_none_or(|(path, _)| *path != hit.path) {
@@ -76,12 +79,12 @@ pub(super) fn annotate_symbols(cache: &super::MapCache, hits: &mut [GrepHit]) {
 /// carries its size on disk for the byte budget and an empty `hash_hex`, which marks it a document:
 /// it has no bloom row, no outline and no indexed stamp to be stale against. A link is skipped, as
 /// the scan skips one. Blocking: one `lstat` per selected document.
-pub(super) fn text_documents(
-    state: &super::ServerState,
-    cache: &super::MapCache,
+pub(crate) fn text_documents(
+    ws: &Workspace,
+    cache: &MapCache,
     selected: &dyn Fn(&RelPath, &str) -> bool,
-) -> Vec<(RelPath, super::l1_cache::FileMeta)> {
-    let root = state.shared.root.as_path();
+) -> Vec<(RelPath, FileMeta)> {
+    let root = ws.root.as_path();
     cache
         .doc_paths
         .iter()
@@ -96,7 +99,7 @@ pub(super) fn text_documents(
             let stat = std::fs::symlink_metadata(file)
                 .ok()
                 .filter(std::fs::Metadata::is_file)?;
-            let meta = super::l1_cache::FileMeta {
+            let meta = FileMeta {
                 hash_hex: Box::default(),
                 language: language.into(),
                 size_bytes: stat.len(),

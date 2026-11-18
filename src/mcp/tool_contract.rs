@@ -49,7 +49,7 @@ impl BasemindServer {
 }
 
 pub(super) use crate::engine::budget::budget;
-pub(super) use crate::engine::files::{IndexedFiles, Sweep, Unreadable};
+pub(super) use crate::engine::files::{IndexedFiles, Unreadable};
 
 /// The error for a caller-supplied path that leaves the repository ([`crate::engine::files`]).
 pub(super) fn outside_repository(tool: &str, path: &RelPath) -> McpError {

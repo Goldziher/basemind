@@ -20,6 +20,9 @@ pub(crate) enum EngineError {
     /// The index cannot be read right now (empty, or held by another process); retry later.
     #[error("{0}")]
     IndexUnavailable(String),
+    /// The caller cancelled the operation before it finished.
+    #[error("request_cancelled")]
+    Cancelled,
     #[error(transparent)]
     Store(#[from] crate::store::StoreError),
     #[error(transparent)]

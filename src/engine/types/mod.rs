@@ -4,6 +4,7 @@
 pub(crate) mod code;
 pub(crate) mod files;
 pub(crate) mod git;
+pub(crate) mod grep;
 
 use serde::Serialize;
 

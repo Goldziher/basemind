@@ -29,6 +29,7 @@ impl From<EngineError> for McpError {
             EngineError::Unavailable(message) | EngineError::IndexUnavailable(message) => {
                 McpError::invalid_request(message, None)
             }
+            EngineError::Cancelled => super::tasks::request_cancelled(),
             other => McpError::internal_error(other.to_string(), None),
         }
     }
@@ -44,16 +45,21 @@ async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) 
 }
 
 /// `op`'s answer as a tool result.
-fn answer<P, R: Serialize>(ws: &Workspace, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError> {
+fn answer<P, R: Serialize>(
+    ws: &Workspace,
+    p: P,
+    op: impl FnOnce(&Workspace, P) -> Result<R, EngineError>,
+) -> Result<CallToolResult, McpError> {
     json_result(&op(ws, p)?)
 }
 
 /// A verb-tool call: refuse a zero `limit`, unbind the cursor, run `op`, bind the next cursor, and
 /// record the telemetry row under the tool's name. One `spawn_blocking` for the whole call.
-pub(super) async fn call<P, R>(state: &ServerState, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+pub(super) async fn call<P, R, O>(state: &ServerState, p: P, op: O) -> Result<CallToolResult, McpError>
 where
     P: Paged + Send + 'static,
     R: Serialize + 'static,
+    O: FnOnce(&Workspace, P) -> Result<R, EngineError> + Send + 'static,
 {
     let ws = Arc::clone(&state.shared);
     let telemetry = Arc::clone(&state.telemetry);
@@ -96,7 +102,7 @@ fn call_blocking<P: Paged, R: Serialize>(
     ws: &Workspace,
     telemetry: &Telemetry,
     p: P,
-    op: Op<P, R>,
+    op: impl FnOnce(&Workspace, P) -> Result<R, EngineError>,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
@@ -137,6 +143,9 @@ mod tests {
             assert_eq!(mapped.message, message);
             assert!(mapped.data.is_none());
         }
+        let cancelled = McpError::from(EngineError::Cancelled);
+        assert_eq!(cancelled.code, ErrorCode(-32800));
+        assert_eq!(cancelled.message, "request_cancelled");
         let io = McpError::from(EngineError::from(std::io::Error::other("disk gone")));
         assert_eq!(io.code, ErrorCode::INTERNAL_ERROR);
         assert_eq!(io.message, "disk gone");

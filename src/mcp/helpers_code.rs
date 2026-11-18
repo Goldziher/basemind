@@ -1,10 +1,10 @@
-//! Bodies of the code verb tools: `code_symbols`, `code_grep`, `code_search`, `code_refs` and
-//! `find_files`. `code_outline` is an engine operation (`src/engine/ops/code_outline.rs`).
+//! Bodies of the code verb tools `code_search` and `code_refs`. The other code tools are engine
+//! operations (`src/engine/ops/`).
 //!
 //! Each `pub(super) async fn` here is what both the `#[tool]` shim in `tools.rs` and the matching
 //! `basemind code …` command run. They translate the tool's wire arguments
 //! ([`super::types_tools`]) into the per-operation shapes the query bodies take; those bodies stay
-//! where they already lived: `helpers_files`, `helpers_grep`, `helpers_calls`, `helpers_impls`,
+//! where they already lived: `helpers_calls`, `helpers_impls`,
 //! `helpers_intel`, `helpers_code_search`. `code_read` is an engine op (`engine/ops/code_read.rs`).
 
 use rmcp::ErrorData as McpError;
@@ -13,40 +13,12 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::{
     SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, run_find_callers, run_find_implementations,
-    run_find_references, run_workspace_grep,
+    run_find_references,
 };
 use super::tool_contract::budget;
-use super::types::{
-    DependentsResponse, FindCallersParams, FindReferencesParams, GotoDefinitionParams, WorkspaceGrepParams,
-};
+use super::types::{DependentsResponse, FindCallersParams, FindReferencesParams, GotoDefinitionParams};
 use super::types_impls::FindImplementationsParams;
-use super::types_tools::{CodeGrepParams, CodeRefsParams, CodeSearchParams};
-
-/// `code_grep`: content search over every indexed code file.
-pub(super) async fn code_grep(state: &ServerState, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
-    if p.pattern.is_empty() {
-        return Err(McpError::invalid_params(
-            "`code_grep`: `pattern` is empty; pass the text to find.".to_string(),
-            None,
-        ));
-    }
-    state.await_cache_ready().await;
-    run_workspace_grep(
-        state,
-        WorkspaceGrepParams {
-            pattern: p.pattern,
-            language: p.language,
-            path_contains: p.path,
-            limit: p.limit,
-            max_tokens: budget(p.max_tokens),
-            format: None,
-            include_context: p.context.unwrap_or(false),
-            literal: !p.regex.unwrap_or(false),
-            cursor: p.cursor,
-        },
-    )
-    .await
-}
+use super::types_tools::{CodeRefsParams, CodeSearchParams};
 
 /// `code_search`: semantic / hybrid search returning pointers.
 pub(super) async fn code_search(state: &ServerState, p: CodeSearchParams) -> Result<CallToolResult, McpError> {

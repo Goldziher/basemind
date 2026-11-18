@@ -62,35 +62,7 @@ tool_args! {
 pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymbolsParams};
 pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
-
-/// Arguments of `code_grep`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CodeGrepParams {
-    /// Text to find, not empty; a literal unless `regex` is true.
-    pub pattern: String,
-    /// Treat `pattern` as a Rust regex; `^` and `$` match at every line.
-    #[serde(default)]
-    pub regex: Option<bool>,
-    /// Literal substring of the repo-relative path, e.g. `src/mcp/`; not a glob.
-    #[serde(default)]
-    pub path: Option<String>,
-    /// Language filter, e.g. `rust`.
-    #[serde(default)]
-    pub language: Option<String>,
-    /// Add one line before and after each hit.
-    #[serde(default)]
-    pub context: Option<bool>,
-    /// Max hits (default 100).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
+pub use crate::engine::types::grep::CodeGrepParams;
 
 /// Arguments of `code_search`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

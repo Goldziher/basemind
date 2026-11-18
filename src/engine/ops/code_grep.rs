@@ -1,5 +1,4 @@
-//! `run_workspace_grep` helper — kept in its own file so `helpers.rs` stays under the
-//! 1000-line cap as the MCP surface grows.
+//! Body of `code_grep`: a literal or regex search over every indexed code file and text document.
 
 use std::cell::RefCell;
 use std::io::Read;
@@ -8,17 +7,16 @@ use std::sync::atomic::Ordering;
 use memchr::memmem::Finder;
 use rayon::prelude::*;
 use regex::Regex;
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
 
-use super::ServerState;
-use super::blocking::blocking;
-use super::cursor::Cursor;
-use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
-use super::helpers_grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
-use super::tool_contract::{IndexedFiles, Sweep};
-use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
+use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use crate::engine::budget::{apply_budget_by_path, budget};
+use crate::engine::cursor::Cursor;
+use crate::engine::error::EngineError;
+use crate::engine::files::{IndexedFiles, Sweep};
 use crate::engine::filters::{Filters, PathFilter};
+use crate::engine::grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
+use crate::engine::types::grep::{CodeGrepParams, GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
+use crate::engine::workspace::Workspace;
 use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
 
@@ -33,13 +31,44 @@ use crate::path::RelPath;
 /// that the cut point is deterministic — a non-deterministic cut would corrupt cursor pagination.
 const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
-tokio::task_local! {
-    /// The cancellation token of the MCP `code_grep` call running on this task. The sweep runs on
-    /// rayon threads that aborting the tool's task does not stop, so it checks the token per file.
-    pub(super) static GREP_CANCEL: tokio_util::sync::CancellationToken;
+impl Workspace {
+    /// `code_grep`: content search over every indexed code file and text document.
+    pub(crate) fn code_grep(&self, p: CodeGrepParams) -> Result<WorkspaceGrepResponse, EngineError> {
+        self.code_grep_until(p, &|| false)
+    }
+
+    /// [`code_grep`](Self::code_grep) that reads no further file once `cancelled` says so, and then
+    /// fails with [`EngineError::Cancelled`]: the sweep runs on rayon threads, which aborting the
+    /// caller's task does not stop.
+    pub(crate) fn code_grep_until(
+        &self,
+        p: CodeGrepParams,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<WorkspaceGrepResponse, EngineError> {
+        if p.pattern.is_empty() {
+            return Err(EngineError::invalid_argument(
+                "`code_grep`: `pattern` is empty; pass the text to find.",
+            ));
+        }
+        self.wait_map_ready();
+        workspace_grep(
+            self,
+            WorkspaceGrepParams {
+                pattern: p.pattern,
+                language: p.language,
+                path_contains: p.path,
+                limit: p.limit,
+                max_tokens: budget(p.max_tokens),
+                include_context: p.context.unwrap_or(false),
+                literal: !p.regex.unwrap_or(false),
+                cursor: p.cursor,
+            },
+            cancelled,
+        )
+    }
 }
 
-/// Body of the `code` tool's `grep` mode.
+/// Body of `code_grep`.
 ///
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
 /// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped and counted in
@@ -47,32 +76,29 @@ tokio::task_local! {
 /// scanned, so `total` is exact for the scanned window. Supports
 /// in-memory pagination via `cursor` / `next_cursor` on the same
 /// `encode_in_memory(offset, generation)` scheme as `list_files`.
-pub(super) async fn run_workspace_grep(
-    state: &ServerState,
+fn workspace_grep(
+    ws: &Workspace,
     params: WorkspaceGrepParams,
-) -> Result<CallToolResult, McpError> {
-    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<WorkspaceGrepResponse, EngineError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
-    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
+    let generation = ws.cache_generation.load(Ordering::Relaxed);
 
     let (skip_files, skip_hits) = match params.cursor.as_ref() {
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return super::toon::format_result(
-                    &WorkspaceGrepResponse {
-                        total: 0,
-                        truncated: false,
-                        truncated_reason: None,
-                        budgeted: false,
-                        hits: Vec::new(),
-                        next_cursor: None,
-                        skipped_files: 0,
-                        cursor_invalidated: true,
-                        notice: state.lifecycle_notice(),
-                    },
-                    format,
-                );
+                return Ok(WorkspaceGrepResponse {
+                    total: 0,
+                    truncated: false,
+                    truncated_reason: None,
+                    budgeted: false,
+                    hits: Vec::new(),
+                    next_cursor: None,
+                    skipped_files: 0,
+                    cursor_invalidated: true,
+                    notice: ws.lifecycle_notice(),
+                });
             }
             unpack_cursor(offset)
         }
@@ -92,10 +118,9 @@ pub(super) async fn run_workspace_grep(
         .crlf(true)
         .build()
         .map_err(|e| {
-            McpError::invalid_params(
-                format!("invalid regex: {e}. Drop `regex` to search for the pattern as literal text."),
-                None,
-            )
+            EngineError::invalid_argument(format!(
+                "invalid regex: {e}. Drop `regex` to search for the pattern as literal text."
+            ))
         })
         .map(LineRegex::new)?;
 
@@ -108,32 +133,32 @@ pub(super) async fn run_workspace_grep(
         language: params.language.as_deref(),
     };
 
-    let cache = state.shared.cache.load_full();
+    let cache = ws.cache.load_full();
 
     let selected = |path: &RelPath, language: &str| {
         filters.path.as_ref().is_none_or(|f| f.matches(path.as_bytes()))
             && filters.language.is_none_or(|l| language == l)
     };
-    let documents = blocking(|| super::helpers_grep_text::text_documents(state, &cache, &selected));
+    let documents = crate::engine::grep_text::text_documents(ws, &cache, &selected);
     // Grep needs only path, language and indexed size — every one of them in the symbol-free file
     // view — so the candidate scan never decodes an outline however large the corpus is. Code first,
     // then the text documents, so a cursor's file index means the same file on every page.
-    let candidates: Vec<(&RelPath, &super::l1_cache::FileMeta)> = cache
+    let candidates: Vec<(&RelPath, &crate::engine::l1_cache::FileMeta)> = cache
         .file_metas()
         .filter(|(path, meta)| selected(path, &meta.language))
         .chain(documents.iter().map(|(path, meta)| (path, meta)))
         .collect();
     if candidates.is_empty()
-        && let Some(refusal) = crate::engine::filters::grep_selects_no_file(&state.shared, &cache, &filters)
+        && let Some(refusal) = crate::engine::filters::grep_selects_no_file(ws, &cache, &filters)
     {
-        return Err(refusal.into());
+        return Err(refusal);
     }
 
     let window = candidates.get(skip_files.min(candidates.len())..).unwrap_or(&[]);
     let (scanned, byte_budget_hit) = apply_byte_budget(window);
 
-    let root = state.shared.root.as_path();
-    let files = IndexedFiles::of(&state.shared);
+    let root = ws.root.as_path();
+    let files = IndexedFiles::of(ws);
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
     // Documents have no bloom row: they sit after the code files and are always read.
     let code_files = scanned.partition_point(|(_, meta)| !meta.hash_hex.is_empty());
@@ -149,7 +174,7 @@ pub(super) async fn run_workspace_grep(
     // Files the per-file trigram blooms prove cannot match are never opened. They keep their slot in
     // `paths` (counted as zero), so window order, `file_idx` and every cursor are those of the full sweep.
     let skip = if bloom_prefilter_enabled() {
-        let idx = state.store_read().await.read_index_view();
+        let idx = ws.store_read().read_index_view();
         grep_skip(idx, root, &source, &entries).map(|mut skip| {
             skip.resize(scanned.len(), false);
             skip
@@ -157,13 +182,7 @@ pub(super) async fn run_workspace_grep(
     } else {
         None
     };
-    let cancel = GREP_CANCEL.try_with(Clone::clone).ok();
-    let cancelled = || {
-        cancel
-            .as_ref()
-            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
-    };
-    let (counts, skipped_files) = blocking(|| {
+    let (counts, skipped_files) = {
         let sweep = Sweep::new(files);
         count_all(
             &sweep,
@@ -172,11 +191,11 @@ pub(super) async fn run_workspace_grep(
             &re,
             literal.as_ref(),
             skip_hits,
-            &cancelled,
+            cancelled,
         )
-    });
+    };
     if cancelled() {
-        return Err(super::tasks::request_cancelled());
+        return Err(EngineError::Cancelled);
     }
 
     let total = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
@@ -185,19 +204,17 @@ pub(super) async fn run_workspace_grep(
     // Judged against the file the bytes were read from: an external path is not under `root`.
     let is_fresh = |file_idx: usize, file: &std::path::Path, bytes: &[u8]| {
         let meta = scanned[file_idx].1;
-        meta.hash_hex.is_empty() || super::freshness::matches_index(meta.into(), file, bytes)
+        meta.hash_hex.is_empty() || crate::engine::freshness::matches_index(meta.into(), file, bytes)
     };
-    let (mut hits, hit_cursors) = blocking(|| {
-        materialize(
-            files,
-            &paths,
-            &selected,
-            &is_fresh,
-            &re,
-            params.include_context,
-            skip_files,
-        )
-    });
+    let (mut hits, hit_cursors) = materialize(
+        files,
+        &paths,
+        &selected,
+        &is_fresh,
+        &re,
+        params.include_context,
+        skip_files,
+    );
     annotate_symbols(&cache, &mut hits);
 
     // A page cut by `limit` is paging and says so with its cursor alone. Files the byte budget
@@ -211,7 +228,7 @@ pub(super) async fn run_workspace_grep(
         (None, false) => None,
     };
 
-    let budget = super::budget::apply_budget_by_path(hits, params.max_tokens);
+    let budget = apply_budget_by_path(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
         let resume = hit_cursors
@@ -222,20 +239,17 @@ pub(super) async fn run_workspace_grep(
         (budget.items, false, next_cursor)
     };
 
-    super::toon::format_result(
-        &WorkspaceGrepResponse {
-            total,
-            truncated: byte_budget_hit,
-            truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
-            budgeted,
-            hits,
-            next_cursor,
-            skipped_files,
-            cursor_invalidated: false,
-            notice: state.lifecycle_notice(),
-        },
-        format,
-    )
+    Ok(WorkspaceGrepResponse {
+        total,
+        truncated: byte_budget_hit,
+        truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
+        budgeted,
+        hits,
+        next_cursor,
+        skipped_files,
+        cursor_invalidated: false,
+        notice: ws.lifecycle_notice(),
+    })
 }
 
 /// Operator kill switch for the trigram-bloom prefilter: `BASEMIND_GREP_BLOOM=0` forces the full
@@ -261,8 +275,8 @@ fn unpack_cursor(offset: u64) -> (usize, u32) {
 /// Returns the slice to scan and whether anything was cut. At least one file always survives, so a
 /// paging caller can never stall on a cursor that refuses to advance.
 fn apply_byte_budget<'a, 'b>(
-    window: &'a [(&'b RelPath, &'b super::l1_cache::FileMeta)],
-) -> (&'a [(&'b RelPath, &'b super::l1_cache::FileMeta)], bool) {
+    window: &'a [(&'b RelPath, &'b crate::engine::l1_cache::FileMeta)],
+) -> (&'a [(&'b RelPath, &'b crate::engine::l1_cache::FileMeta)], bool) {
     let mut used: u64 = 0;
     let mut end = window.len();
     for (i, (_, meta)) in window.iter().enumerate() {
@@ -380,13 +394,13 @@ const LONE_CR_STAND_IN: u8 = 0x0B;
 
 /// A grep's compiled pattern, and whether a lone `\r` in a file is masked before matching it:
 /// decided once per call from the parsed pattern, not once per file.
-pub(super) struct LineRegex {
+pub(crate) struct LineRegex {
     regex: Regex,
     masks_lone_cr: bool,
 }
 
 impl LineRegex {
-    pub(super) fn new(regex: Regex) -> Self {
+    pub(crate) fn new(regex: Regex) -> Self {
         let masks_lone_cr = !names_carriage_return(regex.as_str());
         Self { regex, masks_lone_cr }
     }
@@ -470,7 +484,7 @@ fn names_carriage_return(pattern: &str) -> bool {
 /// `^` and `$` anchor at every line, so an empty match is also found at the very end of a file
 /// that ends in a newline: after the last line, at a line number the file does not have and
 /// `code_read` refuses. The counting pass and the page are both built from this, so the two agree.
-pub(super) fn line_matches<'s>(re: &Regex, source: &'s str) -> impl Iterator<Item = regex::Match<'s>> {
+pub(crate) fn line_matches<'s>(re: &Regex, source: &'s str) -> impl Iterator<Item = regex::Match<'s>> {
     let past_the_last_line = source.ends_with('\n').then_some(source.len());
     re.find_iter(source)
         .filter(move |found| Some(found.start()) != past_the_last_line)
@@ -626,7 +640,7 @@ fn collect_hits(
 /// Which of `entries` provably cannot match the grep `pattern` (`true` = skip), per the per-file
 /// trigram blooms of the index `idx`. `None` means "no prefilter available" (no index, or a
 /// pattern with no required literal): the caller then sweeps every file, which is always correct.
-pub(super) fn grep_skip(
+pub(crate) fn grep_skip(
     idx: Option<std::sync::Arc<dyn crate::index::view::IndexView>>,
     root: &std::path::Path,
     pattern: &str,
@@ -634,9 +648,9 @@ pub(super) fn grep_skip(
 ) -> Option<Vec<bool>> {
     let idx = idx?;
     let needle = crate::index::grep_bloom::Needle::compile(pattern)?;
-    Some(blocking(|| idx.grep_skip_verdicts(root, entries, &needle)))
+    Some(idx.grep_skip_verdicts(root, entries, &needle))
 }
 
 #[cfg(test)]
-#[path = "helpers_grep_tests.rs"]
+#[path = "code_grep_tests.rs"]
 mod tests;

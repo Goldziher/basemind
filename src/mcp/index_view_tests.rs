@@ -212,8 +212,8 @@ async fn every_reference_read_answers_from_the_session_view() {
 
     log.clear();
     let entries = grep_entries(&store);
-    let verdicts =
-        super::helpers_grep::grep_skip(Some(view), dir.path(), "zzz_definitely_absent", &entries).expect("verdicts");
+    let verdicts = crate::engine::ops::code_grep::grep_skip(Some(view), dir.path(), "zzz_definitely_absent", &entries)
+        .expect("verdicts");
     assert_eq!(verdicts.len(), entries.len());
     assert_eq!(sorted(log.entries()), bloom_reads(), "grep prefilter");
 }

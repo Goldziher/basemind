@@ -16,7 +16,7 @@ mod agent_context;
 pub mod agent_tools;
 mod background;
 mod budget;
-mod by_path;
+use crate::engine::by_path;
 mod completions;
 pub mod lead_tools;
 pub(crate) use crate::engine::cursor;
@@ -47,8 +47,6 @@ mod helpers_code;
 mod helpers_code_search;
 #[cfg(all(feature = "documents", feature = "code-search"))]
 mod helpers_documents;
-mod helpers_grep;
-mod helpers_grep_text;
 pub(crate) mod helpers_impls;
 mod helpers_intel;
 mod helpers_memory;
