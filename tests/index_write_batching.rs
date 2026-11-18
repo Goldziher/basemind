@@ -5,7 +5,7 @@
 //! memory (see `scanner_index_batch`). These assertions pin the accounting itself: what charges
 //! the counter, and that a re-upsert's delete tombstones charge it too.
 
-use basemind::extract::{FileMapL1, Import, SCHEMA_VER, Symbol, SymbolKind};
+use basemind::extract::{FileMapL1, Implementation, SCHEMA_VER, Symbol, SymbolKind};
 use basemind::index::IndexDb;
 use basemind::index::keys::{ContentKey, content_key};
 use basemind::path::RelPath;
@@ -42,7 +42,7 @@ fn synthetic_l1(names: &[&str]) -> FileMapL1 {
     }
 }
 
-/// The path-keyed rows (imports) are replaced on a re-upsert; the content rows (symbols) are
+/// The path-keyed rows (implementations) are replaced on a re-upsert; the content rows (symbols) are
 /// replaced when the extraction differs, and left alone when it is the same.
 #[test]
 fn staged_bytes_counts_inserts_and_deletes() {
@@ -50,11 +50,12 @@ fn staged_bytes_counts_inserts_and_deletes() {
     let db = IndexDb::open(dir.path()).expect("open index");
     let rel = RelPath::from("src/a.rs");
     let mut l1 = synthetic_l1(&["alpha", "beta"]);
-    l1.imports = vec![Import {
-        module: Some("std::fmt".to_string()),
-        raw: "use std::fmt;".to_string(),
+    l1.implementations = vec![Implementation {
+        trait_name: "Display".to_string(),
+        impl_type: "Alpha".to_string(),
         start_byte: 0,
-        end_byte: 13,
+        start_row: 0,
+        start_col: 0,
     }];
 
     let mut writer = db.writer();
@@ -79,7 +80,7 @@ fn staged_bytes_counts_inserts_and_deletes() {
     );
 
     let mut changed = synthetic_l1(&["gamma", "delta"]);
-    changed.imports = l1.imports.clone();
+    changed.implementations = l1.implementations.clone();
     let mut writer = db.writer();
     writer.upsert_file(&rel, &content(), &changed, None).unwrap();
     assert!(
