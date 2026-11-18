@@ -10,7 +10,7 @@ use crate::index::view::IndexView;
 
 /// The git-history index for the fixtures, which care about the read stack and not about git
 /// history: none.
-fn no_history() -> impl FnOnce(&Path) -> Option<std::sync::Arc<crate::git_history::GitHistoryIndex>> + Send + 'static {
+fn no_history() -> impl FnOnce(&Path) -> Option<crate::comms::git_history_ops::HostedHistory> + Send + 'static {
     |_| None
 }
 
@@ -55,18 +55,20 @@ fn hosted_rescan_honors_the_pools_shared_drain_token() {
     // Baseline: an un-drained pool runs the hosted scan normally.
     let live = WorkspacePool::new(DEFAULT_HOT_CAP);
     let ws = workspace_with_sources();
-    let stats = live
+    let (stats, cancelled) = live
         .hosted_rescan(ws.path(), None, false, false, false)
         .expect("hosted scan");
+    assert!(!cancelled);
     assert_eq!(stats.scanned, 2, "an un-drained hosted rescan scans both sources");
 
     // Drained: tripping the pool's shared token short-circuits hosted_rescan before it scans anything.
     let drained = WorkspacePool::new(DEFAULT_HOT_CAP);
     drained.scan_cancel().cancel();
     let ws2 = workspace_with_sources();
-    let stats = drained
+    let (stats, cancelled) = drained
         .hosted_rescan(ws2.path(), None, false, false, false)
         .expect("drained hosted scan");
+    assert!(cancelled, "a drained hosted rescan reports the cancellation");
     assert_eq!(
         stats.scanned, 0,
         "a drained pool must not run a hosted scan — the shared token wins"

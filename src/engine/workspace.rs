@@ -157,9 +157,16 @@ pub(crate) struct Workspace {
     pub(crate) history_syncing: Arc<AtomicBool>,
     /// The host's git-history sync ([`OpenOptions::history_sync`]).
     pub(crate) history_sync: Option<fn(&Workspace)>,
+    /// Keeps the host process up while a git-history sync of this workspace runs detached. Set for a
+    /// daemon-hosted workspace, whose syncs no client link waits on.
+    pub(crate) work_pin: Option<WorkPin>,
     /// The git index's file list as `find_files` last read it ([`crate::engine::ops::find_files`]).
     pub(crate) tracked: std::sync::Mutex<crate::engine::ops::find_files::TrackedCache>,
 }
+
+/// Pins the host process while long detached work runs: the guard it returns holds the pin until
+/// dropped.
+pub(crate) type WorkPin = Arc<dyn Fn() -> Box<dyn Send> + Send + Sync>;
 
 /// Whether the workspace's `status.json` records a partial or unresolved last scan. A missing or
 /// unreadable sidecar is not degraded: the empty-index checks above own the never-scanned case.
@@ -196,8 +203,8 @@ pub(crate) struct OpenOptions {
 pub(crate) fn boot_plan(store: &Store, options: &OpenOptions) -> (bool, bool) {
     let view_is_working = store.view == crate::store::VIEW_WORKING;
     let fjall_index_empty = store
-        .index_view()
-        .map(|view| view.symbols_index_is_empty())
+        .index_handle()
+        .map(|db| db.view().symbols_index_is_empty())
         .unwrap_or(false);
     let needs_initial_scan = (options.forwards_writes || !options.read_only)
         && view_is_working
@@ -286,6 +293,7 @@ impl Workspace {
             history_catch_up: options.background,
             history_syncing: Arc::new(AtomicBool::new(false)),
             history_sync: options.history_sync,
+            work_pin: None,
             tracked: std::sync::Mutex::default(),
         }
     }

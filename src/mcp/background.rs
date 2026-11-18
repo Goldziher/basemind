@@ -300,16 +300,9 @@ fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync:
         .ok();
 }
 
-/// Reopen the working store read-only for a MapCache rebuild. A daemon-hosted workspace shares the
-/// pool writer's index handle (fjall admits one holder per database); every other serve opens the
-/// index normally.
+/// Reopen the working store read-only for a MapCache rebuild. Only a read-only `serve` runs this
+/// watcher; a daemon-hosted workspace refreshes after each pool scan instead.
 fn reopen_read_only(state: &ServerState, view: &str) -> Result<crate::store::Store, crate::store::StoreError> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(pool) = &state.pool {
-        let mut store = crate::store::Store::open_read_only_no_index(state.shared.root.as_path(), view)?;
-        store.index_db = pool.writer_index(&state.shared.root);
-        return Ok(store);
-    }
     crate::store::Store::open_read_only(state.shared.root.as_path(), view)
 }
 

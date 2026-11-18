@@ -291,6 +291,10 @@ pub struct Store {
     /// `None` for a read-only open in a process that holds no handle on the group (ADR-0036):
     /// callers must handle the absence.
     pub index_db: Option<IndexDb>,
+    /// Where a daemon-hosted read store borrows the index for each read (ADR-0042): the pool
+    /// writer's current handle, looked up per call. The store keeps no handle of its own, so a
+    /// reopen of a poisoned database has only in-flight calls to wait for. `None` everywhere else.
+    pub(crate) index_source: Option<IndexSource>,
     /// LanceDB-backed vector store. Lazy-opened on first document insert so a
     /// vanilla code-only scan doesn't pay the LanceDB startup cost.
     #[cfg(feature = "intelligence")]
@@ -319,12 +323,23 @@ pub struct Store {
     _lock: Option<crate::store_lock::LockGuard>,
 }
 
+/// How a read store borrows another store's index handle per call ([`Store::index_source`]).
+pub(crate) type IndexSource = std::sync::Arc<dyn Fn() -> Option<IndexDb> + Send + Sync>;
+
 impl Store {
+    /// The index handle a read uses, owned for the call: this store's own, or the one its
+    /// [`index_source`](Self::index_source) lends. `None` when the session holds no index.
+    pub(crate) fn index_handle(&self) -> Option<IndexDb> {
+        match &self.index_source {
+            Some(source) => source(),
+            None => self.index_db.clone(),
+        }
+    }
+
     /// Own the effective read snapshot so indexed queries can release the store lock.
     pub(crate) fn read_index_view(&self) -> Option<std::sync::Arc<dyn crate::index::view::IndexView>> {
-        self.index_db
-            .as_ref()
-            .map(|db| std::sync::Arc::new(crate::index::view::StandaloneView(db.clone())) as _)
+        self.index_handle()
+            .map(|db| std::sync::Arc::new(crate::index::view::StandaloneView(db)) as _)
     }
 
     /// A read view over the fjall index, or `None` when this session holds none. Every index read
@@ -410,6 +425,7 @@ impl Store {
             index_rebuild_needed,
             pending_vectors,
             dropped_doc_keys: Vec::new(),
+            index_source: None,
             _lock: Some(lock),
         };
         store.persist_file_map_emptied_on_open()?;
@@ -536,6 +552,7 @@ impl Store {
             index_rebuild_needed,
             pending_vectors,
             dropped_doc_keys: Vec::new(),
+            index_source: None,
             _lock: None,
         };
         store.publish_live_keys_if_unset();
@@ -701,9 +718,10 @@ impl Store {
     }
 
     /// Drop and reopen the Fjall index, replacing a poisoned handle with a fresh one. Our handle is
-    /// released first so the directory lock can be retaken; if a clone elsewhere still holds the old
-    /// database the reopen fails and `index_db` stays `None`, which the caller must treat as a dead
-    /// store.
+    /// released first. While any other handle on the group database stays open in this process (a
+    /// clone, or another view of the group) the reopen would only hand that same database back, so
+    /// it waits briefly for them to drop and then fails with [`IndexError::StillOpen`]; on any
+    /// failure `index_db` stays `None`, which the caller must treat as a dead store.
     pub fn reopen_index_db(&mut self) -> Result<(), IndexError> {
         if self.index_db.take().is_some() {
             self.index_db = Some(group::reopen_view(&self.root, &self.view)?);

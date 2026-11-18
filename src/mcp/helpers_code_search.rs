@@ -262,7 +262,7 @@ fn lane_refusal(cause: LaneCause, message: String) -> McpError {
 ///
 /// Both lanes read fjall, whose directory lock is exclusive, so a session that holds no index (a CLI
 /// command or a second `serve` beside a writer, with no daemon) cannot run them: the outcome names
-/// why and the fix ([`Degraded::unreachable`]). A daemon-hosted session shares the pool writer's
+/// why and the fix ([`Degraded::unreachable`]). A daemon-hosted session borrows the pool writer's
 /// index handle, so it runs them like a writer. ~keep
 async fn fjall_lanes(
     state: &ServerState,

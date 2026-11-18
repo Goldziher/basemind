@@ -138,14 +138,14 @@ impl HostedReadStack {
     /// every hosted connection sees the new snapshot at once; per-connection servers
     /// ([`BasemindServer::from_shared`]) spawn nothing.
     ///
-    /// `store` is read-only and shares the pool writer's index handle, so reads never wait on a
-    /// scan. Scans run through `pool`, which holds the writer store.
+    /// `store` is read-only and borrows the pool writer's index handle per call, so reads never wait
+    /// on a scan. Scans run through `pool`, which holds the writer store.
     pub(crate) fn start(
         store: Store,
         config: Arc<crate::config::Config>,
         repo: Option<Arc<crate::git::Repo>>,
         git_cache: Arc<crate::git_cache::GitCache>,
-        git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
+        git_history: Option<crate::comms::git_history_ops::HostedHistory>,
         pool: Arc<crate::comms::workspace_pool::WorkspacePool>,
     ) -> Self {
         let root = store.root.clone();
@@ -163,16 +163,14 @@ impl HostedReadStack {
         let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &open);
         let agent_id = identity::resolve_agent_id(&store.root);
         let telemetry_dir = store.basemind_dir.clone();
-        let git_history = git_history.filter(|_| repo.is_some() && crate::git_history::index_enabled());
-        let workspace = Arc::new(Workspace::new(
-            store,
-            root.clone(),
-            config,
-            repo,
-            git_cache,
-            git_history,
-            open,
-        ));
+        let (git_history, work_pin) =
+            match git_history.filter(|_| repo.is_some() && crate::git_history::index_enabled()) {
+                Some(history) => (Some(history.index), Some(history.pin)),
+                None => (None, None),
+            };
+        let mut workspace = Workspace::new(store, root.clone(), config, repo, git_cache, git_history, open);
+        workspace.work_pin = work_pin;
+        let workspace = Arc::new(workspace);
         let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);
         shared.pool = Some(pool);
         let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));

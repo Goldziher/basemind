@@ -21,7 +21,8 @@ impl Drop for Syncing {
 
 /// Bring the git-history index up to date with HEAD, off the calling thread, unless a sync is
 /// already running or this is the one-shot CLI. A daemon-hosted session shares the daemon's handle,
-/// whose build lock serializes syncs, so N sessions cause one walk.
+/// whose build lock serializes syncs, so N sessions cause one walk, and pins the daemon for the
+/// sync's length ([`Workspace::work_pin`]).
 ///
 /// The one-shot CLI never syncs: it exits in milliseconds, and a first build on a deep repo is a
 /// minutes-long walk.
@@ -47,8 +48,10 @@ pub(super) fn request(shared: &Workspace) {
         return;
     };
     let history_dir = crate::git_history::shared_history_basemind_dir(&shared.root);
+    let pin = shared.work_pin.as_ref().map(|pin| pin());
     runtime.spawn_blocking(move || {
         let _syncing = syncing;
+        let _pin = pin;
         match crate::git_history::builder::sync(&git_history, &repo, &history_dir) {
             Ok(outcome) => tracing::info!(?outcome, "git-history index sync complete"),
             Err(error) => tracing::warn!(%error, "git-history index sync failed; tools live-walk"),

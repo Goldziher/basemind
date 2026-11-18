@@ -64,11 +64,11 @@ async fn run_gated_build<T: Send + 'static>(
 /// [`DEFAULT_HOT_CAP`], which governs something much cheaper.
 ///
 /// A hot entry is an open `Store` handle. A warm read stack is an O(corpus) resident structure per
-/// workspace (the L1 outline cache, the projected call / implementation indexes, git caches,
-/// LanceDB, ONNX), so letting one grow per hot entry multiplies the whole read stack by 16 — the
-/// daemon-specific multiplier behind issue #62's 43.8 GiB. Three lets a developer alternate between
-/// a couple of repos without paying a rebuild, and a rebuild is transparent anyway: dropping a stack
-/// changes latency, not answers.
+/// workspace (the in-RAM code map and its L1 outline cache, git caches, LanceDB, ONNX), so letting
+/// one grow per hot entry multiplies the whole read stack by 16 — the daemon-specific multiplier
+/// behind issue #62's 43.8 GiB. Three lets a developer alternate between a couple of repos without
+/// paying a rebuild, and a rebuild is transparent anyway: dropping a stack changes latency, not
+/// answers.
 pub(crate) const DEFAULT_WARM_READ_STACK_CAP: usize = 3;
 
 /// Env override for [`DEFAULT_WARM_READ_STACK_CAP`]. Zero or unparseable falls back to the default.
@@ -142,9 +142,10 @@ struct WorkspaceEntry {
     /// The open read-write store. Behind its own lock so concurrent scans of the SAME workspace
     /// serialize here (one writer) while different workspaces proceed in parallel.
     store: Mutex<Store>,
-    /// The writer store's index handle, cloned at open and after a reopen, so the hosted read store
-    /// can share it without waiting on a scan for the store lock (fjall's directory lock admits one
-    /// holder per database, so a second open is not an option).
+    /// The writer store's index handle, cloned at open and after a reopen. A hosted read store
+    /// borrows it per call ([`Store::index_source`]) instead of waiting on a scan for the store
+    /// lock (fjall's directory lock admits one holder per database, so a second open is not an
+    /// option). Cleared before a reopen and on eviction, so no read takes the handle afterwards.
     index: std::sync::RwLock<Option<crate::index::IndexDb>>,
     /// Resolved config for this workspace, replaced in place when `basemind.toml` changes on disk
     /// (see [`WorkspacePool::refresh_config`]). A scan takes a snapshot, so one scan never sees a
@@ -222,12 +223,10 @@ impl WorkspaceEntry {
         self.index.read().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    /// A read-only store over this workspace's file map that shares the writer's index handle.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    fn read_store(&self, root: &Path) -> Result<Store, store::StoreError> {
-        let mut read = Store::open_read_only_no_index(root, VIEW_WORKING)?;
-        read.index_db = self.index();
-        Ok(read)
+    /// Stop lending the writer's handle: a hosted read from here on finds no index, and the only
+    /// clones left are those of reads already in flight.
+    fn revoke_index(&self) {
+        *self.index.write().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Snapshot of the current config.
@@ -435,8 +434,9 @@ impl WorkspacePool {
     }
 
     /// A daemon-hosted session's scan of `root`: [`Self::rescan_as`] under the pool's own drain token,
-    /// so `comms stop` / SIGTERM stops a hosted mid-scan within one file, as on the socket path. A
-    /// cancelled pass reports the files it got through.
+    /// so `comms stop` / SIGTERM stops a hosted mid-scan within one file, as on the socket path. The
+    /// `bool` says the pass was cancelled: it may have flushed a file map whose resolve pass never
+    /// ran, which the caller must not present as a completed rescan.
     pub(crate) fn hosted_rescan(
         &self,
         root: &Path,
@@ -444,9 +444,8 @@ impl WorkspacePool {
         full: bool,
         embed: bool,
         verify: bool,
-    ) -> Result<ScanStats, WorkspacePoolError> {
+    ) -> Result<(ScanStats, bool), WorkspacePoolError> {
         self.rescan_as(root, paths, full, embed, verify, &self.scan_cancel)
-            .map(|(stats, _cancelled)| stats)
     }
 
     /// Replace a poisoned code-index handle (a failed flush or commit; see
@@ -459,11 +458,21 @@ impl WorkspacePool {
             return;
         }
         tracing::warn!(root = %entry.root.display(), "index handle poisoned; reopening");
+        // Hosted reads borrow the handle per call, so once it is revoked the reopen waits only for the
+        // reads in flight. Another view of the group in this pool (a sibling worktree) keeps the
+        // poisoned database open; the reopen then fails and this entry is evicted. ~keep
+        entry.revoke_index();
         match store.reopen_index_db() {
             Ok(()) => *entry.index.write().unwrap_or_else(PoisonError::into_inner) = store.index_db.clone(),
             Err(error) => {
                 tracing::error!(root = %entry.root.display(), %error, "index reopen failed; evicting the workspace");
-                self.lock_map().remove(&entry.key);
+                let mut map = self.lock_map();
+                if map
+                    .get(&entry.key)
+                    .is_some_and(|current| std::ptr::eq(std::sync::Arc::as_ptr(current), entry))
+                {
+                    map.remove(&entry.key);
+                }
             }
         }
     }
@@ -481,8 +490,8 @@ impl WorkspacePool {
     /// and starts the workspace's single freshness warden; every later caller gets the same `Arc`.
     /// Concurrent callers all await the one build, because the slot lock is held across it.
     ///
-    /// `git_history` yields the git-history index of a root the daemon holds, for a workspace in a
-    /// git repository; it runs only when a stack is built.
+    /// `git_history` yields the git-history index of a root the daemon holds, and the pin its syncs
+    /// hold, for a workspace in a git repository; it runs only when a stack is built.
     ///
     /// Building one stack is what enforces the warm-stack cap: the trim runs here, AFTER the slot
     /// lock is released, so admitting a new stack is the moment the least-recently-used ones are
@@ -491,7 +500,7 @@ impl WorkspacePool {
     pub(crate) async fn get_or_build_serve_state(
         self: &std::sync::Arc<Self>,
         root: &Path,
-        git_history: impl FnOnce(&Path) -> Option<std::sync::Arc<crate::git_history::GitHistoryIndex>> + Send + 'static,
+        git_history: impl FnOnce(&Path) -> Option<super::git_history_ops::HostedHistory> + Send + 'static,
     ) -> anyhow::Result<crate::mcp::ServedWorkspace> {
         let (shared, _conn) = self.serve_conn(root, git_history).await?;
         Ok(shared)
@@ -506,7 +515,7 @@ impl WorkspacePool {
     pub(crate) async fn serve_conn(
         self: &std::sync::Arc<Self>,
         root: &Path,
-        git_history: impl FnOnce(&Path) -> Option<std::sync::Arc<crate::git_history::GitHistoryIndex>> + Send + 'static,
+        git_history: impl FnOnce(&Path) -> Option<super::git_history_ops::HostedHistory> + Send + 'static,
     ) -> anyhow::Result<(crate::mcp::ServedWorkspace, ServeConnGuard)> {
         let (entry, conn) = loop {
             let entry = self.get_or_open_async(root).await.map_err(anyhow::Error::new)?;
@@ -555,18 +564,18 @@ impl WorkspacePool {
     }
 
     /// Open `entry`'s read side for the daemon to host: a read-only store over the file map the
-    /// writer flushed, sharing the writer's index handle, plus the workspace's config, repository,
+    /// writer flushed, borrowing the writer's index handle, plus the workspace's config, repository,
     /// git cache and git-history index. Blocking (the store open reads the file map).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     fn host_read_stack(
         self: &std::sync::Arc<Self>,
         entry: &WorkspaceEntry,
         root: &Path,
-        git_history: impl FnOnce(&Path) -> Option<std::sync::Arc<crate::git_history::GitHistoryIndex>>,
+        git_history: impl FnOnce(&Path) -> Option<super::git_history_ops::HostedHistory>,
     ) -> anyhow::Result<crate::mcp::HostedReadStack> {
         use anyhow::Context as _;
 
-        let store = entry.read_store(root).context("open hosted read stack store")?;
+        let store = self.hosted_store(entry, root).context("open hosted read stack store")?;
         let repo = crate::git::Repo::discover(root).ok().map(std::sync::Arc::new);
         let git_cache = std::sync::Arc::new(
             crate::git_cache::GitCache::open(&store.basemind_dir, crate::mcp::HOSTED_GIT_CACHE_MEM, true)
@@ -588,18 +597,31 @@ impl WorkspacePool {
     }
 
     /// A fresh read-only store for a hosted `root` after the writer scanned it: the file map the
-    /// scan flushed, sharing the writer's index handle.
+    /// scan flushed, borrowing the writer's index handle per call.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) fn read_store(&self, root: &Path) -> Result<Store, WorkspacePoolError> {
-        Ok(self.get_or_open(root)?.read_store(root)?)
+    pub(crate) fn read_store(self: &std::sync::Arc<Self>, root: &Path) -> Result<Store, WorkspacePoolError> {
+        let entry = self.get_or_open(root)?;
+        Ok(self.hosted_store(&entry, root)?)
     }
 
-    /// The index handle of `root`'s writer store, when the workspace is hot.
+    /// A read-only store over `entry`'s file map whose index reads borrow the handle of the
+    /// workspace's current pool entry, looked up per call (ADR-0042). The store holds no handle, so
+    /// a poisoned-handle reopen or an eviction is never kept from releasing the database by a
+    /// hosted stack, and a stack that outlives its entry reads the entry that replaced it.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) fn writer_index(&self, root: &Path) -> Option<crate::index::IndexDb> {
-        self.lock_map()
-            .get(&store::workspace_key(root))
-            .and_then(|entry| entry.index())
+    fn hosted_store(
+        self: &std::sync::Arc<Self>,
+        entry: &WorkspaceEntry,
+        root: &Path,
+    ) -> Result<Store, store::StoreError> {
+        let mut read = Store::open_read_only_no_index(root, VIEW_WORKING)?;
+        let (pool, key) = (std::sync::Arc::downgrade(self), entry.key.clone());
+        read.index_source = Some(std::sync::Arc::new(move || {
+            let pool = pool.upgrade()?;
+            let entry = pool.lock_map().get(&key).cloned()?;
+            entry.index()
+        }));
+        Ok(read)
     }
 
     /// Drop least-recently-used hosted read stacks until at most [`warm_read_stack_cap`] stay warm,
@@ -894,6 +916,7 @@ impl WorkspacePool {
         }
         map.insert(key, entry.clone());
         drop(map);
+        evicted.iter().for_each(|victim| victim.revoke_index());
         drop(evicted);
         Ok(entry)
     }
@@ -924,6 +947,7 @@ impl WorkspacePool {
             .collect();
         let removed: Vec<_> = stale.iter().filter_map(|key| map.remove(key)).collect();
         drop(map);
+        removed.iter().for_each(|entry| entry.revoke_index());
         let count = removed.len();
         drop(removed);
         count

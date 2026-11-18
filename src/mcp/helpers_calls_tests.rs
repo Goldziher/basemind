@@ -572,3 +572,26 @@ async fn code_refs_without_an_index_is_refused_with_the_fix() {
         assert_eq!(crate::cli::exit::exit_code_for(&exit), crate::cli::exit::BUSY);
     }
 }
+
+/// A daemon-hosted store whose index the daemon took back (a poisoned handle being reopened, or an
+/// evicted workspace) is told so, not that no daemon serves it.
+#[test]
+fn a_hosted_store_without_its_index_is_told_the_daemon_released_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
+    drop(scan_fixture(root));
+    let mut store = Store::open_read_only_no_index(root, VIEW_WORKING).expect("index-less store");
+    store.index_source = Some(std::sync::Arc::new(|| None));
+
+    let Err(refused) = super::index_for_refs(&store) else {
+        panic!("no index to lend");
+    };
+    assert!(refused.message.contains("the daemon released"), "{refused:?}");
+    assert!(!refused.message.contains("no daemon serves it"), "{refused:?}");
+    assert_eq!(
+        refused.data.as_ref().and_then(|data| data.get(crate::mcp::BUSY_DATA)),
+        Some(&serde_json::Value::Bool(true)),
+        "busy, so the CLI exits 3"
+    );
+}

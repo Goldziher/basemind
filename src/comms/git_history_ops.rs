@@ -32,9 +32,11 @@ impl HistoryEntry {
         *self.last_used.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
     }
 
-    /// Whether a hosted workspace still holds this handle.
-    pub(crate) fn shared(&self) -> bool {
-        Arc::strong_count(&self.index) > 1
+    /// Whether anything besides the broker's map holds this entry or its handle: a hosted
+    /// workspace, or an op between its lookup and the end of its run. Read under the map lock, where
+    /// every lookup clones the entry, so a holder is either counted here or finds the entry gone.
+    pub(crate) fn in_use(self: &Arc<Self>) -> bool {
+        Arc::strong_count(self) > 1 || Arc::strong_count(&self.index) > 1
     }
 
     /// How long this entry has sat unrequested. The daemon's periodic sweep sheds it past the TTL.
@@ -105,10 +107,11 @@ impl Broker {
         let entry = self.history_entry(&dir).await?;
         entry.touch();
 
-        // ~keep A first-build `Sync` on a deep repo runs for minutes in `spawn_blocking`, and the hosted
-        // ~keep path detaches it with no client link to keep the daemon busy. Pin it as in-flight work so
+        // ~keep A first-build `Sync` on a deep repo runs for minutes in `spawn_blocking`, and a client that
+        // ~keep gives up leaves it running with no link to keep the daemon busy. Pin it as in-flight work so
         // ~keep the idle reaper cannot tear the process down mid-write to `git-history.fjall/` — the same
-        // ~keep guard `run_blob_gc_with_lock_timeout` takes for the other long client-less task.
+        // ~keep guard `run_blob_gc_with_lock_timeout` takes for the other long client-less task. A hosted
+        // ~keep workspace's own syncs pin through `HostedHistory::pin`.
         let _working = matches!(op, GitHistoryOp::Sync).then(|| self.begin_work());
         let index = Arc::clone(&entry.index);
         let err_dir = dir.clone();
@@ -166,6 +169,14 @@ impl Broker {
     }
 }
 
+/// The git-history handle a hosted workspace shares with the daemon, and the pin its syncs hold.
+pub(crate) struct HostedHistory {
+    pub(crate) index: Arc<GitHistoryIndex>,
+    /// Keeps the daemon from being reaped while a sync the workspace started runs: no client link
+    /// waits on that sync, and a first build writes `git-history.fjall/` for minutes.
+    pub(crate) pin: crate::engine::workspace::WorkPin,
+}
+
 impl Broker {
     /// The git-history index a hosted workspace reads: this daemon's handle on the repo's database,
     /// opened on first use, for [`serve_conn`](super::workspace_pool::WorkspacePool::serve_conn). Runs
@@ -173,24 +184,33 @@ impl Broker {
     /// history tools then live-walk.
     pub(crate) fn hosted_history(
         self: &Arc<Self>,
-    ) -> impl FnOnce(&std::path::Path) -> Option<Arc<GitHistoryIndex>> + Send + 'static {
+    ) -> impl FnOnce(&std::path::Path) -> Option<HostedHistory> + Send + 'static {
         let broker = Arc::clone(self);
         move |root| {
-            let dir = crate::git_history::shared_history_basemind_dir(root);
-            if let Some(entry) = broker.history_lookup(&dir) {
-                entry.touch();
-                return Some(Arc::clone(&entry.index));
-            }
-            let _opening = broker.git_history_open_lock.blocking_lock();
-            if let Some(entry) = broker.history_lookup(&dir) {
-                return Some(Arc::clone(&entry.index));
-            }
-            match GitHistoryIndex::open(&dir) {
-                Ok(opened) => Some(Arc::clone(&broker.insert_history(&dir, opened).index)),
-                Err(error) => {
-                    tracing::warn!(%error, root = %root.display(), "git-history index unavailable to the hosted workspace");
-                    None
-                }
+            let index = broker.hosted_history_index(root)?;
+            // Weak: the stack lives in this broker's pool, and an owning pin would keep the broker up. ~keep
+            let weak = Arc::downgrade(&broker);
+            let pin: crate::engine::workspace::WorkPin =
+                Arc::new(move || Box::new(weak.upgrade().map(|broker| broker.begin_owned_work())) as Box<dyn Send>);
+            Some(HostedHistory { index, pin })
+        }
+    }
+
+    fn hosted_history_index(&self, root: &std::path::Path) -> Option<Arc<GitHistoryIndex>> {
+        let dir = crate::git_history::shared_history_basemind_dir(root);
+        if let Some(entry) = self.history_lookup(&dir) {
+            entry.touch();
+            return Some(Arc::clone(&entry.index));
+        }
+        let _opening = self.git_history_open_lock.blocking_lock();
+        if let Some(entry) = self.history_lookup(&dir) {
+            return Some(Arc::clone(&entry.index));
+        }
+        match GitHistoryIndex::open(&dir) {
+            Ok(opened) => Some(Arc::clone(&self.insert_history(&dir, opened).index)),
+            Err(error) => {
+                tracing::warn!(%error, root = %root.display(), "git-history index unavailable to the hosted workspace");
+                None
             }
         }
     }

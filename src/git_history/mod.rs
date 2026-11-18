@@ -332,6 +332,15 @@ impl GitHistoryIndex {
         &self.db
     }
 
+    /// Hold this database's build lock, so a test can keep a sync waiting on it.
+    #[cfg(all(test, feature = "comms", any(unix, windows)))]
+    pub(crate) fn hold_build_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.db
+            .build_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn open_at(dir: &Path) -> Result<Self, GitHistoryError> {
         std::fs::create_dir_all(dir).map_err(|source| GitHistoryError::Io {
             path: dir.to_path_buf(),

@@ -19,10 +19,19 @@ use crate::index::view::IndexView;
 /// The index `store` reads, for a `code_refs` relation that scans it (call sites, callers,
 /// implementations); otherwise the refusal naming the fix. A session holds no index when another
 /// process holds it and no daemon serves this one (a CLI command or a second `serve` beside a
-/// writer), or when the index must be rebuilt. The first is marked busy, so the CLI exits `3`.
+/// writer), or when the index must be rebuilt. The first is marked busy, so the CLI exits `3`. A
+/// daemon-hosted session finds none while the daemon reopens a poisoned handle or after it evicted
+/// the workspace; that too is busy, and a rescan opens the workspace again.
 pub(super) fn index_for_refs(store: &crate::store::Store) -> Result<std::sync::Arc<dyn IndexView>, McpError> {
     if let Some(idx) = store.read_index_view() {
         return Ok(idx);
+    }
+    if store.index_source.is_some() {
+        return Err(McpError::invalid_request(
+            "`code_refs`: the daemon released this workspace's index (it is reopening it, or evicted the \
+             workspace): retry, or run `index_rescan` to open it again",
+            Some(serde_json::json!({ super::BUSY_DATA: true })),
+        ));
     }
     if store.rescan_owed() {
         return Err(McpError::invalid_request(

@@ -297,6 +297,10 @@ fn probe_candidates(path: &str) -> impl Iterator<Item = &str> {
 pub enum IndexError {
     #[error("fjall error: {0}")]
     Fjall(#[from] fjall::Error),
+    /// A reopen of a poisoned handle found another handle on the same database still open in this
+    /// process, which the reopen would only have handed back.
+    #[error("another handle on the index at {dir} is still open in this process; it cannot be reopened yet")]
+    StillOpen { dir: PathBuf },
     #[error("io error on {path}: {source}")]
     Io {
         path: PathBuf,

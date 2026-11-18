@@ -212,10 +212,22 @@ pub(super) fn open_index_read_only(
     Ok((Some(db), false))
 }
 
-/// A fresh handle on `view` of `root`'s group, for a store whose handle was poisoned. While another
-/// handle on the group is alive this is that same database.
+/// How long a reopen waits for the other handles on the group database to be dropped.
+const REOPEN_RELEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const REOPEN_RELEASE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// A fresh handle on `view` of `root`'s group, for a store whose handle was poisoned and dropped. A
+/// handle still open elsewhere in this process would be handed back by the registry, so the reopen
+/// waits for every one to drop and fails with [`IndexError::StillOpen`] when one outlives the wait.
 pub(super) fn reopen_view(root: &Path, view: &str) -> Result<IndexDb, IndexError> {
     let dir = group_index_dir(root);
+    let deadline = std::time::Instant::now() + REOPEN_RELEASE_WAIT;
+    while GroupDb::shared(&dir).is_some() {
+        if std::time::Instant::now() >= deadline {
+            return Err(IndexError::StillOpen { dir });
+        }
+        std::thread::sleep(REOPEN_RELEASE_POLL);
+    }
     let group = open_with_retry(&dir, LockHolder::Maintenance).map_err(|error| match error {
         StoreError::Index(error) => error,
         StoreError::Locked { .. } => IndexError::Fjall(fjall::Error::Locked),

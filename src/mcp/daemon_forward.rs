@@ -1,7 +1,7 @@
 //! Scans for a daemon-hosted workspace.
 //!
 //! The daemon's pool holds the workspace's writer store and the hosted store is a read-only one
-//! sharing its index handle, so a hosted scan runs through the pool ([`writer_rescan_and_refresh`]),
+//! borrowing its index handle per call, so a hosted scan runs through the pool ([`writer_rescan_and_refresh`]),
 //! then reloads the file map the pool wrote and refreshes the in-RAM [`MapCache`](super::MapCache) from it, so the
 //! caller sees fresh results without waiting on the passive view watcher.
 
@@ -35,10 +35,19 @@ pub(super) async fn writer_rescan_and_refresh(
 ) -> Result<RescanReport, McpError> {
     let scan_pool = Arc::clone(pool);
     let root = state.shared.root.clone();
-    let stats = tokio::task::spawn_blocking(move || scan_pool.hosted_rescan(&root, paths, full, embed, verify))
-        .await
-        .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
-        .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
+    let (stats, cancelled) =
+        tokio::task::spawn_blocking(move || scan_pool.hosted_rescan(&root, paths, full, embed, verify))
+            .await
+            .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
+            .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
+    // A cancelled pass may have flushed a file map whose resolve pass never ran. The session keeps
+    // its map until a completed pass, and the caller is told, as on the socket path. ~keep
+    if cancelled {
+        return Err(McpError::internal_error(
+            "host rescan cancelled: the daemon is draining; retry against the next daemon",
+            None,
+        ));
+    }
     refresh_cache_after_scan(state, pool).await?;
     Ok(RescanReport {
         scanned: stats.scanned,
@@ -53,7 +62,7 @@ pub(super) async fn writer_rescan_and_refresh(
 }
 
 /// Refresh the hosted read-only view from the current (pool-written) `index.msgpack`: reopen the
-/// read store (sharing the writer's index handle) and derive the in-RAM
+/// read store (borrowing the writer's index handle per call) and derive the in-RAM
 /// [`MapCache`](super::MapCache) from the current one
 /// ([`MapCache::refreshed`](super::MapCache::refreshed): only the paths the scan changed are
 /// re-projected, and unchanged outlines stay decoded). Runs on a blocking thread so the reactor is

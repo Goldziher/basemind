@@ -90,7 +90,7 @@ mod tests {
         );
 
         drop(sweeping);
-        let stats = scan.join().unwrap().expect("the scan runs once the sweep is done");
+        let (stats, _) = scan.join().unwrap().expect("the scan runs once the sweep is done");
         assert_eq!(stats.updated, 1);
     }
 
@@ -121,7 +121,7 @@ mod tests {
             gate_taken = gate.try_sweep(Duration::ZERO).is_none();
             std::thread::yield_now();
         }
-        let stats = scan.join().unwrap().expect("the scan runs");
+        let (stats, _) = scan.join().unwrap().expect("the scan runs");
 
         assert_eq!(stats.updated, 1);
         assert!(gate_taken, "the scan ran without holding the blob-GC gate");

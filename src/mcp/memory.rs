@@ -271,7 +271,7 @@ async fn memory_put_fjall(
     let key_lock = memory_put_lock(&state.shared.scope, vis_byte, owner, key);
     let _put_guard = key_lock.lock().await;
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     // The put ends in an fsync: off the reactor, like every other blocking store call.
     Ok(super::blocking::blocking(|| {
         super::memory_ops::put_core(idx, &state.shared.scope, vis_byte, owner, key, value, tags)
@@ -295,7 +295,7 @@ pub(super) async fn memory_get_wire(
     key: &str,
 ) -> Result<Option<super::memory_ops::WireMemoryEntry>, McpError> {
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     Ok(super::memory_ops::get_core(
         idx,
         &state.shared.scope,
@@ -335,7 +335,7 @@ async fn memory_get_chunk_wire(
     keys: &[String],
 ) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     Ok(super::memory_ops::get_many_core(
         idx,
         &state.shared.scope,
@@ -359,7 +359,7 @@ pub(super) async fn memory_stamps_wire(
         let rest = &keys[stamps.len()..];
         let chunk = &rest[..rest.len().min(super::memory_ops::STAMPS_MAX_KEYS)];
         let store = state.store_read().await;
-        let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+        let idx = &store.index_handle().ok_or_else(index_unavailable)?;
         stamps.extend(super::memory_ops::stamps_core(
             idx,
             &state.shared.scope,
@@ -430,7 +430,7 @@ pub(super) async fn memory_list_page(
     cursor: Option<Vec<u8>>,
 ) -> Result<super::memory_ops::ListResult, McpError> {
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     Ok(super::memory_ops::list_core(
         idx,
         &state.shared.scope,
@@ -470,7 +470,7 @@ pub(super) async fn run_memory_delete(
 #[cfg(feature = "memory")]
 async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key: &str) -> Result<bool, McpError> {
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     Ok(super::blocking::blocking(|| {
         super::memory_ops::delete_core(idx, &state.shared.scope, vis_byte, owner, key)
     })?)
