@@ -66,7 +66,16 @@ pub type LangId = &'static str;
 ///
 /// Order is the bootstrap download order — keep `rust` first so the most common cold-start case
 /// stays fast.
-pub const OVERRIDE_LANGUAGES: &[LangId] = &["rust", "python", "typescript", "tsx", "javascript", "go", "markdown"];
+pub const OVERRIDE_LANGUAGES: &[LangId] = &[
+    "rust",
+    "python",
+    "typescript",
+    "tsx",
+    "javascript",
+    "go",
+    "markdown",
+    "java",
+];
 
 /// Back-compat alias used by `basemind lang install` and tests that pre-warm the cache.
 pub const SUPPORTED_LANGUAGES: &[LangId] = OVERRIDE_LANGUAGES;
@@ -83,6 +92,7 @@ fn override_query_source(lang: LangId) -> Option<&'static str> {
         "javascript" => include_str!("queries/javascript.scm"),
         "go" => include_str!("queries/go.scm"),
         "markdown" => include_str!("queries/markdown.scm"),
+        "java" => include_str!("queries/java.scm"),
         _ => return None,
     })
 }
@@ -418,7 +428,7 @@ static CLASSIFIED_COMBINED_L1: LazyLock<OnceMap<LangId, ClassifiedOutcome>> = La
 ///
 /// Convention: each .scm file is divided into sections marked by `;; section: <name>` lines.
 /// Sections we look for: `symbols`, `imports`, `calls`, `docs`.
-fn extract_section(source: &str, name: &str) -> Option<String> {
+pub(crate) fn extract_section(source: &str, name: &str) -> Option<String> {
     let mut out = String::new();
     let mut in_section = false;
     for line in source.lines() {
@@ -644,7 +654,7 @@ fn rewrite_capture(cap: &str, kind: PatternKind) -> String {
 /// stays for process lifetime. Bound is the size of TSLP's registry — small.
 static ADAPTED_TAGS: LazyLock<OnceMap<LangId, Option<Arc<str>>>> = LazyLock::new(OnceMap::default);
 
-fn tslp_tags_adapted(lang: LangId) -> Option<Arc<str>> {
+pub(crate) fn tslp_tags_adapted(lang: LangId) -> Option<Arc<str>> {
     ADAPTED_TAGS.get_or_init(lang, || {
         tree_sitter_language_pack::get_tags_query(lang).map(|raw| Arc::from(adapt_tslp_tags(raw)))
     })
@@ -762,7 +772,7 @@ fn classify_combined_l1(lang: LangId) -> Result<ClassifiedOutcome, LangError> {
 /// and `Err` only on a compile error in source we do have.
 ///
 /// Language coverage is three concentric rings over TSLP's ~306-grammar registry:
-/// - **Override ring** ([`OVERRIDE_LANGUAGES`], 6 today): hand-written
+/// - **Override ring** ([`OVERRIDE_LANGUAGES`], 8 today): hand-written
 ///   `src/queries/<lang>.scm` with full symbol/import/call/doc sections.
 /// - **TSLP `tags.scm` ring** (~100 grammars in the published bundle — e.g. kotlin,
 ///   csharp, swift, cpp, scala, solidity): adapted on the fly via `adapt_tslp_tags`.

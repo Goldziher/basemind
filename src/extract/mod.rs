@@ -8,6 +8,8 @@ pub mod doc_fallback;
 pub mod doc_guard;
 #[cfg(feature = "documents")]
 pub mod doc_tiers;
+#[cfg(test)]
+mod java_parity_tests;
 pub mod l1;
 pub mod l2;
 pub mod l3;
