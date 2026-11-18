@@ -164,6 +164,31 @@ fn a_blob_of_other_settings_or_another_model_is_extracted_again_not_written() {
     }
 }
 
+/// An incremental pass that touched no document, dropped none and owes none leaves the store alone:
+/// it does not look for absent rows, list keys or run index upkeep (review 3 S4). A pass that owes
+/// rows still writes them.
+#[test]
+fn an_incremental_pass_without_document_work_leaves_the_store_alone() {
+    let (_tmp, mut store, config, filters) = setup();
+    let key = doc_key(&track(&mut store, &blob("idle", false), &["a.md"]), "digest");
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
+    doc_store(&store, &config)
+        .delete_keys(std::slice::from_ref(&key))
+        .unwrap();
+    let incremental = crate::scanner_flush::REQUEUE_PER_INCREMENTAL;
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), incremental),
+        0,
+        "the pass looked for absent rows"
+    );
+    store.pending_vectors.owe_doc("a.md");
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), incremental),
+        1,
+        "a pass that owes rows writes them"
+    );
+}
+
 #[test]
 fn a_scan_writes_absent_documents_once_per_content_and_settles_their_paths() {
     let (_tmp, mut store, config, filters) = setup();

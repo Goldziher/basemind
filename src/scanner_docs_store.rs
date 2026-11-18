@@ -50,6 +50,13 @@ pub(crate) fn open_doc_store(store: &Store, config: &Config, create: bool) -> Re
     Ok(opened)
 }
 
+/// Whether the group's retrieval store for the configured preset is on disk. Unknown (an unknown
+/// preset) counts as present: the open reports it.
+fn doc_store_exists(store: &Store, config: &Config) -> bool {
+    let preset = &config.documents.embedding_preset;
+    super::preset_dim(preset).map_or(true, |dim| DocStore::exists(&group_store_dir(&store.root, preset, dim)))
+}
+
 /// How long a group retrieval store of another embedding model may go unused by any scan before a
 /// scan of the group removes it. A worktree that still uses that model rebuilds its store from the
 /// cached blobs, with no embedding, on its next scan.
@@ -104,6 +111,9 @@ fn prune_idle_model_stores(dir: &std::path::Path, now: std::time::SystemTime) {
 /// vectors.
 struct LiveDoc {
     blob: String,
+    /// The extraction digest of the entries naming this key: the settings the rows must be built
+    /// under.
+    digest: String,
     paths: Vec<String>,
     want_vectors: bool,
     /// The entry says the blob holds vectors of the preset its scan asked for.
@@ -111,9 +121,6 @@ struct LiveDoc {
 }
 
 fn live_docs(store: &Store, config: &Config, filters: &Filters) -> AHashMap<String, LiveDoc> {
-    /// The extraction digest of the entries naming this key: the settings the rows must be built
-    /// under.
-    digest: String,
     let cfg = &config.documents;
     let mut live: AHashMap<String, LiveDoc> = AHashMap::new();
     for (path, entry) in &store.index.doc_files {
@@ -123,6 +130,7 @@ fn live_docs(store: &Store, config: &Config, filters: &Filters) -> AHashMap<Stri
             .entry(doc_key(&entry.hash_hex, &entry.config_digest))
             .or_insert_with(|| LiveDoc {
                 blob: entry.hash_hex.clone(),
+                digest: entry.config_digest.clone(),
                 paths: Vec::new(),
                 want_vectors: false,
                 embedded: false,
@@ -130,7 +138,6 @@ fn live_docs(store: &Store, config: &Config, filters: &Filters) -> AHashMap<Stri
         doc.want_vectors |= want;
         doc.embedded |= entry.embedded && entry.embedding_preset == cfg.embedding_preset;
         doc.paths.push(path);
-                digest: entry.config_digest.clone(),
     }
     live
 }
@@ -217,6 +224,18 @@ pub(crate) fn sync_document_rows(
     budget: usize,
 ) -> usize {
     let dropped = std::mem::take(&mut store.dropped_doc_keys);
+    let full = budget == crate::scanner_flush::REQUEUE_ALL;
+    // An incremental pass (a watcher batch) that extracted no document, dropped none and owes none
+    // has nothing to bring in line: listing every key and running index upkeep per save would cost
+    // more than the pass. A store that is gone while the view names documents is rebuilt.
+    if !full
+        && scanned.is_empty()
+        && dropped.is_empty()
+        && store.pending_vectors.docs().is_empty()
+        && (store.index.doc_files.is_empty() || doc_store_exists(store, config))
+    {
+        return 0;
+    }
     let live = live_docs(store, config, filters);
     let doc_store = match open_doc_store(store, config, !live.is_empty()) {
         Ok(Some(doc_store)) => doc_store,
@@ -290,6 +309,16 @@ pub(crate) fn sync_document_rows(
     for key in todo {
         let doc = &live[key];
         match store.read_doc_by_hex(&doc.blob) {
+            // The blob is global and keyed by content alone: a workspace with other document
+            // settings or another model rewrote it. Rows built from it would carry that
+            // workspace's chunks, or lose their vectors for good, so the file is extracted again.
+            Ok(Some(blob)) if displaced(&blob, doc, &preset) => {
+                tracing::info!(
+                    key,
+                    "document blob rewritten under other settings; the file is extracted again"
+                );
+                damaged.extend(doc.paths.iter().cloned());
+            }
             Ok(Some(blob)) => {
                 let with_vectors = doc.want_vectors && super::doc_has_vectors_of(&blob, &preset);
                 let built = build_doc_rows(blob, key.clone(), with_vectors);
@@ -308,16 +337,6 @@ pub(crate) fn sync_document_rows(
                     "no blob for a live document; its rows wait for its next extraction"
                 );
                 blobless.extend(doc.paths.iter().cloned());
-            }
-            // The blob is global and keyed by content alone: a workspace with other document
-            // settings or another model rewrote it. Rows built from it would carry that
-            // workspace's chunks, or lose their vectors for good, so the file is extracted again.
-            Ok(Some(blob)) if displaced(&blob, doc, &preset) => {
-                tracing::info!(
-                    key,
-                    "document blob rewritten under other settings; the file is extracted again"
-                );
-                damaged.extend(doc.paths.iter().cloned());
             }
             Err(crate::store::StoreError::Io { source, .. }) => {
                 tracing::warn!(key, error = %source, "reading a document blob failed; its rows stay owed");
@@ -352,43 +371,24 @@ pub(crate) fn sync_document_rows(
         store.pending_vectors.owe_doc(path);
     }
     crate::scanner_flush::extract_again(store, &damaged, |store, rel| store.remove_doc(rel));
-    if budget == crate::scanner_flush::REQUEUE_ALL {
+    let deleted = if full {
         drop(live);
-        sweep_dead_rows(store, &doc_store);
+        sweep_dead_rows(store, &doc_store)
     } else {
-        sweep_dropped_rows(store, &doc_store, dropped, |key| live.contains_key(key));
+        let deleted = sweep_dropped_rows(store, &doc_store, dropped, |key| live.contains_key(key));
         drop(live);
-    }
-    if let Err(error) = doc_store.maintain_indexes() {
+        deleted
+    };
+    // Upkeep with nothing new to index is pure overhead; a full pass still runs it, so an index
+    // missing from an earlier failed upkeep is built.
+    if (full || written > 0 || deleted)
+        && let Err(error) = doc_store.maintain_indexes()
+    {
         tracing::warn!(?error, "document index upkeep failed; searches scan the unindexed rows");
     }
     written
 }
 
-/// Delete the rows of the group's store whose key no view of the group names. A key one view
-/// dropped stays while another names it. When a view's document map cannot be read the liveness is
-/// unknown and nothing is deleted; dead rows are filtered out at query time meanwhile.
-fn sweep_dead_rows(store: &Store, doc_store: &DocStore) {
-    sweep_dead_rows_as_of(doc_store, || store.group_live_doc_keys());
-}
-
-/// [`sweep_dead_rows`] with the live keys read by `live`, under the store's sweep gate: a sibling
-/// that names a document after `live` read its file map writes the rows after the delete.
-fn sweep_dead_rows_as_of(
-    doc_store: &DocStore,
-    live: impl FnOnce() -> Result<AHashSet<String>, crate::store::LivenessUnknown>,
-) {
-    let _exclusive = doc_store.sweep_exclusive();
-    let live_keys = match live() {
-        Ok(keys) => keys,
-        Err(error) => {
-            tracing::warn!(%error, "the group's live documents are unknown; no document rows are deleted");
-            return;
-        }
-    };
-    if let Err(error) = doc_store.delete_dead(&live_keys) {
-        tracing::warn!(
-            ?error,
 /// Whether `blob` was rewritten by a scan of other settings than the entries of `doc` record: another
 /// extraction digest, or vectors of another model where the entries say the blob holds this preset's
 /// and a path wants them. A blob from before digests (empty) is this workspace's.
@@ -398,23 +398,52 @@ fn displaced(blob: &FileMapDoc, doc: &LiveDoc, preset: &str) -> bool {
     other_settings || lost_vectors
 }
 
-            "deleting dead document rows failed; they are filtered out at query time"
-        );
+/// Delete the rows of the group's store whose key no view of the group names. A key one view
+/// dropped stays while another names it. When a view's document map cannot be read the liveness is
+/// unknown and nothing is deleted; dead rows are filtered out at query time meanwhile. `true` when a
+/// delete ran.
+fn sweep_dead_rows(store: &Store, doc_store: &DocStore) -> bool {
+    sweep_dead_rows_as_of(doc_store, || store.group_live_doc_keys())
+}
+
+/// [`sweep_dead_rows`] with the live keys read by `live`, under the store's sweep gate: a sibling
+/// that names a document after `live` read its file map writes the rows after the delete.
+fn sweep_dead_rows_as_of(
+    doc_store: &DocStore,
+    live: impl FnOnce() -> Result<AHashSet<String>, crate::store::LivenessUnknown>,
+) -> bool {
+    let _exclusive = doc_store.sweep_exclusive();
+    let live_keys = match live() {
+        Ok(keys) => keys,
+        Err(error) => {
+            tracing::warn!(%error, "the group's live documents are unknown; no document rows are deleted");
+            return false;
+        }
+    };
+    match doc_store.delete_dead(&live_keys) {
+        Ok(dead) => dead > 0,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                "deleting dead document rows failed; they are filtered out at query time"
+            );
+            false
+        }
     }
 }
 
 /// Delete the rows of the keys `dropped` names that no view of the group names any more. The other
 /// views' file maps are read only when this view's own map names none of them. A dead row of a key
-/// not dropped here waits for the next full pass ([`sweep_dead_rows`]).
+/// not dropped here waits for the next full pass ([`sweep_dead_rows`]). `true` when a delete ran.
 fn sweep_dropped_rows(
     store: &Store,
     doc_store: &DocStore,
     mut dropped: Vec<String>,
     own_names: impl Fn(&String) -> bool,
-) {
+) -> bool {
     dropped.retain(|key| !own_names(key));
     if dropped.is_empty() {
-        return;
+        return false;
     }
     dropped.sort_unstable();
     dropped.dedup();
@@ -423,15 +452,22 @@ fn sweep_dropped_rows(
         Ok(keys) => keys,
         Err(error) => {
             tracing::warn!(%error, "the group's live documents are unknown; no document rows are deleted");
-            return;
+            return false;
         }
     };
     dropped.retain(|key| !live.contains(key));
-    if let Err(error) = doc_store.delete_keys(&dropped) {
-        tracing::warn!(
-            ?error,
-            "deleting dropped document rows failed; they are filtered out at query time"
-        );
+    if dropped.is_empty() {
+        return false;
+    }
+    match doc_store.delete_keys(&dropped) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                "deleting dropped document rows failed; they are filtered out at query time"
+            );
+            false
+        }
     }
 }
 
@@ -449,7 +485,9 @@ pub(crate) fn remove_dead_document_rows(store: &mut Store, config: &Config) {
         .map(|entry| doc_key(&entry.hash_hex, &entry.config_digest))
         .collect();
     match open_doc_store(store, config, false) {
-        Ok(Some(doc_store)) => sweep_dropped_rows(store, &doc_store, dropped, |key| own.contains(key)),
+        Ok(Some(doc_store)) => {
+            sweep_dropped_rows(store, &doc_store, dropped, |key| own.contains(key));
+        }
         Ok(None) => {}
         Err(error) => tracing::warn!(%error, "document store did not open; removed documents' rows stay"),
     }

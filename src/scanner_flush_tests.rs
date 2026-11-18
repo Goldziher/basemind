@@ -690,6 +690,38 @@ mod code {
         assert!(!store.view_dir.join(PENDING_FILE).exists());
     }
 
+    /// Re-queuing owed code rows spends the pass's budget, which made a full pass look incremental to
+    /// the document lane: it skipped the sweep of dead document rows whenever code rows were owed.
+    #[test]
+    fn a_full_pass_that_owes_code_rows_still_sweeps_dead_document_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = open_store(tmp.path());
+        let config = code_config();
+        owe_doc(&mut store, "docs/live.txt", Some(&doc(2, DIM)));
+        owe_code(&mut store, "src/good.rs", Some(&sidecar(2, DIM)));
+        store.flush().unwrap();
+        let docs = crate::scanner_docs::open_doc_store(&store, &config, true)
+            .unwrap()
+            .expect("created");
+        docs.write(&[crate::lance::docs_schema::DocRows {
+            doc_key: "dead".to_string(),
+            mime_type: "text/plain".to_string(),
+            mime_group: "text".to_string(),
+            title: None,
+            keywords: Vec::new(),
+            chunks: Vec::new(),
+        }])
+        .unwrap();
+
+        lanes(&mut store, &config, usize::MAX);
+
+        assert_eq!(code_rows(&mut store), ["src/good.rs"], "the code row was requeued");
+        assert!(
+            !docs.keys().unwrap().contains(&"dead".to_string()),
+            "the dead row is swept"
+        );
+    }
+
     /// A staged or revision view shares the working view's `code_chunks` store, keyed by path, so
     /// its scan must not write there: it would replace the working rows with other content.
     #[test]

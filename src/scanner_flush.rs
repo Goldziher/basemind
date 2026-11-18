@@ -47,8 +47,11 @@ pub(crate) fn flush_vector_lanes(
         requeue_pending_docs(store, config, filters, scope, &mut doc_batches, &mut budget);
         requeue_pending_code(store, config, filters, &mut code_batches, &mut budget);
     }
+    // Re-queuing code rows spends the budget; a full pass stays full for the document lane, which
+    // sweeps every dead row only then. ~keep
+    let doc_budget = if requeue == REQUEUE_ALL { REQUEUE_ALL } else { budget };
     run_optional_lane(LANE_DOC_BATCHES, || {
-        flush_doc_batches_if_any(store, config, filters, doc_batches, budget);
+        flush_doc_batches_if_any(store, config, filters, doc_batches, doc_budget);
     });
     run_optional_lane(LANE_CODE_BATCHES, || {
         flush_code_batches_if_any(store, config, filters, scope, code_batches);
