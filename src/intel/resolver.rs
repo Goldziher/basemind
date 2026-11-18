@@ -45,6 +45,12 @@ impl ProbeSet {
         }
     }
 
+    /// Record the directory `dir` as listed; `""` is the repository root, which
+    /// [`Self::insert_rel`] does not record.
+    pub(crate) fn insert_dir(&mut self, dir: &str) {
+        self.0.insert(dir.to_string());
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -610,6 +616,7 @@ mod stack_tests {
             imported: imported.map(str::to_string),
             is_type: false,
             local_start: 0,
+            module_only: false,
         }
     }
 
@@ -879,6 +886,7 @@ mod js_tests {
             imported: Some("x".to_string()),
             is_type: false,
             local_start: 0,
+            module_only: false,
         }
     }
 

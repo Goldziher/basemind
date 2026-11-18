@@ -72,7 +72,7 @@ fn probe_candidates_walk_up_the_ancestor_directories() {
     );
     assert_eq!(
         probe_candidates("tsconfig.json").collect::<Vec<_>>(),
-        vec!["tsconfig.json"]
+        vec!["tsconfig.json", ""]
     );
 }
 

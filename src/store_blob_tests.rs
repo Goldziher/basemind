@@ -186,6 +186,7 @@ fn resolved_blob_round_trips_and_missing_reads_none() {
         imported: Some("baz".to_string()),
         is_type: false,
         local_start: 9,
+        module_only: false,
     });
     refs.exports.push(ExportEdge {
         name: "alpha".to_string(),
@@ -219,6 +220,26 @@ fn legacy_uncompressed_single_map_blobs_remain_readable() {
     std::fs::write(store.blob_path_rref_hex(&hash_hex), legacy).expect("write legacy blob");
 
     assert_eq!(store.read_resolved_by_hex(&hash_hex).unwrap(), Some(refs));
+}
+
+/// A resolution blob from an older resolver epoch reads as absent, and the resolve pass's rewrite
+/// replaces it although its schema is current.
+#[test]
+fn a_resolution_blob_from_an_older_epoch_reads_as_absent_until_rewritten() {
+    use crate::intel::model::{FileResolvedRefs, RESOLVE_EPOCH};
+
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = "7".repeat(64);
+    let mut stale = FileResolvedRefs::new("typescript");
+    stale.resolve_epoch = RESOLVE_EPOCH - 1;
+    store.write_resolved_hex(&hash_hex, &stale).expect("write stale blob");
+    assert_eq!(store.read_resolved_by_hex(&hash_hex).unwrap(), None);
+
+    let fresh = FileResolvedRefs::new("typescript");
+    store.write_resolved_hex(&hash_hex, &fresh).expect("rewrite blob");
+    assert_eq!(store.read_resolved_by_hex(&hash_hex).unwrap(), Some(fresh));
 }
 
 #[test]

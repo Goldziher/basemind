@@ -104,8 +104,9 @@ const INDEX_KEYSPACES: [&str; 16] = [
 const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
 
 /// Layout revision of the probe keyspaces; bump to force one wholesale resolve pass. Revision 2 added
-/// the file-edge row ([`keys::FILE_EDGES_START`]).
-const IMPORT_PROBE_VER: u8 = 2;
+/// the file-edge row ([`keys::FILE_EDGES_START`]); revision 3 added JS/TS module-only imports to it;
+/// revision 4 added the Rust and Go rows.
+const IMPORT_PROBE_VER: u8 = 4;
 
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
 /// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;
@@ -336,9 +337,14 @@ fn cache_bytes_override() -> Option<u64> {
         .and_then(|v| v.parse::<u64>().ok())
 }
 
-/// `path` followed by each of its ancestor directories, innermost first.
+/// `path` followed by each of its ancestor directories, innermost first, and the root directory `""`
+/// for a path directly in it. The root is probed only by a resolver that lists it (a Go package at
+/// the module root), and only its direct children can change such a listing.
 fn probe_candidates(path: &str) -> impl Iterator<Item = &str> {
-    std::iter::once(path).chain(path.rmatch_indices('/').map(move |(i, _)| &path[..i]))
+    let root = (!path.is_empty() && !path.contains('/')).then_some("");
+    std::iter::once(path)
+        .chain(path.rmatch_indices('/').map(move |(i, _)| &path[..i]))
+        .chain(root)
 }
 
 #[derive(Debug, Error)]

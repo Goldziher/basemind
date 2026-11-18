@@ -54,6 +54,8 @@ use crate::config::MaxFootprint;
 use crate::index::IndexDb;
 use crate::index::view::IndexView;
 use crate::intel::model::FileResolvedRefs;
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+use crate::intel::module_resolver;
 use crate::intel::stage_budget::BudgetedWriter;
 use crate::lang;
 use crate::path::RelPath;
@@ -126,10 +128,13 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint:
             tracing::warn!(%error, "resolve pass: could not withdraw the import-probe stamp");
         }
         let mut cross_file: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
+        let mut modules: Vec<String> = Vec::new();
         let staged = resolve_in_chunks(root, store, index_db, &files, precise, footprint, |facts| {
+            module_resolver::harvest_module_importers(&facts, &mut modules);
             harvest_cross_file_facts(facts, &mut cross_file);
         });
-        let stitched = crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file);
+        let stitched = crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file)
+            & module_resolver::stitch_module_edges(root, store, index_db, &modules);
         if staged
             && stitched
             && let Err(error) = index_db.set_import_probes_complete(true)
@@ -205,18 +210,22 @@ pub(crate) fn resolve_with_probe_view(
         return (false, Vec::new());
     };
     let mut importers: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
+    let mut modules: Vec<String> = Vec::new();
     let changed = snapshot_of(store, delta.changed.iter());
     let affected = xfile_incremental::affected_importers(probe_view, store, delta);
     let affected_snapshot = snapshot_of(store, affected.iter());
     let changed_complete = resolve_in_chunks(root, store, index_db, &changed, precise, footprint, |facts| {
+        module_resolver::harvest_module_importers(&facts, &mut modules);
         harvest_cross_file_facts(facts, &mut importers);
     });
     let affected_complete = resolve_in_chunks(root, store, index_db, &affected_snapshot, precise, footprint, |facts| {
+        module_resolver::harvest_module_importers(&facts, &mut modules);
         harvest_cross_file_facts(facts, &mut importers);
     });
     let complete = changed_complete
         && affected_complete
-        && crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &importers);
+        && crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &importers)
+            & module_resolver::stitch_module_edges(root, store, index_db, &modules);
     (complete, affected)
 }
 
@@ -390,14 +399,16 @@ fn harvest_cross_file_facts(
 
 /// Affected-set computation for the incremental re-stitch (feature `code-intel-js` or
 /// `code-intel-stack`). Resolution itself goes through the shared per-language
-/// [`crate::intel::resolver::SpecifierResolver`] inside the stitch, so it covers every
-/// resolver-capable language (JS/TS, Python, Java).
+/// [`crate::intel::resolver::SpecifierResolver`] inside the stitch, or the file-level
+/// [`crate::intel::module_resolver::ModuleResolver`], so it covers every resolver-capable language
+/// (JS/TS, Python, Java, Rust, Go).
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 mod xfile_incremental {
     use ahash::AHashSet;
 
     use super::PathDelta;
     use crate::index::view::IndexView;
+    use crate::intel::module_resolver::ModuleResolver;
     use crate::intel::resolver::SpecifierResolver;
     use crate::store::Store;
 
@@ -413,9 +424,9 @@ mod xfile_incremental {
                     continue;
                 };
                 if !changed.contains(key)
-                    && store
-                        .lookup(key)
-                        .is_some_and(|entry| SpecifierResolver::supports(&entry.language))
+                    && store.lookup(key).is_some_and(|entry| {
+                        SpecifierResolver::supports(&entry.language) || ModuleResolver::supports(&entry.language)
+                    })
                 {
                     affected.insert(key.to_string());
                 }
@@ -509,6 +520,7 @@ mod tests {
             imported: Some("useThing".to_string()),
             is_type: false,
             local_start: 7,
+            module_only: false,
         }];
         refs.intra = (0..256)
             .map(|i| ResolvedEdge {
@@ -558,6 +570,7 @@ mod tests {
                 imported: Some("useThing".to_string()),
                 is_type: false,
                 local_start: 7,
+                module_only: false,
             }];
             refs.intra = (0..EDGES_PER_FILE)
                 .map(|i| ResolvedEdge {

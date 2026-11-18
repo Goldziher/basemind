@@ -23,8 +23,9 @@
 //! map is what lets the incremental pass re-stitch exactly the importers a changed path can affect.
 //! It also records the importer's file-level edges ([`FileEdges`]): every indexed file an import
 //! resolves to at the first hop, type-only imports included and flagged, whether or not the name
-//! binds an export there (a barrel forwards it), plus the imports that resolved to none. Only the
-//! imports the extractor records count: a JS namespace or side-effect import has no binding there.
+//! binds an export there (a barrel forwards it), plus the imports that resolved to none. A JS
+//! side-effect import, namespace import or `export … from` re-export is a `module_only` import: it
+//! counts as a file edge and joins no export.
 //!
 //! Best-effort: any resolver miss or unindexed target is logged at debug and skipped; a commit
 //! failure warns but never aborts the scan. Idempotency across re-scans is documented on
@@ -185,7 +186,7 @@ fn resolve_export_transitively(
         let reexport = facts
             .imports
             .iter()
-            .find(|import| !import.is_type && import.local == wanted)?;
+            .find(|import| !import.is_type && !import.module_only && import.local == wanted)?;
         let next_rel = resolver.resolve(root, &current_key, reexport, probes)?;
         store.lookup(&next_rel)?;
         wanted = reexport.imported.clone().unwrap_or(wanted);
@@ -259,7 +260,7 @@ pub fn stitch_cross_file_edges(
                 continue;
             }
             file_edges.hit(target_rel.clone(), import);
-            if import.is_type {
+            if import.is_type || import.module_only {
                 continue;
             }
 
@@ -314,9 +315,10 @@ pub fn stitch_cross_file_edges(
     committed
 }
 
-/// Collects one importer's [`FileEdges`] while its imports resolve.
+/// Collects one importer's [`FileEdges`] while its imports resolve. Shared with the file-level
+/// module stitch ([`crate::intel::module_resolver`]), whose resolvers classify a miss themselves.
 #[derive(Default)]
-struct FileEdgesBuilder {
+pub(crate) struct FileEdgesBuilder {
     /// Target -> (first runtime binding, first type-only binding).
     targets: AHashMap<crate::path::RelPath, (Option<u32>, Option<u32>)>,
     external: u32,
@@ -327,27 +329,42 @@ struct FileEdgesBuilder {
 impl FileEdgesBuilder {
     /// `import` resolved to the indexed file `target`.
     fn hit(&mut self, target: crate::path::RelPath, import: &ImportEdge) {
+        self.hit_at(target, import.local_start, import.is_type);
+    }
+
+    /// An import at byte `local_start` resolved to the indexed file `target`.
+    pub(crate) fn hit_at(&mut self, target: crate::path::RelPath, local_start: u32, is_type: bool) {
         let (runtime, type_only) = self.targets.entry(target).or_default();
-        let slot = if import.is_type { type_only } else { runtime };
-        *slot = Some(slot.map_or(import.local_start, |start| start.min(import.local_start)));
+        let slot = if is_type { type_only } else { runtime };
+        *slot = Some(slot.map_or(local_start, |start| start.min(local_start)));
     }
 
     /// `import` resolved to no indexed file. A relative specifier (`./x`, `../x`, `.x`, `/x`) names a
     /// file in the repository and is unresolved; any other is taken for an external module.
     fn miss(&mut self, import: &ImportEdge) {
-        if !import.specifier.starts_with(['.', '/']) {
-            self.external += 1;
-            return;
-        }
-        self.unresolved += 1;
-        if self.unresolved_specifiers.len() < MAX_UNRESOLVED_SPECIFIERS
-            && !self.unresolved_specifiers.contains(&import.specifier)
-        {
-            self.unresolved_specifiers.push(import.specifier.clone());
+        if import.specifier.starts_with(['.', '/']) {
+            self.unresolved(&import.specifier);
+        } else {
+            self.external();
         }
     }
 
-    fn finish(self) -> FileEdges {
+    /// An import named a module outside the repository.
+    pub(crate) fn external(&mut self) {
+        self.external += 1;
+    }
+
+    /// An import named a module of the repository that no indexed file matches.
+    pub(crate) fn unresolved(&mut self, specifier: &str) {
+        self.unresolved += 1;
+        if self.unresolved_specifiers.len() < MAX_UNRESOLVED_SPECIFIERS
+            && !self.unresolved_specifiers.iter().any(|known| known == specifier)
+        {
+            self.unresolved_specifiers.push(specifier.to_string());
+        }
+    }
+
+    pub(crate) fn finish(self) -> FileEdges {
         let mut edges: Vec<FileEdge> = self
             .targets
             .into_iter()
