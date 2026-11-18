@@ -77,14 +77,13 @@ pub fn parse_stop(arguments: Value) -> Result<AgentStopParams, String> {
 const LAUNCH_DESCRIPTION: &str = "Use to hand a task to an agent in another harness (Claude Code, \
 Codex, OpenCode) that the operator allowed: it starts the agent in `working_dir`, its own existing \
 worktree under the operator's worktrees root, with `brief` as its first prompt, and returns the \
-session id, the agent's id and a basemind thread both of you are members of. Every approval the \
-agent asks for is denied unless the operator's policy allows it; nothing here can allow one. Limits \
+session id, the agent's id and a basemind thread both of you are members of; the agent may read and \
+post to it unasked. Every other approval the agent asks for is denied; nothing here can allow one. Limits \
 are clamped to the operator's caps; a refusal is a stable code. \
 Example: {\"harness\":\"claude\",\"brief\":\"Review src/store.rs for races\",\"working_dir\":\"review-store\"}";
 
 const STOP_DESCRIPTION: &str = "Use to stop an agent you launched with agent_launch, by the \
-`session` id it returned; agents it launched stop with it. Stopping a finished session changes \
-nothing. Example: {\"session\":1}";
+`session` id it returned. Stopping a finished session changes nothing. Example: {\"session\":1}";
 
 /// The `tools/list` entries of the lead tools, in [`LEAD_TOOLS`] order.
 pub fn tool_definitions() -> Vec<Value> {
