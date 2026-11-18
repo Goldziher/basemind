@@ -554,10 +554,6 @@ fn sync_git_history_after_scan(
         }
         Err(error) => tracing::warn!(?error, "git-history index sync failed"),
     }
-    // Fjall 3.1.9 can deadlock in `DatabaseInner::drop` even after writers stop
-    // (fjall-rs/fjall#260). A scan is a short-lived helper process, so let the OS close this
-    // already-persisted database at process exit instead of risking an indefinitely wedged CLI.
-    std::mem::forget(index);
 }
 
 /// Run a full scan, printing each file's line as the scan absorbs it.
