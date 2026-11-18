@@ -234,3 +234,42 @@ fn a_policy_file_inside_the_lead_workspace_is_refused() {
     let refused = fixture.load(&path);
     assert!(matches!(refused, Err(PolicyFileError::Unsafe { .. })), "{refused:?}");
 }
+
+/// A mode the harness's adapter refuses at every launch is refused when the file loads, so the
+/// lead never advertises a launch that cannot run.
+#[test]
+fn a_permission_mode_the_harness_cannot_launch_in_is_refused_at_load() {
+    let fixture = Fixture::new();
+    for (harness, mode) in [
+        ("codex", "accept_edits"),
+        ("opencode", "read_only"),
+        ("opencode", "accept_edits"),
+    ] {
+        let path = fixture.write(&format!(
+            "{}[agents.launch.harness.{harness}]\nexecutable = \"/bin/sh\"\npermission_mode = \"{mode}\"\n",
+            fixture.text("", "")
+        ));
+        let refused = fixture.load(&path);
+        assert!(
+            matches!(&refused, Err(PolicyFileError::Invalid { reason, .. }) if reason.contains("permission_mode")),
+            "{harness} {mode}: {refused:?}"
+        );
+    }
+    // The control: every mode that can launch loads.
+    for (harness, mode) in [
+        ("codex", "supervised"),
+        ("codex", "read_only"),
+        ("opencode", "supervised"),
+        ("claude", "accept_edits"),
+    ] {
+        let text = if harness == "claude" {
+            fixture.text("", &format!("permission_mode = \"{mode}\""))
+        } else {
+            format!(
+                "{}[agents.launch.harness.{harness}]\nexecutable = \"/bin/sh\"\npermission_mode = \"{mode}\"\n",
+                fixture.text("", "")
+            )
+        };
+        fixture.enabled(&fixture.write(&text));
+    }
+}
