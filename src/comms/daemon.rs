@@ -184,6 +184,10 @@ pub struct Broker {
     /// active HTTP client. This counter does: a request in flight pins the daemon exactly as a
     /// connected UDS link would, so the idle reaper cannot tear the process down mid-request.
     pub(super) http_inflight: AtomicUsize,
+    /// Latches true once the HTTP front-end is listening. Only an operator's explicit start grants
+    /// HTTP, no HTTP client can spawn a daemon, and an implicit respawn withholds the grant, so a
+    /// daemon serving HTTP is never reaped for idleness: it runs until it is stopped.
+    serves_http: AtomicBool,
     /// Milliseconds (since [`started`](Self::started)) of the last streamable-HTTP request, stamped
     /// on both the start and the end of every request. Feeds the idle predicate the same way
     /// `last_activity_ms` does for UDS links: a request within the idle window keeps the daemon
@@ -238,6 +242,7 @@ impl Broker {
             work_inflight: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
             http_inflight: AtomicUsize::new(0),
+            serves_http: AtomicBool::new(false),
             last_http_ms: AtomicU64::new(0),
             started: Instant::now(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -273,6 +278,17 @@ impl Broker {
     /// `/mcp` clients that never open a persistent link.
     pub fn ever_served(&self) -> bool {
         self.ever_linked.load(Ordering::Relaxed) || self.last_http_ms.load(Ordering::Relaxed) != 0
+    }
+
+    /// Record that the HTTP front-end is listening, which exempts this daemon from both idle
+    /// reapers (see the field's doc).
+    pub fn mark_serving_http(&self) {
+        self.serves_http.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the HTTP front-end is listening.
+    pub fn serves_http(&self) -> bool {
+        self.serves_http.load(Ordering::SeqCst)
     }
 
     /// Record a front-end link closing and stamp activity.
@@ -451,7 +467,7 @@ impl Broker {
 
     /// What "idle" MEANS — and why each clause is here.
     ///
-    /// A daemon is idle only when *nothing can be waiting on it*. Four independent things can make
+    /// A daemon is idle only when *nothing can be waiting on it*. Five independent things can make
     /// that false, and socket traffic is NOT one of them:
     ///
     /// 1. **A connected link** (`link_count`). This is the load-bearing clause, and it is a
@@ -467,9 +483,10 @@ impl Broker {
     ///    — no persistent connection survives between requests — so the link refcount cannot pin it.
     ///    [`Broker::begin_http_request`] fills the gap, and also stamps `last_http_ms` so a burst of
     ///    short requests keeps the daemon warm across the gaps between them.
-    /// 4. **An already-started drain.** Draining/Stopped is terminal; re-reaping is meaningless.
+    /// 4. **A listening HTTP front-end** ([`Broker::serves_http`]). Its clients cannot respawn it.
+    /// 5. **An already-started drain.** Draining/Stopped is terminal; re-reaping is meaningless.
     ///
-    /// Only once all four are clear does the elapsed-time test apply. `last_activity_ms` is stamped
+    /// Only once all five are clear does the elapsed-time test apply. `last_activity_ms` is stamped
     /// on every link connect/disconnect and `last_http_ms` on every HTTP request, so the window
     /// measures time since the daemon last had *anyone* to serve — over either front-end — not time
     /// since the last packet. See [`Broker::elapsed_since_activity`].
@@ -481,7 +498,7 @@ impl Broker {
             return false;
         }
         // A stateless HTTP request in flight pins the daemon just like a connected UDS link. ~keep
-        if self.http_inflight.load(Ordering::SeqCst) != 0 {
+        if self.http_inflight.load(Ordering::SeqCst) != 0 || self.serves_http() {
             return false;
         }
         if matches!(self.state().await, LifecycleState::Draining | LifecycleState::Stopped) {
@@ -528,6 +545,7 @@ impl Broker {
             if self.link_count.load(Ordering::SeqCst) != 0
                 || self.work_inflight.load(Ordering::SeqCst) != 0
                 || self.http_inflight.load(Ordering::SeqCst) != 0
+                || self.serves_http()
             {
                 return false;
             }

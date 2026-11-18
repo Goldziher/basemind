@@ -230,7 +230,7 @@ pub fn run() -> Result<()> {
         tokio::spawn(async move {
             let bootstrap = crate::comms::daemon::bootstrap_timeout();
             tokio::time::sleep(bootstrap).await;
-            if !broker_for_bootstrap.ever_served() {
+            if !broker_for_bootstrap.ever_served() && !broker_for_bootstrap.serves_http() {
                 tracing::info!(
                     bootstrap_secs = bootstrap.as_secs(),
                     "comms: no client connected within the bootstrap window; self-terminating"
