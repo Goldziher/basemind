@@ -7,10 +7,9 @@
 //!
 //! ## Why native (not `serde_toon`)
 //!
-//! The crate already pulls `serde_toon_format`, but only behind the `documents` feature
-//! (`dep:serde_toon_format` lives in that feature list). The tools above are core tools present
-//! in the default build, so their encoder must compile with no features enabled. This module is
-//! therefore a small, dependency-free encoder over [`serde_json::Value`].
+//! The tools above are core tools present in the default build, so their encoder must compile with
+//! no features enabled. This module is therefore a small, dependency-free encoder over
+//! [`serde_json::Value`].
 //!
 //! ## Shape handled
 //!

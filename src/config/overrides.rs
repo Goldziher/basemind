@@ -19,7 +19,7 @@ use super::documents::{ApiKey, SummarizationStrategy};
 use super::layered::OverrideLayer;
 use super::source::{ConfigSource, ProvenanceMap};
 use super::v1::ConfigV1;
-use super::{ConfigError, LoadedConfig, OutputFormat};
+use super::{ConfigError, LoadedConfig};
 
 /// Optional per-call overrides for the document tier. Backs `#[command(flatten)]`
 /// on `ScanArgs` / `ServeArgs`. Never flattened into an MCP request type: every
@@ -120,10 +120,6 @@ pub struct DocumentsCliOverrides {
     )]
     pub summarization_max_tokens: Option<u32>,
 
-    /// Override `documents.output.format` (json / toon).
-    #[arg(long = "documents-output-format", env = "BASEMIND_DOCUMENTS_OUTPUT_FORMAT")]
-    pub output_format: Option<String>,
-
     /// Override `llm.model` (liter-llm routing format, e.g. `openai/gpt-4o`).
     #[arg(long = "llm-model", env = "BASEMIND_LLM_MODEL")]
     pub llm_model: Option<String>,
@@ -183,7 +179,6 @@ impl DocumentsCliOverrides {
             || self.summarization_enabled.is_some()
             || self.summarization_strategy.is_some()
             || self.summarization_max_tokens.is_some()
-            || self.output_format.is_some()
             || self.llm_model.is_some()
             || self.llm_api_key.is_some()
             || self.llm_base_url.is_some()
@@ -314,25 +309,6 @@ fn apply_documents_overrides(
         d.summarization.max_tokens = Some(v);
         record_provenance(&mut provenance, source, "documents.summarization.max_tokens");
     }
-    if let Some(v) = overrides.output_format.as_deref() {
-        let applied = match v.to_ascii_lowercase().as_str() {
-            "json" => {
-                d.output.format = OutputFormat::Json;
-                true
-            }
-            "toon" => {
-                d.output.format = OutputFormat::Toon;
-                true
-            }
-            _ => {
-                tracing::warn!(value = %v, "unknown output_format value; ignoring");
-                false
-            }
-        };
-        if applied {
-            record_provenance(&mut provenance, source, "documents.output.format");
-        }
-    }
     apply_llm_overrides(config, overrides, source, provenance);
 }
 
@@ -381,58 +357,5 @@ fn apply_llm_overrides(
 fn record_provenance(provenance: &mut Option<&mut ProvenanceMap>, source: ConfigSource, key: &'static str) {
     if let Some(p) = provenance.as_mut() {
         p.insert(key, source);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::layered::DOCUMENT_LEAVES;
-    use super::*;
-
-    /// Regression for I8: an unknown `output_format` must skip only that field —
-    /// it must NOT short-circuit `apply_documents_overrides` before the tail call
-    /// to `apply_llm_overrides`, which would silently drop every `llm.*` override.
-    #[test]
-    fn invalid_output_format_still_applies_llm_overrides() {
-        let mut config = ConfigV1::with_defaults();
-        let mut overrides = DocumentsCliOverrides::empty();
-        overrides.output_format = Some("garbage".to_string());
-        overrides.llm_model = Some("gpt-test".to_string());
-
-        let mut provenance = ProvenanceMap::new();
-        for path in DOCUMENT_LEAVES {
-            provenance.insert(path, ConfigSource::Default);
-        }
-        apply_documents_overrides(&mut config, &overrides, ConfigSource::Cli, Some(&mut provenance));
-
-        assert_eq!(config.llm.model, "gpt-test");
-        assert_eq!(provenance.get("llm.model").copied(), Some(ConfigSource::Cli));
-        assert_eq!(
-            provenance.get("documents.output.format").copied(),
-            Some(ConfigSource::Default)
-        );
-    }
-
-    /// A valid `output_format` applies the field and records its provenance, and
-    /// still threads through to the llm overrides.
-    #[test]
-    fn valid_output_format_applies_field_and_llm_overrides() {
-        let mut config = ConfigV1::with_defaults();
-        let mut overrides = DocumentsCliOverrides::empty();
-        overrides.output_format = Some("TOON".to_string());
-        overrides.llm_model = Some("gpt-test".to_string());
-
-        let mut provenance = ProvenanceMap::new();
-        for path in DOCUMENT_LEAVES {
-            provenance.insert(path, ConfigSource::Default);
-        }
-        apply_documents_overrides(&mut config, &overrides, ConfigSource::Cli, Some(&mut provenance));
-
-        assert_eq!(config.documents.output.format, OutputFormat::Toon);
-        assert_eq!(
-            provenance.get("documents.output.format").copied(),
-            Some(ConfigSource::Cli)
-        );
-        assert_eq!(config.llm.model, "gpt-test");
     }
 }

@@ -842,7 +842,6 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "serde_toon_format",
  "streaming-iterator",
  "syn 3.0.10",
  "tempfile",

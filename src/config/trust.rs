@@ -95,11 +95,15 @@ pub fn warn_inert_fields(config: &ConfigV1) {
 
 /// Removed-feature tables that `config` still carries with content.
 pub fn deprecated_sections_set(config: &ConfigV1) -> Vec<&'static str> {
-    [("crawl", &config.crawl), ("shells", &config.shells)]
-        .into_iter()
-        .filter(|(_, section)| !section.is_empty())
-        .map(|(name, _)| name)
-        .collect()
+    [
+        ("crawl", &config.crawl),
+        ("shells", &config.shells),
+        ("documents.output", &config.documents.output),
+    ]
+    .into_iter()
+    .filter(|(_, section)| !section.is_empty())
+    .map(|(name, _)| name)
+    .collect()
 }
 
 pub fn warn_deprecated_sections(config: &ConfigV1) {

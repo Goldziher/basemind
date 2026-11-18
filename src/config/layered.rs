@@ -117,7 +117,6 @@ pub(super) const DOCUMENT_LEAVES: &[&str] = &[
     "documents.summarization.enabled",
     "documents.summarization.strategy",
     "documents.summarization.max_tokens",
-    "documents.output.format",
     "llm.model",
     "llm.api_key",
     "llm.base_url",
