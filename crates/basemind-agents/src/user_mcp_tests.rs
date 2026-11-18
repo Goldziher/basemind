@@ -89,6 +89,61 @@ fn codex_servers_runs_the_listing_in_the_plans_environment() {
     assert!(matches!(codex_servers(&plan), Err(LaunchError::UserMcpServers { .. })));
 }
 
+/// `codex mcp list` from an npm install is a Node shim whose native child holds the output
+/// pipe: a listing that hangs, or exits leaving a process that keeps the pipe open, has to be
+/// bounded by the timeout and leave nothing of its process group running.
+#[cfg(unix)]
+#[test]
+fn codex_listing_is_bounded_when_a_child_keeps_its_output_open() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("codex");
+    let pid_file = dir.path().join("pid");
+    let mut env = BTreeMap::new();
+    env.insert("PATH".to_owned(), OsString::from("/usr/bin:/bin"));
+    let plan = CommandPlan {
+        program: program.clone(),
+        args: Vec::new(),
+        env,
+        cwd: dir.path().to_owned(),
+        server_args: 0,
+    };
+    let holder_gone = || {
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // SAFETY: kill with signal 0 only checks that the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            if std::time::Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        true
+    };
+    for (script, listed) in [
+        // Hangs, with a background child holding the pipe.
+        ("sleep 30 &\necho $! > \"$PID_FILE\"\nexec sleep 30\n", false),
+        // Prints its list and exits, leaving the background child holding the pipe.
+        (
+            "sleep 30 &\necho $! > \"$PID_FILE\"\necho '[{\"name\":\"node_repl\"}]'\n",
+            true,
+        ),
+    ] {
+        let script = script.replace("$PID_FILE", &pid_file.display().to_string());
+        std::fs::write(&program, format!("#!/bin/sh\n{script}")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let result = codex_servers_within(&plan, std::time::Duration::from_secs(1));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{script}");
+        if listed {
+            assert_eq!(result.unwrap(), names(&["node_repl"]));
+        } else {
+            assert!(matches!(result, Err(LaunchError::UserMcpServers { .. })), "{script}");
+        }
+        assert!(holder_gone(), "the listing's background child survived: {script}");
+    }
+}
+
 fn servers(user: &OpenCodeUser) -> Vec<String> {
     user.servers.clone()
 }

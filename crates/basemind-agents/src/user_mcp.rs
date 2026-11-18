@@ -8,7 +8,9 @@ use std::ffi::OsString;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(unix))]
+use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 
@@ -22,6 +24,8 @@ pub(crate) const CODEX_FEATURES_OFF: [&str; 4] = ["-c", "features.plugins=false"
 
 /// How long `codex mcp list` may take before the launch is refused.
 const LIST_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the listing's output may stay open once its process group is gone.
+const READ_GRACE: Duration = Duration::from_secs(2);
 /// The most output `codex mcp list` or an OpenCode configuration file may have.
 const MAX_BYTES: u64 = 1024 * 1024;
 /// The command OpenCode is given for each server it switches off. OpenCode 2.3.2 dropped a
@@ -49,8 +53,20 @@ fn refused(harness: &'static str, reason: impl Into<String>) -> LaunchError {
 /// The user's Codex MCP servers, as `<codex> -c features.plugins=false -c features.apps=false mcp
 /// list --json` reports them in the plan's environment and working directory: the merged
 /// configuration Codex itself would start them from, managed configuration included.
+///
+/// The listing runs with the session's environment, launch token included, outside the session's
+/// process group and keeper: it is the same executable the session then runs with the same
+/// environment, so it is trusted as the harness is. It gets a session and process group of its
+/// own, killed whole once it exits or times out: an npm-installed `codex` is a Node shim whose
+/// native child holds the output pipe, which killing the shim alone left open.
 pub(crate) fn codex_servers(plan: &CommandPlan) -> Result<Vec<String>, LaunchError> {
-    let mut child = Command::new(&plan.program)
+    codex_servers_within(plan, LIST_TIMEOUT)
+}
+
+/// [`codex_servers`] with the listing given `timeout`.
+pub(crate) fn codex_servers_within(plan: &CommandPlan, timeout: Duration) -> Result<Vec<String>, LaunchError> {
+    let mut command = Command::new(&plan.program);
+    command
         .args(CODEX_FEATURES_OFF)
         .args(["mcp", "list", "--json"])
         .env_clear()
@@ -58,38 +74,60 @@ pub(crate) fn codex_servers(plan: &CommandPlan) -> Result<Vec<String>, LaunchErr
         .current_dir(&plan.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|source| LaunchError::Spawn {
-            executable: plan.program.clone(),
-            source,
-        })?;
+        .stderr(Stdio::null());
+    crate::process::isolate(&mut command);
+    let mut child = command.spawn().map_err(|source| LaunchError::Spawn {
+        executable: plan.program.clone(),
+        source,
+    })?;
     let stdout = child.stdout.take();
-    let reader = std::thread::spawn(move || {
+    let (sender, output) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         if let Some(stdout) = stdout {
             // Past the cap the rest is not read; the parse then fails.
             let _ = stdout.take(MAX_BYTES + 1).read_to_end(&mut out);
         }
-        out
+        let _ = sender.send(out);
     });
-    let deadline = Instant::now() + LIST_TIMEOUT;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
+    let exited = wait_for_exit(&mut child, timeout);
+    // What is left of the listing's group goes before the leader is reaped, while the group's
+    // id is still ours.
+    #[cfg(unix)]
+    if exited.is_some() {
+        crate::process::kill_group(child.id());
+    }
+    let _ = child.kill();
+    let status = child.wait().ok();
+    // A process that left the group may still hold the pipe; the reader is then left behind.
+    let out = output.recv_timeout(READ_GRACE).ok();
+    match (exited, status, out) {
+        (Some(false), ..) => Err(refused("codex", "`codex mcp list` did not finish in time")),
+        (Some(true), Some(status), Some(out)) if status.success() => parse_codex_list(&out),
+        (Some(true), Some(status), None) if status.success() => {
+            Err(refused("codex", "`codex mcp list` left its output open"))
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
+        _ => Err(refused("codex", "`codex mcp list` failed")),
+    }
+}
+
+/// Whether `child` exited within `timeout`, as [`crate::process::exited_within`] reports it.
+#[cfg(unix)]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> Option<bool> {
+    crate::process::exited_within(child.id(), timeout)
+}
+
+/// Whether `child` exited within `timeout`; `None` when it cannot be waited for.
+#[cfg(not(unix))]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> Option<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Some(true),
+            Ok(None) if Instant::now() >= deadline => return Some(false),
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => return None,
         }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let out = reader.join().unwrap_or_default();
-    match status {
-        Some(status) if status.success() => parse_codex_list(&out),
-        Some(_) => Err(refused("codex", "`codex mcp list` failed")),
-        None => Err(refused("codex", "`codex mcp list` did not finish in time")),
     }
 }
 

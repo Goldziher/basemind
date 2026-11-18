@@ -68,7 +68,8 @@ Codex's read-only mode failed in the probes too: the agent's shell could not rea
      every listed server. Plugins and ChatGPT apps bring servers of their own; with both off,
      `mcp list` reports the merged table Codex would start (user and managed configuration). A
      listing that fails, times out (15 s), is not a JSON list, or names a server outside
-     `[A-Za-z0-9_-]{1,64}` refuses the launch (`LaunchError::UserMcpServers`).
+     `[A-Za-z0-9_-]{1,64}` refuses the launch (`LaunchError::UserMcpServers`), as does output a
+     process of the listing keeps open past its group's end.
    - OpenCode: the adapter reads every configuration OpenCode 2.3.2 merges beneath the inline
      one (its bundle's `ConfigDiscovery.discover` and `Config.load`; it reads no `config.json`):
      `opencode.json` and `opencode.jsonc` (JSONC comments and trailing commas allowed) in the
@@ -111,7 +112,11 @@ Codex's read-only mode failed in the probes too: the agent's shell could not rea
 - Through `agent_post` a launched agent can open threads to and message any agent the comms layer
   admits, as its own principal. It could already do so through its shell (ADR-0040: the CLI relay
   takes its principal from the claim); the pre-approval adds no reach that the shell lacks.
-- Codex launches run one more short `codex` process before the session, in the same environment;
+- Codex launches run one more short `codex` process before the session, in the same environment
+  (the launch token included) and outside the session's process group and keeper: it is the
+  executable the session runs, so it is trusted as the harness is. It runs in a session and
+  process group of its own, killed whole when it exits or times out, as an npm-installed `codex`
+  is a Node shim whose native child holds the output pipe;
   `Registry::plan` for Codex and OpenCode shows the command without the user's servers, which only
   a launch reads.
 - The user-server lists are snapshots at launch: a server added to the user configuration between
