@@ -54,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (library):** `basemind::scanner::scan`, `scan_paths` and the other public scan entries
+  take the `Retrieval` binding as an argument; a library caller passes
+  `basemind::retrieval_wiring::backend()`.
 - A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
   result reading `tool task failed: …`, where it read `scan join: …` or
   `host rescan task panicked: …`.
