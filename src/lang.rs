@@ -29,6 +29,30 @@ fn grammars_offline() -> bool {
     crate::config::engine::with(|config| config.grammars.offline)
 }
 
+/// Point the language pack at this process's grammar cache, once, before its first use: the
+/// configured [`crate::config::engine::GrammarPolicy::cache_dir`], else
+/// [`crate::data_root::DataRoot::grammars_dir`]. Every entry into the pack that can load or
+/// download a grammar calls it.
+pub(crate) fn configure_grammar_dir() {
+    static CONFIGURED: OnceLock<()> = OnceLock::new();
+    CONFIGURED.get_or_init(|| {
+        let dir = crate::config::engine::with(|config| {
+            config
+                .grammars
+                .cache_dir
+                .clone()
+                .unwrap_or_else(|| config.data_root.grammars_dir())
+        });
+        let pack = tree_sitter_language_pack::PackConfig {
+            cache_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        if let Err(error) = tree_sitter_language_pack::configure(&pack) {
+            tracing::warn!(dir = %dir.display(), %error, "grammar cache directory not applied");
+        }
+    });
+}
+
 #[derive(Debug, Clone, Error)]
 pub enum LangError {
     #[error("language pack error: {0}")]
@@ -103,6 +127,7 @@ pub fn intern(name: &str) -> Option<LangId> {
     if let Some(&existing) = lock.read().expect("intern pool poisoned").get(name) {
         return Some(existing);
     }
+    configure_grammar_dir();
     if !tree_sitter_language_pack::has_language(name) {
         return None;
     }
@@ -145,6 +170,7 @@ static GRAMMAR_BOOTSTRAP: OnceLock<Result<Arc<BootstrapSummary>, Arc<LangError>>
 /// workaround for the pre-1.12 `download()` bug, where in-memory registry membership
 /// short-circuited the actual download (returned Ok with no disk side-effect).
 pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
+    configure_grammar_dir();
     GRAMMAR_BOOTSTRAP
         .get_or_init(|| {
             let cache_dir_str = tree_sitter_language_pack::cache_dir()
@@ -184,6 +210,7 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
 /// cache. The shipped `OVERRIDE_LANGUAGES` are [`ensure_grammars`]'s job and are skipped here.
 /// Returns the names that were downloaded.
 pub fn ensure_extra_grammars(names: &[LangId]) -> Result<Vec<String>, LangError> {
+    configure_grammar_dir();
     let installed = tree_sitter_language_pack::downloaded_languages();
     let mut missing: Vec<&str> = names
         .iter()
@@ -206,16 +233,19 @@ pub fn ensure_extra_grammars(names: &[LangId]) -> Result<Vec<String>, LangError>
 
 /// Languages currently downloaded in the tslp cache (does not hit the network).
 pub fn downloaded_languages() -> Vec<String> {
+    configure_grammar_dir();
     tree_sitter_language_pack::downloaded_languages()
 }
 
 /// Path to the tslp cache directory, if it can be resolved.
 pub fn grammar_cache_dir() -> Option<PathBuf> {
+    configure_grammar_dir();
     tree_sitter_language_pack::cache_dir().ok().map(PathBuf::from)
 }
 
 /// Clear the tslp grammar cache. Forces re-download on next use.
 pub fn clean_grammar_cache() -> Result<(), LangError> {
+    configure_grammar_dir();
     tree_sitter_language_pack::clean_cache().map_err(|e| LangError::Pack(format!("{e}")))
 }
 
@@ -263,6 +293,7 @@ pub fn is_document_markup(lang: &str, path: &Path) -> bool {
 
 /// Fetch the underlying tree-sitter Language for a given `LangId`.
 pub fn language(lang: LangId) -> Result<Language, LangError> {
+    configure_grammar_dir();
     tree_sitter_language_pack::get_language(lang).map_err(|e| LangError::Pack(format!("{e}")))
 }
 

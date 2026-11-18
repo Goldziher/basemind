@@ -27,6 +27,8 @@ use crate::store_layout::DATA_HOME_ENV;
 
 pub const PARSE_TIMEOUT_MS_ENV: &str = "BASEMIND_PARSE_TIMEOUT_MS";
 pub const GRAMMAR_OFFLINE_ENV: &str = "BASEMIND_GRAMMAR_OFFLINE";
+/// The language pack's own override of its grammar cache base, honoured as before.
+pub const GRAMMAR_CACHE_DIR_ENV: &str = "TREE_SITTER_LANGUAGE_PACK_CACHE_DIR";
 pub const GIT_DELTA_CACHE_BYTES_ENV: &str = "BASEMIND_GIT_DELTA_CACHE_BYTES";
 pub const BLAME_MAX_BYTES_ENV: &str = "BASEMIND_BLAME_MAX_BYTES";
 pub const BLAME_MAX_LINES_ENV: &str = "BASEMIND_BLAME_MAX_LINES";
@@ -64,6 +66,10 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
         config.parse_timeout = Duration::from_millis(millis);
     }
     config.grammars.offline = text(&lookup, GRAMMAR_OFFLINE_ENV).is_some_and(|v| v != "0" && !v.is_empty());
+    // Blank counts as unset, as the language pack reads it. ~keep
+    config.grammars.cache_dir = lookup(GRAMMAR_CACHE_DIR_ENV)
+        .filter(|value| value.to_str().is_none_or(|value| !value.trim().is_empty()))
+        .map(absolute);
     config.gc.budget_bytes = cache_budget_from(text(&lookup, CACHE_BUDGET_ENV).as_deref());
     config.gc.grace = cache_grace_from(text(&lookup, CACHE_GRACE_ENV).as_deref());
     config.gc.blob_grace = grace_from(text(&lookup, BLOB_GC_GRACE_ENV).as_deref());
@@ -249,6 +255,17 @@ mod tests {
         assert!(!offline(&[(GRAMMAR_OFFLINE_ENV, "0")]));
         assert!(offline(&[(GRAMMAR_OFFLINE_ENV, "1")]));
         assert!(offline(&[(GRAMMAR_OFFLINE_ENV, "false")]));
+    }
+
+    #[test]
+    fn the_grammar_cache_variable_moves_the_grammar_cache() {
+        assert_eq!(config_of(&[]).grammars.cache_dir, None, "under the data home");
+        assert_eq!(config_of(&[(GRAMMAR_CACHE_DIR_ENV, " ")]).grammars.cache_dir, None);
+        let cwd = std::env::current_dir().expect("cwd");
+        assert_eq!(
+            config_of(&[(GRAMMAR_CACHE_DIR_ENV, "grammars")]).grammars.cache_dir,
+            Some(cwd.join("grammars"))
+        );
     }
 
     #[test]

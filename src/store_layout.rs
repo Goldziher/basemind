@@ -587,13 +587,22 @@ pub fn init_isolated_cache() {
             }
         };
         let comms_dir = root.join("comms");
-        crate::config::engine::update(|config| config.data_root = crate::data_root::DataRoot::new(root.clone()));
+        // Grammars stay in the one shared cache: under each throwaway data home, every test binary
+        // and every daemon it spawns would download them again. ~keep
+        let grammars = shared_grammar_dir();
+        crate::config::engine::update(|config| {
+            config.data_root = crate::data_root::DataRoot::new(root.clone());
+            config.grammars.cache_dir.clone_from(&grammars);
+        });
         // SAFETY: set exactly once, inside `Once::call_once`, before any test thread reads
         unsafe {
             std::env::set_var(DATA_HOME_ENV, root);
             // A literal key, not the `comms::singleton::COMMS_DIR_ENV` constant: that module is
             // feature-gated, this helper is not. ~keep
             std::env::set_var("BASEMIND_COMMS_DIR", comms_dir);
+            if let Some(grammars) = &grammars {
+                std::env::set_var(GRAMMAR_CACHE_DIR_ENV, grammars);
+            }
             // A test binary spawns its own isolated daemons (per the dirs above). Pin a fast idle
             // reap so they self-terminate within seconds of the suite going quiet instead of lingering
             // the shipped window — otherwise a parallel `cargo test` accumulates one daemon per binary,
@@ -612,6 +621,20 @@ pub fn init_isolated_cache() {
             }
         }
     });
+}
+
+/// The language pack's override of its grammar cache base (`cli::env_config` maps it).
+#[cfg(any(feature = "test-support", test))]
+const GRAMMAR_CACHE_DIR_ENV: &str = "TREE_SITTER_LANGUAGE_PACK_CACHE_DIR";
+
+/// The grammar cache base an isolated test process shares with every other: the operator's
+/// override, else the platform cache dir the language pack defaults to.
+#[cfg(any(feature = "test-support", test))]
+fn shared_grammar_dir() -> Option<PathBuf> {
+    std::env::var_os(GRAMMAR_CACHE_DIR_ENV)
+        .filter(|value| value.to_str().is_none_or(|value| !value.trim().is_empty()))
+        .map(PathBuf::from)
+        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.cache_dir().to_path_buf()))
 }
 
 #[cfg(test)]

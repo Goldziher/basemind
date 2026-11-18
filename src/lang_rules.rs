@@ -159,6 +159,7 @@ fn normalize_suffix(ext: &str) -> String {
 
 fn nearby_hint(key: &str) -> String {
     let needle = key.to_ascii_lowercase();
+    crate::lang::configure_grammar_dir();
     let mut scored: Vec<(usize, String)> = tree_sitter_language_pack::available_languages()
         .into_iter()
         .filter_map(|name| {

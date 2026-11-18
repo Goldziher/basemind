@@ -12,6 +12,9 @@ mkdir -p "${ROOT}"
 
 export BASEMIND_DATA_HOME="${BASEMIND_DATA_HOME:-${ROOT}/cache}"
 export BASEMIND_COMMS_DIR="${BASEMIND_COMMS_DIR:-${ROOT}/comms}"
+# Grammars live under the data home by default; keep them out of the wipe below so a cold-cache
+# run measures the scan, not the grammar download.
+export TREE_SITTER_LANGUAGE_PACK_CACHE_DIR="${TREE_SITTER_LANGUAGE_PACK_CACHE_DIR:-${ROOT}/grammars}"
 if [ -z "${BASEMIND_HARDEN_KEEP:-}" ]; then
   echo "==> wiping prior global index cache at ${BASEMIND_DATA_HOME}"
   rm -rf "${BASEMIND_DATA_HOME}"

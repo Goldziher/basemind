@@ -130,6 +130,9 @@ impl Default for GcPolicy {
 pub struct GrammarPolicy {
     /// Never download a missing grammar; a scan that needs one fails (`BASEMIND_GRAMMAR_OFFLINE`).
     pub offline: bool,
+    /// Base directory of the downloaded grammar cache (`TREE_SITTER_LANGUAGE_PACK_CACHE_DIR`).
+    /// `None` keeps it under the data home, at [`DataRoot::grammars_dir`].
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// Operator grants. A repository's own `basemind.toml` can ask for each of these but never grant
