@@ -75,9 +75,8 @@ fn second_session_loses_the_fjall_index_but_keeps_blob_reads() {
     let serve2 = Store::open_read_only(root, VIEW_WORKING).expect("serve #2 read-only fallback");
     assert!(
         serve2.index_db.is_none(),
-        "2nd concurrent session has no Fjall index (single-holder lock). \
-         find_references/find_callers are served from the in-RAM call index instead — \
-         see concurrency_smoke::second_session_resolves_find_references_from_blobs."
+        "2nd concurrent session has no Fjall index (single-holder lock): `code_refs` scans refuse \
+         there as busy (ADR-0042), see concurrency_smoke::second_session_refuses_references_without_an_index"
     );
 
     let hits = basemind::query::search_symbols(&serve2, "alpha", None).expect("search");

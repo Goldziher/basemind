@@ -31,13 +31,18 @@ questions it left open came up when the seams were removed:
 
 ## Decision
 
-1. **The writer store stays on the pool entry; the hosted store shares its index handle.** The
-   pool entry keeps the writer `Mutex<Store>` and a clone of its `IndexDb`, refreshed when a
-   poisoned handle is reopened. The hosted `Workspace` is built over a read-only store whose
-   `index_db` is that clone: every read a hosted session makes runs against the index directly and
-   never waits on a scan for the writer lock, and the warm-stack cap still sheds the `Workspace`
-   alone. A hosted session's scans go to the pool (`WorkspacePool::hosted_rescan`), reached as a
-   concrete type from `ServerState`, not through a trait.
+1. **The writer store stays on the pool entry; the hosted store borrows its index handle per
+   call.** The pool entry keeps the writer `Mutex<Store>` and a clone of its `IndexDb`. The hosted
+   `Workspace` is built over a read-only store that holds no handle: each read looks the
+   workspace's current pool entry up and borrows its handle for the call (`Store::index_source`).
+   Every read a hosted session makes runs against the index directly and never waits on a scan for
+   the writer lock, and the warm-stack cap still sheds the `Workspace` alone. Because no stack owns
+   a clone, a poisoned handle is replaced by a new database: the entry stops lending it, the reopen
+   waits for the reads in flight, and it refuses (evicting the entry) while any other handle on
+   the group database stays open in the process, which the registry would only hand back. Eviction
+   stops lending the handle the same way. A hosted session's scans go to the pool
+   (`WorkspacePool::hosted_rescan`), reached as a concrete type from `ServerState`, not through a
+   trait; a cancelled pass is reported as such and does not refresh the session's file map.
 2. **A session with no index refuses reference scans.** `code_refs` call sites, callers and
    implementations answer from the session's index view or refuse: as busy (exit `3`) naming
    `basemind comms start` when another process holds the index, or naming `basemind scan` when it
@@ -47,19 +52,25 @@ questions it left open came up when the seams were removed:
    git-history handle itself and `builder::sync` takes it, so every holder of a clone (the
    broker's socket path, each hosted session) shares one lock. A hosted workspace is built with the
    broker's own handle on the repository's database; the broker's idle sweep keeps a handle a
-   hosted workspace still shares, since dropping it from the map would leave its fjall lock held.
+   hosted workspace still shares or an op is using, since dropping it from the map would leave its
+   fjall lock held. A hosted workspace's sync holds a work pin on the daemon, as a forwarded sync
+   does, so the idle reaper cannot drain it mid-build.
 
 ## Consequences
 
 - A hosted read is never blocked by a scan of its workspace, and a hosted session's reference,
-  search-lane, resolution and memory reads equal a writer's: they read the same handle.
+  search-lane and memory reads equal a writer's: they read the same handle.
 - The daemon socket no longer needs an index-read, resolved-refs, code-search-lane or memory
   request, and the hosted startup git-history sync runs in process on the shared handle.
 - A user running the CLI beside a writer `serve` with no daemon gets a refusal for reference scans
   where they used to get an answer that could be silently partial.
-- The hosted read store's file map can trail the shared index between a scan's commit and the
-  read store's refresh; reads that join the two (a cross-file definition landing in a file) are
-  checked against the file's stamp, as before.
+- The hosted read store's file map can trail the shared index between a scan's flush and the read
+  store's refresh, and a running, cancelled or aborted resolve pass leaves cross-file edges of the
+  files' previous contents. A hosted cross-file definition is therefore served only when the
+  writer's resolve pass is settled before and after the read, no file map was published in
+  between, and the writer's content keys for the use file and the landing file equal the
+  session's; otherwise it is refused as "the index is updating", and the use's in-file binding is
+  served. This replaces the snapshot check the resolved-refs reply carried.
 
 ## Alternatives considered
 

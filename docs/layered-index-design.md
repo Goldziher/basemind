@@ -257,7 +257,8 @@ would force lifetime plumbing through every call site; the visitor also gives th
 k-way merge of §5.
 
 `IndexRoute` (Local / Host / Daemon) and `index_read_against` take `&dyn IndexView`. The wire
-(`IndexReadQuery`) is unchanged by A3 — the daemon constructs its own view.
+(`IndexReadQuery`) is unchanged by A3 — the daemon constructs its own view. (ADR-0042 later removed
+`IndexRoute` and the forwarded index reads: every session reads its own index view.)
 
 ## 9. Correctness gate (A5)
 
@@ -296,7 +297,7 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
 
 - New `src/index/view.rs`: `Partition`, `trait IndexView`, `StandaloneView`.
 - Thread `&dyn IndexView` through `IndexRoute`, `index_read_against`, `query.rs`, `mcp/helpers*.rs`,
-  `search/*`. Pure refactor — the existing suite is the gate.
+  `search/*` (the first two are gone since ADR-0042). Pure refactor — the existing suite is the gate.
 
 ### A4 — repo-group layout, base builder, migration
 

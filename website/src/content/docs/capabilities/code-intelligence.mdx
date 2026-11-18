@@ -159,10 +159,10 @@ additionally get precise, scope- and import-aware resolution, including cross-fi
 ```
 
 Call-site lookups are backed by an indexed call-site table and capped by `limit` (default 100).
-From a daemon-backed session (the standard deployment) the scan runs in the daemon against the same
-index, so `total` and cursors are complete and identical to what a writer session sees; only when no
-daemon is reachable does a session fall back to an in-RAM projection capped by
-`[resources] max_map_cache_mb`, flagged with a `projections_capped` notice.
+A session the daemon serves (the standard deployment) reads the daemon's index, so `total` and
+cursors are complete and identical to what a writer session sees. A session that holds no index (a
+CLI command or a second `serve` beside a writer, with no daemon) refuses call sites, callers and
+implementations as busy, naming `basemind comms start`.
 
 ### `code_grep`
 

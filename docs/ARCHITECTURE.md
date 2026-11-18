@@ -496,7 +496,7 @@ Both are memory only: nothing is persisted or migrated.
 
 Because Fjall admits one process, a `code_refs` call-site, caller or implementation read runs on
 the session's own index view: a writer's, the CLI's, or, for a daemon-hosted connection, the pool
-writer's handle, which the hosted read store shares (it never opens the database a second time, and
+writer's handle, which the hosted read store borrows per call (it never opens the database a second time, and
 a scan holding the writer store does not block it). A session that holds no index (a CLI command or
 a second `serve` beside a writer, with no daemon) refuses those relations as busy, naming
 `basemind comms start`; there is no second, in-RAM read path. `code_grep` without an index sweeps

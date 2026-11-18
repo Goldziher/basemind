@@ -42,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one 64 MiB journal) per view. A view keeps its path-keyed rows under its own id; the grep bloom is shared by
   content, and its sweeps keep any content another view's file map still names. A file map records the group
   index incarnation and its view id; one that does not match is emptied and its view rebuilt, leaving every other
-  view in place. A process that does not hold the group's index answers from the blob store. Every workspace
+  view in place. A process that does not hold the group's index answers what the blobs hold from the blob store
+  and refuses `code_refs` scans (see Changed). Every workspace
   rebuilds its index on the first scan, and its per-view `index.fjall` is deleted.
 
 ### Changed
@@ -52,8 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (exit `3`), naming `basemind comms start`, instead of answering from an in-RAM projection of the
   blobs that could be truncated. The `projections_capped` notice is gone with it. `code_grep` still
   sweeps every file there, and relation `definition` still reads the intra-file facts.
-- A daemon-hosted session reads the daemon's index directly: its store shares the pool writer's
-  index handle, so reads are not held up by a scan, and it shares the daemon's git-history handle.
+- A daemon-hosted session reads the daemon's index directly: its store borrows the pool writer's
+  index handle per call, so reads are not held up by a scan, and it shares the daemon's git-history handle.
 - With the comms daemon up, a CLI tool command on the working view forwards its whole call to the
   daemon over one relay session (a `cli` client in the relay hello) instead of opening the store
   itself; the output and exit codes are unchanged. Against a daemon too old to take the call it exits
