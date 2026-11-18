@@ -99,7 +99,7 @@ impl Residency {
     }
 
     /// Embeddings and reranks in flight.
-    #[cfg(test)]
+    #[cfg(all(test, any(feature = "documents", feature = "code-search")))]
     pub(crate) fn in_use(&self) -> usize {
         self.embeds
     }
