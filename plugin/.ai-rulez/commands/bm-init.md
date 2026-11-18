@@ -25,8 +25,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 ## How to use
 
 1. **Ask which capabilities matter** (one short question). The options are:
-   `code-search-navigation`, `code-mapping-architecture`, `git-history`, `agent-comms`,
-   `documents-rag`, `semantic-search`. If the user has no preference, enable all.
+   `code-search-navigation`, `code-mapping-architecture`, `git-history`, `file-finding`,
+   `agent-comms`, `documents-rag`, `semantic-search`. If the user has no preference, enable all.
 
 2. **Ask where the rules block should go — do NOT assume.** Never write a committed `CLAUDE.md`
    or `AGENTS.md` without the user's explicit say-so. Present the choice:

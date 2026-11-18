@@ -6,8 +6,8 @@ description: Onboard (or refresh) basemind in this repo — write basemind.toml 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:f79a8df7187f05437f2ec10ef1d0287c26da5f1a84587ec143f01aa15f8ac689
-Source-Hash: blake3:743a0c5a217d74ca3719ade0a3da37bc42ef43da4b9f1c6f2ef619a0cbcf6cbc
+Content-Hash: blake3:75997ac8e3582679a1cd37273b348a3341e40e18bdb934680e85b4401aedbdaf
+Source-Hash: blake3:8af2a868301b0686fa75cbeb01d21bea0d87281ec8fbc885f6948f36989ae87e
 Schema-Version: v1
 -->
 
@@ -25,8 +25,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 ## How to use
 
 1. **Ask which capabilities matter** (one short question). The options are:
-   `code-search-navigation`, `code-mapping-architecture`, `git-history`, `agent-comms`,
-   `documents-rag`, `semantic-search`. If the user has no preference, enable all.
+   `code-search-navigation`, `code-mapping-architecture`, `git-history`, `file-finding`,
+   `agent-comms`, `documents-rag`, `semantic-search`. If the user has no preference, enable all.
 
 2. **Ask where the rules block should go — do NOT assume.** Never write a committed `CLAUDE.md`
    or `AGENTS.md` without the user's explicit say-so. Present the choice:
