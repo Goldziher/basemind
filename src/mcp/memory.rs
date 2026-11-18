@@ -242,8 +242,8 @@ fn embed_report(outcome: Option<Result<(), String>>) -> (bool, Option<String>) {
     }
 }
 
-/// The refusal for a memory call on a session that holds no index and is not hosted by the daemon:
-/// another process holds the workspace's index lock and no daemon serves it. It names the fix, and
+/// The refusal for a memory call on a session that holds no index: another process holds the
+/// workspace's index lock and no daemon serves it. It names the fix, and
 /// is marked busy so the CLI exits `3`.
 #[cfg(feature = "memory")]
 pub(super) fn index_unavailable() -> McpError {
@@ -255,28 +255,10 @@ pub(super) fn index_unavailable() -> McpError {
     )
 }
 
-/// Run a CORE memory op on the daemon's pool (`host`), the workspace's sole fjall writer, for a
-/// daemon-hosted session: in process, on a blocking thread.
-#[cfg(all(feature = "memory", feature = "comms", any(unix, windows)))]
-async fn host_memory(
-    state: &ServerState,
-    host: &std::sync::Arc<dyn super::HostBackend>,
-    op: crate::comms::memory_proto::MemoryOp,
-) -> Result<crate::comms::memory_proto::MemoryOutcome, McpError> {
-    let host = std::sync::Arc::clone(host);
-    let root = state.shared.root.clone();
-    let scope = state.shared.scope.clone();
-    tokio::task::spawn_blocking(move || host.host_memory(&root, &scope, op))
-        .await
-        .map_err(|error| McpError::internal_error(format!("host memory task panicked: {error}"), None))?
-        .map_err(|error| McpError::internal_error(format!("host memory: {error}"), None))
-}
-
 /// Run the fjall half of `memory_put`, returning the resolved `(created_at, updated_at)`.
 ///
-/// A daemon-hosted session runs a [`MemoryOp::Put`] on the daemon's pool (which serializes
-/// same-workspace writes, so the RMW is atomic without a per-key lock). Every other build takes the per-key
-/// [`memory_put_lock`] and calls [`put_core`](super::memory_ops::put_core) against the local index.
+/// Takes the per-key [`memory_put_lock`], process-wide so every session the daemon hosts on one
+/// workspace shares it, and calls [`put_core`](super::memory_ops::put_core) against the index.
 #[cfg(feature = "memory")]
 async fn memory_put_fjall(
     state: &ServerState,
@@ -286,33 +268,12 @@ async fn memory_put_fjall(
     value: &str,
     tags: &[String],
 ) -> Result<(i64, i64), McpError> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.host {
-        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-
-        let op = MemoryOp::Put {
-            vis_byte,
-            owner: owner.to_string(),
-            key: key.to_string(),
-            value: value.to_string(),
-            tags: tags.to_vec(),
-        };
-        let outcome = host_memory(state, host, op).await?;
-        return match outcome {
-            MemoryOutcome::Put { created_at, updated_at } => Ok((created_at, updated_at)),
-            other => Err(McpError::internal_error(
-                format!("memory_put: unexpected daemon outcome {other:?}"),
-                None,
-            )),
-        };
-    }
-
     let key_lock = memory_put_lock(&state.shared.scope, vis_byte, owner, key);
     let _put_guard = key_lock.lock().await;
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     // The put ends in an fsync: off the reactor, like every other blocking store call.
-    Ok(super::index_route::blocking(|| {
+    Ok(super::blocking::blocking(|| {
         super::memory_ops::put_core(idx, &state.shared.scope, vis_byte, owner, key, value, tags)
     })?)
 }
@@ -325,7 +286,7 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
     json_result(&entry.map(wire_to_entry))
 }
 
-/// Read one note from the Fjall truth, through the daemon when it owns the store.
+/// Read one note from the Fjall truth.
 #[cfg(feature = "memory")]
 pub(super) async fn memory_get_wire(
     state: &ServerState,
@@ -333,26 +294,8 @@ pub(super) async fn memory_get_wire(
     owner: &str,
     key: &str,
 ) -> Result<Option<super::memory_ops::WireMemoryEntry>, McpError> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.host {
-        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-
-        let op = MemoryOp::Get {
-            vis_byte,
-            owner: owner.to_string(),
-            key: key.to_string(),
-        };
-        return match host_memory(state, host, op).await? {
-            MemoryOutcome::Got(entry) => Ok(entry),
-            other => Err(McpError::internal_error(
-                format!("memory_get: unexpected daemon outcome {other:?}"),
-                None,
-            )),
-        };
-    }
-
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     Ok(super::memory_ops::get_core(
         idx,
         &state.shared.scope,
@@ -391,27 +334,8 @@ async fn memory_get_chunk_wire(
     owner: &str,
     keys: &[String],
 ) -> Result<Vec<Option<super::memory_ops::WireMemoryEntry>>, McpError> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.host {
-        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-
-        let wanted = keys.len();
-        let op = MemoryOp::GetMany {
-            vis_byte,
-            owner: owner.to_string(),
-            keys: keys.to_vec(),
-        };
-        return match host_memory(state, host, op).await? {
-            MemoryOutcome::GotMany(entries) if (1..=wanted).contains(&entries.len()) => Ok(entries),
-            other => Err(McpError::internal_error(
-                format!("memory_get_many: unexpected daemon outcome {other:?}"),
-                None,
-            )),
-        };
-    }
-
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     Ok(super::memory_ops::get_many_core(
         idx,
         &state.shared.scope,
@@ -434,28 +358,8 @@ pub(super) async fn memory_stamps_wire(
     while stamps.len() < keys.len() {
         let rest = &keys[stamps.len()..];
         let chunk = &rest[..rest.len().min(super::memory_ops::STAMPS_MAX_KEYS)];
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if let Some(host) = &state.host {
-            use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-
-            let op = MemoryOp::Stamps {
-                vis_byte,
-                owner: owner.to_string(),
-                keys: chunk.to_vec(),
-            };
-            match host_memory(state, host, op).await? {
-                MemoryOutcome::Stamps(read) if read.len() == chunk.len() => stamps.extend(read),
-                other => {
-                    return Err(McpError::internal_error(
-                        format!("memory_stamps: unexpected daemon outcome {other:?}"),
-                        None,
-                    ));
-                }
-            }
-            continue;
-        }
         let store = state.store_read().await;
-        let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+        let idx = &store.index_handle().ok_or_else(index_unavailable)?;
         stamps.extend(super::memory_ops::stamps_core(
             idx,
             &state.shared.scope,
@@ -514,8 +418,7 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
     })
 }
 
-/// One page of a namespace's notes from the Fjall truth, through the daemon when it owns the
-/// store. Values are preview-truncated, as `memory_list` returns them.
+/// One page of a namespace's notes from the Fjall truth. Values are preview-truncated, as `memory_list` returns them.
 #[cfg(feature = "memory")]
 pub(super) async fn memory_list_page(
     state: &ServerState,
@@ -526,38 +429,8 @@ pub(super) async fn memory_list_page(
     limit: usize,
     cursor: Option<Vec<u8>>,
 ) -> Result<super::memory_ops::ListResult, McpError> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.host {
-        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-
-        let op = MemoryOp::List {
-            vis_byte,
-            owner: owner.to_string(),
-            prefix: prefix.to_string(),
-            tag: tag.map(str::to_string),
-            limit: limit as u32,
-            cursor,
-        };
-        return match host_memory(state, host, op).await? {
-            MemoryOutcome::Listed {
-                entries,
-                total,
-                next_cursor,
-                ..
-            } => Ok(super::memory_ops::ListResult {
-                entries,
-                total,
-                next_cursor,
-            }),
-            other => Err(McpError::internal_error(
-                format!("memory_list: unexpected daemon outcome {other:?}"),
-                None,
-            )),
-        };
-    }
-
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
     Ok(super::memory_ops::list_core(
         idx,
         &state.shared.scope,
@@ -593,32 +466,12 @@ pub(super) async fn run_memory_delete(
 
 /// Run the fjall half of `memory_delete`, returning whether a record existed.
 ///
-/// A daemon-hosted session runs a [`MemoryOp::Delete`] on the daemon's pool; every other build calls
-/// [`delete_core`](super::memory_ops::delete_core) against the local index.
+/// Calls [`delete_core`](super::memory_ops::delete_core) against the index.
 #[cfg(feature = "memory")]
 async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key: &str) -> Result<bool, McpError> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.host {
-        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
-
-        let op = MemoryOp::Delete {
-            vis_byte,
-            owner: owner.to_string(),
-            key: key.to_string(),
-        };
-        let outcome = host_memory(state, host, op).await?;
-        return match outcome {
-            MemoryOutcome::Deleted { deleted } => Ok(deleted),
-            other => Err(McpError::internal_error(
-                format!("memory_delete: unexpected daemon outcome {other:?}"),
-                None,
-            )),
-        };
-    }
-
     let store = state.store_read().await;
-    let idx = store.index_db.as_ref().ok_or_else(index_unavailable)?;
-    Ok(super::index_route::blocking(|| {
+    let idx = &store.index_handle().ok_or_else(index_unavailable)?;
+    Ok(super::blocking::blocking(|| {
         super::memory_ops::delete_core(idx, &state.shared.scope, vis_byte, owner, key)
     })?)
 }

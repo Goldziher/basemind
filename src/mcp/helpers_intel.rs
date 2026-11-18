@@ -8,8 +8,8 @@
 //! a **cross-file** hop through the Fjall `refs_by_path` partition when the in-file definition is
 //! itself an import binding that resolves across modules. Blobs are concurrently readable, so the
 //! in-file path answers even in a read-only session that lost the single-holder Fjall lock; the
-//! cross-file hop reads the index — locally when open, else forwarded to the machine daemon (the
-//! sole fjall writer) on a `daemon_writer` serve, so precise cross-file resolution holds there too.
+//! cross-file hop reads the index when the session holds one (a writer, or a session the daemon
+//! hosts, which borrows the daemon's handle and checks each hop against its own file map).
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
@@ -30,10 +30,7 @@ use crate::path::RelPath;
 /// The store is read-locked for the whole call, file reads included: the stamp each file is judged
 /// against, the resolution blob and a locally read cross-file edge then come from one scan, never
 /// from either side of a rescan that landed in between. A rescan waits for the reads, which are
-/// bounded by `scan.max_file_bytes`. A cross-file edge the daemon answers (a `daemon_writer` serve, or
-/// a session the daemon hosts) comes from the daemon's index, outside this guard. The file it lands in
-/// is still read against this store's stamp, which catches a file changed since that stamp, but not an
-/// edge the daemon's resolve pass has yet to rewrite after a rescan this store already reflects.
+/// bounded by `scan.max_file_bytes`. A hosted session's hops are checked instead (`definition_of_use`).
 pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
@@ -51,7 +48,7 @@ pub(super) async fn run_goto_definition(
         ));
     };
     let file = super::tool_contract::indexed_file(state, &store, "code_refs", &params.path)?;
-    let source = super::index_route::blocking(|| {
+    let source = super::blocking::blocking(|| {
         super::freshness::load_fresh("code_refs", &params.path, &file, entry.into(), max_bytes)
     })?;
     let column = match params.column {
@@ -81,16 +78,10 @@ pub(super) async fn run_goto_definition(
         .as_ref()
         .and_then(|r| containing_edge(&r.intra, pos))
         .map(|e| e.def_start);
-    let (resolved, refused) = match intra_def {
-        Some(def_start) => {
-            let hop = resolve_definition(state, &store, &params.path, def_start).await;
-            (Some(hop.found.unwrap_or((params.path.clone(), def_start))), false)
-        }
-        None => {
-            let hop = resolve_definition(state, &store, &params.path, pos).await;
-            (hop.found, hop.refused)
-        }
-    };
+    let Hop {
+        found: resolved,
+        refused,
+    } = crate::engine::definition::definition_of_use(&store, &params.path, pos, intra_def);
 
     let definition = match resolved {
         Some((def_path, def_start)) => definition_location(state, &store, &params.path, &source, def_path, def_start)?,
@@ -99,8 +90,8 @@ pub(super) async fn run_goto_definition(
 
     let (line, column) = offset_to_line_col(&source, pos);
     let resolution = match &definition {
+        _ if refused => Some(SNAPSHOT_REFUSED.to_string()),
         Some(_) => None,
-        None if refused => Some(SNAPSHOT_REFUSED.to_string()),
         None if !resolution_ran => resolution_gap(Some(&entry.language), pass_complete),
         None => None,
     };
@@ -143,108 +134,7 @@ pub(super) const NO_DEFINITION_FACTS: &str = "no resolution facts for this defin
 pub(super) const RESOLUTION_NOT_RUN: &str =
     "resolution has not finished for this index; a running scan will complete it, otherwise run `index_rescan`";
 
-/// Whether the last scan's resolve pass committed. The scan stamps `status.json` as resolving when
-/// it flushes the code map and as complete once the pass has committed every edge; a cancelled or
-/// aborted scan leaves it partial. A missing sidecar vouches for nothing either way and reads as
-/// complete, as it does for the boot-time rescan decision.
-pub(super) fn resolve_pass_complete(store: &crate::store::Store) -> bool {
-    crate::store::read_status_sidecar(&store.basemind_dir).is_none_or(|status| !status.is_degraded())
-}
-
-/// A definition the daemon resolved, kept only when it belongs to the snapshot this session reads:
-/// the daemon's resolve pass is settled and its index holds the use file and the landing file with
-/// the content the session's does. An edge from another snapshot would put the agent on a line of
-/// other content, so it is refused, and the reply says the index is updating.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-fn in_snapshot(
-    store: &crate::store::Store,
-    use_path: &RelPath,
-    definition: Option<crate::comms::resolved_proto::ResolvedDefinition>,
-) -> Resolved {
-    let Some(definition) = definition else {
-        return Resolved::default();
-    };
-    let session_use = store.lookup(use_path).map(|entry| entry.hash_hex.as_str());
-    let session_landing = store.lookup(&definition.path).map(|entry| entry.hash_hex.as_str());
-    if definition.landing_hash.is_none() && session_landing.is_none() {
-        tracing::debug!(path = %definition.path, "goto_definition: neither index holds the landing file");
-    }
-    let (path, daemon_use, daemon_landing, settled) = (
-        definition.path.clone(),
-        definition.use_hash.clone(),
-        definition.landing_hash.clone(),
-        definition.settled,
-    );
-    match definition.for_snapshot(session_use, session_landing) {
-        Some(found) => Resolved {
-            found: Some(found),
-            refused: false,
-        },
-        None => {
-            tracing::debug!(%path, ?daemon_use, ?session_use, ?daemon_landing, ?session_landing, settled,
-                "goto_definition: the daemon's edge is from another snapshot; refused");
-            Resolved {
-                found: None,
-                refused: true,
-            }
-        }
-    }
-}
-
-/// What resolving a use found: the definition, or whether one was found and refused because the
-/// daemon's index and this session's did not hold the same content.
-#[derive(Default)]
-struct Resolved {
-    found: Option<(RelPath, u32)>,
-    refused: bool,
-}
-
-/// `resolution` value when the daemon's edge came from another snapshot of the files involved.
-pub(super) const SNAPSHOT_REFUSED: &str = "the index is updating for the files involved; retry in a moment";
-
-/// The definition the use at `(use_path, use_start)` binds to. A daemon-hosted session takes the
-/// cross-file hop (`refs_by_path`) through the daemon's pool, which holds the index; every other
-/// session reads its open index or the intra-file `.rref` blob locally. A host failure degrades to
-/// `None`: goto then reports no binding for the position, exactly as a genuine unresolved use does,
-/// rather than erroring the tool.
-async fn resolve_definition(
-    state: &ServerState,
-    store: &crate::store::Store,
-    use_path: &RelPath,
-    use_start: u32,
-) -> Resolved {
-    #[cfg(not(all(feature = "comms", any(unix, windows))))]
-    let _ = state;
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.host {
-        // ~keep Daemon-hosted: resolve the cross-file binding in-process through the pool's read-write index
-        // ~keep rather than dialing the daemon over its own socket. A host error degrades to `None`, exactly
-        // ~keep like the daemon-forward arm, so goto reports no binding rather than erroring.
-        use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
-        let host = std::sync::Arc::clone(host);
-        let root = state.shared.root.clone();
-        let query = ResolvedRefQuery::DefinitionOf {
-            use_path: use_path.clone(),
-            use_start,
-        };
-        return match tokio::task::spawn_blocking(move || host.host_resolved_refs(&root, query)).await {
-            Ok(Ok(ResolvedRefResult::Definition(definition))) => in_snapshot(store, use_path, definition),
-            Ok(Ok(_)) => Resolved::default(),
-            Ok(Err(error)) => {
-                tracing::debug!(%error, "goto_definition: host resolved-refs failed; no cross-file binding");
-                Resolved::default()
-            }
-            Err(join) => {
-                tracing::debug!(%join, "goto_definition: host resolved-refs task panicked; no cross-file binding");
-                Resolved::default()
-            }
-        };
-    }
-    Resolved {
-        found: crate::query::definition_of(store, use_path, use_start),
-        refused: false,
-    }
-}
+pub(super) use crate::engine::definition::{Hop, SNAPSHOT_REFUSED, resolve_pass_complete};
 
 /// The 0-based byte column where `name` first occurs as a whole identifier on `line` of `source`
 /// (`get` in `budget.pop(get)` is the argument, not the tail of `budget`).
@@ -303,7 +193,7 @@ fn definition_location(
         return Ok(None);
     };
     let max_bytes = state.shared.config.scan.max_file_bytes;
-    let def_source = super::index_route::blocking(|| {
+    let def_source = super::blocking::blocking(|| {
         super::freshness::load_fresh("code_refs", &def_path, &file, entry.into(), max_bytes)
     })?;
     Ok(Some(located(&def_source, def_path)))
@@ -370,61 +260,5 @@ pub(super) fn identifier_at(source: &[u8], start: u32) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn line_col_to_offset_maps_positions() {
-        let src = b"const count = 1;\nreturn count;\n";
-        assert_eq!(line_col_to_offset(src, 1, 6), Some(6));
-        let second = (src.iter().position(|&b| b == b'\n').unwrap() + 1 + "return ".len()) as u32;
-        assert_eq!(line_col_to_offset(src, 2, 7), Some(second));
-        assert_eq!(line_col_to_offset(src, 9, 0), None);
-        assert_eq!(
-            line_col_to_offset(src, 1, 17),
-            None,
-            "col past EOL must be None, not next line"
-        );
-        assert_eq!(line_col_to_offset(src, 1, 16), Some(16));
-    }
-
-    #[test]
-    fn identifier_at_reads_the_token() {
-        let src = b"const count = 1;";
-        assert_eq!(identifier_at(src, 6), "count");
-        assert_eq!(identifier_at(b"let a_1$ = 2;", 4), "a_1$");
-        assert_eq!(identifier_at(src, 5), "");
-        assert_eq!(identifier_at(src, 999), "");
-    }
-
-    #[test]
-    fn offset_to_line_col_roundtrips() {
-        let src = b"a\nbb\nccc";
-        assert_eq!(offset_to_line_col(src, 0), (1, 0));
-        assert_eq!(offset_to_line_col(src, 2), (2, 0));
-        assert_eq!(offset_to_line_col(src, 5), (3, 0));
-        assert_eq!(offset_to_line_col(src, 999), (3, 3));
-    }
-
-    #[test]
-    fn containing_edge_respects_spans() {
-        let zero_width = ResolvedEdge {
-            use_start: 10,
-            use_end: 10,
-            def_start: 0,
-            def_end: 0,
-        };
-        assert!(containing_edge(std::slice::from_ref(&zero_width), 10).is_some());
-        assert!(containing_edge(std::slice::from_ref(&zero_width), 11).is_none());
-
-        let spanned = ResolvedEdge {
-            use_start: 20,
-            use_end: 25,
-            def_start: 0,
-            def_end: 5,
-        };
-        assert!(containing_edge(std::slice::from_ref(&spanned), 20).is_some());
-        assert!(containing_edge(std::slice::from_ref(&spanned), 24).is_some());
-        assert!(containing_edge(std::slice::from_ref(&spanned), 25).is_none());
-    }
-}
+#[path = "helpers_intel_tests.rs"]
+mod tests;

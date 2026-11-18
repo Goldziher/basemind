@@ -2,9 +2,7 @@
 //!
 //! Mirrors the structure of `helpers_calls.rs`: a full-partition scan over
 //! `implementations_by_trait` with a `memmem` case-sensitive substring filter,
-//! bounded by `scan_cap = limit * 8`, with optional language filtering. WHERE the scan runs is
-//! [`IndexRoute`]'s decision: this session's fjall index, the machine daemon's (forwarded), or an
-//! in-RAM projection when neither is reachable.
+//! bounded by `scan_cap = limit * 8`, with optional language filtering, over the session's index.
 
 use std::ops::Bound;
 
@@ -15,7 +13,6 @@ use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result};
 use super::helpers_calls_scan::SCAN_KEYS_EXAMINED_MAX;
 use super::helpers_refs_match::Matching;
-use super::index_route::IndexRoute;
 use super::types_impls::{FindImplementationsParams, FindImplementationsResponse, ImplementationHit};
 use crate::path::RelPath;
 
@@ -34,29 +31,11 @@ pub(crate) struct ImplScanPage {
     pub stopped_after: Option<Vec<u8>>,
 }
 
-impl ImplScanPage {
-    /// Drop the hits `keep` rejects, with their keys; `total` shrinks by the same count and is then an
-    /// upper bound, as in `CallScanPage::retain`.
-    #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
-    pub(super) fn retain(&mut self, keep: impl Fn(&ImplementationHit) -> bool) {
-        let mut index = 0;
-        while index < self.hits.len() {
-            if keep(&self.hits[index]) {
-                index += 1;
-                continue;
-            }
-            self.hits.remove(index);
-            self.hit_keys.remove(index);
-            self.total = self.total.saturating_sub(1);
-        }
-    }
-}
-
 /// Body of the `code` tool's `implementations` mode. Scans `implementations_by_trait` with a
 /// case-sensitive substring filter on `trait_name`, returning up to `limit` hits with optional
 /// language filtering, then applies the token budget.
 pub(super) async fn run_find_implementations(
-    route: &IndexRoute,
+    idx: &dyn crate::index::view::IndexView,
     params: FindImplementationsParams,
     cache: &super::MapCache,
     notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
@@ -64,16 +43,15 @@ pub(super) async fn run_find_implementations(
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let matching = Matching::from_substring(params.substring);
-    let page = route
-        .scan_impls(
-            cache,
-            &params.trait_name,
-            matching,
-            params.language.as_deref(),
-            limit,
-            cursor_bytes.as_deref(),
-        )
-        .await?;
+    let page = scan_impls_session(
+        idx,
+        cache,
+        &params.trait_name,
+        matching,
+        params.language.as_deref(),
+        limit,
+        cursor_bytes.as_deref(),
+    )?;
     let ImplScanPage {
         total,
         total_is_partial,
@@ -262,144 +240,4 @@ pub(crate) fn impl_row_col(l1: &crate::extract::FileMapL1, start_byte: u32) -> (
         .iter()
         .find(|i| i.start_byte == start_byte)
         .map_or((0, 0), |imp| (imp.start_row + 1, imp.start_col))
-}
-
-/// In-RAM twin of [`scan_impls_session`] over the [`InRamImplIndex`] projection. Mirrors the Fjall
-/// scan's substring filter, language filter, `scan_cap` and cursor semantics.
-pub(crate) fn scan_impls_in_ram(
-    index: &InRamImplIndex,
-    cache: &super::MapCache,
-    trait_name: &str,
-    matching: Matching,
-    language: Option<&str>,
-    limit: usize,
-    cursor_after: Option<&[u8]>,
-) -> ImplScanPage {
-    let finder = memchr::memmem::Finder::new(trait_name.as_bytes());
-    let start = match cursor_after {
-        Some(c) => index.entries.partition_point(|e| e.key.as_slice() <= c),
-        None => 0,
-    };
-    let scan_cap = limit.saturating_mul(8).max(2_000);
-    let mut hits: Vec<ImplementationHit> = Vec::with_capacity(limit.min(64));
-    let mut hit_keys: Vec<Vec<u8>> = Vec::with_capacity(limit.min(64));
-    let mut total: usize = 0;
-    let mut total_is_partial = false;
-    let mut has_more = false;
-    let mut matched: usize = 0;
-    let mut stopped_after: Option<Vec<u8>> = None;
-    for (examined, entry) in index.entries[start..].iter().enumerate() {
-        if examined >= SCAN_KEYS_EXAMINED_MAX {
-            total_is_partial = true;
-            stopped_after = Some(index.entries[start + examined - 1].key.clone());
-            break;
-        }
-        if finder.find(entry.trait_name.as_bytes()).is_none() || !matching.accepts_trait(&entry.trait_name, trait_name)
-        {
-            continue;
-        }
-        if let Some(lang) = language
-            && cache.language_of(&entry.rel) != Some(lang)
-        {
-            continue;
-        }
-        total += 1;
-        matched += 1;
-        if hits.len() < limit {
-            hits.push(ImplementationHit {
-                path: entry.rel.clone(),
-                trait_name: entry.trait_name.clone(),
-                impl_type: entry.impl_type.clone(),
-                start_row: entry.start_row,
-                start_col: entry.start_col,
-            });
-            hit_keys.push(entry.key.clone());
-        } else {
-            has_more = true;
-        }
-        if matched >= scan_cap {
-            total_is_partial = true;
-            break;
-        }
-    }
-    ImplScanPage {
-        total,
-        total_is_partial,
-        hits,
-        hit_keys,
-        has_more,
-        stopped_after: if has_more { None } else { stopped_after },
-    }
-}
-
-/// In-RAM mirror of the Fjall `implementations_by_trait` keyspace, projected from every file's
-/// L1 `implementations`. Built lazily, and only when a session has neither a fjall index nor a
-/// reachable daemon to forward to; keys reuse `keys::impl_by_trait` so cursors round-trip with the
-/// Fjall path.
-pub(crate) struct InRamImplIndex {
-    /// Sorted ascending by key to match Fjall's `range` iteration order.
-    entries: Vec<InRamImpl>,
-    /// True when the byte budget cut the projection short, so its answers are incomplete.
-    capped: bool,
-}
-
-struct InRamImpl {
-    key: Vec<u8>,
-    trait_name: String,
-    impl_type: String,
-    rel: crate::path::RelPath,
-    /// 1-based line (`start_row + 1`), matching `resolve_impl_row_col`.
-    start_row: u32,
-    /// 0-based byte column.
-    start_col: u32,
-}
-
-impl InRamImplIndex {
-    /// Project every file's implementation records into the sorted index, streaming the corpus so
-    /// no whole-corpus set of decoded L1s is ever live, and stopping once the projection itself
-    /// would exceed `budget_bytes` (`0` = unbounded).
-    ///
-    /// The cap is what keeps a read-only session — the NORMAL front-end topology under
-    /// daemon-writer, where the store has no Fjall index — from holding an O(corpus) structure for
-    /// the process lifetime. Truncation is reported, never silent: see
-    /// [`capped`](Self::capped) and `LifecycleNotice::projections_capped`.
-    pub(crate) fn build(
-        files: &super::l1_cache::FileIndexView,
-        l1: &super::l1_cache::L1Cache,
-        budget_bytes: u64,
-    ) -> Self {
-        let mut entries: Vec<InRamImpl> = Vec::new();
-        let mut charged: u64 = 0;
-        let mut capped = false;
-        super::l1_cache::stream_while(files, l1, |rel, map| {
-            for imp in &map.implementations {
-                let Some(key) = crate::index::keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte)
-                else {
-                    continue;
-                };
-                charged += (key.len() + imp.trait_name.len() + imp.impl_type.len() + rel.as_bytes().len()) as u64
-                    + std::mem::size_of::<InRamImpl>() as u64;
-                if budget_bytes != 0 && charged > budget_bytes {
-                    capped = true;
-                    return false;
-                }
-                entries.push(InRamImpl {
-                    key,
-                    trait_name: imp.trait_name.clone(),
-                    impl_type: imp.impl_type.clone(),
-                    rel: rel.clone(),
-                    start_row: imp.start_row + 1,
-                    start_col: imp.start_col,
-                });
-            }
-            true
-        });
-        entries.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-        Self { entries, capped }
-    }
-
-    /// Whether the byte budget truncated this projection.
-    pub(crate) fn capped(&self) -> bool {
-        self.capped
-    }
 }

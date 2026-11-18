@@ -17,15 +17,14 @@
 //! ONE process may hold this DB. Which process that is depends on the deployment:
 //!
 //! * **Standalone** (no daemon: `scan` / `rescan`, a `serve` that is itself the writer, a one-shot
-//!   CLI query): that process opens the DB locally ([`Backend::Local`]) and, if it is a writer,
+//!   CLI query): that process opens the DB locally and, if it is a writer,
 //!   builds it in-process.
 //! * **Daemon** (a `comms` build, where the daemon is the machine's sole fjall writer): the DAEMON
-//!   holds the DB and builds it, and EVERY front-end — a `daemon_writer` serve, and equally the
-//!   one-shot CLI — holds a [`Backend::Remote`] proxy that forwards each history query over the
-//!   socket. A front-end must not try to open the DB: it cannot win a lock the daemon holds, so it
-//!   would only stall on the retry ladder and then live-walk forever. And building it in a front-end
-//!   would be doubly wrong — it would steal the lock the daemon (and every peer session) needs, and
-//!   it would run a multi-GB, minutes-long walk inside the process an agent is actively querying.
+//!   holds the DB and builds it. A session the daemon hosts shares the daemon's handle; a CLI command
+//!   forwards its whole call to the daemon. No other process opens the DB: it cannot win a lock the
+//!   daemon holds, so it would only stall on the retry ladder and then live-walk forever. And
+//!   building it elsewhere would be doubly wrong — it would steal the lock the daemon needs, and it
+//!   would run a multi-GB, minutes-long walk inside the process an agent is actively querying.
 //!
 //! A process that can reach neither keeps `git_history: None` and falls back to the live walk. The
 //! index is a pure accelerator — tools use it only when `last_indexed_head == HEAD` and otherwise
@@ -54,8 +53,6 @@ pub mod fts;
 pub mod keys;
 pub mod proto;
 pub mod reader;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod remote;
 
 use std::path::{Path, PathBuf};
 
@@ -174,13 +171,8 @@ pub enum GitHistoryError {
     Decode(#[from] rmp_serde::decode::Error),
     #[error("git error: {0}")]
     Git(#[from] crate::git::GitError),
-    /// A write (or a builder read) was attempted against a DAEMON-BACKED handle. The daemon is the
-    /// sole holder of the git-history database in that deployment; front-ends forward their sync
-    /// request to it instead of building locally. Never reached from a standalone process.
-    #[error("git-history index is daemon-backed; this process cannot write it")]
-    NotLocal,
     /// The git-history index is disabled by configuration (`BASEMIND_GH_INDEX=0`). Returned by the
-    /// daemon's in-process runner so both the forwarded and the hosted path report it uniformly.
+    /// daemon's runner for a forwarded op.
     #[error("git-history index disabled (BASEMIND_GH_INDEX=0)")]
     Disabled,
     /// The on-disk index carries a schema newer than [`GIT_HISTORY_SCHEMA`]. Never wiped: it belongs
@@ -265,35 +257,6 @@ pub struct CommitMeta {
     pub files: Vec<(u32, u8)>,
 }
 
-/// Where a [`GitHistoryIndex`]'s data actually lives. See the module docs for which process holds
-/// the (single-holder) fjall database in each deployment.
-#[derive(Clone)]
-enum Backend {
-    /// This process holds the fjall database.
-    Local(LocalDb),
-    /// Another process holds it; every read is forwarded to it.
-    Remote(std::sync::Arc<dyn HistoryForwarder>),
-}
-
-/// The read side of a daemon-backed index: forwards each query to the process that holds the
-/// database. Implemented outside the core by the transport (`remote::RemoteHistory`), so this module
-/// names no transport, runtime or caller identity; the implementor carries its own. Synchronous: an
-/// implementor that waits on IO blocks inside the call. `Any` lets the transport recover its own type
-/// from a handle.
-pub trait HistoryForwarder: Send + Sync + std::any::Any {
-    /// The HEAD the holder's index is synced to, or `None` when unbuilt or unreachable. `None` makes
-    /// the caller's freshness check fail closed: it live-walks.
-    fn indexed_head(&self) -> Option<String>;
-
-    /// Run one commit-returning op against the holder's index. Unreachable or a reply of another
-    /// shape yields an empty page.
-    fn commits(&self, op: proto::GitHistoryOp) -> Vec<crate::git::CommitInfo>;
-
-    /// Whether the holder is this process. Such a handle must never be asked to sync over the
-    /// holder's socket, which would dial itself; required so no implementor can leave it out.
-    fn hosts_in_process(&self) -> bool;
-}
-
 /// Handle to every git-history partition. Cloned cheaply (each `Keyspace` is `Arc`'d by Fjall).
 #[derive(Clone)]
 pub(crate) struct LocalDb {
@@ -311,13 +274,16 @@ pub(crate) struct LocalDb {
     /// `gh_term_to_ords`: `field:u8 ‖ term` → newest-first ordinal posting list. Backs
     /// `search_git_history`. See [`fts`].
     term_to_ords: Keyspace,
+    /// Serializes syncs of this database (see [`builder::sync`]): every holder of a clone of the
+    /// handle (the daemon's socket path, each session it hosts) shares it, so N sessions asking at
+    /// once produce one history walk and the rest find the index fresh.
+    build_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
-/// The git-history index as its callers see it: the same read API whether the data sits in a fjall
-/// database this process holds or behind the daemon that holds it.
+/// The git-history index: a handle on the fjall database this process holds.
 #[derive(Clone)]
 pub struct GitHistoryIndex {
-    backend: Backend,
+    db: LocalDb,
 }
 
 impl GitHistoryIndex {
@@ -360,44 +326,19 @@ impl GitHistoryIndex {
         basemind_dir.join(GIT_HISTORY_DIR).is_dir()
     }
 
-    /// A handle backed by an index another process holds (the DAEMON's), reached through
-    /// `forwarder`. Takes no lock and performs no IO: this is what every front-end running under a
-    /// live daemon holds — a `daemon_writer` serve, and the one-shot CLI — instead of opening the
-    /// database the daemon has locked.
-    pub fn forwarded(forwarder: std::sync::Arc<dyn HistoryForwarder>) -> Self {
-        Self {
-            backend: Backend::Remote(forwarder),
-        }
+    /// The database. Every write path (the builder) and every low-level point read goes through
+    /// this.
+    pub(crate) fn local(&self) -> &LocalDb {
+        &self.db
     }
 
-    /// True when this handle forwards to the daemon rather than holding the database. The write side
-    /// keys off it: the builder can only run in the process that owns the lock, so a daemon-backed
-    /// session must ASK the daemon to build instead of calling the builder itself.
-    pub fn is_daemon_backed(&self) -> bool {
-        matches!(self.backend, Backend::Remote(_))
-    }
-
-    /// The forwarder of a daemon-backed handle, `None` for a local one.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) fn forwarder(&self) -> Option<&std::sync::Arc<dyn HistoryForwarder>> {
-        match &self.backend {
-            Backend::Remote(forwarder) => Some(forwarder),
-            Backend::Local(_) => None,
-        }
-    }
-
-    /// The local database, or `None` for a daemon-backed handle. Every write path (the builder) and
-    /// every low-level point read goes through this.
-    pub(crate) fn local(&self) -> Option<&LocalDb> {
-        match &self.backend {
-            Backend::Local(db) => Some(db),
-            Backend::Remote(_) => None,
-        }
-    }
-
-    /// The local database, or [`GitHistoryError::NotLocal`] — the writer-side accessor.
-    pub(crate) fn require_local(&self) -> Result<&LocalDb, GitHistoryError> {
-        self.local().ok_or(GitHistoryError::NotLocal)
+    /// Hold this database's build lock, so a test can keep a sync waiting on it.
+    #[cfg(all(test, feature = "comms", any(unix, windows)))]
+    pub(crate) fn hold_build_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.db
+            .build_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn open_at(dir: &Path) -> Result<Self, GitHistoryError> {
@@ -434,7 +375,7 @@ impl GitHistoryIndex {
         let term_to_ords = db.keyspace("gh_term_to_ords", keyspace_options)?;
         meta.insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(Self {
-            backend: Backend::Local(LocalDb {
+            db: LocalDb {
                 db,
                 meta,
                 commit_by_ord,
@@ -444,7 +385,8 @@ impl GitHistoryIndex {
                 path_to_ords,
                 commit_text_by_ord,
                 term_to_ords,
-            }),
+                build_lock: std::sync::Arc::default(),
+            },
         })
     }
 
@@ -452,30 +394,28 @@ impl GitHistoryIndex {
     /// history rewrite is detected and by the manual force-rebuild path. Safe because only the
     /// `.basemind/.lock` holder ever opens this DB, so no other process holds a handle.
     pub fn clear(&self) -> Result<(), GitHistoryError> {
-        self.require_local()?.clear()
+        self.db.clear()
     }
 
     /// Record that a build or append for `head` failed at `unix_secs`. Best-effort: a record that
     /// cannot be written costs one more rebuild.
     pub(crate) fn record_failed_build(&self, head: &[u8; 20], unix_secs: u64) {
-        if let Some(db) = self.local() {
-            let record = [&head[..], &unix_secs.to_be_bytes()].concat();
-            if let Err(error) = db.meta.insert(keys::META_FAILED_BUILD, record) {
-                tracing::debug!(%error, "could not record a failed git-history build");
-            }
+        let record = [&head[..], &unix_secs.to_be_bytes()].concat();
+        if let Err(error) = self.db.meta.insert(keys::META_FAILED_BUILD, record) {
+            tracing::debug!(%error, "could not record a failed git-history build");
         }
     }
 
     /// When a build or append for `head` last failed, in unix seconds, or `None`.
     pub(crate) fn failed_build_at(&self, head: &[u8; 20]) -> Option<u64> {
-        let record = self.local()?.meta.get(keys::META_FAILED_BUILD).ok().flatten()?;
+        let record = self.db.meta.get(keys::META_FAILED_BUILD).ok().flatten()?;
         let (sha, secs) = record.split_at_checked(20)?;
         (sha == head).then(|| <[u8; 8]>::try_from(secs).ok().map(u64::from_be_bytes))?
     }
 
-    /// A batched writer over the underlying Fjall database. Only a local index has one.
+    /// A batched writer over the underlying Fjall database.
     pub fn writer(&self) -> Result<GitHistoryWriter, GitHistoryError> {
-        let db = self.require_local()?;
+        let db = &self.db;
         Ok(GitHistoryWriter {
             db: db.clone(),
             batch: db.db.batch(),
@@ -483,46 +423,40 @@ impl GitHistoryIndex {
         })
     }
 
-    /// Last HEAD the index was synced to (20 raw sha bytes), or `None` if never built. Local only —
-    /// the raw form is a builder-side detail; the forwarded path uses
-    /// [`last_indexed_head_hex`](Self::last_indexed_head_hex).
+    /// Last HEAD the index was synced to (20 raw sha bytes), or `None` if never built. The raw form
+    /// is a builder-side detail; readers use [`last_indexed_head_hex`](Self::last_indexed_head_hex).
     pub fn last_indexed_head(&self) -> Option<[u8; 20]> {
-        self.local()?.indexed_head()
+        self.db.indexed_head()
     }
 
-    /// Whether a build or append started and never stamped its head. Local only.
+    /// Whether a build or append started and never stamped its head.
     pub fn build_interrupted(&self) -> bool {
-        self.local().is_some_and(LocalDb::build_in_progress)
+        self.db.build_in_progress()
     }
 
     /// Last indexed HEAD as a 40-char hex string — the freshness key the MCP tools compare HEAD to.
-    /// On a daemon-backed handle this is one forwarded round trip; an unreachable daemon answers
-    /// `None`, which fails the freshness check closed (the caller live-walks).
     pub fn last_indexed_head_hex(&self) -> Option<String> {
-        match &self.backend {
-            Backend::Local(db) => db.indexed_head().map(|s| keys::sha_raw_to_hex(&s)),
-            Backend::Remote(remote) => remote.indexed_head(),
-        }
+        self.db.indexed_head().map(|s| keys::sha_raw_to_hex(&s))
     }
 
     /// Next free commit ordinal (also the count of indexed commits).
     pub fn next_ord(&self) -> u32 {
-        self.local().map(|db| db.meta_u32(keys::META_NEXT_ORD)).unwrap_or(0)
+        self.db.meta_u32(keys::META_NEXT_ORD)
     }
 
     /// Next free path id.
     pub fn next_path_id(&self) -> u32 {
-        self.local().map(|db| db.meta_u32(keys::META_NEXT_PATH_ID)).unwrap_or(0)
+        self.db.meta_u32(keys::META_NEXT_PATH_ID)
     }
 
     /// Fingerprint: sha of the oldest reachable (root) commit at build time.
     pub fn root_sha(&self) -> Option<[u8; 20]> {
-        self.local()?.meta_sha(keys::META_ROOT_SHA)
+        self.db.meta_sha(keys::META_ROOT_SHA)
     }
 
     /// Fingerprint: number of commits indexed.
     pub fn commit_count(&self) -> u32 {
-        self.local().map(|db| db.meta_u32(keys::META_COMMIT_COUNT)).unwrap_or(0)
+        self.db.meta_u32(keys::META_COMMIT_COUNT)
     }
 
     /// True when nothing has been indexed yet, or a build or append was cut off.
@@ -530,23 +464,21 @@ impl GitHistoryIndex {
         self.last_indexed_head_hex().is_none()
     }
 
-    /// Builder-side point reads. Local only: the builder runs in the process that holds the
-    /// database (a daemon-backed handle is rejected up front by [`builder::sync`]), so a `None` here
-    /// means "not indexed", never "ask the daemon".
+    /// Builder-side point reads. A `None` here means "not indexed".
     pub(crate) fn ord_for_sha(&self, sha20: &[u8; 20]) -> Option<u32> {
-        self.local()?.ord_for_sha(sha20)
+        self.db.ord_for_sha(sha20)
     }
 
     pub(crate) fn path_id(&self, rel: &RelPath) -> Option<u32> {
-        self.local()?.path_id(rel)
+        self.db.path_id(rel)
     }
 
     pub(crate) fn posting_bytes(&self, path_id: u32) -> Option<fjall::Slice> {
-        self.local()?.posting_bytes(path_id)
+        self.db.posting_bytes(path_id)
     }
 
     pub(crate) fn term_posting_bytes(&self, term_key: &[u8]) -> Option<fjall::Slice> {
-        self.local()?.term_posting_bytes(term_key)
+        self.db.term_posting_bytes(term_key)
     }
 }
 
@@ -826,7 +758,7 @@ mod tests {
 
     fn stamp_schema_ver(basemind_dir: &Path, ver: u32) {
         let index = GitHistoryIndex::open(basemind_dir).expect("open index");
-        let db = index.local().expect("local handle");
+        let db = index.local();
         db.meta.insert(keys::META_ROOT_SHA, vec![7u8; 20]).expect("write a row");
         db.meta
             .insert(keys::META_SCHEMA_VER, ver.to_be_bytes())

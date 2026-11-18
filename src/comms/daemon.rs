@@ -349,9 +349,7 @@ impl Broker {
 
         // ~keep Build/fetch the shared stack BEFORE accepting, so a build failure reaches the client
         // ~keep as a decline it can act on rather than "accepted" against a stack we cannot serve.
-        let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
-        let git_history_host = Arc::clone(&self) as Arc<dyn crate::git_history::remote::HistoryHost>;
-        let (shared, _conn) = match self.workspaces.serve_conn(&hello.root, host, git_history_host).await {
+        let (shared, _conn) = match self.workspaces.serve_conn(&hello.root, self.hosted_history()).await {
             Ok(served) => served,
             Err(error) => {
                 tracing::warn!(%error, root = %hello.root.display(), "relay: hosting read stack failed");
@@ -426,6 +424,12 @@ impl Broker {
     pub fn begin_work(&self) -> WorkGuard<'_> {
         self.work_inflight.fetch_add(1, Ordering::SeqCst);
         WorkGuard { broker: self }
+    }
+
+    /// [`Self::begin_work`] for work that runs detached from the caller. See [`OwnedWorkGuard`].
+    pub(crate) fn begin_owned_work(self: &Arc<Self>) -> super::daemon_guards::OwnedWorkGuard {
+        self.work_inflight.fetch_add(1, Ordering::SeqCst);
+        super::daemon_guards::OwnedWorkGuard(Arc::clone(self))
     }
 
     /// Note a client-less work unit finished: drop the in-flight count and stamp activity. The
@@ -566,12 +570,15 @@ impl Broker {
     }
 
     /// Shed hot workspaces idle past `ttl` from RAM (their on-disk cache survives). Returns the
-    /// count evicted. The daemon's periodic sweep calls this so cold indexes free memory.
+    /// count evicted. The daemon's periodic sweep calls this so cold indexes free memory. A
+    /// git-history handle still in use (a hosted workspace shares it, or an op is running on it) is
+    /// kept: dropping it from the map would leave its fjall lock held, and the next open of the
+    /// database would fail on it.
     pub fn evict_idle_workspaces(&self, ttl: Duration) -> usize {
         self.git_history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|_, entry| entry.idle_for() < ttl);
+            .retain(|_, entry| entry.idle_for() < ttl || entry.in_use());
         self.workspaces.evict_idle(ttl)
     }
 

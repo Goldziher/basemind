@@ -27,9 +27,9 @@ pub(crate) struct ServedWorkspace {
     /// Per-tool-call telemetry writer; appends to the workspace's `telemetry.jsonl`. One writer per
     /// served workspace, so connections sharing it share its rotation.
     pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
-    /// The daemon's own workspace pool, for a daemon-hosted workspace (see [`ServerState::host`]).
+    /// The daemon's own workspace pool, for a daemon-hosted workspace (see [`ServerState::pool`]).
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) host: Option<Arc<dyn super::HostBackend>>,
+    pub(crate) pool: Option<Arc<crate::comms::workspace_pool::WorkspacePool>>,
 }
 
 impl ServedWorkspace {
@@ -39,7 +39,7 @@ impl ServedWorkspace {
             workspace,
             telemetry: Arc::new(super::telemetry::Telemetry::new(basemind_dir)),
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            host: None,
+            pool: None,
         }
     }
 }
@@ -56,12 +56,12 @@ pub(crate) struct ServerState {
     /// Per-tool-call telemetry writer, shared by every connection to this workspace. Always present
     /// (best-effort writes); the dashboard surfaces / statusline read from the same file.
     pub(crate) telemetry: Arc<super::telemetry::Telemetry>,
-    /// In-process host seam for a DAEMON-HOSTED read stack: the daemon's own workspace pool (the
-    /// machine's sole fjall writer). When `Some`, scans, memory operations and the index reads the
-    /// hosted store cannot answer (it holds no index) run through it. `None` on every non-hosted
-    /// stack (in-process serve / CLI), which writes and reads its own store.
+    /// The daemon's workspace pool, for a DAEMON-HOSTED workspace: the pool holds the writer store,
+    /// so this session's scans run through it. Reads need no seam: the hosted store shares the
+    /// writer's index handle. `None` on every non-hosted session (in-process serve / CLI), which
+    /// writes its own store.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) host: Option<Arc<dyn super::HostBackend>>,
+    pub(crate) pool: Option<Arc<crate::comms::workspace_pool::WorkspacePool>>,
     /// Owner segment for the individual-memory tier: the session's principal, resolved by the one
     /// identity resolver of agent comms (ADR-0021). Group-tier writes ignore it.
     #[allow(dead_code)]
@@ -92,7 +92,7 @@ impl ServerState {
             shared: served.workspace,
             telemetry: served.telemetry,
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            host: served.host,
+            pool: served.pool,
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             agents: None,
@@ -121,14 +121,14 @@ impl ServerState {
         use std::sync::atomic::Ordering::Relaxed;
         if self.shared.lazy_cache {
             if self.shared.lazy_cache_built.get().is_none() {
-                super::index_route::blocking(|| self.build_cache_on_demand());
+                super::blocking::blocking(|| self.build_cache_on_demand());
             }
             return;
         }
         if !self.shared.cache_warming.load(Relaxed) {
             return;
         }
-        super::index_route::blocking(|| self.shared.wait_for_warm());
+        super::blocking::blocking(|| self.shared.wait_for_warm());
     }
 
     /// Build the whole-corpus in-RAM map and publish it — exactly once, however many callers race
@@ -136,7 +136,7 @@ impl ServerState {
     ///
     /// [`MapCache::build`] is IO-bound (a rayon `par_iter` probing every indexed file's blob), so it
     /// must not run on the async reactor: [`await_cache_ready`](Self::await_cache_ready) runs it
-    /// inside [`index_route::blocking`](super::index_route::blocking), which hands the worker over
+    /// inside [`blocking::blocking`](super::blocking::blocking), which hands the worker over
     /// on the multi-thread runtime the CLI builds and runs it in place on a `current_thread` test
     /// runtime, which has no other task to starve.
     fn build_cache_on_demand(&self) {

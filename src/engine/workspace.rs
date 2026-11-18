@@ -157,9 +157,16 @@ pub(crate) struct Workspace {
     pub(crate) history_syncing: Arc<AtomicBool>,
     /// The host's git-history sync ([`OpenOptions::history_sync`]).
     pub(crate) history_sync: Option<fn(&Workspace)>,
+    /// Keeps the host process up while a git-history sync of this workspace runs detached. Set for a
+    /// daemon-hosted workspace, whose syncs no client link waits on.
+    pub(crate) work_pin: Option<WorkPin>,
     /// The git index's file list as `find_files` last read it ([`crate::engine::ops::find_files`]).
     pub(crate) tracked: std::sync::Mutex<crate::engine::ops::find_files::TrackedCache>,
 }
+
+/// Pins the host process while long detached work runs: the guard it returns holds the pin until
+/// dropped.
+pub(crate) type WorkPin = Arc<dyn Fn() -> Box<dyn Send> + Send + Sync>;
 
 /// Whether the workspace's `status.json` records a partial or unresolved last scan. A missing or
 /// unreadable sidecar is not degraded: the empty-index checks above own the never-scanned case.
@@ -196,8 +203,8 @@ pub(crate) struct OpenOptions {
 pub(crate) fn boot_plan(store: &Store, options: &OpenOptions) -> (bool, bool) {
     let view_is_working = store.view == crate::store::VIEW_WORKING;
     let fjall_index_empty = store
-        .index_view()
-        .map(|view| view.symbols_index_is_empty())
+        .index_handle()
+        .map(|db| db.view().symbols_index_is_empty())
         .unwrap_or(false);
     let needs_initial_scan = (options.forwards_writes || !options.read_only)
         && view_is_working
@@ -286,6 +293,7 @@ impl Workspace {
             history_catch_up: options.background,
             history_syncing: Arc::new(AtomicBool::new(false)),
             history_sync: options.history_sync,
+            work_pin: None,
             tracked: std::sync::Mutex::default(),
         }
     }
@@ -402,8 +410,8 @@ impl Workspace {
 
     /// The `index_rebuilding` notice while the workspace's `status.json` records a partial scan or an
     /// uncommitted resolve pass. The daemon marks it when it opens a workspace whose fjall index was
-    /// wiped or is empty over a populated file map, and a session that does not hold the index
-    /// (`daemon_writer`, daemon-hosted) cannot see that any other way.
+    /// wiped or is empty over a populated file map, and a session that does not own the writer store
+    /// (daemon-hosted) cannot see that any other way.
     fn index_rebuilding_notice(&self) -> Option<LifecycleNotice> {
         let status = crate::store::read_status_sidecar(&crate::store::workspace_cache_dir(&self.root));
         LifecycleNotice::for_scan_status(status.as_ref())
@@ -424,15 +432,6 @@ impl Workspace {
         LifecycleNotice::for_state(self.lifecycle())
             .or_else(|| self.index_rebuilding_notice())
             .or_else(|| self.empty_index_notice())
-            .or_else(|| {
-                // A read-only session whose projected call/impl indexes were capped answers reference
-                // queries from a truncated set. Reported through the same channel as the warming/
-                // rescanning states so a caller never reads an incomplete result as "no matches".
-                self.cache
-                    .load()
-                    .projections_capped()
-                    .then(LifecycleNotice::projections_capped)
-            })
     }
 }
 

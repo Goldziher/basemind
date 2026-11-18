@@ -47,12 +47,12 @@ pub(super) async fn run_background_gc(state: Arc<ServerState>) {
 pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     tracing::info!("empty index on startup; running initial scan in background");
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = state.host.clone() {
+    if let Some(pool) = state.pool.clone() {
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             state.shared.initial_scan_active.store(true, Ordering::Relaxed);
             let started = std::time::Instant::now();
-            match super::daemon_forward::writer_rescan_and_refresh(&state, &host, None, false, false, false).await {
+            match super::daemon_forward::writer_rescan_and_refresh(&state, &pool, None, false, false, false).await {
                 Ok(report) => tracing::info!(
                     scanned = report.scanned,
                     updated = report.updated,
@@ -70,7 +70,7 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
             tokio::spawn(async move {
                 let embed_started = std::time::Instant::now();
                 tracing::info!("background embedding pass starting (forwarded to daemon)");
-                match super::daemon_forward::writer_rescan_and_refresh(&embed_state, &host, None, false, true, false)
+                match super::daemon_forward::writer_rescan_and_refresh(&embed_state, &pool, None, false, true, false)
                     .await
                 {
                     Ok(report) => tracing::info!(
@@ -195,11 +195,11 @@ fn refresh_batch(
     paths: Vec<std::path::PathBuf>,
 ) -> Result<(usize, usize, usize), String> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.host {
+    if let Some(pool) = &state.pool {
         let report = handle
             .block_on(super::daemon_forward::writer_rescan_and_refresh(
                 state,
-                host,
+                pool,
                 Some(paths),
                 false,
                 true,
@@ -300,14 +300,9 @@ fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync:
         .ok();
 }
 
-/// Reopen the working store read-only for a MapCache rebuild. A daemon-hosted workspace opens
-/// blobs-only (never the fjall index) so it can't steal the exclusive index lock from the
-/// daemon's pool (the sole writer); every other serve opens the index normally.
+/// Reopen the working store read-only for a MapCache rebuild. Only a read-only `serve` runs this
+/// watcher; a daemon-hosted workspace refreshes after each pool scan instead.
 fn reopen_read_only(state: &ServerState, view: &str) -> Result<crate::store::Store, crate::store::StoreError> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.host.is_some() {
-        return crate::store::Store::open_read_only_no_index(state.shared.root.as_path(), view);
-    }
     crate::store::Store::open_read_only(state.shared.root.as_path(), view)
 }
 

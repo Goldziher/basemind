@@ -215,37 +215,3 @@ fn a_refresh_after_one_edit_decodes_one_outline() {
     scan(root, &mut store);
     assert!(next.refreshed(&store, 0).is_none(), "an unchanged rescan keeps the map");
 }
-
-/// A map whose entries record no content key still orders its in-RAM call projection by the key
-/// each entry's content would be written under. The `references` / `callers` cursor generation
-/// digests that same key, so an entry whose content changes moves the generation and a cursor cut
-/// before the change is refused.
-#[test]
-fn the_in_ram_cursor_generation_follows_entries_that_record_no_content_key() {
-    let map = |extract_epoch: u16| FileMapL1 {
-        schema_ver: crate::extract::SCHEMA_VER,
-        language: "rust".into(),
-        size_bytes: 0,
-        had_errors: false,
-        error_count: 0,
-        symbols: Vec::new(),
-        imports: Vec::new(),
-        implementations: Vec::new(),
-        rationale: Vec::new(),
-        extract_epoch,
-    };
-    let cache = |extract_epoch: u16| MapCache::from_synthetic(vec![(RelPath::from("a.rs"), map(extract_epoch))]);
-    let before = cache(1);
-    let meta = before.meta(&RelPath::from("a.rs")).expect("the synthetic entry");
-    assert!(meta.content_key.is_none(), "the entry records no content key");
-    assert_ne!(
-        before.content_fingerprint(),
-        cache(2).content_fingerprint(),
-        "a changed content moves the generation"
-    );
-    assert_ne!(
-        before.content_fingerprint(),
-        MapCache::from_synthetic(Vec::new()).content_fingerprint(),
-        "a keyless entry is digested, not skipped"
-    );
-}

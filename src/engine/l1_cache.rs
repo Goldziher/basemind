@@ -195,14 +195,6 @@ impl FileMeta {
             && self.extract_epoch == entry.extract_epoch
             && self.content_key == entry.content_key
     }
-
-    /// The content key this file's calls are ordered under where no index is read: the recorded
-    /// [`content_key`](Self::content_key), else the key its content would be written under. The
-    /// in-RAM projection, its cursor generation and its placement of resolved callers all use it.
-    pub(crate) fn order_key(&self) -> crate::index::keys::ContentKey {
-        self.content_key
-            .unwrap_or_else(|| crate::index::keys::content_key(&self.hash_hex, &self.language, self.extract_epoch))
-    }
 }
 
 impl From<&crate::store::FileEntry> for FileMeta {
@@ -275,14 +267,6 @@ impl L1Cache {
     /// The global content-addressed blob directory this cache reads from.
     pub(crate) fn from_store(store: &crate::store::Store, budget_bytes: u64) -> Self {
         Self::new(store.blobs_dir.clone(), budget_bytes)
-    }
-
-    pub(crate) fn blobs_dir(&self) -> &std::path::Path {
-        &self.blobs_dir
-    }
-
-    pub(crate) fn budget_bytes(&self) -> u64 {
-        self.budget_bytes
     }
 
     /// Bytes currently charged to the cache. Test surface for the budget assertions.

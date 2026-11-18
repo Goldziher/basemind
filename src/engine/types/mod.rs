@@ -52,22 +52,6 @@ impl LifecycleNotice {
         }
     }
 
-    /// The notice for a read-only session whose projected call / implementation indexes hit their
-    /// byte cap. Such a session has no Fjall index to query, so those projections ARE the answer
-    /// source; once capped, reference-shaped results are truncated rather than merely stale.
-    /// `retry: false` because rerunning changes nothing — the fix is a larger
-    /// `[resources] max_map_cache_mb`, or a session that owns the index.
-    pub(crate) fn projections_capped() -> Self {
-        Self {
-            state: "projections_capped",
-            message: "No daemon was reachable, so this session answered from in-memory reference \
-                      projections that hit the `[resources] max_map_cache_mb` budget; reference / \
-                      implementation results are truncated. Start the daemon or raise the budget \
-                      for complete results.",
-            retry: false,
-        }
-    }
-
     /// [`index_rebuilding`](Self::index_rebuilding) when `status` records a degraded scan, else `None`
     /// (healthy, or no sidecar yet: the never-scanned case belongs to the building-index lifecycle).
     pub(crate) fn for_scan_status(status: Option<&crate::store::StatusSidecar>) -> Option<Self> {

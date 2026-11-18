@@ -267,9 +267,9 @@ async fn fetch_rescan_stats(
     scoped_paths: Option<Vec<std::path::PathBuf>>,
 ) -> Result<RescanStats, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = &state.host {
+    if let Some(pool) = &state.pool {
         let report =
-            super::daemon_forward::writer_rescan_and_refresh(state, host, scoped_paths, false, true, true).await?;
+            super::daemon_forward::writer_rescan_and_refresh(state, pool, scoped_paths, false, true, true).await?;
         return Ok(RescanStats {
             scanned: report.scanned,
             updated: report.updated,

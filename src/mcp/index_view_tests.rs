@@ -5,7 +5,6 @@
 use super::helpers_calls_scan::{calls_in_content_fjall, scan_calls_by_name};
 use super::helpers_impls::scan_impls_fjall;
 use super::helpers_refs_match::Matching;
-use super::index_route::IndexRoute;
 use crate::config::ConfigV1;
 use crate::index::grep_bloom::{GrepEntry, Needle};
 use crate::index::view::{IndexView, ReadLog, RecordingView};
@@ -185,41 +184,36 @@ fn both_search_lanes_read_through_the_view() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_local_route_answers_every_read_from_its_view() {
+async fn every_reference_read_answers_from_the_session_view() {
+    use super::helpers_calls_scan::{calls_in_files, content_keys, scan_calls};
+
     let dir = tempfile::tempdir().expect("tempdir");
     let store = scanned_store(dir.path());
     let cache = super::MapCache::build(&store, 0);
     let (view, log) = recording(&store);
-    let route = IndexRoute::Local(Box::new(view));
+    let view: std::sync::Arc<dyn crate::index::view::IndexView> = std::sync::Arc::new(view);
 
-    let (page, _) = route
-        .scan_calls(&cache, "shared_helper", Matching::Substring, 50, None)
-        .await
-        .expect("scan");
+    let (page, _) = scan_calls(&*view, "shared_helper", Matching::Substring, 50, None).expect("scan");
     assert_eq!(page.total, 2 * FILES as u32);
     assert_eq!(log.entries(), name_scan_reads(), "references/callers");
 
     log.clear();
     let paths = vec![RelPath::from("m1.rs")];
-    let files: Vec<_> = paths.iter().cloned().zip(route.content_keys(&cache, &paths)).collect();
-    let per_file = route.calls_in_files(&cache, &files).await.expect("calls");
+    let files: Vec<_> = paths.iter().cloned().zip(content_keys(&*view, &paths)).collect();
+    let per_file = calls_in_files(&*view, &files).expect("calls");
     assert!(per_file[0].as_ref().is_some_and(|(_, calls)| !calls.is_empty()));
     assert_eq!(log.entries(), ["prefix:calls_by_path"], "resolved callers");
 
     log.clear();
-    let impls = route
-        .scan_impls(&cache, "Tr", Matching::Substring, None, 50, None)
-        .await
+    let impls = super::helpers_impls::scan_impls_session(&*view, &cache, "Tr", Matching::Substring, None, 50, None)
         .expect("impls");
     assert_eq!(impls.total, FILES);
     assert_eq!(log.entries(), ["trait_keys_matching"], "implementations");
 
     log.clear();
     let entries = grep_entries(&store);
-    let verdicts = route
-        .grep_skip(dir.path(), "zzz_definitely_absent", &entries)
-        .await
-        .expect("verdicts");
+    let verdicts =
+        super::helpers_grep::grep_skip(Some(view), dir.path(), "zzz_definitely_absent", &entries).expect("verdicts");
     assert_eq!(verdicts.len(), entries.len());
     assert_eq!(sorted(log.entries()), bloom_reads(), "grep prefilter");
 }

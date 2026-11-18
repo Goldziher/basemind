@@ -34,6 +34,7 @@ pub(crate) fn server_busy_for_cli() -> rmcp::ErrorData {
 }
 #[cfg(test)]
 pub(crate) use helpers::rescan_error;
+mod blocking;
 #[cfg(feature = "documents")]
 mod docs_pipeline;
 mod helpers_admin;
@@ -57,16 +58,9 @@ mod helpers_refs_match;
 mod helpers_stale;
 mod helpers_telemetry;
 mod history_sync;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-mod host;
 pub(crate) mod identity;
 #[cfg(feature = "test-support")]
 pub mod in_memory;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) mod index_read;
-mod index_route;
-#[cfg(test)]
-mod index_route_tests;
 #[cfg(test)]
 mod index_view_tests;
 pub(crate) use crate::engine::l1_cache;
@@ -119,8 +113,6 @@ pub(crate) use crate::engine::MapCache;
 pub(crate) use crate::engine::Workspace;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub use agent_context::AgentContext;
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub(crate) use host::HostBackend;
 #[cfg(feature = "test-support")]
 pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
 pub(crate) use state::{ServedWorkspace, ServerState};
@@ -137,6 +129,63 @@ impl HostedReadStack {
     /// Clone the read stack shared by every connection to this hosted workspace.
     pub(crate) fn shared(&self) -> ServedWorkspace {
         self.shared.clone()
+    }
+
+    /// Serve the workspace the daemon's pool opened, and start its single "warden": a
+    /// background-running [`ServerState`] that owns freshness for the whole workspace (the
+    /// empty-index auto-scan, the live filesystem watcher, cache warming and the git-history sync).
+    /// The warden shares the [`Workspace`] by `Arc`, so when its watcher refreshes the in-RAM map
+    /// every hosted connection sees the new snapshot at once; per-connection servers
+    /// ([`BasemindServer::from_shared`]) spawn nothing.
+    ///
+    /// `store` is read-only and borrows the pool writer's index handle per call, so reads never wait
+    /// on a scan. Scans run through `pool`, which holds the writer store.
+    pub(crate) fn start(
+        store: Store,
+        config: Arc<crate::config::Config>,
+        repo: Option<Arc<crate::git::Repo>>,
+        git_cache: Arc<crate::git_cache::GitCache>,
+        git_history: Option<crate::comms::git_history_ops::HostedHistory>,
+        pool: Arc<crate::comms::workspace_pool::WorkspacePool>,
+    ) -> Self {
+        let root = store.root.clone();
+        let options = ServerOptions {
+            background: true,
+            watch: true,
+            read_only: true,
+            lazy_cache: false,
+        };
+        // ~keep The pool writes the index, so an empty one still asks for an initial scan.
+        let open = crate::engine::workspace::OpenOptions {
+            forwards_writes: true,
+            ..options.into()
+        };
+        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &open);
+        let agent_id = identity::resolve_agent_id(&store.root);
+        let telemetry_dir = store.basemind_dir.clone();
+        let (git_history, work_pin) =
+            match git_history.filter(|_| repo.is_some() && crate::git_history::index_enabled()) {
+                Some(history) => (Some(history.index), Some(history.pin)),
+                None => (None, None),
+            };
+        let mut workspace = Workspace::new(store, root.clone(), config, repo, git_cache, git_history, open);
+        workspace.work_pin = work_pin;
+        let workspace = Arc::new(workspace);
+        let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);
+        shared.pool = Some(pool);
+        let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
+        let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
+        history_sync::request(&warden.shared);
+        if needs_initial_scan {
+            background::spawn_initial_scan(Arc::clone(&warden));
+        } else if defer_warm {
+            background::spawn_cache_warm(Arc::clone(&warden));
+        }
+        tracing::info!(root = %root.display(), needs_initial_scan, "daemon hosting read stack for workspace");
+        Self {
+            _watcher: watcher,
+            shared,
+        }
     }
 }
 
@@ -307,17 +356,7 @@ impl BasemindServer {
     ) -> Self {
         let agent_id = identity::resolve_agent_id(&store.root);
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
-        let git_history = Self::open_git_history(
-            &root,
-            &history_dir,
-            repo.is_some(),
-            &agent_id,
-            &options,
-            // ~keep In-process serve / CLI: no daemon hosting us, so history reads use a local handle,
-            // ~keep or none while the daemon holds the database.
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            None,
-        );
+        let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
         let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
         let basemind_dir = store.basemind_dir.clone();
@@ -400,7 +439,7 @@ impl BasemindServer {
 
     /// Build a per-connection server that SHARES a workspace's [`Workspace`] rather than
     /// opening its own. This is the daemon-hosted seam: the daemon builds one shared read stack per
-    /// hot workspace (see [`build_hosted_read_stack`](Self::build_hosted_read_stack)) and hands every
+    /// hot workspace (see [`HostedReadStack::start`]) and hands every
     /// accepted relay connection its own `BasemindServer` over that one stack — so the heavy state
     /// (in-RAM `MapCache`, LanceDB, ONNX, git caches) is resident once per workspace, not once per
     /// client. Spawns NO background facilities: freshness is owned by the workspace's single warden
@@ -446,95 +485,6 @@ impl BasemindServer {
         self
     }
 
-    /// Build (once) the shared read stack the daemon hosts for one workspace, plus its single
-    /// "warden" — a background-running [`ServerState`] that owns freshness for the whole workspace:
-    /// the empty-index auto-scan, the live filesystem watcher, cache warming, and the git-history
-    /// sync. The warden shares the returned [`Workspace`] by `Arc`, so when its watcher
-    /// rebuilds the in-RAM map every hosted connection sees the refreshed snapshot at once. This is
-    /// the N-watchers-per-workspace → one-watcher-per-workspace consolidation: per-connection
-    /// servers ([`from_shared`](Self::from_shared)) spawn nothing.
-    ///
-    /// The warden is `read_only` and hosted (its writes go to the pool through `host`), so
-    /// its scans forward to the daemon's sole-writer pool over the existing path — no new scan/write
-    /// machinery. The store is [`open_read_only_no_index`](crate::store::Store::open_read_only_no_index)
-    /// (no fjall lock), so the shared `MapCache` still builds its in-RAM call/impl indexes exactly as
-    /// a thin serve does.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) fn build_hosted_read_stack(
-        root: &std::path::Path,
-        host: Arc<dyn HostBackend>,
-        git_history_host: Arc<dyn crate::git_history::remote::HistoryHost>,
-    ) -> anyhow::Result<HostedReadStack> {
-        use anyhow::Context as _;
-
-        let view = crate::store::VIEW_WORKING;
-        let store = crate::store::Store::open_read_only_no_index(root, view).context("open hosted read stack store")?;
-        debug_assert!(
-            store.index_db.is_none(),
-            "hosted read stack must be index-less so MapCache builds in-RAM call/impl indexes"
-        );
-        let basemind_dir = crate::store::workspace_cache_dir(root);
-        let config = Arc::new(
-            crate::config::daemon::load_daemon(root)
-                .map_err(|error| anyhow::Error::new(error).context("load hosted workspace config"))?,
-        );
-        let repo = crate::git::Repo::discover(root).ok().map(Arc::new);
-        let git_cache = Arc::new(
-            crate::git_cache::GitCache::open(&basemind_dir, HOSTED_GIT_CACHE_MEM, true)
-                .context("open hosted git cache")?,
-        );
-        let options = ServerOptions {
-            background: true,
-            watch: true,
-            read_only: true,
-            lazy_cache: false,
-        };
-        let agent_id = identity::resolve_agent_id(&store.root);
-        let history_dir = crate::git_history::shared_history_basemind_dir(root);
-        let git_history = Self::open_git_history(
-            root,
-            &history_dir,
-            repo.is_some(),
-            &agent_id,
-            &options,
-            Some(git_history_host),
-        );
-        // ~keep The pool writes the index, so an empty one still asks for an initial scan.
-        let open = crate::engine::workspace::OpenOptions {
-            forwards_writes: true,
-            ..options.into()
-        };
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &open);
-        let telemetry_dir = store.basemind_dir.clone();
-        let workspace = Arc::new(Workspace::new(
-            store,
-            root.to_path_buf(),
-            config,
-            repo,
-            git_cache,
-            git_history,
-            open,
-        ));
-        let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);
-        // ~keep The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
-        // ~keep the pool instead of looping back over the daemon's own socket.
-        shared.host = Some(host);
-        // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
-        let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
-        let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
-        history_sync::request(&warden.shared);
-        if needs_initial_scan {
-            background::spawn_initial_scan(Arc::clone(&warden));
-        } else if defer_warm {
-            background::spawn_cache_warm(Arc::clone(&warden));
-        }
-        tracing::info!(root = %root.display(), needs_initial_scan, "daemon hosting read stack for workspace");
-        Ok(HostedReadStack {
-            _watcher: watcher,
-            shared,
-        })
-    }
-
     /// The git-history handle this session gets, if any. Fjall's directory lock is exclusive — even a
     /// read-only open takes it — so `git-history.fjall/` has exactly one holder machine-wide, and the
     /// only question here is whether that holder is us or the daemon:
@@ -543,7 +493,7 @@ impl BasemindServer {
     ///   through the daemon's handle. Any other session (a CLI command on a view the daemon does not
     ///   host) gets no handle and live-walks: it cannot win the lock, and trying would burn the retry
     ///   ladder on every invocation. The CLI asks whether a daemon is up, which is one `stat` when
-    ///   there is none (see [`crate::git_history::remote::daemon_is_up`]).
+    ///   there is none (see [`crate::comms::singleton::daemon_is_up`]).
     /// * **no daemon** (a standalone process, or a non-`comms` build): this process holds the
     ///   database and builds it in-process, as before. Nobody else can, and history tools would
     ///   otherwise permanently live-walk.
@@ -556,24 +506,12 @@ impl BasemindServer {
         has_repo: bool,
         agent_id: &str,
         options: &ServerOptions,
-        // ~keep A daemon-hosted connection passes the daemon itself as the in-process history host, so
-        // ~keep its reads run through the shared handle instead of looping back over the daemon's socket.
-        #[cfg(all(feature = "comms", any(unix, windows)))] git_history_host: Option<
-            Arc<dyn crate::git_history::remote::HistoryHost>,
-        >,
     ) -> Option<Arc<crate::git_history::GitHistoryIndex>> {
         if !has_repo || !crate::git_history::index_enabled() {
             return None;
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if let Some(host) = git_history_host {
-            return Some(Arc::new(crate::git_history::remote::hosted_index(
-                root.to_path_buf(),
-                host,
-            )));
-        }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if crate::git_history::remote::daemon_is_up() {
+        if crate::comms::singleton::daemon_is_up() {
             // ~keep The daemon holds the database and fjall's lock is exclusive even to a reader
             // ~keep (fjall `locked_file.rs` `try_lock`), so a session it does not host live-walks.
             return None;
@@ -695,20 +633,6 @@ mod map_cache_tests {
         assert!(types::LifecycleNotice::for_scan_status(None).is_none());
     }
 
-    /// A read-only session whose reference projections were truncated by the outline budget reports
-    /// it through the same channel — and does NOT ask for a retry, because rerunning the query
-    /// cannot widen a budget.
-    #[test]
-    fn capped_projection_notice_reports_truncation_without_asking_for_a_retry() {
-        let notice = types::LifecycleNotice::projections_capped();
-        assert_eq!(notice.state, "projections_capped");
-        assert!(!notice.retry);
-        assert!(
-            notice.message.contains("max_map_cache_mb"),
-            "the notice must name the knob that fixes it"
-        );
-    }
-
     /// `with_delta` must re-read only the changed blobs, preserve untouched entries, and drop
     /// removed ones — the incremental refresh the serve watcher uses instead of a whole-corpus
     /// rebuild (issue #33).
@@ -733,7 +657,6 @@ mod map_cache_tests {
         let cache = MapCache::build(&store, 0);
         assert_eq!(sym_names(&cache, "a.rs"), vec!["alpha".to_string()]);
         assert_eq!(sym_names(&cache, "b.rs"), vec!["beta".to_string()]);
-        assert!(!cache.projections_capped());
 
         fs::write(root.join("a.rs"), b"pub fn alpha2() {}\npub fn alpha3() {}\n").unwrap();
         let report = crate::scanner::scan_paths(

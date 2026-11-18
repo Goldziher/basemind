@@ -12,10 +12,10 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
+use super::blocking::blocking;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use super::helpers_grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
-use super::index_route::blocking;
 use super::tool_contract::{IndexedFiles, Sweep};
 use super::types::{GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
 use crate::engine::filters::{Filters, PathFilter};
@@ -149,14 +149,11 @@ pub(super) async fn run_workspace_grep(
     // Files the per-file trigram blooms prove cannot match are never opened. They keep their slot in
     // `paths` (counted as zero), so window order, `file_idx` and every cursor are those of the full sweep.
     let skip = if bloom_prefilter_enabled() {
-        super::index_route::IndexRoute::resolve(state)
-            .await
-            .grep_skip(root, &source, &entries)
-            .await
-            .map(|mut skip| {
-                skip.resize(scanned.len(), false);
-                skip
-            })
+        let idx = state.store_read().await.read_index_view();
+        grep_skip(idx, root, &source, &entries).map(|mut skip| {
+            skip.resize(scanned.len(), false);
+            skip
+        })
     } else {
         None
     };
@@ -624,6 +621,20 @@ fn collect_hits(
         ));
     }
     out
+}
+
+/// Which of `entries` provably cannot match the grep `pattern` (`true` = skip), per the per-file
+/// trigram blooms of the index `idx`. `None` means "no prefilter available" (no index, or a
+/// pattern with no required literal): the caller then sweeps every file, which is always correct.
+pub(super) fn grep_skip(
+    idx: Option<std::sync::Arc<dyn crate::index::view::IndexView>>,
+    root: &std::path::Path,
+    pattern: &str,
+    entries: &[GrepEntry],
+) -> Option<Vec<bool>> {
+    let idx = idx?;
+    let needle = crate::index::grep_bloom::Needle::compile(pattern)?;
+    Some(blocking(|| idx.grep_skip_verdicts(root, entries, &needle)))
 }
 
 #[cfg(test)]

@@ -21,8 +21,8 @@ pub struct Case {
     /// Fields of this tool's payload that differ between two calls by design (a write timestamp,
     /// the answering process).
     pub volatile: &'static [&'static str],
-    /// The tool reads the workspace's fjall index, which the in-process writer locks for as long as
-    /// it lives. Beside it, with no daemon, the CLI cannot read that index and must refuse busy
+    /// The tool reads the workspace's fjall index (the keyword lane, memory, and `code_refs` call
+    /// sites and callers, which scan it), which the in-process writer locks for as long as it lives. Beside it, with no daemon, the CLI cannot read that index and must refuse busy
     /// (exit 3) naming the fix ([`refuses_beside_the_writer`]); the payloads are compared once the
     /// session has ended. Every other case answers beside the writer.
     pub after_session: bool,
@@ -90,13 +90,14 @@ pub fn cases() -> Vec<Case> {
             "code grep",
             &["alpha\\(\\d", "--regex", "--path", "gamma", "--context"],
         ),
-        case("code_refs", json!({"name": "alpha"}), "code refs", &["alpha"]),
+        case("code_refs", json!({"name": "alpha"}), "code refs", &["alpha"]).after_session(),
         case(
             "code_refs",
             json!({"name": "alpha", "path": "src/alpha.rs"}),
             "code callers",
             &["src/alpha.rs", "alpha"],
-        ),
+        )
+        .after_session(),
         case(
             "code_refs",
             json!({"name": "std::collections", "relation": "importers"}),
@@ -151,7 +152,8 @@ pub fn cases() -> Vec<Case> {
             json!({"name": "alpha", "path": "src/alpha.rs", "line": 5, "match": "substring"}),
             "code callers",
             &["src/alpha.rs", "alpha", "--line", "5", "--match", "substring"],
-        ),
+        )
+        .after_session(),
         case(
             "code_refs",
             json!({"name": "std::collections", "relation": "importers", "max_tokens": 50}),

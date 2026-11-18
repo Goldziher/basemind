@@ -14,18 +14,13 @@ use crate::store::{LockMeta, StoreError};
 /// Lock contention gets its own token: the index lock is held by another basemind process, most
 /// often the daemon of another protocol generation serving the same repository, and is free again
 /// once that process lets go. The detail then names the holder. A refused root is the same on
-/// every retry and carries the guidance written for it. So is an index a newer basemind wrote. A
-/// store this daemon's own scan holds is free again in moments. Anything else keeps the generic
-/// token, with the error text as the detail.
+/// every retry and carries the guidance written for it. So is an index a newer basemind wrote.
+/// Anything else keeps the generic token, with the error text as the detail.
 pub(super) fn of_build_failure(error: &anyhow::Error) -> (&'static str, Option<String>) {
     let mut contended = false;
     for cause in error.chain() {
-        match cause.downcast_ref::<WorkspacePoolError>() {
-            Some(WorkspacePoolError::RootRefused { message, .. }) => {
-                return (decline::ROOT_REFUSED, Some(message.clone()));
-            }
-            Some(WorkspacePoolError::Busy { .. }) => return (decline::WORKSPACE_BUSY, Some(chain_text(error))),
-            _ => {}
+        if let Some(WorkspacePoolError::RootRefused { message, .. }) = cause.downcast_ref::<WorkspacePoolError>() {
+            return (decline::ROOT_REFUSED, Some(message.clone()));
         }
         let newer_index = matches!(cause.downcast_ref::<StoreError>(), Some(StoreError::NewerSchema { .. }))
             || matches!(
@@ -135,19 +130,10 @@ mod tests {
         );
     }
 
-    /// A scan that holds the store is over in moments; an index a newer basemind wrote stays that
-    /// way. The relay retries the first within seconds and gives up on the second, so neither may
+    /// An index a newer basemind wrote stays that way. The relay gives up on it, so it may not
     /// travel under the generic token it retries once a minute.
     #[test]
-    fn a_busy_workspace_and_an_index_from_a_newer_basemind_have_tokens_of_their_own() {
-        let busy = anyhow::Error::new(WorkspacePoolError::Busy { root: "/repo".into() });
-        let (code, detail) = of_build_failure(&busy);
-        assert_eq!(code, decline::WORKSPACE_BUSY);
-        assert_eq!(
-            detail.as_deref(),
-            Some("workspace /repo is busy (scanning); retry shortly")
-        );
-
+    fn an_index_from_a_newer_basemind_has_a_token_of_its_own() {
         let newer_store = anyhow::Error::new(WorkspacePoolError::Store(StoreError::NewerSchema {
             stored: 9,
             current: 8,

@@ -47,7 +47,7 @@ impl Broker {
     /// Resolve a repo `root` to its daemon-hosted [`Workspace`](crate::mcp::Workspace),
     /// building it on first touch. This is the HTTP front-end's per-request seam: it mirrors exactly
     /// what [`serve_relay_connection`](Broker::serve_relay_connection) does for a UDS relay client —
-    /// same host backend (the workspace pool) and git-history host (this broker) — so an HTTP request
+    /// same workspace pool and git-history index (this broker's) — so an HTTP request
     /// and a relay connection to the same workspace share one resident read stack. The returned
     /// guard registers the request against the workspace, so the eviction sweep keeps the stack
     /// while the request runs; it is taken before the stack is handed out.
@@ -55,8 +55,6 @@ impl Broker {
         self: &Arc<Self>,
         root: &std::path::Path,
     ) -> anyhow::Result<(crate::mcp::ServedWorkspace, super::workspace_pool::ServeConnGuard)> {
-        let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
-        let git_history_host = Arc::clone(self) as Arc<dyn crate::git_history::remote::HistoryHost>;
-        self.workspaces.serve_conn(root, host, git_history_host).await
+        self.workspaces.serve_conn(root, self.hosted_history()).await
     }
 }

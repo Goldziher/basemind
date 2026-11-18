@@ -20,20 +20,16 @@ impl Drop for Syncing {
 }
 
 /// Bring the git-history index up to date with HEAD, off the calling thread, unless a sync is
-/// already running or this is the one-shot CLI. A session whose handle is daemon-backed asks the
-/// daemon (which serializes builds per repo, so N sessions cause one walk); a daemon-hosted handle
-/// syncs through the in-process seam; a session that holds the database syncs in-process.
-///
-/// Keyed off the handle the routing produced, not off `daemon_writer`: a non-`daemon_writer`
-/// session that found a live daemon also holds a forwarding handle, and asking the builder to write
-/// through it is a guaranteed [`NotLocal`](crate::git_history::GitHistoryError::NotLocal).
+/// already running or this is the one-shot CLI. A daemon-hosted session shares the daemon's handle,
+/// whose build lock serializes syncs, so N sessions cause one walk, and pins the daemon for the
+/// sync's length ([`Workspace::work_pin`]).
 ///
 /// The one-shot CLI never syncs: it exits in milliseconds, and a first build on a deep repo is a
 /// minutes-long walk.
 pub(super) fn request(shared: &Workspace) {
-    let Some(index) = shared.git_history.as_deref() else {
+    if shared.git_history.is_none() {
         return;
-    };
+    }
     if !shared.history_catch_up {
         return;
     }
@@ -48,32 +44,14 @@ pub(super) fn request(shared: &Workspace) {
         return;
     }
     let syncing = Syncing(Arc::clone(&shared.history_syncing));
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if let Some(host) = crate::git_history::remote::history_host(index) {
-        let root = shared.root.clone();
-        runtime.spawn(async move {
-            let _syncing = syncing;
-            match host
-                .run_history(root, crate::git_history::proto::GitHistoryOp::Sync)
-                .await
-            {
-                Ok(reply) => tracing::info!(?reply, "git-history index synced in-process (hosted)"),
-                Err(error) => tracing::warn!(%error, "git-history in-process sync failed; history tools live-walk"),
-            }
-        });
-        return;
-    }
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    if index.forwarder().is_some_and(|forwarder| forwarder.hosts_in_process()) {
-        return;
-    }
-    let _ = index;
     let (Some(git_history), Some(repo)) = (shared.git_history.clone(), shared.repo.clone()) else {
         return;
     };
     let history_dir = crate::git_history::shared_history_basemind_dir(&shared.root);
+    let pin = shared.work_pin.as_ref().map(|pin| pin());
     runtime.spawn_blocking(move || {
         let _syncing = syncing;
+        let _pin = pin;
         match crate::git_history::builder::sync(&git_history, &repo, &history_dir) {
             Ok(outcome) => tracing::info!(?outcome, "git-history index sync complete"),
             Err(error) => tracing::warn!(%error, "git-history index sync failed; tools live-walk"),

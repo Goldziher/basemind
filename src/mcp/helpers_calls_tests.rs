@@ -1,6 +1,5 @@
 //! The reference and caller bodies against a scanned fixture, and how a resolved page merges.
 
-use super::super::helpers_calls_scan::scan_calls_in_ram;
 use crate::config::ConfigV1;
 use crate::scanner::{ScanSource, scan};
 use crate::store::{Store, VIEW_WORKING};
@@ -19,11 +18,9 @@ fn decode(result: &rmcp::model::CallToolResult) -> serde_json::Value {
     serde_json::from_str(&text).expect("tool response is JSON")
 }
 
-/// The route a writer session takes: its own open fjall index.
-fn local_route(store: &Store) -> super::IndexRoute {
-    super::IndexRoute::Local(Box::new(crate::index::view::StandaloneView(
-        store.index_db.clone().expect("a writer store opens the fjall index"),
-    )))
+/// The index a writer session reads: its own open fjall index.
+fn local_index(store: &Store) -> crate::index::view::StandaloneView<crate::index::IndexDb> {
+    crate::index::view::StandaloneView(store.index_db.clone().expect("a writer store opens the fjall index"))
 }
 
 /// Scan `root` and return the store plus its map cache.
@@ -89,7 +86,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
     let references = decode(
         &runtime
             .block_on(super::run_find_references(
-                &local_route(&store),
+                &local_index(&store),
                 FindReferencesParams {
                     substring: false,
                     name: "target".to_string(),
@@ -98,7 +95,6 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                     format: None,
                     cursor: None,
                 },
-                &cache,
                 || None,
                 |_| {},
             ))
@@ -114,8 +110,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
         &runtime
             .block_on(super::run_find_callers(
                 &store,
-                super::RefsSource::Local(&store),
-                &local_route(&store),
+                &local_index(&store),
                 crate::mcp::tool_contract::IndexedFiles::contained(root),
                 &cache,
                 FindCallersParams {
@@ -202,8 +197,7 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
             .expect("runtime")
             .block_on(super::run_find_callers(
                 &store,
-                super::RefsSource::Local(&store),
-                &local_route(&store),
+                &local_index(&store),
                 crate::mcp::tool_contract::IndexedFiles::contained(root),
                 &cache,
                 FindCallersParams {
@@ -249,36 +243,6 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
             .flat_map(|hits| hits.as_array().into_iter().flatten())
             .all(|h| h.get("resolved").is_some()),
         "every hit is annotated so the agent can tell proven from unproven: {body}"
-    );
-}
-
-/// The in-RAM index (built from blobs, used by read-only sessions) must return
-/// the same references the Fjall path would — this is what keeps `find_references`
-/// working for the 2nd+ concurrent session that can't open the Fjall lock.
-#[test]
-fn in_ram_call_index_resolves_references() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
-    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
-    std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); alpha(); }\n").expect("b.rs");
-    let mut store = Store::open(root, VIEW_WORKING).expect("open");
-    scan(
-        root,
-        &mut store,
-        &ConfigV1::with_defaults(),
-        ScanSource::WorkingTree,
-        crate::scanner::EmbedMode::Inline,
-    )
-    .expect("scan");
-
-    let cache = crate::mcp::MapCache::build(&store, 0);
-    let page = scan_calls_in_ram(cache.calls_projection(), "alpha", super::Matching::Substring, 100, None);
-    assert_eq!(page.total, 2, "two alpha() call sites in b.rs");
-    assert_eq!(page.hits.len(), 2);
-    assert!(page.hits.iter().all(|h| h.callee == "alpha"));
-    assert!(
-        page.hits.iter().all(|h| h.path.as_str() == Some("b.rs")),
-        "both references live in b.rs"
     );
 }
 
@@ -334,8 +298,7 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
             .expect("runtime")
             .block_on(super::run_find_callers(
                 &store,
-                super::RefsSource::Local(&store),
-                &local_route(&store),
+                &local_index(&store),
                 crate::mcp::tool_contract::IndexedFiles::contained(root),
                 &cache,
                 FindCallersParams {
@@ -415,13 +378,7 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
         shared_line: false,
         stale: false,
     };
-    let scan = scan_calls_in_ram(
-        &super::super::helpers_calls_scan::InRamCallIndex::empty(),
-        "f",
-        super::Matching::Exact,
-        10,
-        None,
-    );
+    let scan = super::CallScanPage::finish(0, false, Vec::new(), Vec::new(), Vec::new(), false, None);
     let page = super::CallScanPage {
         total_is_partial: true,
         next_cursor: Some(super::Cursor::encode_fjall(&[5])),
@@ -473,8 +430,7 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
             &runtime
                 .block_on(super::run_find_callers(
                     &store,
-                    super::RefsSource::Local(&store),
-                    &local_route(&store),
+                    &local_index(&store),
                     crate::mcp::tool_contract::IndexedFiles::contained(root),
                     cache,
                     FindCallersParams {
@@ -517,14 +473,14 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
     std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
     std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); }\n").expect("b.rs");
     std::fs::write(root.join("c.rs"), b"fn gamma() { alpha(); }\n").expect("c.rs");
-    let (mut store, cache) = scan_fixture(root);
+    let (mut store, _) = scan_fixture(root);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("runtime");
     let page = |store: &Store, cursor: Option<super::Cursor>| {
         runtime.block_on(super::run_find_references(
-            &local_route(store),
+            &local_index(store),
             FindReferencesParams {
                 substring: false,
                 name: "alpha".to_string(),
@@ -533,7 +489,6 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
                 format: None,
                 cursor,
             },
-            &cache,
             || None,
             |_| {},
         ))
@@ -557,4 +512,86 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
 
     let refused = page(&store, Some(cursor)).expect_err("a cursor cut before the edit");
     assert!(refused.message.contains("changed since this cursor"), "{refused:?}");
+}
+
+/// A session that holds no index (another process holds the lock, no daemon serves this one: a CLI
+/// command beside a writer `serve`) refuses every `code_refs` relation that scans it, naming the fix
+/// and marked busy so the CLI exits `3`, instead of answering from a partial in-RAM projection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_without_an_index_is_refused_with_the_fix() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
+    std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); }\n").expect("b.rs");
+    drop(scan_fixture(root));
+    let store = Store::open_read_only_no_index(root, VIEW_WORKING).expect("index-less store");
+    let telemetry_dir = store.basemind_dir.clone();
+    let shared = crate::mcp::Workspace::new(
+        store,
+        root.to_path_buf(),
+        Arc::new(ConfigV1::with_defaults()),
+        None,
+        Arc::new(crate::git_cache::GitCache::open(root, 1, false).expect("git cache")),
+        None,
+        crate::mcp::ServerOptions {
+            read_only: true,
+            ..crate::mcp::ServerOptions::default()
+        }
+        .into(),
+    );
+    let state = crate::mcp::ServerState::for_connection(
+        crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
+        "test".into(),
+    );
+    let refs = |relation: Option<&str>, path: Option<&str>| crate::mcp::params::CodeRefsParams {
+        name: "alpha".to_string(),
+        relation: relation.map(str::to_string),
+        path: path.map(crate::path::RelPath::from),
+        line: None,
+        column: None,
+        match_mode: None,
+        limit: None,
+        cursor: None,
+        max_tokens: None,
+    };
+    for params in [
+        refs(None, None),
+        refs(None, Some("a.rs")),
+        refs(Some("implementations"), None),
+    ] {
+        let refused = crate::mcp::helpers_code::code_refs(&state, params)
+            .await
+            .expect_err("a session with no index cannot scan references");
+        assert_eq!(refused.code, rmcp::model::ErrorCode::INVALID_REQUEST, "{refused:?}");
+        assert!(refused.message.contains("holds this workspace's index"), "{refused:?}");
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        assert!(refused.message.contains("`basemind comms start`"), "{refused:?}");
+        let exit = crate::cli::run_tool("code_refs", Err(refused)).expect_err("refused");
+        assert_eq!(crate::cli::exit::exit_code_for(&exit), crate::cli::exit::BUSY);
+    }
+}
+
+/// A daemon-hosted store whose index the daemon took back (a poisoned handle being reopened, or an
+/// evicted workspace) is told so, not that no daemon serves it.
+#[test]
+fn a_hosted_store_without_its_index_is_told_the_daemon_released_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
+    drop(scan_fixture(root));
+    let mut store = Store::open_read_only_no_index(root, VIEW_WORKING).expect("index-less store");
+    store.index_source = Some(std::sync::Arc::new(|| None));
+
+    let Err(refused) = super::index_for_refs(&store) else {
+        panic!("no index to lend");
+    };
+    assert!(refused.message.contains("the daemon released"), "{refused:?}");
+    assert!(!refused.message.contains("no daemon serves it"), "{refused:?}");
+    assert_eq!(
+        refused.data.as_ref().and_then(|data| data.get(crate::mcp::BUSY_DATA)),
+        Some(&serde_json::Value::Bool(true)),
+        "busy, so the CLI exits 3"
+    );
 }

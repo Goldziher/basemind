@@ -7,69 +7,47 @@
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
-use super::MapCache;
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
-use super::helpers_calls_scan::{CallRef, CallScanPage, budget_call_page, mark_shared_lines};
+use super::helpers_calls_scan::{
+    CallRef, CallScanPage, budget_call_page, calls_in_files, content_keys, mark_shared_lines, scan_calls,
+};
 use super::helpers_refs_match::Matching;
-use super::index_route::IndexRoute;
 use super::types::ReferenceHit;
-use crate::path::RelPath;
+use crate::index::view::IndexView;
 
-/// How `find_callers` fetches the cross-file resolved uses of a definition. The precise
-/// (`resolved: true`) path needs the fjall `refs_by_def` reverse index; under Seam B a
-/// `daemon_writer` serve has no open index, so it forwards the lookup to the machine daemon (the
-/// sole fjall writer, which holds it). Every other serve resolves locally from its open index — or,
-/// read-only without a daemon, the intra-file `.rref` blobs.
-pub(super) enum RefsSource<'a> {
-    /// Resolve against this serve's own store: the open fjall index, else intra-file `.rref` blobs.
-    Local(&'a crate::store::Store),
-    /// Resolve IN-PROCESS through the daemon's own workspace pool — the daemon-HOSTED path. The pool
-    /// holds the workspace's read-write fjall index (the sole writer), so this serves the cross-file
-    /// `refs_by_def` edges the hosted stack's index-less store cannot see, WITHOUT the daemon dialing
-    /// itself over the socket (which the `Daemon` arm would do).
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    Host {
-        /// The daemon's workspace pool, as the in-process host seam.
-        host: std::sync::Arc<dyn crate::mcp::HostBackend>,
-        /// Canonical workspace root, selecting the pool's hot workspace.
-        root: std::path::PathBuf,
-    },
-}
-
-impl RefsSource<'_> {
-    /// The resolved uses of the definition at `(def_path, def_start)`. On the daemon path a forward
-    /// failure degrades to empty — `find_callers` then falls back to the name-based scan, exactly as
-    /// a resolution miss does — so a transient daemon hiccup never errors the tool.
-    async fn references_to(&self, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
-        match self {
-            RefsSource::Local(store) => crate::query::resolved_references(store, def_path, def_start),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            RefsSource::Host { host, root } => {
-                use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
-                let host = std::sync::Arc::clone(host);
-                let root = root.clone();
-                let query = ResolvedRefQuery::ReferencesTo {
-                    def_path: def_path.clone(),
-                    def_start,
-                };
-                // ~keep The fjall prefix scan is blocking, so it runs off the reactor; a host error degrades
-                // ~keep to empty exactly like the `Daemon` arm, so `find_callers` still floors on the name scan.
-                match tokio::task::spawn_blocking(move || host.host_resolved_refs(&root, query)).await {
-                    Ok(Ok(ResolvedRefResult::References(uses))) => uses,
-                    Ok(Ok(_)) => Vec::new(),
-                    Ok(Err(error)) => {
-                        tracing::debug!(%error, "find_callers: host resolved-refs failed; name-based fallback");
-                        Vec::new()
-                    }
-                    Err(join) => {
-                        tracing::debug!(%join, "find_callers: host resolved-refs task panicked; name-based fallback");
-                        Vec::new()
-                    }
-                }
-            }
-        }
+/// The index `store` reads, for a `code_refs` relation that scans it (call sites, callers,
+/// implementations); otherwise the refusal naming the fix. A session holds no index when another
+/// process holds it and no daemon serves this one (a CLI command or a second `serve` beside a
+/// writer), or when the index must be rebuilt. The first is marked busy, so the CLI exits `3`. A
+/// daemon-hosted session finds none while the daemon reopens a poisoned handle or after it evicted
+/// the workspace; that too is busy, and a rescan opens the workspace again.
+pub(super) fn index_for_refs(store: &crate::store::Store) -> Result<std::sync::Arc<dyn IndexView>, McpError> {
+    if let Some(idx) = store.read_index_view() {
+        return Ok(idx);
     }
+    if store.index_source.is_some() {
+        return Err(McpError::invalid_request(
+            "`code_refs`: the daemon released this workspace's index (it is reopening it, or evicted the \
+             workspace): retry, or run `index_rescan` to open it again",
+            Some(serde_json::json!({ super::BUSY_DATA: true })),
+        ));
+    }
+    if store.rescan_owed() {
+        return Err(McpError::invalid_request(
+            "`code_refs`: the index of this workspace must be rebuilt: run `basemind scan` (MCP: `index_rescan`)",
+            None,
+        ));
+    }
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    let fix = "start the daemon (`basemind comms start`), which then serves the index to every session, or stop \
+               the process that holds the lock, then retry";
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
+    let fix = "stop the process that holds the lock, then retry";
+    Err(McpError::invalid_request(
+        format!("`code_refs`: another basemind process holds this workspace's index and no daemon serves it: {fix}"),
+        Some(serde_json::json!({ super::BUSY_DATA: true })),
+    ))
 }
 
 /// Point-lookup a `Call` value in the index by `(content, start_byte)` and return its
@@ -92,12 +70,10 @@ pub(super) fn resolve_call_line_col(
     (call.start_row + 1, call.start_col)
 }
 
-/// Body of the `code` tool's `references` mode. `route` decides where the `calls_by_callee` scan
-/// runs; the caller releases the store lock before awaiting it.
+/// Body of the `code` tool's `references` mode: the `calls_by_callee` scan over `idx`.
 pub(super) async fn run_find_references(
-    route: &IndexRoute,
+    idx: &dyn IndexView,
     params: super::types::FindReferencesParams,
-    cache: &super::MapCache,
     notice: impl FnOnce() -> Option<super::types::LifecycleNotice>,
     flag_stale: impl FnOnce(&mut [ReferenceHit]),
 ) -> Result<CallToolResult, McpError> {
@@ -106,11 +82,9 @@ pub(super) async fn run_find_references(
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
-    let (mut scan, generation) = route
-        .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
-        .await?;
+    let (mut scan, generation) = scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref())?;
     refuse_stale(stamped, generation)?;
-    mark_shared_lines(route, cache, &mut scan.hits, &scan.hit_keys).await;
+    mark_shared_lines(idx, &mut scan.hits, &scan.hit_keys);
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let mut budgeted = budget_call_page(scan, &params.name, params.max_tokens);
@@ -154,13 +128,10 @@ pub(super) async fn run_find_references(
 /// instead of being silently handed a subset.
 ///
 /// Holds the store read guard for the call (like `goto_definition`): the resolution layer reads the
-/// concurrently-readable `.rref` blobs plus, when open, the Fjall index; the scan reads
-/// `store.index_db` or the in-RAM call cache for a read-only multi-session serve.
-#[allow(clippy::too_many_arguments)]
+/// concurrently-readable `.rref` blobs plus the Fjall index `idx`, which the scan reads too.
 pub(super) async fn run_find_callers(
     store: &crate::store::Store,
-    refs: RefsSource<'_>,
-    route: &IndexRoute,
+    idx: &dyn IndexView,
     files: super::tool_contract::IndexedFiles<'_>,
     cache: &super::MapCache,
     params: super::types::FindCallersParams,
@@ -182,7 +153,7 @@ pub(super) async fn run_find_callers(
         }
     })?;
     // The outline's spans and the resolution facts below are offsets into the indexed bytes.
-    let source = super::index_route::blocking(|| {
+    let source = super::blocking::blocking(|| {
         super::freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), files.max_file_bytes)
     })?;
     let symbol = crate::engine::pick::pick_symbol(
@@ -206,9 +177,7 @@ pub(super) async fn run_find_callers(
 
     let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
-    let (scan, generation) = route
-        .scan_calls(cache, &params.name, matching, limit, cursor_bytes.as_deref())
-        .await?;
+    let (scan, generation) = scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref())?;
     refuse_stale(stamped, generation)?;
 
     // Resolution facts are a per-file blob the scan writes only for a file that produced some. No
@@ -216,18 +185,7 @@ pub(super) async fn run_find_callers(
     // not finish, or this file bound nothing; `resolution` says which (`helpers_intel::resolution_gap`).
     let resolution_ran = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten().is_some();
     let resolved = if resolution_ran {
-        resolved_callers(
-            store,
-            &refs,
-            route,
-            cache,
-            &params.path,
-            &source,
-            symbol,
-            &params.name,
-            limit,
-        )
-        .await
+        resolved_callers(store, idx, &params.path, &source, symbol, &params.name, limit)
     } else {
         None
     };
@@ -244,7 +202,7 @@ pub(super) async fn run_find_callers(
     };
 
     let mut page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());
-    mark_shared_lines(route, cache, &mut page.hits, &page.hit_keys).await;
+    mark_shared_lines(idx, &mut page.hits, &page.hit_keys);
     let total = page.total;
     let total_is_partial = page.total_is_partial;
     let budgeted = budget_call_page(page, &params.name, params.max_tokens);
@@ -269,7 +227,7 @@ const GENERATION_LEN: usize = 8;
 type Stamped = ([u8; GENERATION_LEN], Vec<u8>);
 
 /// The cursor of a name scan, prefixed with the generation of the key order it was cut in
-/// ([`IndexRoute::scan_calls`]). Hits are in content-key order, and an edit moves the edited file's
+/// ([`scan_calls`]). Hits are in content-key order, and an edit moves the edited file's
 /// hits, so a cursor continues only the view it was cut from.
 fn stamp(cursor: Option<Cursor>, generation: u64) -> Option<Cursor> {
     let key = cursor?.decode_fjall().ok()?;
@@ -359,8 +317,8 @@ const CALL_SITE_BATCH: usize = 128;
 /// are `def_source`. `None` when resolution has nothing to say about that definition (its facts do
 /// not name it, or the call sites could not be fetched): no hit is then marked either way. A
 /// definition resolution knows and found no use of yields an empty refinement, which marks every
-/// hit unproven. Cross-file uses come from the index via [`RefsSource`]: read locally when it is
-/// open, else forwarded to the machine daemon on a `daemon_writer` serve.
+/// hit unproven. Cross-file uses come from the index when it is open, else the intra-file `.rref`
+/// blobs.
 ///
 /// Offset alignment (verified empirically, see the unit test): the resolver records `def_start` as
 /// the definition *identifier* byte, which is NOT the L1 `Symbol.start_byte` (the definition *node*
@@ -373,12 +331,9 @@ const CALL_SITE_BATCH: usize = 128;
 /// cap the refinement simply stops proving things — hits stay unannotated and the floor stays
 /// complete. Degrading toward "unproven" is always safe; degrading toward "no callers" is what this
 /// function exists to prevent.
-#[allow(clippy::too_many_arguments)]
-async fn resolved_callers(
+fn resolved_callers(
     store: &crate::store::Store,
-    ref_source: &RefsSource<'_>,
-    route: &IndexRoute,
-    cache: &MapCache,
+    idx: &dyn IndexView,
     def_path: &crate::path::RelPath,
     def_source: &[u8],
     symbol: &crate::extract::Symbol,
@@ -411,7 +366,7 @@ async fn resolved_callers(
     let mut seen: ahash::AHashSet<(crate::path::RelPath, u32)> = ahash::AHashSet::new();
     let mut uses: Vec<(crate::path::RelPath, u32)> = Vec::new();
     for def_start in def_starts {
-        for use_ref in ref_source.references_to(def_path, def_start).await {
+        for use_ref in crate::query::resolved_references(store, def_path, def_start) {
             if seen.insert(use_ref.clone()) {
                 uses.push(use_ref);
             }
@@ -443,14 +398,14 @@ async fn resolved_callers(
     runs.truncate(probe_cap);
     let paths: Vec<crate::path::RelPath> = runs.iter().map(|(path, _)| (*path).clone()).collect();
     // One snapshot for every file, so the keys agree with each other and with the calls read. ~keep
-    let keys = route.content_keys(cache, &paths);
+    let keys = content_keys(idx, &paths);
     for (batch, batch_keys) in runs.chunks(CALL_SITE_BATCH).zip(keys.chunks(CALL_SITE_BATCH)) {
         let files: Vec<(crate::path::RelPath, Option<crate::index::keys::ContentKey>)> = batch
             .iter()
             .map(|(path, _)| (*path).clone())
             .zip(batch_keys.iter().copied())
             .collect();
-        let per_file = route.calls_in_files(cache, &files).await.ok()?;
+        let per_file = calls_in_files(idx, &files).ok()?;
         // A file read under no key has no calls, so every proven site below has its key. ~keep
         for ((use_path, run), (content, calls)) in
             batch.iter().zip(per_file).filter_map(|(run, read)| Some((run, read?)))

@@ -72,11 +72,8 @@ The daemon is the only process that opens the index. A session answers from:
   call-site and implementation lookups (a few MB at monorepo scale), so a substring query range-scans
   only the matching names instead of walking every call site.
 
-`code_refs` scans from a daemon-backed session are forwarded to the
-daemon, which runs the same scan as a writer session. The session holds no copy of the call index and the
-results and totals are complete. Only when no daemon is reachable does a session build an in-RAM
-projection, charged against `max_map_cache_mb` and flagged with a `projections_capped` notice if it
-is truncated.
+`code_refs` scans in a session the daemon serves read the daemon's index, as a writer session does.
+No session holds a copy of the call index: one that holds no index refuses those scans as busy.
 
 The daemon keeps at most three workspaces' read stacks warm at once (`BASEMIND_WARM_READ_STACKS`,
 default 3) and drops an idle one after about ten minutes. Dropping a stack changes latency, not

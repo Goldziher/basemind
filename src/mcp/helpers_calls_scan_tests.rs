@@ -7,10 +7,9 @@ use crate::extract::{Call, FileMapL1, FileMapL2, Implementation};
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
-use super::{CallScanPage, scan_calls_by_name, scan_calls_examining, scan_calls_in_ram_examining};
+use super::{scan_calls_by_name, scan_calls_examining};
 use crate::mcp::helpers_impls::{scan_impls_examining, scan_impls_fjall};
 use crate::mcp::helpers_refs_match::Matching;
-use crate::mcp::types::ReferenceHit;
 
 /// Deterministic xorshift, so a failure reproduces.
 struct Rng(u64);
@@ -557,49 +556,6 @@ fn an_exact_impl_scan_stops_at_the_examined_keys_cap_and_resumes() {
     assert!(!page.total_is_partial);
 }
 
-/// The in-RAM projection a read-only session scans has the same bound and the same cursor.
-#[test]
-fn the_in_ram_call_scan_has_the_same_examined_keys_cap() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let mut source = String::from("fn caller() {\n");
-    source.push_str(&"    zapx();\n".repeat(300));
-    source.push_str("    ns::zap();\n    ns::zap();\n}\n");
-    std::fs::write(root.join("a.rs"), source).unwrap();
-    let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).unwrap();
-    crate::scanner::scan(
-        root,
-        &mut store,
-        &crate::config::ConfigV1::with_defaults(),
-        crate::scanner::ScanSource::WorkingTree,
-        crate::scanner::EmbedMode::Inline,
-    )
-    .unwrap();
-    let cache = crate::mcp::MapCache::build(&store, 0);
-    let scan = |cursor: Option<&[u8]>| {
-        scan_calls_in_ram_examining(cache.calls_projection(), "zap", Matching::Exact, 10, cursor, 100)
-    };
-
-    let mut page = scan(None);
-    assert!(page.total_is_partial && page.stopped_after.is_some());
-    let mut callees: Vec<String> = page.hits.iter().map(|hit| hit.callee.clone()).collect();
-    let mut pages = 1;
-    while let Some(cursor) = page.next_cursor.take() {
-        let after = cursor.decode_fjall().unwrap();
-        page = scan(Some(&after));
-        callees.extend(page.hits.iter().map(|hit| hit.callee.clone()));
-        pages += 1;
-        assert!(pages <= 10, "paging must terminate");
-    }
-    assert_eq!(callees.len(), 2, "both exact calls, once each: {callees:?}");
-    assert!(callees.iter().all(|callee| callee.ends_with("zap")), "{callees:?}");
-    assert_eq!(pages, 302usize.div_ceil(100));
-    assert!(!page.total_is_partial);
-
-    let zero = scan_calls_in_ram_examining(cache.calls_projection(), "zap", Matching::Exact, 10, None, 0);
-    assert!(zero.total_is_partial && zero.stopped_after.is_some());
-}
-
 /// A cap of zero would examine nothing and so have no key to resume from; it examines one.
 #[test]
 fn an_examined_keys_cap_of_zero_still_yields_a_resumable_page() {
@@ -628,71 +584,6 @@ fn an_examined_keys_cap_of_zero_still_yields_a_resumable_page() {
     )
     .unwrap();
     assert!(impls.total_is_partial && impls.stopped_after.is_some());
-}
-
-fn hit(callee: &str) -> ReferenceHit {
-    ReferenceHit {
-        path: path(0),
-        line: 1,
-        column: 0,
-        callee: callee.to_string(),
-        resolved: None,
-        shared_line: false,
-        stale: false,
-    }
-}
-
-/// A daemon that predates `exact` answers with substring hits. Dropping this page's share of them
-/// leaves a total that still counts the ones on later pages, an upper bound; no scan cap was hit, so
-/// the page must not report one.
-#[test]
-fn dropping_hits_from_a_forwarded_page_does_not_report_a_scan_cap() {
-    let page = || {
-        CallScanPage::finish(
-            40,
-            false,
-            vec![hit("zap"), hit("zapx"), hit("ns::zap")],
-            vec![vec![1], vec![2], vec![3]],
-            vec![10, 20, 30],
-            true,
-            None,
-        )
-    };
-    let mut filtered = page();
-    filtered.retain(|hit| Matching::Exact.accepts_callee(&hit.callee, "zap"));
-    assert_eq!(filtered.hits.len(), 2);
-    assert_eq!(filtered.hit_keys, [vec![1], vec![3]]);
-    assert_eq!(filtered.hit_starts, [10, 30]);
-    assert_eq!(
-        filtered.total, 39,
-        "an upper bound: later pages hold more substring hits"
-    );
-    assert!(!filtered.total_is_partial, "no scan cap was hit");
-
-    let mut untouched = page();
-    untouched.retain(|_| true);
-    assert_eq!(untouched.total, 40);
-    assert!(!untouched.total_is_partial, "nothing dropped, nothing to qualify");
-
-    let implementation = |trait_name: &str| crate::mcp::types_impls::ImplementationHit {
-        path: path(0),
-        trait_name: trait_name.to_string(),
-        impl_type: "Ty".to_string(),
-        start_row: 1,
-        start_col: 0,
-    };
-    let mut impls = crate::mcp::helpers_impls::ImplScanPage {
-        total: 9,
-        total_is_partial: false,
-        hits: vec![implementation("IteratorExt"), implementation("Iterator")],
-        hit_keys: vec![vec![1], vec![2]],
-        has_more: true,
-        stopped_after: None,
-    };
-    impls.retain(|hit| Matching::Exact.accepts_trait(&hit.trait_name, "Iterator"));
-    assert_eq!(impls.hit_keys, [vec![2]]);
-    assert_eq!(impls.total, 8);
-    assert!(!impls.total_is_partial, "no scan cap was hit");
 }
 
 /// Rows of a content no live path holds (an edited file's earlier content, until the group sweep

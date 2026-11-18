@@ -2,13 +2,10 @@
 //! walking history live. Every method returns the same [`CommitInfo`] shape the live walk produced,
 //! so a tool only swaps its data source; response structs and pagination are unchanged.
 //!
-//! Each public method is a dispatcher: a locally-held index answers from its fjall posting lists; a
-//! daemon-backed one forwards the identical query (one coarse round trip, a whole page) to the
-//! process that holds the database. See [`super::remote`].
+//! Each public method answers from the fjall posting lists of the database this process holds.
 
 use ahash::AHashMap;
 
-use super::proto::GitHistoryOp;
 use super::{CommitMeta, GitHistoryIndex, LocalDb, encoding, keys};
 use crate::git::CommitInfo;
 use crate::path::RelPath;
@@ -20,46 +17,18 @@ impl GitHistoryIndex {
     /// Commits that touched `rel`, newest-first, after skipping `skip` and taking at most `take`.
     /// Files are omitted (parity with the live `commits_touching`, which passes `include_files=false`).
     pub fn commits_touching(&self, rel: &RelPath, skip: usize, take: usize) -> Vec<CommitInfo> {
-        match self.local() {
-            Some(db) => db.commits_touching(rel, skip, take),
-            None => self.forward(GitHistoryOp::CommitsTouching {
-                path: rel.clone(),
-                skip,
-                take,
-            }),
-        }
+        self.local().commits_touching(rel, skip, take)
     }
 
     /// Newest-first global commit log (the source for `recent_changes`).
     pub fn recent_commits(&self, skip: usize, take: usize, include_files: bool) -> Vec<CommitInfo> {
-        match self.local() {
-            Some(db) => db.recent_commits(skip, take, include_files),
-            None => self.forward(GitHistoryOp::RecentCommits {
-                skip,
-                take,
-                include_files,
-            }),
-        }
+        self.local().recent_commits(skip, take, include_files)
     }
 
     /// The newest `window` commits, with files resolved — the input for `find_commits_by_path`
     /// (regex over paths) and `hot_files` (churn aggregation).
     pub fn window_commits(&self, window: usize) -> Vec<CommitInfo> {
-        match self.local() {
-            Some(db) => db.window_commits(window),
-            None => self.forward(GitHistoryOp::WindowCommits { window }),
-        }
-    }
-
-    /// Send one commit-returning op to the daemon that holds this repo's index. A handle with no
-    /// local database and no reachable daemon yields an empty page — but the caller's freshness
-    /// check (`last_indexed_head_hex`, itself a forwarded call) fails closed first, so a tool
-    /// live-walks rather than ever seeing this.
-    pub(crate) fn forward(&self, op: GitHistoryOp) -> Vec<CommitInfo> {
-        match &self.backend {
-            super::Backend::Remote(remote) => remote.commits(op),
-            super::Backend::Local(_) => Vec::new(),
-        }
+        self.local().window_commits(window)
     }
 }
 

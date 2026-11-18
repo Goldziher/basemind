@@ -67,3 +67,13 @@ impl Drop for WorkGuard<'_> {
         self.broker.end_work();
     }
 }
+
+/// A [`WorkGuard`] that owns its broker, for work a hosted workspace starts on a detached thread
+/// (its git-history sync), which no borrow of the broker can outlive.
+pub(crate) struct OwnedWorkGuard(pub(super) std::sync::Arc<Broker>);
+
+impl Drop for OwnedWorkGuard {
+    fn drop(&mut self) {
+        self.0.end_work();
+    }
+}

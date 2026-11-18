@@ -7,7 +7,7 @@ use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use serde_json::json;
 
-use super::{UnusedHistoryHost, WorkspacePool, workspace_with_sources};
+use super::{WorkspacePool, no_history, workspace_with_sources};
 use crate::comms::agents_hub::AgentHub;
 use crate::comms::v2::api::{Actor, Caller, PostBody, PostTarget, Principal, RepoKey};
 
@@ -28,10 +28,8 @@ fn more_waiting_reads_than_blocking_threads_still_let_a_post_through() {
         crate::store::init_isolated_cache();
         let pool = Arc::new(WorkspacePool::new(super::DEFAULT_HOT_CAP));
         let workspace = workspace_with_sources();
-        let host: Arc<dyn crate::mcp::HostBackend> = pool.clone();
-        let history: Arc<dyn crate::git_history::remote::HistoryHost> = Arc::new(UnusedHistoryHost);
         let shared = pool
-            .get_or_build_serve_state(workspace.path(), host, history)
+            .get_or_build_serve_state(workspace.path(), no_history())
             .await
             .expect("build hosted read stack");
         let store_dir = tempfile::tempdir().expect("store dir");

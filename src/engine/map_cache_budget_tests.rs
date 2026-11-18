@@ -141,36 +141,3 @@ fn zero_budget_keeps_every_outline_resident() {
         "with no budget a second whole-corpus pass reads no blob at all"
     );
 }
-
-/// A session with no Fjall index (the normal `daemon_writer` front-end topology) answers reference
-/// and implementation queries from in-RAM projections of the blobs. Those projections are O(corpus),
-/// so they are charged against the same budget — and when the budget truncates them the cache says
-/// so, rather than letting a partial answer read as "no matches".
-#[test]
-fn read_only_projections_are_capped_and_report_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    drop(scan_oversized_corpus(tmp.path()));
-
-    let store = Store::open_read_only_no_index(tmp.path(), VIEW_WORKING).expect("read-only store");
-    assert!(store.index_db.is_none(), "the read-only opener must not open an index");
-
-    let tight = MapCache::build(&store, 2048);
-    assert!(
-        !tight.projections_capped(),
-        "projections are lazy: nothing is built, so nothing is capped, until a fallback scan asks"
-    );
-    tight.calls_projection();
-    tight.impls_projection();
-    assert!(
-        tight.projections_capped(),
-        "a 4 KiB budget cannot hold the projections for this corpus"
-    );
-
-    let roomy = MapCache::build(&store, 0);
-    roomy.calls_projection();
-    roomy.impls_projection();
-    assert!(
-        !roomy.projections_capped(),
-        "an unbounded budget must never report truncation"
-    );
-}

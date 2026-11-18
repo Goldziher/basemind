@@ -32,14 +32,19 @@ pub enum RebuildOutcome {
 /// Bring the index up to date with `repo`'s current HEAD, running the revalidation decision tree.
 /// Best-effort callers ignore the error; the index simply stays stale and tools fall back to the
 /// live walk until the next successful sync.
-/// Only the process that HOLDS the fjall database may build it. A daemon-backed handle (a
-/// `daemon_writer` serve) has no database to write, and building one would steal the lock the daemon
-/// needs; such a caller forwards [`GitHistoryOp::Sync`](super::proto::GitHistoryOp::Sync) instead.
+/// Only the process that HOLDS the fjall database may build it. Syncs of one database serialize on
+/// its build lock, which every clone of the handle shares: callers that queue behind a sync find the
+/// index fresh and return at once.
 ///
 /// And only a repository the caller actually rooted at is built: `repo` reaching here from a
 /// workspace root *below* its workdir means an ancestor repository was inherited, which
 /// [`history_scope_ok`](super::history_scope_ok) refuses.
 pub fn sync(index: &GitHistoryIndex, repo: &Repo, _basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+    let _building = index
+        .local()
+        .build_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Run on a small dedicated pool, not rayon's global one: a first build walks hundreds of thousands
     // of commits in parallel, and on the global pool it starves every other par_iter in the process
     // (a read-stack warm that takes 12 s took 469 s while a 248k-commit build was running).
@@ -69,7 +74,6 @@ fn history_pool() -> Option<&'static rayon::ThreadPool> {
 }
 
 fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, GitHistoryError> {
-    index.require_local()?;
     if !super::history_scope_ok(repo) {
         return Err(GitHistoryError::ForeignHistory {
             root: repo.origin().to_path_buf(),
@@ -600,7 +604,7 @@ mod tests {
 
         sync(&index, &repo, cache.path()).expect("retry");
 
-        let local = index.local().expect("local");
+        let local = index.local();
         let paths: Vec<RelPath> = (0..index.next_path_id())
             .map(|id| local.path_for_id(id).expect("every id names a path"))
             .collect();

@@ -1,4 +1,4 @@
-//! The wire types for the git-history RPC a `daemon_writer` serve forwards to the daemon.
+//! The wire types for the git-history RPC a client forwards to the daemon.
 //!
 //! Fjall takes an exclusive per-directory process lock, so `git-history.fjall/` can only ever be
 //! held by ONE process. Under the daemon-as-sole-writer model that process is the daemon: it builds

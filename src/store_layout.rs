@@ -560,8 +560,7 @@ fn sweep_stale_isolated_caches(temp_root: &Path, max_age: std::time::Duration) -
 /// it — no per-test env churn, no races on `set_var`.
 ///
 /// Also pins `$BASEMIND_COMMS_DIR` under the same tempdir. On a `comms` build the real `basemind
-/// serve` binary is a `daemon_writer` that forwards every write to the machine daemon (auto-spawned
-/// on first use); a test that spawns `serve` inherits this env, so its daemon binds an ISOLATED
+/// serve` binary relays to the machine daemon (auto-spawned on first use); a test that spawns `serve` inherits this env, so its daemon binds an ISOLATED
 /// socket under the tempdir instead of touching the user's real machine daemon.
 ///
 /// A cache created here is stamped with [`ISOLATION_MARKER`] and re-adopted by any child process,
