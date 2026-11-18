@@ -121,7 +121,7 @@ mod tests {
         let query = fn_query();
         let mut cursor = bounded_cursor(MATCH_LIMIT);
         let mut seen = 0usize;
-        let complete = walk(
+        let dropped = walk(
             &mut cursor,
             &query,
             tree.root_node(),
@@ -129,7 +129,7 @@ mod tests {
             Duration::from_secs(60),
             |_| seen += 1,
         );
-        assert_eq!(complete.expect("walk"), false, "nothing dropped under a generous limit");
+        assert!(!dropped.expect("walk"), "nothing dropped under a generous limit");
         assert_eq!(seen, 400, "control: every nested fn matches");
 
         let timed_out = walk(&mut cursor, &query, tree.root_node(), &src, Duration::ZERO, |_| {});
