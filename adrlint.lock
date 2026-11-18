@@ -160,3 +160,8 @@ blake3 = "697c55ee948b7531f5b6d76f6c5fc43bf975f6ff23bb1ca8adde178e5ffc332a"
 number = 45
 status = "accepted"
 blake3 = "e4bc582c9a7bd40ee2d035278fd1b3d3c8f4e64aa138cc43597ea1c6ec92db80"
+
+[adrs."docs/adr/0046-release-commit-reaches-main-after-its-release.md"]
+number = 46
+status = "accepted"
+blake3 = "8a401042774da68b2c26959929eeaa90bf6d16c7f7849b534fc673aeba3bd6d2"

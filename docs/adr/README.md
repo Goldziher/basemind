@@ -110,7 +110,7 @@ them.
 | [0024](0024-daemon-and-process-model.md) | Daemon and process model — rendezvous scoped by protocol generation | Accepted (amended by ADR-0028, ADR-0030, ADR-0045) |
 | [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted (amended by ADR-0028, ADR-0030, ADR-0033, ADR-0037) |
 | [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Superseded by ADR-0027 |
-| [0027](0027-single-breaking-release.md) | Release and branch policy — trunk-based, one breaking release | Accepted (amended by ADR-0035) |
+| [0027](0027-single-breaking-release.md) | Release and branch policy — trunk-based, one breaking release | Accepted (amended by ADR-0035, ADR-0046) |
 | [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Accepted (amended by ADR-0036, ADR-0041) |
 | [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Accepted (amended by ADR-0037) |
 | [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted (amended by ADR-0033, ADR-0038, ADR-0045) |
@@ -129,4 +129,4 @@ them.
 | [0043](0043-packed-call-name-rows-and-cheaper-hit-expansion.md) | Packed call name rows and cheaper hit expansion | Accepted |
 | [0044](0044-launched-agent-comms-and-user-mcp-isolation.md) | Launched agents use their comms thread, and start none of the user's MCP servers | Accepted |
 | [0045](0045-daemon-stop-and-idle-rules-as-built.md) | Daemon stop and idle rules as built after the comms v2 cutover | Accepted |
-| [0046](0046-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Proposed |
+| [0046](0046-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Accepted |

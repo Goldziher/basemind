@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-18
 amends: ["0027"]
 ---
