@@ -20,7 +20,7 @@ use crate::intel::module_resolver::{ModuleImport, ModuleTarget, Probe, join, par
 pub(crate) struct GoModules {
     /// `go.mod` path -> its module path; `None` when there is no such file or no `module` line.
     modules: AHashMap<String, Option<String>>,
-    /// Package directory -> its non-test `.go` file names.
+    /// Package directory -> its indexed non-test `.go` files.
     packages: AHashMap<String, Vec<String>>,
 }
 
@@ -50,20 +50,18 @@ impl GoModules {
         };
         let package = join(module_dir, rest);
         probe.probes.insert_dir(&package);
-        let root = probe.root;
-        let names = self
-            .packages
-            .entry(package.clone())
-            .or_insert_with_key(|package| package_files(&root.join(package)));
-        let files: Vec<String> = names
-            .iter()
-            .map(|name| join(&package, name))
-            .filter(|file| (probe.indexed)(file))
-            .collect();
+        let (root, indexed) = (probe.root, probe.indexed);
+        let files = self.packages.entry(package).or_insert_with_key(|package| {
+            package_files(&root.join(package))
+                .into_iter()
+                .map(|name| join(package, &name))
+                .filter(|file| indexed(file))
+                .collect()
+        });
         if files.is_empty() {
             ModuleTarget::Unresolved
         } else {
-            ModuleTarget::Files(files)
+            ModuleTarget::Files(files.clone())
         }
     }
 

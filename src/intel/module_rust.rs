@@ -24,8 +24,21 @@ use crate::intel::module_resolver::{ModuleImport, ModuleTarget, Probe, join, par
 struct CrateLayout {
     /// The directory module paths start from.
     dir: String,
-    /// The crate root file, when it is indexed.
-    root_file: Option<String>,
+    /// The crate root file's candidates in order; the first indexed one is the root. Probed only
+    /// when a path falls back to the root, so editing `lib.rs` does not re-stitch the whole crate.
+    roots: Vec<String>,
+}
+
+impl CrateLayout {
+    /// Whether `importer` is (a candidate for) the crate root file.
+    fn is_root(&self, importer: &str) -> bool {
+        self.roots.iter().any(|root| root == importer)
+    }
+
+    /// The crate root file, when one is indexed.
+    fn root_file(&self, probe: &mut Probe<'_>) -> Option<String> {
+        self.roots.iter().find(|root| probe.indexed(root)).cloned()
+    }
 }
 
 /// A module declared in the importer: its name and, for an inline one, its body's byte span.
@@ -43,10 +56,15 @@ pub(crate) struct RustModules {
 }
 
 impl RustModules {
+    /// Resolve one importer whose outline (`symbols`, `imports`) was extracted from the content
+    /// `content_hash`. The source is re-read only to tell `mod x;` from `mod x { … }` and to find
+    /// `#[path]`; when it no longer hashes to `content_hash` the outline's offsets do not fit it,
+    /// so no module declaration is read (the next scan of the edited file re-stitches it).
     pub(crate) fn resolve(
         &mut self,
         probe: &mut Probe<'_>,
         importer: &str,
+        content_hash: &str,
         symbols: &[Symbol],
         imports: &[Import],
     ) -> Vec<ModuleImport> {
@@ -54,16 +72,17 @@ impl RustModules {
             .iter()
             .any(|symbol| symbol.kind == SymbolKind::Module)
             .then(|| std::fs::read(probe.root.join(importer)).ok())
-            .flatten();
+            .flatten()
+            .filter(|bytes| crate::hashing::hex(&crate::hashing::hash_bytes(bytes)) == content_hash);
         let modules = declared_modules(symbols, source.as_deref());
         let layout = self.crate_layout(probe, importer);
         let file_scope = layout.as_ref().and_then(|layout| module_path(layout, importer));
-        let root_file = layout.as_ref().and_then(|layout| layout.root_file.as_deref());
+        let is_root = layout.as_ref().is_some_and(|layout| layout.is_root(importer));
         let names: AHashSet<&str> = modules.iter().map(|module| module.name.as_str()).collect();
 
         let mut out = Vec::new();
         for module in modules.iter().filter(|module| !module.inline) {
-            let target = declared_module_file(probe, importer, root_file, &modules, module, source.as_deref());
+            let target = declared_module_file(probe, importer, is_root, &modules, module, source.as_deref());
             out.push(ModuleImport {
                 anchor: module.start,
                 specifier: format!("mod {}", module.name),
@@ -116,32 +135,27 @@ impl RustModules {
             return Some(match rest.split_once('/') {
                 None => CrateLayout {
                     dir: top_dir,
-                    root_file: Some(importer.to_string()),
+                    roots: vec![importer.to_string()],
                 },
                 Some((target, _)) => {
                     let dir = join(&top_dir, target);
-                    let root_file = [join(&dir, "main.rs"), format!("{dir}.rs")]
-                        .into_iter()
-                        .find(|file| probe.indexed(file));
-                    CrateLayout { dir, root_file }
+                    let roots = vec![join(&dir, "main.rs"), format!("{dir}.rs")];
+                    CrateLayout { dir, roots }
                 }
             });
         }
         if rel.starts_with("src/") {
             let dir = join(&manifest_dir, "src");
-            let root_file = if rel == "src/main.rs" {
-                Some(importer.to_string())
+            let roots = if rel == "src/main.rs" {
+                vec![importer.to_string()]
             } else {
-                ["lib.rs", "main.rs"]
-                    .into_iter()
-                    .map(|file| join(&dir, file))
-                    .find(|file| probe.indexed(file))
+                vec![join(&dir, "lib.rs"), join(&dir, "main.rs")]
             };
-            return Some(CrateLayout { dir, root_file });
+            return Some(CrateLayout { dir, roots });
         }
         (rel == "build.rs").then(|| CrateLayout {
             dir: manifest_dir,
-            root_file: Some(importer.to_string()),
+            roots: vec![importer.to_string()],
         })
     }
 
@@ -211,7 +225,7 @@ fn scope_at(base: &[String], modules: &[DeclaredModule], at: u32) -> Vec<String>
 fn declared_module_file(
     probe: &mut Probe<'_>,
     importer: &str,
-    root_file: Option<&str>,
+    is_root: bool,
     modules: &[DeclaredModule],
     module: &DeclaredModule,
     source: Option<&[u8]>,
@@ -228,9 +242,7 @@ fn declared_module_file(
     }
     let file = importer.rsplit('/').next().unwrap_or(importer);
     let mut base = match file.strip_suffix(".rs") {
-        Some(stem) if !matches!(file, "mod.rs" | "lib.rs" | "main.rs") && root_file != Some(importer) => {
-            join(dir, stem)
-        }
+        Some(stem) if !matches!(file, "mod.rs" | "lib.rs" | "main.rs") && !is_root => join(dir, stem),
         _ => dir.to_string(),
     };
     for name in inline {
@@ -293,7 +305,7 @@ fn normalize(path: &str) -> Option<String> {
 /// The module path of `importer` within its crate: `[]` for the crate root, `["a", "b"]` for
 /// `a/b.rs` or `a/b/mod.rs`.
 fn module_path(layout: &CrateLayout, importer: &str) -> Option<Vec<String>> {
-    if layout.root_file.as_deref() == Some(importer) {
+    if layout.is_root(importer) {
         return Some(Vec::new());
     }
     let stem = strip_dir(importer, &layout.dir)?.strip_suffix(".rs")?;
@@ -345,12 +357,15 @@ fn resolve_path(
     };
     absolute.extend(segments.map(str::to_string));
 
-    let mut found = layout.root_file.clone();
+    let mut found = None;
     for depth in 1..=absolute.len() {
         match module_file_at(probe, &join(&layout.dir, &absolute[..depth].join("/"))) {
             Some(file) => found = Some(file),
             None => break,
         }
+    }
+    if found.is_none() {
+        found = layout.root_file(probe);
     }
     match found {
         Some(file) if file == importer => ModuleTarget::SelfFile,
@@ -548,7 +563,7 @@ mod tests {
     fn module_paths_follow_the_crate_layout() {
         let layout = CrateLayout {
             dir: "core/src".to_string(),
-            root_file: Some("core/src/lib.rs".to_string()),
+            roots: vec!["core/src/lib.rs".to_string(), "core/src/main.rs".to_string()],
         };
         assert_eq!(module_path(&layout, "core/src/lib.rs"), Some(vec![]));
         assert_eq!(module_path(&layout, "core/src/main.rs"), Some(vec![]));
@@ -635,6 +650,7 @@ mod tests {
         let source = files.iter().find(|(rel, _)| *rel == importer).unwrap().1;
         let mut probes = ProbeSet::default();
         let (symbols, imports) = outline(source);
+        let content_hash = crate::hashing::hex(&crate::hashing::hash_bytes(source.as_bytes()));
         let imports = RustModules::default().resolve(
             &mut Probe {
                 root: dir.path(),
@@ -642,6 +658,7 @@ mod tests {
                 probes: &mut probes,
             },
             importer,
+            &content_hash,
             &symbols,
             &imports,
         );

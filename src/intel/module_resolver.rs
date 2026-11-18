@@ -32,6 +32,10 @@ use crate::store::Store;
 /// Importers staged into one Fjall write batch, as in the binding stitch.
 const COMMIT_BATCH: usize = 256;
 
+/// Importers resolved per parallel round. Their resolved imports and probes are staged and dropped
+/// before the next round, so what is held at once is bounded by this, not by the corpus.
+const RESOLVE_CHUNK_IMPORTERS: usize = 1024;
+
 /// What one import resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ModuleTarget {
@@ -99,9 +103,15 @@ impl ModuleResolver {
         }
     }
 
-    fn resolve(&mut self, probe: &mut Probe<'_>, importer: &str, l1: &FileMapL1) -> Vec<ModuleImport> {
+    fn resolve(
+        &mut self,
+        probe: &mut Probe<'_>,
+        importer: &str,
+        content_hash: &str,
+        l1: &FileMapL1,
+    ) -> Vec<ModuleImport> {
         match self {
-            Self::Rust(resolver) => resolver.resolve(probe, importer, &l1.symbols, &l1.imports),
+            Self::Rust(resolver) => resolver.resolve(probe, importer, content_hash, &l1.symbols, &l1.imports),
             Self::Go(resolver) => resolver.resolve(probe, importer, &l1.imports),
         }
     }
@@ -120,8 +130,9 @@ pub(crate) fn harvest_module_importers(facts: &[(String, FileResolvedRefs)], out
 
 /// Resolve every importer in `importers` with its language's module resolver and write its
 /// file-edge row and probe rows. Runs after the resolve pass staged the importers' facts, which
-/// cleared their previous rows. Resolution runs in parallel (each worker with its own resolver
-/// caches); staging stays serial, as in the resolve pass. Returns whether every batch committed.
+/// cleared their previous rows. Resolution runs in parallel in bounded chunks (each worker with its
+/// own resolver caches); staging stays serial, as in the resolve pass. Returns whether every batch
+/// committed.
 pub(crate) fn stitch_module_edges(root: &Path, store: &Store, index_db: &IndexDb, importers: &[String]) -> bool {
     if importers.is_empty() {
         return true;
@@ -130,28 +141,30 @@ pub(crate) fn stitch_module_edges(root: &Path, store: &Store, index_db: &IndexDb
     let mut keys: Vec<&String> = importers.iter().collect();
     keys.sort_unstable();
     keys.dedup();
-    let resolved: Vec<(&String, Vec<ModuleImport>, ProbeSet)> = keys
-        .par_iter()
-        .map_init(AHashMap::new, |resolvers, importer| {
-            resolve_importer(root, store, resolvers, importer)
-        })
-        .flatten()
-        .collect();
-
     let mut batch = BudgetedWriter::new(index_db, COMMIT_BATCH, "module stitch");
-    let rows = resolved.len();
-    for (importer, imports, probes) in resolved {
-        let importer_rel = RelPath::from(importer.as_str());
-        if !probes.is_empty() {
+    let mut rows = 0usize;
+    for chunk in keys.chunks(RESOLVE_CHUNK_IMPORTERS) {
+        let resolved: Vec<(&String, Vec<ModuleImport>, ProbeSet)> = chunk
+            .par_iter()
+            .map_init(AHashMap::new, |resolvers, importer| {
+                resolve_importer(root, store, resolvers, importer)
+            })
+            .flatten()
+            .collect();
+        rows += resolved.len();
+        for (importer, imports, probes) in resolved {
+            let importer_rel = RelPath::from(importer.as_str());
+            if !probes.is_empty() {
+                batch
+                    .writer()
+                    .upsert_import_probes(&importer_rel, &[], &probes.hashes());
+                batch.item_staged();
+            }
             batch
                 .writer()
-                .upsert_import_probes(&importer_rel, &[], &probes.hashes());
+                .upsert_file_edges(&importer_rel, &file_edges(importer, imports).finish());
             batch.item_staged();
         }
-        batch
-            .writer()
-            .upsert_file_edges(&importer_rel, &file_edges(importer, imports).finish());
-        batch.item_staged();
     }
     let committed = batch.finish();
     tracing::debug!(
@@ -193,6 +206,7 @@ fn resolve_importer<'a>(
             probes: &mut probes,
         },
         importer,
+        &entry.hash_hex,
         &l1,
     );
     (!imports.is_empty()).then_some((importer, imports, probes))
