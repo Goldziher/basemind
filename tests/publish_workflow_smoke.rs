@@ -323,7 +323,7 @@ fn the_skew_gate_reads_a_release_from_its_checksums_not_its_tag() {
 }
 
 /// The marketplaces serve `./plugin` from main, so main reaches the release commit only once the
-/// release is public (ADR-0045): earlier, every auto-updating host pinned a binary with no assets.
+/// release is public (ADR-0046): earlier, every auto-updating host pinned a binary with no assets.
 #[test]
 fn main_advances_to_the_release_only_after_it_is_public() {
     let workflow = workflow();
