@@ -162,9 +162,9 @@ fn common_terms_are_skipped_and_candidates_are_bounded() {
 
 /// A session that holds no index and is not hosted by the daemon (another process holds the lock,
 /// no daemon is up: a CLI command beside a writer `serve`) refuses the keyword lane naming the fix,
-/// marked busy so the CLI exits `3`, instead of an internal error.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_keyword_lane_without_an_index_is_refused_with_the_fix() {
+/// as busy (the adapter marks it so the CLI exits `3`), instead of an internal error.
+#[test]
+fn the_keyword_lane_without_an_index_is_refused_with_the_fix() {
     use std::sync::Arc;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -173,32 +173,30 @@ async fn the_keyword_lane_without_an_index_is_refused_with_the_fix() {
     drop(scanned(root));
     let store = Store::open_read_only_no_index(root, crate::store::VIEW_WORKING).expect("index-less store");
     assert!(!store.rescan_owed(), "the scanned index owes no rebuild");
-    let telemetry_dir = store.basemind_dir.clone();
-    let shared = crate::mcp::Workspace::new(
+    let ws = Workspace::new(
         store,
         root.to_path_buf(),
         Arc::new(crate::config::Config::with_defaults()),
         None,
         Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
         None,
-        crate::mcp::ServerOptions {
+        crate::engine::workspace::OpenOptions {
+            background: false,
             read_only: true,
-            ..crate::mcp::ServerOptions::default()
-        }
-        .into(),
-    );
-    let state = ServerState::for_connection(
-        crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
-        "test".into(),
+            forwards_writes: false,
+            lazy_cache: false,
+            history_sync: None,
+            #[cfg(feature = "memory")]
+            memory_owner: |_| "owner".to_string(),
+        },
     );
 
-    let refused = keyword_hits(&state, "retry upload", 5)
-        .await
-        .expect_err("a session with no index cannot run the keyword lane");
-    assert_eq!(refused.code, rmcp::model::ErrorCode::INVALID_REQUEST, "{refused:?}");
-    assert!(refused.message.contains("holds this workspace's index"), "{refused:?}");
+    let refused =
+        keyword_hits(&ws, "retry upload", 5).expect_err("a session with no index cannot run the keyword lane");
+    let EngineError::Busy(message) = refused else {
+        panic!("busy, so the CLI exits 3: {refused:?}");
+    };
+    assert!(message.contains("holds this workspace's index"), "{message}");
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    assert!(refused.message.contains("`basemind comms start`"), "{refused:?}");
-    let exit = crate::cli::run_tool("code_search", Err(refused)).expect_err("refused");
-    assert_eq!(crate::cli::exit::exit_code_for(&exit), crate::cli::exit::BUSY);
+    assert!(message.contains("`basemind comms start`"), "{message}");
 }

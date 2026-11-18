@@ -12,7 +12,7 @@ use rmcp::model::CallToolResult;
 use serde::Serialize;
 
 use super::ServerState;
-use super::cursor_bind::{Paged, bound_blocking};
+use super::cursor_bind::{Paged, bound};
 use super::helpers::json_result;
 use super::strict::ToolArgs;
 use super::telemetry::Telemetry;
@@ -40,7 +40,7 @@ impl From<EngineError> for McpError {
 
 /// Run `body` on a blocking thread: an operation reads the store, the disk and the in-RAM map
 /// synchronously, which must not park a runtime worker. A panic in it resumes on the caller.
-async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+pub(super) async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
     match tokio::task::spawn_blocking(body).await {
         Ok(value) => value,
         Err(join) => std::panic::resume_unwind(join.into_panic()),
@@ -109,7 +109,7 @@ fn call_blocking<P: Paged, R: Serialize>(
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-    let result = bound_blocking(p, |p| answer(ws, p, op));
+    let result = bound(p, |p| answer(ws, p, op));
     record(ws, telemetry, P::TOOL, &params, started, &result);
     result
 }

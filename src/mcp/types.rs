@@ -11,9 +11,6 @@ use crate::path::RelPath;
 
 pub(crate) use crate::engine::types::LifecycleNotice;
 
-#[cfg(feature = "memory")]
-pub(super) use crate::engine::types::default_true;
-
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct StatusResponse {
     pub file_count: usize,

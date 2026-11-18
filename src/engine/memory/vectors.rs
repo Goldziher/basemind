@@ -24,24 +24,19 @@
 //! and dimension ([`memory_lance_dir`]): a note saved from one worktree is found from every other,
 //! and two worktrees configured with different presets each keep their own table.
 
-#![cfg(feature = "memory")]
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ahash::{AHashMap, AHashSet};
-use rmcp::ErrorData as McpError;
-use rmcp::model::CallToolResult;
 
-use super::ServerState;
-use super::helpers::{elapsed_us, json_result};
-use super::memory::{
-    embed_passage, embed_query, lance_visibility, memory_get_many_wire, memory_list_page, memory_namespace,
-    memory_stamps_wire, shared_embedder,
+use super::lance_visibility;
+use super::ops::{MEMORY_PREVIEW_CHARS, WireMemoryEntry};
+use crate::engine::timing::elapsed_us;
+use crate::engine::types::memory::{
+    MemoryPutParams, MemorySearchHit, MemorySearchParams, MemorySearchResponse, Visibility,
 };
-use super::memory_ops::{MEMORY_PREVIEW_CHARS, WireMemoryEntry};
-use super::types_memory::{MemoryPutParams, MemorySearchHit, MemorySearchParams, MemorySearchResponse, Visibility};
+use crate::engine::{EngineError, Workspace};
 use crate::lance::{LanceStore, MemoryHit, MemoryRow, MemoryStamps};
 
 /// Notes listed per page while looking for the ones without a current row.
@@ -49,7 +44,7 @@ const BACKFILL_PAGE: usize = 500;
 /// Notes embedded by one model call and written by one upsert.
 const BACKFILL_BATCH: usize = 32;
 /// Most notes one search embeds before it answers; the next search continues.
-pub(super) const BACKFILL_NOTES_PER_CALL: usize = if cfg!(test) { 5 } else { 256 };
+pub(crate) const BACKFILL_NOTES_PER_CALL: usize = if cfg!(test) { 5 } else { 256 };
 /// Once this much of a search has gone into embedding, no further batch starts.
 const BACKFILL_TIME_BUDGET: Duration = Duration::from_secs(3);
 /// How long a namespace found level is taken to be level. Another process may have saved a note
@@ -111,7 +106,7 @@ fn table_owed_path(root: &Path, table: &str) -> PathBuf {
 
 /// The rows-owed stamp of the table `table`: `0` while no save has owed it a row, and another
 /// value after each.
-pub(super) fn rows_owed(root: &Path, table: &str) -> u64 {
+pub(crate) fn rows_owed(root: &Path, table: &str) -> u64 {
     let group = std::fs::read(rows_owed_path(root)).unwrap_or_default();
     let own = std::fs::read(table_owed_path(root, table)).unwrap_or_default();
     if group.is_empty() && own.is_empty() {
@@ -121,25 +116,22 @@ pub(super) fn rows_owed(root: &Path, table: &str) -> u64 {
     u64::from_le_bytes([hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]]) | 1
 }
 
-/// [`rows_owed`] of the table this process searches, read on a blocking thread.
-pub(super) async fn rows_owed_here(state: &ServerState) -> u64 {
-    let (root, table) = (state.shared.root.clone(), table_name(state).await.unwrap_or_default());
-    tokio::task::spawn_blocking(move || rows_owed(&root, &table))
-        .await
-        .unwrap_or_default()
+/// [`rows_owed`] of the table this process searches.
+pub(crate) fn rows_owed_here(ws: &Workspace) -> u64 {
+    rows_owed(&ws.root, &table_name(ws).unwrap_or_default())
 }
 
 /// The directory name of the table this process's embedder writes, or `None` without an embedder.
-async fn table_name(state: &ServerState) -> Option<String> {
-    let embedder = shared_embedder(state).await.ok()?;
-    let dir = memory_lance_dir(&state.shared.root, embedder.model(), embedder.dim());
+fn table_name(ws: &Workspace) -> Option<String> {
+    let embedder = ws.shared_embedder().ok()?;
+    let dir = memory_lance_dir(&ws.root, embedder.model(), embedder.dim());
     dir.file_name().and_then(|name| name.to_str()).map(str::to_string)
 }
 
 /// Tell every process with the group's notes open that a note has no row of its latest write.
 /// Best effort: a stamp that cannot be written leaves other processes to find the note when their
 /// belief lapses.
-pub(super) fn owe_rows(root: &Path) {
+pub(crate) fn owe_rows(root: &Path) {
     write_owed_stamp(&rows_owed_path(root));
 }
 
@@ -151,26 +143,22 @@ pub(super) fn owe_rows(root: &Path) {
 /// directories nor their `memory-rows-owed.<table>` stamps are ever collected. A process that dies
 /// between writing the row and these stamps leaves the other presets' searches to find the note
 /// when their level lapses, after at most [`LEVEL_TTL_MAX`].
-pub(super) async fn owe_rows_elsewhere(state: &ServerState) {
-    let Some(own) = table_name(state).await else {
+pub(crate) fn owe_rows_elsewhere(ws: &Workspace) {
+    let Some(own) = table_name(ws) else {
         return;
     };
-    let root = state.shared.root.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(&root)) else {
-            return;
+    let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(&ws.root)) else {
+        return;
+    };
+    for table in tables.flatten() {
+        let name = table.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
         };
-        for table in tables.flatten() {
-            let name = table.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if name != own && table.file_type().is_ok_and(|kind| kind.is_dir()) {
-                write_owed_stamp(&table_owed_path(&root, name));
-            }
+        if name != own && table.file_type().is_ok_and(|kind| kind.is_dir()) {
+            write_owed_stamp(&table_owed_path(&ws.root, name));
         }
-    })
-    .await;
+    }
 }
 
 /// Rewrite the rows-owed stamp at `path` with a value no earlier write of it held. Written aside
@@ -207,8 +195,8 @@ fn level_ttl(lapsed: Option<Duration>, found_work: bool) -> Duration {
 
 /// Forget that a namespace was found level: a note in it has no current row. A pass that is
 /// running keeps its mark, and finds out for itself ([`backfill`] re-reads what it embedded).
-pub(super) fn not_level(state: &ServerState, vis_byte: u8, owner: &str) {
-    let mut marks = backfill_marks(state);
+pub(crate) fn not_level(ws: &Workspace, vis_byte: u8, owner: &str) {
+    let mut marks = backfill_marks(ws);
     let namespace = (vis_byte, owner.to_string());
     if matches!(marks.get(&namespace), Some(Backfill::Level { .. })) {
         marks.remove(&namespace);
@@ -222,7 +210,7 @@ pub(super) fn not_level(state: &ServerState, vis_byte: u8, owner: &str) {
 /// model names to one string (`a/b` and `a-b`), so the name ends in a hash of the model's own
 /// name: two models never share a directory and wipe each other's rows in turn. No garbage
 /// collector lists the group directory.
-pub(super) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
+pub(crate) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
     let model = crate::embeddings::model_key(model);
     let slug: String = model
         .chars()
@@ -239,42 +227,28 @@ pub(super) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
 }
 
 /// Open the repo group's memory vector store for the configured embedder.
-pub(super) async fn memory_lance_store(state: &ServerState) -> Result<Arc<LanceStore>, super::lance_cell::Unavailable> {
-    state
-        .shared
-        .memory_lance
-        .get_or_open(|| async {
-            let embedder = shared_embedder(state)
-                .await
-                .map_err(|e| format!("embedder init: {e}"))?;
-            let (root, model, dim) = (state.shared.root.clone(), embedder.model().to_string(), embedder.dim());
-            tokio::task::spawn_blocking(move || {
-                let dir = memory_lance_dir(&root, &model, dim);
-                LanceStore::open(&dir, dim, &model)
-            })
-            .await
-            .map_err(|e| format!("lance open join: {e}"))?
+pub(crate) fn memory_lance_store(ws: &Workspace) -> Result<Arc<LanceStore>, crate::engine::lance_cell::Unavailable> {
+    ws.memory_lance.get_or_open(|| {
+        let embedder = ws.shared_embedder().map_err(|e| format!("embedder init: {e}"))?;
+        let (model, dim) = (embedder.model(), embedder.dim());
+        let dir = memory_lance_dir(&ws.root, model, dim);
+        LanceStore::open(&dir, dim, model)
             .map(Arc::new)
             .map_err(|e| format!("open LanceStore: {e}"))
-        })
-        .await
+    })
 }
 
 /// The store, when a row could be in it: already open in this process, or present on disk. A
 /// store that was never created holds no row and is not created to find that out.
-async fn memory_lance_store_if_any(state: &ServerState) -> Option<Arc<LanceStore>> {
-    if let Some(lance) = state.shared.memory_lance.get() {
+fn memory_lance_store_if_any(ws: &Workspace) -> Option<Arc<LanceStore>> {
+    if let Some(lance) = ws.memory_lance.get() {
         return Some(Arc::clone(lance));
     }
-    let embedder = shared_embedder(state).await.ok()?;
-    let (root, model, dim) = (state.shared.root.clone(), embedder.model().to_string(), embedder.dim());
-    let on_disk = tokio::task::spawn_blocking(move || memory_lance_dir(&root, &model, dim).is_dir())
-        .await
-        .unwrap_or(false);
-    if !on_disk {
+    let embedder = ws.shared_embedder().ok()?;
+    if !memory_lance_dir(&ws.root, embedder.model(), embedder.dim()).is_dir() {
         return None;
     }
-    match memory_lance_store(state).await {
+    match memory_lance_store(ws) {
         Ok(lance) => Some(lance),
         Err(error) => {
             tracing::warn!(%error, "memory vector store could not be opened");
@@ -283,34 +257,28 @@ async fn memory_lance_store_if_any(state: &ServerState) -> Option<Arc<LanceStore
     }
 }
 
-/// Run `work` against the store on a blocking thread.
-async fn on_store<T, F>(lance: &Arc<LanceStore>, what: &'static str, work: F) -> Result<T, McpError>
-where
-    T: Send + 'static,
-    F: FnOnce(&LanceStore) -> anyhow::Result<T> + Send + 'static,
-{
-    let lance = Arc::clone(lance);
-    tokio::task::spawn_blocking(move || work(&lance))
-        .await
-        .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-        .map_err(|e| McpError::internal_error(format!("{what}: {e}"), None))
+/// Run `work` against the store, naming the store call `what` in its error.
+fn on_store<T>(
+    lance: &LanceStore,
+    what: &'static str,
+    work: impl FnOnce(&LanceStore) -> anyhow::Result<T>,
+) -> Result<T, EngineError> {
+    work(lance).map_err(|e| EngineError::internal(format!("{what}: {e}")))
 }
 
 /// Embed a saved note and upsert its vector row.
-pub(super) async fn embed_note(
-    state: &ServerState,
+pub(crate) fn embed_note(
+    ws: &Workspace,
     params: &MemoryPutParams,
     owner: &str,
     tags: Vec<String>,
     created_at: i64,
     updated_at: i64,
 ) -> Result<(), String> {
-    let embedding = embed_passage(state, &params.value)
-        .await
-        .map_err(|error| error.message.into_owned())?;
-    let lance = memory_lance_store(state).await.map_err(|error| error.to_string())?;
+    let embedding = ws.embed_passage(&params.value).map_err(|error| error.to_string())?;
+    let lance = memory_lance_store(ws).map_err(|error| error.to_string())?;
     let row = MemoryRow {
-        scope: state.shared.scope.clone(),
+        scope: ws.scope.clone(),
         key: params.key.clone(),
         tags,
         visibility: lance_visibility(params.visibility).to_string(),
@@ -319,34 +287,28 @@ pub(super) async fn embed_note(
         created_at,
         updated_at,
     };
-    on_store(&lance, "upsert_memory", move |lance| lance.upsert_memory(row))
-        .await
-        .map_err(|error| error.message.into_owned())
+    on_store(&lance, "upsert_memory", move |lance| lance.upsert_memory(row)).map_err(|error| error.to_string())
 }
 
 /// Best-effort removal of one note's vector row from the configured model's store. The fjall
 /// record is the source of truth; a row that cannot be removed is logged, never an error, and the
 /// join keeps it from being served.
-pub(super) async fn delete_vector_row(state: &ServerState, visibility: Visibility, owner: &str, key: &str) {
-    let Some(lance) = memory_lance_store_if_any(state).await else {
+pub(crate) fn delete_vector_row(ws: &Workspace, visibility: Visibility, owner: &str, key: &str) {
+    let Some(lance) = memory_lance_store_if_any(ws) else {
         return;
     };
-    let scope = state.shared.scope.clone();
-    let row_key = key.to_string();
     let visibility = lance_visibility(visibility);
-    let agent_id = owner.to_string();
-    let deleted = on_store(&lance, "delete_memory", move |lance| {
-        lance.delete_memory(&scope, visibility, &agent_id, &row_key)
-    })
-    .await;
+    let deleted = on_store(&lance, "delete_memory", |lance| {
+        lance.delete_memory(&ws.scope, visibility, owner, key)
+    });
     if let Err(error) = deleted {
-        tracing::warn!(%key, error = %error.message, "the note's vector row was not removed");
+        tracing::warn!(%key, %error, "the note's vector row was not removed");
     }
 }
 
 /// The notes to embed, given the rows the table holds: those with no row, a row embedded from an
 /// earlier write, or more than one row. A note with no text cannot be embedded and is never behind.
-pub(super) fn notes_behind(notes: Vec<WireMemoryEntry>, rows: &MemoryStamps) -> Vec<WireMemoryEntry> {
+pub(crate) fn notes_behind(notes: Vec<WireMemoryEntry>, rows: &MemoryStamps) -> Vec<WireMemoryEntry> {
     notes
         .into_iter()
         .filter(|note| !note.value.is_empty())
@@ -356,7 +318,7 @@ pub(super) fn notes_behind(notes: Vec<WireMemoryEntry>, rows: &MemoryStamps) -> 
 
 /// Drops the `Running` mark of a backfill that did not reach `Level`, however it ended.
 struct RunningMark<'a> {
-    state: &'a ServerState,
+    ws: &'a Workspace,
     namespace: (u8, String),
     /// How long the namespace is level for, once the pass found it level.
     level: Option<Duration>,
@@ -366,7 +328,7 @@ struct RunningMark<'a> {
 
 impl Drop for RunningMark<'_> {
     fn drop(&mut self) {
-        let mut marks = backfill_marks(self.state);
+        let mut marks = backfill_marks(self.ws);
         if let Some(ttl) = self.level {
             marks.insert(self.namespace.clone(), Backfill::level(ttl, self.owed));
         } else {
@@ -375,10 +337,8 @@ impl Drop for RunningMark<'_> {
     }
 }
 
-fn backfill_marks(state: &ServerState) -> std::sync::MutexGuard<'_, AHashMap<(u8, String), Backfill>> {
-    state
-        .shared
-        .memory_backfill
+fn backfill_marks(ws: &Workspace) -> std::sync::MutexGuard<'_, AHashMap<(u8, String), Backfill>> {
+    ws.memory_backfill
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -387,13 +347,13 @@ fn backfill_marks(state: &ServerState) -> std::sync::MutexGuard<'_, AHashMap<(u8
 /// Returns whether the rows are still behind. Best effort: a failure is logged, the namespace stays
 /// unmarked so the next search tries again, and the search that triggered it still runs over
 /// whatever rows exist.
-pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, vis_byte: u8, owner: &str) -> bool {
+pub(crate) fn backfill_step(ws: &Workspace, visibility: Visibility, vis_byte: u8, owner: &str) -> bool {
     let namespace = (vis_byte, owner.to_string());
     // Read before the look: a save that owes a row after this has its note listed by the look or
     // its stamp read by the next search. ~keep
-    let owed = rows_owed_here(state).await;
+    let owed = rows_owed_here(ws);
     let lapsed = {
-        let mut marks = backfill_marks(state);
+        let mut marks = backfill_marks(ws);
         let lapsed = match marks.get(&namespace) {
             Some(Backfill::Level { until, owed: seen, .. }) if *seen == owed && Instant::now() < *until => {
                 return false;
@@ -406,12 +366,12 @@ pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, v
         lapsed
     };
     let mut mark = RunningMark {
-        state,
+        ws,
         namespace,
         level: None,
         owed,
     };
-    match backfill(state, visibility, vis_byte, owner).await {
+    match backfill(ws, visibility, vis_byte, owner) {
         Ok(progress) => {
             if progress.embedded > 0 || progress.pruned > 0 {
                 tracing::info!(
@@ -424,7 +384,7 @@ pub(super) async fn backfill_step(state: &ServerState, visibility: Visibility, v
             let found_work = progress.embedded > 0 || progress.pruned > 0;
             mark.level = progress.level.then(|| level_ttl(lapsed, found_work));
         }
-        Err(error) => tracing::warn!(error = %error.message, "memory vector backfill failed; the next search retries"),
+        Err(error) => tracing::warn!(%error, "memory vector backfill failed; the next search retries"),
     }
     mark.level.is_none()
 }
@@ -445,28 +405,19 @@ struct Progress {
 /// an earlier write: the upsert leaves the later write's row alone, the join never serves this
 /// one, and the pass reads the batch's notes once more after writing and does not call the
 /// namespace level when one of them moved.
-async fn backfill(
-    state: &ServerState,
-    visibility: Visibility,
-    vis_byte: u8,
-    owner: &str,
-) -> Result<Progress, McpError> {
-    let lance = memory_lance_store(state).await?;
-    let scope = state.shared.scope.clone();
+fn backfill(ws: &Workspace, visibility: Visibility, vis_byte: u8, owner: &str) -> Result<Progress, EngineError> {
+    let lance = memory_lance_store(ws)?;
+    let scope = &ws.scope;
     let lance_vis = lance_visibility(visibility);
     let listed_at = crate::lance::now_micros();
-    let rows = {
-        let (scope, agent_id) = (scope.clone(), owner.to_string());
-        on_store(&lance, "memory_stamps", move |lance| {
-            lance.memory_stamps(&scope, lance_vis, &agent_id)
-        })
-        .await?
-    };
+    let rows = on_store(&lance, "memory_stamps", |lance| {
+        lance.memory_stamps(scope, lance_vis, owner)
+    })?;
     let mut live: AHashSet<String> = AHashSet::new();
     let mut behind = Vec::new();
     let mut cursor = None;
     loop {
-        let page = memory_list_page(state, vis_byte, owner, "", None, BACKFILL_PAGE, cursor).await?;
+        let page = ws.memory_list_page(vis_byte, owner, "", None, BACKFILL_PAGE, cursor)?;
         // A note without text has no row to have: one left from when it had text is an orphan.
         let with_text = page.entries.iter().filter(|note| !note.value.is_empty());
         live.extend(with_text.map(|note| note.key.clone()));
@@ -481,13 +432,11 @@ async fn backfill(
     let pruned = if orphans.is_empty() {
         0
     } else {
-        let (scope, agent_id) = (scope.clone(), owner.to_string());
         // Bounded by the instant the rows were listed: a note saved since has a newer row.
-        on_store(&lance, "prune memory rows", move |lance| {
+        on_store(&lance, "prune memory rows", |lance| {
             let keys: Vec<&str> = orphans.iter().map(String::as_str).collect();
-            lance.delete_memory_keys(&scope, lance_vis, &agent_id, &keys, Some(listed_at))
-        })
-        .await?
+            lance.delete_memory_keys(scope, lance_vis, owner, &keys, Some(listed_at))
+        })?
     };
 
     let mut level = behind.len() <= BACKFILL_NOTES_PER_CALL;
@@ -499,12 +448,11 @@ async fn backfill(
             level = false;
             break;
         }
-        let notes = whole_notes(state, vis_byte, owner, batch).await?;
+        let notes = whole_notes(ws, vis_byte, owner, batch)?;
         let wanted = notes.len();
         #[cfg(test)]
-        test_hooks::while_embedding(state).await;
-        let rows: Vec<MemoryRow> = embed_notes(state, notes)
-            .await
+        test_hooks::while_embedding(ws);
+        let rows: Vec<MemoryRow> = embed_notes(ws, notes)
             .into_iter()
             .map(|(note, embedding)| MemoryRow {
                 scope: scope.clone(),
@@ -521,11 +469,8 @@ async fn backfill(
         level &= rows.len() == wanted;
         embedded += rows.len();
         let written: Vec<(String, i64)> = rows.iter().map(|row| (row.key.clone(), row.updated_at)).collect();
-        on_store(&lance, "upsert_memory_rows", move |lance| {
-            lance.upsert_memory_rows(&rows)
-        })
-        .await?;
-        level &= still_current(state, vis_byte, owner, written).await?;
+        on_store(&lance, "upsert_memory_rows", |lance| lance.upsert_memory_rows(&rows))?;
+        level &= still_current(ws, vis_byte, owner, written)?;
     }
     Ok(Progress {
         embedded,
@@ -536,14 +481,9 @@ async fn backfill(
 
 /// Whether every note of `written` (key and the `updated_at` its row was embedded from) is still
 /// that write. A note saved again or deleted since has a row here that is behind it.
-async fn still_current(
-    state: &ServerState,
-    vis_byte: u8,
-    owner: &str,
-    written: Vec<(String, i64)>,
-) -> Result<bool, McpError> {
+fn still_current(ws: &Workspace, vis_byte: u8, owner: &str, written: Vec<(String, i64)>) -> Result<bool, EngineError> {
     let keys: Vec<String> = written.iter().map(|(key, _)| key.clone()).collect();
-    let now = memory_stamps_wire(state, vis_byte, owner, &keys).await?;
+    let now = ws.memory_stamps_wire(vis_byte, owner, &keys)?;
     Ok(written
         .iter()
         .zip(&now)
@@ -553,48 +493,42 @@ async fn still_current(
 /// A seam inside a backfill pass, between reading a batch's notes and embedding them, where a
 /// test saves one of them again.
 #[cfg(test)]
-pub(super) mod test_hooks {
-    use std::future::Future;
-    use std::pin::Pin;
+pub(crate) mod test_hooks {
     use std::sync::Mutex;
 
-    use super::ServerState;
+    use crate::engine::Workspace;
 
-    pub(crate) type Hook =
-        Box<dyn for<'a> FnOnce(&'a ServerState) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send + Sync>;
+    pub(crate) type Hook = Box<dyn FnOnce(&Workspace) + Send + Sync>;
 
     static WHILE_EMBEDDING: Mutex<Option<(String, Hook)>> = Mutex::new(None);
 
-    /// Run `hook` once, in the next backfill pass of the server whose scope is `scope`.
+    /// Run `hook` once, in the next backfill pass of the workspace whose scope is `scope`.
     pub(crate) fn once_while_embedding(scope: &str, hook: Hook) {
         *WHILE_EMBEDDING.lock().unwrap() = Some((scope.to_string(), hook));
     }
 
-    pub(super) async fn while_embedding(state: &ServerState) {
-        let hook = WHILE_EMBEDDING
-            .lock()
-            .unwrap()
-            .take_if(|(scope, _)| *scope == state.shared.scope);
+    pub(super) fn while_embedding(ws: &Workspace) {
+        let hook = WHILE_EMBEDDING.lock().unwrap().take_if(|(scope, _)| *scope == ws.scope);
         if let Some((_, hook)) = hook {
-            hook(state).await;
+            hook(ws);
         }
     }
 }
 
 /// The notes of `listed` with their whole text. A listing truncates a long value to a preview;
 /// only those notes are read again, and one deleted since the listing is left out.
-async fn whole_notes(
-    state: &ServerState,
+fn whole_notes(
+    ws: &Workspace,
     vis_byte: u8,
     owner: &str,
     listed: &[WireMemoryEntry],
-) -> Result<Vec<WireMemoryEntry>, McpError> {
+) -> Result<Vec<WireMemoryEntry>, EngineError> {
     let clipped: Vec<String> = listed
         .iter()
         .filter(|note| note.value.len() > MEMORY_PREVIEW_CHARS)
         .map(|note| note.key.clone())
         .collect();
-    let mut whole = memory_get_many_wire(state, vis_byte, owner, clipped).await?.into_iter();
+    let mut whole = ws.memory_get_many_wire(vis_byte, owner, clipped)?.into_iter();
     let mut notes = Vec::with_capacity(listed.len());
     for note in listed {
         if note.value.len() <= MEMORY_PREVIEW_CHARS {
@@ -608,29 +542,20 @@ async fn whole_notes(
 
 /// Embed `notes` in one model call. When the batch fails each note is tried alone, so one note the
 /// model rejects costs only itself; a note that still fails is logged and left out.
-async fn embed_notes(state: &ServerState, notes: Vec<WireMemoryEntry>) -> Vec<(WireMemoryEntry, Vec<f32>)> {
-    let batch = match shared_embedder(state).await {
-        Ok(embedder) => {
-            let texts: Vec<String> = notes.iter().map(|note| note.value.clone()).collect();
-            tokio::task::spawn_blocking(move || {
-                let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-                embedder.embed_batch(&refs)
-            })
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|embedded| embedded.map_err(|e| e.to_string()))
-        }
-        Err(error) => Err(error),
-    };
+fn embed_notes(ws: &Workspace, notes: Vec<WireMemoryEntry>) -> Vec<(WireMemoryEntry, Vec<f32>)> {
+    let batch = ws.shared_embedder().and_then(|embedder| {
+        let refs: Vec<&str> = notes.iter().map(|note| note.value.as_str()).collect();
+        embedder.embed_batch(&refs).map_err(|e| e.to_string())
+    });
     match batch {
         Ok(embeddings) if embeddings.len() == notes.len() => notes.into_iter().zip(embeddings).collect(),
         _ => {
             let mut embedded = Vec::with_capacity(notes.len());
             for note in notes {
-                match embed_passage(state, &note.value).await {
+                match ws.embed_passage(&note.value) {
                     Ok(embedding) => embedded.push((note, embedding)),
                     Err(error) => {
-                        tracing::warn!(key = %note.key, error = %error.message, "memory note could not be embedded");
+                        tracing::warn!(key = %note.key, %error, "memory note could not be embedded");
                     }
                 }
             }
@@ -640,7 +565,7 @@ async fn embed_notes(state: &ServerState, notes: Vec<WireMemoryEntry>) -> Vec<(W
 }
 
 /// The hits a search serves, and how many rows the join refused.
-pub(super) struct Joined {
+pub(crate) struct Joined {
     pub hits: Vec<MemorySearchHit>,
     /// Rows whose note is gone or rewritten, and second rows of a key. Rows the `tag` filter
     /// excluded are not counted: they are current.
@@ -650,7 +575,7 @@ pub(super) struct Joined {
 /// Join vector hits against the notes read for their keys. A hit is served once per key, from the
 /// note, and only when the note exists, carries the `updated_at` the row was embedded from and has
 /// `tag` when one is asked for.
-pub(super) fn truth_join(
+pub(crate) fn truth_join(
     hits: Vec<MemoryHit>,
     notes: &AHashMap<String, Option<WireMemoryEntry>>,
     tag: Option<&str>,
@@ -681,7 +606,7 @@ pub(super) fn truth_join(
             served.insert(hit.key);
             joined.hits.push(MemorySearchHit {
                 key: note.key.clone(),
-                value: super::memory_ops::preview(&note.value),
+                value: super::ops::preview(&note.value),
                 tags: note.tags.clone(),
                 distance: hit.distance,
             });
@@ -724,16 +649,15 @@ fn read_further(wanted: usize, limit: usize, served: usize) -> usize {
 /// `memory_search` by meaning: embed the query, bring the rows nearer the notes, and answer the
 /// nearest rows from the notes they were embedded from. Which rows are current is read from the
 /// notes' stamps; only the notes that may be served are read whole.
-pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> Result<CallToolResult, McpError> {
+pub(crate) fn search(ws: &Workspace, params: MemorySearchParams) -> Result<MemorySearchResponse, EngineError> {
     let started = Instant::now();
     let limit = params.limit.unwrap_or(10).min(100) as usize;
-    let (vis_byte, owner) = memory_namespace(state, params.visibility);
+    let (vis_byte, owner) = ws.memory_namespace(params.visibility);
     let lance_vis = lance_visibility(params.visibility);
-    let embedding = embed_query(state, &params.query).await?;
-    let lance = memory_lance_store(state)
-        .await
-        .map_err(|unavailable| unavailable.refusal("memory_search", MEMORY_SEARCH_MEANWHILE))?;
-    let catching_up = backfill_step(state, params.visibility, vis_byte, owner).await;
+    let embedding = ws.embed_query(&params.query)?;
+    let lance =
+        memory_lance_store(ws).map_err(|unavailable| unavailable.refusal("memory_search", MEMORY_SEARCH_MEANWHILE))?;
+    let catching_up = backfill_step(ws, params.visibility, vis_byte, owner);
 
     // Rows the join refuses must not shrink the answer: the search fetches more than it serves,
     // and more again while refused rows leave it short and the table has rows left.
@@ -741,12 +665,16 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
     let mut stamps: AHashMap<String, Option<i64>> = AHashMap::new();
     let mut notes: AHashMap<String, Option<WireMemoryEntry>> = AHashMap::new();
     let joined = loop {
-        let (scope, agent_id, query) = (state.shared.scope.clone(), owner.to_string(), embedding.clone());
-        let tag = params.tag.clone();
-        let raw = on_store(&lance, "search_memory", move |lance| {
-            lance.search_memory(&scope, lance_vis, &agent_id, query, fetch, tag.as_deref())
-        })
-        .await?;
+        let raw = on_store(&lance, "search_memory", |lance| {
+            lance.search_memory(
+                &ws.scope,
+                lance_vis,
+                owner,
+                embedding.clone(),
+                fetch,
+                params.tag.as_deref(),
+            )
+        })?;
         let exhausted = raw.len() < fetch;
         let mut unstamped: Vec<String> = Vec::new();
         for hit in &raw {
@@ -754,7 +682,7 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
                 unstamped.push(hit.key.clone());
             }
         }
-        let read = memory_stamps_wire(state, vis_byte, owner, &unstamped).await?;
+        let read = ws.memory_stamps_wire(vis_byte, owner, &unstamped)?;
         stamps.extend(unstamped.into_iter().zip(read));
         let current = current_keys(&raw, &stamps);
         // A note read whole may lack the tag asked for: read further down only while short.
@@ -766,7 +694,7 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
                 .filter(|key| !notes.contains_key(*key))
                 .cloned()
                 .collect();
-            let read = memory_get_many_wire(state, vis_byte, owner, unread.clone()).await?;
+            let read = ws.memory_get_many_wire(vis_byte, owner, unread.clone())?;
             notes.extend(unread.into_iter().zip(read));
             let joined = truth_join(decidable(&raw, &stamps, &notes), &notes, params.tag.as_deref(), limit);
             if joined.hits.len() >= limit || wanted >= current.len() {
@@ -781,9 +709,9 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
     };
     if joined.dropped > 0 {
         // Rows without a current note are in the table: the next search reconciles again.
-        not_level(state, vis_byte, owner);
+        not_level(ws, vis_byte, owner);
     }
-    json_result(&MemorySearchResponse {
+    Ok(MemorySearchResponse {
         query: params.query,
         hits: joined.hits,
         notice: catching_up.then(|| CATCHING_UP.to_string()),
@@ -792,5 +720,5 @@ pub(super) async fn search(state: &ServerState, params: MemorySearchParams) -> R
 }
 
 #[cfg(test)]
-#[path = "memory_vectors_tests.rs"]
+#[path = "vectors_tests.rs"]
 mod tests;

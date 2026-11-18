@@ -12,9 +12,7 @@
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
-use super::cursor::Cursor;
 use super::strict::ToolArgs;
-use super::types_memory::Visibility;
 
 macro_rules! tool_args {
     ($($params:ident => $tool:literal),+ $(,)?) => {
@@ -62,101 +60,9 @@ pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymb
 pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
 pub use crate::engine::types::grep::CodeGrepParams;
+pub use crate::engine::types::memory::{MemorySaveParams, MemorySearchToolParams};
 pub use crate::engine::types::refs::CodeRefsParams;
-
-/// Arguments of `code_search`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CodeSearchParams {
-    /// What the code does, in plain words.
-    pub query: String,
-    /// Retrieval lane (default `hybrid`).
-    #[serde(default)]
-    #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
-    pub lane: Option<String>,
-    /// Max hits (default 10).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
-
-/// Arguments of `docs_search`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DocsSearchParams {
-    /// What to look for, in plain words.
-    pub query: String,
-    /// Exact MIME filter, e.g. `application/pdf`.
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    /// Format: pdf, office, html, markdown, email, notebook, text or other.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Glob over document paths (`docs/**/*.md`).
-    #[serde(default)]
-    pub path: Option<String>,
-    /// Whole keywords, comma-separated; any one matches.
-    #[serde(default)]
-    pub keywords: Option<String>,
-    /// Keep chunks naming an entity of this category, e.g. `PERSON`.
-    #[serde(default)]
-    pub entity: Option<String>,
-    /// Max hits (default 10).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
-
-/// Arguments of `memory_save`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct MemorySaveParams {
-    /// Stable identifier, e.g. `decision/auth-tokens`.
-    pub key: String,
-    /// The note.
-    pub value: String,
-    /// Labels to filter on later.
-    #[serde(default)]
-    pub tags: Option<Vec<String>>,
-    #[serde(default)]
-    pub visibility: Option<Visibility>,
-}
-
-/// Arguments of `memory_search`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct MemorySearchToolParams {
-    /// Search notes by meaning. At most one of `query`, `key`, `prefix`; none lists every note.
-    #[serde(default)]
-    pub query: Option<String>,
-    /// Read one note by exact key.
-    #[serde(default)]
-    pub key: Option<String>,
-    /// List notes whose key starts with this.
-    #[serde(default)]
-    pub prefix: Option<String>,
-    /// Only notes carrying this tag. Not with `key`.
-    #[serde(default)]
-    pub tag: Option<String>,
-    #[serde(default)]
-    pub visibility: Option<Visibility>,
-    /// Max notes (default 10 for `query`, 100 for a listing). Not with `key`.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous listing page. Not with `query` or `key`.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-}
+pub use crate::engine::types::search::{CodeSearchParams, DocsSearchParams};
 
 /// Arguments of `index_status`: none.
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]

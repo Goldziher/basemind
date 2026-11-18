@@ -14,11 +14,11 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::{CallToolResult, JsonObject};
 use serde::de::DeserializeOwned;
 
-use super::types_code::GetChunkParams;
-use super::types_memory::MemoryDeleteParams;
 use super::{BasemindServer, lean, tasks};
 use crate::engine::Workspace;
 use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};
+use crate::engine::types::memory::MemoryDeleteParams;
+use crate::engine::types::search::GetChunkParams;
 
 /// SEP-2549 cache TTL advertised on `tools/list` and `prompts/list`. The advertised tool and prompt
 /// sets are fixed for the lifetime of a server process (they change only with the binary/schema, not

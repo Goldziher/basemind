@@ -3,7 +3,7 @@
 //!
 //! Each `#[tool]` is a thin shim: [`BasemindServer::answer`] rejects inexact arguments and reports
 //! failures as `isError` results, and the `*_call` method beside it (also what `basemind code …`
-//! runs) records telemetry around the body in `helpers_code.rs` or an engine op.
+//! runs) runs an engine op through the adapter, which records telemetry around it.
 //!
 //! No tool declares an `output_schema`: the response structs nest, schemars emits nested structs
 //! as `$ref` into `$defs` (the construct that dropped the whole registry in GH #50), and inlining
@@ -18,8 +18,6 @@ use rmcp::tool;
 
 use super::BasemindServer;
 use super::adapter::{self, Op};
-use super::cursor_bind::bound;
-use super::helpers_code;
 use super::strict::Strict;
 use super::types_tools::{
     CodeGrepParams, CodeOutlineParams, CodeReadParams, CodeRefsParams, CodeSearchParams, CodeSymbolsParams,
@@ -257,14 +255,9 @@ impl BasemindServer {
         .await
     }
 
-    /// Body of `code_search`, shared with `basemind code search`.
+    /// Body of the `code_search` tool.
     pub(crate) async fn code_search_call(&self, p: CodeSearchParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "code_search",
-            p,
-            bound(p, |p| helpers_code::code_search(&self.state, p)).await
-        )
+        self.op(p, Workspace::code_search).await
     }
 
     /// Body of the `code_refs` tool.
@@ -281,17 +274,9 @@ impl BasemindServer {
     /// `basemind code chunk`.
     pub(crate) async fn code_chunk_call(
         &self,
-        p: super::types_code::GetChunkParams,
+        p: crate::engine::types::search::GetChunkParams,
     ) -> Result<CallToolResult, McpError> {
-        #[cfg(feature = "code-search")]
-        {
-            super::helpers_code_search::run_get_chunk(&self.state, p).await
-        }
-        #[cfg(not(feature = "code-search"))]
-        {
-            let _ = p;
-            Err(super::tool_contract::feature_missing("code chunk", "code-search"))
-        }
+        self.cli_op(p, Workspace::code_chunk).await
     }
 }
 

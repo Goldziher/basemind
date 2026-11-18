@@ -10,5 +10,8 @@ pub(crate) mod code_grep;
 mod code_outline;
 mod code_read;
 mod code_refs;
+mod code_search;
 mod code_symbols;
+mod docs_search;
 pub(crate) mod find_files;
+mod memory;

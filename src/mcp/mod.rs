@@ -36,17 +36,7 @@ mod blocking;
 mod code_refs_hosted_tests;
 #[cfg(test)]
 mod code_refs_tests;
-#[cfg(feature = "documents")]
-mod docs_pipeline;
 mod helpers_admin;
-mod helpers_code;
-#[cfg(feature = "code-search")]
-mod helpers_code_search;
-#[cfg(all(feature = "documents", feature = "code-search"))]
-mod helpers_documents;
-mod helpers_memory;
-#[cfg(any(feature = "code-search", feature = "documents", test))]
-mod helpers_page;
 mod helpers_telemetry;
 mod history_sync;
 pub(crate) mod identity;
@@ -55,14 +45,9 @@ pub mod in_memory;
 #[cfg(test)]
 mod index_view_tests;
 pub(crate) use crate::engine::l1_cache;
-#[cfg(any(feature = "memory", feature = "code-search"))]
-pub(crate) mod lance_cell;
 mod lean;
-#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-mod memory;
-#[cfg(feature = "memory")]
-pub(crate) mod memory_ops;
-pub(crate) mod memory_vectors;
+#[cfg(all(test, feature = "memory"))]
+mod memory_tests;
 mod notifications;
 pub mod offline;
 mod prompts;
@@ -85,9 +70,6 @@ mod tools_git;
 mod tools_memory;
 pub(crate) mod toon;
 mod types;
-mod types_code;
-mod types_documents;
-pub(crate) mod types_memory;
 mod types_tools;
 
 use std::path::PathBuf;
@@ -187,8 +169,6 @@ pub mod params {
 
     pub(crate) use super::strict::parse as parse_args;
     pub use super::types::{FindCommitsByPathParams, HotFilesParams, TelemetrySummaryParams};
-    pub use super::types_code::GetChunkParams;
-    pub use super::types_memory::{MemoryDeleteParams, Visibility};
     #[cfg(feature = "test-support")]
     pub use super::types_tools::check_arguments;
     pub use super::types_tools::{
@@ -196,6 +176,8 @@ pub mod params {
         DocsSearchParams, FindFilesToolParams, GitBlameParams, GitDiffParams, GitLogParams, IndexRescanParams,
         IndexStatusParams, MemorySaveParams, MemorySearchToolParams, RETIRED_TOOLS, VERB_TOOLS,
     };
+    pub use crate::engine::types::memory::{MemoryDeleteParams, Visibility};
+    pub use crate::engine::types::search::GetChunkParams;
 }
 
 pub use params::Parameters;
@@ -276,6 +258,8 @@ impl From<ServerOptions> for crate::engine::workspace::OpenOptions {
             forwards_writes: false,
             lazy_cache: options.lazy_cache,
             history_sync: Some(history_sync::request),
+            #[cfg(feature = "memory")]
+            memory_owner: identity::resolve_agent_id,
         }
     }
 }

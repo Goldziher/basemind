@@ -1,5 +1,5 @@
-//! Fjall-side cores for the CORE memory operations, called by the `run_memory_*` helpers in
-//! [`super::memory`].
+//! Fjall-side cores for the CORE memory operations, called by the memory bodies in
+//! [`super`].
 //!
 //! These functions own the `memory_by_key` read-modify-write / range-scan logic and nothing else:
 //! no LanceDB, no embedder, no MCP response shaping.
@@ -8,13 +8,12 @@
 //! caller's job: it holds `memory_put_lock`, which is process-wide, so the sessions a daemon hosts
 //! on one workspace share it. That is why this module carries no synchronization of its own.
 
-#![cfg(feature = "memory")]
-
 use serde::{Deserialize, Serialize};
 
 use crate::index::IndexDb;
 
-use super::types_memory::{MemoryRecord, Provenance, VerifyState};
+use crate::engine::EngineError;
+use crate::engine::types::memory::{MemoryRecord, Provenance, VerifyState};
 
 /// One memory entry as the cores yield it: the durable record fields, with `value` already
 /// preview-truncated for `List` results (never truncated for `Get`).
@@ -76,8 +75,8 @@ pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), 
     Ok(())
 }
 
-/// A fjall-side memory operation failed. Kept small and stringly so it maps cleanly to both an
-/// [`McpError`](rmcp::ErrorData) on the local path and a `CommsResponse::Error` on the daemon path.
+/// A fjall-side memory operation failed. Kept small and stringly so it maps cleanly onto an
+/// [`EngineError`].
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MemoryOpError {
     /// The group memory store is owned by another process (the daemon), so this handle holds no
@@ -135,11 +134,12 @@ pub(crate) enum MemoryOpError {
     Serialize(rmp_serde::encode::Error),
 }
 
-impl From<MemoryOpError> for rmcp::ErrorData {
+/// A note too long to save is the caller's to fix; every other failure is internal.
+impl From<MemoryOpError> for EngineError {
     fn from(error: MemoryOpError) -> Self {
         match error {
-            MemoryOpError::TooLong { .. } => rmcp::ErrorData::invalid_params(error.to_string(), None),
-            _ => rmcp::ErrorData::internal_error(error.to_string(), None),
+            MemoryOpError::TooLong { .. } => EngineError::InvalidArgument(error.to_string()),
+            _ => EngineError::Internal(error.to_string()),
         }
     }
 }
@@ -429,7 +429,7 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
     require_memory(idx)?;
     use std::ops::Bound;
 
-    use super::cursor::prefix_upper_bound;
+    use crate::engine::cursor::prefix_upper_bound;
 
     let limit = query.limit;
     let ns_prefix = crate::index::keys::memory_by_key_ns_prefix(scope, query.vis_byte, query.owner);
@@ -652,9 +652,6 @@ mod tests {
             ),
             "{long_note}"
         );
-        assert_eq!(
-            rmcp::ErrorData::from(long_note).code,
-            rmcp::model::ErrorCode::INVALID_PARAMS
-        );
+        assert!(matches!(EngineError::from(long_note), EngineError::InvalidArgument(_)));
     }
 }

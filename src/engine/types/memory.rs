@@ -1,25 +1,72 @@
-//! Internal request shapes and response payloads of the memory bodies.
+//! Types of `memory_save`, `memory_search` and `basemind memory delete`: the wire arguments, the
+//! per-operation requests the bodies in `engine::memory` take, and their responses.
 //!
-//! The wire arguments of `memory_save` / `memory_search` live in `types_tools.rs`; the
-//! per-operation structs below are what the bodies in `memory.rs` take.
-//!
-//! Split out of `types.rs` to keep that file within the per-file size budget. The param structs are
-//! always compiled: the memory tools are advertised in every build and gate in the body, so the
-//! shapes must exist without the `memory` feature. The response structs and the blob-record types
+//! The wire param structs are always compiled: the memory tools are advertised in every build and
+//! gate in the body, so the shapes must exist without the `memory` feature. The response structs and the blob-record types
 //! (`MemoryRecord`, `SymbolRef`, `Provenance`, `VerifyState`) are `#[cfg(feature = "memory")]`-gated:
 //! they only exist when the LanceDB-backed memory store is compiled in to construct them. The
 //! [`Visibility`] tier selector is re-exported from `crate::config`, which owns it because the
 //! memory config names its default tier.
 
-use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "memory")]
-use super::cursor::Cursor;
-#[cfg(feature = "memory")]
-use super::types::default_true;
+use super::default_true;
+use crate::engine::cursor::Cursor;
 
 pub use crate::config::Visibility;
+
+/// Arguments of `memory_save`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemorySaveParams {
+    /// Stable identifier, e.g. `decision/auth-tokens`.
+    pub key: String,
+    /// The note.
+    pub value: String,
+    /// Labels to filter on later.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub visibility: Option<Visibility>,
+}
+
+/// Arguments of `memory_search`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemorySearchToolParams {
+    /// Search notes by meaning. At most one of `query`, `key`, `prefix`; none lists every note.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Read one note by exact key.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// List notes whose key starts with this.
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Only notes carrying this tag. Not with `key`.
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<Visibility>,
+    /// Max notes (default 10 for `query`, 100 for a listing). Not with `key`.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous listing page. Not with `query` or `key`.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+}
+
+/// What `memory_search` answers, by the shape of its arguments: hits by meaning, one note (or
+/// `null`), or a listing.
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum MemorySearchAnswer {
+    Search(MemorySearchResponse),
+    Get(Option<MemoryEntry>),
+    List(MemoryListResponse),
+}
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -40,7 +87,7 @@ pub struct MemoryPutParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct MemoryPutResponse {
+pub(crate) struct MemoryPutResponse {
     pub key: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -62,7 +109,7 @@ pub struct MemoryGetParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-pub(super) struct MemoryEntry {
+pub(crate) struct MemoryEntry {
     pub key: String,
     pub value: String,
     pub tags: Vec<String>,
@@ -90,7 +137,7 @@ pub struct MemoryListParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct MemoryListResponse {
+pub(crate) struct MemoryListResponse {
     /// Notes matching the listing. A lower bound when `truncated`.
     pub total: usize,
     /// True when counting stopped at the scan cap, so `total` is a lower bound. A page cut at
@@ -109,7 +156,7 @@ pub(super) struct MemoryListResponse {
     /// search + response construction), excluding MCP transport, argument
     /// deserialization, and response serialization. A first call against a cold server also
     /// includes index warm-up; such responses carry a `notice`. See
-    /// [`crate::mcp::helpers::timing`] for the full contract.
+    /// [`crate::engine::timing`] for the full contract.
     #[serde(default)]
     pub elapsed_us: u64,
 }
@@ -130,7 +177,7 @@ pub struct MemorySearchParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct MemorySearchHit {
+pub(crate) struct MemorySearchHit {
     pub key: String,
     pub value: String,
     pub tags: Vec<String>,
@@ -139,7 +186,7 @@ pub(super) struct MemorySearchHit {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct MemorySearchResponse {
+pub(crate) struct MemorySearchResponse {
     pub query: String,
     pub hits: Vec<MemorySearchHit>,
     /// Set while the vector index is behind the saved notes: the hits may be incomplete.
@@ -149,7 +196,7 @@ pub(super) struct MemorySearchResponse {
     /// search + response construction), excluding MCP transport, argument
     /// deserialization, and response serialization. A first call against a cold server also
     /// includes index warm-up; such responses carry a `notice`. See
-    /// [`crate::mcp::helpers::timing`] for the full contract.
+    /// [`crate::engine::timing`] for the full contract.
     #[serde(default)]
     pub elapsed_us: u64,
 }
@@ -164,7 +211,7 @@ pub struct MemoryDeleteParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct MemoryDeleteResponse {
+pub(crate) struct MemoryDeleteResponse {
     pub deleted: bool,
 }
 
