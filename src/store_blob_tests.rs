@@ -449,7 +449,7 @@ fn has_l2_reads_the_tier_from_the_header() {
     init_isolated_cache();
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
-    let (with, without, absent) = ("b".repeat(64), "c".repeat(64), "d".repeat(64));
+    let (with, without, absent) = ("9a".repeat(32), "9b".repeat(32), "9c".repeat(32));
     store
         .write_filemap_hex(&with, &sample_l1(), Some(&sample_l2()))
         .expect("write");
