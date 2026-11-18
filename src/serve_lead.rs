@@ -103,7 +103,11 @@ pub(crate) fn mode(root: &std::path::Path, principal: basemind::comms::v2::Princ
         Err(off) => {
             tracing::error!("basemind serve --lead: {off}; serving without agent_launch");
             Mode::Off {
-                notice: format!("{off}; agent_launch and agent_stop are not available in this session."),
+                notice: format!(
+                    "{}; agent_launch and agent_stop are not available in this session (the reason is on \
+                     the serve's stderr).",
+                    off.1
+                ),
             }
         }
     }

@@ -16,16 +16,26 @@ use super::policy_file::{self, Context, Loaded};
 use crate::comms::v2::{Actor, PostBody, PostTarget, Principal};
 use crate::mcp::lead_tools::{self, AGENT_LAUNCH, AGENT_STOP};
 
-/// Why this `serve --lead` hosts no supervisor. It then serves as a plain relay, and the reason is
-/// told to the human: on stderr and in the session's `instructions`.
+/// Why this `serve --lead` hosts no supervisor. It then serves as a plain relay. The full reason
+/// (`.0`, with paths and the policy file's own text) goes to stderr; the session's `instructions`,
+/// which the model reads, get only the fixed category (`.1`).
 #[derive(Clone, Debug)]
-pub struct LeadOff(pub String);
+pub struct LeadOff(pub String, pub &'static str);
 
 impl std::fmt::Display for LeadOff {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
+
+/// The fixed reasons a model may read for launching being off (review 3 N5).
+const NO_POLICY: &str =
+    "agent launching is off: there is no operator policy (agents.toml in basemind's user configuration directory)";
+const DISABLED: &str = "agent launching is off: the operator policy agents.toml does not enable it";
+const REFUSED: &str = "agent launching is off: the operator policy agents.toml was refused";
+const NO_AUDIT: &str = "agent launching is off: the audit log cannot be used";
+const NESTED: &str = "agent launching is off: this process runs inside a launched session";
+const UNREADABLE: &str = "agent launching is off: this process cannot host a supervisor";
 
 /// Where the host keeps what it needs besides the operator's file; injectable for tests.
 pub struct Setup {
@@ -43,8 +53,12 @@ pub struct Setup {
 impl Setup {
     /// The production setup: the user-level policy file and `<data dir>/agents/`.
     pub fn from_user() -> Result<Self, LeadOff> {
-        let policy_path = crate::config::agents_policy::policy_path()
-            .ok_or_else(|| LeadOff("agent launching is off: no home directory to find agents.toml in".to_owned()))?;
+        let policy_path = crate::config::agents_policy::policy_path().ok_or_else(|| {
+            LeadOff(
+                "agent launching is off: no home directory to find agents.toml in".to_owned(),
+                "agent launching is off: there is no home directory to find the operator's agents.toml in",
+            )
+        })?;
         let agents = crate::store::cache_root().join("agents");
         Ok(Self {
             policy_path,
@@ -84,11 +98,19 @@ impl LeadHost {
     /// cannot be opened or reserved, a process inside a launched session, or one that could not be
     /// sealed.
     pub fn start(root: &Path, principal: Principal, host: Option<String>, setup: Setup) -> Result<Self, LeadOff> {
-        let lead_root = root
-            .canonicalize()
-            .map_err(|error| LeadOff(format!("agent launching is off: the workspace root: {error}")))?;
-        let off = |reason: String| LeadOff(format!("agent launching is off: {reason}"));
-        let mcp_command = std::env::current_exe().map_err(|error| off(format!("this executable: {error}")))?;
+        let lead_root = root.canonicalize().map_err(|error| {
+            LeadOff(
+                format!("agent launching is off: the workspace root: {error}"),
+                "agent launching is off: the workspace root cannot be read",
+            )
+        })?;
+        let off = |category: &'static str| {
+            move |reason: String| LeadOff(format!("agent launching is off: {reason}"), category)
+        };
+        // Read once: after the binary is replaced on Linux it names `<path> (deleted)`, and every
+        // later launch fails to resolve the injected server until the lead restarts.
+        let mcp_command =
+            std::env::current_exe().map_err(|error| off(UNREADABLE)(format!("this executable: {error}")))?;
         let env = |name: &str| std::env::var(name).ok();
         let context = Context {
             lead_root: &lead_root,
@@ -99,18 +121,24 @@ impl LeadHost {
         let path = &setup.policy_path;
         let lead = match policy_file::load(path, &context) {
             Ok(Loaded::Enabled(lead)) => lead,
-            Ok(Loaded::Absent) => return Err(off(format!("no operator policy at {}", path.display()))),
-            Ok(Loaded::Disabled) => return Err(off(format!("{} does not enable [agents.launch]", path.display()))),
-            Err(error) => return Err(off(error.to_string())),
+            Ok(Loaded::Absent) => return Err(off(NO_POLICY)(format!("no operator policy at {}", path.display()))),
+            Ok(Loaded::Disabled) => {
+                return Err(off(DISABLED)(format!(
+                    "{} does not enable [agents.launch]",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(off(REFUSED)(error.to_string())),
         };
+        prune_audit_logs(&setup.audit_dir, AUDIT_RETENTION);
         let audit_path = open_audit_dir(&setup.audit_dir).map_err(|error| {
-            off(format!(
+            off(NO_AUDIT)(format!(
                 "the audit log directory {} cannot be used: {error}",
                 setup.audit_dir.display()
             ))
         })?;
         let mut sink = FileAuditSink::open(&audit_path).map_err(|error| {
-            off(format!(
+            off(NO_AUDIT)(format!(
                 "the audit log {} cannot be opened: {error}",
                 audit_path.display()
             ))
@@ -120,16 +148,31 @@ impl LeadHost {
         }
         let held_locks = Arc::new(HeldLocks::default());
         let supervisor = Supervisor::new(lead.policy, lead.configs, setup.registry, Arc::new(sink))
-            .map_err(|error| off(error.to_string()))?
+            .map_err(|error| {
+                let category = match error {
+                    basemind_agents::PolicyError::NestedHost => NESTED,
+                    basemind_agents::PolicyError::AuditReserve { .. } => NO_AUDIT,
+                    _ => REFUSED,
+                };
+                off(category)(error.to_string())
+            })?
             .with_observer(Arc::new(LeadObserver {
                 held_locks: Arc::clone(&held_locks),
             }));
         supervisor
             .register_launcher_in_process(principal.as_str())
-            .map_err(|error| off(format!("this process cannot host a supervisor ({})", error.code())))?;
-        let peer = Peer::embedding().map_err(|error| off(format!("this process cannot be read: {error}")))?;
+            .map_err(|error| {
+                let category = if error.code() == "nested_host" {
+                    NESTED
+                } else {
+                    UNREADABLE
+                };
+                off(category)(format!("this process cannot host a supervisor ({})", error.code()))
+            })?;
+        let peer =
+            Peer::embedding().map_err(|error| off(UNREADABLE)(format!("this process cannot be read: {error}")))?;
         let caller = Caller::principal(principal.as_str(), peer)
-            .map_err(|error| off(format!("the lead's principal: {error}")))?;
+            .map_err(|error| off(REFUSED)(format!("the lead's principal: {error}")))?;
         Ok(Self {
             supervisor,
             caller,
@@ -335,6 +378,49 @@ fn tool_result(body: &Value, is_error: bool) -> Value {
         "content": [{ "type": "text", "text": body.to_string() }],
         "isError": is_error,
     })
+}
+
+/// How long an audit log of an ended lead is kept (review 3 N1): each lead start adds a file of
+/// up to 64 MiB.
+const AUDIT_RETENTION: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Delete the audit logs in `dir` last written more than `retention` ago whose lead has ended: a
+/// live lead's [`FileAuditSink`] holds its file's `flock`, so a file that cannot be locked is kept.
+/// Best effort: a failure keeps the file.
+fn prune_audit_logs(dir: &Path, retention: std::time::Duration) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::io::AsRawFd as _;
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("launch-audit-") && name.ends_with(".jsonl")) {
+            continue;
+        }
+        let Ok(meta) = entry.path().symlink_metadata() else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > retention);
+        if !old || !meta.is_file() {
+            continue;
+        }
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(entry.path())
+        else {
+            continue;
+        };
+        // SAFETY: flock on a descriptor this function owns; it does not block (LOCK_NB).
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// The audit log's path in `dir`, created mode 0700: one file per lead process.

@@ -218,3 +218,38 @@ async fn two_leads_never_launch_into_the_same_or_nested_worktrees() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
+
+/// Review 3 N1: an old audit log of an ended lead is deleted when a lead starts; a recent one, and
+/// one a live lead still holds, are kept.
+#[test]
+fn old_audit_logs_of_ended_leads_are_pruned() {
+    use std::os::unix::io::AsRawFd as _;
+    let fixture = Fixture::new();
+    let dir = fixture.base.join("audit-prune");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = dir.join("launch-audit-1-1.jsonl");
+    let held = dir.join("launch-audit-2-1.jsonl");
+    let recent = dir.join("launch-audit-3-1.jsonl");
+    let other = dir.join("notes.jsonl");
+    for path in [&old, &held, &recent, &other] {
+        std::fs::write(path, "{}\n").unwrap();
+    }
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 60 * 60);
+    for path in [&old, &held, &other] {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+    }
+    let holder = std::fs::File::open(&held).unwrap();
+    // SAFETY: flock on a descriptor this test owns.
+    assert_eq!(
+        unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    prune_audit_logs(&dir, AUDIT_RETENTION);
+    assert!(!old.exists());
+    assert!(held.exists() && recent.exists() && other.exists());
+}
