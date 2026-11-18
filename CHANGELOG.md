@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `code_refs` call sites, `callers` (with `path`) and `implementations` in a session that holds no
+  index — a CLI command or a second `serve` beside a writer, with no daemon — are refused as busy
+  (exit `3`), naming `basemind comms start`, instead of answering from an in-RAM projection of the
+  blobs that could be truncated. The `projections_capped` notice is gone with it. `code_grep` still
+  sweeps every file there, and relation `definition` still reads the intra-file facts.
+- A daemon-hosted session reads the daemon's index directly: its store shares the pool writer's
+  index handle, so reads are not held up by a scan, and it shares the daemon's git-history handle.
 - With the comms daemon up, a CLI tool command on the working view forwards its whole call to the
   daemon over one relay session (a `cli` client in the relay hello) instead of opening the store
   itself; the output and exit codes are unchanged. Against a daemon too old to take the call it exits

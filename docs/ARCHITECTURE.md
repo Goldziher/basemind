@@ -142,13 +142,12 @@ src/
 │   └── tsg/{python,java}.tsg — vendored stack-graph name-binding rulesets
 ├── git_history/            — precomputed git-history index (`git-history.fjall/` in the workspace cache,
 │   │                         see "Git-history index" below)
-│   ├── mod.rs              — GitHistoryIndex; Local/Remote backend; CommitMeta; partitions
+│   ├── mod.rs              — GitHistoryIndex; CommitMeta; partitions
 │   ├── builder.rs          — sync: walk HEAD, populate partitions incrementally
 │   ├── reader.rs           — indexed-vs-live query surface for the history MCP tools
 │   ├── fts.rs              — full-text search over commit messages
 │   ├── keys.rs, encoding.rs — key layout + delta-varint posting-list encoding
-│   ├── proto.rs            — daemon RPC request/response shapes
-│   └── remote.rs           — daemon-forwarding backend (feature comms)
+│   └── proto.rs            — daemon RPC request/response shapes
 ├── config/                 — schema-driven config (TOML/CLI/MCP/env)
 │   ├── v1.rs               — top-level ConfigV1, LlmConfig, CodeIntelConfig (schemars-derived)
 │   ├── resources.rs        — [resources]: scan_threads, embed_threads, max_footprint_mb, max_map_cache_mb
@@ -185,9 +184,6 @@ src/
 │   │                         and docs_search become a task only if still running after 3 s
 │   ├── term_index.rs       — resident term index (symbol names + import strings) behind
 │   │                         `code_symbols` and the `code_refs` importer lookup
-│   ├── index_route.rs      — where a `code_refs` call-site/caller/implementation read runs: local index,
-│   │                         daemon-hosted (in-process), forwarded to the daemon, or in-RAM fallback
-│   ├── index_read.rs       — daemon-side executor for the forwarded index reads (`IndexRead`)
 │   ├── l1_cache.rs         — byte-budgeted read-through cache of decoded outlines (max_map_cache_mb)
 │   ├── helpers.rs          — tool bodies; shared scan / decode helpers
 │   ├── helpers_<area>.rs   — the tool bodies, area-sliced: admin (index_status,
@@ -213,8 +209,7 @@ src/
 │                             daemon replacement without closing the host's pipes
 ├── comms/                  — agent-comms daemon: broker, memory, worktree registry; `comms/v2/` is
 │                             the agent store and its rules (see "Agent comms" below); workspace_pool.rs is
-│                             the daemon's hot-workspace + warm-read-stack pool, index_read_proto.rs
-│                             the wire types of the forwarded index reads;
+│                             the daemon's hot-workspace + warm-read-stack pool;
 │                             http_auth.rs is the BASEMIND_ALLOW_HTTP opt-in + the bearer
 │                             token every HTTP front-end request must present
 ├── git/, git_cache.rs      — gix-backed history, blame, diff, status (git/mod.rs,
@@ -499,15 +494,13 @@ without changing a single result:
 
 Both are memory only: nothing is persisted or migrated.
 
-Because Fjall admits one process, `src/mcp/index_route.rs` picks where a reference read runs:
-`Local` (this session holds the index: a writer or the CLI), `Host` (a daemon-hosted connection,
-reaching the daemon's workspace pool in-process), `Daemon` (a session that cannot open the index
-forwards an `IndexRead` request over the socket; the daemon runs the same scan functions via
-`src/mcp/index_read.rs`, so results, totals and cursors equal a writer's and the session holds no
-projection), or `InRam` (nothing reachable: a lazily built, byte-budgeted projection of the blobs that
-can be truncated and says so with a `projections_capped` notice). A failed forward degrades to
-`InRam` rather than erroring. The same request type carries the `code_grep` bloom lookup
-(`IndexReadQuery::GrepBloom`, at most 16,384 paths per request).
+Because Fjall admits one process, a `code_refs` call-site, caller or implementation read runs on
+the session's own index view: a writer's, the CLI's, or, for a daemon-hosted connection, the pool
+writer's handle, which the hosted read store shares (it never opens the database a second time, and
+a scan holding the writer store does not block it). A session that holds no index (a CLI command or
+a second `serve` beside a writer, with no daemon) refuses those relations as busy, naming
+`basemind comms start`; there is no second, in-RAM read path. `code_grep` without an index sweeps
+every file instead of consulting the blooms.
 
 ### Grep prefilter
 
@@ -751,13 +744,12 @@ commit walk behind `path` + `symbol`, and full-text `query` / `author` search) a
   `GIT_HISTORY_SCHEMA`, independent of the code-map `INDEX_SCHEMA_VER` — a code-map schema bump
   must never throw away a 200k-commit walk.
 - Fjall's directory lock is exclusive even for a read-only open, so exactly ONE process may hold
-  this database. Which process that is depends on the deployment, modeled as a `Backend::Local
-  | Backend::Remote` enum on `GitHistoryIndex`:
+  this database. Which process that is depends on the deployment:
   - **Standalone** (no comms daemon): the process that opens it (`scan`, a writable `serve`, a
     one-shot CLI query) holds it locally and, if a writer, builds it in-process.
-  - **Daemon-backed**: the daemon — the machine's sole fjall writer — holds and builds the
-    database; every front-end (a `daemon_writer` serve, the one-shot CLI) holds a `Remote` proxy
-    that forwards each history query over the socket rather than trying (and failing) to open it.
+  - **Daemon**: the daemon — the machine's sole fjall writer — holds and builds the database. A
+    session it hosts shares the daemon's handle; a CLI command forwards its whole call. Syncs
+    serialize on the handle's build lock, so N sessions asking at once cause one walk.
 - A process that can reach neither backend falls back to the live walk (`git_history: None`). The
   index is a pure accelerator: tools use it only when `last_indexed_head == HEAD` and otherwise
   live-walk and report `truncated_reason: "live_walk"`, so it can never serve stale results.
