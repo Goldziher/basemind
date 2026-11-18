@@ -1,0 +1,231 @@
+"""Tests for the analysis-kind gold (`_edges.py`, `gen_graph.py`, `gen_changed.py`, `gen_large.py`,
+`gen_read_around.py`, `gen_explain.py`): `python3 -m unittest discover benchmarks/eval`.
+
+A throwaway repository with a known module graph, history and file sizes is built once; every
+expected value is worked out by hand from the fixture. `rust_gold` is built offline from the cargo
+cache on first use (set `BASEMIND_EVAL_RUST_GOLD` to reuse a binary).
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).parent
+sys.path.insert(0, str(HERE))
+
+import _edges as e  # noqa: E402
+from gen_read_around import merged_ranges  # noqa: E402
+
+# Module graph: lib -> {a, b, c}; a <-> b; a -> a/inner; a/inner -> c; c -> c/extra (by #[path]);
+# c/extra -> a/inner. Cycles: {a, b} and {a/inner, c/mod, c/extra}.
+FILES = {
+    "Cargo.toml": '[package]\nname = "fixture"\nversion = "0.1.0"\n',
+    "src/lib.rs": "pub mod a;\npub mod b;\npub mod c;\n// Beacon_marker lives here too\n",
+    "src/a.rs": "use crate::b::B;\nmod inner;\n\npub struct A;\n",
+    "src/a/inner.rs": "use super::super::c::C;\n\npub fn helper_fn() -> u8 {\n    1\n}\n",
+    "src/b.rs": "use crate::a::A;\nuse std::fmt;\nuse self::nested::N;\n\nmod nested {\n    pub struct N;\n}\n\npub struct B;\n",
+    "src/c/mod.rs": '#[path = "extra.rs"]\nmod d;\nuse d::D;\n\npub struct C;\n',
+    "src/c/extra.rs": "use crate::a::inner::helper_fn;\n\npub struct D;\n",
+    "tests/it.rs": "mod common;\nuse fixture::a::A;\n",
+    "tests/common.rs": "pub fn shared() {}\n",
+    "pkg/__init__.py": "",
+    "pkg/x.py": "from . import y\n",
+    "pkg/y.py": "from pkg import x\n",
+    "pkg/z.py": "import os\nimport pkg.y\nfrom .x import thing\n",
+}
+# 200 lines, the last without a newline: `wc -l` says 199, the scanner says 200.
+BIG = "\n".join(f"// line {i}" for i in range(1, 201))
+WIDGET = """pub struct Wheel;
+
+impl Wheel {
+    pub fn spin_wheel(&self) {}
+}
+
+pub fn make_widget_unique(w: &Wheel) -> u8 {
+    w.spin_wheel();
+    println!("x");
+    crate::a::inner::helper_fn()
+}
+
+pub fn first_user(w: &Wheel) -> u8 {
+    make_widget_unique(w)
+}
+
+pub fn second_user(w: &Wheel) -> u8 {
+    make_widget_unique(w) + 1
+}
+"""
+CHANGE = "\n// Beacon_marker changed here\n"
+
+
+def git(repo: Path, *args: str) -> str:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e.x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e.x",
+    }
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=env).stdout
+
+
+class AnalysisGenerators(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.repo = repo = Path(cls._tmp.name) / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q")
+        git(repo, "config", "commit.gpgsign", "false")
+        for rel, text in {**FILES, "src/big.rs": BIG, "src/widget.rs": WIDGET}.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(text)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "fixture")
+        cls.c1 = git(repo, "rev-parse", "HEAD").strip()
+        with (repo / "src/b.rs").open("a") as fh:
+            fh.write(CHANGE)
+        git(repo, "commit", "-qam", "touch b")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def gen(self, script: str, *args: str) -> list[dict]:
+        cmd = [sys.executable, str(HERE / script), "--repo", str(self.repo), "--seed", "1", *args]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        again = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        self.assertEqual(proc.stdout, again.stdout, "generator output must be deterministic")
+        return [json.loads(line) for line in proc.stdout.splitlines()]
+
+    def baseline_output(self, task: dict) -> str:
+        cmds = task["baseline"]["grep"]
+        out = ""
+        for cmd in cmds if isinstance(cmds, list) else [cmds]:
+            proc = subprocess.run(["sh", "-c", cmd], cwd=self.repo, capture_output=True, text=True, check=False)
+            self.assertIn(proc.returncode, (0, 1), f"{cmd}: {proc.stderr}")
+            out += proc.stdout
+        return out
+
+    def test_rust_edges_follow_mod_use_super_self_and_path_attributes(self) -> None:
+        import _common as c
+        import _rust as r
+
+        repo = c.Repo(str(self.repo), exts="rs")
+        edges = e.rust_edges(repo.all_files(), r.records(repo.blobs(repo.files())))
+        got = {src: sorted(t) for src, t in edges.items()}
+        expected = {
+            "src/lib.rs": ["src/a.rs", "src/b.rs", "src/c/mod.rs"],
+            "src/a.rs": ["src/a/inner.rs", "src/b.rs"],
+            "src/a/inner.rs": ["src/c/mod.rs"],
+            # `use self::nested::N` names b.rs itself and `std::fmt` another crate: no edges.
+            "src/b.rs": ["src/a.rs"],
+            "src/c/mod.rs": ["src/c/extra.rs"],
+            "src/c/extra.rs": ["src/a/inner.rs"],
+            # `use fixture::a::A` names the package's library, another crate.
+            "tests/it.rs": ["tests/common.rs"],
+        }
+        self.assertEqual(got, expected)
+        self.assertEqual(edges["src/a.rs"], {"src/b.rs": 1, "src/a/inner.rs": 2}, "first import line per target")
+
+    def test_python_edges_resolve_absolute_relative_and_submodule_imports(self) -> None:
+        sources = [(p, t) for p, t in FILES.items() if p.endswith(".py")]
+        got = {src: sorted(t) for src, t in e.python_edges(sources).items()}
+        self.assertEqual(
+            got,
+            {
+                "pkg/x.py": ["pkg/y.py"],
+                "pkg/y.py": ["pkg/x.py"],
+                "pkg/z.py": ["pkg/x.py", "pkg/y.py"],
+            },
+        )
+
+    def test_cycles_and_importers_on_hand_built_graphs(self) -> None:
+        edges = {"a": {"b": 1}, "b": {"c": 1, "a": 2}, "c": {"d": 1}, "d": {"c": 1}, "e": {"a": 1}, "f": {"f": 1}}
+        self.assertEqual(e.cycles(edges), [["a", "b"], ["c", "d"]], "a self-edge is no cycle")
+        rev = e.reverse(edges)
+        self.assertEqual(e.importers_within(rev, "c", 1), {"b": 1, "d": 1})
+        self.assertEqual(e.importers_within(rev, "c", 2), {"b": 1, "d": 1, "a": 2})
+        self.assertEqual(e.importers_within(rev, "c", 3), {"b": 1, "d": 1, "a": 2, "e": 3})
+        chain = {str(i): {str(i + 1): 1} for i in range(3000)}
+        chain["3000"] = {"0": 1}
+        self.assertEqual(len(e.cycles(chain)[0]), 3001, "iterative: no recursion limit")
+
+    def test_graph_tasks(self) -> None:
+        tasks = self.gen("gen_graph.py", "--n", "40")
+        impact = {(t["args"]["path"], t["args"]["depth"]): t for t in tasks if t["mode"] == "impact"}
+        self.assertEqual(impact[("src/b.rs", 1)]["gold"], ["src/a.rs", "src/lib.rs"])
+        self.assertNotIn(("src/b.rs", 2), impact, "depth 2 adds nothing to b.rs, so no task")
+        inner2 = impact[("src/a/inner.rs", 2)]
+        self.assertEqual(inner2["gold"], ["src/a.rs", "src/b.rs", "src/c/extra.rs", "src/c/mod.rs", "src/lib.rs"])
+        self.assertEqual(inner2["args"]["relation"], "importers")
+        self.assertEqual(len(inner2["baseline"]["grep"]), 3, "the target and its two depth-1 importers")
+        got = {line.strip() for line in self.baseline_output(impact[("src/b.rs", 1)]).splitlines()}
+        self.assertEqual(got, {"src/a.rs", "src/lib.rs"})
+
+        cycles = [t for t in tasks if t["mode"] == "cycles"]
+        everything = next(t for t in cycles if "path" not in t["args"])
+        self.assertEqual(
+            everything["gold"], ["src/a.rs", "src/a/inner.rs", "src/b.rs", "src/c/extra.rs", "src/c/mod.rs"]
+        )
+        by_path = {t["args"]["path"]: t["gold"] for t in cycles if "path" in t["args"]}
+        self.assertEqual(by_path["src/a.rs"], ["src/a.rs", "src/b.rs"])
+        self.assertEqual(by_path["src/c/extra.rs"], ["src/a/inner.rs", "src/c/extra.rs", "src/c/mod.rs"])
+        self.assertEqual(len(by_path), 5)
+
+        py = self.gen("gen_graph.py", "--ext", "py", "--kind", "cycles")
+        self.assertEqual(py[0]["gold"], ["pkg/x.py", "pkg/y.py"])
+
+    def test_grep_changed_scopes_gold_to_the_change(self) -> None:
+        tasks = self.gen("gen_changed.py", "--n", "50", "--per-rev", "50")
+        self.assertTrue(tasks)
+        for t in tasks:
+            self.assertEqual(t["args"]["changed"], self.c1)
+            self.assertTrue(all(g.startswith("src/b.rs:") for g in t["gold"]), t)
+        beacon = next(t for t in tasks if t["args"]["pattern"] == "Beacon_marker")
+        self.assertEqual(beacon["gold"], ["src/b.rs:11"], "the occurrence in lib.rs is out of scope")
+        got = {":".join(line.split(":")[:2]) for line in self.baseline_output(beacon).splitlines()}
+        self.assertEqual(got, {"src/b.rs:11"})
+
+    def test_find_large_counts_an_unterminated_last_line(self) -> None:
+        tasks = self.gen("gen_large.py", "--min-dir-files", "100")
+        at200 = next(t for t in tasks if t["args"]["min_lines"] == 200)
+        self.assertEqual(at200["gold"], ["src/big.rs"])
+        self.assertEqual(at200["args"]["language"], "rust")
+        self.assertNotIn("path_prefix", at200["args"])
+        wc = subprocess.run(["wc", "-l", "src/big.rs"], cwd=self.repo, capture_output=True, text=True, check=True)
+        self.assertEqual(int(wc.stdout.split()[0]), 199, "the fixture really ends without a newline")
+        rows = [re.match(r"\s*(\d+) (.*)", line).groups() for line in self.baseline_output(at200).splitlines()]
+        self.assertEqual(rows, [("200", "src/big.rs")])
+        self.assertFalse(any(t["args"]["min_lines"] > 200 for t in tasks), "no file reaches 300")
+
+    def test_read_around_merges_overlapping_and_adjacent_ranges(self) -> None:
+        self.assertEqual(merged_ranges([3, 9, 30], 33), [(1, 14), (25, 33)])
+        self.assertEqual(merged_ranges([1, 12], 40), [(1, 17)], "adjacent ranges merge")
+        self.assertEqual(merged_ranges([20, 40], 60), [(15, 25), (35, 45)])
+        tasks = self.gen("gen_read_around.py", "--n", "500")
+        spin = next(t for t in tasks if t["args"]["pattern"] == "spin_wheel")
+        self.assertEqual(spin["args"]["ranges"], True)
+        self.assertEqual(spin["gold"], [f"src/widget.rs:{n}" for n in range(1, 14)])
+        printed = "".join(self.baseline_output({"baseline": {"grep": spin["baseline"]["grep"][1:]}}))
+        self.assertEqual(printed.count("\n"), len(spin["gold"]))
+
+    def test_explain_gold_is_definition_call_sites_and_callees(self) -> None:
+        tasks = self.gen("gen_explain.py", "--n", "50")
+        t = next(t for t in tasks if t["args"]["target"] == "make_widget_unique")
+        self.assertEqual(
+            t["gold"],
+            ["src/widget.rs:7", "src/widget.rs:14", "src/widget.rs:18", "->helper_fn", "->spin_wheel"],
+        )
+        self.assertEqual(len(t["baseline"]["grep"]), 3)
+        self.assertIn("make_widget_unique", self.baseline_output(t))
+
+
+if __name__ == "__main__":
+    unittest.main()
