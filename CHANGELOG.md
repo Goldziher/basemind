@@ -54,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A one-shot `basemind scan` gives each ONNX session the scan's cores minus the embed pool's other
+  workers as intra-op threads (3 on 4 cores, was 2), and a set `[resources] embed_threads` now sets
+  them too. The daemon keeps 2 and `serve` keeps `max(2, cores / 4)`: they share the machine.
 - `code_refs` call sites, `callers` (with `path`) and `implementations` in a session that holds no
   index — a CLI command or a second `serve` beside a writer, with no daemon — are refused as busy
   (exit `3`), naming `basemind comms start`, instead of answering from an in-RAM projection of the

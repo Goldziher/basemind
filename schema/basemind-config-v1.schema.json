@@ -921,7 +921,7 @@
           "default": 0
         },
         "embed_threads": {
-          "description": "Cap on the ONNX embedding pool. `0` (auto) resolves to\n`max(2, logical_cpus / 4)` via `crate::embeddings::resolve_embed_threads`\n— a bounded fraction of cores so the embedder never pins the machine and\nORT arenas are not replicated across every core. This supersedes the\ndeprecated `[documents].embed_max_threads`; see\n[`ResourcesConfig::effective_embed_threads`] for the precedence.",
+          "description": "Cap on the ONNX embedding pool. `0` (auto) resolves to\n`max(2, logical_cpus / 4)` via `crate::embeddings::resolve_embed_threads`\n— a bounded fraction of cores so the embedder never pins the machine and\nORT arenas are not replicated across every core. This supersedes the\ndeprecated `[documents].embed_max_threads`; see\n[`ResourcesConfig::effective_embed_threads`] for the precedence.\nIn a one-shot `basemind scan` a non-zero value is also each ONNX session's\nintra-op thread count; auto gives those sessions the scan's cores the pool\nleaves (`crate::embeddings::ort_intra_threads`).",
           "type": "integer",
           "format": "uint",
           "minimum": 0,

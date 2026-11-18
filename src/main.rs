@@ -318,15 +318,20 @@ fn run() -> Result<()> {
         .init();
 
     // Every process that may build an ONNX session bounds its memory before the first one exists. The
-    // comms daemon applies its own (tighter) thread cap in `comms_daemon::run`, which must win.
+    // comms daemon applies its own (tighter) thread cap in `comms_daemon::run`, and a one-shot scan its
+    // own (wider) one in `cmd_scan` once its config is loaded; both must win.
     #[cfg(feature = "intelligence")]
     {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         let is_comms = matches!(cli.cmd, Cmd::Comms { .. });
         #[cfg(not(all(feature = "comms", any(unix, windows))))]
         let is_comms = false;
-        if !is_comms {
-            basemind::embeddings::bound_ort_memory(basemind::embeddings::resolve_embed_threads(0));
+        if !is_comms && !matches!(cli.cmd, Cmd::Scan(_)) {
+            basemind::embeddings::bound_ort_memory(basemind::embeddings::ort_intra_threads(
+                basemind::embeddings::EmbedProcess::Interactive,
+                0,
+                rayon::current_num_threads(),
+            ));
         }
     }
 
@@ -632,6 +637,8 @@ fn cmd_scan(
     let _ = matches;
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default_with(root, Some(args.documents.clone()))?;
+    #[cfg(feature = "intelligence")]
+    bound_scan_ort_threads(&config);
 
     if args.staged {
         let repo = basemind::git::Repo::discover(root).context("`--staged` requires being inside a git repository")?;
@@ -704,6 +711,25 @@ fn cmd_scan(
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())
+}
+
+/// Give a one-shot scan's ONNX sessions the cores of its scan pool (`[resources] scan_threads`, else
+/// rayon's default), unless `[resources] embed_threads` names a count; see
+/// [`basemind::embeddings::ort_intra_threads`].
+#[cfg(feature = "intelligence")]
+fn bound_scan_ort_threads(config: &basemind::config::Config) {
+    let resources = &config.resources;
+    let cores = match resources.scan_threads {
+        0 => rayon::current_num_threads(),
+        n => n,
+    };
+    let threads = basemind::embeddings::ort_intra_threads(
+        basemind::embeddings::EmbedProcess::OneShotScan,
+        resources.effective_embed_threads(config.documents.embed_max_threads),
+        cores,
+    );
+    tracing::debug!(threads, cores, "ONNX intra-op threads for this scan");
+    basemind::embeddings::bound_ort_memory(threads);
 }
 
 /// Reap what a migrating, re-extracting or schema-resetting pass orphaned. Gated on the pass having displaced anything,
