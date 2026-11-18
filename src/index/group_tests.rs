@@ -167,3 +167,37 @@ fn a_view_s_bm25_cache_is_dropped_with_its_last_handle() {
     drop((a, again));
     assert!(group.bm25_cache_views().is_empty());
 }
+
+/// A group database of another format is discarded whole, and so is one holding rows without an
+/// incarnation (an older build died while emptying it in place): no row of the old layout survives
+/// under a view id the new database allocates again.
+#[test]
+fn rows_of_another_layout_never_survive_the_rebuild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let group_dir = dir.path().join("group");
+    let memory = dir.path().join("memory.fjall");
+    for crashed_mid_clear in [false, true] {
+        let first = {
+            let group = open(&group_dir);
+            let a = view(&group, "ws-a", "working", &memory);
+            a.keyspace(Part::RefsByPath).insert(b"old", "row").expect("insert");
+            a.keyspace(Part::GrepBloom).insert(b"hash", "bloom").expect("insert");
+            let meta = group.meta();
+            if crashed_mid_clear {
+                meta.remove(META_INCARNATION).expect("lose the incarnation");
+                meta.remove(META_FORMAT).expect("lose the format");
+                meta.remove(META_NEXT_VIEW).expect("lose the view counter");
+                meta.remove(view_record("ws-a", "working")).expect("lose the view record");
+            } else {
+                meta.insert(META_FORMAT, (GROUP_FORMAT - 1).to_be_bytes()).expect("older format");
+            }
+            group.incarnation()
+        };
+
+        let group = open(&group_dir);
+        assert_ne!(group.incarnation(), first, "crashed mid-clear: {crashed_mid_clear}");
+        let a = view(&group, "ws-a", "working", &memory);
+        assert!(a.keyspace(Part::RefsByPath).is_empty().expect("read"), "{crashed_mid_clear}");
+        assert!(a.keyspace(Part::GrepBloom).is_empty().expect("read"), "{crashed_mid_clear}");
+    }
+}

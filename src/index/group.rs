@@ -52,8 +52,8 @@ pub(super) const SHARED_PARTS: [Part; 7] = [
 const META_FORMAT: &[u8] = b"\xffgroup/format";
 /// The layout of the rows in a group database. Bumped when a stage of ADR-0028 changes a key shape
 /// within an unreleased minor: an open that finds another value (or none, in a database that has an
-/// incarnation) empties every keyspace and takes a new incarnation, so every view's file map names a
-/// gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content. 3:
+/// incarnation) discards the database and creates it anew with a new incarnation, so every view's
+/// file map names a gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content. 3:
 /// symbol and call rows shared, keyed by content. 4: BM25 holders; postings written once per key. 5: one posting row per term and
 /// content, packing its chunks (ADR-0041). 6: one call name row per callee and content, packing its
 /// starts (ADR-0043).
@@ -131,6 +131,22 @@ fn read_u32(bytes: &[u8]) -> Option<u32> {
 
 fn read_u64(bytes: &[u8]) -> Option<u64> {
     <[u8; 8]>::try_from(bytes).ok().map(u64::from_be_bytes)
+}
+
+/// Whether the database holds rows no open of this build may read: a format other than
+/// [`GROUP_FORMAT`], or rows without the incarnation that every writer stamps before its first row
+/// (what a crash in an older build's in-place clear left).
+fn holds_rows_of_another_layout(db: &IndexDb) -> Result<bool, IndexError> {
+    let meta = db.keyspace(Part::Meta).raw();
+    if meta.get(META_INCARNATION)?.is_some() {
+        return Ok(meta.get(META_FORMAT)?.as_deref().and_then(read_u32) != Some(GROUP_FORMAT));
+    }
+    for part in Part::ALL.into_iter().filter(|part| *part != Part::Meta) {
+        if !db.keyspace(part).raw().is_empty()? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A fresh incarnation: distinct from every earlier one of the directory with overwhelming
@@ -219,20 +235,23 @@ impl GroupDb {
     }
 
     fn open(dir: &Path, lock: GroupLock) -> Result<Self, IndexError> {
-        let fresh = super::IndexDb::open_without_memory(dir)?;
-        let wiped_on_open = fresh.wiped_on_open();
+        let mut fresh = super::IndexDb::open_without_memory(dir)?;
+        let mut wiped_on_open = fresh.wiped_on_open();
+        if holds_rows_of_another_layout(&fresh)? {
+            // Discarded whole, as a schema mismatch is: emptying it keyspace by keyspace would leave,
+            // after a crash, rows of the old layout under view ids the next open allocates again. ~keep
+            tracing::info!(dir = %dir.display(), "group index rows are of another layout; rebuilding it");
+            drop(fresh);
+            super::durability::discard_dir(&dir.join(super::INDEX_DIR))?;
+            fresh = super::IndexDb::open_without_memory(dir)?;
+            wiped_on_open = true;
+        }
         let meta = fresh.keyspace(Part::Meta).raw().clone();
         let stored = meta.get(META_INCARNATION)?.as_deref().and_then(read_u64);
         let current_format = meta.get(META_FORMAT)?.as_deref().and_then(read_u32) == Some(GROUP_FORMAT);
         let incarnation = match stored {
             Some(incarnation) if !wiped_on_open && current_format => incarnation,
             _ => {
-                if stored.is_some() && !current_format {
-                    tracing::info!(dir = %dir.display(), "group index rows are of an older layout; rebuilding it");
-                    for part in Part::ALL {
-                        fresh.keyspace(part).raw().clear()?;
-                    }
-                }
                 let incarnation = new_incarnation(dir);
                 let mut batch = fresh.db.batch().durability(Some(PersistMode::SyncAll));
                 batch.insert(&meta, META_INCARNATION, incarnation.to_be_bytes());
