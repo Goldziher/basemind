@@ -257,19 +257,26 @@ mod with_daemon {
         );
     }
 
-    /// The honest fallback survives: a repo the daemon has never indexed has no index to read, so the
-    /// CLI live-walks — and SAYS SO (`truncated`, reason `live_walk`) rather than pretending the answer is
+    /// The honest fallback survives: when the daemon has no index it can read for the repo, the CLI
+    /// live-walks — and SAYS SO (`truncated`, reason `live_walk`) rather than pretending the answer is
     /// complete.
+    ///
+    /// "Never indexed" alone is not that state: the forwarded call makes the daemon host the
+    /// workspace, which starts a background history sync, and on a three-commit repo that sync can
+    /// finish before the search reads the index. So this process holds the repo's database, which
+    /// leaves the daemon unable to open, build or read it for as long as the call runs.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn cli_reports_partial_when_the_daemon_has_no_index_for_the_repo() {
         let dir = build_repo();
         let root = dir.path();
         ensure_real_daemon();
+        let _held = GitHistoryIndex::open(&basemind::git_history::shared_history_basemind_dir(root))
+            .expect("hold the repo's git-history database");
 
         let response = cli_search(root, &[]);
         assert!(
             is_partial(&response),
-            "an unindexed repo must degrade VISIBLY to the live walk: {response}"
+            "a repo without a readable index must degrade VISIBLY to the live walk: {response}"
         );
     }
 }
