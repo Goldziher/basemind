@@ -99,6 +99,7 @@ pub(crate) fn kind_to_str(k: SymbolKind) -> &'static str {
         SymbolKind::Constructor => "constructor",
         SymbolKind::Decorator => "decorator",
         SymbolKind::Heading => "heading",
+        SymbolKind::Route => "route",
         SymbolKind::Unknown => "unknown",
     }
 }
@@ -127,6 +128,7 @@ pub(crate) fn parse_kind(s: &str) -> Result<SymbolKind, EngineError> {
         "constructor" => SymbolKind::Constructor,
         "decorator" => SymbolKind::Decorator,
         "heading" => SymbolKind::Heading,
+        "route" => SymbolKind::Route,
         other => {
             return Err(EngineError::invalid_argument(format!("unknown symbol kind: {other}")));
         }

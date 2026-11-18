@@ -8,6 +8,9 @@ pub mod doc_fallback;
 pub mod doc_guard;
 #[cfg(feature = "documents")]
 pub mod doc_tiers;
+mod http;
+#[cfg(test)]
+mod java_parity_tests;
 pub mod l1;
 pub mod l2;
 pub mod l3;
@@ -92,7 +95,9 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 /// - 2: Rust outlines gain bodiless trait methods, nested `fn` items, items inside item-position
 ///   macro bodies, and trait impls written with a path or generic trait.
 /// - 3: the BM25 keyword postings split camelCase and PascalCase identifiers into their words.
-pub const EXTRACT_EPOCH: u16 = 3;
+/// - 4: HTTP routes become `Route` symbols and literal-URL client calls become call rows (ADR-0048);
+///   Java gains its own query override.
+pub const EXTRACT_EPOCH: u16 = 4;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
@@ -264,6 +269,9 @@ pub enum SymbolKind {
     /// heading text; the heading hierarchy is implicit in document (line) order. Lets `outline` and
     /// `search_symbols` navigate a notes vault by section, mirroring how source symbols work.
     Heading,
+    /// An HTTP route a server framework registers (ADR-0048). The name is the method and the
+    /// normalized path (`GET /users/:param`); the signature is the handler's name.
+    Route,
 }
 
 impl SymbolKind {
@@ -290,6 +298,7 @@ impl SymbolKind {
             "constructor" => Self::Constructor,
             "decorator" => Self::Decorator,
             "heading" => Self::Heading,
+            "route" => Self::Route,
             _ => Self::Unknown,
         }
     }
@@ -303,7 +312,7 @@ impl SymbolKind {
             Unknown => 0,
             Const | Variable | Field | Decorator => 1,
             Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module | Macro | Impl
-            | Namespace | Getter | Setter | EnumVariant | Constructor | Heading => 2,
+            | Namespace | Getter | Setter | EnumVariant | Constructor | Heading | Route => 2,
         }
     }
 }
