@@ -34,6 +34,7 @@ pub fn baseline_items(kind: BaselineItems, root: &Path, output: &str, files: &[(
                 .map(|path| Item { path, line: None })
                 .collect()
         }
+        BaselineItems::CountedPaths => counted_paths(output),
         BaselineItems::Blame => blame(root, output),
         BaselineItems::Diff => diff_lines(output),
         BaselineItems::DiffSymbols => diff_symbols(output),
@@ -47,6 +48,23 @@ pub fn baseline_items(kind: BaselineItems, root: &Path, output: &str, files: &[(
             })
             .collect(),
     }
+}
+
+/// `wc -l` rows, `<count> <path>` with leading blanks: the path after the count. The `total` row
+/// `wc` prints for several files names no file.
+fn counted_paths(output: &str) -> Vec<Item> {
+    output
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim_start();
+            let digits = l.bytes().take_while(u8::is_ascii_digit).count();
+            let path = l[digits..].strip_prefix(' ')?.trim_start();
+            (digits > 0 && !path.is_empty() && path != "total").then(|| Item {
+                path: path.to_string(),
+                line: None,
+            })
+        })
+        .collect()
 }
 
 fn is_sha(t: &str) -> bool {
@@ -251,6 +269,13 @@ mod tests {
         assert_eq!(got, vec![it("src/a.rs:12"), it("src/b:c.rs:3")]);
         let paths = baseline_items(BaselineItems::Paths, Path::new("."), "a/b.rs\n\n c.md \n", &[]);
         assert_eq!(paths, vec![it("a/b.rs"), it("c.md")]);
+    }
+
+    #[test]
+    fn counted_paths_keep_the_path_and_drop_the_total_row() {
+        let out = "  2210 src/big.rs\n   980 src/with space.rs\n  3190 total\nnoise\n";
+        let got = baseline_items(BaselineItems::CountedPaths, Path::new("."), out, &[]);
+        assert_eq!(got, vec![it("src/big.rs"), it("src/with space.rs")]);
     }
 
     #[test]

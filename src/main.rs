@@ -55,7 +55,7 @@ struct Cli {
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
     /// subcommands (code / git / memory / admin / status / cache), the
-    /// coordination groups (agent / workspace / comms / daemon) and doctor. It is ignored, with a
+    /// coordination groups (agent / workspace / comms / daemon), doctor and sessions. It is ignored, with a
     /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
     /// serve.
     #[arg(long, global = true)]
@@ -131,6 +131,9 @@ enum Cmd {
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
     Statusline,
+    /// Tool-use counts from the local Claude Code and Codex transcripts of this repository and its
+    /// worktrees: basemind calls against shell searches and whole-file reads. Counts and paths only.
+    Sessions(basemind::cli::sessions::SessionsArgs),
     /// Manage the machine-global caches (gc / stats / clear). Offline path.
     #[command(subcommand)]
     Cache(basemind::cli::admin::CacheCmd),
@@ -400,6 +403,7 @@ fn run() -> Result<()> {
         },
         Cmd::Serve { lead } => cmd_serve(&root, &view, lead),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
+        Cmd::Sessions(args) => basemind::cli::sessions::run(&root, json, &args),
         // An explicit `--root` selects the per-repo line for that (resolved) workspace; bare
         // `basemind statusline` keeps the daemon hot-workspace summary.
         Cmd::Statusline => comms_cli::cmd_statusline(cli.root.as_ref().map(|_| root.as_path())),
@@ -430,6 +434,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
             Cmd::Comms { .. } | Cmd::Agent { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. }
         );
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve { .. });
+    let consumes_json = consumes_json || matches!(cmd, Cmd::Sessions(_));
 
     if json && !consumes_json {
         tracing::warn!("--json has no effect on this subcommand; ignoring");

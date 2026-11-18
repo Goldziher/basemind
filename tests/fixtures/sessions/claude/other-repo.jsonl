@@ -1,0 +1,2 @@
+{"type":"user","cwd":"{{OTHER}}","version":"2.1.0","sessionId":"s4","timestamp":"2026-11-18T12:00:00.000Z","message":{"role":"user","content":"SECRET-OTHER-PROMPT"}}
+{"type":"assistant","cwd":"{{OTHER}}","version":"2.1.0","sessionId":"s4","timestamp":"2026-11-18T12:01:00.000Z","message":{"id":"o1","role":"assistant","content":[{"type":"tool_use","id":"o-t1","name":"Grep","input":{"pattern":"SECRET-OTHER"}}],"usage":{"output_tokens":7}}}

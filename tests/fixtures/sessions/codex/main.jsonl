@@ -1,0 +1,13 @@
+{"timestamp":"2026-11-18T09:00:00.000Z","type":"session_meta","payload":{"id":"aaaa","timestamp":"2026-11-18T09:00:00.000Z","cwd":"{{REPO}}","originator":"codex_cli_rs","cli_version":"0.58.0","instructions":"SECRET-INSTRUCTIONS","git":{"branch":"main"}}}
+{"timestamp":"2026-11-18T09:00:01.000Z","type":"turn_context","payload":{"cwd":"{{REPO}}","approval_policy":"on-request","model":"x"}}
+{"timestamp":"2026-11-18T09:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"SECRET-CODEX-PROMPT"}]}}
+{"timestamp":"2026-11-18T09:00:03.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"SECRET-REASONING"}],"encrypted_content":"x"}}
+{"timestamp":"2026-11-18T09:00:04.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"rg -n SECRET-CODEX-PATTERN src\"],\"workdir\":\"{{REPO}}\"}","call_id":"c1"}}
+{"timestamp":"2026-11-18T09:00:05.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"{\"output\":\"SECRET-CODEX-OUT\",\"metadata\":{\"exit_code\":1,\"duration_seconds\":0.1}}"}}
+{"timestamp":"2026-11-18T09:00:06.000Z","type":"response_item","payload":{"type":"function_call","name":"basemind__code_read","arguments":"{\"path\":\"src/lib.rs\",\"symbol\":\"SECRET-SYMBOL\"}","call_id":"c2"}}
+{"timestamp":"2026-11-18T09:00:07.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":30},"last_token_usage":{"input_tokens":100,"output_tokens":30}}}}
+{"timestamp":"2026-11-18T09:00:08.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"c3","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-SECRET-PATCH-OLD\n+SECRET-PATCH-NEW\n*** End Patch\n"}}
+{"timestamp":"2026-11-18T09:00:09.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c3","output":"Exit code: 0\nWall time: 0 seconds\nOutput:\nSECRET-PATCH-RESULT"}}
+{"timestamp":"2026-11-18T09:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":50}}}}
+{"timestamp":"2026-11-18T09:30:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cat src/lib.rs\"}","call_id":"c4"}}
+{"timestamp":"2026-11-18T09:30:01.000Z","type":"event_msg","payload":{"type":"token_count","info":null}}

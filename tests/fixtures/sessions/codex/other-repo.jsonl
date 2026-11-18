@@ -1,0 +1,2 @@
+{"timestamp":"2026-11-18T09:00:00.000Z","type":"session_meta","payload":{"id":"bbbb","cwd":"{{OTHER}}","cli_version":"0.58.0","instructions":"SECRET-OTHER-INSTRUCTIONS"}}
+{"timestamp":"2026-11-18T09:00:04.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"rg\",\"SECRET-OTHER\"]}","call_id":"c1"}}
