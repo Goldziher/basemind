@@ -87,9 +87,11 @@ const OWNER_ONLY_FILE: u32 = 0o600;
 #[cfg(unix)]
 const SUN_PATH_MAX: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
 
-/// How long to wait for a spawned daemon to become reachable before giving up. Full-feature
-/// binaries can take materially longer to page in when every core and memory channel is busy.
-const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long to wait for a spawned daemon to become reachable before giving up. A spawn made while
+/// a predecessor drains (its socket already gone) waits out that teardown for the lock
+/// ([`HOLDER_DRAIN_WAIT`](super::daemon::HOLDER_DRAIN_WAIT)), then starts; full-feature binaries can
+/// take materially longer to page in when every core and memory channel is busy.
+const SPAWN_READY_TIMEOUT: Duration = super::daemon::HOLDER_DRAIN_WAIT.saturating_add(Duration::from_secs(15));
 /// Poll interval while waiting for a spawned daemon.
 const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Resolved per-user comms paths.

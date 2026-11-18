@@ -95,6 +95,23 @@ pub fn bootstrap_timeout() -> Duration {
 /// before exiting anyway. Bounded so one wedged client cannot pin a draining daemon forever; ample
 /// for any request that is actually progressing, and the idle path normally finds zero links.
 pub const DRAIN_GRACE: Duration = Duration::from_secs(10);
+/// Bound on the exit path between the front-end's return and the runtime teardown: shedding the
+/// hosted read stacks and the agent store's last sweep and flush.
+pub const EXIT_TAIL_TIMEOUT: Duration = Duration::from_secs(3);
+/// Hard bound on the runtime teardown that ends the daemon. Dropping the runtime implicitly waits
+/// *forever* for in-flight `spawn_blocking` work — which is exactly how a SIGTERM'd daemon used to
+/// hang until SIGKILL while a big rescan finished. The drain already trips the broker's scan-cancel
+/// token, so a scan winds down within one file; this timeout is the backstop for the pathological
+/// case where that one file is stuck inside non-cooperative work (e.g. an ONNX embed call).
+pub const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+/// The longest a draining daemon holds its lock: the drain grace, the exit tail and the runtime
+/// teardown. Every wait that assumes a predecessor is gone derives from it.
+pub const TEARDOWN_MAX: Duration = DRAIN_GRACE
+    .saturating_add(EXIT_TAIL_TIMEOUT)
+    .saturating_add(RUNTIME_SHUTDOWN_TIMEOUT);
+/// How long a new daemon waits for a lock holder that does not answer: a draining daemon has
+/// unlinked its endpoint and holds the lock through its teardown.
+pub const HOLDER_DRAIN_WAIT: Duration = TEARDOWN_MAX.saturating_add(Duration::from_secs(2));
 const DRAIN_POLL_EVERY: Duration = Duration::from_millis(25);
 /// How long a GC cycle waits for the blob-GC write lock before declaring itself starved and
 /// skipping the cycle. Every rescan holds the read side for its whole duration, so this must be

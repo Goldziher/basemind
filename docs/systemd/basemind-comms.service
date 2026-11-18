@@ -72,8 +72,8 @@ Environment=BASEMIND_COMMS_BOOTSTRAP_SECS=31536000
 Restart=on-failure
 RestartSec=5s
 
-# A clean shutdown drains in-flight links; the daemon bounds its own teardown, so this only has to
-# outlast that.
+# A clean shutdown drains in-flight links; the daemon bounds its own teardown to 28 seconds
+# (TEARDOWN_MAX), so this only has to outlast that.
 KillSignal=SIGTERM
 TimeoutStopSec=30
 

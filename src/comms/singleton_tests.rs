@@ -313,6 +313,20 @@ fn spawn_ready_timeout_covers_a_cold_full_feature_start() {
     );
 }
 
+/// A successor spawned while its predecessor drains waits for the lock through the predecessor's
+/// whole teardown, and the client that spawned it waits for the successor past that.
+#[test]
+fn the_waits_on_a_draining_daemon_cover_its_teardown() {
+    use crate::comms::daemon::{HOLDER_DRAIN_WAIT, TEARDOWN_MAX};
+
+    assert!(HOLDER_DRAIN_WAIT > TEARDOWN_MAX);
+    assert!(SPAWN_READY_TIMEOUT > HOLDER_DRAIN_WAIT);
+    assert!(
+        TEARDOWN_MAX <= Duration::from_secs(30),
+        "docs/systemd/basemind-comms.service stops the unit after TimeoutStopSec=30"
+    );
+}
+
 /// A socket path past `sun_path` can never be bound, so the caller must be told that — not
 /// left to wait out the readiness timeout and report a hang. Asserting the error is NOT
 /// `SpawnTimeout` is the point: that is the misleading message this replaces.
