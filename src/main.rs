@@ -570,8 +570,8 @@ fn scan_streaming(
     config: &basemind::config::Config,
     cancel: &basemind::scanner::ScanCancel,
 ) -> std::result::Result<basemind::scanner::ScanReport, basemind::scanner::ScanError> {
-    // The pass releases the process-wide embedding engine when the scan ends, so the model is not
-    // held through the git-history sync and until exit (the daemon does the same per full pass).
+    // The pass releases the embedding engine it loaded when the scan ends, so the model is not held
+    // through the git-history sync and until exit.
     #[cfg(feature = "intelligence")]
     let _embed_pass = basemind::embeddings::begin_embed_pass();
     let mut observer = render::ScanLineObserver::new(no_color, verbosity);
