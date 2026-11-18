@@ -67,26 +67,51 @@ pub struct PendingVectors {
     /// Whether the set differs from what [`PENDING_FILE`] holds.
     #[serde(skip)]
     dirty: bool,
+    /// Whether [`PENDING_FILE`] was there but could not be read or decoded: the paths it named are
+    /// unknown, so every indexed path must be owed again ([`Self::unreadable`]).
+    #[serde(skip)]
+    unreadable: bool,
 }
 
 impl PendingVectors {
-    /// Read the owed set of a view. A missing file is the empty set. So is one that cannot be
-    /// read: it is written whole or not at all, and failing every open over it would cost more
-    /// than the rows it might have named.
+    /// Read the owed set of a view. A missing file is the empty set. One that cannot be read or
+    /// decoded loads as the empty set marked [`Self::unreadable`]: failing every open over it would
+    /// cost more than the rows it named, but those rows are unknown, so the next flush of the vector
+    /// lanes owes every indexed path again, as it does when the vector store was lost.
     pub(crate) fn load(view_dir: &Path) -> Self {
         let path = view_dir.join(PENDING_FILE);
+        let unreadable = Self {
+            unreadable: true,
+            ..Self::default()
+        };
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "owed vector rows could not be read");
-                return Self::default();
+                tracing::warn!(path = %path.display(), %error, "owed vector rows could not be read; owing every path again");
+                return unreadable;
             }
         };
         rmp_serde::from_slice(&bytes).unwrap_or_else(|error| {
-            tracing::warn!(path = %path.display(), %error, "owed vector rows could not be decoded");
-            Self::default()
+            tracing::warn!(path = %path.display(), %error, "owed vector rows could not be decoded; owing every path again");
+            unreadable
         })
+    }
+
+    /// Whether the set was loaded from a file that could not be read, so the paths it owes are
+    /// unknown, and no caller has owed every path again since ([`Self::owed_everything`]). A write
+    /// of the set before then does not clear it: the set written is still missing those debts.
+    #[cfg_attr(not(any(feature = "documents", feature = "code-search")), allow(dead_code))]
+    pub(crate) fn unreadable(&self) -> bool {
+        self.unreadable
+    }
+
+    /// Record that every indexed path has been owed again, so an unreadable file's debts are
+    /// covered, and that the set must be written whole over that file.
+    #[cfg_attr(not(any(feature = "documents", feature = "code-search")), allow(dead_code))]
+    pub(crate) fn owed_everything(&mut self) {
+        self.dirty |= self.unreadable;
+        self.unreadable = false;
     }
 
     /// Make the file say what the set says: nothing to do when they agree, the file removed when
@@ -212,10 +237,13 @@ mod tests {
     }
 
     #[test]
-    fn an_undecodable_file_reads_as_nothing_owed() {
+    fn an_undecodable_file_reads_as_unknown_debts() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(PENDING_FILE), b"\xc1 not msgpack").unwrap();
-        assert!(PendingVectors::load(dir.path()).is_empty());
+        let loaded = PendingVectors::load(dir.path());
+        assert!(loaded.is_empty());
+        assert!(loaded.unreadable(), "the paths it named are unknown, not none");
+        assert!(!PendingVectors::load(&dir.path().join("absent")).unreadable());
     }
 
     /// A set loaded before another process recorded a debt must not, once persisted, drop it.
