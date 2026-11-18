@@ -106,6 +106,7 @@ pub(crate) fn text_documents(
                 mtime_ns: 0,
                 extract_epoch: 0,
                 content_key: None,
+                lines: 0,
             };
             Some((path.clone(), meta))
         })
