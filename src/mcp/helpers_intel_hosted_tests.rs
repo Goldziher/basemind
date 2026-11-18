@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::{SNAPSHOT_REFUSED, run_goto_definition};
+use super::super::{SNAPSHOT_REFUSED, run_goto_definition};
 use crate::comms::workspace_pool::WorkspacePool;
 use crate::mcp::types::GotoDefinitionParams;
 use crate::path::RelPath;

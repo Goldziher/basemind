@@ -546,7 +546,7 @@ async fn hosted_stack(pool: &std::sync::Arc<WorkspacePool>, root: &std::path::Pa
         .expect("build hosted read stack")
 }
 
-/// A hosted stack reads the writer's index while a scan holds the writer store: its store shares the
+/// A hosted stack reads the writer's index while a scan holds the writer store: its store borrows the
 /// writer's index handle, so a reference read neither waits for the scan nor falls back to anything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hosted_read_answers_from_the_index_while_a_scan_holds_the_writer() {
@@ -558,8 +558,8 @@ async fn a_hosted_read_answers_from_the_index_while_a_scan_holds_the_writer() {
         .expect("scan");
     let shared = hosted_stack(&pool, ws.path()).await;
     assert!(
-        shared.workspace.store_read().index_db.is_some(),
-        "the hosted store shares the writer's index handle"
+        shared.workspace.store_read().read_index_view().is_some(),
+        "the hosted store borrows the writer's index handle"
     );
 
     let entry = pool.get_or_open(ws.path()).expect("hot entry");

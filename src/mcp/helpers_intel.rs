@@ -30,8 +30,7 @@ use crate::path::RelPath;
 /// The store is read-locked for the whole call, file reads included: the stamp each file is judged
 /// against, the resolution blob and a locally read cross-file edge then come from one scan, never
 /// from either side of a rescan that landed in between. A rescan waits for the reads, which are
-/// bounded by `scan.max_file_bytes`. A daemon-hosted session reads the pool writer's index, which a
-/// scan moves outside this guard, so its hops are checked instead ([`follow`]).
+/// bounded by `scan.max_file_bytes`. A hosted session's hops are checked instead (`definition_of_use`).
 pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
@@ -79,20 +78,10 @@ pub(super) async fn run_goto_definition(
         .as_ref()
         .and_then(|r| containing_edge(&r.intra, pos))
         .map(|e| e.def_start);
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    let hosted = state.pool.is_some();
-    #[cfg(not(all(feature = "comms", any(unix, windows))))]
-    let hosted = false;
-    let (resolved, refused) = match intra_def {
-        Some(def_start) => {
-            let hop = follow(&store, hosted, &params.path, def_start);
-            (Some(hop.found.unwrap_or((params.path.clone(), def_start))), hop.refused)
-        }
-        None => {
-            let hop = follow(&store, hosted, &params.path, pos);
-            (hop.found, hop.refused)
-        }
-    };
+    let Hop {
+        found: resolved,
+        refused,
+    } = crate::engine::definition::definition_of_use(&store, &params.path, pos, intra_def);
 
     let definition = match resolved {
         Some((def_path, def_start)) => definition_location(state, &store, &params.path, &source, def_path, def_start)?,
@@ -145,76 +134,7 @@ pub(super) const NO_DEFINITION_FACTS: &str = "no resolution facts for this defin
 pub(super) const RESOLUTION_NOT_RUN: &str =
     "resolution has not finished for this index; a running scan will complete it, otherwise run `index_rescan`";
 
-/// `resolution` value when a cross-file edge was read from an index whose resolve pass is unsettled,
-/// or that holds other content for one of the files than this session's file map.
-pub(super) const SNAPSHOT_REFUSED: &str = "the index is updating for the files involved; retry in a moment";
-
-/// What following a use through the index found: the definition, or that one was found and refused
-/// because it may not belong to the content this session reads.
-#[derive(Default)]
-struct Hop {
-    found: Option<(RelPath, u32)>,
-    refused: bool,
-}
-
-/// The definition the use at `(use_path, use_start)` binds to.
-///
-/// A daemon-hosted session (`hosted`) reads the pool writer's index, which runs ahead of its file
-/// map from a scan's flush until the session refreshes, and whose cross-file edges are of the
-/// files' previous contents while a resolve pass runs or after one was cancelled or aborted. Its
-/// edge is kept only when the pass was settled before and after the read, the writer published no
-/// file map in between, and the writer's content keys for the use file and the landing file are
-/// the session's. Any other session reads an index no scan moves while its store guard is held.
-fn follow(store: &crate::store::Store, hosted: bool, use_path: &RelPath, use_start: u32) -> Hop {
-    use crate::index::view::IndexView as _;
-
-    let index = hosted.then(|| store.index_handle()).flatten();
-    let Some(index) = index else {
-        return Hop {
-            found: crate::query::definition_of(store, use_path, use_start),
-            refused: false,
-        };
-    };
-    let (live, settled) = (index.live_keys(), resolve_pass_complete(store));
-    let Some((path, start)) = index.view().definition_of(use_path, use_start) else {
-        return Hop::default();
-    };
-    let current = index.live_keys();
-    let session_key = |rel: &RelPath| store.lookup(rel).and_then(|entry| entry.content_key);
-    let in_snapshot = settled
-        && resolve_pass_complete(store)
-        && std::sync::Arc::ptr_eq(&live, &current)
-        && same_content(session_key(use_path), current.key_of(use_path))
-        && same_content(session_key(&path), current.key_of(&path));
-    if in_snapshot {
-        Hop {
-            found: Some((path, start)),
-            refused: false,
-        }
-    } else {
-        tracing::debug!(%use_path, %path, settled, "goto_definition: the writer's edge is not of this session's snapshot; refused");
-        Hop {
-            found: None,
-            refused: true,
-        }
-    }
-}
-
-/// Whether the session and the writer both hold a file, with the same content.
-fn same_content(
-    session: Option<crate::index::keys::ContentKey>,
-    writer: Option<&crate::index::keys::ContentKey>,
-) -> bool {
-    session.is_some_and(|session| writer == Some(&session))
-}
-
-/// Whether the last scan's resolve pass committed. The scan stamps `status.json` as resolving when
-/// it flushes the code map and as complete once the pass has committed every edge; a cancelled or
-/// aborted scan leaves it partial. A missing sidecar vouches for nothing either way and reads as
-/// complete, as it does for the boot-time rescan decision.
-pub(super) fn resolve_pass_complete(store: &crate::store::Store) -> bool {
-    crate::store::read_status_sidecar(&store.basemind_dir).is_none_or(|status| !status.is_degraded())
-}
+pub(super) use crate::engine::definition::{Hop, SNAPSHOT_REFUSED, resolve_pass_complete};
 
 /// The 0-based byte column where `name` first occurs as a whole identifier on `line` of `source`
 /// (`get` in `budget.pop(get)` is the argument, not the tail of `budget`).
@@ -339,79 +259,6 @@ pub(super) fn identifier_at(source: &[u8], start: u32) -> String {
     String::from_utf8_lossy(&source[start..end]).into_owned()
 }
 
-#[cfg(all(test, feature = "comms", feature = "code-intel-js", any(unix, windows)))]
-#[path = "helpers_intel_hosted_tests.rs"]
-mod hosted_tests;
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn line_col_to_offset_maps_positions() {
-        let src = b"const count = 1;\nreturn count;\n";
-        assert_eq!(line_col_to_offset(src, 1, 6), Some(6));
-        let second = (src.iter().position(|&b| b == b'\n').unwrap() + 1 + "return ".len()) as u32;
-        assert_eq!(line_col_to_offset(src, 2, 7), Some(second));
-        assert_eq!(line_col_to_offset(src, 9, 0), None);
-        assert_eq!(
-            line_col_to_offset(src, 1, 17),
-            None,
-            "col past EOL must be None, not next line"
-        );
-        assert_eq!(line_col_to_offset(src, 1, 16), Some(16));
-    }
-
-    #[test]
-    fn identifier_at_reads_the_token() {
-        let src = b"const count = 1;";
-        assert_eq!(identifier_at(src, 6), "count");
-        assert_eq!(identifier_at(b"let a_1$ = 2;", 4), "a_1$");
-        assert_eq!(identifier_at(src, 5), "");
-        assert_eq!(identifier_at(src, 999), "");
-    }
-
-    #[test]
-    fn offset_to_line_col_roundtrips() {
-        let src = b"a\nbb\nccc";
-        assert_eq!(offset_to_line_col(src, 0), (1, 0));
-        assert_eq!(offset_to_line_col(src, 2), (2, 0));
-        assert_eq!(offset_to_line_col(src, 5), (3, 0));
-        assert_eq!(offset_to_line_col(src, 999), (3, 3));
-    }
-
-    #[test]
-    fn an_edge_is_of_the_snapshot_only_when_both_sides_hold_one_content() {
-        let (old, new) = ([1u8; 16], [2u8; 16]);
-        assert!(same_content(Some(old), Some(&old)));
-        assert!(
-            !same_content(Some(old), Some(&new)),
-            "the writer rescanned the file first"
-        );
-        assert!(!same_content(Some(old), None), "the writer no longer holds the file");
-        assert!(!same_content(None, Some(&old)), "the session does not hold it yet");
-        assert!(!same_content(None, None));
-    }
-
-    #[test]
-    fn containing_edge_respects_spans() {
-        let zero_width = ResolvedEdge {
-            use_start: 10,
-            use_end: 10,
-            def_start: 0,
-            def_end: 0,
-        };
-        assert!(containing_edge(std::slice::from_ref(&zero_width), 10).is_some());
-        assert!(containing_edge(std::slice::from_ref(&zero_width), 11).is_none());
-
-        let spanned = ResolvedEdge {
-            use_start: 20,
-            use_end: 25,
-            def_start: 0,
-            def_end: 5,
-        };
-        assert!(containing_edge(std::slice::from_ref(&spanned), 20).is_some());
-        assert!(containing_edge(std::slice::from_ref(&spanned), 24).is_some());
-        assert!(containing_edge(std::slice::from_ref(&spanned), 25).is_none());
-    }
-}
+#[path = "helpers_intel_tests.rs"]
+mod tests;

@@ -4,6 +4,7 @@
 
 pub(crate) mod budget;
 pub(crate) mod cursor;
+pub(crate) mod definition;
 pub(crate) mod error;
 pub(crate) mod files;
 pub(crate) mod filters;
