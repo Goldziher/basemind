@@ -485,7 +485,7 @@ fn rerank(query: &str, settings: &RerankSettings, ranking: &mut DocsRanking) {
         acceleration: settings.acceleration.clone(),
         ..Default::default()
     };
-    match xberg::rerank(query.to_string(), documents, &config) {
+    match crate::embeddings::rerank(query.to_string(), documents, &config, &settings.preset) {
         Ok(scored) => match reorder(&mut ranking.hits, candidates, &scored) {
             Ok(()) => {
                 ranking.rerank = RerankReport {

@@ -426,7 +426,7 @@ fn rerank_hits(
         acceleration: crate::embeddings::acceleration(ws.config.resources.onnx_provider),
         ..Default::default()
     };
-    let scored = match xberg::rerank(query.to_string(), texts, &config) {
+    let scored = match crate::embeddings::rerank(query.to_string(), texts, &config, preset) {
         Ok(scored) => scored,
         Err(error) => return (hits, Some(format!("the reranker failed: {error}"))),
     };
