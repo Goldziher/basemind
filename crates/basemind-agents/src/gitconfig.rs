@@ -74,21 +74,25 @@ fn git_dir(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// The first of [`COMMAND_KEYS`] `text` sets, as `section.*.key` or `section.key`. Sections and
-/// keys are compared without case, as git does. A line continued with a backslash is read as
-/// lines of its own, which can only find a key that is not there, never miss one.
+/// keys are compared without case, as git does. Headers follow git's grammar: a leading
+/// byte-order mark is skipped, a quoted subsection may hold `]` and `\"`, and a header may be
+/// followed on its line by another header or by a key. A line continued with a backslash is
+/// read as lines of its own, which can only find a key that is not there, never miss one.
 fn command_key(text: &str) -> Option<String> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut section = String::new();
     let mut subsection = false;
     for line in text.lines() {
         let mut line = line.trim_start();
-        if let Some(header) = line.strip_prefix('[') {
-            let Some((name, rest)) = header.split_once(']') else {
-                continue;
+        while let Some(header) = line.strip_prefix('[') {
+            let Some((name, sub, rest)) = parse_header(header) else {
+                // git refuses the whole file; nothing after this line is read as this section.
+                section.clear();
+                line = "";
+                break;
             };
-            let name = name.trim();
-            let end = name.find(|c: char| c == '.' || c == '"' || c.is_whitespace());
-            section = name[..end.unwrap_or(name.len())].to_ascii_lowercase();
-            subsection = end.is_some();
+            section = name;
+            subsection = sub;
             line = rest.trim_start();
         }
         if line.starts_with(['#', ';']) {
@@ -108,6 +112,34 @@ fn command_key(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// A header after its `[`: the lower-case section name, whether a subsection follows it (quoted,
+/// or the legacy `[section.sub]`), and the rest of the line after the closing `]`.
+fn parse_header(header: &str) -> Option<(String, bool, &str)> {
+    let end = header.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))?;
+    let (name, mut rest) = header.split_at(end);
+    let (name, mut subsection) = match name.split_once('.') {
+        Some((name, _)) => (name, true),
+        None => (name, false),
+    };
+    rest = rest.trim_start_matches([' ', '\t']);
+    if let Some(quoted) = rest.strip_prefix('"') {
+        subsection = true;
+        let mut chars = quoted.char_indices();
+        let close = loop {
+            match chars.next()? {
+                (_, '\\') => {
+                    chars.next()?;
+                }
+                (at, '"') => break at,
+                _ => {}
+            }
+        };
+        rest = &quoted[close + 1..];
+    }
+    let rest = rest.strip_prefix(']')?;
+    Some((name.to_ascii_lowercase(), subsection, rest))
 }
 
 #[cfg(test)]

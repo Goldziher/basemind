@@ -32,6 +32,27 @@ fn a_repository_config_that_runs_commands_on_a_read_refuses_the_launch() {
     }
 }
 
+/// Syntax git 2.x accepts and runs the filter of (checked with `git add`): a byte-order mark
+/// before the first header, a `]` or an escaped quote inside a quoted subsection with the key
+/// on the header line, and two headers on one line.
+#[test]
+fn header_syntax_git_accepts_cannot_hide_a_command_key() {
+    for (config, key) in [
+        ("\u{feff}[filter \"x\"]\n\tclean = ./x.sh\n", "filter.*.clean"),
+        ("[filter \"x]y\"] clean = ./x.sh\n", "filter.*.clean"),
+        ("[filter \"a\\\"]b\"] smudge = ./x.sh\n", "filter.*.smudge"),
+        ("[core] [filter \"z\"] clean = ./x.sh\n", "filter.*.clean"),
+        ("[diff \"q\\\\\"]textconv=./d\n", "diff.*.textconv"),
+    ] {
+        let (_outer, root) = repo(config);
+        let error = check_repository(&root.join("src")).expect_err(config);
+        let LaunchError::GitConfig { key: found, .. } = &error else {
+            panic!("{config:?}: {error}");
+        };
+        assert_eq!(found, key, "{config:?}");
+    }
+}
+
 #[test]
 fn an_ordinary_repository_config_passes() {
     let config = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tfsmonitor = ./hook\n\
