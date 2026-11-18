@@ -1,4 +1,5 @@
-//! Types of `code_search` and of `basemind code chunk`, the fetch half of a search hit.
+//! Types of `code_search`, of `basemind code chunk` (the fetch half of a search hit) and of
+//! `docs_search`.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,38 @@ pub struct CodeSearchParams {
     #[serde(default)]
     #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
     pub lane: Option<String>,
+    /// Max hits (default 10).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+    /// Token budget for the list (default 6000).
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+}
+
+/// Arguments of `docs_search`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DocsSearchParams {
+    /// What to look for, in plain words.
+    pub query: String,
+    /// Exact MIME filter, e.g. `application/pdf`.
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    /// Format: pdf, office, html, markdown, email, notebook, text or other.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Glob over document paths (`docs/**/*.md`).
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Whole keywords, comma-separated; any one matches.
+    #[serde(default)]
+    pub keywords: Option<String>,
+    /// Keep chunks naming an entity of this category, e.g. `PERSON`.
+    #[serde(default)]
+    pub entity: Option<String>,
     /// Max hits (default 10).
     #[serde(default)]
     pub limit: Option<u32>,
@@ -200,5 +233,17 @@ pub(crate) struct GetChunkResponse {
     pub text: String,
     /// Server-side handler latency in microseconds. See [`crate::engine::timing`].
     #[serde(default)]
+    pub elapsed_us: u64,
+}
+
+/// The response of `docs_search`: a page of the document search engine
+/// ([`crate::lance::docs_page`]) plus the paging and timing fields.
+#[cfg(feature = "documents")]
+#[derive(Debug, Serialize)]
+pub(crate) struct DocsSearchResponse {
+    #[serde(flatten)]
+    pub page: crate::lance::docs_types::DocsPage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
     pub elapsed_us: u64,
 }

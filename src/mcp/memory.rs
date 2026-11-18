@@ -20,7 +20,6 @@ use super::types_memory::{
 
 /// The shared embedding engine ([`Workspace::shared_embedder`](crate::engine::Workspace)), loaded
 /// on a blocking thread.
-#[cfg(any(feature = "memory", feature = "documents"))]
 pub(super) async fn shared_embedder(state: &ServerState) -> Result<Arc<crate::embeddings::SharedEmbedder>, String> {
     let ws = Arc::clone(&state.shared);
     super::adapter::blocking(move || ws.shared_embedder()).await

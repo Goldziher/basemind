@@ -36,8 +36,6 @@ mod blocking;
 mod code_refs_hosted_tests;
 #[cfg(test)]
 mod code_refs_tests;
-#[cfg(feature = "documents")]
-mod docs_pipeline;
 mod helpers_admin;
 mod helpers_memory;
 mod helpers_telemetry;
@@ -49,7 +47,7 @@ pub mod in_memory;
 mod index_view_tests;
 pub(crate) use crate::engine::l1_cache;
 mod lean;
-#[cfg(any(feature = "memory", feature = "documents"))]
+#[cfg(feature = "memory")]
 mod memory;
 #[cfg(feature = "memory")]
 pub(crate) mod memory_ops;
@@ -76,7 +74,6 @@ mod tools_git;
 mod tools_memory;
 pub(crate) mod toon;
 mod types;
-mod types_documents;
 pub(crate) mod types_memory;
 mod types_tools;
 

@@ -1,6 +1,6 @@
-//! Bodies of `memory_save`, `memory_search` and `docs_search`.
+//! Bodies of `memory_save` and `memory_search`.
 //!
-//! The three tools are advertised in every build and gate in the body: an agent looking for
+//! The tools are advertised in every build and gate in the body: an agent looking for
 //! "remember this" or "search the PDFs" is better served a tool that answers "rebuild with
 //! `--features memory`" than a tool that is not there. [`feature_missing`] is the only answer a
 //! gated-off tool gives, never an empty result an agent would read as "nothing stored".
@@ -9,10 +9,10 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
-#[cfg(not(all(feature = "memory", feature = "documents")))]
+#[cfg(not(feature = "memory"))]
 use super::tool_contract::feature_missing;
 use super::types_memory::MemoryDeleteParams;
-use super::types_tools::{DocsSearchParams, MemorySaveParams, MemorySearchToolParams};
+use super::types_tools::{MemorySaveParams, MemorySearchToolParams};
 
 /// The argument shapes `memory_search` accepts, quoted in every shape error.
 #[cfg(feature = "memory")]
@@ -112,16 +112,4 @@ pub(super) async fn memory_delete(state: &ServerState, p: MemoryDeleteParams) ->
 #[cfg(not(feature = "memory"))]
 pub(super) async fn memory_delete(_state: &ServerState, _p: MemoryDeleteParams) -> Result<CallToolResult, McpError> {
     Err(feature_missing("memory delete", "memory"))
-}
-
-/// `docs_search`: hybrid search over indexed documents (ADR-0029).
-#[cfg(feature = "documents")]
-pub(super) async fn docs_search(state: &ServerState, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
-    super::docs_pipeline::docs_search(state, p).await
-}
-
-/// `docs_search` in a build without the document tier.
-#[cfg(not(feature = "documents"))]
-pub(super) async fn docs_search(_state: &ServerState, _p: DocsSearchParams) -> Result<CallToolResult, McpError> {
-    Err(feature_missing("docs_search", "documents"))
 }

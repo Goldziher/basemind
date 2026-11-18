@@ -47,12 +47,9 @@ impl BasemindServer {
     }
 }
 
-#[cfg(feature = "documents")]
-pub(super) use crate::engine::budget::budget;
-
 /// The error for a tool whose retrieval stack is not in this build.
 #[cfg_attr(
-    all(feature = "code-search", feature = "documents", feature = "memory"),
+    feature = "memory",
     allow(dead_code, reason = "only the gated-off arms name a missing feature")
 )]
 pub(super) fn feature_missing(tool: &str, feature: &str) -> McpError {

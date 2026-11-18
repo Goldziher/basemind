@@ -72,7 +72,7 @@ impl EngineError {
     /// The refusal of a tool whose retrieval stack is not in this build: it is advertised in every
     /// build, and answers this rather than an empty result an agent would read as "nothing found".
     #[cfg_attr(
-        feature = "code-search",
+        all(feature = "code-search", feature = "documents"),
         allow(dead_code, reason = "only the gated-off arms name a missing feature")
     )]
     pub(crate) fn feature_missing(tool: &str, feature: &str) -> Self {

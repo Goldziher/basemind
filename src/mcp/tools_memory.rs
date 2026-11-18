@@ -81,14 +81,9 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
-    /// Body of `docs_search`, shared with `basemind memory documents`.
+    /// Body of the `docs_search` tool, shared with `basemind memory documents`.
     pub(crate) async fn docs_search_call(&self, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
-        crate::instrument_tool!(
-            &self.state,
-            "docs_search",
-            p,
-            bound(p, |p| helpers_memory::docs_search(&self.state, p)).await
-        )
+        self.op(p, crate::engine::Workspace::docs_search).await
     }
 
     /// Body of `memory_save`, shared with `basemind memory put`.

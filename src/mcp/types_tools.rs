@@ -63,39 +63,7 @@ pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};
 pub use crate::engine::types::grep::CodeGrepParams;
 pub use crate::engine::types::refs::CodeRefsParams;
-pub use crate::engine::types::search::CodeSearchParams;
-
-/// Arguments of `docs_search`.
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DocsSearchParams {
-    /// What to look for, in plain words.
-    pub query: String,
-    /// Exact MIME filter, e.g. `application/pdf`.
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    /// Format: pdf, office, html, markdown, email, notebook, text or other.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Glob over document paths (`docs/**/*.md`).
-    #[serde(default)]
-    pub path: Option<String>,
-    /// Whole keywords, comma-separated; any one matches.
-    #[serde(default)]
-    pub keywords: Option<String>,
-    /// Keep chunks naming an entity of this category, e.g. `PERSON`.
-    #[serde(default)]
-    pub entity: Option<String>,
-    /// Max hits (default 10).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
-    #[serde(default)]
-    pub cursor: Option<Cursor>,
-    /// Token budget for the list (default 6000).
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
+pub use crate::engine::types::search::{CodeSearchParams, DocsSearchParams};
 
 /// Arguments of `memory_save`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
