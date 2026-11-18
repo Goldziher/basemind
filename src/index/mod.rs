@@ -337,14 +337,12 @@ fn cache_bytes_override() -> Option<u64> {
         .and_then(|v| v.parse::<u64>().ok())
 }
 
-/// `path` followed by each of its ancestor directories, innermost first, and the root directory `""`
-/// for a path directly in it. The root is probed only by a resolver that lists it (a Go package at
-/// the module root), and only its direct children can change such a listing.
+/// `path` followed by each of its ancestor directories, innermost first. The root directory `""` is
+/// not an ancestor: probing it for every top-level path would double their scans, so the resolve
+/// pass probes it only for a path a resolver lists there
+/// (`ModuleResolver::lists_in_root`).
 fn probe_candidates(path: &str) -> impl Iterator<Item = &str> {
-    let root = (!path.is_empty() && !path.contains('/')).then_some("");
-    std::iter::once(path)
-        .chain(path.rmatch_indices('/').map(move |(i, _)| &path[..i]))
-        .chain(root)
+    std::iter::once(path).chain(path.rmatch_indices('/').map(move |(i, _)| &path[..i]))
 }
 
 #[derive(Debug, Error)]

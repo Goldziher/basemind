@@ -6,9 +6,10 @@
 //! A path under the module with no such file is unresolved; any other path (the standard library,
 //! another module, `"C"`) is external. `replace` directives, `go.work` and `vendor/` are not read.
 //!
-//! The package directory is recorded as a probe (`""` for a package at the repository root), so a
-//! file added to or removed from it re-stitches the importer through
-//! `IndexView::importers_probing`'s ancestor lookup.
+//! The package directory is recorded as a probe, so a file added to or removed from it re-stitches
+//! the importer through `IndexView::importers_probing`'s ancestor lookup. A package at the
+//! repository root is the probe `""`, which no path has as an ancestor; the resolve pass probes it
+//! only for a top-level [`is_package_file`] (`ModuleResolver::lists_in_root`).
 
 use ahash::AHashMap;
 
@@ -107,6 +108,11 @@ fn module_directive(text: &str) -> Option<String> {
 }
 
 /// The sorted non-test `.go` file names of a directory.
+/// Whether a file named `name` belongs to its directory's package: a non-test `.go` file.
+pub(crate) fn is_package_file(name: &str) -> bool {
+    name.ends_with(".go") && !name.ends_with("_test.go")
+}
+
 fn package_files(dir: &std::path::Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -115,7 +121,7 @@ fn package_files(dir: &std::path::Path) -> Vec<String> {
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.ends_with(".go") && !name.ends_with("_test.go"))
+        .filter(|name| is_package_file(name))
         .collect();
     names.sort_unstable();
     names

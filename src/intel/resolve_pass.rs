@@ -414,12 +414,16 @@ mod xfile_incremental {
 
     /// Indexed, resolver-capable importers that are NOT in `delta.changed` (those are re-stitched
     /// anyway) but consulted a touched path: a changed, added or deleted file, or a non-indexed
-    /// config file. One prefix scan of `importers_by_probe` per touched path.
+    /// config file. One prefix scan of `importers_by_probe` per touched path, plus one of the root
+    /// directory `""` when a touched path can change a root listing
+    /// ([`ModuleResolver::lists_in_root`]).
     pub(super) fn affected_importers(view: &dyn IndexView, store: &Store, delta: &PathDelta<'_>) -> Vec<String> {
         let changed: AHashSet<&str> = delta.changed.iter().map(String::as_str).collect();
         let mut affected: AHashSet<String> = AHashSet::new();
-        for touched in delta.changed.iter().chain(delta.removed).chain(delta.other) {
-            for importer in view.importers_probing(touched) {
+        let touched = || delta.changed.iter().chain(delta.removed).chain(delta.other);
+        let root = touched().any(|rel| ModuleResolver::lists_in_root(rel)).then_some("");
+        for probed in touched().map(String::as_str).chain(root) {
+            for importer in view.importers_probing(probed) {
                 let Some(key) = importer.as_str() else {
                     continue;
                 };
