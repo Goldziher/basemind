@@ -1471,6 +1471,7 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         .expect("daemon-hosted MCP transport ready");
     let token =
         http_frontend::published_token(&generation_dir(&comms_dir)).expect("the daemon publishes its bearer token");
+    await_settled(&addr, &token, &repo).await;
     let (total, pages) = hosted_paginated(&addr, &token, &repo, json!({"name": "get_arg", "limit": 40})).await;
     assert_eq!(
         total, truth_refs["total"],
@@ -1681,6 +1682,29 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
 
     done.store(true, Ordering::SeqCst);
     released_daemon.join().expect("released daemon thread");
+}
+
+/// Wait until a hosted answer carries no lifecycle notice: the stack has warmed its map and finished
+/// the catch-up pass it runs over a populated index.
+async fn await_settled(addr: &str, token: &str, repo: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for id in 1.. {
+        let response = hosted_tool_call(
+            addr,
+            token,
+            repo,
+            "settle-reader",
+            id,
+            "code_symbols",
+            json!({ "name": "x" }),
+        )
+        .await;
+        if response["result"]["structuredContent"].get("notice").is_none() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the hosted stack never settled: {response}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Poll `code_symbols {name}` through the daemon's hosted HTTP front-end until it lists `name`. Only

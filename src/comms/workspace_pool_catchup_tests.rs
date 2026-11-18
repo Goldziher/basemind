@@ -90,7 +90,12 @@ async fn a_catch_up_over_an_unchanged_tree_extracts_nothing() {
     let entry = pool.get_or_open(workspace.path()).expect("hot entry");
     let before = entry.full_scan_gen.load(Ordering::Acquire);
 
-    let _shared = hosted_stack(&pool, workspace.path()).await;
+    let shared = hosted_stack(&pool, workspace.path()).await;
+    assert_eq!(
+        shared.workspace.index_generation.load(Ordering::Relaxed),
+        1,
+        "an unchanged pass publishes nothing, so no session's cursor is cut short"
+    );
     assert_eq!(
         entry.full_scan_gen.load(Ordering::Acquire),
         before + 1,
