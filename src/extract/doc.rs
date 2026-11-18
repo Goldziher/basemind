@@ -231,9 +231,8 @@ pub struct DocConfig {
     pub phase: Option<Arc<DocPhase>>,
     /// Size cutovers above which text-like files skip xberg's quadratic markdown splitter.
     pub chunk_cutovers: ChunkCutovers,
-    /// Chunk-count cap (`[documents] max_chunks_per_document`). Beyond it no vector rows are written, so
-    /// a linearly-chunked document over the cap skips embedding entirely rather than embedding chunks
-    /// that would be thrown away.
+    /// Chunk-count cap (`[documents] max_chunks_per_document`). A document over it, whichever chunker
+    /// cut it, is not embedded; its chunks are kept, so the lexical lane still finds it.
     pub max_chunks_per_document: usize,
     pub max_characters: usize,
     pub overlap: usize,
@@ -621,12 +620,12 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     let chunked = source::chunk_document(path, shape, &mut result, linear, config, embed_requested);
     let (mut chunks, mut dense_inputs) = (chunked.chunks, chunked.dense);
 
-    if (linear || chunked.from_source) && chunks.len() > config.max_chunks_per_document {
+    if chunks.len() > config.max_chunks_per_document {
         tracing::warn!(
             path = %path.display(),
             chunks = chunks.len(),
             cap = config.max_chunks_per_document,
-            "linearly chunked document exceeds max_chunks_per_document; skipping embedding"
+            "document exceeds max_chunks_per_document; indexed without vectors"
         );
         dense_inputs.clear();
     }

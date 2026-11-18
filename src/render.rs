@@ -222,6 +222,13 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
             fallback = pair("docs_text_fallback", stats.docs_text_fallback, style_warn),
         );
     }
+    if stats.docs_over_chunk_cap > 0 {
+        let _ = writeln!(
+            w,
+            "{cut} (not embedded, found by keyword only; see [documents] max_chunks_per_document)",
+            cut = pair("docs_over_chunk_cap", stats.docs_over_chunk_cap, style_warn),
+        );
+    }
     if stats.docs_tombstoned > 0 || stats.docs_deferred > 0 || stats.abandoned_extractions > 0 {
         let _ = writeln!(
             w,
@@ -575,6 +582,7 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
             reused,
             degraded,
             text_fallback,
+            over_chunk_cap,
             elapsed_ms,
         } => {
             if v == Verbosity::Quiet {
@@ -587,6 +595,11 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
                     format!("{cached}, linear chunking")
                 } else {
                     cached.to_string()
+                };
+                let cached = if *over_chunk_cap {
+                    format!("{cached}, over the chunk cap: not embedded")
+                } else {
+                    cached
                 };
                 Some(Row {
                     symbol: '✓',

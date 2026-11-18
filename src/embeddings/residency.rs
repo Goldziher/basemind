@@ -97,6 +97,12 @@ impl Residency {
     pub(crate) fn passes(&self) -> usize {
         self.passes
     }
+
+    /// Embeddings and reranks in flight.
+    #[cfg(test)]
+    pub(crate) fn in_use(&self) -> usize {
+        self.embeds
+    }
 }
 
 static STATE: Mutex<Residency> = Mutex::new(Residency {

@@ -51,15 +51,18 @@ impl Workspace {
         self.embed_with(text, false)
     }
 
+    /// An empty text is the caller's to fix; a model that will not load is unavailable until it
+    /// can be loaded (the embedder remembers the failure for a while). Anything else is internal.
     #[cfg(any(feature = "memory", feature = "code-search"))]
     fn embed_with(&self, text: &str, query: bool) -> Result<Vec<f32>, EngineError> {
-        let embedder = self.shared_embedder().map_err(EngineError::Internal)?;
+        require_text(text, query)?;
+        let embedder = self.shared_embedder().map_err(EngineError::Unavailable)?;
         let embedded = if query {
             embedder.embed_query(text)
         } else {
             embedder.embed(text)
         };
-        embedded.map_err(|e| EngineError::internal(format!("embed: {e}")))
+        embedded.map_err(embed_error)
     }
 
     /// The workspace's code-chunk vector store, opened on first use. Only a writer (holding the
@@ -84,5 +87,48 @@ impl Workspace {
             };
             opened.map(Arc::new).map_err(|e| format!("open LanceStore: {e}"))
         })
+    }
+}
+
+/// Refuse an empty text before any model is loaded: there is nothing to embed.
+#[cfg(any(feature = "memory", feature = "code-search"))]
+fn require_text(text: &str, query: bool) -> Result<(), EngineError> {
+    if !text.trim().is_empty() {
+        return Ok(());
+    }
+    Err(EngineError::invalid_argument(if query {
+        "`query` is empty: pass the text to search for"
+    } else {
+        "the text to embed is empty"
+    }))
+}
+
+/// The class of an embedding failure: a model that will not load is unavailable, anything else is
+/// internal.
+#[cfg(any(feature = "memory", feature = "code-search"))]
+fn embed_error(error: anyhow::Error) -> EngineError {
+    let message = format!("embed: {error:#}");
+    if crate::embeddings::is_load_failure(&error) {
+        EngineError::unavailable(message)
+    } else {
+        EngineError::internal(message)
+    }
+}
+
+#[cfg(all(test, any(feature = "memory", feature = "code-search")))]
+mod tests {
+    use super::*;
+
+    /// An empty `memory_search` query and an embedder that will not load were reported as internal
+    /// errors (review 3): the first is the caller's to fix, the second is unavailable for now.
+    #[test]
+    fn embedding_failures_are_classed_by_what_the_caller_can_do() {
+        assert!(matches!(require_text("  ", true), Err(EngineError::InvalidArgument(_))));
+        assert!(matches!(require_text("", false), Err(EngineError::InvalidArgument(_))));
+        assert!(require_text("rivers", true).is_ok());
+        let offline = anyhow::anyhow!("failed to download model from huggingface");
+        assert!(matches!(embed_error(offline), EngineError::Unavailable(_)));
+        let other = anyhow::anyhow!("embed_texts returned empty result");
+        assert!(matches!(embed_error(other), EngineError::Internal(_)));
     }
 }

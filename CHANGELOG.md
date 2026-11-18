@@ -28,8 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git_log {path, symbol}` and on `git_log` with a directory `path`. An empty page of either carries
   `unmatched` while nothing inspected so far defines the symbol or touches the directory.
 - `resolution: "no resolution facts for this definition"` on `code_refs` with `path`.
-- `truncated` / `truncated_reason` on `code_search` and `docs_search` (`depth`, `rerank_top_k`,
-  `filter_depth`), and `truncated_reason` wherever `truncated` stood alone (`code_read`: `size_cap`).
+- `truncated` / `truncated_reason` on `code_search` (`stale_chunks`) and `docs_search` (`depth`,
+  `liveness_depth`), and `truncated_reason` wherever `truncated` stood alone (`code_read`: `size_cap`).
 - `git_diff` with a `path` ending in `/` returns the working-tree status under that directory, with
   every untracked file listed on its own and `is_clean` scoped to the directory. A directory that is
   not on disk and has no changed path under it is an error, and so is a directory given without the
@@ -63,6 +63,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A one-shot `basemind scan` gives each ONNX session the scan's cores minus the embed pool's other
   workers as intra-op threads (3 on 4 cores, was 2), and a set `[resources] embed_threads` now sets
   them too. The daemon keeps 2 and `serve` keeps `max(2, cores / 4)`: they share the machine.
+- **BREAKING: `docs_search` is rebuilt on one document store per repository group (ADR-0029,
+  ADR-0037).**
+  - A hit carries `chunk`, `cite` (pages, section, headings inside the hit, lines, bytes), `context`,
+    `also_at` and `title`; the response reports `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`,
+    `vector_mode` and `rerank`. Per-hit `keywords`, `entities` and `summary`, `chunk_idx`, `distance`
+    and `byte_start` / `byte_end` are gone.
+  - `scope` is removed. `kind` and `path` are new filters, `keywords` matches whole keywords, and every
+    filter runs before ranking.
+  - A vector lane and a full-text lane are fused; a search works without the embedder, on the full-text
+    lane, and says so.
+  - Plain text, logs, CSV, TSV, NDJSON, JSON, YAML and TOML are chunked from the file itself, so every
+    chunk cites its lines.
+  - The rows live at `cache/groups/<group>/lance/<model>-<dim>-<hash>/`, shared by every worktree of
+    the repository. The first scan deletes each view's old document store and re-extracts and
+    re-embeds every document once (extraction digest `doc/4`, vectors keyed by model).
 - `code_refs` call sites, `callers` (with `path`) and `implementations` in a session that holds no
   index — a CLI command or a second `serve` beside a writer, with no daemon — are refused as busy
   (exit `3`), naming `basemind comms start`, instead of answering from an in-RAM projection of the
@@ -242,10 +257,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `code_read`: an oversized body ends at a whole line and `end_line` is the last line returned (read on
     from `end_line + 1`); a symbol read refuses a file over `scan.max_file_bytes`.
   - `code_search` / `docs_search`: every page is cut from one retrieval of 101 hits (the 100 that can be
-    paged and one that says whether the ranking goes on); a reranker scores up to 101 candidates per
-    retrieval. A ranking that goes on past that depth, that the reranker's `top_k` cut, or that a
-    `docs_search` filter could not see whole (more than 400 chunks) sets `truncated`, and a cursor issued
-    before a rescan is refused.
+    paged and one that says whether the ranking goes on), and a cursor issued before a rescan is refused.
+    A `docs_search` ranking that goes on past that depth sets `truncated_reason: "depth"`. Its filters run
+    before ranking, and its reranker reorders the first `[documents.reranker] top_k` fused hits (at most
+    50) and drops none (ADR-0029, ADR-0037).
   - `git_log {rev}` and `{path, symbol}` now honour `max_tokens`. A symbol's history is paged by a cursor
     over the commits touching the file, so a change older than the first window can be reached, and a
     symbol the working tree no longer defines has its history read. A name no commit defines either is
@@ -387,8 +402,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so `--features crawl` now fails the build. A `[crawl]` table in `basemind.toml` is still accepted and
   ignored (`basemind init` used to write an empty one, and no longer does); one with keys in it logs a
   warning. `BASEMIND_ALLOW_PRIVATE_HOSTS` and `BASEMIND_DAEMON_MAX_CRAWL_PAGES` / `_DEPTH` / `_BODY_BYTES`
-  have no effect. Pages already ingested stay in the document store under their `web:<host>` scope and are
-  still searchable with `docs_search` and `scope: "web:<host>"`, but are never refreshed.
+  have no effect. Pages already ingested lived only in the per-view document stores, which the first scan
+  of this version deletes (see the `docs_search` entry under Changed); `docs_search` has no `scope`.
 - **Agent shells.** The `shell` MCP tool (`spawn`, `send`, `capture`, `kill`, `list`, `broadcast`), the
   `basemind shell` CLI group and the `shells` cargo feature are gone, along with the `rmux` git dependencies;
   `full` no longer includes `shells`, so `--features shells` now fails the build. A `[shells]` table in
@@ -730,11 +745,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     opening beside one that may be wiping the store. The rest of that scan pass, and the tool calls
     of the next minute, take the store as unavailable at once instead of each waiting again; so do
     calls that were already waiting on the open that failed. A hybrid `code_search` runs its other
-    lanes and names the vector lane in `lanes_unavailable`. `docs_search`, `memory_search` by
-    `query` and `code_search` with `mode: "semantic"` refuse the call (`isError`, not an internal
-    error): the refusal says the vector store is unavailable and why, and when the store is opened
-    again; `code_search` points to `mode: "keyword"` and `"hybrid"`, `memory_search` to reads by
-    `key` or `prefix`.
+    lanes and names the vector lane in `lanes_unavailable`. `memory_search` by `query` and
+    `code_search` with `lane: "semantic"` refuse the call (`isError`, not an internal error): the
+    refusal says the vector store is unavailable and why, and when the store is opened again;
+    `code_search` points to `lane: "keyword"` and `"hybrid"`, `memory_search` to reads by `key` or
+    `prefix`. `docs_search` opens its own document store and is refused only when that store does
+    not open; without the embedder it answers on its lexical lane.
 - `memory_save` refuses a key longer than 1024 bytes and a note whose text and tags pass 4 MiB,
   with an invalid-params error naming the limit: a longer one could be saved locally but not
   carried in one daemon frame, by its save or by any later read. Reads of several notes or stamps
@@ -754,9 +770,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client that finds this daemon is told to update and never takes it over.
 - The agent comms store is still versioned by the release minor, so the 0.34 bump empties it once
   more.
-- `docs_search` hits carry their document's `keywords`, `entities` and `summary`, and the `keywords` /
-  `entity` filters work (over the 400 best-ranked chunks; `truncated_reason: "filter_depth"` says when that
-  depth was used up). The metadata was looked up in the code file map, where no document lives.
+- The `docs_search` `keywords` and `entity` filters work, before ranking (ADR-0029): they were matched
+  against metadata looked up in the code file map, where no document lives.
 - A same-size edit is detected as stale: the content hash decides when the size and timestamp do not.
 - Symbol history no longer reports the edge of its window as `introduced`.
 - A page of `git_log` with a directory `path`, answered before the git-history index is ready, walks to its
@@ -920,6 +935,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The daemon's exit path (shedding hosted stacks, the agent store's last flush) is bounded, and the
   waits on a draining predecessor cover the whole teardown.
 - A hosted workspace's file watcher no longer wakes five times a second while nothing changes.
+- A document over `[documents] max_chunks_per_document` is no longer embedded in full and then left
+  unsearchable: whichever chunker cut it, it is not embedded, and its chunks are indexed without
+  vectors, so `docs_search` finds it on the lexical lane. The scan summary counts such documents as
+  `docs_over_chunk_cap`.
+- A document blob another workspace rewrote under other `[documents]` settings or another model is no
+  longer turned into this workspace's rows (which lost their vectors for good and were rewritten on
+  every scan): the file is extracted again.
+- An incremental scan (a watcher batch) that touched no document no longer lists every document of
+  the store and runs index upkeep; upkeep runs only after rows were written or deleted. A full scan
+  that re-queued owed code rows sweeps dead document rows again.
+- `code_search` with `lane: "semantic"` refused with a fix naming `mode`, an argument it rejects; it
+  names `lane`.
+- A `code_search` ranking under the default `[code_search] embed = false` is kept for its pages and
+  repeats, like any other.
+- The cross-encoder reranker is released by the idle engine release like the embedder, and one that
+  failed to load is not retried by every `docs_search` and `code_search` for 60 s.
+- A `docs_search` reranker answer naming an unknown hit leaves the fused order as it was.
+- `[documents.reranker] top_k` above 50 is refused instead of silently capped.
+- An empty `memory_search` query is an invalid argument, and an embedding model that will not load
+  makes `memory_search` and `code_search` unavailable, not an internal error.
+- `docs_search` no longer wipes a document store of another model or version it cannot read: it
+  refuses it, and the scan that holds the store rebuilds it.
 
 ## [0.33.0] - 2026-11-14
 

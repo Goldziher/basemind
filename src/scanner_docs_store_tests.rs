@@ -95,7 +95,7 @@ fn doc_store(store: &Store, config: &Config) -> DocStore {
 
 #[test]
 fn rows_carry_citations_entities_keywords_and_title() {
-    let rows = build_doc_rows(blob("alpha", true), "k".to_string(), true, 10);
+    let rows = build_doc_rows(blob("alpha", true), "k".to_string(), true);
     assert_eq!(rows.mime_group, "markdown");
     assert_eq!(rows.title.as_deref(), Some("alpha title"));
     assert_eq!(rows.keywords, vec!["flood barrier".to_string()]);
@@ -104,11 +104,88 @@ fn rows_carry_citations_entities_keywords_and_title() {
     assert!(rows.chunks[0].entity_cats.is_empty());
     assert_eq!(rows.chunks[1].entity_cats, vec!["location".to_string()]);
     assert!(rows.embedded());
-    assert!(!build_doc_rows(blob("alpha", true), "k".to_string(), false, 10).embedded());
-    assert!(
-        build_doc_rows(blob("alpha", true), "k".to_string(), true, 1)
-            .chunks
-            .is_empty()
+    assert!(!build_doc_rows(blob("alpha", true), "k".to_string(), false).embedded());
+}
+
+/// The chunk cap bounds embedding, not search: a document over it keeps its chunk rows, so the
+/// lexical lane finds it, and a blob embedded before the cap applied to its chunker keeps its
+/// vectors instead of being rewritten without them on every scan (review 3 M1).
+#[test]
+fn a_document_over_the_chunk_cap_keeps_its_chunk_rows() {
+    let (_tmp, mut store, mut config, filters) = setup();
+    config.documents.max_chunks_per_document = 1;
+    track(&mut store, &blob("overcap bare", false), &["bare.md"]);
+    track(&mut store, &blob("overcap embedded", true), &["embedded.md"]);
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX),
+        2
+    );
+    let caps = doc_store(&store, &config).capabilities().unwrap();
+    assert_eq!((caps.rows, caps.vectors), (4, 2));
+    assert!(caps.lexical);
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX),
+        0,
+        "nothing is rewritten"
+    );
+}
+
+/// A blob is keyed by content alone, so another workspace with other document settings or another
+/// model overwrites it. Rows are never built from such a blob: its entry is dropped and the path
+/// owed, so the next pass extracts the file again under this view's settings (review 3 S1).
+#[test]
+fn a_blob_of_other_settings_or_another_model_is_extracted_again_not_written() {
+    let (_tmp, mut store, config, filters) = setup();
+    let mine = blob("displaced digest", false);
+    let hash = crate::hashing::hash_bytes(mine.content.as_bytes());
+    track(&mut store, &mine, &["digest.md"]);
+    let mut theirs = mine.clone();
+    theirs.config_digest = "other settings".to_string();
+    store.write_doc(&hash, &theirs).unwrap();
+
+    let embedded = blob("displaced model", true);
+    let hash = crate::hashing::hash_bytes(embedded.content.as_bytes());
+    track(&mut store, &embedded, &["model.md"]);
+    let mut other_model = embedded.clone();
+    other_model.embedding_model = "another-model".to_string();
+    store.write_doc(&hash, &other_model).unwrap();
+
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX),
+        0,
+        "nothing is built from another workspace's blob"
+    );
+    for path in ["digest.md", "model.md"] {
+        assert!(store.lookup_doc(path).is_none(), "{path} is extracted again");
+        assert!(
+            store.pending_vectors.docs().contains(bstr::BStr::new(path.as_bytes())),
+            "{path} owes its rows"
+        );
+    }
+}
+
+/// An incremental pass that touched no document, dropped none and owes none leaves the store alone:
+/// it does not look for absent rows, list keys or run index upkeep (review 3 S4). A pass that owes
+/// rows still writes them.
+#[test]
+fn an_incremental_pass_without_document_work_leaves_the_store_alone() {
+    let (_tmp, mut store, config, filters) = setup();
+    let key = doc_key(&track(&mut store, &blob("idle", false), &["a.md"]), "digest");
+    sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), usize::MAX);
+    doc_store(&store, &config)
+        .delete_keys(std::slice::from_ref(&key))
+        .unwrap();
+    let incremental = crate::scanner_flush::REQUEUE_PER_INCREMENTAL;
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), incremental),
+        0,
+        "the pass looked for absent rows"
+    );
+    store.pending_vectors.owe_doc("a.md");
+    assert_eq!(
+        sync_document_rows(&mut store, &config, &filters, &AHashSet::new(), incremental),
+        1,
+        "a pass that owes rows writes them"
     );
 }
 
@@ -387,7 +464,7 @@ fn a_sweep_never_deletes_rows_a_sibling_writes_after_liveness_was_read() {
             wait_go.recv().unwrap();
             // A scan writes its file map before its rows (`flush_code_map`, then the lanes).
             b.flush().unwrap();
-            let rows = build_doc_rows(blob("race-sibling", true), sibling_key, true, 10);
+            let rows = build_doc_rows(blob("race-sibling", true), sibling_key, true);
             open_doc_store(b, config, true)
                 .unwrap()
                 .unwrap()

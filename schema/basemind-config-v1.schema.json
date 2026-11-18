@@ -473,7 +473,7 @@
           "default": []
         },
         "max_chunks_per_document": {
-          "description": "Hard cap on chunks embedded per document. A pathological input (huge generated file, an\narchive that slipped the denylist) can otherwise explode into tens of thousands of ONNX\nembeds. Documents exceeding the cap are extracted but not embedded (blob written, no vector\nrows) with a warning.",
+          "description": "Hard cap on chunks embedded per document. A pathological input (huge generated file, an\narchive that slipped the denylist) can otherwise explode into tens of thousands of ONNX\nembeds. Documents exceeding the cap are extracted but not embedded, with a warning: their\nchunks are indexed without vectors, so the lexical lane still finds them.",
           "type": "integer",
           "format": "uint",
           "minimum": 1,
@@ -1082,7 +1082,7 @@
           "default": []
         },
         "reranker": {
-          "description": "Optional cross-encoder rerank of the fused `semantic` hits. Reuses the same xberg reranker\nas the documents tier. Off by default — the first call downloads an ONNX model. Enable via\n`[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.",
+          "description": "Optional cross-encoder rerank of the fused hits. Reuses the same xberg reranker as the\ndocuments tier. Off by default — the first call downloads an ONNX model. Enable via\n`[code_search.reranker] enabled = true`.",
           "$ref": "#/$defs/RerankerConfig",
           "default": {
             "enabled": false,

@@ -82,6 +82,20 @@ pub(super) fn retrieve(
     })
 }
 
+/// Why a hybrid search ran without its vector lane when `[code_search] embed` is off.
+const EMBEDDINGS_OFF: &str = "embeddings are off: set `[code_search] embed = true` and run `index_rescan`";
+
+/// Whether `ranking` may be kept for the pages and repeats that follow: a degraded or empty answer
+/// is the one most likely to differ a moment later. A vector lane the configuration turned off is
+/// not degraded: turning it on takes an `index_rescan`, which drops the kept rankings.
+pub(super) fn is_cacheable(ranking: &CodeSearchRanking) -> bool {
+    !ranking.hits.is_empty()
+        && ranking
+            .lanes_unavailable
+            .iter()
+            .all(|unavailable| unavailable.lane == "vector" && unavailable.reason == EMBEDDINGS_OFF)
+}
+
 /// Hybrid lane: run the vector, keyword, and exact lanes best-effort and fuse their rankings via RRF
 /// on the shared `chunk_id` key. Each lane is independent — a lane that is unavailable (no embedder,
 /// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
@@ -114,7 +128,7 @@ fn hybrid_hits(ws: &Workspace, query: &str, limit: usize) -> Result<(Vec<CodeSea
         // result that silently lacks the vector lane reads as "nothing similar exists".
         report.unavailable.push(LaneUnavailable {
             lane: "vector".to_string(),
-            reason: "embeddings are off: set `[code_search] embed = true` and run `index_rescan`".to_string(),
+            reason: EMBEDDINGS_OFF.to_string(),
         });
         Vec::new()
     };
@@ -244,7 +258,7 @@ fn fjall_lanes(ws: &Workspace, query: &str, limit: usize, want_exact: bool) -> L
 
 /// What a semantic-only `code_search` can do while the vector store is unavailable.
 const SEMANTIC_MEANWHILE: Option<&str> = Some(
-    "Meanwhile `mode: \"keyword\"` searches without it, and `mode: \"hybrid\"` runs the keyword and exact \
+    "Meanwhile `lane: \"keyword\"` searches without it, and `lane: \"hybrid\"` runs the keyword and exact \
      lanes and names the vector lane in `lanes_unavailable`.",
 );
 
@@ -412,7 +426,7 @@ fn rerank_hits(
         acceleration: crate::embeddings::acceleration(ws.config.resources.onnx_provider),
         ..Default::default()
     };
-    let scored = match xberg::rerank(query.to_string(), texts, &config) {
+    let scored = match crate::embeddings::rerank(query.to_string(), texts, &config, preset) {
         Ok(scored) => scored,
         Err(error) => return (hits, Some(format!("the reranker failed: {error}"))),
     };

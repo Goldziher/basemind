@@ -292,8 +292,10 @@ fn the_owed_set_is_written_before_the_file_map_that_claims_its_files() {
 }
 
 /// A path no rows can come of leaves the owed set instead of failing its whole batch on every
-/// scan: a blob re-extracted without vectors, a blob that is gone, a document the embed policy or
-/// the chunk cap now excludes. The document beside them still gets its rows.
+/// scan: a blob that is gone, a document the embed policy now excludes. A document over the chunk
+/// cap keeps the vectors its blob already holds. A blob without the vectors its entry records (none,
+/// or another model's) was rewritten under other settings, so its file is extracted again. The
+/// document beside them still gets its rows.
 #[test]
 fn a_document_no_rows_can_come_of_is_settled_and_does_not_fail_the_others() {
     let tmp = tempfile::tempdir().unwrap();
@@ -311,13 +313,34 @@ fn a_document_no_rows_can_come_of_is_settled_and_does_not_fail_the_others() {
 
     lanes(&mut store, &config, usize::MAX);
 
-    assert_eq!(doc_rows(&mut store, SCOPE), ["docs/good.txt"]);
-    assert!(store.pending_vectors.is_empty(), "{:?}", store.pending_vectors);
+    assert_eq!(
+        doc_rows(&mut store, SCOPE),
+        ["docs/good.txt", "docs/too-many-chunks.txt"]
+    );
+    assert_eq!(
+        owed_docs(&store),
+        ["docs/other-dim.txt", "docs/vectorless.txt"],
+        "extracted again"
+    );
+    assert!(store.lookup_doc("docs/other-dim.txt").is_none());
+    assert!(store.lookup_doc("docs/vectorless.txt").is_none());
+}
+
+/// The paths owing document rows.
+fn owed_docs(store: &Store) -> Vec<String> {
+    let mut owed: Vec<String> = store
+        .pending_vectors
+        .docs()
+        .iter()
+        .map(|rel| rel.to_str_lossy().into_owned())
+        .collect();
+    owed.sort();
+    owed
 }
 
 /// The batch a scan hands over for a document with no rows to write is skipped by the lane, so the
 /// lane cannot settle it; and a blob whose vectors are of another dimension must not reach the
-/// write, where it would fail every document batched with it.
+/// write, where it would fail every document batched with it: its file is extracted again.
 #[test]
 fn a_batch_whose_blob_holds_other_vectors_is_settled_not_written() {
     let tmp = tempfile::tempdir().unwrap();
@@ -335,6 +358,7 @@ fn a_batch_whose_blob_holds_other_vectors_is_settled_not_written() {
         reused: true,
         degraded: false,
         text_fallback: false,
+        over_chunk_cap: false,
     };
     let batches = vec![batch("docs/good.txt"), batch("docs/other-dim.txt")];
 
@@ -350,7 +374,7 @@ fn a_batch_whose_blob_holds_other_vectors_is_settled_not_written() {
     .unwrap();
 
     assert_eq!(doc_rows(&mut store, SCOPE), ["docs/good.txt"]);
-    assert!(store.pending_vectors.is_empty(), "{:?}", store.pending_vectors);
+    assert_eq!(owed_docs(&store), ["docs/other-dim.txt"], "extracted again");
 }
 
 /// While the vector store cannot be opened nothing is looked at: a path that would be settled on
@@ -693,6 +717,38 @@ mod code {
         assert_eq!(code_rows(&mut store), ["src/good.rs"]);
         assert!(store.pending_vectors.is_empty(), "{:?}", store.pending_vectors);
         assert!(!store.view_dir.join(PENDING_FILE).exists());
+    }
+
+    /// Re-queuing owed code rows spends the pass's budget, which made a full pass look incremental to
+    /// the document lane: it skipped the sweep of dead document rows whenever code rows were owed.
+    #[test]
+    fn a_full_pass_that_owes_code_rows_still_sweeps_dead_document_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = open_store(tmp.path());
+        let config = code_config();
+        owe_doc(&mut store, "docs/live.txt", Some(&doc(2, DIM)));
+        owe_code(&mut store, "src/good.rs", Some(&sidecar(2, DIM)));
+        store.flush().unwrap();
+        let docs = crate::scanner_docs::open_doc_store(&store, &config, true)
+            .unwrap()
+            .expect("created");
+        docs.write(&[crate::lance::docs_schema::DocRows {
+            doc_key: "dead".to_string(),
+            mime_type: "text/plain".to_string(),
+            mime_group: "text".to_string(),
+            title: None,
+            keywords: Vec::new(),
+            chunks: Vec::new(),
+        }])
+        .unwrap();
+
+        lanes(&mut store, &config, usize::MAX);
+
+        assert_eq!(code_rows(&mut store), ["src/good.rs"], "the code row was requeued");
+        assert!(
+            !docs.keys().unwrap().contains(&"dead".to_string()),
+            "the dead row is swept"
+        );
     }
 
     /// A staged or revision view shares the working view's `code_chunks` store, keyed by path, so

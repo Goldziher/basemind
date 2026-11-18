@@ -176,6 +176,9 @@ pub struct ScanStats {
     /// table-cell limit, an SVG with an oversized entity) and the file was re-read as `text/plain`
     /// through the linear chunker. Distinct from `doc_timeouts` and `extract_failed`.
     pub docs_text_fallback: usize,
+    /// Subset of `docs_indexed` with more chunks than `[documents] max_chunks_per_document`: indexed
+    /// without vectors, so only the lexical lane finds them.
+    pub docs_over_chunk_cap: usize,
     /// Documents abandoned because extraction overran `[documents] extraction_timeout_secs` (also
     /// counted in `extract_failed`). Each is tombstoned, so it is retried only once the file or the
     /// extraction limits change.
@@ -310,6 +313,9 @@ pub enum FileStatus {
         /// True when structured extraction failed and the file was re-read as `text/plain` (drives
         /// `docs_text_fallback`; implies `degraded`).
         text_fallback: bool,
+        /// True when the document is over `[documents] max_chunks_per_document` and was not embedded
+        /// (drives `docs_over_chunk_cap`).
+        over_chunk_cap: bool,
         /// Wall-clock milliseconds this document spent in extraction, chunking and persisting.
         elapsed_ms: u64,
     },

@@ -50,7 +50,7 @@ mod enabled {
                 &arguments,
                 generation,
                 || crate::engine::code_search::retrieve(self, p.query, p.lane.as_deref(), RANKED_FETCH as usize),
-                |ranking| !ranking.hits.is_empty() && ranking.lanes_unavailable.is_empty(),
+                crate::engine::code_search::is_cacheable,
             )?;
             let mut ranking = ranking;
             let page = page_ranked(

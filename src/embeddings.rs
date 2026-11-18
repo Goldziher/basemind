@@ -208,8 +208,12 @@ pub(crate) type FakeEmbed = fn(&str) -> Result<Vec<f32>>;
 pub(crate) fn preset_dimension(preset: &str) -> Result<u16> {
     let meta = EMBEDDING_PRESETS.iter().find(|p| p.name == preset).ok_or_else(|| {
         anyhow!(
-            "unknown embedding preset '{preset}'; \
-                 available: fast, balanced, quality, multilingual"
+            "unknown embedding preset '{preset}'; available: {}",
+            EMBEDDING_PRESETS
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     })?;
     u16::try_from(meta.dimensions)
@@ -360,8 +364,8 @@ impl SharedEmbedder {
     /// Embed a batch of texts in one call. Returns one `Vec<f32>` of length `self.dim()` per
     /// input, in order.
     ///
-    /// Errors if any input text is empty (xberg rejects empty strings, which produce meaningless
-    /// embeddings). An empty batch returns an empty vector without touching the model.
+    /// The texts are not checked here: xberg refuses a batch holding an empty text, failing the
+    /// whole call. An empty batch returns an empty vector without touching the model.
     ///
     /// The call is routed through the process-wide bounded [`embed_pool`] so it
     /// cannot saturate the global rayon pool used by the code-map scanner.
@@ -438,8 +442,39 @@ pub fn with_query_prefix(prefix: Option<&str>, query: &str) -> String {
     }
 }
 
-/// A model that could not be loaded (offline, a failed download, no ONNX runtime) is not tried
-/// again by every call for a while: each attempt can take as long as the download timeout.
+/// Rerank `documents` against `query` with xberg's cross-encoder `preset`. The reranker is one of the
+/// engines [`release_engines`] drops, so the call is on the residency books like a request's
+/// embedding: in flight it holds the engines, and one that ran leaves them resident until the idle
+/// release. A reranker that failed to load is not tried again for a while, so an offline machine
+/// does not retry the download on every search.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+pub fn rerank(
+    query: String,
+    documents: Vec<String>,
+    config: &xberg::core::config::RerankerConfig,
+    preset: &str,
+) -> Result<Vec<xberg::RerankedDocument>> {
+    rerank_tracked(preset, || {
+        xberg::rerank(query, documents, config).map_err(anyhow::Error::from)
+    })
+}
+
+/// Whether `error` is a model that could not be loaded (offline, a failed download, no ONNX runtime),
+/// remembered or fresh, rather than one input that failed.
+pub fn is_load_failure(error: &anyhow::Error) -> bool {
+    load_failure::is_load_failure(&format!("{error:#}"))
+}
+
+/// [`rerank`] around any model call `work`.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+fn rerank_tracked<T>(preset: &str, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    load_failure::RERANKER.recent(preset)?;
+    residency::state().begin_use();
+    let result = work();
+    residency::end_use(Use::Request, result.is_ok());
+    load_failure::RERANKER.remember(preset, result)
+}
+
 /// A stand-in for the document embedder, settable by integration tests (the `test-support`
 /// feature): `Some(f)` makes every document embedding call answer with `f(texts, dim)`, so a test
 /// can make the embedder fail, then work, without a model.
@@ -462,6 +497,8 @@ pub mod test_document_embedder {
     }
 }
 
+/// A model that could not be loaded (offline, a failed download, no ONNX runtime) is not tried
+/// again by every call for a while: each attempt can take as long as the download timeout.
 mod load_failure {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
@@ -471,32 +508,52 @@ mod load_failure {
     /// How long a load failure is answered from memory before the model is tried again.
     pub(super) const RETRY_AFTER: Duration = Duration::from_secs(60);
 
-    static FAILED: Mutex<Option<(String, Instant, String)>> = Mutex::new(None);
+    /// The last load failure of one kind of model: its name, when, and why.
+    pub(super) struct Memo(Mutex<Option<(String, Instant, String)>>);
 
-    /// The remembered failure of `model`, while it is recent.
+    /// The embedding model's.
+    static EMBEDDER: Memo = Memo(Mutex::new(None));
+
+    /// The cross-encoder reranker's, kept apart so neither model's failure holds back the other.
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    pub(super) static RERANKER: Memo = Memo(Mutex::new(None));
+
+    /// The remembered failure of the embedding `model`, while it is recent.
     pub(super) fn recent(model: &str) -> Result<()> {
-        let failed = FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match failed.as_ref() {
-            Some((name, at, reason)) if name == model && at.elapsed() < RETRY_AFTER => Err(anyhow!(
-                "{reason} (a load failure less than {} s ago; not retried yet)",
-                RETRY_AFTER.as_secs()
-            )),
-            _ => Ok(()),
-        }
+        EMBEDDER.recent(model)
     }
 
-    /// Pass `result` through, remembering it when it failed to load `model`, forgetting any earlier
-    /// failure when it succeeded.
+    /// [`Memo::remember`] for the embedding model.
     pub(super) fn remember<T>(model: &str, result: Result<T>) -> Result<T> {
-        let mut failed = FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match &result {
-            Ok(_) => *failed = None,
-            Err(error) if is_load_failure(&format!("{error:#}")) => {
-                *failed = Some((model.to_string(), Instant::now(), format!("{error:#}")));
+        EMBEDDER.remember(model, result)
+    }
+
+    impl Memo {
+        /// The remembered failure of `model`, while it is recent.
+        pub(super) fn recent(&self, model: &str) -> Result<()> {
+            let failed = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match failed.as_ref() {
+                Some((name, at, reason)) if name == model && at.elapsed() < RETRY_AFTER => Err(anyhow!(
+                    "{reason} (a load failure less than {} s ago; not retried yet)",
+                    RETRY_AFTER.as_secs()
+                )),
+                _ => Ok(()),
             }
-            Err(_) => {}
         }
-        result
+
+        /// Pass `result` through, remembering it when it failed to load `model`, forgetting any
+        /// earlier failure when it succeeded.
+        pub(super) fn remember<T>(&self, model: &str, result: Result<T>) -> Result<T> {
+            let mut failed = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &result {
+                Ok(_) => *failed = None,
+                Err(error) if is_load_failure(&format!("{error:#}")) => {
+                    *failed = Some((model.to_string(), Instant::now(), format!("{error:#}")));
+                }
+                Err(_) => {}
+            }
+            result
+        }
     }
 
     /// Whether an embedding error is the model failing to load rather than one input failing.
@@ -706,6 +763,38 @@ mod tests {
         );
         assert!(super::load_failure::remember(model, Ok(())).is_ok());
         assert!(super::load_failure::recent(model).is_ok());
+    }
+
+    /// The reranker is held on the residency books while it runs, and a reranker that failed to load
+    /// is answered from memory instead of being tried (and its download retried) on every search
+    /// (review 3 S5).
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    #[test]
+    fn a_rerank_is_tracked_and_its_load_failure_remembered() {
+        let preset = "rerank-memo-test-preset";
+        let in_use = super::rerank_tracked(preset, || Ok(residency::state().in_use())).unwrap();
+        assert!(in_use >= 1, "the rerank ran outside the residency books");
+        let failed: Result<()> = super::rerank_tracked(preset, || Err(anyhow!("download of the reranker failed")));
+        assert!(failed.is_err());
+        let mut ran = false;
+        let again = super::rerank_tracked(preset, || {
+            ran = true;
+            Ok(())
+        });
+        assert!(!ran, "a remembered load failure is not tried again");
+        assert!(again.unwrap_err().to_string().contains("not retried"));
+        assert!(
+            super::load_failure::recent(preset).is_ok(),
+            "a reranker failure does not hold back the embedder"
+        );
+    }
+
+    #[test]
+    fn an_unknown_preset_names_every_preset() {
+        let error = super::preset_dimension("no-such-preset").unwrap_err().to_string();
+        for preset in xberg::embeddings::EMBEDDING_PRESETS.iter() {
+            assert!(error.contains(preset.name.as_str()), "{error}");
+        }
     }
 
     #[test]

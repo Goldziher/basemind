@@ -320,14 +320,15 @@ pub(crate) fn doc_entry_settled(
 /// AND its **model**. The model check is load-bearing: `balanced` and `multilingual` share dim 768,
 /// so a dim-only gate would falsely reuse stale-model vectors when switching between them. A preset
 /// change (dim OR model) therefore forces recompute — same gate as `chunk_and_embed`. An
-/// empty-of-chunks doc is always reusable (recompute would yield nothing anyway). When embedding is
+/// empty-of-chunks doc, or one over `max_chunks_per_document`, is always reusable (recompute would
+/// embed nothing anyway). When embedding is
 /// off, any cached doc is reusable (chunks only). In every case the blob must have been produced
 /// under the current `config_digest` (or predate digests, in which case the caller stamps it).
 fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: bool, config_digest: &str) -> bool {
     if !cached.config_digest.is_empty() && cached.config_digest != config_digest {
         return false;
     }
-    if !embed || cached.chunks.is_empty() {
+    if !embed || cached.chunks.is_empty() || cached.chunks.len() > cfg.max_chunks_per_document {
         return true;
     }
     doc_has_vectors_of(cached, &cfg.embedding_preset)
@@ -364,7 +365,7 @@ pub(crate) fn pending_from_doc(
             rel,
             chunks = chunk_count,
             cap = cfg.max_chunks_per_document,
-            "document exceeds max_chunks_per_document; caching blob but skipping vector rows"
+            "document exceeds max_chunks_per_document; indexed without vectors"
         );
     }
     let emit_rows = embed && embedding_dim > 0 && chunk_count > 0 && !over_cap;
@@ -377,7 +378,8 @@ pub(crate) fn pending_from_doc(
         // Only a fresh extraction (`!reused`) ran an attempt; a reused blob already carries vectors ~keep
         // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. A ~keep
         // failed attempt is not one: the document owes its vectors until the embedder works. ~keep
-        embed_attempted: embed && !reused && !doc.embed_failed,
+        // A document over the cap is never embedded, so it owes no attempt either. ~keep
+        embed_attempted: embed && (over_cap || (!reused && !doc.embed_failed)),
         reused,
         degraded: crate::extract::doc_guard::is_degraded_chunking(
             &doc.mime_type,
@@ -385,6 +387,7 @@ pub(crate) fn pending_from_doc(
             doc.text_fallback,
         ),
         text_fallback: doc.text_fallback,
+        over_chunk_cap: over_cap,
     }
 }
 

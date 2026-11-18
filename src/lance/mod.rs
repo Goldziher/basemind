@@ -22,7 +22,6 @@ pub mod docs_rank;
 pub mod docs_schema;
 #[cfg(feature = "documents")]
 pub mod docs_types;
-pub mod live;
 mod memory;
 pub mod schema;
 pub mod session;

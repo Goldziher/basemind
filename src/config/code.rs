@@ -61,9 +61,9 @@ pub struct CodeSearchConfig {
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub embed_exclude: Vec<String>,
-    /// Optional cross-encoder rerank of the fused `semantic` hits. Reuses the same xberg reranker
-    /// as the documents tier. Off by default — the first call downloads an ONNX model. Enable via
-    /// `[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.
+    /// Optional cross-encoder rerank of the fused hits. Reuses the same xberg reranker as the
+    /// documents tier. Off by default — the first call downloads an ONNX model. Enable via
+    /// `[code_search.reranker] enabled = true`.
     #[serde(default)]
     pub reranker: RerankerConfig,
 }

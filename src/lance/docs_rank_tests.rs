@@ -192,3 +192,15 @@ fn the_reranker_reorders_its_candidates_and_drops_nothing() {
     assert!(reorder(&mut hits, 2, &bad).is_err());
     assert_eq!(hits.len(), 3, "a bad answer keeps every hit");
 }
+
+/// A reranker answer with an index out of range leaves the fused order exactly as it was, with no
+/// hit carrying a rerank score: it put the unscored candidates before the ones already scored.
+#[test]
+fn a_bad_reranker_answer_keeps_the_fused_order() {
+    let mut hits: Vec<RankedChunk> = (0..4).map(|i| ranked_chunk("d", i, "x")).collect();
+    let bad = vec![scored(2, 0.9), scored(7, 0.1)];
+    assert!(reorder(&mut hits, 3, &bad).is_err());
+    let order: Vec<u32> = hits.iter().map(|h| h.ord).collect();
+    assert_eq!(order, vec![0, 1, 2, 3]);
+    assert!(hits.iter().all(|h| h.rerank_score.is_none()));
+}
