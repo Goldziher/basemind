@@ -18,10 +18,10 @@ Lives at `.basemind/views/<view>/index.fjall/`. Source: `src/index/{mod,keys,wri
 | Keyspace | Purpose |
 |---|---|
 | `meta` | Constants (e.g. `schema_ver`). |
-| `symbols_by_path` | Per-file outline lookups. |
-| `symbols_by_name` | `name`-prefix range scans for symbol search. |
-| `calls_by_path` | Per-file call lookups. |
-| `calls_by_callee` | `callee`-prefix range scans — drives `code_refs`. |
+| `symbols_by_path` | One content's symbols, keyed by content key; shared by the group. |
+| `symbols_by_name` | `name`-prefix range scans for symbol search; shared by the group. |
+| `calls_by_path` | One content's call sites, keyed by content key; shared by the group. |
+| `calls_by_callee` | `callee`-prefix range scans — drives `code_refs`; shared by the group. |
 | `imports_by_module` | Future fast-path for `code_refs` relation `importers`. |
 | `embeddings` | Reserved for vector search; empty today. |
 
@@ -30,6 +30,12 @@ Lives at `.basemind/views/<view>/index.fjall/`. Source: `src/index/{mod,keys,wri
 All composite keys are length-prefixed (`u16:len ‖ bytes`). Length prefixes guarantee that a `Foo`
 prefix never spills into `Foobar`. Concrete shapes live in `src/index/keys.rs` with `*_prefix` +
 `parse_*` companions for every encoder.
+
+The symbol and call rows are keyed by a 16-byte content key (content hash, language, extract
+epoch) in place of the path (`src/index/keys_content.rs`): `symbols_by_path` / `calls_by_path` are
+`ckey ‖ start`, the name-led rows `u16:len(name) ‖ name ‖ [kind] ‖ ckey ‖ start`. A view reads them
+through its live keys (`src/index/live_keys.rs`), the content key each file map entry records with
+the paths holding it; a name scan's hit key is the row key followed by one holder's path.
 
 #### Operational invariants
 
