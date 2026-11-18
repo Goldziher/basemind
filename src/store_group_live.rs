@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 use ahash::AHashSet;
 
+use crate::index::keys::ContentKey;
 use crate::index::live_keys::LiveKeys;
 use crate::store::{Index, Store, StoreError};
 use crate::store_hash_refs::HashRefs;
@@ -170,6 +171,23 @@ impl Store {
     /// [`for_each_map`]). Fails, and a sweep must then delete nothing, when one cannot be read.
     pub(crate) fn sibling_doc_keys(&self) -> Result<AHashSet<String>, LivenessUnknown> {
         sibling_doc_keys_in(self.sibling_view_dirs()?)
+    }
+
+    /// The content key of every file named by any view of this store's group: this store's own file
+    /// map in memory and every other view's file map on disk (see [`for_each_map`]), each entry's
+    /// recorded key. Fails, and the group sweep must then delete no content, when a sibling's file
+    /// map cannot be read.
+    pub(crate) fn group_live_content_keys(&self) -> Result<AHashSet<ContentKey>, LivenessUnknown> {
+        let mut keys: AHashSet<ContentKey> = self
+            .index
+            .files
+            .values()
+            .filter_map(|entry| entry.content_key)
+            .collect();
+        for_each_map(self.sibling_view_dirs()?, |index| {
+            keys.extend(index.files.values().filter_map(|entry| entry.content_key));
+        })?;
+        Ok(keys)
     }
 
     /// Publish the live keys of the file map just written, so the view's reads follow it.

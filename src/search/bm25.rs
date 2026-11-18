@@ -185,16 +185,15 @@ pub fn bm25_search(db: &dyn IndexView, query: &str, limit: usize) -> Vec<Bm25Hit
     bm25_search_counted(db, query, limit, MAX_CANDIDATES).0
 }
 
-/// Count `term`'s postings among the chunks the view holds, stopping once the count passes
-/// `stop_after`.
+/// Count the chunks the view holds that contain `term`, stopping once the count passes `stop_after`.
 fn document_frequency(db: &dyn IndexView, live: &Bm25Live, term: &str, stop_after: u64) -> u64 {
     let mut df = 0u64;
     for row in db.prefix(Part::CodeBm25Postings, &keys::code_bm25_postings_prefix(term)) {
-        let Ok((key, _)) = row else {
+        let Ok((key, value)) = row else {
             continue;
         };
-        if keys::parse_code_bm25_posting_chunk(&key).is_some_and(|(content, _)| live.hash_of(&content).is_some()) {
-            df += 1;
+        if keys::parse_code_bm25_posting_content(&key).is_some_and(|content| live.hash_of(&content).is_some()) {
+            df += (value.len() / keys::POSTING_ENTRY_LEN) as u64;
             if df > stop_after {
                 break;
             }
@@ -270,20 +269,20 @@ pub fn bm25_search_counted(
                     continue;
                 }
             };
-            let (Some(chunk), Some((tf, doclen))) = (
-                keys::parse_code_bm25_posting_chunk(&k),
-                keys::parse_code_bm25_posting_value(&v),
-            ) else {
+            let Some(content) = keys::parse_code_bm25_posting_content(&k) else {
                 continue;
             };
-            if live.hash_of(&chunk.0).is_none() {
+            if live.hash_of(&content).is_none() {
                 continue;
             }
-            let gain = bm25_term_score(tf, doclen, avgdl, idf);
-            if let Some(score) = scores.get_mut(&chunk) {
-                *score += gain;
-            } else if scores.len() < max_candidates {
-                scores.insert(chunk, gain);
+            for (ordinal, tf, doclen) in keys::code_bm25_posting_entries(&v) {
+                let gain = bm25_term_score(tf, doclen, avgdl, idf);
+                let chunk = (content, ordinal);
+                if let Some(score) = scores.get_mut(&chunk) {
+                    *score += gain;
+                } else if scores.len() < max_candidates {
+                    scores.insert(chunk, gain);
+                }
             }
         }
     }

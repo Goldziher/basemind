@@ -1,7 +1,8 @@
 //! Regression tests for the document-extraction stall: xberg's markdown splitter is quadratic in the
 //! document size (it re-collects and re-sorts every remaining element per chunk), so a multi-megabyte
 //! text file pinned a scan worker for tens of minutes. Large text-like files now take a linear chunker,
-//! and a wall-clock budget abandons any extraction that still overruns.
+//! and a wall-clock budget abandons any extraction that still overruns. The budget tests stall their
+//! document with `test_stall`, so it overruns by construction rather than by the splitter being slow.
 
 #![cfg(feature = "documents")]
 
@@ -13,22 +14,25 @@ use std::time::{Duration, Instant};
 use basemind::config::ConfigV1;
 use basemind::extract::ExtractError;
 use basemind::extract::doc::{DocConfig, extract_doc};
-use basemind::extract::doc_guard::{ChunkCutovers, abandoned_extractions};
+use basemind::extract::doc_guard::{ChunkCutovers, abandoned_extractions, test_stall};
 use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::Store;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
-/// Run one test at a time, starting from an idle process. These tests each push megabytes through a
-/// splitter, and a timed-out extraction keeps burning a core for several seconds after its budget
-/// expires. Run in parallel, or right behind one, a small runner starves the 1 s budget of the small
-/// guide document; so each test waits for its neighbours' abandoned threads to finish first.
+/// Run one test at a time, starting from an idle process: these tests each push megabytes through a
+/// chunker, and share the process-wide stall list and abandoned-thread ledger. Each test releases
+/// its neighbours' stalled extractions and waits for their threads to finish first.
 fn exclusive() -> MutexGuard<'static, ()> {
     let guard = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    // Best effort: a runner too slow to drain in time gets the old behavior, never a new failure.
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while abandoned_extractions() > 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
+    test_stall::release();
+    let started = Instant::now();
+    while abandoned_extractions() > 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "released extractions never finished"
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
     guard
 }
@@ -136,17 +140,11 @@ fn normal_documents_chunk_exactly_as_before() {
 fn extraction_past_its_wall_clock_budget_is_abandoned() {
     let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("big.md");
-    // A log under a Markdown name: one long paragraph for xberg's splitter, which only
-    // Markdown-family text still reaches (plain text is chunked from the file).
-    fs::write(&path, pathological_log(2 * 1024 * 1024)).unwrap();
+    let path = dir.path().join("stalled.md");
+    fs::write(&path, "# Stalled\n\nNever extracted.\n").unwrap();
+    let _stalled = test_stall::stall(&["stalled.md"]);
     let config = DocConfig {
         extraction_timeout_secs: 1,
-        // Force the quadratic splitter so the budget, not the linear route, is what is under test.
-        chunk_cutovers: ChunkCutovers {
-            markdown_bytes: u64::MAX,
-            plain_text_bytes: u64::MAX,
-        },
         ..offline_doc_config()
     };
 
@@ -213,11 +211,11 @@ fn structured_data_is_linear_but_not_counted_as_degraded() {
 fn scan_counts_a_timed_out_document_and_still_indexes_the_rest() {
     let _serial = exclusive();
     let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("big.md"), pathological_log(2 * 1024 * 1024)).unwrap();
+    fs::write(dir.path().join("stalled.md"), "# Stalled\n\nNever extracted.\n").unwrap();
     fs::write(dir.path().join("guide.md"), markdown_doc()).unwrap();
+    let _stalled = test_stall::stall(&["stalled.md"]);
     let mut cfg = offline_scan_config();
     cfg.documents.extraction_timeout_secs = 1;
-    cfg.documents.markdown_chunk_max_bytes = u64::MAX;
 
     let report = scan_once(dir.path(), &cfg);
 
@@ -228,7 +226,7 @@ fn scan_counts_a_timed_out_document_and_still_indexes_the_rest() {
     );
     assert_eq!(report.stats.docs_indexed, 1, "the normal document is unaffected");
     let store = Store::open(dir.path(), basemind::store::VIEW_WORKING).unwrap();
-    assert!(store.lookup_doc("big.md").is_none());
+    assert!(store.lookup_doc("stalled.md").is_none());
     assert!(store.lookup_doc("guide.md").is_some());
 }
 

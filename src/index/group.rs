@@ -19,6 +19,7 @@ use ahash::AHashMap;
 use fjall::{Database, Keyspace, PersistMode};
 
 use super::bm25_live::{Bm25Gate, Bm25LiveCache};
+use super::group_sweep::PendingContents;
 use super::live_keys::LiveKeysCell;
 use super::name_dict::NameDict;
 use super::scoped::Scoped;
@@ -37,13 +38,14 @@ const META_VIEW_RECORD: &[u8] = b"\xffgroup/view/";
 const FIRST_VIEW_ID: u32 = 1;
 
 /// Keyspaces the group shares by content: no view prefix.
-const SHARED_PARTS: [Part; 6] = [
+pub(super) const SHARED_PARTS: [Part; 7] = [
     Part::SymbolsByPath,
     Part::SymbolsByName,
     Part::CallsByPath,
     Part::CallsByCallee,
     Part::GrepBloom,
     Part::CodeBm25Postings,
+    Part::CodeBm25Holders,
 ];
 
 /// `meta` row holding the layout of the group's rows ([`GROUP_FORMAT`]).
@@ -52,8 +54,9 @@ const META_FORMAT: &[u8] = b"\xffgroup/format";
 /// within an unreleased minor: an open that finds another value (or none, in a database that has an
 /// incarnation) empties every keyspace and takes a new incarnation, so every view's file map names a
 /// gone incarnation and its next scan rebuilds it. 2: BM25 postings shared, keyed by content. 3:
-/// symbol and call rows shared, keyed by content.
-const GROUP_FORMAT: u32 = 3;
+/// symbol and call rows shared, keyed by content. 4: BM25 holders; postings written once per key. 5: one posting row per term and
+/// content, packing its chunks (ADR-0041).
+const GROUP_FORMAT: u32 = 5;
 
 /// Keeps the cross-process group lock held for as long as the database is open.
 pub(crate) type GroupLock = Box<dyn Send + Sync>;
@@ -66,7 +69,9 @@ pub(crate) struct GroupDb {
     embeddings: Keyspace,
     incarnation: u64,
     /// Serialises view-id allocation within the process; the lock serialises it across processes.
-    allocation: Mutex<()>,
+    /// A view's retirement holds it too, and so does every open's claim of an id
+    /// ([`Self::claim_view`]), so no open gets an id being retired.
+    pub(super) allocation: Mutex<()>,
     /// Each view's BM25 live-key cache, shared by every handle on the view.
     bm25_live: Mutex<AHashMap<u32, Arc<Bm25LiveCache>>>,
     /// Each view's BM25 pass ledger, shared by every handle on the view as `bm25_live` is.
@@ -78,6 +83,9 @@ pub(crate) struct GroupDb {
     live: Mutex<AHashMap<u32, Weak<LiveKeysCell>>>,
     /// Distinct callee names of the shared `calls_by_callee`, shared by every view.
     callee_names: Arc<NameDict>,
+    /// Content keys each view's writer staged that no file map it wrote names yet: live for the
+    /// group sweep ([`super::group_sweep`]).
+    pub(super) pending: Mutex<PendingContents>,
     _lock: GroupLock,
 }
 
@@ -88,6 +96,19 @@ pub(crate) struct GroupView {
     pub(crate) view_id: u32,
 }
 
+/// A view id held for an open; see [`GroupDb::claim_view`].
+pub(crate) struct ViewClaim {
+    id: u32,
+    live: Arc<LiveKeysCell>,
+}
+
+impl ViewClaim {
+    /// The claimed view's id.
+    pub(crate) fn id(&self) -> u32 {
+        self.id
+    }
+}
+
 /// Every group database this process holds, by directory.
 fn registry() -> &'static Mutex<AHashMap<PathBuf, Weak<GroupDb>>> {
     static REGISTRY: std::sync::OnceLock<Mutex<AHashMap<PathBuf, Weak<GroupDb>>>> = std::sync::OnceLock::new();
@@ -95,7 +116,7 @@ fn registry() -> &'static Mutex<AHashMap<PathBuf, Weak<GroupDb>>> {
 }
 
 /// A view's record key in group `meta`.
-fn view_record(workspace_key: &str, view: &str) -> Vec<u8> {
+pub(super) fn view_record(workspace_key: &str, view: &str) -> Vec<u8> {
     let mut key = META_VIEW_RECORD.to_vec();
     key.extend_from_slice(workspace_key.as_bytes());
     key.push(b'/');
@@ -191,6 +212,7 @@ impl GroupDb {
             bm25_gate: Bm25Gate::default(),
             live: Mutex::default(),
             callee_names: Arc::default(),
+            pending: Mutex::default(),
             _lock: lock,
         }
     }
@@ -227,8 +249,18 @@ impl GroupDb {
         self.incarnation
     }
 
-    fn meta(&self) -> &Keyspace {
+    pub(super) fn meta(&self) -> &Keyspace {
         &self.keyspaces[Part::Meta.name()]
+    }
+
+    /// The fjall keyspace of `part`, every view's rows.
+    pub(super) fn keyspace(&self, part: Part) -> &Keyspace {
+        &self.keyspaces[part.name()]
+    }
+
+    /// The database every keyspace lives in.
+    pub(super) fn database(&self) -> &Database {
+        &self.db
     }
 
     /// The id of `(workspace_key, view)`, if the group has allocated one.
@@ -240,11 +272,40 @@ impl GroupDb {
             .and_then(read_u32))
     }
 
-    /// The id of `(workspace_key, view)`, allocating one with a synced commit when it has none. An id
-    /// is never reused: the counter only grows, and a record outlives the rows it names until the
-    /// group sweep removes both.
+    /// The id of `(workspace_key, view)`, allocating one when it has none, unclaimed: for tests. An
+    /// open takes [`Self::claim_view`].
+    #[cfg(test)]
     pub(crate) fn allocate_view_id(&self, workspace_key: &str, view: &str) -> Result<u32, IndexError> {
         let _serial = self.allocation.lock().expect("view allocation");
+        self.allocate_locked(workspace_key, view)
+    }
+
+    /// The id of `(workspace_key, view)`, allocated when it has none, claimed for an open: its
+    /// live-key cell is taken while the allocation lock is held, and the group sweep retires a view
+    /// only under that lock and only when no cell of it is held. So the id the open gets is never
+    /// retired under it.
+    pub(crate) fn claim_view(&self, workspace_key: &str, view: &str) -> Result<ViewClaim, IndexError> {
+        let _serial = self.allocation.lock().expect("view allocation");
+        let id = self.allocate_locked(workspace_key, view)?;
+        Ok(ViewClaim {
+            id,
+            live: self.live_keys_cell(id),
+        })
+    }
+
+    /// [`Self::claim_view`] for a reader: `None` when the view has no id, none is allocated.
+    pub(crate) fn claim_existing_view(&self, workspace_key: &str, view: &str) -> Result<Option<ViewClaim>, IndexError> {
+        let _serial = self.allocation.lock().expect("view allocation");
+        Ok(self.view_id(workspace_key, view)?.map(|id| ViewClaim {
+            id,
+            live: self.live_keys_cell(id),
+        }))
+    }
+
+    /// The id of `(workspace_key, view)`, allocating one with a synced commit when it has none. An id
+    /// is never reused: the counter only grows, and a record outlives the rows it names until the
+    /// group sweep removes both. The caller holds the allocation lock.
+    fn allocate_locked(&self, workspace_key: &str, view: &str) -> Result<u32, IndexError> {
         if let Some(id) = self.view_id(workspace_key, view)? {
             return Ok(id);
         }
@@ -284,14 +345,31 @@ impl GroupDb {
         Ok(views)
     }
 
-    /// A handle on the rows of view `view_id`, sharing this database. The memory store opens as
-    /// for a view database of its own.
+    /// A handle on the rows of view `view_id`, taking its live-key cell without the allocation lock:
+    /// for tests that open a view no sweep runs against.
+    #[cfg(test)]
     pub(crate) fn open_view(
         self: &Arc<Self>,
         view_id: u32,
         memory_dir: &Path,
         tolerate_held_memory: bool,
     ) -> Result<IndexDb, IndexError> {
+        let claim = ViewClaim {
+            id: view_id,
+            live: self.live_keys_cell(view_id),
+        };
+        self.open_claimed(claim, memory_dir, tolerate_held_memory)
+    }
+
+    /// A handle on the rows of the claimed view, sharing this database. The memory store opens as
+    /// for a view database of its own.
+    pub(crate) fn open_claimed(
+        self: &Arc<Self>,
+        claim: ViewClaim,
+        memory_dir: &Path,
+        tolerate_held_memory: bool,
+    ) -> Result<IndexDb, IndexError> {
+        let ViewClaim { id: view_id, live } = claim;
         let memory = super::open_memory(memory_dir, tolerate_held_memory)?;
         let scoped = |part: Part| {
             let keyspace = self.keyspaces[part.name()].clone();
@@ -320,6 +398,7 @@ impl GroupDb {
             importers_by_probe: scoped(Part::ImportersByProbe),
             code_bm25_postings: scoped(Part::CodeBm25Postings),
             code_bm25_by_path: scoped(Part::CodeBm25ByPath),
+            code_bm25_holders: scoped(Part::CodeBm25Holders),
             bm25_live: Arc::clone(
                 self.bm25_live
                     .lock()
@@ -328,7 +407,7 @@ impl GroupDb {
                     .or_default(),
             ),
             bm25_gate: Arc::clone(&self.bm25_gate),
-            live: self.live_keys_cell(view_id),
+            live,
             #[cfg(feature = "code-search")]
             bm25_pass: Arc::clone(
                 self.bm25_pass
@@ -367,11 +446,17 @@ impl GroupDb {
     }
 
     /// Views whose live-key cell is still held by an open handle.
-    #[cfg(test)]
     pub(crate) fn live_key_views(&self) -> Vec<u32> {
         let mut cells = self.live.lock().expect("live key cells");
         cells.retain(|_, cell| cell.strong_count() > 0);
         cells.keys().copied().collect()
+    }
+
+    /// Drop the per-view caches of a view whose rows are gone.
+    pub(super) fn forget_view(&self, view_id: u32) {
+        self.bm25_live.lock().expect("bm25 live caches").remove(&view_id);
+        #[cfg(feature = "code-search")]
+        self.bm25_pass.lock().expect("bm25 pass ledgers").remove(&view_id);
     }
 }
 

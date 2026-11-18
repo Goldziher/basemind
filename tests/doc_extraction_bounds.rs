@@ -3,8 +3,10 @@
 //! budget. The abandoned-thread cap has its own binary (`doc_abandoned_cap.rs`) because it counts a
 //! process-wide resource.
 //!
-//! The slow document is a 4 MB log forced through xberg's markdown splitter (cutover raised to
-//! `u64::MAX`): about 1.4 s per MB in a debug build, so a 1 s budget is exceeded by a wide margin.
+//! A document overruns its budget by construction: `test_stall` blocks its extraction until the test
+//! releases it, however fast the machine extracts. Timing a real slow document was flaky: these tests
+//! once leaned on xberg's markdown splitter taking about 1.4 s per MB, and once text files stopped
+//! reaching the splitter a 4 MB log extracted in about 2 s, so a 2 s budget raced the runner.
 
 #![cfg(feature = "documents")]
 
@@ -14,22 +16,24 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use basemind::config::ConfigV1;
-use basemind::extract::doc_guard::abandoned_extractions;
+use basemind::extract::doc_guard::{abandoned_extractions, test_stall};
 use basemind::scanner::{EmbedMode, ScanReport, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
 
-/// Scans share the process-wide abandoned-thread ledger; run them one at a time so a neighbour's
-/// still-burning thread cannot change what a scan sees.
+/// Scans share the process-wide abandoned-thread ledger and stall list; run them one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
 
-/// Wait for every timed-out extraction thread to finish. An abandoned quadratic splitter keeps a core
-/// busy for several seconds after its budget expires; scans started meanwhile compete with it, and on a
-/// 4-vCPU runner the small guide can then miss its own 1 s budget (the failure these tests used to show).
+/// Release the stalled extractions and wait for their threads to leave the abandoned count, so every
+/// scan starts with none.
 fn drain_abandoned() {
-    // Best effort: a runner too slow to drain in time gets the old behavior, never a new failure.
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while abandoned_extractions() > 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
+    test_stall::release();
+    let started = Instant::now();
+    while abandoned_extractions() > 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "released extractions never finished"
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -55,7 +59,7 @@ fn guide() -> String {
         .collect()
 }
 
-/// Offline config whose 1 s per-file budget the slow log always overruns.
+/// Offline config with a 1 s per-file budget, which a stalled document always overruns.
 fn slow_config() -> ConfigV1 {
     basemind::store::init_isolated_cache();
     let mut cfg = ConfigV1::with_defaults();
@@ -87,6 +91,7 @@ fn a_timed_out_document_is_not_retried_until_the_file_or_the_limits_change() {
     fs::write(root.join("slow.txt"), slow_log(1)).unwrap();
     fs::write(root.join("guide.md"), guide()).unwrap();
     let cfg = slow_config();
+    let stalled = test_stall::stall(&["slow.txt"]);
 
     // First scan: the log overruns its budget and is tombstoned; the guide is unaffected.
     let first = scan_once(root, &cfg);
@@ -110,7 +115,7 @@ fn a_timed_out_document_is_not_retried_until_the_file_or_the_limits_change() {
     assert_eq!(second.stats.extract_failed, 0);
     assert_eq!(second.stats.docs_indexed, 0);
 
-    // A changed limit retries it: here the timeout is raised, but the log still overruns 2 s.
+    // A changed limit retries it: here the timeout is raised, and the stalled log overruns 2 s too.
     let mut raised = cfg.clone();
     raised.documents.extraction_timeout_secs = 2;
     let third = scan_once(root, &raised);
@@ -133,9 +138,9 @@ fn a_timed_out_document_is_not_retried_until_the_file_or_the_limits_change() {
     );
 
     // Putting the guard back (linear chunking) indexes it and clears the tombstone.
+    drop(stalled);
     let mut guarded = raised.clone();
-    // The earlier scans leave their quadratic splitters burning CPU in abandoned threads; a small runner
-    // can starve the linear chunker past 2 s, so this scan gets a budget that only a real hang would hit.
+    // This scan really extracts the 4 MB log; a budget only a real hang would hit.
     guarded.documents.extraction_timeout_secs = 60;
     guarded.documents.plain_text_chunk_max_bytes = ConfigV1::with_defaults().documents.plain_text_chunk_max_bytes;
     let fifth = scan_once(root, &guarded);
@@ -155,6 +160,7 @@ fn a_deleted_document_takes_its_tombstone_with_it() {
     let root = dir.path();
     fs::write(root.join("slow.txt"), slow_log(3)).unwrap();
     let cfg = slow_config();
+    let _stalled = test_stall::stall(&["slow.txt"]);
 
     assert_eq!(scan_once(root, &cfg).stats.doc_timeouts, 1);
     assert!(open(root).has_doc_tombstone("slow.txt"));
@@ -176,6 +182,7 @@ fn the_document_phase_budget_defers_the_rest_and_the_next_scan_picks_them_up() {
     let mut cfg = slow_config();
     // The phase budget equals the per-file one, so the first overrunning log spends the whole phase.
     cfg.documents.phase_budget_secs = 1;
+    let _stalled = test_stall::stall(&["a.txt", "b.txt", "c.txt"]);
 
     let first = scan_once(root, &cfg);
     let stats = first.stats;

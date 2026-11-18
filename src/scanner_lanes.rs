@@ -38,6 +38,8 @@ pub const LANE_EMBED_POLICY: &str = "embed_policy";
 pub const LANE_LANCE_MAINTENANCE: &str = "lance_maintenance";
 /// Corpus-global BM25 statistics recompute.
 pub const LANE_BM25_STATS: &str = "bm25_stats";
+/// The group sweep: retired views and the content rows no view names (`store_group_sweep`).
+pub const LANE_GROUP_SWEEP: &str = "group_sweep";
 
 /// Fault-injection seam, compiled only under the dev-only `test-support` feature so production
 /// builds carry neither the variable nor the branch.

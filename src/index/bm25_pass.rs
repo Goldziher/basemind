@@ -49,16 +49,7 @@ pub(crate) const META_BM25_DIRTY: &[u8] = b"code_bm25_dirty";
 /// hold postings no view names.
 pub(crate) const META_BM25_SWEEP_OWED: &[u8] = b"\xffgroup/bm25_sweep_owed";
 
-/// A token no earlier one in this process equals and no other process plausibly picks, so a row
-/// holding it was set by this call.
-pub(crate) fn fresh_token() -> u64 {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos() as u64);
-    let mixed = nanos ^ u64::from(std::process::id()).rotate_left(40);
-    mixed.wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed)).max(1)
-}
+pub(crate) use super::group_sweep::fresh_token;
 
 /// Bytes of retired posting keys one pass may hold for an exact retirement. A pass that replaces
 /// more than this (a mass edit, a branch switch) forgets them and sweeps instead, so the ledger
@@ -111,7 +102,7 @@ impl Bm25Delta {
     /// A forward row the batch deletes: its chunk leaves `N`, and its postings may now be dead. A
     /// row that does not decode still leaves `N`, uncounted, so it poisons the pass.
     pub(crate) fn remove_row(&mut self, ledger: &Bm25PassLedger, key: &[u8], value: &[u8]) {
-        let (Some((_, content, ordinal)), Some((doclen, _, terms))) = (
+        let (Some((_, content, _)), Some((doclen, _, terms))) = (
             keys::parse_code_bm25_by_path(key),
             keys::parse_code_bm25_by_path_value(value),
         ) else {
@@ -130,7 +121,7 @@ impl Bm25Delta {
         };
         let postings = self.retired.entry(content).or_default();
         for term in terms {
-            if let Some(posting) = keys::code_bm25_posting(&term, &content, ordinal) {
+            if let Some(posting) = keys::code_bm25_posting(&term, &content) {
                 self.retired_bytes += posting.len() as u64 + RETIRED_KEY_OVERHEAD;
                 postings.push(posting);
             }
@@ -303,15 +294,15 @@ impl IndexDb {
     }
 
     /// Record that the shared posting list may hold garbage, for forward rows deleted without the
-    /// writer (a rebuild clearing a view's keyspaces).
-    pub(crate) fn mark_bm25_sweep_owed(&self) -> Result<(), IndexError> {
-        Ok(self
-            .meta
-            .raw()
-            .insert(META_BM25_SWEEP_OWED, fresh_token().to_be_bytes())?)
+    /// writer (a view's rebuild or retirement). Returns the token, for [`Self::clear_sweep_owed_if`]
+    /// once the postings those rows named are retired.
+    pub(crate) fn mark_bm25_sweep_owed(&self) -> Result<u64, IndexError> {
+        let token = fresh_token();
+        self.meta.raw().insert(META_BM25_SWEEP_OWED, token.to_be_bytes())?;
+        Ok(token)
     }
 
-    fn sweep_owed_token(&self) -> Result<Option<u64>, IndexError> {
+    pub(super) fn sweep_owed_token(&self) -> Result<Option<u64>, IndexError> {
         Ok(self
             .meta
             .raw()
@@ -322,7 +313,7 @@ impl IndexDb {
 
     /// Clear the owed row if it still holds `token`. Under the gate every owed-setting commit holds
     /// shared, so a debt incurred after `token` was read is never cleared.
-    fn clear_sweep_owed_if(&self, token: u64) -> Result<(), IndexError> {
+    pub(super) fn clear_sweep_owed_if(&self, token: u64) -> Result<(), IndexError> {
         let _exclusive = self.bm25_gate.write();
         if self.sweep_owed_token()? == Some(token) {
             self.meta.raw().remove(META_BM25_SWEEP_OWED)?;

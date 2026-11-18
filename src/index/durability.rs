@@ -273,11 +273,17 @@ impl IndexDb {
     /// back a sealed generation that vouches for rows whose clear did reach the disk.
     ///
     /// In a group index only this view's rows go: the rows the group shares by content, and the
-    /// group's schema stamp, belong to every view.
+    /// group's schema stamp, belong to every view. The view's BM25 rows go first, with the postings
+    /// only it held ([`IndexDb::drop_view_bm25`]); a view that held rows owes the group's content
+    /// sweep, since contents only it named are dead once its file map is emptied.
     pub(crate) fn clear_for_rebuild(&self) -> Result<(), IndexError> {
         let shared = self.group.is_some();
-        #[cfg(feature = "code-search")]
-        let leaves_postings = shared && self.code_bm25_by_path.keys().next().is_some();
+        if shared {
+            if self.holds_view_rows()? {
+                self.owe_content_sweep()?;
+            }
+            self.drop_view_bm25(&self.code_bm25_by_path, self.holder_view_id())?;
+        }
         self.meta.clear(&self.db)?;
         self.db.persist(PersistMode::SyncAll)?;
         for part in Part::ALL.into_iter().filter(|part| *part != Part::Meta) {
@@ -288,15 +294,23 @@ impl IndexDb {
             keyspace.clear(&self.db)?;
         }
         self.bm25_live.invalidate();
-        // The view's forward rows went without the writer; the shared postings they named stay. ~keep
-        #[cfg(feature = "code-search")]
-        if leaves_postings {
-            self.mark_bm25_sweep_owed()?;
-        }
         if !shared {
             self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
         }
         Ok(())
+    }
+}
+
+impl IndexDb {
+    /// Whether any keyspace of this view's own holds a row.
+    fn holds_view_rows(&self) -> Result<bool, IndexError> {
+        for part in Part::ALL {
+            let keyspace = self.keyspace(part);
+            if keyspace.is_view_scoped() && keyspace.keys().next().transpose()?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 

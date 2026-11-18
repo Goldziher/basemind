@@ -155,6 +155,9 @@ impl super::IndexDb {
     /// Publish this view's live keys. The store calls it whenever it writes the view's file map.
     pub fn publish_live_keys(&self, live: LiveKeys) {
         self.live.publish(live);
+        if let Some(own) = &self.group {
+            own.group.settle_pending(own.view_id);
+        }
     }
 
     /// [`Self::publish_live_keys`] unless the view's keys are already published, by a writer of
