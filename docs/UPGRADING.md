@@ -285,7 +285,8 @@ aliases ([`comms-v2.md`](comms-v2.md) is the spec). Three deferred tools replace
 `agent_inbox` and `agent_threads`; the CLI is `basemind agent post|inbox|threads`, plus
 `basemind agent status` and `basemind agent cleanup`.
 
-- **Restart every session.** The comms protocol goes from 6 to 7 and the relay protocol from 1 to 2.
+- **Restart every session.** The comms protocol goes from 4 (0.33.0) to 7 and the relay protocol from
+  1 to 2, in one step.
   A client and a daemon of different versions refuse each other at connect, and a session that
   still runs an older binary has no messaging until it restarts. Run `basemind comms stop` after the
   upgrade so the old daemon is replaced; update the plugin and the binary together.
@@ -449,8 +450,8 @@ commands were removed; they have no replacement. `put`, `get`, `list`, `search`,
 `documents` were kept (and are now `memory_save`, `memory_search` and `docs_search`, see above), and
 stored notes keep every field, including the verdict and importance
 an audit wrote, which nothing updates any more. Archived notes and pending proposals stay on disk in
-the repo's `memory.fjall` and are never read. The comms protocol version is now 5: the first
-upgraded session replaces a running older daemon, and a client and daemon that still disagree fail
+the repo's `memory.fjall` and are never read. The `governance` request left the comms protocol (part of
+its step from 4 to 7): the first upgraded session replaces a running older daemon, and a client and daemon that still disagree fail
 the handshake with `proto_skew`.
 
 The `graph` tool and the `basemind graph` commands (`calls`, `neighbors`, `path`, `subgraph`,
@@ -511,7 +512,7 @@ Also check scripts for these behaviour changes:
 | Resident term index, name dictionaries, heap retag | In memory only. Nothing on disk, nothing to migrate | none |
 | `[resources] onnx_provider` defaults to `cpu` | Behaviour only: models load on the CPU provider instead of the platform default (CoreML on macOS). Set `onnx_provider = "auto"` to restore it. No on-disk change | none |
 | Daemon `IndexRead` forwarding | Wire protocol only | none |
-| Daemon protocol version 6 (was 5): the batched memory reads and the `verify` flag of a rescan | A client and a daemon of different protocol versions refuse each other at connect. A 0.33 install never meets this daemon: it runs in another protocol generation. Within the generation the rules of [running two versions side by side](#running-two-basemind-versions-side-by-side) apply: a newer client asks an older daemon to stop and has no daemon while that one serves sessions (close them or run `basemind comms stop`), and an older client that finds this daemon is told to update | none on disk |
+| Daemon protocol version 7 (0.33.0 had 4; relay 1 to 2): among its changes, the batched memory reads and the `verify` flag of a rescan | A client and a daemon of different protocol versions refuse each other at connect. A 0.33 install never meets this daemon: it runs in another protocol generation. Within the generation the rules of [running two versions side by side](#running-two-basemind-versions-side-by-side) apply: a newer client asks an older daemon to stop and has no daemon while that one serves sessions (close them or run `basemind comms stop`), and an older client that finds this daemon is told to update | none on disk |
 
 ## The extractor epoch
 

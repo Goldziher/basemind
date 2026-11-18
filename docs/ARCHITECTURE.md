@@ -1043,7 +1043,7 @@ ceiling is real rather than merely configured — ships at `docs/systemd/basemin
 ### Request correlation, timeouts and the daemon log
 
 Every client request after `Hello` travels as a `Call { id, request }` and is answered by a
-`Reply { id, response }` (since protocol version 4; the current version is 6, which added the batched
+`Reply { id, response }` (since protocol version 4; the current version is 7, which among its changes added the batched
 memory reads `MemoryOp::GetMany`, at most 256 keys and 8 MiB of notes per reply, and
 `MemoryOp::Stamps`, and the `verify` flag of `Rescan`; `ensure_daemon` asks an older daemon to stop
 on its version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a

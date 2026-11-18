@@ -276,8 +276,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `basemind agent post|inbox|threads`, plus `basemind agent status` and `basemind agent cleanup`.
   Reading now marks read (`peek: true` does not), bodies come inline (4 KiB, `id` reads one whole),
   a thread is open to its repository or invitation-only, and membership belongs to the principal.
-  The comms protocol version goes from 6 to 7 and the relay protocol from 1 to 2: a client and a
-  daemon of different versions refuse each other at connect, so restart every session and run
+  The comms protocol version goes from 4 (0.33.0) to 7 and the relay protocol from 1 to 2, in one
+  step with the protocol changes listed below: a client and a daemon of different versions refuse
+  each other at connect, so restart every session and run
   `basemind comms stop`. The agent store moves to `agents.fjall` in the protocol generation's
   directory and starts empty: threads and messages of earlier releases are not carried over. The
   legacy `store.fjall` is left in place and never read; `basemind comms cleanup` removes the
@@ -382,8 +383,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (see Changed for their new tool names). Stored
   notes keep their `verified`, `last_verified` and `importance` fields, which nothing updates any more. The
   `memory_archive` and `proposals` keyspaces an older version wrote stay in the repo's `memory.fjall`
-  untouched and are never opened. The comms protocol version goes from 4 to 5 because the `governance`
-  request was removed: the first upgraded session replaces a running older daemon, and a client and daemon
+  untouched and are never opened. The `governance` request was removed from the comms protocol (part of its
+  step from 4 to 7, see agent comms v2 above): the first upgraded session replaces a running older daemon, and a client and daemon
   that disagree fail the handshake with `proto_skew`.
 - **The code graph.** The `graph` MCP tool (`calls`, `neighbors`, `path`, `subgraph`, `communities`, `map`,
   `export`, `display`, `open`) and the `basemind graph` CLI group are gone, along with the
@@ -725,7 +726,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by name, with how to fix it, when read by key, instead of breaking the connection; a search
   through the daemon leaves it out and the daemon logs it, where it failed every search whose hits
   or embedding batch included it.
-- The daemon protocol version is 6 (was 5): a search by meaning reads the `updated_at` of its
+- The daemon protocol changes (part of the comms protocol's step from 4 to 7): a search by meaning reads the `updated_at` of its
   hits' notes, and whole only the notes it may serve, in batches (at most 256 keys and 8 MiB of
   notes per reply, which the daemon enforces), and a rescan says whether its paths were named or
   watched. A client and a daemon of different protocol versions refuse each other at connect, as
