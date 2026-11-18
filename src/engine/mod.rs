@@ -13,6 +13,7 @@ pub(crate) mod filters;
 pub(crate) mod freshness;
 pub(crate) mod git;
 pub(crate) mod grep_text;
+mod handle;
 pub(crate) mod l1_cache;
 #[cfg(any(feature = "memory", feature = "code-search"))]
 pub(crate) mod lance_cell;
@@ -34,6 +35,9 @@ pub(crate) mod tokens;
 pub(crate) mod types;
 pub(crate) mod workspace;
 
-pub(crate) use error::EngineError;
+pub use crate::config::engine::EngineConfig;
+pub use crate::data_root::DataRoot;
+pub use error::EngineError;
+pub use handle::Engine;
 pub(crate) use map_cache::MapCache;
 pub(crate) use workspace::{Lifecycle, Workspace};

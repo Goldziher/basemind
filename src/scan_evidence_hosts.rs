@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::data_root::DataRoot;
 use crate::scan_evidence::VERIFY_BLOBS_FILE;
-use crate::store_layout::{CACHE_DIR, WORKSPACES_DIR, cache_root};
 
 /// Directory under the data home with one file per process that hosts workspaces, named by pid.
 const HOSTING_DIR: &str = "hosting";
@@ -166,11 +166,11 @@ pub fn settle_dead_hosts() {
         }
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
-            let root = cache_root();
+            let data = DataRoot::current();
             let id = crate::boot_identity::current();
             settle_dead_hosts_in(
-                &root.join(HOSTING_DIR),
-                &root.join(CACHE_DIR).join(WORKSPACES_DIR),
+                &data.path().join(HOSTING_DIR),
+                &data.workspaces_dir(),
                 ThisBoot {
                     id: id.as_deref(),
                     began: crate::boot_identity::boot_time(),
@@ -212,7 +212,7 @@ impl HostingMarker {
     #[cfg(any(unix, windows))]
     pub fn begin() -> Option<Self> {
         let mut holders = HOLDERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = cache_root().join(HOSTING_DIR);
+        let dir = DataRoot::current().path().join(HOSTING_DIR);
         let path = if *holders == 0 {
             settle_dead_hosts();
             write_marker(&dir, crate::boot_identity::current().as_deref())?

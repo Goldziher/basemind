@@ -10,12 +10,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use basemind::config::ConfigV1;
+use basemind::data_root::DataRoot;
 use basemind::scan_evidence::{self, PHASE_STARTING, ScanInflight};
 use basemind::scanner::{
     EmbedMode, FileResult, ScanCancel, ScanObserver, ScanSource, scan, scan_paths, scan_with_observer,
 };
 use basemind::store::{Store, VIEW_WORKING};
-use basemind::store_layout::{CACHE_DIR, WORKSPACES_DIR, cache_root, workspace_cache_dir};
+use basemind::store_layout::workspace_cache_dir;
 
 /// A repo-shaped tempdir with one source file. Returned whole so the `TempDir` outlives the scan.
 fn repo() -> tempfile::TempDir {
@@ -31,7 +32,7 @@ fn open(root: &Path) -> Store {
 /// The directory `stale_inflight_scans` enumerates. Derived here from the same layout constants the
 /// consumer uses, so a future split between producer and consumer roots fails these tests.
 fn workspaces_dir() -> PathBuf {
-    cache_root().join(CACHE_DIR).join(WORKSPACES_DIR)
+    DataRoot::current().workspaces_dir()
 }
 
 /// Snapshots the breadcrumb from the real cache dir on the first file the drive absorbs — the only

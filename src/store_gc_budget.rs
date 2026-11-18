@@ -22,9 +22,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::{
-    CACHE_DIR, WORKSPACE_MARKER_FILE, WORKSPACES_DIR, acquire_lock, cache_root, global_blobs_dir, read_workspace_marker,
-};
+use crate::data_root::DataRoot;
+use crate::store::{WORKSPACE_MARKER_FILE, acquire_lock, read_workspace_marker};
 use crate::store_gc::{GcError, GcReport, dir_size, gc_global_blobs_in, read_dir};
 use crate::store_gc_protect::{ProtectedWorkspace, ProtectionReason, cache_grace};
 
@@ -226,14 +225,14 @@ pub fn cache_budget_bytes() -> Option<u64> {
 }
 
 /// Path of the persisted last-GC state in the machine-global cache root.
-pub fn gc_state_path() -> PathBuf {
-    cache_root().join(CACHE_DIR).join(GC_STATE_FILE)
+pub fn gc_state_path(data: &DataRoot) -> PathBuf {
+    data.cache_dir().join(GC_STATE_FILE)
 }
 
 /// Record what a destructive sweep did (best-effort: persistence failure is logged, never
 /// propagated — losing a telemetry write must not fail the sweep that just succeeded).
-pub fn persist_gc_state(report: &GcReport) {
-    persist_gc_state_at(&gc_state_path(), report);
+pub fn persist_gc_state(data: &DataRoot, report: &GcReport) {
+    persist_gc_state_at(&gc_state_path(data), report);
 }
 
 /// [`persist_gc_state`] against an explicit path (tests pass a temp file).
@@ -278,8 +277,8 @@ pub(crate) fn persist_gc_state_at(path: &Path, report: &GcReport) {
 }
 
 /// Persist a failed or starved GC attempt while preserving the last completed sweep counters.
-pub fn persist_gc_error(error: &GcError) {
-    persist_gc_error_at(&gc_state_path(), error);
+pub fn persist_gc_error(data: &DataRoot, error: &GcError) {
+    persist_gc_error_at(&gc_state_path(data), error);
 }
 
 fn persist_gc_error_at(path: &Path, error: &GcError) {
@@ -329,8 +328,8 @@ fn write_gc_state(path: &Path, state: &GcState) {
 
 /// Read the persisted last-GC state, if any. `None` covers both "no sweep has ever run" and an
 /// unreadable/corrupt file (logged at debug — the state is advisory).
-pub fn read_gc_state() -> Option<GcState> {
-    read_gc_state_at(&gc_state_path())
+pub fn read_gc_state(data: &DataRoot) -> Option<GcState> {
+    read_gc_state_at(&gc_state_path(data))
 }
 
 /// [`read_gc_state`] against an explicit path (tests, and `cache_stats` which derives the path
@@ -351,11 +350,11 @@ pub(crate) fn read_gc_state_at(path: &Path) -> Option<GcState> {
 /// and the group directory of each evicted workspace once no workspace holding a view uses it.
 /// Locked workspaces remain protected. Each eviction immediately reclaims blobs that lost their
 /// final reference and remeasures the real footprint before selecting another victim.
-pub fn enforce_cache_budget(budget_bytes: u64) -> Result<EvictReport, GcError> {
+pub fn enforce_cache_budget(data: &DataRoot, budget_bytes: u64) -> Result<EvictReport, GcError> {
     enforce_cache_budget_at(
-        &cache_root().join(CACHE_DIR).join(WORKSPACES_DIR),
-        &crate::store_layout::global_blobs_root(),
-        &global_blobs_dir(),
+        &data.workspaces_dir(),
+        &data.global_blobs_root(),
+        &data.global_blobs_dir(),
         crate::extract::SCHEMA_VER,
         budget_bytes,
         BUDGET_EVICTION_HOT_FLOOR,

@@ -939,7 +939,8 @@ fn an_incremental_pass_holds_a_hosting_marker_while_it_runs() {
     struct SeesMarker(Vec<bool>);
     impl crate::scanner::ScanObserver for SeesMarker {
         fn on_file(&mut self, _result: crate::scanner::FileResult) {
-            let marker = crate::store::cache_root()
+            let marker = crate::data_root::DataRoot::current()
+                .path()
                 .join("hosting")
                 .join(std::process::id().to_string());
             self.0.push(marker.exists());

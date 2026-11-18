@@ -816,7 +816,11 @@ fn git_first_line(repo: &Path, args: &[&str]) -> Option<String> {
 async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path, record: &mut RepoRecord) {
     // Cache accounting has no MCP tool; this is the call `basemind cache stats` makes.
     let cache_dir = basemind::store::workspace_cache_dir(repo_root);
-    if let Ok(Ok(stats)) = tokio::task::spawn_blocking(move || basemind::store_gc::cache_stats(&cache_dir)).await {
+    if let Ok(Ok(stats)) = tokio::task::spawn_blocking(move || {
+        basemind::store_gc::cache_stats(&basemind::data_root::DataRoot::current(), &cache_dir)
+    })
+    .await
+    {
         record
             .canaries
             .insert("stats_git_history_bytes".into(), json!(stats.git_history_bytes));

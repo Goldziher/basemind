@@ -12,17 +12,18 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::data_root::DataRoot;
 use crate::hashing;
 use crate::store_blob::write_bytes_atomic;
 
 pub const INDEX_FILE: &str = "index.msgpack";
 pub const BLOBS_DIR: &str = "blobs";
 pub const LOCK_FILE: &str = ".lock";
-/// Environment override for the global cache root. When set, [`cache_root`] returns it verbatim
-/// instead of the XDG data dir — the single seam the test-isolation helper uses to redirect every
-/// workspace's cache into a per-process temp dir.
+/// Environment override for the data home ([`DataRoot`](crate::data_root::DataRoot)). The CLI maps
+/// it onto the engine configuration; the test-isolation helper sets it so a child process inherits
+/// the per-process temp dir.
 pub const DATA_HOME_ENV: &str = "BASEMIND_DATA_HOME";
-/// Sub-directory of [`cache_root`] that holds all basemind cache state (`blobs/` + `workspaces/`).
+/// Sub-directory of the data home that holds all basemind cache state (`blobs/` + `workspaces/`).
 pub const CACHE_DIR: &str = "cache";
 /// Sub-directory of the cache holding per-workspace state, keyed by [`workspace_key`].
 pub const WORKSPACES_DIR: &str = "workspaces";
@@ -73,30 +74,6 @@ pub fn view_name_for_rev(short_sha: &str) -> String {
     format!("rev-{short_sha}")
 }
 
-/// Root of basemind's GLOBAL on-disk cache, shared across every workspace on the machine.
-///
-/// Resolution order:
-/// 1. `$BASEMIND_DATA_HOME` when set (the test-isolation seam; also a user escape hatch).
-/// 2. Else `directories::ProjectDirs::from("", "", "basemind").data_dir()` — the platform XDG
-///    data dir (`~/.local/share/basemind` on Linux, `~/Library/Application Support/basemind` on
-///    macOS, `%APPDATA%\basemind\data` on Windows).
-/// 3. Else the current directory (only when `ProjectDirs` cannot resolve a home dir — no `HOME`).
-///
-/// The cache lives under `cache_root()/cache/`: a global `blobs/` (content-addressed, shared by
-/// every workspace) plus per-workspace state under `workspaces/<workspace_key>/`.
-pub fn cache_root() -> PathBuf {
-    // A lib test reads the root only after the isolated cache is in place, whether or not it asked
-    // for it: one that read it first would see the developer's cache, and a test binary two roots.
-    #[cfg(test)]
-    init_isolated_cache();
-    if let Some(explicit) = std::env::var_os(DATA_HOME_ENV) {
-        return PathBuf::from(explicit);
-    }
-    directories::ProjectDirs::from("", "", "basemind")
-        .map(|dirs| dirs.data_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
 /// Stable per-workspace key: a hex blake3 hash of the **canonicalized** worktree-root path. One
 /// key per worktree root (linked git worktrees canonicalize to distinct paths and so get distinct
 /// keys — correct, since the global blob store dedups byte-identical content across them anyway).
@@ -109,14 +86,11 @@ pub fn workspace_key(root: &Path) -> String {
     hashing::hex(&hashing::hash_bytes(canonical.as_os_str().as_encoded_bytes()))
 }
 
-/// Per-workspace cache directory for `root`: `cache_root()/cache/workspaces/<workspace_key>/`.
+/// Per-workspace cache directory for `root`: `<data home>/cache/workspaces/<workspace_key>/`.
 /// Holds `views/<view>/`, the top-level `index.msgpack` (legacy), the LanceDB store, and the
 /// per-workspace `.lock`. Blobs are NOT here — they live in the global [`global_blobs_dir`].
 pub fn workspace_cache_dir(root: &Path) -> PathBuf {
-    cache_root()
-        .join(CACHE_DIR)
-        .join(WORKSPACES_DIR)
-        .join(workspace_key(root))
+    DataRoot::current().workspace_cache_dir(root)
 }
 
 /// Sub-directory of the cache holding per-repo-group state shared by every worktree of one clone,
@@ -140,18 +114,18 @@ pub fn repo_group_key(root: &Path) -> String {
     }
 }
 
-/// Per-repo-group directory for `root`: `cache_root()/cache/repos/<repo_group_key>/`.
+/// Per-repo-group directory for `root`: `<data home>/cache/repos/<repo_group_key>/`.
 pub fn repo_group_dir(root: &Path) -> PathBuf {
-    cache_root().join(CACHE_DIR).join(REPOS_DIR).join(repo_group_key(root))
+    DataRoot::current().repo_group_dir(root)
 }
 
 /// Sub-directory of the cache holding the derived state of each repository group (ADR-0028), keyed
 /// by [`repo_group_key`]: the group index and its lock. Rebuildable, unlike [`REPOS_DIR`].
 pub const GROUPS_DIR: &str = "groups";
 
-/// `cache_root()/cache/groups/<repo_group_key>/`: the group index of `root`'s repository group.
+/// `<data home>/cache/groups/<repo_group_key>/`: the group index of `root`'s repository group.
 pub fn group_index_dir(root: &Path) -> PathBuf {
-    cache_root().join(CACHE_DIR).join(GROUPS_DIR).join(repo_group_key(root))
+    DataRoot::current().group_index_dir(root)
 }
 
 /// Directory of a repository group's document retrieval stores, under its [`GROUPS_DIR`] entry:
@@ -188,16 +162,12 @@ pub fn group_lance_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
 /// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every
 /// workspace in the group, so budget eviction and the orphan reaper never touch it.
 pub fn memory_store_dir(root: &Path) -> PathBuf {
-    repo_group_dir(root).join(MEMORY_STORE_DIR)
+    DataRoot::current().memory_store_dir(root)
 }
 
 /// [`memory_store_dir`] of the group keyed `group` ([`repo_group_key`]), for a root that is gone.
 pub fn group_memory_store_dir(group: &str) -> PathBuf {
-    cache_root()
-        .join(CACHE_DIR)
-        .join(REPOS_DIR)
-        .join(group)
-        .join(MEMORY_STORE_DIR)
+    DataRoot::current().group_memory_store_dir(group)
 }
 
 /// Directory, beside [`MEMORY_STORE_DIR`], that holds the vector stores of the memory notes: one
@@ -206,7 +176,7 @@ pub const MEMORY_VECTORS_DIR: &str = "memory.lance";
 
 /// `<repo_group_dir>/memory.lance/`: the memory notes' vector stores of every embedding model.
 pub fn memory_vectors_dir(root: &Path) -> PathBuf {
-    repo_group_dir(root).join(MEMORY_VECTORS_DIR)
+    DataRoot::current().memory_vectors_dir(root)
 }
 
 /// The layout of the blob store, recorded in every file map ([`crate::store::Index::blob_layout`]).
@@ -215,13 +185,13 @@ pub fn memory_vectors_dir(root: &Path) -> PathBuf {
 /// workspace scanned again, without waiting for a release to change the schema as well.
 pub const BLOB_LAYOUT: u8 = 1;
 
-/// Root of the global blob store: `cache_root()/cache/blobs/`. Holds one namespace directory per
+/// Root of the global blob store: `<data home>/cache/blobs/`. Holds one namespace directory per
 /// blob schema; only [`global_blobs_dir`] is read or written by this binary.
 pub fn global_blobs_root() -> PathBuf {
-    cache_root().join(CACHE_DIR).join(BLOBS_DIR)
+    DataRoot::current().global_blobs_root()
 }
 
-/// The GLOBAL content-addressed blob store: `cache_root()/cache/blobs/v<SCHEMA_VER>/`. Shared
+/// The GLOBAL content-addressed blob store: `<data home>/cache/blobs/v<SCHEMA_VER>/`. Shared
 /// across every workspace on the machine, so byte-identical files are extracted + embedded exactly
 /// once.
 ///
@@ -230,7 +200,7 @@ pub fn global_blobs_root() -> PathBuf {
 /// would go on calling those files unchanged. Other namespaces are never read, written or deleted
 /// here; [`crate::store_gc`] reaps the superseded ones.
 pub fn global_blobs_dir() -> PathBuf {
-    global_blobs_root().join(format!("v{}", crate::extract::SCHEMA_VER))
+    DataRoot::current().global_blobs_dir()
 }
 
 /// The `workspace.json` sidecar: the canonical worktree root a workspace cache dir was keyed from.
@@ -475,7 +445,7 @@ pub fn update_status_health(basemind_dir: &Path, health: &ScanHealth) {
     write_status_sidecar(basemind_dir, file_count, blob_count, health);
 }
 
-/// Redirect [`cache_root`] at a per-process temp dir for the whole test binary.
+/// Redirect the data home at a per-process temp dir for the whole test binary.
 ///
 /// Marker file stamped into a cache directory created by [`init_isolated_cache`]. Its presence is
 /// the only evidence that an inherited `$BASEMIND_DATA_HOME` is a throwaway test cache rather than a
@@ -617,6 +587,7 @@ pub fn init_isolated_cache() {
             }
         };
         let comms_dir = root.join("comms");
+        crate::config::engine::set_data_root(crate::data_root::DataRoot::new(root.clone()));
         // SAFETY: set exactly once, inside `Once::call_once`, before any test thread reads
         unsafe {
             std::env::set_var(DATA_HOME_ENV, root);
@@ -653,7 +624,7 @@ mod daemon_isolation_tests {
     /// test having initialised the cache first.
     #[test]
     fn the_first_read_of_the_cache_root_isolates_it() {
-        let root = cache_root();
+        let root = DataRoot::current().path().to_path_buf();
 
         assert!(
             root.join(ISOLATION_MARKER).is_file(),
@@ -671,7 +642,11 @@ mod daemon_isolation_tests {
         init_isolated_cache();
         let temp_root = PathBuf::from(std::env::var_os(DATA_HOME_ENV).expect("BASEMIND_DATA_HOME is set"));
 
-        assert_eq!(cache_root(), temp_root, "cache_root must follow the isolation seam");
+        assert_eq!(
+            DataRoot::current().path(),
+            temp_root,
+            "the data home must follow the isolation seam"
+        );
         if let Some(dirs) = directories::ProjectDirs::from("", "", "basemind") {
             assert!(
                 !temp_root.starts_with(dirs.data_dir()),
@@ -687,8 +662,8 @@ mod daemon_isolation_tests {
             comms_dir.display()
         );
 
-        // agent-ipc has no socket env var of its own: it derives `cache_root()/agent/<key>.sock` and
-        // `cache_root()/agent/sessions/`, so the `cache_root` assertion above is its path isolation.
+        // agent-ipc has no socket env var of its own: it derives `<data home>/agent/<key>.sock` and
+        // `<data home>/agent/sessions/`, so the data-home assertion above is its path isolation.
         // Only its lifetime can still escape, hence the pinned reap windows. ~keep
         for key in [
             "BASEMIND_AGENT_BOOTSTRAP_SECS",

@@ -59,7 +59,7 @@ impl Setup {
                 "agent launching is off: there is no home directory to find the operator's agents.toml in",
             )
         })?;
-        let agents = crate::store::cache_root().join("agents");
+        let agents = crate::data_root::DataRoot::current().path().join("agents");
         Ok(Self {
             policy_path,
             worktree_locks: agents.join("worktrees"),

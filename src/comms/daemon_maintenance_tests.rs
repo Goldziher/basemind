@@ -154,7 +154,8 @@ async fn blob_gc_returns_starved_instead_of_hanging_behind_an_endless_rescan() {
     let (_d, broker) = temp_broker();
 
     broker.run_blob_gc().await.expect("seed a completed sweep");
-    let completed = crate::store_gc::read_gc_state().expect("completed sweep state");
+    let completed =
+        crate::store_gc::read_gc_state(&crate::data_root::DataRoot::current()).expect("completed sweep state");
 
     let _rescan_guard = hold_gate_as_a_scan(&broker);
 
@@ -163,7 +164,8 @@ async fn blob_gc_returns_starved_instead_of_hanging_behind_an_endless_rescan() {
         matches!(result, Err(crate::store_gc::GcError::Starved(_))),
         "a sweep that cannot win the lock within its bound reports Starved, got {result:?}"
     );
-    let state = crate::store_gc::read_gc_state().expect("a starved attempt must be persisted");
+    let state = crate::store_gc::read_gc_state(&crate::data_root::DataRoot::current())
+        .expect("a starved attempt must be persisted");
     assert_eq!(state.status, crate::store_gc::GcStatus::Starved);
     assert_eq!(
         state.at_epoch_secs, completed.at_epoch_secs,
@@ -192,7 +194,8 @@ async fn a_completed_sweep_persists_gc_state() {
 
     broker.run_blob_gc().await.expect("sweep");
 
-    let state = crate::store_gc::read_gc_state().expect("gc-state.json must exist after a completed sweep");
+    let state = crate::store_gc::read_gc_state(&crate::data_root::DataRoot::current())
+        .expect("gc-state.json must exist after a completed sweep");
     assert!(state.at_epoch_secs > 0, "the sweep timestamp is recorded");
     assert_eq!(state.last_attempt_epoch_secs, state.at_epoch_secs);
     assert_eq!(state.status, crate::store_gc::GcStatus::Completed);

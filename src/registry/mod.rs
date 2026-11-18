@@ -225,9 +225,9 @@ impl Registry {
         Ok(registry)
     }
 
-    /// Open the registry under the machine-global cache (`cache_root()/registry`).
-    pub fn from_data_home() -> Result<Self, RegistryError> {
-        Self::open(&crate::store::cache_root().join("registry"))
+    /// Open the registry under the data home (`<data home>/registry`).
+    pub fn from_data_home(data: &crate::data_root::DataRoot) -> Result<Self, RegistryError> {
+        Self::open(&data.path().join("registry"))
     }
 
     /// [`Self::register_workspace`] for a `root` with no row yet; a registered one is left as it is.

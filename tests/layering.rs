@@ -57,6 +57,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("config", Core),
     ("config::overrides", Root),
     ("daemon_lock", Core),
+    ("data_root", Core),
     ("disk_space", Core),
     ("embeddings", Retrieval),
     ("engine", Engine),

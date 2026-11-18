@@ -32,10 +32,10 @@ pub use crate::store_layout::init_isolated_cache;
 pub use crate::store_layout::{
     BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, MEMORY_STORE_DIR, PartialScan,
     REPOS_DIR, STATUS_SIDECAR_FILE, STATUS_SIDECAR_SCHEMA_VER, ScanHealth, StatusSidecar, VIEW_STAGED, VIEW_WORKING,
-    VIEWS_DIR, WORKSPACE_MARKER_FILE, WORKSPACES_DIR, WorkspaceMarker, cache_root, count_fm_blobs,
-    ensure_workspace_marker, global_blobs_dir, memory_store_dir, read_status_sidecar, read_workspace_marker,
-    repo_group_dir, repo_group_key, status_sidecar_path, update_status_health, view_name_for_rev, workspace_cache_dir,
-    workspace_key, write_status_sidecar,
+    VIEWS_DIR, WORKSPACE_MARKER_FILE, WORKSPACES_DIR, WorkspaceMarker, count_fm_blobs, ensure_workspace_marker,
+    global_blobs_dir, memory_store_dir, read_status_sidecar, read_workspace_marker, repo_group_dir, repo_group_key,
+    status_sidecar_path, update_status_health, view_name_for_rev, workspace_cache_dir, workspace_key,
+    write_status_sidecar,
 };
 
 #[derive(Debug, Error)]
@@ -268,11 +268,13 @@ pub struct Store {
     pub root: PathBuf,
     pub basemind_dir: PathBuf,
     /// Directory holding the content-addressed blob cache (`<hash>.{fm,doc,rref,chunk}.msgpack`).
-    /// The GLOBAL blob store at `cache_root()/cache/blobs/`, shared by every workspace on the
+    /// The GLOBAL blob store at `<data home>/cache/blobs/`, shared by every workspace on the
     /// machine, so byte-identical files across repositories/worktrees are extracted + embedded
     /// exactly once. Per-workspace state (views, LanceDB, lock) lives under [`Store::basemind_dir`].
     /// See [`global_blobs_dir`].
     pub blobs_dir: PathBuf,
+    /// The data home this store was opened under: where the other workspaces of its group live.
+    pub data_root: crate::data_root::DataRoot,
     /// Always `true` since the blob store went global: a standalone Store references only ONE
     /// workspace's index, so it can never enumerate the full live blob set across all workspaces.
     /// Auto-GC (boot + background) is therefore disabled here — reference-counted GC that spans
@@ -358,7 +360,8 @@ impl Store {
     /// Like [`Store::open`] but records which command (`serve` / `watch` / `scan` / `rescan`)
     /// is taking the lock, so a concurrent acquirer's contention error names the live holder.
     pub fn open_with_holder(root: &Path, view: &str, holder: LockHolder) -> Result<Self, StoreError> {
-        let basemind_dir = workspace_cache_dir(root);
+        let data_root = crate::data_root::DataRoot::current();
+        let basemind_dir = data_root.workspace_cache_dir(root);
         ensure_dir(&basemind_dir)?;
         // Lock before creating any of the rebuildable subdirectories below: the cache-budget
         // eviction sweep (`store_gc_budget::evict_workspace`) takes this same lock before it
@@ -367,7 +370,7 @@ impl Store {
         // but still unlocked, delete them, and leave `flush()` writing into a directory that no
         // longer exists. ~keep
         let lock = acquire_lock_as(&basemind_dir, holder)?;
-        let blobs_dir = global_blobs_dir();
+        let blobs_dir = data_root.global_blobs_dir();
         ensure_dir(&blobs_dir)?;
         let blobs_shared = true;
         ensure_dir(&basemind_dir.join(VIEWS_DIR))?;
@@ -411,6 +414,7 @@ impl Store {
             root: root.to_path_buf(),
             basemind_dir,
             blobs_dir,
+            data_root,
             blobs_shared,
             view_dir,
             view: view.to_string(),
@@ -487,12 +491,13 @@ impl Store {
         view: &str,
         index_access: Option<group::ReadAccess>,
     ) -> Result<Self, StoreError> {
-        let basemind_dir = workspace_cache_dir(root);
+        let data_root = crate::data_root::DataRoot::current();
+        let basemind_dir = data_root.workspace_cache_dir(root);
         if basemind_dir.exists() {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
             ensure_workspace_marker(&basemind_dir, root);
         }
-        let blobs_dir = global_blobs_dir();
+        let blobs_dir = data_root.global_blobs_dir();
         let blobs_shared = true;
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
         if view != VIEW_WORKING && !view_dir.join(INDEX_FILE).exists() {
@@ -538,6 +543,7 @@ impl Store {
             root: root.to_path_buf(),
             basemind_dir,
             blobs_dir,
+            data_root,
             blobs_shared,
             view_dir,
             view: view.to_string(),

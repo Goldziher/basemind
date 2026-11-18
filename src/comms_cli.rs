@@ -462,7 +462,7 @@ fn now_unix() -> i64 {
 /// whose pid is dead are removed, so a scan running right now keeps its claim.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn clear_recorded_failures(json: bool) -> Result<()> {
-    let cleared_scans = basemind::scan_evidence::stale_inflight_scans()
+    let cleared_scans = basemind::scan_evidence::stale_inflight_scans(&basemind::data_root::DataRoot::current())
         .iter()
         .filter(|scan| basemind::scan_evidence::clear(&scan.cache_dir))
         .count();
@@ -518,7 +518,7 @@ fn cmd_comms_doctor(json: bool, probe: bool, clear_fatal: bool) -> Result<()> {
 
     // Read before the daemon rows so the report can say "nothing survived a scan" alongside "no
     // daemon is wedged". Filesystem-only, like the registry read — `doctor` must never need an RPC.
-    let stale_scans = basemind::scan_evidence::stale_inflight_scans();
+    let stale_scans = basemind::scan_evidence::stale_inflight_scans(&basemind::data_root::DataRoot::current());
 
     let daemons = daemon_lock::live_daemons();
     let other_generations = daemon_lock::count_live_daemons_of_other_generations(DaemonKind::Comms);

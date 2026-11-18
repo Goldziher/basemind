@@ -176,13 +176,14 @@ pub async fn run_status(tools: &Tools, opts: &Emit, out: &mut impl Write) -> Res
 /// `store_gc` primitives, which is why this is the only safe place to clear the
 /// live Fjall index (`views` / `all`).
 pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -> Result<()> {
-    let basemind_dir = crate::store::workspace_cache_dir(root);
+    let data = crate::data_root::DataRoot::current();
+    let basemind_dir = data.workspace_cache_dir(root);
     match cmd {
         CacheCmd::Gc { dry_run } => {
             let report = if dry_run {
-                store_gc::gc_report_only().context("count blobs")?
+                store_gc::gc_report_only(&data).context("count blobs")?
             } else {
-                store_gc::run_gc(&basemind_dir).context("run blob GC")?
+                store_gc::run_gc(&data).context("run blob GC")?
             };
             let value = serde_json::to_value(&report).context("serialize GC report")?;
             if json {
@@ -192,7 +193,7 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
             }
         }
         CacheCmd::Stats => {
-            let stats = store_gc::cache_stats(&basemind_dir).context("collect cache stats")?;
+            let stats = store_gc::cache_stats(&data, &basemind_dir).context("collect cache stats")?;
             let value = serde_json::to_value(&stats).context("serialize cache stats")?;
             if json {
                 render_json(&value, out)
@@ -207,8 +208,8 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
                 serde_json::json!({ "component": format!("views:{name}"), "cleared": true })
             } else {
                 let comp = CacheComponent::from_str(&component).map_err(|e| anyhow::anyhow!(e))?;
-                let report =
-                    store_gc::clear_component(&basemind_dir, comp).map_err(|error| clear_failed(&component, error))?;
+                let report = store_gc::clear_component(&data, &basemind_dir, comp)
+                    .map_err(|error| clear_failed(&component, error))?;
                 let mut value = serde_json::json!({ "component": comp.as_str(), "cleared": true });
                 if !report.spared_newer_blob_namespaces.is_empty() {
                     value["spared_newer_blob_namespaces"] = serde_json::json!(report.spared_newer_blob_namespaces);

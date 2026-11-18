@@ -4,6 +4,7 @@ mod comms;
 pub mod daemon;
 mod documents;
 mod documents_validate;
+pub mod engine;
 pub(crate) mod layered;
 pub mod overrides;
 mod resources;

@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING (library):** `basemind::scanner::scan`, `scan_paths` and the other public scan entries
   take the `Retrieval` binding as an argument; a library caller passes
   `basemind::retrieval_wiring::backend()`.
+- **BREAKING (library):** the library no longer reads `BASEMIND_DATA_HOME`. The data home is
+  `basemind::engine::EngineConfig::data_root` (a `basemind::data_root::DataRoot`), installed by
+  `basemind::engine::Engine::new`; `basemind::cli::env_config::install_from_env()` builds it from the
+  environment as the binary does, and a process that installs none uses the platform data dir.
+  `basemind::store::cache_root()` is removed (use `DataRoot::current()`), and the machine-wide GC,
+  cache-stats and registry entries (`store_gc::{gc_global_blobs, run_gc, gc_report_only,
+  reap_gc_and_enforce_budget, reclaim_displaced_blobs, cache_stats, clear_component, read_gc_state}`
+  and the rest of that family, `scan_evidence::stale_inflight_scans`,
+  `registry::Registry::from_data_home`) take a `&DataRoot`. The variable keeps its meaning for the CLI
+  and the daemon.
 - A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
   result reading `tool task failed: …`, where it read `scan join: …` or
   `host rescan task panicked: …`.

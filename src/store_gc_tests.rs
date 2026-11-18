@@ -657,8 +657,9 @@ fn cache_stats_reports_the_last_sweep() {
 #[test]
 fn the_global_blob_store_reads_the_record_the_sweep_persists() {
     crate::store::init_isolated_cache();
-    let paths = BlobStorePaths::global();
-    assert_eq!(paths.gc_state, crate::store_gc_budget::gc_state_path());
+    let data = crate::data_root::DataRoot::current();
+    let paths = BlobStorePaths::global(&data);
+    assert_eq!(paths.gc_state, crate::store_gc_budget::gc_state_path(&data));
     assert_eq!(paths.current(), crate::store::global_blobs_dir());
     assert_eq!(
         paths.gc_state.parent(),
@@ -771,7 +772,7 @@ fn the_machine_global_sweep_reaps_what_older_builds_left() {
     // A sweep another test is running holds the machine-wide lock and makes this call a no-op.
     let mut attempts = 0;
     while (older.exists() || flat.exists()) && attempts < 100 {
-        gc_global_blobs().expect("sweep");
+        gc_global_blobs(&crate::data_root::DataRoot::current()).expect("sweep");
         attempts += 1;
         if older.exists() || flat.exists() {
             std::thread::yield_now();

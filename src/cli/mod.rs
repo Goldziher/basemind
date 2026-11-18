@@ -19,6 +19,7 @@ pub mod code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod comms_daemon;
 pub mod context;
+pub mod env_config;
 pub mod exit;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod forward;

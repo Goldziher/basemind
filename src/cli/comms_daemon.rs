@@ -167,7 +167,7 @@ pub fn run() -> Result<()> {
 
         let agents = AgentHub::open_after(&paths.comms_dir, test_store_open_delay().unwrap_or_default());
         log_retention_policy();
-        let machine_registry = match crate::registry::Registry::from_data_home() {
+        let machine_registry = match crate::registry::Registry::from_data_home(&crate::data_root::DataRoot::current()) {
             Ok(registry) => registry,
             Err(error) => {
                 tracing::warn!(%error, "comms: machine registry open failed; coordination tools degrade to empty");

@@ -1,6 +1,6 @@
 //! Orphaned-workspace reaper for the machine-global cache.
 //!
-//! Per-workspace cache state lives at `cache_root()/cache/workspaces/<workspace_key>/`, where the
+//! Per-workspace cache state lives at `<data home>/cache/workspaces/<workspace_key>/`, where the
 //! key is a **one-way** blake3 hash of the canonicalized worktree root. Blobs, by contrast, live in
 //! ONE machine-global content-addressed store shared by every workspace, and the daemon's blob GC
 //! ([`crate::store_gc::gc_global_blobs`]) reference-counts a blob against *every* workspace dir it
@@ -38,10 +38,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
-use crate::store::{
-    CACHE_DIR, LOCK_FILE, LOCK_META_FILE, WORKSPACES_DIR, acquire_lock, cache_root, read_workspace_marker,
-    writer_lock_is_held,
-};
+use crate::data_root::DataRoot;
+use crate::store::{LOCK_FILE, LOCK_META_FILE, acquire_lock, read_workspace_marker, writer_lock_is_held};
 use crate::store_cache_admin::{TELEMETRY_FILENAME, TELEMETRY_ROTATED_FILENAME};
 use crate::store_gc::{GcError, dir_size};
 use crate::store_layout::AGENT_ID_FILE;
@@ -94,8 +92,8 @@ pub struct ReapReport {
 ///
 /// Destructive; see the module docs for the (conservative) policy. Only the daemon calls this, from
 /// inside its blob-GC write guard, so no scan is writing to a workspace mid-reap.
-pub fn reap_orphaned_workspaces() -> Result<ReapReport, GcError> {
-    reap_orphaned_workspaces_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR))
+pub fn reap_orphaned_workspaces(data: &DataRoot) -> Result<ReapReport, GcError> {
+    reap_orphaned_workspaces_in(&data.workspaces_dir())
 }
 
 /// [`reap_orphaned_workspaces`] against an explicit workspaces directory. Production passes the
@@ -217,8 +215,8 @@ pub struct MarkerlessCandidates {
 
 /// Count the marker-less workspace dirs [`reap_orphaned_workspaces`] would remove, deleting nothing
 /// and taking no lock.
-pub fn markerless_workspace_candidates() -> Result<MarkerlessCandidates, GcError> {
-    markerless_workspace_candidates_at(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR), SystemTime::now())
+pub fn markerless_workspace_candidates(data: &DataRoot) -> Result<MarkerlessCandidates, GcError> {
+    markerless_workspace_candidates_at(&data.workspaces_dir(), SystemTime::now())
 }
 
 fn markerless_workspace_candidates_at(workspaces_dir: &Path, now: SystemTime) -> Result<MarkerlessCandidates, GcError> {

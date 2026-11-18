@@ -320,6 +320,7 @@ fn harden_worktrees() {
         std::env::var_os(DATA_HOME_ENV).is_some() && std::env::var_os("BASEMIND_COMMS_DIR").is_some(),
         "set {DATA_HOME_ENV} and BASEMIND_COMMS_DIR to a throwaway directory (scripts/harden.sh does)"
     );
+    basemind::cli::env_config::install_from_env().expect("install the engine configuration");
     let repo_name = std::env::var("BASEMIND_HARDEN_REPO_NAME").unwrap_or_else(|_| {
         repo.file_name()
             .and_then(|name| name.to_str())

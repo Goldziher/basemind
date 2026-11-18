@@ -43,12 +43,12 @@ fn git_cache_bytes_nonzero_after_disk_backed_log_call() {
 
     let cache = GitCache::open(&basemind_dir, 32, true).expect("open git cache");
 
-    let before = cache_stats(&basemind_dir).expect("stats before");
+    let before = cache_stats(&basemind::data_root::DataRoot::current(), &basemind_dir).expect("stats before");
 
     let commits = cache.log(&repo, &head, None, 50, true).expect("log");
     assert!(!commits.is_empty(), "repo has at least one commit");
 
-    let after = cache_stats(&basemind_dir).expect("stats after");
+    let after = cache_stats(&basemind::data_root::DataRoot::current(), &basemind_dir).expect("stats after");
 
     assert!(
         after.git_cache_bytes > before.git_cache_bytes,
@@ -84,7 +84,7 @@ fn ram_only_git_cache_legitimately_persists_nothing() {
     let commits = cache.log(&repo, &head, None, 50, true).expect("log");
     assert!(!commits.is_empty(), "log returns commits from RAM");
 
-    let stats = cache_stats(&basemind_dir).expect("stats");
+    let stats = cache_stats(&basemind::data_root::DataRoot::current(), &basemind_dir).expect("stats");
     assert_eq!(
         stats.git_cache_bytes, 0,
         "RAM-only cache writes nothing to disk; 0 is the honest on-disk size"
