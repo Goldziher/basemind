@@ -25,23 +25,19 @@
         },
         "model": {
           "description": "The model, for Claude Code or Codex.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "effort": {
           "description": "The reasoning effort, for Claude Code or Codex.",
-          "type": "string",
-          "default": null
+          "type": "string"
         },
         "max_turns": {
           "description": "Turns the session may run, lowered to the operator's cap.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         },
         "wall_time_s": {
           "description": "Seconds the session may run, lowered to the operator's cap.",
-          "type": "integer",
-          "default": null
+          "type": "integer"
         }
       },
       "type": "object"

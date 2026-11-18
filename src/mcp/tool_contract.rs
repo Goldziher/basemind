@@ -72,8 +72,9 @@ pub(super) fn finalize_router(mut router: ToolRouter<BasemindServer>) -> ToolRou
     router
 }
 
-/// Drop `$schema` / the root `title`, integer `format` / `minimum`, and the `null` alternative of an
-/// optional field. Optional fields are already absent from `required`, which is what a model reads.
+/// Drop `$schema` / the root `title`, integer `format` / `minimum`, the `null` alternative of an
+/// optional field and its `"default": null`. Optional fields are already absent from `required`, which
+/// is what a model reads.
 pub(super) fn compact_schema(value: &mut Value, root: bool) {
     let Value::Object(object) = value else {
         return;
@@ -85,6 +86,9 @@ pub(super) fn compact_schema(value: &mut Value, root: bool) {
     if object.get("type").is_some_and(|kind| kind == "integer") || type_includes(object, "integer") {
         object.remove("format");
         object.remove("minimum");
+    }
+    if object.get("default").is_some_and(Value::is_null) {
+        object.remove("default");
     }
     if let Some(Value::Array(kinds)) = object.get("type") {
         let concrete: Vec<Value> = kinds.iter().filter(|kind| *kind != "null").cloned().collect();
@@ -126,9 +130,10 @@ mod tests {
             "required": ["pattern"],
             "properties": {
                 "pattern": { "type": "string", "description": "Text to find." },
-                "limit": { "type": ["integer", "null"], "format": "uint32", "minimum": 0, "description": "Max." },
-                "tags": { "type": ["array", "null"], "items": { "type": "string" } },
-                "lane": { "type": ["string", "null"], "enum": ["hybrid", null] }
+                "limit": { "type": ["integer", "null"], "format": "uint32", "minimum": 0, "description": "Max.", "default": null },
+                "tags": { "type": ["array", "null"], "items": { "type": "string" }, "default": null },
+                "lane": { "type": ["string", "null"], "enum": ["hybrid", null] },
+                "context": { "type": "integer", "default": 2 }
             }
         });
         compact_schema(&mut schema, true);
@@ -141,7 +146,8 @@ mod tests {
                     "pattern": { "type": "string", "description": "Text to find." },
                     "limit": { "type": "integer", "description": "Max." },
                     "tags": { "type": "array", "items": { "type": "string" } },
-                    "lane": { "type": "string", "enum": ["hybrid"] }
+                    "lane": { "type": "string", "enum": ["hybrid"] },
+                    "context": { "type": "integer", "default": 2 }
                 }
             })
         );
