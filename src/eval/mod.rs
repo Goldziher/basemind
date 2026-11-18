@@ -73,7 +73,8 @@ fn parse_mode(s: &str) -> std::result::Result<EvalMode, String> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         format!(
             "unknown mode `{s}` (symbols, outline, references, callers, implementations, dependents, grep, \
-             find, read, git_search, git_path, git_symbol, blame, blame_symbol, diff, diff_structural, docs)"
+             find, read, git_search, git_path, git_symbol, blame, blame_symbol, diff, diff_structural, docs, \
+             impact, cycles, grep_changed, find_large, read_around, explain)"
         )
     })
 }
@@ -129,6 +130,9 @@ pub async fn run(server: &BasemindServer, args: &EvalArgs, out: &mut impl Write)
     }
     for r in results.iter().filter(|r| !r.ok) {
         eprintln!("task {} failed: {}", r.id, r.error.as_deref().unwrap_or("?"));
+    }
+    for (mode, k) in &rep.skipped {
+        eprintln!("{} task(s) of kind {} skipped: {}", k.tasks, mode.as_str(), k.reason);
     }
 
     if let Some(path) = &args.baseline {

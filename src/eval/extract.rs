@@ -16,6 +16,15 @@
 //! | blame, blame_symbol | `sha:line` for every line of each hunk |
 //! | diff | `+path:line` per added line, `-path:line` per removed line |
 //! | diff_structural | `+name` per added symbol, `-name` per removed one |
+//! | impact | `path` of each importer (`paths`, or `hits` as rows or grouped by file) |
+//! | cycles | `path` of each file of each cycle (`cycles[].files`) |
+//! | grep_changed | `path:line` of each match (listed under its file) |
+//! | find_large | `path` of each file (`files`, as strings or `{path, lines}` rows) |
+//! | read_around | `path:line` for every line of every span (`spans[]`, else the top-level span) |
+//! | explain | `definition` `path:line`, each caller `path:line`, `->name` per callee |
+//!
+//! The analysis kinds' response shapes are the contract their engine ops (ADR-0047) answer in; an op
+//! that answers otherwise changes its reader here.
 
 use serde_json::Value;
 
@@ -135,7 +144,101 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
             v.extend(named("removed", '-'));
             v
         }
+        EvalMode::Impact => file_rows(body),
+        EvalMode::Cycles => array(body, "cycles")
+            .iter()
+            .flat_map(|c| array(c, "files"))
+            .filter_map(|f| f.as_str().map(str::to_string).or_else(|| s(f, "path")))
+            .map(|path| Item { path, line: None })
+            .collect(),
+        EvalMode::GrepChanged => grouped(body, "hits"),
+        EvalMode::FindLarge => array(body, "files")
+            .iter()
+            .filter_map(|f| f.as_str().map(str::to_string).or_else(|| s(f, "path")))
+            .map(|path| Item { path, line: None })
+            .collect(),
+        EvalMode::ReadAround => {
+            let path = s(body, "path").unwrap_or_default();
+            let spans = array(body, "spans");
+            if spans.is_empty() {
+                span(&path, u(body, "line"), u(body, "end_line"))
+            } else {
+                spans
+                    .iter()
+                    .flat_map(|sp| {
+                        span(
+                            &s(sp, "path").unwrap_or_else(|| path.clone()),
+                            u(sp, "line"),
+                            u(sp, "end_line"),
+                        )
+                    })
+                    .collect()
+            }
+        }
+        EvalMode::Explain => {
+            let def = body.get("definition");
+            let mut v: Vec<Item> = def
+                .and_then(|d| {
+                    Some(Item {
+                        path: s(d, "path")?,
+                        line: u(d, "line"),
+                    })
+                })
+                .into_iter()
+                .collect();
+            v.extend(match body.get("callers") {
+                Some(Value::Array(rows)) => located(rows, |e| u(e, "line")),
+                _ => grouped(body, "callers"),
+            });
+            v.extend(
+                array(body, "callees")
+                    .iter()
+                    .filter_map(|c| c.as_str().map(str::to_string).or_else(|| s(c, "name")))
+                    .map(|n| Item {
+                        path: format!("->{n}"),
+                        line: None,
+                    }),
+            );
+            v
+        }
     }
+}
+
+/// `path` of every row of a file list: `paths` as strings, or `hits` as `{path, ...}` rows or an
+/// object keyed by path.
+fn file_rows(body: &Value) -> Vec<Item> {
+    let mut paths: Vec<String> = array(body, "paths")
+        .iter()
+        .filter_map(|p| p.as_str().map(str::to_string))
+        .collect();
+    match body.get("hits") {
+        Some(Value::Array(rows)) => paths.extend(rows.iter().filter_map(|r| s(r, "path"))),
+        Some(Value::Object(by_path)) => paths.extend(by_path.keys().cloned()),
+        _ => {}
+    }
+    paths.into_iter().map(|path| Item { path, line: None }).collect()
+}
+
+/// `(path, "a-b,c-d")` per file of a `code_grep` answer with `ranges`
+/// (`{"hits": {"<path>": {"ranges": [[a, b], ...]}}}`), in answer order: the `code_read` calls
+/// that read those ranges.
+pub fn grep_ranges(body: &Value) -> Vec<(String, String)> {
+    body.get("hits")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(path, entry)| {
+            let spans: Vec<String> = array(entry, "ranges")
+                .iter()
+                .filter_map(|r| {
+                    let pair = r.as_array()?;
+                    let (a, b) = (pair.first()?.as_u64()?, pair.get(1)?.as_u64()?);
+                    Some(format!("{a}-{b}"))
+                })
+                .collect();
+            (!spans.is_empty()).then(|| (path.clone(), spans.join(",")))
+        })
+        .collect()
 }
 
 /// `code_grep` hits as `(path:line, enclosing symbol name)`, from hits listed under their file.
@@ -334,6 +437,84 @@ mod tests {
             &json!({"hits":{"x.rs":[{"line":3,"impl_type":"T"},{"impl_type":"U"}],"y.rs":[{"line":8,"impl_type":"V"}]}}),
         );
         assert_eq!(strs(&impls), vec!["x.rs:3", "x.rs", "y.rs:8"]);
+    }
+
+    #[test]
+    fn maps_the_analysis_kinds() {
+        let impact = extract_items(
+            EvalMode::Impact,
+            &Value::Null,
+            &json!({"hits":[{"path":"a.rs","depth":1},{"path":"b.rs","depth":2,"in_cycle":true}]}),
+        );
+        assert_eq!(strs(&impact), vec!["a.rs", "b.rs"]);
+        let grouped_impact = extract_items(EvalMode::Impact, &Value::Null, &json!({"hits":{"c.rs":{"depth":1}}}));
+        assert_eq!(strs(&grouped_impact), vec!["c.rs"]);
+        let listed = extract_items(EvalMode::Impact, &Value::Null, &json!({"paths":["d.rs"]}));
+        assert_eq!(strs(&listed), vec!["d.rs"]);
+
+        let cycles = extract_items(
+            EvalMode::Cycles,
+            &Value::Null,
+            &json!({"cycles":[{"files":["a.rs","b.rs"],"chain":"a.rs:1 -> b.rs:2 -> a.rs"},
+                              {"files":[{"path":"c.rs"},{"path":"d.rs"}]}]}),
+        );
+        assert_eq!(strs(&cycles), vec!["a.rs", "b.rs", "c.rs", "d.rs"]);
+
+        let changed = extract_items(
+            EvalMode::GrepChanged,
+            &Value::Null,
+            &json!({"hits":{"x.rs":[{"line":4}]},"scope_files":1}),
+        );
+        assert_eq!(strs(&changed), vec!["x.rs:4"]);
+
+        let large = extract_items(
+            EvalMode::FindLarge,
+            &Value::Null,
+            &json!({"files":[{"path":"big.rs","lines":4000},"plain.rs"]}),
+        );
+        assert_eq!(strs(&large), vec!["big.rs", "plain.rs"]);
+
+        let around = extract_items(
+            EvalMode::ReadAround,
+            &Value::Null,
+            &json!({"path":"f.rs","spans":[{"line":2,"end_line":3,"body":"x"},{"line":9,"end_line":9}]}),
+        );
+        assert_eq!(strs(&around), vec!["f.rs:2", "f.rs:3", "f.rs:9"]);
+        let single = extract_items(
+            EvalMode::ReadAround,
+            &Value::Null,
+            &json!({"path":"f.rs","line":5,"end_line":6}),
+        );
+        assert_eq!(strs(&single), vec!["f.rs:5", "f.rs:6"]);
+
+        let explain = extract_items(
+            EvalMode::Explain,
+            &Value::Null,
+            &json!({"definition":{"path":"a.rs","line":3},"callers":{"b.rs":[{"line":7}]},
+                    "callees":["spawn",{"name":"poll"}]}),
+        );
+        assert_eq!(strs(&explain), vec!["a.rs:3", "b.rs:7", "->spawn", "->poll"]);
+        let rows = extract_items(
+            EvalMode::Explain,
+            &Value::Null,
+            &json!({"callers":[{"path":"b.rs","line":8}]}),
+        );
+        assert_eq!(strs(&rows), vec!["b.rs:8"]);
+    }
+
+    #[test]
+    fn reads_grep_ranges_as_code_read_range_strings() {
+        let body = json!({"hits":{"a.rs":{"ranges":[[1,8],[20,31]],"hits":3},
+                                  "b.rs":{"ranges":[],"hits":0},
+                                  "c.rs":{"ranges":[[4,14]],"hits":1}}});
+        assert_eq!(
+            grep_ranges(&body),
+            vec![
+                ("a.rs".to_string(), "1-8,20-31".to_string()),
+                ("c.rs".to_string(), "4-14".to_string())
+            ]
+        );
+        assert!(grep_ranges(&json!({"hits":{"a.rs":[{"line":1}]}})).is_empty());
     }
 
     #[test]

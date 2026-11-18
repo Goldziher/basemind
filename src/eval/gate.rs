@@ -131,6 +131,7 @@ mod tests {
             mode: EvalMode::Symbols,
             ok: true,
             error: None,
+            skipped: None,
             elapsed_us: 1,
             tokens,
             pages: 1,
