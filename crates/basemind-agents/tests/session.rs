@@ -20,11 +20,13 @@ printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"default","mcp
 "#;
 
 /// Writes an executable `/bin/sh` script that stands in for a harness. It ignores its
-/// arguments and speaks whatever `body` prints.
+/// arguments and speaks whatever `body` prints, but answers the user-server listing a Codex
+/// launch runs first (`mcp list --json`) with none.
 fn stand_in(dir: &Path, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("stand-in");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    let listing = "case \"$*\" in *\"mcp list --json\") echo '[]'; exit 0;; esac\n";
+    std::fs::write(&path, format!("#!/bin/sh\n{listing}{body}")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }

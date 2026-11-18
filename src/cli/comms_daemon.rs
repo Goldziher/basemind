@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::comms::agents_hub::AgentHub;
-use crate::comms::daemon::Broker;
+use crate::comms::daemon::{Broker, EXIT_TAIL_TIMEOUT, HOLDER_DRAIN_WAIT, RUNTIME_SHUTDOWN_TIMEOUT};
 use crate::comms::singleton;
 
 /// How often the registry prune and the hot-workspace eviction run.
@@ -68,18 +68,6 @@ fn test_store_open_delay() -> Option<std::time::Duration> {
     let millis = std::env::var(TEST_STORE_OPEN_DELAY_ENV).ok()?.parse::<u64>().ok()?;
     Some(std::time::Duration::from_millis(millis))
 }
-
-/// Hard bound on the runtime teardown at the end of [`run`]. Dropping the runtime implicitly waits
-/// *forever* for in-flight `spawn_blocking` work — which is exactly how a SIGTERM'd daemon used to
-/// hang until SIGKILL while a big rescan finished. The drain already trips the broker's scan-cancel
-/// token, so a scan winds down within one file; this timeout is the backstop for the pathological
-/// case where that one file is stuck inside non-cooperative work (e.g. an ONNX embed call).
-const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// How long a new daemon waits for a lock holder that does not answer: a draining daemon has
-/// unlinked its endpoint and holds the lock through its drain grace and runtime teardown.
-const HOLDER_DRAIN_WAIT: std::time::Duration = crate::comms::daemon::DRAIN_GRACE
-    .saturating_add(RUNTIME_SHUTDOWN_TIMEOUT.saturating_add(std::time::Duration::from_secs(5)));
 
 /// How often a waiting daemon tries the lock again.
 const HOLDER_DRAIN_POLL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -230,7 +218,7 @@ pub fn run() -> Result<()> {
         tokio::spawn(async move {
             let bootstrap = crate::comms::daemon::bootstrap_timeout();
             tokio::time::sleep(bootstrap).await;
-            if !broker_for_bootstrap.ever_served() {
+            if !broker_for_bootstrap.ever_served() && !broker_for_bootstrap.serves_http() {
                 tracing::info!(
                     bootstrap_secs = bootstrap.as_secs(),
                     "comms: no client connected within the bootstrap window; self-terminating"
@@ -386,9 +374,19 @@ pub fn run() -> Result<()> {
             .serve_obj(broker, shutdown_rx)
             .await
             .context("comms front-end serve loop");
-        broker_for_exit.shed_hosted_stacks().await;
+        let tail = async {
+            broker_for_exit.shed_hosted_stacks().await;
+            if served.is_ok() {
+                broker_for_exit.maintain_agents().await;
+            }
+        };
+        if tokio::time::timeout(EXIT_TAIL_TIMEOUT, tail).await.is_err() {
+            tracing::warn!(
+                timeout_secs = EXIT_TAIL_TIMEOUT.as_secs(),
+                "comms: the exit tail overran; the runtime teardown bounds the rest"
+            );
+        }
         served?;
-        broker_for_exit.maintain_agents().await;
         Ok(())
     });
     // Bounded teardown instead of the implicit unbounded drop — see [`RUNTIME_SHUTDOWN_TIMEOUT`]. ~keep

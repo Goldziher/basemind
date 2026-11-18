@@ -5,9 +5,8 @@
 //! **The breadcrumb.** [`ScanBreadcrumb::begin`] writes `<workspace_cache_dir>/scan-inflight.json`
 //! *before* the work starts, and [`Drop`] removes it when the pass returns — by any path, including
 //! an unwind. A file still sitting there afterwards therefore means exactly one thing: that process
-//! never ran its destructors. That is precisely the signature `comms::store_health` cannot capture:
-//! its record is written from `note_store_error`, inside a process still healthy enough to diagnose
-//! itself, and a `SIGKILL` reaches none of that. The record's `phase` says how far the pass had got,
+//! never ran its destructors, which no record written by the process itself can capture: a
+//! `SIGKILL` reaches none of that code. The record's `phase` says how far the pass had got,
 //! which is the question a memory post-mortem actually opens with.
 //!
 //! **The memory log.** [`log_memory_snapshot`] emits one `tracing` line with the process's current

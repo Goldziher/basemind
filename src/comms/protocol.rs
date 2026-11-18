@@ -1,7 +1,7 @@
 //! Wire protocol between comms clients (serve / CLI / hooks) and the broker daemon.
 //!
 //! JSON-RPC-shaped: [`CommsRequest`] is an internally-tagged `method` + `params` enum and
-//! [`CommsResponse`] / [`CommsNotification`] mirror it, so a future A2A HTTP front-end can
+//! [`CommsResponse`] mirrors it, so a future A2A HTTP front-end can
 //! serialize the SAME enums to JSON and reuse this contract verbatim. Over the local IPC
 //! transport the bodies are msgpack, but the serde shape is transport-agnostic.
 //!
@@ -314,16 +314,8 @@ pub struct StatusReport {
     pub agent_store: String,
 }
 
-/// An unsolicited message the broker pushes to a link.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "notify", content = "data", rename_all = "snake_case")]
-pub enum CommsNotification {
-    /// The daemon is shutting down; the link should disconnect.
-    Shutdown,
-}
-
-/// A frame sent from broker → client: either a direct response to a request or an
-/// out-of-band notification. Both ride the same link.
+/// A frame sent from broker → client: a direct response to a bare request, or the reply to a
+/// correlated `Call`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommsOut {
@@ -336,8 +328,6 @@ pub enum CommsOut {
         /// The response.
         response: CommsResponse,
     },
-    /// An out-of-band push.
-    Notification(CommsNotification),
 }
 
 #[cfg(test)]
@@ -570,7 +560,10 @@ mod tests {
 
     #[test]
     fn out_frame_round_trips() {
-        let out = CommsOut::Notification(CommsNotification::Shutdown);
+        let out = CommsOut::Reply {
+            id: 7,
+            response: CommsResponse::Pong,
+        };
         let bytes = rmp_serde::to_vec_named(&out).expect("encode");
         let back: CommsOut = rmp_serde::from_slice(&bytes).expect("decode");
         assert_eq!(out, back);

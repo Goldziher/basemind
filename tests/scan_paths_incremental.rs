@@ -164,3 +164,56 @@ fn a_newly_excluded_file_is_evicted_from_an_incremental_scan() {
 
     assert!(store.lookup("gen/a.py").is_none());
 }
+
+/// A watcher reports a directory rename as the directory's own path, never one event per child.
+/// The incremental pass must expand both sides: the old directory's indexed files are pruned and
+/// the new directory's files are indexed.
+#[test]
+fn a_renamed_directory_moves_its_files_in_an_incremental_scan() {
+    let (dir, cfg) = repo();
+    let root = dir.path();
+    write(root, "a/x.py", PY);
+    write(root, "a/deep/y.py", PY);
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    incremental(root, &mut store, &cfg, &["a/x.py", "a/deep/y.py"]);
+    assert!(store.lookup("a/x.py").is_some() && store.lookup("a/deep/y.py").is_some());
+
+    fs::rename(root.join("a"), root.join("b")).unwrap();
+    incremental(root, &mut store, &cfg, &["a", "b"]);
+
+    assert!(
+        store.lookup("a/x.py").is_none(),
+        "the old directory's file must be pruned"
+    );
+    assert!(
+        store.lookup("a/deep/y.py").is_none(),
+        "nested files under the old directory too"
+    );
+    assert!(
+        store.lookup("b/x.py").is_some(),
+        "the new directory's file must be indexed"
+    );
+    assert!(
+        store.lookup("b/deep/y.py").is_some(),
+        "nested files under the new directory too"
+    );
+}
+
+/// A directory moved out of the tree (`mv lib/x /tmp`) leaves only its own path behind.
+#[test]
+fn a_directory_moved_out_of_the_tree_is_pruned_in_an_incremental_scan() {
+    let (dir, cfg) = repo();
+    let root = dir.path();
+    write(root, "lib/x/a.py", PY);
+    write(root, "keep.py", PY);
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    incremental(root, &mut store, &cfg, &["lib/x/a.py", "keep.py"]);
+    assert!(store.lookup("lib/x/a.py").is_some(), "control: indexed before the move");
+
+    let outside = tempfile::tempdir().expect("outside");
+    fs::rename(root.join("lib/x"), outside.path().join("x")).unwrap();
+    incremental(root, &mut store, &cfg, &["lib/x"]);
+
+    assert!(store.lookup("lib/x/a.py").is_none());
+    assert!(store.lookup("keep.py").is_some(), "a sibling outside the prefix stays");
+}

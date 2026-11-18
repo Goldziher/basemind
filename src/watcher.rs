@@ -4,8 +4,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
-use notify::event::{CreateKind, RemoveKind};
+use notify::event::ModifyKind;
 use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, DebouncedEvent, NoCache, new_debouncer_opt};
 use thiserror::Error;
@@ -82,24 +81,27 @@ impl PendingPaths {
     }
 
     /// Take everything coalesced so far, leaving the set empty. The consumer calls this on every
-    /// loop iteration — including the idle timeout — so a set that filled up during a long rescan is
-    /// processed as soon as that rescan returns.
+    /// loop iteration, so a set that filled up during a long rescan is processed as soon as that
+    /// rescan returns.
     fn take(&self) -> Vec<PathBuf> {
         let mut set = self.0.lock().expect("pending paths poisoned");
         std::mem::take(&mut *set).into_iter().collect()
     }
 }
 
+/// What the consumer loop receives: a debounced batch, or the caller's shutdown. Shutdown rides the
+/// same queue so the loop can block on it instead of polling for the signal.
+enum WatchMsg {
+    Batch(DebounceEventResult),
+    Shutdown,
+}
+
 /// Debouncer callback body: hand the batch to the consumer, or coalesce it when the queue is full.
 /// Never blocks, never discards a path.
-fn dispatch_debounced(
-    tx: &std::sync::mpsc::SyncSender<DebounceEventResult>,
-    pending: &PendingPaths,
-    res: DebounceEventResult,
-) {
-    match tx.try_send(res) {
+fn dispatch_debounced(tx: &std::sync::mpsc::SyncSender<WatchMsg>, pending: &PendingPaths, res: DebounceEventResult) {
+    match tx.try_send(WatchMsg::Batch(res)) {
         Ok(()) => {}
-        Err(std::sync::mpsc::TrySendError::Full(Ok(events))) => {
+        Err(std::sync::mpsc::TrySendError::Full(WatchMsg::Batch(Ok(events)))) => {
             debug!(
                 n = events.len(),
                 "debounce queue full; coalescing batch into the pending set"
@@ -107,13 +109,30 @@ fn dispatch_debounced(
             pending.coalesce(&events);
         }
         // Errors carry no path, so there is nothing to coalesce; log them here instead of queueing.
-        Err(std::sync::mpsc::TrySendError::Full(Err(errors))) => {
+        Err(std::sync::mpsc::TrySendError::Full(WatchMsg::Batch(Err(errors)))) => {
             for e in errors {
                 warn!(error = %e, "watch error (debounce queue full)");
             }
         }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+        Err(
+            std::sync::mpsc::TrySendError::Full(WatchMsg::Shutdown) | std::sync::mpsc::TrySendError::Disconnected(_),
+        ) => {}
     }
+}
+
+/// Forward `shutdown` into the consumer's queue from a thread of its own, which sleeps until the
+/// signal fires or its sender is dropped; either ends the watcher.
+fn forward_shutdown(
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+    tx: std::sync::mpsc::SyncSender<WatchMsg>,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("basemind-watch-stop".to_string())
+        .spawn(move || {
+            let _ = shutdown.blocking_recv();
+            let _ = tx.send(WatchMsg::Shutdown);
+        })
+        .map(drop)
 }
 
 /// Path-emitting primitive at the core of every watcher. Runs the
@@ -148,10 +167,11 @@ pub fn watch_paths_reloading(
     root: &Path,
     config: &Config,
     mut reload: impl FnMut() -> Option<Arc<Config>>,
-    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
     mut on_change: impl FnMut(Vec<PathBuf>, BatchKind),
 ) -> Result<(), WatchError> {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<WatchMsg>(DEBOUNCE_QUEUE_CAPACITY);
+    let stop_tx = tx.clone();
     let pending = Arc::new(PendingPaths::default());
     let pending_producer = Arc::clone(&pending);
     let debounce = Duration::from_millis(config.watch.debounce_ms);
@@ -174,6 +194,8 @@ pub fn watch_paths_reloading(
     let mut filter = crate::scanner_filter::IndexFilter::new(root, config)?;
 
     #[cfg(target_os = "linux")]
+    let mut dir_watches = DirWatches::default();
+    #[cfg(target_os = "linux")]
     {
         let filters = filter.filters();
         // Linux inotify: register watches directory-by-directory, pruning by the same
@@ -182,6 +204,7 @@ pub fn watch_paths_reloading(
         // that the [scan] exclude globs / .gitignore already drop — the root cause of the
         // "notify error: Permission denied (os error 13)" crash on unreadable trees.
         debouncer.watch(root, RecursiveMode::NonRecursive)?;
+        dir_watches.watched.insert(root.to_path_buf());
         let walker = crate::scanner_filter::ignore_walk_builder(
             root,
             config.scan.respect_gitignore,
@@ -211,8 +234,13 @@ pub fn watch_paths_reloading(
             }
             // Registering a watch can still fail (the directory was removed between the walk and
             // the watch, or inotify limits were hit). Make it non-fatal: warn and continue.
-            if let Err(e) = debouncer.watch(entry.path(), RecursiveMode::NonRecursive) {
-                warn!(path = %entry.path().display(), error = %e, "inotify watch registration failed; continuing");
+            match debouncer.watch(entry.path(), RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    dir_watches.watched.insert(entry.path().to_path_buf());
+                }
+                Err(e) => {
+                    warn!(path = %entry.path().display(), error = %e, "inotify watch registration failed; continuing");
+                }
             }
         }
     }
@@ -225,89 +253,62 @@ pub fn watch_paths_reloading(
         debouncer.watch(root, RecursiveMode::Recursive)?;
     }
 
+    forward_shutdown(shutdown, stop_tx)?;
+
     loop {
-        if !matches!(
-            shutdown.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ) {
-            info!("shutdown requested; exiting watcher");
-            return Ok(());
-        }
         // One generation of work: the batch we just received, every other batch already queued, and
         // whatever the callback coalesced aside while the last rescan was running. Rescanning those
         // one at a time is what lets a backlog outlive the burst that produced it, so they are merged
         // into a single union of paths instead.
         let mut queued: Vec<Vec<DebouncedEvent>> = Vec::new();
-        match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(Ok(events)) => queued.push(events),
-            Ok(Err(errors)) => {
-                for e in errors {
-                    warn!(error = %e, "watch error");
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                info!("debouncer channel closed; exiting watcher");
-                return Ok(());
-            }
-        }
-        // Bounded by the queue's own capacity so a sustained event stream can never keep the drain
-        // spinning past the next shutdown check.
-        for _ in 1..DEBOUNCE_QUEUE_CAPACITY {
-            match rx.try_recv() {
-                Ok(Ok(events)) => queued.push(events),
-                Ok(Err(errors)) => {
+        // Blocks: an idle watcher wakes only for a batch or the shutdown, never on a timer.
+        let Ok(first) = rx.recv() else {
+            info!("watch channel closed; exiting watcher");
+            return Ok(());
+        };
+        // Bounded by the queue's own capacity so a sustained event stream cannot keep the drain
+        // spinning while a shutdown waits behind it.
+        let rest = (1..DEBOUNCE_QUEUE_CAPACITY).map_while(|_| rx.try_recv().ok());
+        for message in std::iter::once(first).chain(rest) {
+            match message {
+                WatchMsg::Batch(Ok(events)) => queued.push(events),
+                WatchMsg::Batch(Err(errors)) => {
                     for e in errors {
                         warn!(error = %e, "watch error");
                     }
                 }
-                Err(_) => break,
+                WatchMsg::Shutdown => {
+                    info!("shutdown requested; exiting watcher");
+                    return Ok(());
+                }
             }
         }
 
         let mut candidates: Vec<PathBuf> = Vec::new();
+        // Paths whose event can mean a directory appeared under a new name: only these are expanded
+        // into their subtree when they turn out to be a directory, so a metadata change on a
+        // directory does not rescan everything beneath it.
+        let mut dir_events: BTreeSet<PathBuf> = BTreeSet::new();
         for ev in queued.into_iter().flatten() {
             if !is_relevant(&ev.event.kind) {
                 continue;
             }
-            // Linux inotify: a directory created after startup is not covered by the
-            // frozen NonRecursive watch set. Re-arm by registering a watch on it.
-            #[cfg(target_os = "linux")]
-            if matches!(&ev.event.kind, EventKind::Create(CreateKind::Folder)) {
-                for p in &ev.event.paths {
-                    if filter.is_watchable_dir(p)
-                        && let Err(e) = debouncer.watch(p, RecursiveMode::NonRecursive)
-                    {
-                        warn!(path = %p.display(), error = %e, "inotify re-arm failed");
-                    }
-                }
-            }
-            // The kernel drops a removed directory's watch; the debouncer keeps its root until told.
-            #[cfg(target_os = "linux")]
-            if matches!(&ev.event.kind, EventKind::Remove(RemoveKind::Folder)) {
-                for p in &ev.event.paths {
-                    let _ = debouncer.unwatch(p);
-                }
+            if may_bring_a_directory(&ev.event.kind) {
+                dir_events.extend(ev.event.paths.iter().cloned());
             }
             candidates.extend(ev.event.paths.iter().cloned());
         }
         // Taken after the drain, so a batch that overflowed while we were draining is not left
-        // sitting until the next iteration.
+        // sitting until the next iteration. A coalesced path has lost its event kind, so it is
+        // treated as one that may bring a directory.
         let coalesced = pending.take();
-        // A coalesced path has lost its event kind, so the Create(Folder) test above cannot fire for
-        // it; re-arm any that is a directory, or a subtree created during the burst stays unwatched.
-        #[cfg(target_os = "linux")]
-        for p in &coalesced {
-            if filter.is_watchable_dir(p)
-                && let Err(e) = debouncer.watch(p, RecursiveMode::NonRecursive)
-            {
-                warn!(path = %p.display(), error = %e, "inotify re-arm failed");
-            }
-        }
+        dir_events.extend(coalesced.iter().cloned());
         candidates.extend(coalesced);
         if candidates.is_empty() {
             continue;
         }
+        candidates.sort();
+        candidates.dedup();
 
         if let Some(fresh) = reload() {
             match crate::scanner_filter::IndexFilter::new(root, &fresh) {
@@ -319,11 +320,16 @@ pub fn watch_paths_reloading(
             }
         }
         filter.clear_cache();
-        candidates.sort();
-        candidates.dedup();
+        // Linux inotify watches one directory at a time. Release every watch at or under a path
+        // that is no longer a directory (removed, or renamed or moved away: the kernel watch follows
+        // the inode, so it would keep reporting under the old name), then arm every directory that
+        // appeared, with its whole subtree: a directory renamed or moved in, or one filled before
+        // its own create event was handled, has subdirectories no event named.
+        #[cfg(target_os = "linux")]
+        dir_watches.sync(&mut debouncer, &filter, &candidates);
         let touched: Vec<PathBuf> = candidates
             .into_iter()
-            .filter(|p| keep_event_path(&filter, root, p))
+            .filter(|p| keep_event_path(&filter, root, p, dir_events.contains(p)))
             .collect();
         if touched.is_empty() {
             continue;
@@ -436,13 +442,103 @@ fn is_relevant(kind: &EventKind) -> bool {
     matches!(kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_))
 }
 
+/// Can an event of this kind mean a directory now exists at its path: one created, or renamed or
+/// moved into place? FSEvents and inotify report a directory rename on the directory alone.
+fn may_bring_a_directory(kind: &EventKind) -> bool {
+    matches!(kind, EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_)))
+}
+
+/// What [`DirWatches`] arms and releases through: the debouncer in production, a recorder in tests.
+#[cfg(any(target_os = "linux", test))]
+trait DirRegistry {
+    fn watch_dir(&mut self, dir: &Path) -> Result<(), notify::Error>;
+    fn unwatch_dir(&mut self, dir: &Path);
+}
+
+#[cfg(target_os = "linux")]
+impl DirRegistry for notify_debouncer_full::Debouncer<RecommendedWatcher, NoCache> {
+    fn watch_dir(&mut self, dir: &Path) -> Result<(), notify::Error> {
+        self.watch(dir, RecursiveMode::NonRecursive)
+    }
+
+    fn unwatch_dir(&mut self, dir: &Path) {
+        let _ = self.unwatch(dir);
+    }
+}
+
+/// The directories the Linux watcher holds a non-recursive watch on. Kept so a directory that goes
+/// away releases the watches of its whole subtree, and so a directory already armed is not walked
+/// again on every event it produces.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Default)]
+struct DirWatches {
+    watched: BTreeSet<PathBuf>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl DirWatches {
+    /// Bring the watch set in line with the batch's `paths`: release first, then arm, so a
+    /// directory renamed within the tree drops the watch that still reports under its old name
+    /// before its new name is armed.
+    fn sync(
+        &mut self,
+        registry: &mut impl DirRegistry,
+        filter: &crate::scanner_filter::IndexFilter,
+        paths: &[PathBuf],
+    ) {
+        for p in paths {
+            let is_dir = std::fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir());
+            if !is_dir {
+                self.release_tree(registry, p);
+            }
+        }
+        for p in paths {
+            self.arm_tree(registry, filter, p);
+        }
+    }
+
+    /// Release the watch on `gone` and on every watched directory beneath it.
+    fn release_tree(&mut self, registry: &mut impl DirRegistry, gone: &Path) {
+        let beneath: Vec<PathBuf> = self
+            .watched
+            .range(gone.to_path_buf()..)
+            .take_while(|p| p.starts_with(gone))
+            .cloned()
+            .collect();
+        for dir in beneath {
+            registry.unwatch_dir(&dir);
+            self.watched.remove(&dir);
+        }
+    }
+
+    /// Arm `dir` and every watchable directory beneath it, unless `dir` is already armed.
+    fn arm_tree(&mut self, registry: &mut impl DirRegistry, filter: &crate::scanner_filter::IndexFilter, dir: &Path) {
+        if self.watched.contains(dir) || !filter.is_watchable_dir(dir) {
+            return;
+        }
+        for sub in filter.subtree_dirs(dir) {
+            if self.watched.contains(&sub) {
+                continue;
+            }
+            match registry.watch_dir(&sub) {
+                Ok(()) => {
+                    self.watched.insert(sub);
+                }
+                Err(e) => warn!(path = %sub.display(), error = %e, "inotify re-arm failed"),
+            }
+        }
+    }
+}
+
 /// Should this event path wake a rescan? Keep only what a full scan would index. For an existing
-/// path that means include/exclude globs AND the nested-`.gitignore` hierarchy; for a deleted path
+/// path that means include/exclude globs AND the nested-`.gitignore` hierarchy; a directory is kept
+/// when its event may have brought it under this name (`dir_event`) and a full scan would descend
+/// into it, so the scan expands it into its files; for a deleted path
 /// (gone from disk, so gitignore can't be evaluated) keep anything the glob layer allows so a
 /// previously-indexed file is still forwarded for pruning. Out-of-root and empty/ancestor rels
 /// (the FSEvents coalescing case) are dropped. Resolver config files (`tsconfig*.json`,
 /// `package.json`) are kept even when not indexed, since an importer's resolution may depend on them.
-fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: &Path) -> bool {
+fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: &Path, dir_event: bool) -> bool {
     let Ok(rel) = p.strip_prefix(root) else {
         return false;
     };
@@ -460,7 +556,9 @@ fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: 
     if rel.is_empty() {
         return false;
     }
-    if p.exists() {
+    if std::fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()) {
+        dir_event && filter.is_watchable_dir(p)
+    } else if p.exists() {
         filter.is_indexable(p) || (is_resolver_config(rel) && filter.allows_glob(rel))
     } else {
         filter.allows_glob(rel)

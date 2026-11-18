@@ -2,8 +2,9 @@
 //! plus the offline `cache` group. The index tools live under their own top-level commands:
 //! `status` (`index_status`) and `rescan` (`index_rescan`).
 //!
-//! The `cache` subcommands call `store_gc` directly (no server, no flock), which is the only way to
-//! clear `views` / `all`, the components that back the live index.
+//! The `cache` subcommands call `store_gc` directly (no server), which is the only way to clear
+//! `views` / `all`, the components that back the live index. A clear holds the workspace lock (and
+//! the group lock for the group's retrieval stores) through the delete.
 
 use std::io::{IsTerminal, Write};
 use std::path::Path;
@@ -202,13 +203,12 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
         CacheCmd::Clear { component, yes } => {
             guard_clear(&basemind_dir, &component, yes)?;
             let value = if let Some(name) = component.strip_prefix("views:") {
-                store_gc::clear_single_view(&basemind_dir, name)
-                    .with_context(|| format!("clear single view {name}"))?;
+                store_gc::clear_single_view(&basemind_dir, name).map_err(|error| clear_failed(&component, error))?;
                 serde_json::json!({ "component": format!("views:{name}"), "cleared": true })
             } else {
                 let comp = CacheComponent::from_str(&component).map_err(|e| anyhow::anyhow!(e))?;
-                let report = store_gc::clear_component(&basemind_dir, comp)
-                    .with_context(|| format!("clear cache component {component}"))?;
+                let report =
+                    store_gc::clear_component(&basemind_dir, comp).map_err(|error| clear_failed(&component, error))?;
                 let mut value = serde_json::json!({ "component": comp.as_str(), "cleared": true });
                 if !report.spared_newer_blob_namespaces.is_empty() {
                     value["spared_newer_blob_namespaces"] = serde_json::json!(report.spared_newer_blob_namespaces);
@@ -224,6 +224,18 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
                 render_human("cache_clear", &value, out)
             }
         }
+    }
+}
+
+/// A failed `cache clear`. A lock the clear needs (this workspace's, or the repository group's for
+/// the shared retrieval stores) held by a live writer is the busy refusal, exit `3`.
+fn clear_failed(component: &str, error: store_gc::GcError) -> anyhow::Error {
+    match error {
+        store_gc::GcError::Store(locked @ crate::store::StoreError::Locked { .. }) => CliExit::busy(format!(
+            "refusing to clear `{component}`: {locked}. Stop it first (`basemind comms stop` for the \
+             daemon), then retry."
+        )),
+        error => anyhow::Error::new(error).context(format!("clear cache component {component}")),
     }
 }
 

@@ -827,4 +827,24 @@ mod code {
         assert_eq!(code_rows(&mut store), ["src/good.rs"]);
         assert!(store.pending_vectors.is_empty());
     }
+
+    /// An owed set that cannot be read loads empty, but the paths it named are unknown, not none:
+    /// every indexed file is owed again and its rows are written.
+    #[test]
+    fn an_unreadable_owed_set_owes_every_indexed_file_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = open_store(tmp.path());
+        let config = code_config();
+        owe_code(&mut store, "src/good.rs", Some(&sidecar(2, DIM)));
+        store.flush().unwrap();
+        std::fs::write(store.view_dir.join(PENDING_FILE), b"\xc1 torn").unwrap();
+        store.pending_vectors = PendingVectors::load(&store.view_dir);
+        assert!(store.pending_vectors.is_empty());
+
+        lanes(&mut store, &config, usize::MAX);
+
+        assert_eq!(code_rows(&mut store), ["src/good.rs"]);
+        assert!(store.pending_vectors.is_empty());
+        assert!(!store.view_dir.join(PENDING_FILE).exists(), "the torn file is replaced");
+    }
 }

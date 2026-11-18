@@ -170,10 +170,12 @@ src/
 │   ├── strict.rs           — Strict<T>: exact argument validation; an unknown or malformed
 │   │                         argument becomes an isError result naming the closest accepted
 │   │                         field and the accepted set
-│   ├── tool_contract.rs    — the contract every tool shares: answer(), isError results that
-│   │                         name the fix (not indexed, empty index, feature compiled out),
-│   │                         the default max_tokens budget, the alwaysLoad meta and schema
-│   │                         compaction applied to every advertised definition
+│   ├── tool_contract.rs    — answer(): a body's error becomes an isError result naming the
+│   │                         fix; the alwaysLoad meta and schema compaction applied to every
+│   │                         advertised definition
+│   ├── adapter.rs          — runs an engine operation for a shim or a CLI command: a blocking
+│   │                         thread, EngineError → McpError, the cursor bound to its query
+│   │                         (cursor_bind.rs), the telemetry row
 │   ├── tools.rs            — #[tool] shims of code_outline, code_symbols, code_read,
 │   │                         code_grep, code_search, code_refs, find_files (thin wrappers;
 │   │                         1000-line cap)
@@ -182,29 +184,29 @@ src/
 │   │                         (index_status, index_rescan), comms (→ `agent_post`, `agent_inbox`, `agent_threads`)
 │   ├── tasks.rs            — Tasks extension: results are inline; index_rescan, code_search
 │   │                         and docs_search become a task only if still running after 3 s
-│   ├── term_index.rs       — resident term index (symbol names + import strings) behind
-│   │                         `code_symbols` and the `code_refs` importer lookup
-│   ├── l1_cache.rs         — byte-budgeted read-through cache of decoded outlines (max_map_cache_mb)
-│   ├── helpers.rs          — tool bodies; shared scan / decode helpers
-│   ├── helpers_<area>.rs   — the tool bodies, area-sliced: admin (index_status,
-│   │                         index_rescan), calls, calls_scan, code, code_search (feature
-│   │                         code-search), comms, documents, expand (code_read), files,
-│   │                         fingerprint, git, git_file, git_show, grep, impls, intel (the
-│   │                         code_refs definition body), memory, page (offset paging for
-│   │                         the ranked code_search / docs_search), registry, telemetry
-│   ├── memory.rs           — search_documents + memory_* bodies behind docs_search,
-│   │                         memory_save and memory_search
-│   ├── types.rs, types_<area>.rs — internal request shapes and response structs of the
-│   │                         bodies (code, documents, git, impls, memory, comms, registry);
-│   │                         the wire arguments are in types_tools.rs
-│   ├── cursor.rs           — cursor encoding for paginated tools
+│   ├── helpers.rs, helpers_admin.rs, helpers_telemetry.rs — what stays on the MCP side: the
+│   │                         index_status / index_rescan bodies and the telemetry hook; every
+│   │                         other body is an engine operation (engine/ below)
+│   ├── agent_tools/        — the agent_post / agent_inbox / agent_threads bodies (comms)
 │   ├── savings.rs          — token-savings heuristics, keyed by tool name (rows recorded
 │   │                         under the old domain:mode keys are mapped to it)
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer; the key is the tool name
-│   └── budget.rs, toon.rs, lean.rs, lenient.rs, notifications.rs,
-│       completions.rs, prompts.rs, tokens.rs, background.rs, daemon_forward.rs,
-│       identity.rs — response budgeting, TOON/lean output
-│       shaping, request leniency, daemon-forward plumbing for Seam B
+│   └── toon.rs, lean.rs, notifications.rs, completions.rs, prompts.rs, background.rs,
+│       daemon_forward.rs, identity.rs — TOON/lean output shaping, notifications,
+│       daemon-forward plumbing for Seam B
+├── engine/                 — the engine API (ADR-0039): no rmcp type; the MCP shims and the CLI
+│   │                         both run these operations through mcp/adapter.rs
+│   ├── ops/<tool>.rs       — one synchronous `impl Workspace` method per verb tool
+│   ├── git/                — the git_log / git_blame / git_diff operations
+│   ├── types/<area>.rs     — the operations' responses (code, files, git, grep, memory, refs,
+│   │                         search)
+│   ├── refs/, memory/      — code_refs resolution; memory notes and their vectors
+│   ├── term_index.rs, l1_cache.rs, map_cache.rs — resident term index, decoded-outline and
+│   │                         file-map caches (max_map_cache_mb)
+│   └── budget.rs, cursor.rs, filters.rs, freshness.rs, pick.rs, files.rs, error.rs — the
+│                             contract every body shares: token budget, cursors, refused
+│                             filters, files changed since the scan, pinned symbols, indexed
+│                             paths, EngineError
 ├── stdio_relay.rs          — protocol-aware stdio relay behind `basemind serve`; survives a
 │                             daemon replacement without closing the host's pipes
 ├── comms/                  — agent-comms daemon: broker, memory, worktree registry; `comms/v2/` is
@@ -706,11 +708,11 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
   tool name and the arguments that select the list, hashed. Passed to another query, or used after
   the index or HEAD moved, it is an `isError` result saying to call again without `cursor`.
 - **Paths.** A caller-supplied path is read from the working tree only after it is found in the
-  index and shown to stay inside the repository (`tool_contract::working_file`): an absolute path, a
+  index and shown to stay inside the repository (`engine::files::indexed_file`): an absolute path, a
   `..` component and a symlink pointing outside are refused.
 - **Annotations.** Exact per tool: everything is read-only except `memory_save` and `index_rescan`,
   and nothing is destructive. No `output_schema`.
-- **Size.** `tools/list` for the 15 tools is about 18 KB (about 4.5k tokens), down from about 25 KB
+- **Size.** `tools/list` for the 15 tools is about 20 KB (about 5k tokens), down from about 25 KB
   (about 6.3k tokens) for the four domain tools they replace. `tests/mcp_schema_wire.rs` enforces a
   20,000-byte ceiling; a description that pushes past it is shortened, the ceiling is not raised.
 - **Descriptions.** Each description says when to use the tool and carries one example call; field
@@ -719,9 +721,9 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
 - **CLI parity.** Every MCP tool has a CLI command, checked by `tests/cli_parity/`
   ([ADR-0014](adr/0014-cli-mcp-parity-guard.md), amended by ADR-0018); the CLI also has shorthands and
   administrative commands with no tool.
-- **Layout.** Tool bodies live in `src/mcp/helpers*.rs`, area-sliced (see
-  [Source layout](#source-layout)); `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]`
-  shims only.
+- **Layout.** Tool bodies are engine operations in `src/engine/ops/` and `src/engine/git/` (see
+  [Source layout](#source-layout), ADR-0039); `tools.rs` and the `tools_<area>.rs` siblings contain
+  `#[tool]` shims only.
 
 ## Git layer
 
@@ -819,7 +821,7 @@ it is capped separately and far lower:
 | Knob | Default | Purpose |
 |---|---|---|
 | `BASEMIND_WARM_READ_STACKS` | `3` | Daemon-hosted read stacks kept warm at once. Building one past the cap sheds the least-recently-used, skipping any workspace with a live connection. |
-| read-stack idle TTL | `10 min` | A read stack unrequested this long is dropped while its hot store entry survives (swept every 60 s), against the 15-minute TTL for the entry itself. Deliberately not shorter: the warm-stack **cap** is what bounds residency, so a tighter clock buys at most three stacks while reaching the staleness window below more often. |
+| read-stack idle TTL | `10 min` | A read stack unused this long since its last session ended is dropped while its hot store entry survives (swept every 60 s), against the 15-minute TTL for the entry itself. Deliberately not shorter: the warm-stack **cap** is what bounds residency, so a tighter clock buys at most three stacks while reaching the staleness window below more often. |
 
 Both are machine-global daemon knobs, so they are constants with an env override rather than
 `[resources]` keys: the pool is built before any workspace is known, and a per-workspace config key
@@ -958,8 +960,7 @@ comms/
     daemon.lock       single-owner flock, held for the daemon's lifetime
     daemon.pid        the holder's record
     agents.fjall/     threads, messages, read marks, seen records (0.34 and later)
-    store.fjall/      the agent store of earlier releases: no longer read, left in place
-    daemon.log  http.addr  last-fatal.json
+    daemon.log  http.addr
   comms.sock ...      releases up to 0.33: the same files, unscoped
 ```
 
@@ -1041,7 +1042,7 @@ ceiling is real rather than merely configured — ships at `docs/systemd/basemin
 ### Request correlation, timeouts and the daemon log
 
 Every client request after `Hello` travels as a `Call { id, request }` and is answered by a
-`Reply { id, response }` (since protocol version 4; the current version is 6, which added the batched
+`Reply { id, response }` (since protocol version 4; the current version is 7, which among its changes added the batched
 memory reads `MemoryOp::GetMany`, at most 256 keys and 8 MiB of notes per reply, and
 `MemoryOp::Stamps`, and the `verify` flag of `Rescan`; `ensure_daemon` asks an older daemon to stop
 on its version check, and a skewed peer fails `Hello` with `proto_skew`). A client that abandons a
@@ -1055,9 +1056,11 @@ Nothing waits forever. A coordination request must be answered within
 `comms: broker unresponsive`. Forwarded work (scan, embed, memory, git-history, index reads) is
 exempt. The stdio relay answers a request the daemon has not replied to within
 `BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` (default 180, `0` disables) with a retryable `-32002
-backend_timeout` and drops the late reply. The MCP `wait` mode is capped at 40 s, returns early
-when the host cancels the call or the connection closes (the ephemeral link, and so its
-subscription, is dropped at once), and does not return messages a previous `wait` already returned.
+backend_timeout` and drops the late reply. The wait of `agent_inbox {wait_secs}` is capped at 40 s
+(`MAX_WAIT_SECS`; more is refused, not clamped) and belongs to the daemon:
+`AgentHub::wait_and_read` (`src/comms/agents_hub.rs`) reads, then sleeps on the store's arrivals
+signal and reads again, and ends when a read returns messages, at the deadline, when the client
+goes away, or when the daemon drains.
 
 The detached daemon's stdout and stderr are appended to `<comms_dir>/daemon.log` (mode 0600,
 rotated to `daemon.log.1` past 8 MiB at spawn and trimmed in place while running). `basemind comms
@@ -1067,13 +1070,12 @@ doctor` prints the path for every comms daemon (`log` in `--json`).
 
 The daemon is mostly an idle I/O relay, so it runs a small multi-thread tokio runtime of 8 async
 workers (`DAEMON_ASYNC_WORKERS` in `src/cli/comms_daemon.rs`) and a capped blocking pool. The comms
-store is Fjall, so every call is blocking disk I/O. Handlers never run it on a worker: reads go
-through `Broker::store_blocking` and mutations through `Broker::store_write`
-(`src/comms/daemon_store_blocking.rs`), both of which hand a closure to `spawn_blocking`. Writers
-additionally take a plain-mutex write gate so read-modify-write sequences (a post's `seq`
-allocation, thread-record updates) stay serialized exactly as when every handler ran inline. A slow
-disk therefore cannot stall `Ping` or `Status` on another link, and a plain inbox read skips the
-gate.
+agent store is Fjall, so every call is blocking disk I/O. Handlers never run it on a worker: the
+`AgentHub` (`src/comms/agents_hub.rs`) hands each agent request to `spawn_blocking`, and the machine
+registry's calls go through `Broker::registry_blocking` (`src/comms/daemon_store_blocking.rs`). The
+store serializes its own writes on its writer mutex (`src/comms/v2/store/mod.rs`), under which each
+operation reads a snapshot, stages its rows and commits them in one batch. A slow disk therefore
+cannot stall `Ping` or `Status` on another link.
 
 On Unix the singleton socket is accepted before the store has finished opening (`EarlyAccept` in
 `src/comms/frontend_uds.rs`). Until the broker is published, only `Ping` is answered, so
@@ -1103,16 +1105,13 @@ backend_timeout`.
 
 ### Evidence a killed process leaves behind
 
-A daemon that *diagnoses* its own failure records it (`comms/store_health.rs` writes
-`last-fatal.json` before releasing the singleton) and `comms doctor` reports it. A `SIGKILL` reaches
-none of that, so the OOM case — the one issue #62 is about — used to leave nothing at all.
-
-`scan_evidence.rs` covers it from the other direction. A full-tree scan writes
+A `SIGKILL` runs none of a process's code, so the OOM case — the one issue #62 is about — used to
+leave nothing at all. `scan_evidence.rs` covers it: a full-tree scan writes
 `<workspace_cache_dir>/scan-inflight.json` before it starts and removes it on `Drop`, so a surviving
 file proves the process never ran its destructors; the record's `phase` says how far it had got and
 `root` names what it was scanning. `basemind comms doctor` lists every such record whose pid is dead
 (filesystem-only, no RPC, so it stays usable on a wedged machine) and `--clear-fatal` acknowledges
-them alongside the fatal-store record. Alongside it, a periodic `rss_mb` / `ceiling_mb` line makes
+them. Alongside it, a periodic `rss_mb` / `ceiling_mb` line makes
 the growth curve that led to the kill reconstructable from the log. The sampler reads the footprint
 every 200 ms and each line also carries `window_peak_mb` (the maximum since the previous line) and
 `process_peak_rss_mb`; a gibibyte jump above anything already logged writes a `spike=true` line at once,
@@ -1185,6 +1184,8 @@ schema-mismatch wipe. A seeded worktree view therefore carries no memory after i
 ### Worktree registry
 
 The daemon maintains a registry of the workspaces it has seen and each repo's worktrees and local
-branches, populated from git plumbing as sessions connect. It is read-only to serving sessions and
+branches, populated from git plumbing when a comms `Hello` names a root. A root refreshed in the
+last five minutes is left as it is, since every prompt hook says `Hello`, and a root that resolves
+to the filesystem root is not registered. It is read-only to serving sessions and
 listed by `basemind workspace workspaces` / `worktrees` / `branches`; it has no MCP tool and holds
 no claims.

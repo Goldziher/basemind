@@ -158,9 +158,14 @@ pub struct GcReport {
     /// enforce the budget.
     #[serde(default)]
     pub workspaces_evicted: usize,
-    /// Bytes reclaimed by those evictions. Disjoint from the other byte counters.
+    /// Bytes reclaimed by those evictions, the evicted groups' included. Disjoint from the other
+    /// byte counters.
     #[serde(default)]
     pub evicted_bytes_freed: u64,
+    /// Group directories evicted by cache-budget enforcement with the last of their workspaces
+    /// that held a view.
+    #[serde(default)]
+    pub groups_evicted: usize,
     /// Cache budget applied by the daemon maintenance sweep.
     #[serde(default)]
     pub cache_budget_bytes: Option<u64>,
@@ -506,7 +511,8 @@ pub fn reap_gc_and_enforce_budget() -> Result<GcReport, GcError> {
         report.protected_workspaces = evicted.protected;
         if evicted.evicted > 0 {
             report.workspaces_evicted = evicted.evicted;
-            report.evicted_bytes_freed = evicted.bytes_freed;
+            report.evicted_bytes_freed = evicted.bytes_freed + evicted.group_bytes_freed;
+            report.groups_evicted = evicted.groups_evicted;
             report.removed += evicted.blobs_removed;
             report.bytes_freed += evicted.blob_bytes_freed;
         }

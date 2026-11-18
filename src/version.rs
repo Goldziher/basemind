@@ -5,7 +5,8 @@
 //! (`crate::index::INDEX_SCHEMA_VER`), and the git cache
 //! (`crate::git_cache::GIT_CACHE_SCHEMA`) all read from it, so a minor-release bump
 //! invalidates every cache on next scan. The invalidation is durable, not destructive:
-//! `Store::open` resets each view's `index.msgpack` and the Fjall index, then the next
+//! `Store::open` resets each view's `index.msgpack` and the group's Fjall index
+//! (`cache/groups/<group>/index.fjall`), then the next
 //! scan re-extracts every file — overwriting stale-schema blobs in place at their
 //! content-hash path. Orphaned blobs are reclaimed by `store_gc::run_gc`, so the expensive
 //! content-addressed blob store is never `rm -rf`'d out from under a live cache.

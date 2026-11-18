@@ -132,7 +132,8 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
 ///
 /// A fixed list rather than the server's advertised one, because the agent tools are cfg-gated:
 /// under a default-feature build they are absent, and the harness calls them deliberately so it can
-/// record them as skipped. In-process they answer that the daemon serves them. ~keep
+/// record them as skipped. In-process they answer that the daemon serves them, also recorded as
+/// skipped: `tests/agent_tools_smoke.rs` covers them through the daemon. ~keep
 const KNOWN_TOOLS: [&str; 17] = [
     "code_outline",
     "code_symbols",
@@ -554,6 +555,22 @@ fn precise_resolution_expected() -> bool {
     }
 }
 
+/// The agent tools, which only the daemon serves: see [`KNOWN_TOOLS`].
+const DAEMON_SERVED_TOOLS: [&str; 2] = ["agent_threads", "agent_inbox"];
+
+/// The refusal an agent tool answers on a server the daemon does not host (`agent_context`).
+const DAEMON_REFUSAL: &str = "agent messaging is served by the basemind daemon";
+
+/// Whether a failed call is an expected refusal rather than a defect, recorded as skipped: a tool
+/// this build does not advertise, a feature-gated tool naming its Cargo feature, an agent tool
+/// refused in-process, or an ambiguous name.
+fn tolerated_failure(label: &str, detail: &str) -> bool {
+    let tool = label.split(':').next().unwrap_or(label);
+    let feature_gated = FEATURE_GATED_TOOLS.contains(&tool) && detail.contains("Cargo feature");
+    let daemon_served = DAEMON_SERVED_TOOLS.contains(&tool) && detail.contains(DAEMON_REFUSAL);
+    feature_gated || daemon_served || detail.contains("tool not found") || detail.contains("disambiguate")
+}
+
 /// Returns the human-readable failure summary if anything tripped; None on pass.
 fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRecord) -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
@@ -570,11 +587,7 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
     }
 
     for r in &repo_record.tools {
-        let tool_name = r.tool.split(':').next().unwrap_or(&r.tool);
-        let feature_gated = FEATURE_GATED_TOOLS.contains(&tool_name) && r.detail.contains("Cargo feature");
-        let tolerated =
-            !r.ok && (feature_gated || r.detail.contains("tool not found") || r.detail.contains("disambiguate"));
-        if !r.ok && !tolerated {
+        if !r.ok && !tolerated_failure(&r.tool, &r.detail) {
             failures.push(format!("{} failed: {}", r.tool, r.detail));
         }
         if r.elapsed_ms > TOOL_TIMEOUT.as_millis() {
@@ -1389,4 +1402,23 @@ async fn harden_repo() {
     }
 
     eprintln!("[harden] {} clean", repo_name);
+}
+
+#[test]
+fn tolerates_only_the_expected_refusals() {
+    let daemon_refusal = "is_error: comms backend: agent messaging is served by the basemind daemon, which hosts \
+                          every session the `basemind serve` relay starts; this server runs without it";
+    assert!(tolerated_failure("agent_threads", daemon_refusal));
+    assert!(tolerated_failure("agent_inbox:peek", daemon_refusal));
+    assert!(tolerated_failure("agent_inbox:peek", "rmcp error: tool not found"));
+    assert!(tolerated_failure(
+        "docs_search",
+        "is_error: needs the `documents` Cargo feature"
+    ));
+    assert!(!tolerated_failure("code_grep", daemon_refusal));
+    assert!(!tolerated_failure("agent_threads", "is_error: database is locked"));
+    assert!(!tolerated_failure(
+        "code_grep",
+        "is_error: needs the `documents` Cargo feature"
+    ));
 }

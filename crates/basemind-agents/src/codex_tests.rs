@@ -565,6 +565,8 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
     assert_eq!(
         overrides,
         [
+            "features.plugins=false",
+            "features.apps=false",
             format!("mcp_servers.basemind.command={}", toml_string(MCP_COMMAND)).as_str(),
             "mcp_servers.basemind.args=[\"serve\"]",
             "mcp_servers.basemind.default_tools_approval_mode=\"prompt\"",
@@ -587,12 +589,36 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
         approvals,
         ["mcp_servers.basemind.default_tools_approval_mode=\"prompt\""]
     );
-    spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned()];
-    assert!(matches!(
-        CodexAdapter.plan_spec(&spec),
-        Err(LaunchError::Unsupported { .. })
-    ));
+    // A pre-approved tool is approved by name; every other tool still prompts.
+    spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned(), "agent_inbox".to_owned()];
+    let plan = CodexAdapter.plan_spec(&spec).unwrap();
+    let approvals: Vec<_> = plan.args.iter().filter(|arg| arg.contains("approval")).collect();
+    assert_eq!(
+        approvals,
+        [
+            "mcp_servers.basemind.default_tools_approval_mode=\"prompt\"",
+            "mcp_servers.basemind.tools.agent_post.approval_mode=\"approve\"",
+            "mcp_servers.basemind.tools.agent_inbox.approval_mode=\"approve\"",
+        ]
+    );
     spec.mcp_server.as_mut().unwrap().allow_tools.clear();
+
+    // The user's own servers, as a launch lists them, are each switched off.
+    let (plan, _) = CodexAdapter
+        .plan_prepared(&spec, &["node_repl".to_owned(), "ai-rulez".to_owned()])
+        .unwrap();
+    let off: Vec<_> = plan.args.iter().filter(|arg| arg.ends_with(".enabled=false")).collect();
+    assert_eq!(
+        off,
+        [
+            "mcp_servers.node_repl.enabled=false",
+            "mcp_servers.ai-rulez.enabled=false"
+        ]
+    );
+    assert!(matches!(
+        CodexAdapter.plan_prepared(&spec, &["basemind".to_owned()]),
+        Err(LaunchError::UserMcpServers { .. })
+    ));
 
     spec.mcp_server.as_mut().unwrap().name = "bad.name".to_owned();
     assert!(matches!(

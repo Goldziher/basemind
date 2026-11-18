@@ -258,6 +258,9 @@ pub(crate) struct ServeConnGuard {
 #[cfg(all(feature = "comms", any(unix, windows)))]
 impl Drop for ServeConnGuard {
     fn drop(&mut self) {
+        // A session uses its workspace until it ends, so the idle clocks start here, not at the
+        // connect: a long session must not leave a stack that looks as old as the session.
+        self.entry.touch();
         self.entry
             .active_conns
             .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);

@@ -92,6 +92,15 @@ pub enum LaunchError {
         /// What was asked of it.
         feature: &'static str,
     },
+    /// The harness's own MCP servers, which it would start from the user's configuration beside
+    /// the injected one, could not be listed or switched off, so the launch is refused.
+    #[error("cannot switch off {harness}'s user MCP servers: {reason}")]
+    UserMcpServers {
+        /// The harness the launch targets.
+        harness: &'static str,
+        /// Why, without a path or a value of the configuration.
+        reason: String,
+    },
     /// The MCP server name cannot be written into every harness's configuration.
     #[error("MCP server name {0:?} does not match [A-Za-z0-9_-]{{1,64}}")]
     InvalidMcpServerName(String),

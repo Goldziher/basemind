@@ -242,3 +242,50 @@ async fn a_second_hello_on_a_link_is_refused_and_keeps_the_first_identity() {
     assert_eq!(session.principal.as_ref().map(Principal::as_str), Some("alice"));
     assert_eq!(session.root.as_deref(), Some(dir.path()));
 }
+
+/// A broker over an isolated machine registry in `dir/registry`.
+fn broker_with_registry(dir: &std::path::Path) -> Broker {
+    let agents = super::super::agents_hub::AgentHub::open(&dir.join("agents"));
+    let registry = MachineRegistry::open(&dir.join("registry")).expect("open registry");
+    Broker::with_registry(agents, registry)
+}
+
+/// Every `basemind agent` call says hello, the prompt hook included, so a hello must not
+/// re-enumerate the repository and rewrite the machine registry each time.
+#[tokio::test]
+async fn a_hello_from_a_freshly_registered_root_rewrites_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_with_registry(dir.path());
+    let checkout = dir.path().join("checkout");
+    std::fs::create_dir_all(&checkout).expect("mkdir checkout");
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&checkout)
+        .status()
+        .expect("git init");
+    assert!(init.success());
+
+    hello(&broker, "alice", &checkout).await;
+    let snapshot = dir.path().join("registry").join("registry.msgpack");
+    assert!(snapshot.is_file(), "the first hello registers the checkout");
+    std::fs::remove_file(&snapshot).expect("remove snapshot");
+
+    hello(&broker, "alice", &checkout).await;
+    assert!(
+        !snapshot.exists(),
+        "a hello within the refresh window rewrote the registry"
+    );
+}
+
+/// A hello names its root off the wire; one that resolves to the filesystem root is no workspace
+/// and is not registered.
+#[tokio::test]
+async fn a_hello_from_the_filesystem_root_registers_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_with_registry(dir.path());
+    hello(&broker, "alice", std::path::Path::new("/usr/..")).await;
+    assert!(
+        broker.machine_registry.lock().await.workspaces().is_empty(),
+        "the filesystem root was registered"
+    );
+}

@@ -1,8 +1,10 @@
 //! The lead's supervisor: built once at `serve --lead` start-up from the operator's file, bound to
 //! this process, and called for the lead's own `agent_launch` / `agent_stop` calls.
 
+use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use basemind_agents::{
     Caller, Event, FileAuditSink, HarnessKind, LaunchRequest, Peer, Registry, SessionId, SessionObserver, SessionState,
@@ -14,10 +16,11 @@ use super::policy_file::{self, Context, Loaded};
 use crate::comms::v2::{Actor, PostBody, PostTarget, Principal};
 use crate::mcp::lead_tools::{self, AGENT_LAUNCH, AGENT_STOP};
 
-/// Why this `serve --lead` hosts no supervisor. It then serves as a plain relay, and the reason is
-/// told to the human: on stderr and in the session's `instructions`.
+/// Why this `serve --lead` hosts no supervisor. It then serves as a plain relay. The full reason
+/// (`.0`, with paths and the policy file's own text) goes to stderr; the session's `instructions`,
+/// which the model reads, get only the fixed category (`.1`).
 #[derive(Clone, Debug)]
-pub struct LeadOff(pub String);
+pub struct LeadOff(pub String, pub &'static str);
 
 impl std::fmt::Display for LeadOff {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,12 +28,24 @@ impl std::fmt::Display for LeadOff {
     }
 }
 
+/// The fixed reasons a model may read for launching being off (review 3 N5).
+const NO_POLICY: &str =
+    "agent launching is off: there is no operator policy (agents.toml in basemind's user configuration directory)";
+const DISABLED: &str = "agent launching is off: the operator policy agents.toml does not enable it";
+const REFUSED: &str = "agent launching is off: the operator policy agents.toml was refused";
+const NO_AUDIT: &str = "agent launching is off: the audit log cannot be used";
+const NESTED: &str = "agent launching is off: this process runs inside a launched session";
+const UNREADABLE: &str = "agent launching is off: this process cannot host a supervisor";
+
 /// Where the host keeps what it needs besides the operator's file; injectable for tests.
 pub struct Setup {
     /// The operator's policy file.
     pub policy_path: PathBuf,
     /// The directory the audit log is created in.
     pub audit_dir: PathBuf,
+    /// The directory of the worktree lock files every lead of this user shares, so two leads
+    /// never launch into the same or nested worktrees.
+    pub worktree_locks: PathBuf,
     /// The adapters launches go through.
     pub registry: Registry,
 }
@@ -38,11 +53,17 @@ pub struct Setup {
 impl Setup {
     /// The production setup: the user-level policy file and `<data dir>/agents/`.
     pub fn from_user() -> Result<Self, LeadOff> {
-        let policy_path = crate::config::agents_policy::policy_path()
-            .ok_or_else(|| LeadOff("agent launching is off: no home directory to find agents.toml in".to_owned()))?;
+        let policy_path = crate::config::agents_policy::policy_path().ok_or_else(|| {
+            LeadOff(
+                "agent launching is off: no home directory to find agents.toml in".to_owned(),
+                "agent launching is off: there is no home directory to find the operator's agents.toml in",
+            )
+        })?;
+        let agents = crate::store::cache_root().join("agents");
         Ok(Self {
             policy_path,
-            audit_dir: crate::store::cache_root().join("agents"),
+            worktree_locks: agents.join("worktrees"),
+            audit_dir: agents,
             registry: Registry::with_defaults(),
         })
     }
@@ -59,6 +80,10 @@ pub struct LeadHost {
     /// Working directories of launches in progress (`None`) and of sessions, so two agents never
     /// share a worktree.
     worktrees: Mutex<Vec<(Option<SessionId>, PathBuf)>>,
+    /// The lock files this lead holds for each session's worktree, shared with the observer,
+    /// which drops them when the session finishes. A leaf lock: nothing else is taken under it.
+    held_locks: Arc<HeldLocks>,
+    worktree_locks: PathBuf,
     policy_path: PathBuf,
     audit_path: PathBuf,
 }
@@ -73,11 +98,19 @@ impl LeadHost {
     /// cannot be opened or reserved, a process inside a launched session, or one that could not be
     /// sealed.
     pub fn start(root: &Path, principal: Principal, host: Option<String>, setup: Setup) -> Result<Self, LeadOff> {
-        let lead_root = root
-            .canonicalize()
-            .map_err(|error| LeadOff(format!("agent launching is off: the workspace root: {error}")))?;
-        let off = |reason: String| LeadOff(format!("agent launching is off: {reason}"));
-        let mcp_command = std::env::current_exe().map_err(|error| off(format!("this executable: {error}")))?;
+        let lead_root = root.canonicalize().map_err(|error| {
+            LeadOff(
+                format!("agent launching is off: the workspace root: {error}"),
+                "agent launching is off: the workspace root cannot be read",
+            )
+        })?;
+        let off = |category: &'static str| {
+            move |reason: String| LeadOff(format!("agent launching is off: {reason}"), category)
+        };
+        // Read once: after the binary is replaced on Linux it names `<path> (deleted)`, and every
+        // later launch fails to resolve the injected server until the lead restarts.
+        let mcp_command =
+            std::env::current_exe().map_err(|error| off(UNREADABLE)(format!("this executable: {error}")))?;
         let env = |name: &str| std::env::var(name).ok();
         let context = Context {
             lead_root: &lead_root,
@@ -88,18 +121,24 @@ impl LeadHost {
         let path = &setup.policy_path;
         let lead = match policy_file::load(path, &context) {
             Ok(Loaded::Enabled(lead)) => lead,
-            Ok(Loaded::Absent) => return Err(off(format!("no operator policy at {}", path.display()))),
-            Ok(Loaded::Disabled) => return Err(off(format!("{} does not enable [agents.launch]", path.display()))),
-            Err(error) => return Err(off(error.to_string())),
+            Ok(Loaded::Absent) => return Err(off(NO_POLICY)(format!("no operator policy at {}", path.display()))),
+            Ok(Loaded::Disabled) => {
+                return Err(off(DISABLED)(format!(
+                    "{} does not enable [agents.launch]",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(off(REFUSED)(error.to_string())),
         };
+        prune_audit_logs(&setup.audit_dir, AUDIT_RETENTION);
         let audit_path = open_audit_dir(&setup.audit_dir).map_err(|error| {
-            off(format!(
+            off(NO_AUDIT)(format!(
                 "the audit log directory {} cannot be used: {error}",
                 setup.audit_dir.display()
             ))
         })?;
         let mut sink = FileAuditSink::open(&audit_path).map_err(|error| {
-            off(format!(
+            off(NO_AUDIT)(format!(
                 "the audit log {} cannot be opened: {error}",
                 audit_path.display()
             ))
@@ -107,15 +146,33 @@ impl LeadHost {
         if let Some(max_bytes) = lead.audit_max_bytes {
             sink = sink.with_max_bytes(max_bytes);
         }
+        let held_locks = Arc::new(HeldLocks::default());
         let supervisor = Supervisor::new(lead.policy, lead.configs, setup.registry, Arc::new(sink))
-            .map_err(|error| off(error.to_string()))?
-            .with_observer(Arc::new(LeadObserver));
+            .map_err(|error| {
+                let category = match error {
+                    basemind_agents::PolicyError::NestedHost => NESTED,
+                    basemind_agents::PolicyError::AuditReserve { .. } => NO_AUDIT,
+                    _ => REFUSED,
+                };
+                off(category)(error.to_string())
+            })?
+            .with_observer(Arc::new(LeadObserver {
+                held_locks: Arc::clone(&held_locks),
+            }));
         supervisor
             .register_launcher_in_process(principal.as_str())
-            .map_err(|error| off(format!("this process cannot host a supervisor ({})", error.code())))?;
-        let peer = Peer::embedding().map_err(|error| off(format!("this process cannot be read: {error}")))?;
+            .map_err(|error| {
+                let category = if error.code() == "nested_host" {
+                    NESTED
+                } else {
+                    UNREADABLE
+                };
+                off(category)(format!("this process cannot host a supervisor ({})", error.code()))
+            })?;
+        let peer =
+            Peer::embedding().map_err(|error| off(UNREADABLE)(format!("this process cannot be read: {error}")))?;
         let caller = Caller::principal(principal.as_str(), peer)
-            .map_err(|error| off(format!("the lead's principal: {error}")))?;
+            .map_err(|error| off(REFUSED)(format!("the lead's principal: {error}")))?;
         Ok(Self {
             supervisor,
             caller,
@@ -124,6 +181,8 @@ impl LeadHost {
             host,
             worktrees_root: lead.worktrees_root,
             worktrees: Mutex::default(),
+            held_locks,
+            worktree_locks: setup.worktree_locks,
             policy_path: setup.policy_path,
             audit_path,
         })
@@ -136,6 +195,13 @@ impl LeadHost {
             self.policy_path.display(),
             self.audit_path.display()
         )
+    }
+
+    /// Stop every launched session and wait for it, its detached processes and its exit record
+    /// ([`Supervisor::shutdown`]). Blocks; the `serve` calls it once its relay has ended, before
+    /// the process exits.
+    pub fn shutdown(&self) {
+        self.supervisor.shutdown();
     }
 
     /// Answer a `tools/call` of `name`, one of the lead tools, as a `CallToolResult` value.
@@ -154,7 +220,7 @@ impl LeadHost {
     async fn launch(self: Arc<Self>, arguments: Value) -> Result<Value, String> {
         let params = lead_tools::parse_launch(arguments)?;
         let kind = harness_kind(&params.harness).ok_or("flavor_not_allowed")?;
-        let working_dir = self.claim_worktree(&params.working_dir)?;
+        let (working_dir, locks) = self.claim_worktree(&params.working_dir)?;
         let relative = working_dir
             .strip_prefix(&self.worktrees_root)
             .map(Path::to_path_buf)
@@ -178,6 +244,11 @@ impl LeadHost {
             }
         };
         self.bind_worktree(&working_dir, launched.id);
+        self.held_locks.hold(launched.id, locks);
+        if !self.live(launched.id) {
+            // It finished before the observer could see its locks held.
+            self.held_locks.release(launched.id);
+        }
         let caveats: Vec<&str> = launched.caveats.iter().map(|caveat| caveat.id()).collect();
         let mut body = json!({
             "session": launched.id.get(),
@@ -211,8 +282,9 @@ impl LeadHost {
 
     /// Resolve `working_dir` under the worktrees root and reserve it. Refused, with a code that
     /// names no path, when it is not an existing directory strictly inside the root, or overlaps a
-    /// directory another live session or launch holds.
-    fn claim_worktree(&self, working_dir: &str) -> Result<PathBuf, String> {
+    /// directory another live session or launch holds, of this lead or of another lead of this
+    /// user (through the shared lock files).
+    fn claim_worktree(&self, working_dir: &str) -> Result<(PathBuf, WorktreeLocks), String> {
         let relative = Path::new(working_dir);
         let plain = relative
             .components()
@@ -236,8 +308,9 @@ impl LeadHost {
         if held.iter().any(|(_, dir)| policy_file::overlaps(dir, &resolved)) {
             return Err("working_dir_in_use".to_owned());
         }
+        let locks = lock_worktree(&self.worktree_locks, &resolved)?;
         held.push((None, resolved.clone()));
-        Ok(resolved)
+        Ok((resolved, locks))
     }
 
     fn bind_worktree(&self, dir: &Path, id: SessionId) {
@@ -307,6 +380,49 @@ fn tool_result(body: &Value, is_error: bool) -> Value {
     })
 }
 
+/// How long an audit log of an ended lead is kept (review 3 N1): each lead start adds a file of
+/// up to 64 MiB.
+const AUDIT_RETENTION: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Delete the audit logs in `dir` last written more than `retention` ago whose lead has ended: a
+/// live lead's [`FileAuditSink`] holds its file's `flock`, so a file that cannot be locked is kept.
+/// Best effort: a failure keeps the file.
+fn prune_audit_logs(dir: &Path, retention: std::time::Duration) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::io::AsRawFd as _;
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("launch-audit-") && name.ends_with(".jsonl")) {
+            continue;
+        }
+        let Ok(meta) = entry.path().symlink_metadata() else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > retention);
+        if !old || !meta.is_file() {
+            continue;
+        }
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(entry.path())
+        else {
+            continue;
+        };
+        // SAFETY: flock on a descriptor this function owns; it does not block (LOCK_NB).
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// The audit log's path in `dir`, created mode 0700: one file per lead process.
 fn open_audit_dir(dir: &Path) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
@@ -322,14 +438,112 @@ fn open_audit_dir(dir: &Path) -> std::io::Result<PathBuf> {
     Ok(dir.join(format!("launch-audit-{}-{started}.jsonl", std::process::id())))
 }
 
-/// Logs what the operator must see outside the audit log. Never blocks.
-struct LeadObserver;
+/// The worktree lock files of each live session.
+#[derive(Default)]
+struct HeldLocks(Mutex<HashMap<SessionId, WorktreeLocks>>);
+
+impl HeldLocks {
+    fn hold(&self, session: SessionId, locks: WorktreeLocks) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(session, locks);
+    }
+
+    fn release(&self, session: SessionId) {
+        let released = self.0.lock().unwrap_or_else(PoisonError::into_inner).remove(&session);
+        drop(released);
+    }
+}
+
+/// The worktree lock files this process has open, by path, with whether each is locked
+/// exclusively. A file is open at most once per process: where `flock` is emulated with `fcntl`
+/// locks (Linux NFS), closing any descriptor of a file releases every lock the process holds on
+/// it, so a second descriptor, closed by a refused claim or a finished session, would release a
+/// lock another session of this process still relies on. Taken after a host's own locks.
+static OPEN_LOCKS: Mutex<Vec<(PathBuf, bool, Weak<File>)>> = Mutex::new(Vec::new());
+
+/// The lock files one worktree claim holds. They are closed under [`OPEN_LOCKS`], so no claim
+/// opens a file again while its last descriptor is being closed.
+struct WorktreeLocks(Vec<Arc<File>>);
+
+impl Drop for WorktreeLocks {
+    fn drop(&mut self) {
+        let _open = OPEN_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        self.0.clear();
+    }
+}
+
+/// Take the lock files for `dir`, shared by every lead of this user that shares the data
+/// directory: an exclusive lock on `dir`'s own file and a shared one on each of its ancestors up
+/// to `/`, so a worktree is refused while another lead holds it, a directory inside it or one
+/// around it, whatever worktrees root each lead has. The files are named by a hash of the
+/// canonical path and are never deleted: deleting a lock file races with a lead opening it. The
+/// locks go with the returned files.
+fn lock_worktree(locks: &Path, dir: &Path) -> Result<WorktreeLocks, String> {
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    use std::os::unix::io::AsRawFd as _;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(locks)
+        .map_err(|_| "working_dir_lock_failed".to_owned())?;
+    let mut open = OPEN_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    open.retain(|(_, _, file)| file.strong_count() > 0);
+    // Declared after `open`, so a refused claim closes its files before the lock is let go.
+    let mut held: Vec<Arc<File>> = Vec::new();
+    let mut ancestors: Vec<&Path> = dir.ancestors().skip(1).collect();
+    ancestors.reverse();
+    for (path, exclusive) in ancestors.into_iter().map(|a| (a, false)).chain([(dir, true)]) {
+        let name = blake3::hash(path.as_os_str().as_encoded_bytes()).to_hex();
+        let lock_path = locks.join(format!("{name}.lock"));
+        let known = open
+            .iter()
+            .find(|(known, _, _)| *known == lock_path)
+            .and_then(|(_, held_exclusively, file)| file.upgrade().map(|file| (*held_exclusively, file)));
+        match known {
+            Some((false, file)) if !exclusive => {
+                held.push(file);
+                continue;
+            }
+            Some(_) => return Err("working_dir_in_use".to_owned()),
+            None => {}
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&lock_path)
+            .map_err(|_| "working_dir_lock_failed".to_owned())?;
+        let operation = if exclusive { libc::LOCK_EX } else { libc::LOCK_SH };
+        // SAFETY: flock on a descriptor this function owns; it does not block (LOCK_NB).
+        if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } != 0 {
+            return Err("working_dir_in_use".to_owned());
+        }
+        let file = Arc::new(file);
+        open.push((lock_path, exclusive, Arc::downgrade(&file)));
+        held.push(file);
+    }
+    drop(open);
+    Ok(WorktreeLocks(held))
+}
+
+/// Logs what the operator must see outside the audit log, and lets go of a finished session's
+/// worktree locks. Never blocks.
+struct LeadObserver {
+    held_locks: Arc<HeldLocks>,
+}
 
 impl SessionObserver for LeadObserver {
     fn event(&self, session: SessionId, event: &Event) {
         match event {
             Event::Error(line) => tracing::warn!(%session, error = %line, "launched agent failed"),
-            Event::Finished(status) => tracing::info!(%session, ?status, "launched agent finished"),
+            Event::Finished(status) => {
+                tracing::info!(%session, ?status, "launched agent finished");
+                self.held_locks.release(session);
+            }
             _ => {}
         }
     }

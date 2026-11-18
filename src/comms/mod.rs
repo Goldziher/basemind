@@ -50,8 +50,6 @@ mod daemon_lifecycle;
 /// families; re-exported here so the broker's historical `comms::daemon_lock::` path stays stable.
 pub use crate::daemon_lock;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod frontend_inproc;
-#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_named_pipe;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_uds;
@@ -80,7 +78,6 @@ mod relay_decline;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod singleton;
 #[cfg(all(feature = "comms", any(unix, windows)))]
-pub mod store_health;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod transport;
 pub mod v2;

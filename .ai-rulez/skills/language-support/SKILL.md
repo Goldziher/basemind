@@ -26,7 +26,7 @@ Use this to add a new language to basemind's extraction. Supported languages tod
 
 2. **L1 (outline) queries**
    - Adapt the upstream `tags.scm` to basemind's L1 capture shape: `@symbol.function`, `@symbol.method`, `@symbol.class`, etc. mapped to `extract::SymbolKind`.
-   - Place query string in `src/queries/<lang>.rs` (or under `src/extract/queries/`, matching the existing layout).
+   - Place the query in `src/queries/<pack-name>.scm`, under its `;; section: symbols` header.
    - Wire into `extract::l1::extract`'s language dispatch.
 
 3. **L2 (calls) queries**

@@ -13,6 +13,8 @@ impl LeadCalls for Echo {
     fn call(self: Arc<Self>, name: String, arguments: Value) -> Pin<Box<dyn Future<Output = Value> + Send>> {
         Box::pin(async move { json!({ "answered_here": name, "arguments": arguments }) })
     }
+
+    fn shutdown(&self) {}
 }
 
 fn on() -> Mode {
@@ -204,4 +206,45 @@ async fn lines_the_filter_cannot_read_pass_through_unchanged() {
     assert_eq!(relayed[1..6], expected[2..7]);
     assert_eq!(relayed.len(), 6, "the unterminated lead call is still answered here");
     assert_eq!(by_id(&read, &json!(5))["result"]["answered_here"], "agent_stop");
+}
+
+/// Counts the lead calls it is given.
+struct Counting(StdMutex<u32>);
+
+impl LeadCalls for Counting {
+    fn call(self: Arc<Self>, _name: String, _arguments: Value) -> Pin<Box<dyn Future<Output = Value> + Send>> {
+        *self.0.lock().unwrap() += 1;
+        Box::pin(async { json!({}) })
+    }
+
+    fn shutdown(&self) {}
+}
+
+/// A signal ends the `serve` by dropping the filter: from then on no host line becomes a lead
+/// call, which could launch an agent after the shutdown stopped every session.
+#[tokio::test]
+async fn a_dropped_filter_takes_no_more_lead_calls() {
+    let (mut host_write, filter_read) = tokio::io::duplex(1 << 20);
+    let (filter_write, _host_read) = tokio::io::duplex(1 << 20);
+    let counting = Arc::new(Counting(StdMutex::new(0)));
+    let mode = Mode::On {
+        calls: Arc::clone(&counting) as Arc<dyn LeadCalls>,
+        notice: "lead notice".to_owned(),
+    };
+    // A relay that holds its pipe and never ends, as the daemon's does while it serves.
+    let filter = run(filter_read, filter_write, mode, |input, output| async move {
+        let _held = (input, output);
+        std::future::pending::<io::Result<()>>().await
+    });
+    host_write.write_all(&line(&call(1, "agent_stop"))).await.unwrap();
+    // The filter runs until the "signal", then is dropped as the `serve`'s select drops it.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), filter).await;
+    assert_eq!(*counting.0.lock().unwrap(), 1);
+    host_write.write_all(&line(&call(2, "agent_launch"))).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        *counting.0.lock().unwrap(),
+        1,
+        "a call reached the lead after the filter was dropped"
+    );
 }

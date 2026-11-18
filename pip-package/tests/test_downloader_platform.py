@@ -85,6 +85,54 @@ def test_prune_removes_only_versions_unused_for_the_window(monkeypatch, tmp_path
     assert remaining == [".lock-0.18.0", "0.14.0", "0.18.0", "0.19.2"]
 
 
+def test_prune_keeps_an_unused_version_a_process_still_runs_from(monkeypatch, tmp_path):
+    cache = tmp_path / ".cache" / "basemind"
+    for name in ("0.30.0", "0.31.0", "0.33.0"):
+        (cache / name).mkdir(parents=True)
+        (cache / name / "basemind").write_bytes(b"x")
+        _age(cache / name, 30)
+    monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
+    daemon = f"{cache / '0.31.0' / 'basemind'} comms serve --detach"
+    monkeypatch.setattr(downloader, "_process_args", lambda: ["/sbin/launchd", daemon])
+
+    downloader._prune_stale_versions("0.33.0")
+
+    assert sorted(p.name for p in cache.iterdir()) == ["0.31.0", "0.33.0"]
+
+
+def test_prune_keeps_everything_when_processes_cannot_be_listed(monkeypatch, tmp_path):
+    cache = tmp_path / ".cache" / "basemind"
+    (cache / "0.30.0").mkdir(parents=True)
+    _age(cache / "0.30.0", 30)
+    monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(downloader, "_process_args", lambda: None)
+
+    downloader._prune_stale_versions("0.33.0")
+
+    assert (cache / "0.30.0").is_dir()
+
+
+@pytest.mark.skipif(downloader.os.name == "nt", reason="Windows has no exec")
+def test_the_binary_replaces_the_wrapper_process(monkeypatch):
+    calls = []
+
+    class Replaced(Exception):
+        pass
+
+    def execv(path, argv):
+        calls.append((path, argv))
+        raise Replaced
+
+    monkeypatch.setattr(downloader, "ensure_binary", lambda: "/cache/0.34.0/basemind")
+    monkeypatch.setattr(downloader.os, "execv", execv)
+    monkeypatch.setattr(downloader.subprocess, "run", lambda *a, **k: pytest.fail("ran a child process"))
+
+    with pytest.raises(Replaced):
+        downloader.run_basemind(["scan", "--root", "."])
+
+    assert calls == [("/cache/0.34.0/basemind", ["/cache/0.34.0/basemind", "scan", "--root", "."])]
+
+
 def _fake_release(monkeypatch, tmp_path, version="0.19.2"):
     """ensure_binary with the network replaced: the "download" writes a binary to extract."""
     monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))

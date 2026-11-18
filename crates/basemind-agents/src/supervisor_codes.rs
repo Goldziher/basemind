@@ -22,6 +22,7 @@ pub fn launch_error_code(error: &LaunchError) -> &'static str {
         LaunchError::ArgumentNotAllowed { .. } => "argument_not_allowed",
         LaunchError::UnverifiedMode { .. } => "unverified_mode",
         LaunchError::Unsupported { .. } => "unsupported",
+        LaunchError::UserMcpServers { .. } => "user_mcp_servers_refused",
         LaunchError::InvalidMcpServerName(_) => "invalid_mcp_server_name",
         LaunchError::InvalidMcpToolName(_) => "invalid_mcp_tool_name",
         LaunchError::EnvNotAllowed(_) => "env_not_allowed",

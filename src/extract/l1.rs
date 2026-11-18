@@ -1,4 +1,3 @@
-use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryMatch};
 
 use super::rust_macro_items::MacroBodies;
@@ -13,7 +12,7 @@ pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError
         ParseOutcome::Ok(t) => t,
         ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
         ParseOutcome::TimedOut => {
-            return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
+            return Err(ExtractError::ParseTimeout(crate::lang::parse_timeout()));
         }
     };
     let bodies = MacroBodies::collect(lang, tree.root_node(), source)?;
@@ -37,8 +36,10 @@ pub(super) fn extract_l1_from_tree(
         (false, 0)
     };
 
-    let mut combined = run_combined(lang, root, source)?;
-    bodies.extend_l1(lang, source, &mut combined)?;
+    // A query walk that hit its match limit may have dropped matches: the outline is partial.
+    let mut partial = false;
+    let mut combined = run_combined(lang, root, source, &mut partial)?;
+    bodies.extend_l1(lang, source, &mut combined, &mut partial)?;
     let (symbols, imports, implementations) = combined;
     let rationale = super::rationale::extract_rationale(lang, root, source);
 
@@ -46,7 +47,7 @@ pub(super) fn extract_l1_from_tree(
         schema_ver: SCHEMA_VER,
         language: lang.to_string(),
         size_bytes: source.len() as u64,
-        had_errors,
+        had_errors: had_errors || partial,
         error_count,
         symbols,
         imports,
@@ -81,8 +82,14 @@ pub(super) type CombinedL1 = (Vec<Symbol>, Vec<Import>, Vec<Implementation>);
 /// Walk the combined L1 query (symbols + imports + implementations) once, dispatching each
 /// match by pre-classified capture index. Allocates one `QueryCursor` instead of three, cutting
 /// the per-file tree-walk cost to one pass. Dispatch is an integer array lookup
-/// (`classes[first_cap.index]`) instead of three `starts_with` comparisons per match.
-pub(super) fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<CombinedL1, ExtractError> {
+/// (`classes[first_cap.index]`) instead of three `starts_with` comparisons per match. Sets
+/// `partial` when the walk's match limit dropped a match.
+pub(super) fn run_combined(
+    lang: LangId,
+    root: tree_sitter::Node,
+    source: &[u8],
+    partial: &mut bool,
+) -> Result<CombinedL1, ExtractError> {
     let Some(cq) = try_get_classified_combined_l1_query(lang)? else {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     };
@@ -91,34 +98,32 @@ pub(super) fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8])
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut implementations = Vec::new();
-    crate::lang::with_query_cursor(|cursor| {
-        let mut iter = cursor.matches(q, root, source);
-        while let Some(m) = iter.next() {
-            let class = m
-                .captures()
-                .iter()
-                .map(|cap| classes[cap.index as usize])
-                .find(|class| !matches!(class, CaptureClass::Other));
-            match class {
-                Some(CaptureClass::Symbol) => {
-                    if let Some(sym) = build_symbol(q, m, source, lang) {
-                        symbols.push(sym);
-                    }
+    let dropped = super::query_walk::for_each_match(q, root, source, |m| {
+        let class = m
+            .captures()
+            .iter()
+            .map(|cap| classes[cap.index as usize])
+            .find(|class| !matches!(class, CaptureClass::Other));
+        match class {
+            Some(CaptureClass::Symbol) => {
+                if let Some(sym) = build_symbol(q, m, root, source, lang) {
+                    symbols.push(sym);
                 }
-                Some(CaptureClass::Import) => {
-                    if let Some(imp) = build_import(q, m, source) {
-                        imports.push(imp);
-                    }
-                }
-                Some(CaptureClass::Impl) => {
-                    if let Some(imp) = build_implementation(q, m, source).filter(|_| !is_negative_impl(m)) {
-                        implementations.push(imp);
-                    }
-                }
-                Some(CaptureClass::Other) | None => {}
             }
+            Some(CaptureClass::Import) => {
+                if let Some(imp) = build_import(q, m, source) {
+                    imports.push(imp);
+                }
+            }
+            Some(CaptureClass::Impl) => {
+                if let Some(imp) = build_implementation(q, m, source).filter(|_| !is_negative_impl(m)) {
+                    implementations.push(imp);
+                }
+            }
+            Some(CaptureClass::Other) | None => {}
         }
-    });
+    })?;
+    *partial |= dropped;
     let mut symbols = dedupe_symbols(symbols);
     for sym in &mut symbols {
         trim_signature(sym);
@@ -164,7 +169,7 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
     keep
 }
 
-fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8], lang: LangId) -> Option<Symbol> {
+fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: LangId) -> Option<Symbol> {
     let mut name: Option<String> = None;
     let mut kind: Option<SymbolKind> = None;
     let mut start_byte = 0u32;
@@ -194,7 +199,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8], lang: LangId) -> Optio
         } else if let Some(suffix) = cname.strip_prefix("symbol.") {
             // Decided before the signature is built: most value matches in JS and Python are
             // function locals, and their signature would be collapsed only to be dropped.
-            if !nested_rust_fn(node) && is_function_local(node) {
+            if !nested_rust_fn(node) && is_function_local(root, node) {
                 return None;
             }
             kind = Some(SymbolKind::from_capture_suffix(suffix));
@@ -258,15 +263,23 @@ const FUNCTION_SCOPE_KINDS: &[&str] = &[
 /// The node itself being a function does not count: top-level and class-level functions and methods
 /// are kept, as are class fields and module-level bindings; function locals and nested definitions
 /// are not.
-fn is_function_local(node: Node) -> bool {
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if FUNCTION_SCOPE_KINDS.contains(&n.kind()) {
+///
+/// Walks down from `root` (the tree `node` belongs to) rather than up through `Node::parent`, which
+/// itself descends from the root on every call: one walk instead of one per ancestor.
+fn is_function_local(root: Node, node: Node) -> bool {
+    if root == node {
+        return false;
+    }
+    let mut cur = root;
+    loop {
+        if FUNCTION_SCOPE_KINDS.contains(&cur.kind()) {
             return true;
         }
-        cur = n.parent();
+        match cur.child_with_descendant(node) {
+            Some(next) if next != node => cur = next,
+            _ => return false,
+        }
     }
-    false
 }
 
 /// Longest signature kept for a value-like symbol (variable, constant, field). Their "signature" is

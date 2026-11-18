@@ -25,18 +25,18 @@ pub(crate) fn open_index_for_writer(
 }
 
 /// Remove the file map of a view written for an earlier blob store layout, or one of this version
-/// that does not decode, and the index built from it: the index is of the current schema, so
-/// nothing else would empty it, and rows of files deleted since would outlive the map that knew of
-/// them. A map whose version cannot be read (`why`) is set aside instead of deleted. The caller
-/// holds the workspace lock.
+/// that does not decode. A map whose version cannot be read (`why`) is set aside instead of
+/// deleted. The caller holds the workspace lock.
+///
+/// The view's rows need no discard here: the emptied map names no group incarnation, so the writer
+/// open that follows clears them ([`super::group::open_index_for_writer`]). That open also moves the
+/// memory notes an index of the per-view layout may still hold to the group store before it deletes
+/// that index; deleting it here, first, lost them.
 pub(super) fn discard_view_of_a_stale_layout(view_dir: &Path, why: &StoreError) -> Result<(), StoreError> {
     if matches!(why, StoreError::UnreadableFileMap { .. }) {
         super::file_map::set_aside_unreadable_map(view_dir)?;
     } else {
         super::wipe_view(view_dir)?;
-    }
-    if view_dir.join(crate::index::INDEX_DIR).exists() {
-        crate::index::durability::discard_index(view_dir)?;
     }
     Ok(())
 }

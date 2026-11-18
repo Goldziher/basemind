@@ -214,6 +214,26 @@ impl Registry {
         Self::open(&crate::store::cache_root().join("registry"))
     }
 
+    /// [`Self::register_workspace`], unless `root`'s row was refreshed within `fresh_for`: the
+    /// daemon registers the root of every comms `Hello`, and every prompt hook says one, so a
+    /// re-enumeration of the repository and a rewrite of the snapshot each time would be wasted.
+    pub fn register_workspace_unless_fresh(
+        &mut self,
+        root: &Path,
+        fresh_for: std::time::Duration,
+    ) -> Result<WorkspaceKey, RegistryError> {
+        let key = crate::store::workspace_key(root);
+        let window = i64::try_from(fresh_for.as_micros()).unwrap_or(i64::MAX);
+        let fresh = self
+            .workspaces
+            .get(&key)
+            .is_some_and(|row| row.root == root && now_micros().saturating_sub(row.last_seen) < window);
+        if fresh {
+            return Ok(key);
+        }
+        self.register_workspace(root)
+    }
+
     /// Register (or refresh) the workspace rooted at `root`, populating repo / worktree / branch rows
     /// from git plumbing. A non-git `root` registers as [`WorkspaceKind::Plain`] with no repo rows.
     /// Idempotent: re-registering refreshes `last_seen` and reconciles worktree/branch rows. Returns

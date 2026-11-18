@@ -110,6 +110,48 @@ else
   STATUS_LINE="basemind verified: ${FILE_COUNT} files indexed (schema ${SCHEMA_VER:-unknown}).${CALL_TOOLS}"
 fi
 
+# The PreToolUse guard (pre-tool-guard) steers Grep and rg toward the code tools only in a session
+# this probe found indexed: steering an unscanned repository's searches to code_grep earns an
+# empty_index answer per call. The verdict is a per-session marker in the guard's private state
+# directory: written on a verified, non-empty index, removed otherwise (a resumed or cleared
+# session probes again). Best-effort; the guard stays quiet when the marker cannot be written.
+private_state_dir() {
+  local dir="${XDG_RUNTIME_DIR:-}"
+  if [ -n "${dir}" ] && [ -d "${dir}" ] && [ ! -L "${dir}" ] && [ -O "${dir}" ]; then
+    dir="${dir}/basemind"
+  else
+    dir="${TMPDIR:-/tmp}"
+    dir="${dir%/}/basemind-$(id -u)"
+  fi
+  mkdir -m 700 "${dir}" 2>/dev/null || true
+  [ -d "${dir}" ] && [ ! -L "${dir}" ] && [ -O "${dir}" ] || return 1
+  case "$(ls -ld "${dir}" 2>/dev/null)" in
+  drwx------*) printf '%s' "${dir}" ;;
+  *) return 1 ;;
+  esac
+}
+record_index_verdict() {
+  local session state_dir marker_dir marker
+  command -v jq >/dev/null 2>&1 || return 0
+  session="$(printf '%s' "${STDIN_JSON}" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  [ -n "${session}" ] || return 0
+  session="$(printf '%s' "${session}" | tr -c 'A-Za-z0-9._-' '_')"
+  state_dir="$(private_state_dir)" || return 0
+  marker_dir="${state_dir}/indexed"
+  mkdir -m 700 "${marker_dir}" 2>/dev/null || true
+  [ -d "${marker_dir}" ] && [ ! -L "${marker_dir}" ] || return 0
+  marker="${marker_dir}/${session}"
+  if [ "$1" = yes ]; then
+    : >"${marker}" 2>/dev/null || true
+  else
+    rm -f "${marker}" 2>/dev/null || true
+  fi
+}
+case "${STATUS_LINE}" in
+"basemind verified: "*) record_index_verdict yes ;;
+*) record_index_verdict no ;;
+esac
+
 ROUTING="Use basemind before shell rg, grep, find and git, and before reading whole files. What a file contains: code_outline {\"path\":\"src/store.rs\"}, then code_read {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for the one body you need. Where a name is defined: code_symbols {\"name\":\"open_store\"}. What calls, implements or imports it: code_refs {\"name\":\"open_store\"}. A string or comment in indexed code: code_grep {\"pattern\":\"cache_root(\"} (literal text; add \"regex\":true for a regex). Code by what it does: code_search {\"query\":\"retry a failed upload\"}. A file by name: find_files {\"query\":\"readme\"}. History: git_log {} for recent commits (add path, query, author, symbol or rev), git_blame {\"path\":\"src/store.rs\"}, git_diff {} for the working-tree status (add path, from, to). Documents, which the code tools do not cover (markdown, config, PDFs, Jupyter notebooks): docs_search {\"query\":\"how releases are versioned\"}. Notes shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"} and memory_search {\"query\":\"…\"}. Lines are 1-based, an unknown argument is rejected, and a failure is a tool result that names the fix. For exact literals or regex outside the code map, search the files directly; a semantic miss does not establish absence. Fall back to ordinary tools when basemind cannot cover the task, and run index_rescan {} after editing indexed files."
 CONTEXT="${STATUS_LINE} ${ROUTING}"
 

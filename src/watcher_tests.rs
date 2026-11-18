@@ -28,6 +28,20 @@ fn arm_watcher(root: &Path, path_rx: &mpsc::Receiver<Vec<PathBuf>>) {
     while path_rx.recv_timeout(Duration::from_millis(300)).is_ok() {}
 }
 
+/// Every path the watcher emits within `window`. FSEvents can deliver the arming probe's events
+/// after the drain above, so a negative test asserts on the paths it wrote, not on silence.
+fn emitted_within(path_rx: &mpsc::Receiver<Vec<PathBuf>>, window: Duration) -> Vec<PathBuf> {
+    let deadline = std::time::Instant::now() + window;
+    let mut emitted = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match path_rx.recv_timeout(left) {
+            Ok(paths) => emitted.extend(paths),
+            Err(_) => break,
+        }
+    }
+    emitted
+}
+
 /// `watch_paths` should hand the callback the repo-relative path of a file
 /// that changes under the watched root, within a bounded window. This is the
 /// primitive the MCP serve watcher funnels into `scan_and_refresh`.
@@ -283,8 +297,13 @@ fn should_ignore_changes_under_basemind_dir() {
     std::fs::write(root.join(crate::config::BASEMIND_DIR).join("noise.txt"), b"ignored\n")
         .expect("write basemind file");
 
-    let result = path_rx.recv_timeout(Duration::from_millis(800));
-    assert!(result.is_err(), "expected no emission, got {result:?}");
+    let emitted = emitted_within(&path_rx, Duration::from_millis(800));
+    assert!(
+        !emitted
+            .iter()
+            .any(|path| path.starts_with(root.join(crate::config::BASEMIND_DIR))),
+        "a path under .basemind/ was emitted: {emitted:?}"
+    );
 
     let _ = shutdown_tx.send(());
     let _ = handle.join();
@@ -324,10 +343,12 @@ fn should_ignore_nested_basemind_and_gitignored_paths() {
     .expect("write nested basemind file");
     std::fs::write(root.join("build").join("out.o"), b"\x00").expect("write gitignored file");
 
-    let result = path_rx.recv_timeout(Duration::from_millis(800));
+    let emitted = emitted_within(&path_rx, Duration::from_millis(800));
     assert!(
-        result.is_err(),
-        "expected no emission for nested-.basemind / gitignored churn, got {result:?}"
+        !emitted
+            .iter()
+            .any(|path| path.starts_with(root.join("child")) || path.starts_with(root.join("build"))),
+        "nested-.basemind / gitignored churn was emitted: {emitted:?}"
     );
 
     let _ = shutdown_tx.send(());
@@ -409,7 +430,7 @@ fn batch(kind: EventKind, paths: &[&str]) -> DebounceEventResult {
         .collect())
 }
 
-fn drain(rx: &mpsc::Receiver<DebounceEventResult>) -> usize {
+fn drain(rx: &mpsc::Receiver<WatchMsg>) -> usize {
     std::iter::from_fn(|| rx.try_recv().ok()).count()
 }
 
@@ -417,15 +438,14 @@ fn drain(rx: &mpsc::Receiver<DebounceEventResult>) -> usize {
 /// the consumer and nothing is set aside.
 #[test]
 fn should_deliver_batch_to_the_queue_when_it_has_room() {
-    let (tx, rx) = mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+    let (tx, rx) = mpsc::sync_channel::<WatchMsg>(DEBOUNCE_QUEUE_CAPACITY);
     let pending = PendingPaths::default();
 
     dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/a.rs", "/repo/b.rs"]));
 
-    let events = rx
-        .try_recv()
-        .expect("batch reaches the consumer")
-        .expect("not an error batch");
+    let Ok(WatchMsg::Batch(Ok(events))) = rx.try_recv() else {
+        panic!("the batch must reach the consumer");
+    };
     let paths: Vec<PathBuf> = events.iter().flat_map(|e| e.event.paths.iter().cloned()).collect();
     assert_eq!(paths, vec![PathBuf::from("/repo/a.rs"), PathBuf::from("/repo/b.rs")]);
     assert!(
@@ -438,7 +458,7 @@ fn should_deliver_batch_to_the_queue_when_it_has_room() {
 /// pending set, deduped, and filtered by the same relevance test the consumer applies.
 #[test]
 fn should_coalesce_into_the_pending_set_when_the_queue_is_full() {
-    let (tx, rx) = mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+    let (tx, rx) = mpsc::sync_channel::<WatchMsg>(DEBOUNCE_QUEUE_CAPACITY);
     let pending = PendingPaths::default();
 
     for i in 0..DEBOUNCE_QUEUE_CAPACITY {
@@ -481,7 +501,7 @@ fn should_coalesce_into_the_pending_set_when_the_queue_is_full() {
 /// how many distinct paths exist rather than how many batches the debouncer emitted.
 #[test]
 fn should_not_grow_the_queue_beyond_capacity_under_a_burst() {
-    let (tx, rx) = mpsc::sync_channel::<DebounceEventResult>(DEBOUNCE_QUEUE_CAPACITY);
+    let (tx, rx) = mpsc::sync_channel::<WatchMsg>(DEBOUNCE_QUEUE_CAPACITY);
     let pending = PendingPaths::default();
     let paths = ["/repo/a.rs", "/repo/b.rs", "/repo/c.rs", "/repo/d.rs"];
 
@@ -547,5 +567,107 @@ fn should_not_fail_startup_on_unreadable_directory() {
     assert!(
         result.is_ok(),
         "watch_paths must not fail on an unreadable directory: {result:?}"
+    );
+}
+
+/// A directory rename is reported as the directory's own path, not one event per child. Both the
+/// old and the new directory must reach the callback so the scan can prune one and index the other.
+#[test]
+fn should_emit_both_directories_when_a_directory_is_renamed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+    let mut config = crate::config::default_for_root(&root);
+    config.watch.debounce_ms = 50;
+    std::fs::create_dir_all(root.join("old/deep")).expect("mkdir");
+    std::fs::write(root.join("old/x.rs"), b"fn x() {}\n").expect("seed");
+    std::fs::write(root.join("old/deep/y.rs"), b"fn y() {}\n").expect("seed");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
+    let root_for_thread = root.clone();
+    let handle = std::thread::spawn(move || {
+        watch_paths(&root_for_thread, &config, shutdown_rx, |paths, _| {
+            let _ = path_tx.send(paths);
+        })
+    });
+    arm_watcher(&root, &path_rx);
+
+    std::fs::rename(root.join("old"), root.join("new")).expect("rename dir");
+
+    let (old, new) = (root.join("old"), root.join("new"));
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !(seen.contains(&old) && seen.contains(&new)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "watcher never reported both directories within 30s: {seen:?}"
+        );
+        match path_rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(paths) => seen.extend(paths),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
+        }
+    }
+
+    let _ = shutdown_tx.send(());
+    let _ = handle.join();
+}
+
+/// Records what [`DirWatches`] arms and releases, standing in for the inotify debouncer.
+#[derive(Default)]
+struct Recorder {
+    armed: Vec<PathBuf>,
+    released: Vec<PathBuf>,
+}
+
+impl DirRegistry for Recorder {
+    fn watch_dir(&mut self, dir: &Path) -> Result<(), notify::Error> {
+        self.armed.push(dir.to_path_buf());
+        Ok(())
+    }
+
+    fn unwatch_dir(&mut self, dir: &Path) {
+        self.released.push(dir.to_path_buf());
+    }
+}
+
+/// A directory renamed within the tree releases the watches of its old subtree (the kernel watch
+/// follows the inode and would keep reporting the old name) and arms its new subtree, including
+/// subdirectories no event named. A directory already armed is not walked again.
+#[test]
+fn dir_watches_follow_a_renamed_directory_subtree() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+    std::fs::create_dir_all(root.join("old/deep")).expect("mkdir");
+    std::fs::create_dir_all(root.join("oldish")).expect("mkdir");
+    std::fs::create_dir_all(root.join("target/debug")).expect("mkdir");
+    let config = crate::config::default_for_root(&root);
+    let filter = crate::scanner_filter::IndexFilter::new(&root, &config).expect("filter");
+    let mut watches = DirWatches::default();
+    let mut registry = Recorder::default();
+    watches.sync(&mut registry, &filter, &[root.join("old"), root.join("oldish")]);
+    assert_eq!(
+        registry.armed,
+        [root.join("old"), root.join("old/deep"), root.join("oldish")]
+    );
+
+    std::fs::rename(root.join("old"), root.join("new")).expect("rename dir");
+    filter.clear_cache(); // as the watcher loop does before every batch ~keep
+    let mut registry = Recorder::default();
+    watches.sync(
+        &mut registry,
+        &filter,
+        &[
+            root.join("new"),
+            root.join("old"),
+            root.join("oldish"),
+            root.join("target"),
+        ],
+    );
+    assert_eq!(registry.released, [root.join("old"), root.join("old/deep")]);
+    assert_eq!(registry.armed, [root.join("new"), root.join("new/deep")]);
+    assert_eq!(
+        watches.watched.iter().collect::<Vec<_>>(),
+        [&root.join("new"), &root.join("new/deep"), &root.join("oldish")]
     );
 }

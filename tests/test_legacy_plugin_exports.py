@@ -54,6 +54,17 @@ class LegacyExportsTests(unittest.TestCase):
         self.assertNotIn(".cursor-plugin/hooks/agent-as", files, "Cursor applies no input agent-as rewrites")
 
 
+class GeminiContextFileTests(unittest.TestCase):
+    def test_every_gemini_manifest_names_a_context_file_the_repository_ships(self):
+        for manifest in ("gemini-extension.json", "plugin/gemini-extension.json"):
+            name = json.loads((ROOT / manifest).read_text())["contextFileName"]
+            shipped = (Path(manifest).parent / name).as_posix()
+            tracked = subprocess.run(
+                ["git", "ls-files", "--error-unmatch", shipped], cwd=ROOT, capture_output=True, check=False
+            )
+            self.assertEqual(tracked.returncode, 0, f"{manifest} names {shipped}, which is not tracked")
+
+
 class StatusLineShippingTests(unittest.TestCase):
     """`/bm-statusline` resolves the installed plugin's `scripts/statusline.sh`."""
 

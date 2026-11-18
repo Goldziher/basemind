@@ -175,6 +175,23 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
     service.cancel().await.expect("shut down the relay client");
 }
 
+/// Live `serve` sessions of `root`'s identity, as `basemind agent status` reports them.
+async fn live_serve_sessions(root: &Path) -> u64 {
+    let status = AsyncCommand::new(env!("CARGO_BIN_EXE_basemind"))
+        .arg("--root")
+        .arg(root)
+        .arg("--json")
+        .args(["agent", "status"])
+        .output()
+        .await
+        .expect("run `agent status`");
+    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+    let report: Value = serde_json::from_slice(&status.stdout).expect("status JSON");
+    report["store"]["sessions"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no session count: {report}"))
+}
+
 /// The four CLI-only commands, which ADR-0018 keeps off the agent surface.
 const CLI_ONLY: [(&str, &str); 4] = [
     ("memory_delete", r#"{"key":"k"}"#),
@@ -219,7 +236,9 @@ async fn only_a_cli_session_reaches_the_cli_only_commands() {
         relay_proto_ver: basemind::comms::relay::RELAY_PROTO_VER,
         root: root.canonicalize().expect("canonical root"),
         view: basemind::store::VIEW_WORKING.to_string(),
-        principal: basemind::comms::v2::Principal::parse("cli-test").expect("principal"),
+        principal: basemind::comms::v2::identity::resolve_for_root(root)
+            .expect("the serve session's identity")
+            .principal,
         host: None,
         notices: Vec::new(),
         client: basemind::comms::relay::RelayClient::Cli,
@@ -229,6 +248,11 @@ async fn only_a_cli_session_reaches_the_cli_only_commands() {
         .expect("relay handshake");
     assert!(welcome.accepted && welcome.cli, "{welcome:?}");
     let cli = ().serve(tokio::io::split(stream)).await.expect("CLI session");
+    assert_eq!(
+        live_serve_sessions(root).await,
+        1,
+        "a CLI command's session is not a serve session of the same identity"
+    );
 
     let mut tools: Vec<_> = cli
         .list_all_tools()

@@ -46,12 +46,6 @@ echo "→ basemind-agents    → $VERSION"
 sed -i.bak -E "s/^version = \"[^\"]+\"$/version = \"$VERSION\"/" crates/basemind-agents/Cargo.toml
 rm crates/basemind-agents/Cargo.toml.bak
 
-# The config schema snapshot embeds the crate version in the default user agent;
-# tests/config_schema.rs asserts it byte-equal, so it must move with the version.
-echo "→ config schema      → $VERSION"
-sed -i.bak -E "s#basemind/[0-9][^ ]* \(\+https#basemind/$VERSION (+https#" schema/basemind-config-v1.schema.json
-rm schema/basemind-config-v1.schema.json.bak
-
 if [[ -f npm-package/package.json ]]; then
   echo "→ npm-package        → $VERSION"
   sed -i.bak -E "s/\"version\": \"[^\"]+\"/\"version\": \"$VERSION\"/" npm-package/package.json
