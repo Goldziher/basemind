@@ -48,6 +48,9 @@ const SETTLED_WRITE_BUFFER_BYTES: u64 = 8 * 1_024 * 1_024;
 /// and a set of cached blocks; at this size the rewrite costs less than the flush that preceded it.
 const SMALL_KEYSPACE_BYTES: u64 = 16 * 1_024 * 1_024;
 
+/// How long [`IndexDb::settle_write_buffer`] waits for its flushes before it leaves them running.
+const SETTLE_FLUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Flush the active memtable of each of `keyspaces` to disk and wait for it. Stops at the first
 /// error. A journal is deleted once every keyspace it covers has flushed past it, so this releases
 /// the sealed ones.
@@ -285,25 +288,41 @@ impl IndexDb {
             .map(|keyspace| (keyspace, keyspace.tree.active_memtable().size()))
             .collect();
         sized.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
-        let mut flushed = 0;
+        let mut flushed = Vec::new();
         for (keyspace, size) in sized {
             if unflushed <= SETTLED_WRITE_BUFFER_BYTES / 2 || size == 0 {
                 break;
             }
-            let settled = keyspace.rotate_memtable_and_wait().and_then(|()| {
-                if keyspace.table_count() > 1 && keyspace.disk_space() <= SMALL_KEYSPACE_BYTES {
-                    keyspace.major_compact()?;
+            match keyspace.rotate_memtable() {
+                Ok(true) => {
+                    flushed.push(keyspace);
+                    unflushed = unflushed.saturating_sub(size);
                 }
-                Ok(())
-            });
-            if let Err(error) = settled {
-                tracing::warn!(%error, "index memtable flush failed; the rows stay in memory until the next pass");
-                break;
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "index memtable flush failed; the rows stay in memory until the next pass");
+                    break;
+                }
             }
-            flushed += 1;
-            unflushed = unflushed.saturating_sub(size);
         }
-        flushed
+        // Wait for these flushes only, not every flush queued on the shared group database, and not
+        // past a failing flush: the compaction then waits for the next pass.
+        let deadline = std::time::Instant::now() + SETTLE_FLUSH_WAIT;
+        while flushed.iter().any(|keyspace| keyspace.sealed_memtable_count() > 0) {
+            if std::time::Instant::now() >= deadline {
+                return flushed.len();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        for keyspace in &flushed {
+            if keyspace.table_count() > 1
+                && keyspace.disk_space() <= SMALL_KEYSPACE_BYTES
+                && let Err(error) = keyspace.major_compact()
+            {
+                tracing::warn!(%error, "index keyspace compaction failed; its tables merge at the next compaction");
+            }
+        }
+        flushed.len()
     }
 
     /// Whether no other clone of this handle is alive, so dropping it releases fjall's lock.
