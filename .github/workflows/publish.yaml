@@ -148,7 +148,7 @@ jobs:
         uses: ./.github/actions/setup-rust
 
       - name: Require vendored crates to match their crates.io versions
-        run: python3 scripts/check_vendored_crates.py
+        run: python3 scripts/check_vendored_crates.py --release
 
       - name: Detect already-published versions
         id: published

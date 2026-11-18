@@ -86,8 +86,9 @@ fn a_crates_io_blocker_fails_the_release_instead_of_skipping_it() {
         "meta must fail, not skip, on a Git-pinned dependency",
     );
     assert!(
-        meta.contains("scripts/check_vendored_crates.py"),
-        "meta must refuse vendored crates that drifted from their published version",
+        meta.contains("scripts/check_vendored_crates.py --release"),
+        "meta must refuse vendored crates that drifted from their published version, and a crate \
+         crates.io does not have: trusted publishing cannot create one",
     );
     assert!(
         !publish.contains("crates_publishable"),
