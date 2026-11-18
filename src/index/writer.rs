@@ -57,6 +57,12 @@ pub struct IndexWriter {
     /// The batch already stages the group's owed sweep.
     #[cfg(feature = "code-search")]
     bm25_sweep_owed: bool,
+    /// The batch already stages the group's owed content sweep, so its commit holds the group gate
+    /// shared (see [`super::group_sweep`]).
+    content_sweep_owed: bool,
+    /// BM25 keys this batch stages forward rows for, in flight until it commits or drops.
+    #[cfg(feature = "code-search")]
+    bm25_in_flight: super::bm25_live::InFlight,
     /// Test-only fault seam: make the next [`Self::upsert_file`] (or `upsert_bm25_file`) stage its
     /// deletes and inserts and *then* fail. The real failures have exactly that shape — a fjall read
     /// error inside `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and
@@ -159,6 +165,9 @@ impl IndexWriter {
             bm25_dirty_marked: false,
             #[cfg(feature = "code-search")]
             bm25_sweep_owed: false,
+            content_sweep_owed: false,
+            #[cfg(feature = "code-search")]
+            bm25_in_flight: super::bm25_live::InFlight::default(),
             #[cfg(test)]
             fail_after_staging: false,
             #[cfg(all(test, feature = "code-search"))]
@@ -187,6 +196,14 @@ impl IndexWriter {
         l1: &FileMapL1,
         l2: Option<&FileMapL2>,
     ) -> Result<(), IndexError> {
+        // The content is pending, and its stored rows are read, under the group gate: a sweep then ~keep
+        // either sees it pending or deleted the rows before this read (see `group_sweep`). ~keep
+        let gate = std::sync::Arc::clone(&self.db.bm25_gate);
+        let _shared = gate.read();
+        if let Some(own) = &self.db.group {
+            own.group.register_pending(own.view_id, *content);
+        }
+        self.owe_content_sweep();
         self.stage_deletes_for(rel)?;
         self.stage_inserts_for(rel, content, l1)?;
         if let Some(l2) = l2 {
@@ -205,7 +222,25 @@ impl IndexWriter {
     /// Drop the path-keyed rows of `rel`. Used when a file is removed from the scan set. Its content
     /// rows stay for the views that hold the content; the group sweep collects them.
     pub fn remove_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
+        // The view is unsettled until its file map drops `rel` (see `group_sweep`). ~keep
+        if let Some(own) = &self.db.group {
+            own.group.register_path_write(own.view_id);
+        }
+        self.owe_content_sweep();
         self.stage_deletes_for(rel)
+    }
+
+    /// A path write may leave a content no view names once the file map follows: stage the group's
+    /// owed content sweep into the same batch, once.
+    fn owe_content_sweep(&mut self) {
+        if self.content_sweep_owed || self.db.group.is_none() {
+            return;
+        }
+        let token = super::group_sweep::fresh_token().to_be_bytes();
+        let key = super::group_sweep::META_CONTENT_SWEEP_OWED;
+        self.batch.insert(self.db.meta.raw(), key.to_vec(), token.to_vec());
+        self.staged_bytes += staged_entry_bytes(key.len(), token.len());
+        self.content_sweep_owed = true;
     }
 
     /// Drop every symbol and call row of `content`, for every view that holds it. Only for a
@@ -283,9 +318,30 @@ impl IndexWriter {
         content: &keys::Bm25Key,
         postings: &[ChunkPosting],
     ) -> Result<(), IndexError> {
-        let staged = self
-            .stage_bm25_deletes_for(rel)
-            .and_then(|()| self.stage_bm25_inserts_for(rel, content, postings));
+        // In flight before the holders are read, under the gate: a retirement then keeps the key's ~keep
+        // postings until this batch commits its holder row (see `bm25_live::Bm25GateState`). ~keep
+        let gate = std::sync::Arc::clone(&self.db.bm25_gate);
+        let shared = gate.read();
+        self.bm25_in_flight.register(&gate, *content);
+        // Another path's holder row means the postings are stored; this path's own does not, so a ~keep
+        // pass that writes a file again (a policy reconcile) restores whatever is missing. ~keep
+        let own = keys::code_bm25_holder(content, self.db.holder_view_id(), rel);
+        let stored = self
+            .db
+            .code_bm25_holders
+            .prefix_keys(content)
+            .take(2)
+            .find(|holder| holder.as_ref().map_or(true, |holder| **holder != *own))
+            .transpose()
+            .map(|holder| holder.is_some());
+        drop(shared);
+        let staged = stored.and_then(|stored| {
+            let old = self.stage_bm25_deletes_for(rel)?;
+            // A holder row is found and removed only through a forward row: none without one. ~keep
+            let holds = self.stage_bm25_inserts_for(rel, content, postings, !stored)?;
+            self.stage_bm25_holders(rel, &old, Some(content), holds);
+            Ok(())
+        });
         #[cfg(test)]
         let staged = staged.and_then(|()| match self.fail_after_staging {
             true => Err(IndexError::Io {
@@ -302,8 +358,40 @@ impl IndexWriter {
     /// the group's posting sweep finds no view naming their key.
     #[cfg(feature = "code-search")]
     pub fn remove_bm25_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
-        self.stage_bm25_deletes_for(rel)
-            .inspect_err(|_| self.db.bm25_pass.poison())
+        let old = self
+            .stage_bm25_deletes_for(rel)
+            .inspect_err(|_| self.db.bm25_pass.poison())?;
+        self.stage_bm25_holders(rel, &old, None, false);
+        Ok(())
+    }
+
+    /// Stage this view's holder rows of `rel`: drop those of the `old` keys its deleted forward rows
+    /// named, then add the one of `new` when the file holds chunks under it. A key in both stays as
+    /// it is, so no batch deletes and inserts one key.
+    #[cfg(feature = "code-search")]
+    fn stage_bm25_holders(&mut self, rel: &RelPath, old: &[keys::Bm25Key], new: Option<&keys::Bm25Key>, holds: bool) {
+        let view_id = self.db.holder_view_id();
+        let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        let kept = new.filter(|_| holds);
+        for key in old.iter().filter(|key| Some(*key) != kept) {
+            stage_remove(
+                batch,
+                staged_bytes,
+                &db.code_bm25_holders,
+                keys::code_bm25_holder(key, view_id, rel),
+            );
+            self.writes_postings = true;
+        }
+        if let Some(key) = kept.filter(|key| !old.contains(key)) {
+            stage_insert(
+                batch,
+                staged_bytes,
+                &db.code_bm25_holders,
+                keys::code_bm25_holder(key, view_id, rel),
+                Vec::<u8>::new(),
+            );
+            self.writes_postings = true;
+        }
     }
 
     /// Stage a single CROSS-FILE resolved edge: the use in `use_rel` binds to a definition in a
@@ -402,7 +490,7 @@ impl IndexWriter {
                 source: std::io::Error::other("injected commit failure"),
             });
         }
-        let gate = self.writes_postings.then(|| self.db.bm25_gate.read());
+        let gate = (self.writes_postings || self.content_sweep_owed).then(|| self.db.bm25_gate.read());
         let result = self.batch.commit().map_err(IndexError::from);
         drop(gate);
         if let Err(error) = &result {
@@ -519,7 +607,7 @@ impl IndexWriter {
     }
 
     #[cfg(feature = "code-search")]
-    fn stage_bm25_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
+    fn stage_bm25_deletes_for(&mut self, rel: &RelPath) -> Result<Vec<keys::Bm25Key>, IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         let prefix = keys::code_bm25_by_path_prefix(rel);
         let keys: Vec<Vec<u8>> = if let Some(generation) = db.bm25_pass.open_generation() {
@@ -550,7 +638,13 @@ impl IndexWriter {
         };
         let deleted = !keys.is_empty();
         self.changes_bm25_forward |= deleted;
+        let mut old: Vec<keys::Bm25Key> = Vec::new();
         for key in keys {
+            if let Some((_, content, _)) = keys::parse_code_bm25_by_path(&key)
+                && !old.contains(&content)
+            {
+                old.push(content);
+            }
             stage_remove(batch, staged_bytes, &db.code_bm25_by_path, key);
         }
         if self.changes_bm25_forward {
@@ -559,7 +653,7 @@ impl IndexWriter {
         if deleted {
             self.owe_bm25_sweep_outside_pass();
         }
-        Ok(())
+        Ok(old)
     }
 
     /// A forward-row delete outside an open pass leaves its postings for no retirement: stage the
@@ -606,32 +700,33 @@ impl IndexWriter {
         );
     }
 
-    /// Stage inserts for `rel`'s BM25 postings: one shared `code_bm25_postings` entry per
-    /// `(term, chunk)` carrying `tf ‖ doclen`, plus one `code_bm25_by_path` forward entry per chunk
-    /// carrying `doclen ‖ content hash ‖ terms`. A posting whose chunk id does not parse is skipped.
+    /// Stage inserts for `rel`'s BM25 postings: one shared `code_bm25_postings` row per term of the
+    /// content packing `ordinal ‖ tf ‖ doclen` of every chunk holding it (only when `write_postings`),
+    /// plus one `code_bm25_by_path` forward entry per chunk carrying `doclen ‖ content hash ‖ terms`.
+    /// A posting whose chunk id does not parse is skipped. Returns whether a forward entry was
+    /// staged: only then does the file hold `content`.
     #[cfg(feature = "code-search")]
     fn stage_bm25_inserts_for(
         &mut self,
         rel: &RelPath,
         content: &keys::Bm25Key,
         postings: &[ChunkPosting],
-    ) -> Result<(), IndexError> {
+        write_postings: bool,
+    ) -> Result<bool, IndexError> {
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
+        let mut holds = false;
+        let mut by_term: ahash::AHashMap<&str, Vec<(u32, u32, u32)>> = ahash::AHashMap::new();
         for posting in postings {
             let Some((hash, ordinal)) = keys::split_chunk_id(&posting.chunk_id) else {
                 tracing::debug!(path = %rel, chunk = %posting.chunk_id, "index: unparsable chunk id; posting skipped");
                 continue;
             };
-            for (term, tf) in &posting.terms {
-                if let Some(posting_key) = keys::code_bm25_posting(term, content, ordinal) {
-                    stage_insert(
-                        batch,
-                        staged_bytes,
-                        &db.code_bm25_postings,
-                        posting_key,
-                        keys::code_bm25_posting_value(*tf, posting.doclen),
-                    );
-                }
+            // Another holder wrote this key's postings: they are a function of the key. ~keep
+            for (term, tf) in posting.terms.iter().filter(|_| write_postings) {
+                by_term
+                    .entry(term.as_str())
+                    .or_default()
+                    .push((ordinal, *tf, posting.doclen));
             }
             let mut term_names: Vec<&str> = posting.terms.iter().map(|(t, _)| t.as_str()).collect();
             term_names.sort_unstable();
@@ -650,13 +745,27 @@ impl IndexWriter {
                 self.bm25_delta.staged_under(generation);
                 self.bm25_delta.add_row(posting.doclen);
             }
+            holds = true;
             self.writes_postings = true;
             self.changes_bm25_forward = true;
+        }
+        for (term, mut entries) in by_term {
+            entries.sort_unstable();
+            if let Some(posting_key) = keys::code_bm25_posting(term, content) {
+                stage_insert(
+                    batch,
+                    staged_bytes,
+                    &db.code_bm25_postings,
+                    posting_key,
+                    keys::code_bm25_posting_value(&entries),
+                );
+                self.writes_postings = true;
+            }
         }
         if self.changes_bm25_forward {
             self.mark_bm25_dirty_outside_pass();
         }
-        Ok(())
+        Ok(holds)
     }
 
     /// Stage the L2 call sites of `content` into both call partitions.

@@ -138,11 +138,11 @@ pub struct GcReport {
     /// [`Self::bytes_freed`], which counts only global-blob bytes.
     #[serde(default)]
     pub workspace_bytes_freed: u64,
-    /// Retrieval stores of repository groups no workspace names any more, reaped by the same sweep
-    /// (see [`crate::store_gc_groups`]).
+    /// Directories (index and retrieval store) of repository groups no workspace names any more,
+    /// reaped by the same sweep (see [`crate::store_gc_groups`]).
     #[serde(default)]
     pub group_stores_reaped: usize,
-    /// Bytes reclaimed by reaping those stores. Disjoint from the other byte counters.
+    /// Bytes reclaimed by reaping those directories. Disjoint from the other byte counters.
     #[serde(default)]
     pub group_store_bytes_freed: u64,
     /// Marker-less workspace dirs the next destructive sweep would reap (see
@@ -474,7 +474,7 @@ pub(crate) fn gc_global_blobs_in(
     gc_blobs_in(blobs_dir, &referenced, grace)
 }
 
-/// The daemon's full cache sweep: reap orphaned workspace cache dirs FIRST, then the retrieval stores
+/// The daemon's full cache sweep: reap orphaned workspace cache dirs FIRST, then the directories
 /// of the groups no workspace names any more, then reference-count and sweep the global blob store.
 ///
 /// Order is load-bearing. An orphaned workspace (its worktree deleted) still votes in the blob GC's

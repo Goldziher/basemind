@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.14.0'
 scope = 'all'
-tree = 'sha256:734aeac1ccdb04f374d5951403fa5199fbb325b49465781725928e4a6e9faf30'
+tree = 'sha256:a4a964601903be48c7fb8c53101f0c322f296bb68bbf1a388debe88f725ae10c'
 
 [[served]]
 name = 'adr-workflow'
@@ -226,7 +226,7 @@ digest = 'sha256:ac461e60c8bcbc32236f3042de314491ed90529dbebeb87e64680f1cac4fdf3
 kind = 'context'
 id = 'inverted-index'
 path = 'context/inverted-index.md'
-digest = 'sha256:ff9e2660b0851ae58c9e5912a62c7e57a598ef95db774fe7cbe1e4950679b70b'
+digest = 'sha256:ae65cee566caddb5b56a5354343b71ff87168a6e0209ba289076400c90fe374b'
 
 [[item]]
 kind = 'context'

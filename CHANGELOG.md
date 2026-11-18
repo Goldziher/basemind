@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   view in place. A process that does not hold the group's index answers what the blobs hold from the blob store
   and refuses `code_refs` scans (see Changed). Every workspace
   rebuilds its index on the first scan, and its per-view `index.fjall` is deleted.
+- The group sweep (ADR-0041): at the end of a full pass that owes it, the group index deletes the symbol and call
+  rows of contents no view's file map names, and the rows of views whose view directory is gone. A view's BM25
+  postings are shared by key and written once; a holder row per path names who holds a key, so retiring a
+  posting is one lookup per key and a retired or rebuilt view's postings are retired by key, a bounded batch
+  at a time, instead of by a sweep of the whole posting list. Postings are packed into one row per term and
+  content. The group index is rebuilt once on first open (layout 5).
 
 ### Changed
 
@@ -55,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sweeps every file there, and relation `definition` still reads the intra-file facts.
 - A daemon-hosted session reads the daemon's index directly: its store borrows the pool writer's
   index handle per call, so reads are not held up by a scan, and it shares the daemon's git-history handle.
+- `cache gc` removes the whole `cache/groups/<group>/` directory, index included, of a group no workspace names
+  (memory notes under `cache/repos/` stay); `group_stores_reaped` in its report counts those directories. A group
+  that cannot be removed is logged and kept, and the rest of the GC still runs.
 - With the comms daemon up, a CLI tool command on the working view forwards its whole call to the
   daemon over one relay session (a `cli` client in the relay hello) instead of opening the store
   itself; the output and exit codes are unchanged. Against a daemon too old to take the call it exits

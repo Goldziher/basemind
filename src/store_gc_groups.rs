@@ -1,13 +1,15 @@
-//! Reaping the document retrieval stores of repository groups no workspace belongs to any more.
+//! Reaping the derived state of repository groups no workspace belongs to any more.
 //!
-//! A group's retrieval store (`cache/groups/<group>/lance/`, ADR-0037 rule 3) holds every vector of
-//! the group's documents, so it is often the largest thing a deleted repository leaves behind. The
-//! workspace reaper ([`crate::store_gc_workspace`]) removes the workspaces of a deleted worktree;
-//! once no workspace marker names the group, its retrieval store is reaped too. The policy is as
-//! conservative as the workspace reaper's: a workspace whose group cannot be told (no marker but
-//! index state, or a marker that names no group for a root that is gone) could belong to any
-//! group, and then nothing is reaped. A group whose lock another process holds is skipped. The
-//! group index beside the store is left alone.
+//! A group's directory (`cache/groups/<group>/`) holds its index (ADR-0028) and its retrieval store
+//! (`lance/`, ADR-0037 rule 3), every row and vector of the group's files, so it is often the largest
+//! thing a deleted repository leaves behind. The workspace reaper ([`crate::store_gc_workspace`])
+//! removes the workspaces of a deleted worktree; once no workspace marker names the group, its
+//! directory is reaped too, under the group lock, the way a workspace is
+//! ([`crate::store_lock::remove_dir_under_lock`]). The policy is as conservative as the workspace
+//! reaper's: a workspace whose group cannot be told (no marker but index state, or a marker that
+//! names no group for a root that is gone) could belong to any group, and then nothing is reaped. A
+//! group whose lock another process holds is skipped. The memory notes (`cache/repos/<group>/`)
+//! are not derived state and stay.
 
 use std::path::Path;
 
@@ -15,18 +17,18 @@ use ahash::AHashSet;
 
 use crate::store::{CACHE_DIR, LockHolder, VIEWS_DIR, WORKSPACES_DIR, cache_root, read_workspace_marker};
 use crate::store_gc::{GcError, dir_size};
-use crate::store_layout::{GROUP_LANCE_DIR, GROUPS_DIR, repo_group_key};
+use crate::store_layout::{GROUPS_DIR, repo_group_key};
 
-/// What a reap of the group retrieval stores removed.
+/// What a reap of the group directories removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GroupStoreReap {
-    /// Group retrieval stores removed.
+    /// Group directories removed.
     pub reaped: usize,
     /// Their on-disk size.
     pub bytes_freed: u64,
 }
 
-/// Reap the retrieval store of every group no workspace of the machine-global cache names.
+/// Reap the directory of every group no workspace of the machine-global cache names.
 pub fn reap_orphaned_group_stores() -> Result<GroupStoreReap, GcError> {
     reap_orphaned_group_stores_in(&cache_root().join(CACHE_DIR))
 }
@@ -70,28 +72,40 @@ pub(crate) fn reap_orphaned_group_stores_in(cache_dir: &Path) -> Result<GroupSto
         return Ok(report);
     }
     let Some(named) = named_groups(&cache_dir.join(WORKSPACES_DIR)) else {
-        tracing::debug!("a workspace's group is unknown; keeping every group retrieval store");
+        tracing::debug!("a workspace's group is unknown; keeping every group directory");
         return Ok(report);
     };
+    crate::store_lock::purge_reaped(&groups_dir);
     for entry in crate::store_gc::read_dir(&groups_dir)?.flatten() {
         let group_dir = entry.path();
-        let store = group_dir.join(GROUP_LANCE_DIR);
-        if named.contains(entry.file_name().to_string_lossy().as_ref()) || !store.is_dir() {
+        if named.contains(entry.file_name().to_string_lossy().as_ref()) || !group_dir.is_dir() {
             continue;
         }
         let Ok(lock) = crate::store_lock::try_acquire_lock_as(&group_dir, LockHolder::Maintenance) else {
             tracing::debug!(group = %group_dir.display(), "group is locked by another process; skipping");
             continue;
         };
-        let bytes = dir_size(&store)?;
-        std::fs::remove_dir_all(&store).map_err(|source| GcError::Io {
-            path: store.clone(),
-            source,
-        })?;
+        // One group that cannot be removed (a file held open on Windows, a protected directory) ~keep
+        // is left for the next run; it must not keep the other groups, or the blob GC, from running. ~keep
+        let removed = dir_size(&group_dir).and_then(|bytes| {
+            crate::store_lock::remove_dir_under_lock(&group_dir)
+                .map(|()| bytes)
+                .map_err(|source| GcError::Io {
+                    path: group_dir.clone(),
+                    source,
+                })
+        });
         drop(lock);
-        report.reaped += 1;
-        report.bytes_freed += bytes;
-        tracing::info!(group = %group_dir.display(), bytes, "reaped the retrieval store of a group no workspace names");
+        match removed {
+            Ok(bytes) => {
+                report.reaped += 1;
+                report.bytes_freed += bytes;
+                tracing::info!(group = %group_dir.display(), bytes, "reaped a group no workspace names");
+            }
+            Err(error) => {
+                tracing::warn!(group = %group_dir.display(), %error, "could not reap a group no workspace names; kept");
+            }
+        }
     }
     Ok(report)
 }
@@ -102,6 +116,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::store_layout::GROUP_LANCE_DIR;
 
     /// `cache/` with a group store per name in `groups`, each holding a few bytes.
     fn cache_with_groups(groups: &[&str]) -> (tempfile::TempDir, PathBuf) {
@@ -142,11 +157,38 @@ mod tests {
         assert_eq!(report.reaped, 1);
         assert!(report.bytes_freed > 0);
         assert!(store_of(&cache, "live").exists(), "a named group keeps its store");
-        assert!(!store_of(&cache, "gone").exists(), "no workspace names it");
         assert!(
-            cache.join(GROUPS_DIR).join("gone").exists(),
-            "only the store goes, not the group directory"
+            !cache.join(GROUPS_DIR).join("gone").exists(),
+            "no workspace names it: the whole group directory goes"
         );
+    }
+
+    /// A group's index is reaped with the group: a deleted repository leaves no group directory.
+    #[test]
+    fn the_index_of_a_group_no_workspace_names_is_reaped_with_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("cache");
+        for group in ["live", "gone"] {
+            let index = cache.join(GROUPS_DIR).join(group).join(crate::index::INDEX_DIR);
+            fs::create_dir_all(&index).expect("mk group index");
+            fs::write(index.join("journal"), b"rows").expect("write rows");
+        }
+        let memory = cache.join(crate::store_layout::REPOS_DIR).join("gone");
+        fs::create_dir_all(&memory).expect("mk memory");
+        workspace(&cache, "w", Some(r#"{"root":"/gone","updated_unix":0,"group":"live"}"#));
+
+        let report = reap_orphaned_group_stores_in(&cache).expect("reap");
+
+        assert_eq!(report.reaped, 1);
+        assert!(
+            cache
+                .join(GROUPS_DIR)
+                .join("live")
+                .join(crate::index::INDEX_DIR)
+                .exists()
+        );
+        assert!(!cache.join(GROUPS_DIR).join("gone").exists());
+        assert!(memory.exists(), "memory notes are not derived state");
     }
 
     #[test]
@@ -188,6 +230,40 @@ mod tests {
             assert!(!store_of(&cache, "g").exists(), "{component:?} removes the group store");
             assert!(index.exists(), "the group index stays");
         }
+    }
+
+    /// A group that cannot be removed (a held file on Windows, a protected directory) is logged and
+    /// left; the reaper goes on with the others and the caller's blob GC still runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_that_cannot_be_removed_does_not_stop_the_reaper() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, cache) = cache_with_groups(&["stuck", "gone"]);
+        let protected = store_of(&cache, "stuck").join("model-768-x");
+        fs::set_permissions(&protected, fs::Permissions::from_mode(0o555)).expect("chmod");
+
+        let report = reap_orphaned_group_stores_in(&cache);
+
+        for dir in dirs_under(tmp.path()) {
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
+        }
+        let report = report.expect("one group failing is not the reaper failing");
+        assert_eq!(report.reaped, 1);
+        assert!(!cache.join(GROUPS_DIR).join("gone").exists());
+    }
+
+    /// Every directory under `dir`, for restoring permissions before the tempdir is removed.
+    #[cfg(unix)]
+    fn dirs_under(dir: &Path) -> Vec<PathBuf> {
+        let mut out = vec![dir.to_path_buf()];
+        let mut at = 0;
+        while at < out.len() {
+            if let Ok(entries) = fs::read_dir(&out[at]) {
+                out.extend(entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()));
+            }
+            at += 1;
+        }
+        out
     }
 
     #[test]

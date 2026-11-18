@@ -673,7 +673,11 @@ fn bm25_dual_partition_consistency() {
     w.upsert_bm25_file(&rel, &content, &postings).unwrap();
     w.commit().unwrap();
 
-    assert_eq!(db.code_bm25_postings.iter().count(), 3);
+    assert_eq!(
+        db.code_bm25_postings.iter().count(),
+        2,
+        "one row per term of the content"
+    );
     assert_eq!(db.code_bm25_by_path.iter().count(), 2);
     let live = db.bm25_live().unwrap();
     assert_eq!((live.len(), live.hash_of(&content)), (1, Some("h")));
@@ -682,11 +686,12 @@ fn bm25_dual_partition_consistency() {
         .code_bm25_postings
         .raw()
         .prefix(keys::code_bm25_postings_prefix("spawn"))
-        .map(|g| {
+        .flat_map(|g| {
             let (k, v) = g.into_inner().unwrap();
-            let (key, ordinal) = keys::parse_code_bm25_posting_chunk(&k).unwrap();
-            let (tf, doclen) = keys::parse_code_bm25_posting_value(&v).unwrap();
-            (key, ordinal, tf, doclen)
+            let key = keys::parse_code_bm25_posting_content(&k).unwrap();
+            keys::code_bm25_posting_entries(&v)
+                .map(move |(ordinal, tf, doclen)| (key, ordinal, tf, doclen))
+                .collect::<Vec<_>>()
         })
         .collect();
     spawn_docs.sort();
@@ -700,7 +705,7 @@ fn bm25_dual_partition_consistency() {
     assert_eq!(db.view().bm25_stats(), Some((4, 8)));
     assert_eq!(
         db.code_bm25_postings.iter().count(),
-        3,
+        2,
         "one content, one set of postings"
     );
 
@@ -713,7 +718,7 @@ fn bm25_dual_partition_consistency() {
     assert_eq!(db.view().bm25_stats(), Some((2, 4)));
     assert_eq!(
         db.code_bm25_postings.iter().count(),
-        3,
+        2,
         "the sibling path still holds the content, so its postings stay"
     );
     assert_eq!(db.code_bm25_by_path.iter().count(), 2);

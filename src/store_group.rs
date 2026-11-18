@@ -129,8 +129,9 @@ pub(super) fn open_index_for_writer(
     holder: LockHolder,
 ) -> Result<(IndexDb, bool), StoreError> {
     let group = open_group_for_writer(root, holder)?;
-    let view_id = group.allocate_view_id(&workspace_key(root), view)?;
-    let db = group.open_view(view_id, &memory_store_dir(root), false)?;
+    let claim = group.claim_view(&workspace_key(root), view)?;
+    let view_id = claim.id();
+    let db = group.open_claimed(claim, &memory_store_dir(root), false)?;
     if view_dir.join(crate::index::INDEX_DIR).exists() {
         if db.adopt_legacy_view_notes(view_dir)? {
             crate::index::durability::discard_index(view_dir)?;
@@ -199,10 +200,11 @@ pub(super) fn open_index_read_only(
             Err(error) => return Err(error),
         },
     };
-    let Some(view_id) = group.view_id(&workspace_key(root), view)? else {
+    let Some(claim) = group.claim_existing_view(&workspace_key(root), view)? else {
         return Ok((None, !index.files.is_empty()));
     };
-    let db = group.open_view(view_id, &memory_store_dir(root), true)?;
+    let view_id = claim.id();
+    let db = group.open_claimed(claim, &memory_store_dir(root), true)?;
     // A view with no file map yet claims nothing, so it is read as it stands, as a view with a
     // database of its own is. ~keep
     let claims_nothing = index.group_incarnation == 0 && index.files.is_empty() && index.generation == 0;
@@ -236,6 +238,6 @@ pub(super) fn reopen_view(root: &Path, view: &str) -> Result<IndexDb, IndexError
             source: std::io::Error::other(other.to_string()),
         },
     })?;
-    let view_id = group.allocate_view_id(&workspace_key(root), view)?;
-    group.open_view(view_id, &memory_store_dir(root), false)
+    let claim = group.claim_view(&workspace_key(root), view)?;
+    group.open_claimed(claim, &memory_store_dir(root), false)
 }
