@@ -31,6 +31,7 @@ fn scan_resolves_intra_file_references_for_javascript() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -84,6 +85,7 @@ fn scan_resolves_cross_file_references_for_typescript() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
@@ -133,6 +135,7 @@ fn resolved_references_do_not_conflate_same_named_symbols_across_files() {
         &cfg,
         ScanSource::WorkingTree,
         basemind::scanner::EmbedMode::Inline,
+        basemind::retrieval_wiring::backend(),
     )
     .unwrap();
 
