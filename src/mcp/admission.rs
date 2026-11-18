@@ -25,6 +25,25 @@ pub(crate) enum Admission {
     Heavy { _permit: OwnedSemaphorePermit },
 }
 
+tokio::task_local! {
+    /// The admission of the tool call running in this task, set by [`holding`]. A call's body runs
+    /// on the blocking pool ([`super::adapter`]), which a dropped or aborted handler future does not
+    /// stop, so the blocking closure takes a clone and the permit is released only when both the
+    /// handler and the work it started have ended.
+    static HELD: Arc<Admission>;
+}
+
+/// Run `work` as the call `admission` admitted: blocking work it starts keeps the permit alive
+/// (see [`HELD`]).
+pub(crate) async fn holding<F: std::future::Future>(admission: Admission, work: F) -> F::Output {
+    HELD.scope(Arc::new(admission), work).await
+}
+
+/// The admission of the call running in this task, for blocking work that must hold its permit.
+pub(crate) fn held() -> Option<Arc<Admission>> {
+    HELD.try_with(Arc::clone).ok()
+}
+
 /// Process-scoped controller injected into every daemon-hosted MCP server connection.
 pub(crate) struct HeavyAdmission {
     permits: Arc<Semaphore>,

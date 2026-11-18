@@ -62,12 +62,6 @@ pub(crate) struct ServerState {
     /// Who this session is to the agent tools: set for a daemon-hosted relay session only.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) agents: Option<std::sync::Arc<super::AgentContext>>,
-    /// Whether this server advertises the lean three-tool surface (see [`super::lean`]). Resolved
-    /// ONCE at construction from `BASEMIND_MCP_LEAN` (the value does not change mid-session), so the
-    /// decision is stable and per-server rather than a per-request global-env read — which lets
-    /// several servers with different surfaces coexist in one process (integration tests). The
-    /// in-memory test serve overrides it directly.
-    pub(crate) lean: std::sync::atomic::AtomicBool,
     /// Milliseconds an offload-eligible call may run before it becomes a task
     /// ([`super::tasks::TASK_THRESHOLD`]). Per-server so the in-memory test serve can lower it to
     /// exercise the task path without a genuinely slow call.
@@ -89,7 +83,6 @@ impl ServerState {
             agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             agents: None,
-            lean: std::sync::atomic::AtomicBool::new(super::lean::lean_mode_enabled()),
             task_threshold_ms: std::sync::atomic::AtomicU64::new(super::tasks::TASK_THRESHOLD.as_millis() as u64),
         }
     }

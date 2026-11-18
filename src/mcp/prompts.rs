@@ -8,8 +8,8 @@
 //!
 //! The router is built by the `#[prompt_router]` macro into `Self::prompt_router()` and stored on
 //! [`super::BasemindServer`]; `list_prompts` / `get_prompt` in `super` delegate to it manually
-//! (basemind hand-writes its `ServerHandler` impl for lean-mode, so it cannot use the blanket
-//! `#[prompt_handler]` macro, which would regenerate `get_info`).
+//! (basemind hand-writes its `ServerHandler` impl, so it cannot use the blanket `#[prompt_handler]`
+//! macro, which would regenerate `get_info`).
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{PromptMessage, Role};

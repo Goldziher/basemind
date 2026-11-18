@@ -195,6 +195,21 @@ impl Workspace {
         published
     }
 
+    /// [`publish_store`](Self::publish_store) only when `store` maps the workspace differently from
+    /// the map served now; `None` when it does not, and nothing is replaced or bumped.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn publish_store_if_changed(&self, store: Store) -> Option<Arc<MapCache>> {
+        let cache = Arc::new(
+            self.cache
+                .load_full()
+                .refreshed(&store, budget_bytes_from(&self.config.resources))?,
+        );
+        *self.store_write() = store;
+        self.cache.store(Arc::clone(&cache));
+        self.note_index_changed();
+        Some(cache)
+    }
+
     /// The deferred in-RAM map preload of a workspace opened with its map warming
     /// ([`Workspace::wait_for_warm`]): build the map from every indexed blob, publish it, open the
     /// warm gate every map-reading call waits on, then build the map's term index so the first

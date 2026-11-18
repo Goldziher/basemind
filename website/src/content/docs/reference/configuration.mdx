@@ -449,7 +449,6 @@ Read directly rather than mapped from a config key:
 | `BASEMIND_BLAME_MAX_BYTES` / `BASEMIND_BLAME_MAX_LINES` | Size limits past which `git_blame` refuses a file (defaults 1 MiB and 5000 lines). |
 | `BASEMIND_PARSE_TIMEOUT_MS` | Hard ceiling on one tree-sitter parse, in milliseconds (default 5000). |
 | `BASEMIND_GRAMMAR_OFFLINE` | Any non-empty value other than `0` stops basemind downloading tree-sitter grammars. |
-| `BASEMIND_MCP_LEAN` | Advertises three lean wrapper tools in `tools/list` instead of the full tool list. |
 | `BASEMIND_COMMS_DIR` | Overrides the comms directory. The daemon's files (singleton socket, `daemon.log`, `http.addr`, the comms store) are in its protocol-generation subdirectory, `g1/`. Keep the path short: the socket is `<dir>/g1/comms.sock`, and a Unix socket path is limited to 103 bytes on macOS and 107 on Linux. |
 | `BASEMIND_HTTP_ADDR` | `host:port` for the opt-in HTTP front-end (needs `BASEMIND_ALLOW_HTTP`). Unset, the daemon binds `127.0.0.1:51786`, or an OS-assigned port when that is in use, as it is when a daemon of another protocol generation runs; the bound address is the first line of `http.addr`. A value set here is bound as given or not at all. |
 | `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` | Seconds a coordination request waits for the broker's reply (default 10). Forwarded work is exempt. |

@@ -11,7 +11,7 @@ use crate::engine::refs::calls::{index_for_refs, run_find_callers, run_find_refe
 use crate::engine::refs::impls::run_find_implementations;
 use crate::engine::refs::intel::run_goto_definition;
 use crate::engine::refs::matching::Matching;
-use crate::engine::stale::flag_call_sites;
+use crate::engine::stale::flag_listed;
 use crate::engine::types::refs::{
     CodeRefsParams, CodeRefsResult, DependentsResponse, FindCallersParams, FindCallersResponse,
     FindImplementationsParams, FindReferencesParams, GotoDefinitionParams,
@@ -98,7 +98,7 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
                         cursor: p.cursor,
                     },
                     || ws.lifecycle_notice(),
-                    |hits| flag_call_sites(ws, &cache, hits),
+                    |hits| flag_listed(ws, &cache, hits),
                 )
                 .map(CodeRefsResult::References)
             }
@@ -123,7 +123,10 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
                 &cache,
                 || ws.lifecycle_notice(),
             )
-            .map(CodeRefsResult::Implementations)
+            .map(|mut implementations| {
+                flag_listed(ws, &cache, &mut implementations.hits);
+                CodeRefsResult::Implementations(implementations)
+            })
         }
         Relation::Importers => {
             if p.path.is_some() {
@@ -166,12 +169,16 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
 /// store ([`run_find_callers`]).
 fn run_callers(ws: &Workspace, params: FindCallersParams) -> Result<FindCallersResponse, EngineError> {
     ws.wait_map_ready();
-    let store = ws.store_read();
-    let idx = index_for_refs(&store)?;
     let cache = ws.cache.load_full();
-    run_find_callers(&store, &*idx, IndexedFiles::of(ws), &cache, params, || {
-        ws.lifecycle_notice()
-    })
+    let mut callers = {
+        let store = ws.store_read();
+        let idx = index_for_refs(&store)?;
+        run_find_callers(&store, &*idx, IndexedFiles::of(ws), &cache, params, || {
+            ws.lifecycle_notice()
+        })?
+    };
+    flag_listed(ws, &cache, &mut callers.hits);
+    Ok(callers)
 }
 
 /// Body of `code_refs` relation `importers`: a heuristic reverse lookup over every file's imports.

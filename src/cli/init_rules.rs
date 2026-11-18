@@ -86,7 +86,7 @@ impl Capability {
                     r#"`code_refs {"name":"parse_config"}` (add `"relation":"implementations"` or `"importers"`)"#,
                 ),
                 (
-                    "Find a string, identifier or comment",
+                    "Find a string, identifier or comment in code, markdown, config or data files",
                     r#"`code_grep {"pattern":"cache_root("}` (literal; add `"regex":true` for a regex)"#,
                 ),
                 (
@@ -121,7 +121,7 @@ impl Capability {
                 r#"`agent_inbox {}` / `agent_threads {"query":"…"}` / `agent_post {"subject":"…","body":"…"}`"#,
             )],
             Capability::DocumentsRag => &[(
-                "Search documents (PDFs, Office, markdown, config and data files; the code tools cover code only)",
+                "Search documents by meaning (PDFs, Office, markdown, notebooks)",
                 r#"`docs_search {"query":"how releases are versioned"}`"#,
             )],
             Capability::SemanticSearch => &[(

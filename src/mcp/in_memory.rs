@@ -69,15 +69,7 @@ fn build_support_bits(root: &Path) -> Result<SupportBits> {
 ///
 /// Intended for integration tests only — gated behind `feature = "test-support"`.
 pub async fn serve_in_memory(root: &Path, view: &str) -> Result<tokio::io::DuplexStream> {
-    serve_in_memory_inner(root, view, None).await
-}
-
-/// Like [`serve_in_memory`], but forces the lean tool surface on (`lean = true`) or off
-/// (`lean = false`) for THIS server, independent of the `BASEMIND_MCP_LEAN` process env — so a lean
-/// and a full server can coexist in one test process without the env race the child-process serve
-/// avoided by isolation.
-pub async fn serve_in_memory_lean(root: &Path, view: &str, lean: bool) -> Result<tokio::io::DuplexStream> {
-    serve_in_memory_inner(root, view, Some(lean)).await
+    serve_in_memory_configured(root, view, None).await
 }
 
 /// Like [`serve_in_memory`], but an offload-eligible call becomes a SEP-2663 task after
@@ -88,17 +80,12 @@ pub async fn serve_in_memory_with_task_threshold(
     view: &str,
     threshold: std::time::Duration,
 ) -> Result<tokio::io::DuplexStream> {
-    serve_in_memory_configured(root, view, None, Some(threshold)).await
-}
-
-async fn serve_in_memory_inner(root: &Path, view: &str, lean: Option<bool>) -> Result<tokio::io::DuplexStream> {
-    serve_in_memory_configured(root, view, lean, None).await
+    serve_in_memory_configured(root, view, Some(threshold)).await
 }
 
 async fn serve_in_memory_configured(
     root: &Path,
     view: &str,
-    lean: Option<bool>,
     task_threshold: Option<std::time::Duration>,
 ) -> Result<tokio::io::DuplexStream> {
     // Mirror the old in-process `serve` fallback: hold the write lock when free, else open read-only
@@ -115,11 +102,6 @@ async fn serve_in_memory_configured(
         ..ServerOptions::default()
     };
     let server = BasemindServer::new_with_options(store, root.to_path_buf(), config, repo, git_cache, options);
-    if let Some(lean) = lean {
-        // ~keep Override the env-resolved default BEFORE the server handles any request. Each server
-        // ~keep owns its own `ServerState.lean`, so this never races a sibling in-memory server.
-        server.state.lean.store(lean, std::sync::atomic::Ordering::Relaxed);
-    }
     if let Some(threshold) = task_threshold {
         server.state.task_threshold_ms.store(
             u64::try_from(threshold.as_millis()).unwrap_or(u64::MAX),

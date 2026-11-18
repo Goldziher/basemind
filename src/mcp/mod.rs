@@ -41,7 +41,6 @@ pub mod in_memory;
 #[cfg(test)]
 mod index_view_tests;
 pub(crate) use crate::engine::l1_cache;
-mod lean;
 #[cfg(all(test, feature = "memory"))]
 mod memory_tests;
 mod notifications;
@@ -75,6 +74,7 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::task_manager::TaskManager;
 
+use crate::engine::workspace::BootScan;
 use crate::store::Store;
 
 pub(crate) use crate::engine::MapCache;
@@ -82,7 +82,7 @@ pub(crate) use crate::engine::Workspace;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub use agent_context::AgentContext;
 #[cfg(feature = "test-support")]
-pub use in_memory::{serve_in_memory, serve_in_memory_lean, serve_in_memory_with_task_threshold};
+pub use in_memory::{serve_in_memory, serve_in_memory_with_task_threshold};
 pub(crate) use state::{ServedWorkspace, ServerState};
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -128,7 +128,7 @@ impl HostedReadStack {
             forwards_writes: true,
             ..options.into()
         };
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &open);
+        let plan = crate::engine::workspace::boot_plan(&store, &open);
         let agent_id = identity::resolve_agent_id(&store.root);
         let telemetry_dir = store.basemind_dir.clone();
         let (git_history, work_pin) =
@@ -144,12 +144,13 @@ impl HostedReadStack {
         let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
         history_sync::request(&warden.shared);
-        if needs_initial_scan {
-            background::spawn_initial_scan(Arc::clone(&warden));
-        } else if defer_warm {
-            background::spawn_cache_warm(Arc::clone(&warden));
+        match plan.scan {
+            BootScan::Initial => background::spawn_initial_scan(Arc::clone(&warden)),
+            BootScan::CatchUp => background::spawn_catch_up(Arc::clone(&warden), plan.defer_warm),
+            BootScan::None if plan.defer_warm => background::spawn_cache_warm(Arc::clone(&warden)),
+            BootScan::None => {}
         }
-        tracing::info!(root = %root.display(), needs_initial_scan, "daemon hosting read stack for workspace");
+        tracing::info!(root = %root.display(), scan = ?plan.scan, "daemon hosting read stack for workspace");
         Self {
             _watcher: watcher,
             shared,
@@ -328,7 +329,7 @@ impl BasemindServer {
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
         let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
-        let (needs_initial_scan, defer_warm) = crate::engine::workspace::boot_plan(&store, &options.into());
+        let plan = crate::engine::workspace::boot_plan(&store, &options.into());
         let basemind_dir = store.basemind_dir.clone();
         let shared = Arc::new(Workspace::new(
             store,
@@ -356,10 +357,10 @@ impl BasemindServer {
             };
             watcher = Some(Arc::new(watcher_guard));
             history_sync::request(&state.shared);
-            if needs_initial_scan {
+            if plan.scan == BootScan::Initial {
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
-                if defer_warm {
+                if plan.defer_warm {
                     background::spawn_cache_warm(Arc::clone(&state));
                 }
                 background::spawn_background_gc(Arc::clone(&state.shared));
@@ -379,13 +380,6 @@ impl BasemindServer {
     /// How long an offload-eligible call may run before it is answered with a task handle.
     pub(crate) fn task_threshold(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.state.task_threshold_ms.load(std::sync::atomic::Ordering::Relaxed))
-    }
-
-    /// Whether this server advertises the lean three-tool surface. Resolved once at construction
-    /// (see [`ServerState::lean`]) and read here per request, so the decision is per-server rather
-    /// than a global-env read.
-    pub(crate) fn lean_enabled(&self) -> bool {
-        self.state.lean.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Assemble the full tool router (every feature-gated tool group). Pure and argument-free —
@@ -506,9 +500,9 @@ impl BasemindServer {
         }
     }
 
-    /// Names of every tool this server advertises via `tools/list` (the full router, ignoring the
-    /// `BASEMIND_MCP_LEAN` wrapper mode). Exposed for the `tests/cli_parity/` guard, which asserts
-    /// each advertised tool has a CLI counterpart. The set follows the compiled feature flags.
+    /// Names of every tool this server advertises via `tools/list`. Exposed for the
+    /// `tests/cli_parity/` guard, which asserts each advertised tool has a CLI counterpart. The set
+    /// follows the compiled feature flags.
     pub fn tool_names(&self) -> Vec<String> {
         self.tool_router
             .list_all()

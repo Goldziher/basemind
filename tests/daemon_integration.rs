@@ -1471,6 +1471,7 @@ async fn daemon_backed_references_and_implementations_equal_the_writer_session()
         .expect("daemon-hosted MCP transport ready");
     let token =
         http_frontend::published_token(&generation_dir(&comms_dir)).expect("the daemon publishes its bearer token");
+    await_settled(&addr, &token, &repo).await;
     let (total, pages) = hosted_paginated(&addr, &token, &repo, json!({"name": "get_arg", "limit": 40})).await;
     assert_eq!(
         total, truth_refs["total"],
@@ -1681,4 +1682,81 @@ fn a_daemon_of_this_generation_starts_beside_a_pre_generation_daemon_and_leaves_
 
     done.store(true, Ordering::SeqCst);
     released_daemon.join().expect("released daemon thread");
+}
+
+/// Wait until a hosted answer carries no lifecycle notice: the stack has warmed its map and finished
+/// the catch-up pass it runs over a populated index.
+async fn await_settled(addr: &str, token: &str, repo: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for id in 1.. {
+        let response = hosted_tool_call(
+            addr,
+            token,
+            repo,
+            "settle-reader",
+            id,
+            "code_symbols",
+            json!({ "name": "x" }),
+        )
+        .await;
+        if response["result"]["structuredContent"].get("notice").is_none() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the hosted stack never settled: {response}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Poll `code_symbols {name}` through the daemon's hosted HTTP front-end until it lists `name`. Only
+/// reads: nothing here asks for a rescan, so a hit means the daemon caught up on its own.
+async fn await_symbol(comms_dir: &Path, repo: &Path, name: &str, bound: Duration) {
+    let addr = http_frontend::await_http_ready(&generation_dir(comms_dir), HTTP_READY)
+        .await
+        .expect("daemon-hosted MCP transport ready");
+    let token =
+        http_frontend::published_token(&generation_dir(comms_dir)).expect("the daemon publishes its bearer token");
+    let deadline = Instant::now() + bound;
+    for id in 1.. {
+        let response = hosted_tool_call(
+            &addr,
+            &token,
+            repo,
+            "catch-up-reader",
+            id,
+            "code_symbols",
+            json!({ "name": name }),
+        )
+        .await;
+        if response["result"]["structuredContent"]["total"] == json!(1) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "`{name}` was never indexed without a rescan call: {response}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A daemon that opens a workspace over a populated index catches up on what changed while no daemon
+/// watched it (an idle exit, then a `git checkout` or an edit): a symbol added meanwhile is found
+/// with no `index_rescan` call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_daemon_catches_up_on_edits_made_while_it_was_down() {
+    const FOUND_BOUND: Duration = Duration::from_secs(120);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let daemon = Daemon::start(&comms_dir);
+    await_symbol(&comms_dir, &repo, "alpha", FOUND_BOUND).await;
+    daemon.stop();
+
+    std::fs::write(repo.join("b.rs"), b"pub fn beta_added_while_down() {}\n").expect("write b.rs");
+
+    let daemon = Daemon::start(&comms_dir);
+    await_symbol(&comms_dir, &repo, "beta_added_while_down", FOUND_BOUND).await;
+    daemon.stop();
 }

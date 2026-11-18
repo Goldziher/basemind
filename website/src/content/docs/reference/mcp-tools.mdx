@@ -226,8 +226,8 @@ The server emits no MCP logging notifications; use `daemon.log` and `RUST_LOG` f
 Besides the tools, basemind serves a small set of MCP resources. They are listed on demand
 (`resources/list`, `resources/templates/list`), so they add nothing to the always-loaded prompt.
 Each read runs the same code as the matching tool, so the body equals the tool result, including the
-code-only policy: an outline of a non-code file errors with "not indexed". They are served in lean
-mode, over the daemon stdio relay and over the HTTP front-end.
+code-only policy: an outline of a non-code file errors with "not indexed". They are served over
+the daemon stdio relay and over the HTTP front-end.
 
 | URI | Backing call |
 |---|---|

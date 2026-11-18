@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:2563d86524d4e20a67b3ebc08d48d9575915f917aa7ff07661e7c5f43a845e2c
-Source-Hash: blake3:020e00400901c88d82d3c9448bb2a0c2ddf8af7aa9204c2a6bf1a794bea85230
+Content-Hash: blake3:023f2218bbe73268dc133c2dda864cb02ef9865270ab24990c0627f4733a8edb
+Source-Hash: blake3:e9ce4c3282c460bc11b11666bc7a7c2a9337b6c57ccb90f607c6ab77e97ab9ba
 Schema-Version: v1
 -->
 
@@ -87,7 +87,7 @@ code_outline {"path":"src/mcp/tools.rs"}
   at `find_files`.
 - `path` is repo-relative with forward slashes. `line`, `end_line` and `column` are 1-based.
 - `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
-  not both. A body over 128 KiB is cut after a whole line and flagged `truncated`
+  not both. A body over 128 KiB is cut at a line end (a single longer line inside it) and flagged `truncated`
   (`omitted_bytes` is what was left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file changed since it was
   indexed and was read as it is now; a file deleted since the scan is an error naming
   `index_rescan`.

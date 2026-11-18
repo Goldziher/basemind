@@ -86,6 +86,44 @@ impl Writer {
         let report = self.ws.rescan(paths, embed, false)?;
         Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
     }
+
+    /// Whether the catch-up should stop before its next step: the daemon is draining, or the pool no
+    /// longer holds the workspace (evicted while the map warmed), which a scan would reopen only to
+    /// publish to a stack nobody serves.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    fn catch_up_moot(&self) -> bool {
+        if let Some(pool) = &self.pool {
+            let key = crate::store::workspace_key(&self.ws.root);
+            return pool.scan_cancel().is_cancelled() || !pool.accessed().iter().any(|hot| hot.key == key);
+        }
+        false
+    }
+
+    /// The catch-up pass ([`spawn_catch_up`]): a whole-tree pass without embedding, reported as
+    /// [`scan`](Self::scan) reports, or `None` when it was cancelled. A hosted stack then takes the
+    /// pool's file map only when it differs from the one it serves
+    /// ([`Workspace::publish_store_if_changed`]): a publish bumps the generations every cursor is
+    /// bound to, and an unchanged tree must not cut a session's paging short. The comparison is with
+    /// the map, not the pass's counts, so a write another path made since the stack opened is taken.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    fn catch_up(&self) -> Result<Option<(usize, usize, usize)>, EngineError> {
+        if let Some(pool) = &self.pool {
+            let (stats, cancelled) = pool
+                .hosted_rescan(&self.ws.root, None, false, false, false)
+                .map_err(|error| EngineError::internal(format!("host rescan: {error}")))?;
+            if cancelled {
+                return Ok(None);
+            }
+            let store = pool
+                .read_store(&self.ws.root)
+                .map_err(|error| EngineError::internal(format!("reopen read-only store: {error}")))?;
+            if let Some(cache) = self.ws.publish_store_if_changed(store) {
+                warm_terms(&cache);
+            }
+            return Ok(Some((stats.scanned, stats.updated, stats.removed)));
+        }
+        self.scan(None, EmbedMode::Deferred).map(Some)
+    }
 }
 
 /// Boot-time initial index build for an empty index, spawned once from `BasemindServer::new`.
@@ -152,6 +190,65 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
                 run_background_gc(&writer.ws);
             }
         });
+    });
+}
+
+/// Boot-time catch-up of a daemon-hosted stack built over a populated index
+/// ([`BootScan::CatchUp`](crate::engine::workspace::BootScan::CatchUp)): the edits made while no
+/// watcher ran (the stack shed, the daemon gone, a `git checkout` in between) are indexed without
+/// anyone calling `index_rescan`.
+///
+/// The map warm (`warm_first`) runs first so the pass refreshes a full map, then a whole-tree pass
+/// through the pool, which judges every file by its stat and hash as `index_rescan {}` does and
+/// coalesces with a client's rescan of the same tree. The workspace reports `rescanning` from the
+/// moment the stack is served until that pass has published its file map; a pass that changed
+/// anything is followed, as the initial scan is, by a detached embedding pass. The host's work pin,
+/// when it lends one (a workspace with a git-history index), keeps the daemon up meanwhile; the
+/// pool's drain token stops the pass, and a pass the daemon no longer needs is skipped.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
+    let writer = Writer::of(&state);
+    let rescanning = writer.ws.mark_rescan();
+    let pin = writer.ws.work_pin.as_ref().map(|pin| pin());
+    spawn_logged("catch-up scan task panicked", move || {
+        if warm_first {
+            writer.ws.warm();
+        }
+        if writer.catch_up_moot() {
+            tracing::debug!("catch-up skipped: the daemon is draining or the workspace was evicted");
+            return;
+        }
+        let started = std::time::Instant::now();
+        let outcome = writer.catch_up();
+        drop(rescanning);
+        let changed = match outcome {
+            Ok(None) => {
+                tracing::debug!("catch-up cancelled: the daemon is draining");
+                false
+            }
+            Ok(Some((scanned, updated, removed))) => {
+                tracing::info!(
+                    scanned,
+                    updated,
+                    removed,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "catch-up scan complete"
+                );
+                updated + removed > 0
+            }
+            Err(error) => {
+                tracing::warn!(%error, "catch-up scan failed");
+                false
+            }
+        };
+        if changed {
+            spawn_logged("catch-up embedding pass task panicked", move || {
+                let _pin = pin;
+                if let Err(error) = writer.scan(None, EmbedMode::Inline) {
+                    tracing::warn!(%error, "catch-up embedding pass failed");
+                }
+            });
+        }
     });
 }
 
@@ -248,10 +345,9 @@ fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync:
             let _runtime = handle.enter();
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
             let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
-                use std::sync::atomic::Ordering;
-                writer.ws.rescan_active.store(true, Ordering::Relaxed);
+                let rescanning = writer.ws.mark_rescan();
                 let outcome = writer.scan(Some(paths), EmbedMode::Inline);
-                writer.ws.rescan_active.store(false, Ordering::Relaxed);
+                drop(rescanning);
                 match outcome {
                     Ok((scanned, updated, removed)) => {
                         tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")

@@ -80,9 +80,9 @@ impl BasemindServer {
         title = "Read a symbol or line span",
         description = "Use to read the source of one function or type, or an exact line span, \
         instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a \
-        `line`..`end_line` span. A body over 128 KiB is cut after a whole line and flagged \
-        `truncated`: read on from `end_line` + 1. `stale` means the file changed since it was \
-        indexed and the symbol was found by parsing it as it is now. \
+        `line`..`end_line` span. A body over 128 KiB is cut, at a line end if it can, and flagged \
+        `truncated`: read on from `end_line` + 1. `stale`: the file changed since indexing; the \
+        symbol was found by parsing it now. \
         Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
         annotations(
             read_only_hint = true,
@@ -103,9 +103,8 @@ impl BasemindServer {
         description = "Use instead of `rg`/`grep` to find exact text (a string, identifier or \
         comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is \
         literal unless `regex` is true. `hits` maps each file to its hits: `line`, `text` and the \
-        `symbol` it sits in; a hit in a file edited since it was indexed has `stale` and no symbol. \
-        `skipped_files` counts files that could not be searched. A `path` or `language` no indexed \
-        file has is an error. \
+        `symbol` it sits in; a hit in a file edited since indexing has `stale` and no symbol. \
+        `skipped_files` counts unsearchable files; `total` counts hits from `cursor` on. A `path` or `language` no indexed file has is an error. \
         Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
         annotations(
             read_only_hint = true,

@@ -27,6 +27,12 @@ async fn git_blame_validates_its_span_and_limit() {
 
     let past_the_end = call_err(&client, "git_blame", json!({ "path": "src/outline.rs", "line": 9000 })).await;
     assert!(past_the_end.contains("out of range"), "{past_the_end}");
+
+    let absent = call_err(&client, "git_blame", json!({ "path": "src/absent.rs" })).await;
+    assert!(
+        absent.starts_with("`git_blame`: no file `src/absent.rs` at "),
+        "a whole-file blame of a path the revision lacks names the path, as a span does: {absent}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

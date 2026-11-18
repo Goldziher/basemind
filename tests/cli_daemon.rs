@@ -128,13 +128,15 @@ impl Daemon {
     }
 }
 
-/// Block until the daemon has loaded the workspace: until then a forwarded answer carries a
-/// `warming_up` notice the in-process call (which loads the map before answering) never shows.
+/// Block until the daemon has loaded the workspace and caught up on the tree: until then a
+/// forwarded answer carries a `warming_up` or `rescanning` notice the in-process call (which loads
+/// the map before answering and runs no catch-up) never shows.
 fn wait_until_warm(env: &Env) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let out = env.run(&["--json", "code", "outline", "a.rs"]);
-        if code(&out) == 0 && !answer(&out).contains("\"warming_up\"") {
+        let settled = !answer(&out).contains("\"warming_up\"") && !answer(&out).contains("\"rescanning\"");
+        if code(&out) == 0 && settled {
             return;
         }
         assert!(

@@ -890,9 +890,29 @@ async fn mcp_server_exercises_representative_tools() {
             json!({ "key": "smoke_key", "value": "hello" }),
         ))
         .await;
-    let _ = service
+    let read = service
         .call_tool(call_params("memory_search", json!({ "key": "smoke_key" })))
-        .await;
+        .await
+        .expect("memory_search key");
+    let missing = service
+        .call_tool(call_params("memory_search", json!({ "key": "decision/nope" })))
+        .await
+        .expect("memory_search missing key");
+    #[cfg(feature = "memory")]
+    {
+        assert_eq!(
+            read.structured_content.as_ref().map(|note| &note["value"]),
+            Some(&json!("hello"))
+        );
+        assert_eq!(
+            missing.structured_content,
+            Some(json!({ "key": "decision/nope", "found": false })),
+            "a missing note is an object, never `null`: MCP types structuredContent as an object"
+        );
+        assert_structured_matches_text(&missing);
+    }
+    #[cfg(not(feature = "memory"))]
+    let _ = (read, missing);
     let listing = service
         .call_tool(call_params("memory_search", json!({})))
         .await
@@ -1227,16 +1247,15 @@ async fn mcp_server_exercises_representative_tools() {
         "a substring match names the trait each hit implements: {body}"
     );
 
-    let body = decode_text(
+    let message = error_text(
         &service
             .call_tool(call_params("code_symbols", json!({ "name": "", "limit": 100 })))
             .await
             .expect("code_symbols(empty)"),
     );
-    let results = body.get("results").and_then(Value::as_array).expect("results");
     assert!(
-        results.is_empty(),
-        "code_symbols with empty needle must return 0 results, got {results:?}"
+        message.contains("`name` is empty"),
+        "code_symbols with an empty name is refused, as code_grep with an empty pattern is: {message}"
     );
 
     let body = decode_text(
@@ -1948,19 +1967,68 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
     let _ = service.cancel().await;
 }
 
-/// Spawn `basemind serve` against `root`, optionally setting `BASEMIND_MCP_LEAN`, and return the
-/// connected rmcp client service.
-async fn spawn_serve(root: &Path, lean: Option<&str>) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    // Force the lean surface per-server (env-independent) so a lean and a full server can coexist
-    // in this one test process. Mirrors `lean_mode_enabled`'s truthiness for the tested values.
-    let lean_on = lean.is_some_and(|v| {
-        let v = v.trim();
-        !(v.is_empty()
-            || v.eq_ignore_ascii_case("0")
-            || v.eq_ignore_ascii_case("off")
-            || v.eq_ignore_ascii_case("false"))
-    });
-    let transport = basemind::mcp::serve_in_memory_lean(root, "working", lean_on)
+/// MCP types `structuredContent` as an object. A host that validates the result schema rejects any
+/// other value, so every answer of every verb tool must be one, including "nothing found" answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_answer_carries_an_object_as_structured_content() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+    let _ = service
+        .call_tool(call_params("memory_save", json!({ "key": "k/one", "value": "v" })))
+        .await;
+    let calls = [
+        ("code_outline", json!({ "path": "a.rs" })),
+        ("code_symbols", json!({ "name": "alpha" })),
+        ("code_symbols", json!({ "name": "no_such_symbol_anywhere" })),
+        ("code_read", json!({ "path": "a.rs", "symbol": "alpha" })),
+        ("code_grep", json!({ "pattern": "alpha" })),
+        ("code_grep", json!({ "pattern": "no such text anywhere" })),
+        ("code_search", json!({ "query": "alpha" })),
+        ("code_refs", json!({ "name": "alpha" })),
+        (
+            "code_refs",
+            json!({ "name": "Drawable", "relation": "implementations" }),
+        ),
+        ("find_files", json!({ "query": "a.rs" })),
+        ("docs_search", json!({ "query": "alpha" })),
+        ("git_log", json!({})),
+        ("git_blame", json!({ "path": "a.rs" })),
+        ("git_diff", json!({})),
+        ("memory_search", json!({ "key": "k/one" })),
+        ("memory_search", json!({ "key": "k/none" })),
+        ("memory_search", json!({ "prefix": "k/" })),
+        ("memory_search", json!({ "query": "v" })),
+        ("index_status", json!({})),
+        ("index_rescan", json!({ "paths": ["a.rs"] })),
+    ];
+    let mut answered = 0;
+    for (tool, args) in calls {
+        let result = service
+            .call_tool(call_params(tool, args.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("{tool} {args}: {error}"));
+        if result.is_error == Some(true) {
+            continue;
+        }
+        answered += 1;
+        assert!(
+            result.structured_content.as_ref().is_some_and(Value::is_object),
+            "{tool} {args}: structuredContent must be an object: {:?}",
+            result.structured_content
+        );
+    }
+    assert!(
+        answered >= 14,
+        "the sweep must reach the tools every build serves: {answered}"
+    );
+    let _ = service.cancel().await;
+}
+
+/// Spawn `basemind serve` against `root` and return the connected rmcp client service.
+async fn spawn_serve(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    let transport = basemind::mcp::serve_in_memory(root, "working")
         .await
         .expect("in-memory serve");
     ().serve(transport).await.expect("rmcp handshake")
@@ -1976,7 +2044,7 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
-    let service = spawn_serve(root, None).await;
+    let service = spawn_serve(root).await;
 
     let escaping = service
         .call_tool(call_params(
@@ -2011,7 +2079,7 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
 async fn serve_auto_scan_reports_index_build_ms_on_status() {
     let dir = build_repo();
     let root = dir.path();
-    let service = spawn_serve(root, None).await;
+    let service = spawn_serve(root).await;
 
     // ~keep Poll for up to 30s: on a loaded Windows runner the boot scan (daemon spawn + named-pipe
     // ~keep comms + scan) can take well over the ~10s a 200-iteration budget allowed, which flaked here.
@@ -2057,7 +2125,7 @@ async fn no_tool_advertises_an_output_schema() {
     let root = dir.path();
     run_scan(root);
 
-    let server = spawn_serve(root, None).await;
+    let server = spawn_serve(root).await;
     let tools = server.list_all_tools().await.expect("list tools");
 
     for name in WRITING_TOOLS {
@@ -2121,143 +2189,13 @@ async fn no_tool_advertises_an_output_schema() {
     let _ = server.cancel().await;
 }
 
-/// W5 slice 3: the lean MCP surface is STRICTLY opt-in.
-///
-/// * `BASEMIND_MCP_LEAN=1` → exactly the three wrapper tools are advertised, and
-///   `invoke_tool { code_symbols }` returns the same payload as a direct `code_symbols` call.
-/// * flag UNSET → the full surface is advertised unchanged (the verb tools, and `code_symbols` is
-///   callable directly).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
-    let dir = build_repo();
-    let root = dir.path();
-    run_scan(root);
-
-    let full = spawn_serve(root, None).await;
-    let full_tools = full.list_all_tools().await.expect("list tools (full)");
-    let full_names: Vec<&str> = full_tools.iter().map(|t| t.name.as_ref()).collect();
-    // The surface is the verb tools plus, under `comms`, the three deferred agent tools. A count
-    // that creeps up is a regression, not growth: asserted as a ceiling plus the always-on names,
-    // rather than a floor that any addition would satisfy.
-    let ceiling = basemind::mcp::params::VERB_TOOLS.len() + basemind::mcp::agent_tools::AGENT_TOOLS.len();
-    assert!(
-        full_tools.len() <= ceiling,
-        "the surface must stay at {ceiling} tools or fewer, got {}: {full_names:?}",
-        full_tools.len()
-    );
-    for verb in basemind::mcp::params::VERB_TOOLS {
-        assert!(
-            full_names.contains(verb),
-            "default surface must advertise the always-on `{verb}` tool: {full_names:?}"
-        );
-    }
-    for &removed in basemind::mcp::params::RETIRED_TOOLS {
-        assert!(
-            !full_names.contains(&removed),
-            "the removed mode-dispatched `{removed}` tool must not be advertised: {full_names:?}"
-        );
-    }
-    assert!(
-        !full_names.contains(&"invoke_tool"),
-        "default surface must NOT expose the lean wrappers: {full_names:?}"
-    );
-
-    let direct = decode_text(
-        &full
-            .call_tool(call_params("code_symbols", json!({ "name": "Greet", "limit": 10 })))
-            .await
-            .expect("direct code_symbols"),
-    );
-    let _ = full.cancel().await;
-
-    let lean = spawn_serve(root, Some("1")).await;
-    let lean_tools = lean.list_all_tools().await.expect("list tools (lean)");
-    let mut lean_names: Vec<&str> = lean_tools.iter().map(|t| t.name.as_ref()).collect();
-    lean_names.sort_unstable();
-    assert_eq!(
-        lean_names,
-        vec!["get_tool_schema", "invoke_tool", "list_tools"],
-        "lean mode advertises exactly the three wrapper tools"
-    );
-
-    let listing = decode_text(
-        &lean
-            .call_tool(call_params("list_tools", json!({})))
-            .await
-            .expect("lean list_tools"),
-    );
-    let listed = listing.get("tools").and_then(Value::as_array).expect("tools array");
-    assert!(
-        listed
-            .iter()
-            .any(|t| t.get("name").and_then(Value::as_str) == Some("code_symbols")),
-        "lean list_tools should surface the real `code_symbols` tool: {listing}"
-    );
-
-    let schema = decode_text(
-        &lean
-            .call_tool(call_params("get_tool_schema", json!({ "tool_name": "code_symbols" })))
-            .await
-            .expect("lean get_tool_schema"),
-    );
-    assert_eq!(
-        schema.get("name").and_then(Value::as_str),
-        Some("code_symbols"),
-        "schema echoes the tool name: {schema}"
-    );
-    assert!(
-        schema.get("input_schema").is_some(),
-        "schema carries the input_schema: {schema}"
-    );
-
-    let via_invoke = decode_text(
-        &lean
-            .call_tool(call_params(
-                "invoke_tool",
-                json!({
-                    "tool_name": "code_symbols",
-                    "tool_input": { "name": "Greet", "limit": 10 }
-                }),
-            ))
-            .await
-            .expect("lean invoke_tool"),
-    );
-    assert_eq!(
-        via_invoke, direct,
-        "invoke_tool result must match a direct code_symbols call"
-    );
-
-    let bad = lean
-        .call_tool(call_params(
-            "invoke_tool",
-            json!({ "tool_name": "definitely_not_a_tool", "tool_input": {} }),
-        ))
-        .await;
-    assert!(bad.is_err(), "invoke_tool rejects unknown tool names");
-
-    let inexact = lean
-        .call_tool(call_params(
-            "invoke_tool",
-            json!({ "tool_name": "code_symbols", "tool_input": { "mode": "symbols", "name": "Greet" } }),
-        ))
-        .await
-        .expect("lean invoke_tool with a leftover mode");
-    let message = error_text(&inexact);
-    assert!(
-        message.contains("unknown field `mode`"),
-        "the wrapped tool's own argument check must run through invoke_tool: {message}"
-    );
-
-    let _ = lean.cancel().await;
-}
-
 /// 0.8.0: the server advertises reusable prompt templates and renders them with arguments.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prompts_are_listed_and_rendered_with_arguments() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
-    let server = spawn_serve(root, None).await;
+    let server = spawn_serve(root).await;
 
     let prompts = server.list_all_prompts().await.expect("list_all_prompts");
     let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
@@ -2355,7 +2293,7 @@ async fn completes_prompt_arguments_from_the_code_map() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
-    let server = spawn_serve(root, None).await;
+    let server = spawn_serve(root).await;
 
     let symbols = server
         .complete_prompt_argument("trace-symbol", "symbol", "al", None)
@@ -2652,7 +2590,7 @@ async fn workspace_grep_finds_a_rare_token_past_the_old_scan_cap() {
     let dir = build_wide_repo(2_100, RARE);
     let root = dir.path();
     run_scan(root);
-    let service = spawn_serve(root, None).await;
+    let service = spawn_serve(root).await;
 
     let body = decode_text(
         &service
@@ -2697,7 +2635,7 @@ async fn paging_a_grep_one_hit_at_a_time_reconstructs_the_whole_result() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
-    let service = spawn_serve(root, None).await;
+    let service = spawn_serve(root).await;
 
     let whole = decode_text(
         &service
@@ -3125,7 +3063,7 @@ async fn every_advertised_tool_has_a_replay_decision() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
-    let server = spawn_serve(root, None).await;
+    let server = spawn_serve(root).await;
     let tools = server.list_all_tools().await.expect("list tools");
     assert!(tools.len() >= REPLAY_SAFE_TOOLS.len(), "the server lists its tools");
 

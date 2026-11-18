@@ -191,8 +191,8 @@ src/
 │   ├── savings.rs          — token-savings heuristics, keyed by tool name (rows recorded
 │   │                         under the old domain:mode keys are mapped to it)
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer; the key is the tool name
-│   └── toon.rs, lean.rs, notifications.rs, completions.rs, prompts.rs, background.rs,
-│       daemon_forward.rs, identity.rs — TOON/lean output shaping, notifications,
+│   └── toon.rs, notifications.rs, completions.rs, prompts.rs, background.rs,
+│       daemon_forward.rs, identity.rs — TOON output shaping, notifications,
 │       daemon-forward plumbing for Seam B
 ├── engine/                 — the engine API (ADR-0039): no rmcp type; the MCP shims and the CLI
 │   │                         both run these operations through mcp/adapter.rs

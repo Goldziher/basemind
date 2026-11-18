@@ -159,8 +159,9 @@ pub(crate) enum GrepTruncation {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct WorkspaceGrepResponse {
-    /// Exact hit count across the whole scanned corpus — not just the returned page. Exceeds the
-    /// hits listed when `limit` or the token budget cut the page; `next_cursor` continues.
+    /// Exact hit count from the cursor position on (the whole scanned corpus on a first page), not
+    /// just the returned page. Exceeds the hits listed when `limit` or the token budget cut the
+    /// page; `next_cursor` continues.
     pub total: u32,
     /// True when files were left unread, so `total` does not cover them. Never true because
     /// `limit` cut the page or because the corpus is large: grep scans every candidate file it may

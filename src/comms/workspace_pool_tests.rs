@@ -322,10 +322,8 @@ async fn idle_eviction_stops_hosted_watcher_and_releases_read_stack() {
     pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
         .expect("scan workspace");
 
-    let shared = pool
-        .get_or_build_serve_state(workspace.path(), no_history())
-        .await
-        .expect("build hosted read stack");
+    // ~keep Settled: the catch-up pass holds the stack until it ends, as any scan of it would.
+    let shared = hosted_stack(&pool, workspace.path()).await;
     let weak = std::sync::Arc::downgrade(&shared.workspace);
     drop(shared);
 
@@ -539,12 +537,23 @@ fn a_path_that_resolves_to_the_filesystem_root_is_refused() {
 }
 
 /// Build (or rebuild) `root`'s hosted read stack through `pool`, with no git-history index, as every
-/// plain-workspace fixture uses.
+/// plain-workspace fixture uses. Returns once the stack's boot work (map warm, catch-up scan) has
+/// settled: an answer read before that carries a lifecycle notice.
 async fn hosted_stack(pool: &std::sync::Arc<WorkspacePool>, root: &std::path::Path) -> crate::mcp::ServedWorkspace {
-    pool.get_or_build_serve_state(root, no_history())
+    let shared = pool
+        .get_or_build_serve_state(root, no_history())
         .await
-        .expect("build hosted read stack")
+        .expect("build hosted read stack");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while shared.workspace.lifecycle() != crate::engine::workspace::Lifecycle::Ready {
+        assert!(std::time::Instant::now() < deadline, "the hosted stack never settled");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    shared
 }
+
+#[path = "workspace_pool_catchup_tests.rs"]
+mod catchup;
 
 /// A hosted stack reads the writer's index while a scan holds the writer store: its store borrows the
 /// writer's index handle, so a reference read neither waits for the scan nor falls back to anything.

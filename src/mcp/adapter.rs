@@ -43,8 +43,18 @@ impl From<EngineError> for McpError {
 
 /// Run `body` on a blocking thread: an operation reads the store, the disk and the in-RAM map
 /// synchronously, which must not park a runtime worker. A panic in it resumes on the caller.
+///
+/// The body holds the admission of the call it runs for ([`super::admission::held`]): dropping the
+/// awaiting future does not stop a blocking thread, so the permit must outlive the work, not the
+/// handler.
 pub(super) async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
-    match tokio::task::spawn_blocking(body).await {
+    let held = super::admission::held();
+    match tokio::task::spawn_blocking(move || {
+        let _held = held;
+        body()
+    })
+    .await
+    {
         Ok(value) => value,
         Err(join) => std::panic::resume_unwind(join.into_panic()),
     }
@@ -56,9 +66,13 @@ pub(super) async fn blocking<T: Send + 'static>(body: impl FnOnce() -> T + Send 
 async fn blocking_answer(
     body: impl FnOnce() -> Result<CallToolResult, McpError> + Send + 'static,
 ) -> Result<CallToolResult, McpError> {
-    tokio::task::spawn_blocking(body)
-        .await
-        .unwrap_or_else(|join| Err(McpError::internal_error(format!("tool task failed: {join}"), None)))
+    let held = super::admission::held();
+    tokio::task::spawn_blocking(move || {
+        let _held = held;
+        body()
+    })
+    .await
+    .unwrap_or_else(|join| Err(McpError::internal_error(format!("tool task failed: {join}"), None)))
 }
 
 /// `op`'s answer as a tool result.
@@ -160,6 +174,40 @@ mod tests {
             .await
             .expect("a body that returns is answered");
         assert_eq!(answered.is_error, Some(false));
+    }
+
+    /// A cancelled `code_search` drops its handler future, but the body keeps running on the
+    /// blocking pool. Its heavy permit must stay taken until the body ends, or each retry of a
+    /// timed-out call would start one more concurrent model run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_dropped_call_keeps_its_heavy_permit_until_its_blocking_body_ends() {
+        use super::super::admission::{HeavyAdmission, WorkClass, holding};
+
+        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
+        let permit = admission.admit(WorkClass::Heavy).await.expect("the one permit");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let call = tokio::spawn(holding(
+            permit,
+            blocking_answer(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                Ok(CallToolResult::success(Vec::new()))
+            }),
+        ));
+        started_rx.await.expect("the body started");
+        call.abort();
+        assert!(call.await.is_err(), "the handler was dropped");
+
+        assert!(
+            admission.admit(WorkClass::Heavy).await.is_err(),
+            "the body still runs, so its permit is still taken"
+        );
+        release_tx.send(()).expect("release the body");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while admission.admit(WorkClass::Heavy).await.is_err() {
+            assert!(std::time::Instant::now() < deadline, "the permit was never released");
+        }
     }
 
     #[test]

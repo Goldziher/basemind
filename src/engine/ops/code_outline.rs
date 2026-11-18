@@ -42,13 +42,26 @@ impl Workspace {
             (indexed_file(self, &store, "code_outline", &p.path)?, entry, l1)
         };
 
+        let max_bytes = self.config.scan.max_file_bytes;
+        let live = freshness::load(&file, (&entry).into(), max_bytes)
+            .map_err(|reason| freshness::unloadable("code_outline", &p.path, reason, max_bytes))?;
+        // A page of an edited file is a page of what it holds now, which no index generation
+        // describes: its cursor is bound to those bytes too.
+        let snapshot = if live.fresh {
+            generation
+        } else {
+            let digest = crate::hashing::hash_bytes(&live.bytes);
+            generation ^ u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]])
+        };
         let skip = match p.cursor.as_ref() {
             Some(cursor) => {
-                let (offset, snapshot) = cursor.decode_in_memory()?;
-                if snapshot != generation {
-                    return Err(EngineError::invalid_argument(
-                        "`code_outline`: the index changed since this cursor was issued. Call again without `cursor`.",
-                    ));
+                let (offset, issued) = cursor.decode_in_memory()?;
+                if issued != snapshot {
+                    return Err(EngineError::invalid_argument(if live.fresh {
+                        "`code_outline`: the index changed since this cursor was issued. Call again without `cursor`."
+                    } else {
+                        "`code_outline`: the file changed since this cursor was issued. Call again without `cursor`."
+                    }));
                 }
                 offset as usize
             }
@@ -56,9 +69,6 @@ impl Workspace {
         };
         let limit = p.limit.unwrap_or(OUTLINE_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
 
-        let max_bytes = self.config.scan.max_file_bytes;
-        let live = freshness::load(&file, (&entry).into(), max_bytes)
-            .map_err(|reason| freshness::unloadable("code_outline", &p.path, reason, max_bytes))?;
         let l1 = if live.fresh {
             l1
         } else {
@@ -117,7 +127,7 @@ impl Workspace {
             truncated_reason: (imports_omitted > 0).then_some("imports"),
             omitted: imports_omitted,
             imports,
-            next_cursor: (next < total).then(|| Cursor::encode_in_memory(next as u64, generation)),
+            next_cursor: (next < total).then(|| Cursor::encode_in_memory(next as u64, snapshot)),
             notice: self.lifecycle_notice(),
             elapsed_us: elapsed_us(started),
         })

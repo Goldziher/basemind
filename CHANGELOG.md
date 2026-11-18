@@ -54,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `code_symbols {"name":""}` is refused, as an empty `code_grep` pattern is, instead of answering an
+  empty list.
 - **BREAKING (library):** `basemind::scanner::scan`, `scan_paths` and the other public scan entries
   take the `Retrieval` binding as an argument; a library caller passes
   `basemind::retrieval_wiring::backend()`.
@@ -359,6 +361,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `BASEMIND_MCP_LEAN` and its three wrapper tools (`list_tools`, `get_tool_schema`,
+  `invoke_tool`). The verb tools are the surface (ADR-0018); the wrapper path skipped the task
+  offload and cancel handling of a direct call and advertised no `destructiveHint`.
 - The `store_error` exception of `basemind comms stop` and the takeover, and the `last-fatal.json`
   record `basemind comms doctor` reported. No daemon of this generation answers `store_error` or
   writes the record: a broken agent store shows as `agent_store` in `Status`. `--clear-fatal` now
@@ -490,6 +495,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A daemon-hosted workspace opened over a populated index catches up on the edits made while no
+  watcher ran (the daemon's idle exit, a shed read stack, a `git checkout` or `git pull` in
+  between): building the read stack runs the whole-tree stat-and-hash pass of `index_rescan {}` in
+  the background, reporting `rescanning` until it commits. Before, those edits were served stale,
+  unflagged, until each file changed again or someone ran `index_rescan`.
+- `memory_search {key}` for a key no note has answers `{"key":…,"found":false}`. It answered
+  `structuredContent: null`, which MCP types as an object, so a host that validates results
+  rejected the routine "is there a note?" call.
+- A cancelled `code_search` or `docs_search` holds its heavy-call permit until its body, which runs
+  on the blocking pool, has ended. Before, the permit was released at the cancel while the
+  embedding and rerank kept running, so a client retrying a timed-out call ran one more model pass
+  per retry.
+- `code_refs` callers (with `path`) and implementations flag a hit in a file edited since the scan
+  `stale`, as the call sites of a name scan already did.
+- The server instructions and the `basemind init` rules block send exact text in markdown, config
+  and data files to `code_grep`, which searches them; `docs_search` is for documents by meaning.
+- `code_symbols` paging neither repeats nor skips a row when a candidate's outline cannot be read.
+- A `code_outline` cursor into a file edited since the scan is refused once the file changes again,
+  instead of continuing at an offset into different symbols.
+- `git_blame` of a whole file the revision lacks says `no file … at <rev>`, as the span and symbol
+  forms do, instead of an internal error; its only truncation reason is `shallow_clone`.
+- `resources/read` no longer waits for the in-RAM map to build; none of the resources reads it.
+- A forwarded CLI command takes only a response as its call's reply, never a daemon request that
+  happens to carry the same id.
 - The daemon's memory no longer climbs under steady memory, document and code-search writes: every
   LanceDB store of a process caches through one session of 64 MiB (index) and 32 MiB (metadata)
   instead of Lance's default 6 GiB and 1 GiB per store, where each commit's manifest and file

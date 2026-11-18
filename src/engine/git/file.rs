@@ -299,6 +299,17 @@ pub(super) fn run_blame(ws: &Workspace, params: BlameFileParams) -> Result<Blame
             if let Some(too_large) = blame_too_large_response(&params.path, &suspect_sha, &e, started) {
                 return Ok(too_large);
             }
+            // A whole-file blame of a path the revision lacks fails inside gix; say so as the span
+            // and symbol forms do.
+            if let Some(text) = params.path.as_str()
+                && matches!(repo.read_blob_at_rev(&suspect_sha, text), Ok(None))
+            {
+                return Err(EngineError::invalid_argument(format!(
+                    "`git_blame`: no file `{}` at {}",
+                    params.path,
+                    params.rev.as_deref().unwrap_or("HEAD")
+                )));
+            }
             return Err(EngineError::internal(format!("blame: {e}")));
         }
     };
@@ -309,12 +320,8 @@ pub(super) fn run_blame(ws: &Workspace, params: BlameFileParams) -> Result<Blame
         params.max_tokens,
         snapshot,
     );
-    let truncated_reason: Option<&'static str> = match result.truncated_reason.as_deref() {
-        Some("shallow_clone") => Some("shallow_clone"),
-        Some(_) => Some("truncated"),
-        None if repo.is_shallow() => Some("shallow_clone"),
-        None => None,
-    };
+    // A shallow history is the one cut a blame reports: the walk stops at the graft.
+    let truncated_reason = (result.truncated_reason.is_some() || repo.is_shallow()).then_some("shallow_clone");
     Ok(BlameResponse {
         path: result.path.clone(),
         suspect_sha: result.suspect_sha.clone(),
@@ -403,12 +410,8 @@ pub(super) fn run_blame_symbol(ws: &Workspace, params: BlameSymbolParams) -> Res
         params.max_tokens,
         snapshot,
     );
-    let truncated_reason: Option<&'static str> = match result.truncated_reason.as_deref() {
-        Some("shallow_clone") => Some("shallow_clone"),
-        Some(_) => Some("truncated"),
-        None if repo.is_shallow() => Some("shallow_clone"),
-        None => None,
-    };
+    // A shallow history is the one cut a blame reports: the walk stops at the graft.
+    let truncated_reason = (result.truncated_reason.is_some() || repo.is_shallow()).then_some("shallow_clone");
     Ok(BlameSymbolResponse {
         path: result.path.clone(),
         suspect_sha: result.suspect_sha.clone(),

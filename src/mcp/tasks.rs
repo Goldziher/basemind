@@ -103,7 +103,8 @@ fn matches_call(table: &[&str], name: &str, arguments: Option<&serde_json::Map<S
 
 /// Dispose of the tool's child task after a cancellation. The tool's token is always cancelled so a
 /// cancel-aware handler unwinds on its own; a pure read ([`CANCEL_AWARE_READS`]) is also aborted so its
-/// guards (comms link, admission permit) drop immediately instead of at its next poll. Anything else
+/// guards (comms link) drop immediately instead of at its next poll; the admission permit is held on by
+/// the blocking work the call started until that work ends. Anything else
 /// (rescan) is left detached to finish its write.
 fn settle_cancelled<T>(work: tokio::task::JoinHandle<T>, tool_ct: &tokio_util::sync::CancellationToken, abort: bool) {
     tool_ct.cancel();
@@ -156,9 +157,8 @@ pub(super) async fn run_slow_tool(
     let slot = TaskSlot::default();
     let work_slot = Arc::clone(&slot);
     let mut work = tokio::spawn(async move {
-        let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
-        CURRENT_TASK.scope(work_slot, server.tool_router.call(tcc)).await
+        super::admission::holding(admission, CURRENT_TASK.scope(work_slot, server.tool_router.call(tcc))).await
     });
 
     tokio::select! {

@@ -14,7 +14,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::{CallToolResult, JsonObject};
 use serde::de::DeserializeOwned;
 
-use super::{BasemindServer, lean, tasks};
+use super::{BasemindServer, tasks};
 use crate::engine::Workspace;
 use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};
 use crate::engine::types::memory::MemoryDeleteParams;
@@ -28,19 +28,13 @@ pub(super) const LIST_CACHE_TTL_MS: u64 = 300_000;
 
 #[tool_handler(router = self.tool_router.clone())]
 impl ServerHandler for BasemindServer {
-    /// `tools/list`. Default (the overwhelming case): delegate to the static router exactly as
-    /// the `#[tool_handler]` macro would, advertising every real tool. When `BASEMIND_MCP_LEAN`
-    /// is set, advertise only the three lean wrapper tools instead. The macro detects this
-    /// hand-written method and skips generating its own, so the default branch must remain a
-    /// faithful copy of the generated body to keep the unset-flag surface byte-for-byte identical.
+    /// `tools/list`: every tool of the static router, with the SEP-2549 cache hints the generated
+    /// body lacks. The macro detects this hand-written method and skips generating its own.
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
-        if self.lean_enabled() {
-            return Ok(lean::lean_list_tools());
-        }
         Ok(
             rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all())
                 .with_ttl_ms(LIST_CACHE_TTL_MS)
@@ -48,9 +42,8 @@ impl ServerHandler for BasemindServer {
         )
     }
 
-    /// `tools/call`. Default: dispatch through the static router exactly as the macro would.
-    /// In lean mode, route the three wrapper tools through `lean::lean_call_tool`, which itself
-    /// delegates `invoke_tool` back to this same router — no tool logic is duplicated.
+    /// `tools/call`: dispatch through the static router as the macro would, under the call's
+    /// admission (see [`super::admission::holding`]).
     ///
     /// SEP-2663 Tasks: a call that can run long ([`tasks::SLOW_CALLS`]), made by a client that
     /// declared the tasks extension, is answered inline when it finishes within
@@ -61,28 +54,6 @@ impl ServerHandler for BasemindServer {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
-        if self.lean_enabled() {
-            let inner_name = request
-                .arguments
-                .as_ref()
-                .and_then(|arguments| arguments.get("tool_name"))
-                .and_then(serde_json::Value::as_str);
-            let inner_arguments = request
-                .arguments
-                .as_ref()
-                .and_then(|arguments| arguments.get("tool_input"))
-                .and_then(serde_json::Value::as_object);
-            let work_class = if inner_name.is_some_and(|name| tasks::is_slow_tool(name, inner_arguments)) {
-                super::admission::WorkClass::Heavy
-            } else {
-                super::admission::WorkClass::Control
-            };
-            let _admission = match self.heavy_admission.admit(work_class).await {
-                Ok(admission) => admission,
-                Err(busy) => return Ok(rmcp::model::CallToolResponse::Complete(busy.into_tool_result())),
-            };
-            return lean::lean_call_tool(self, &self.tool_router, request, context).await;
-        }
         let work_class = if tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
             super::admission::WorkClass::Heavy
         } else {
@@ -94,9 +65,7 @@ impl ServerHandler for BasemindServer {
             Err(busy) => return Ok(rmcp::model::CallToolResponse::Complete(busy.into_tool_result())),
         };
         if self.cli && CLI_ONLY.contains(&request.name.as_ref()) {
-            let _admission = admission;
-            return self
-                .cli_only_call(&request.name, request.arguments)
+            return super::admission::holding(admission, self.cli_only_call(&request.name, request.arguments))
                 .await
                 .map(rmcp::model::CallToolResponse::Complete);
         }
@@ -105,16 +74,17 @@ impl ServerHandler for BasemindServer {
             return tasks::run_slow_tool(self, request, context, admission, self.task_threshold()).await;
         }
         let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
-        let _admission = admission;
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        // Pure read-only heavy calls race the client's cancellation: the handler future (and the
-        // admission permit it keeps alive alongside) is dropped the moment the request is cancelled.
+        // Pure read-only heavy calls race the client's cancellation: the handler future is dropped
+        // the moment the request is cancelled. The admission permit is held by the call's blocking
+        // work too, so it is released only once that work has ended.
         // Mutating calls never take this branch — see `tasks::CANCEL_AWARE_READS`.
+        let ct = tcc.request_context.ct.clone();
+        let call = super::admission::holding(admission, self.tool_router.call(tcc));
         let response = if cancel_aware {
-            let ct = tcc.request_context.ct.clone();
-            tasks::run_until_cancelled(ct.cancelled(), self.tool_router.call(tcc)).await?
+            tasks::run_until_cancelled(ct.cancelled(), call).await?
         } else {
-            self.tool_router.call(tcc).await?
+            call.await?
         };
         Ok(response)
     }
@@ -150,12 +120,8 @@ impl ServerHandler for BasemindServer {
         self.tasks.cancel_task(&request.task_id)
     }
 
-    /// `get_tool` introspection. Default mirrors the macro (router lookup); in lean mode it
-    /// reports the three wrapper tools so task-support validation matches the advertised surface.
+    /// `get_tool` introspection: the router lookup the macro would generate.
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
-        if self.lean_enabled() {
-            return lean::lean_get_tool(name);
-        }
         self.tool_router.get(name).cloned()
     }
 
@@ -254,14 +220,14 @@ pub(super) fn server_config() -> ServerConfig {
          {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for only the body you need\n\
          - where is X defined: code_symbols {\"name\":\"open_store\"}\n\
          - what calls / implements / imports X: code_refs {\"name\":\"open_store\"}\n\
-         - find a string or comment: code_grep {\"pattern\":\"cache_root(\"} (literal unless \
-         \"regex\":true)\n\
+         - find a string or comment in code, markdown, config and data files: code_grep \
+         {\"pattern\":\"cache_root(\"} (literal unless \"regex\":true)\n\
          - find code by what it does: code_search {\"query\":\"retry a failed upload\"}\n\
          - find a file by name: find_files {\"query\":\"readme\"}\n\
          History: git_log {} (recent commits; add path, query, author, symbol or rev), \
          git_blame {\"path\":\"src/store.rs\",\"symbol\":\"open\"}, git_diff {} (working-tree status; \
          add path, from, to).\n\
-         Documents (markdown, PDFs, config; the code tools cover code only): docs_search \
+         Documents by meaning (PDFs, Office, markdown, notebooks): docs_search \
          {\"query\":\"how releases are versioned\"}.\n\
          Memory shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"}, \
          memory_search {\"query\":\"…\"}.\n\

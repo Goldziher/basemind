@@ -20,7 +20,7 @@ The Basemind tools are always loaded: call them directly, there is no tool searc
 |---|---|
 | Where is X defined | `code_symbols {"name":"parse_config"}` |
 | What calls / implements / imports X | `code_refs {"name":"parse_config"}` (add `"relation":"implementations"` or `"importers"`) |
-| Find a string, identifier or comment | `code_grep {"pattern":"cache_root("}` (literal; add `"regex":true` for a regex) |
+| Find a string, identifier or comment in code, markdown, config or data files | `code_grep {"pattern":"cache_root("}` (literal; add `"regex":true` for a regex) |
 | Read one function or a line span | `code_read {"path":"src/store.rs","symbol":"open"}` |
 | See what a code file contains without opening it | `code_outline {"path":"src/store.rs"}` |
 | Recent commits, a file's history, or a commit search | `git_log {}` / `git_log {"path":"src/store.rs"}` / `git_log {"query":"fix race"}` |
@@ -28,7 +28,7 @@ The Basemind tools are always loaded: call them directly, there is no tool searc
 | Working-tree status, or a file's diff | `git_diff {}` / `git_diff {"path":"src/store.rs"}` |
 | Find a file by a fragment of its name or path | `find_files {"query":"readme"}` |
 | Check the inbox, discover threads, or post to other agents (deferred tools: find them by tool search) | `agent_inbox {}` / `agent_threads {"query":"…"}` / `agent_post {"subject":"…","body":"…"}` |
-| Search documents (PDFs, Office, markdown, config and data files; the code tools cover code only) | `docs_search {"query":"how releases are versioned"}` |
+| Search documents by meaning (PDFs, Office, markdown, notebooks) | `docs_search {"query":"how releases are versioned"}` |
 | Find code by what it does, then read the hit | `code_search {"query":"retry a failed upload with backoff"}` |
 
 When a result is unexpectedly empty call `index_status {}`; after edits call `index_rescan {}`.
