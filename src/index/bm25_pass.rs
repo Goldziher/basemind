@@ -1,23 +1,31 @@
-//! A full pass's BM25 upkeep without walking the whole posting list.
+//! A full pass's BM25 upkeep from what the pass changed, not from a walk of the posting list.
 //!
-//! A full pass used to end with [`IndexDb::sweep_bm25_postings`], which reads every
-//! `code_bm25_postings` key (one per `(term, chunk)` pair, ~8.6 M on a 4 000-file corpus), and
-//! [`IndexDb::recompute_bm25_stats`], which reads every forward row. Both pull the whole keyspace
-//! through the block cache, which on a group database is sized at its 256 MiB ceiling, so every
-//! full pass filled the cache and took a minute in debug builds, whatever had changed.
+//! [`IndexDb::sweep_bm25_postings`] reads every `code_bm25_postings` key (one per `(term, chunk)`
+//! pair, ~8.6 M on a 4 000-file corpus) and [`IndexDb::recompute_bm25_stats`] every forward row of
+//! the view. Both pull the keyspace through the block cache, which a group database opens at its
+//! 256 MiB ceiling, so running them on every full pass filled the cache and took a minute in debug
+//! builds, whatever had changed.
 //!
-//! Every posting a pass can leave dead belongs to a forward row the pass deletes, and the writer
-//! reads those rows before deleting them anyway. While a pass is open ([`IndexDb::begin_bm25_pass`]),
-//! each committed batch hands the ledger the postings its deleted rows named and the change in
-//! `(N, total_len)` its deleted and inserted rows make. [`Bm25Pass::finish`] then retires exactly
-//! those postings and stamps the stats as the stored ones plus the delta.
+//! While a pass is open ([`IndexDb::begin_bm25_pass`]), each committed batch hands the view's
+//! ledger the postings its deleted forward rows named and the change it makes to `(N, total_len)`.
+//! [`Bm25Pass::finish`] retires exactly those postings, under the same group gate and liveness
+//! test as the sweep, and stamps the stats as the stored ones plus the delta.
 //!
-//! The shortcut is taken only when the stored state was exact when the pass began: a `meta`
-//! marker says no forward row has changed outside a completed pass since. A write outside a pass
-//! (an incremental scan, a cleanup) drops the marker in its own batch; a pass drops it at its
-//! start and stamps it only once its retirement and stats are written, so a pass that dies midway
-//! leaves it unset. An unset marker, or a pass whose retired keys outgrow
-//! [`RETIRED_KEYS_CEILING_BYTES`], falls back to the full sweep and recompute.
+//! Two facts decide whether that is sound, and they have different scopes:
+//!
+//! - **The view's stats are exact** (per view). A `meta` marker says no forward row of this view
+//!   changed outside a completed pass since the stats were written: a write outside a pass drops it
+//!   in its own batch, and a pass drops it at its start and stamps it only once finished. A view
+//!   with no forward row at all is exact at zero, which makes a new worktree's first scan cheap.
+//! - **The group's posting list holds no garbage** (per group). A group `meta` row records that a
+//!   sweep is owed. It is set in the same batch as any forward-row delete made outside a pass, by
+//!   [`IndexDb::mark_bm25_sweep_owed`] for deletes made without the writer, and by a pass at its
+//!   start (cleared at its finish), so a pass that dies leaves it set. Any view's next full pass
+//!   that finds it sweeps, then clears it unless someone set it again meanwhile.
+//!
+//! A ledger that saw a staging, decode or commit error is poisoned; one whose retired keys outgrow
+//! [`RETIRED_KEYS_CEILING_BYTES`] overflows. Either way the pass falls back to the sweep and the
+//! recompute, which are exact whatever the failed batch did.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +39,21 @@ use super::{IndexDb, IndexError, META_BM25_DOC_COUNT, META_BM25_TOTAL_LEN};
 /// `meta` marker: the posting list holds no posting this view orphaned and the stored BM25 stats
 /// are exact. Present only between a completed pass and the next forward-row write outside one.
 const META_BM25_EXACT: &[u8] = b"code_bm25_exact";
+
+/// Group `meta`, outside every view's prefix: a token present while the shared posting list may
+/// hold postings no view names.
+pub(crate) const META_BM25_SWEEP_OWED: &[u8] = b"\xffgroup/bm25_sweep_owed";
+
+/// A token no earlier one in this process equals and no other process plausibly picks, so a row
+/// holding it was set by this call.
+pub(crate) fn fresh_token() -> u64 {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+    let mixed = nanos ^ u64::from(std::process::id()).rotate_left(40);
+    mixed.wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed)).max(1)
+}
 
 /// Bytes of retired posting keys one pass may hold for an exact retirement. A pass that replaces
 /// more than this (a mass edit, a branch switch) forgets them and sweeps instead, so the ledger
@@ -177,12 +200,25 @@ impl Bm25PassLedger {
     }
 }
 
+/// How a finished pass brought the BM25 state up to date.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PassOutcome {
+    /// The stats came from the stored base plus the ledger, not a walk of the view's forward rows.
+    pub(crate) stats_from_ledger: bool,
+    /// The whole posting list was swept.
+    pub(crate) swept: bool,
+}
+
 /// An open full pass; see the module docs. Dropping it unfinished (a cancelled or failed pass)
-/// closes the ledger and leaves the exact marker unset, so the next pass sweeps.
+/// closes the ledger and leaves the view's marker unset and the group's sweep owed.
 pub(crate) struct Bm25Pass {
     db: IndexDb,
-    /// Stored `(N, total_len)` when the pass began, when they were exact; `None` means sweep.
+    /// Stored `(N, total_len)` when the pass began, when they were exact; `None` means recompute.
     base: Option<(u64, u64)>,
+    /// The group's owed token as the pass found it: a debt this pass pays with a sweep.
+    owed_before: Option<u64>,
+    /// The owed token this pass set at its begin when none was owed, cleared by its finish.
+    owed_own: Option<u64>,
 }
 
 impl IndexDb {
@@ -191,8 +227,36 @@ impl IndexDb {
         META_BM25_EXACT
     }
 
-    /// Open a full pass: read whether the stored BM25 state is exact, drop the marker, and start
-    /// collecting. An empty posting list is exact at zero, which is what makes a first scan cheap.
+    /// Record that the shared posting list may hold garbage, for forward rows deleted without the
+    /// writer (a rebuild clearing a view's keyspaces).
+    pub(crate) fn mark_bm25_sweep_owed(&self) -> Result<(), IndexError> {
+        Ok(self
+            .meta
+            .raw()
+            .insert(META_BM25_SWEEP_OWED, fresh_token().to_be_bytes())?)
+    }
+
+    fn sweep_owed_token(&self) -> Result<Option<u64>, IndexError> {
+        Ok(self
+            .meta
+            .raw()
+            .get(META_BM25_SWEEP_OWED)?
+            .and_then(|bytes| <[u8; 8]>::try_from(&bytes[..]).ok())
+            .map(u64::from_be_bytes))
+    }
+
+    /// Clear the owed row if it still holds `token`. Under the gate every owed-setting commit holds
+    /// shared, so a debt incurred after `token` was read is never cleared.
+    fn clear_sweep_owed_if(&self, token: u64) -> Result<(), IndexError> {
+        let _exclusive = self.bm25_gate.write();
+        if self.sweep_owed_token()? == Some(token) {
+            self.meta.raw().remove(META_BM25_SWEEP_OWED)?;
+        }
+        Ok(())
+    }
+
+    /// Open a full pass: read whether the view's stats are exact, drop the view's marker, owe the
+    /// group a sweep until the pass finishes, and start collecting.
     pub(crate) fn begin_bm25_pass(&self) -> Result<Bm25Pass, IndexError> {
         self.bm25_pass.reset();
         let stat = |key: &[u8]| -> Result<Option<u64>, IndexError> {
@@ -202,7 +266,7 @@ impl IndexDb {
                 .and_then(|bytes| <[u8; 8]>::try_from(&bytes[..]).ok())
                 .map(u64::from_be_bytes))
         };
-        let base = if self.code_bm25_postings.raw().first_key_value().is_none() {
+        let base = if self.code_bm25_by_path.keys().next().transpose()?.is_none() {
             Some((0, 0))
         } else if self.meta.get(META_BM25_EXACT)?.is_some() {
             match (stat(META_BM25_DOC_COUNT)?, stat(META_BM25_TOTAL_LEN)?) {
@@ -213,8 +277,22 @@ impl IndexDb {
             None
         };
         self.meta.remove(META_BM25_EXACT)?;
+        let owed_before = self.sweep_owed_token()?;
+        let owed_own = match owed_before {
+            Some(_) => None,
+            None => {
+                let own = fresh_token();
+                self.meta.raw().insert(META_BM25_SWEEP_OWED, own.to_be_bytes())?;
+                Some(own)
+            }
+        };
         self.bm25_pass.open.store(true, Ordering::Release);
-        Ok(Bm25Pass { db: self.clone(), base })
+        Ok(Bm25Pass {
+            db: self.clone(),
+            base,
+            owed_before,
+            owed_own,
+        })
     }
 }
 
@@ -229,7 +307,7 @@ impl Bm25Pass {
     /// Retire the postings the pass's deleted rows named and stamp the stats, then mark the state
     /// exact. Falls back to the full sweep and recompute when the pass began inexact or its
     /// ledger overflowed. On an error the marker stays unset.
-    pub(crate) fn finish(self) -> Result<(), IndexError> {
+    pub(crate) fn finish(self) -> Result<PassOutcome, IndexError> {
         let db = &self.db;
         let state = db.bm25_pass.reset();
         let exact = self
@@ -240,20 +318,35 @@ impl Bm25Pass {
                 let len = i64::try_from(len).ok()?.checked_add(state.total_len)?;
                 Some((u64::try_from(n).ok()?, u64::try_from(len).ok()?))
             });
+        // Stats and postings fail over separately: inexact stats need only a recompute of this ~keep
+        // view; the postings need the sweep only when a debt is owed or the tally is incomplete. ~keep
+        let sweep = self.owed_before.is_some() || state.overflowed || state.poisoned;
+        let outcome = PassOutcome {
+            stats_from_ledger: exact.is_some(),
+            swept: sweep,
+        };
+        if sweep {
+            let owed = db.sweep_owed_token()?;
+            drop(state);
+            db.sweep_bm25_postings()?;
+            if let Some(owed) = owed {
+                db.clear_sweep_owed_if(owed)?;
+            }
+        } else {
+            db.retire_bm25_postings(Bm25Candidates(state.retired))?;
+            if let Some(own) = self.owed_own {
+                db.clear_sweep_owed_if(own)?;
+            }
+        }
         match exact {
             Some((n, len)) => {
-                db.retire_bm25_postings(Bm25Candidates(state.retired))?;
                 db.meta.insert(META_BM25_DOC_COUNT, n.to_be_bytes())?;
                 db.meta.insert(META_BM25_TOTAL_LEN, len.to_be_bytes())?;
             }
-            None => {
-                drop(state);
-                db.sweep_bm25_postings()?;
-                db.recompute_bm25_stats()?;
-            }
+            None => db.recompute_bm25_stats()?,
         }
         db.meta.insert(META_BM25_EXACT, [1u8])?;
-        Ok(())
+        Ok(outcome)
     }
 }
 
@@ -266,260 +359,5 @@ impl Drop for Bm25Pass {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::index::view::IndexView;
-    use crate::path::RelPath;
-    use crate::search::bm25::ChunkPosting;
-
-    fn postings(hash: &str, terms: &[&str]) -> Vec<ChunkPosting> {
-        vec![ChunkPosting {
-            chunk_id: format!("{hash}:0"),
-            doclen: u32::try_from(terms.len()).unwrap(),
-            terms: terms.iter().map(|t| ((*t).to_string(), 1)).collect(),
-        }]
-    }
-
-    fn upsert(db: &IndexDb, path: &str, hash: &str, terms: &[&str]) {
-        let mut writer = db.writer();
-        writer
-            .upsert_bm25_file(
-                &RelPath::from(path),
-                &keys::bm25_content_key(hash, "rust", "d"),
-                &postings(hash, terms),
-            )
-            .unwrap();
-        writer.commit().unwrap();
-    }
-
-    fn posting_count(db: &IndexDb) -> usize {
-        db.code_bm25_postings.iter().count()
-    }
-
-    /// What the full sweep and recompute would leave, to compare the ledger's shortcut against.
-    fn swept(db: &IndexDb) -> (usize, Option<(u64, u64)>) {
-        db.sweep_bm25_postings().unwrap();
-        db.recompute_bm25_stats().unwrap();
-        (posting_count(db), db.view().bm25_stats())
-    }
-
-    #[test]
-    fn a_pass_over_an_empty_index_is_exact_and_needs_no_sweep() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = IndexDb::open(dir.path()).unwrap();
-        let pass = db.begin_bm25_pass().unwrap();
-        assert!(pass.is_exact(), "an empty posting list is exact at zero");
-        upsert(&db, "src/a.rs", "a1", &["alpha", "beta"]);
-        upsert(&db, "src/b.rs", "b1", &["beta"]);
-        pass.finish().unwrap();
-        assert_eq!(db.view().bm25_stats(), Some((2, 3)));
-        assert_eq!(posting_count(&db), 3);
-        assert_eq!(swept(&db), (3, Some((2, 3))), "the ledger agrees with a full recompute");
-    }
-
-    #[test]
-    fn a_pass_retires_exactly_the_postings_its_replaced_rows_named() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = IndexDb::open(dir.path()).unwrap();
-        let pass = db.begin_bm25_pass().unwrap();
-        upsert(&db, "src/a.rs", "a1", &["alpha", "beta"]);
-        upsert(&db, "src/b.rs", "b1", &["gamma"]);
-        upsert(&db, "src/c.rs", "a1", &["alpha", "beta"]);
-        pass.finish().unwrap();
-
-        let pass = db.begin_bm25_pass().unwrap();
-        assert!(
-            pass.is_exact(),
-            "the marker the last pass stamped vouches for the stored state"
-        );
-        upsert(&db, "src/a.rs", "a2", &["delta"]);
-        upsert(&db, "src/b.rs", "b2", &["epsilon", "zeta"]);
-        let mut writer = db.writer();
-        writer.remove_bm25_file(&RelPath::from("src/c.rs")).unwrap();
-        writer.commit().unwrap();
-        pass.finish().unwrap();
-
-        assert_eq!(db.view().bm25_stats(), Some((2, 3)));
-        assert_eq!(
-            posting_count(&db),
-            3,
-            "every posting of a1 and b1 is retired; a2 and b2 remain"
-        );
-        assert_eq!(swept(&db), (3, Some((2, 3))), "nothing was left for a sweep to find");
-    }
-
-    #[test]
-    fn a_write_outside_a_pass_or_an_unfinished_pass_makes_the_next_pass_sweep() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = IndexDb::open(dir.path()).unwrap();
-        let pass = db.begin_bm25_pass().unwrap();
-        upsert(&db, "src/a.rs", "a1", &["alpha"]);
-        pass.finish().unwrap();
-
-        upsert(&db, "src/a.rs", "a2", &["beta"]);
-        let pass = db.begin_bm25_pass().unwrap();
-        assert!(
-            !pass.is_exact(),
-            "an incremental write dropped the marker in its own batch"
-        );
-        pass.finish().unwrap();
-        assert_eq!(posting_count(&db), 1, "the fallback sweep retired a1's posting");
-        assert_eq!(db.view().bm25_stats(), Some((1, 1)));
-
-        let pass = db.begin_bm25_pass().unwrap();
-        assert!(pass.is_exact());
-        upsert(&db, "src/a.rs", "a3", &["gamma"]);
-        drop(pass);
-        assert!(!db.bm25_pass.is_open(), "dropping the pass closes the ledger");
-        let pass = db.begin_bm25_pass().unwrap();
-        assert!(!pass.is_exact(), "a pass that never finished left the marker unset");
-        pass.finish().unwrap();
-        assert_eq!(posting_count(&db), 1);
-    }
-
-    /// A posting no forward row names: garbage only a sweep removes, so it shows which path ran.
-    fn plant_orphan(db: &IndexDb) -> Vec<u8> {
-        let orphan = keys::code_bm25_posting("orphan", &keys::bm25_content_key("gone", "rust", "d"), 0).unwrap();
-        db.code_bm25_postings
-            .insert(&orphan, keys::code_bm25_posting_value(1, 1))
-            .unwrap();
-        orphan
-    }
-
-    fn exact_db_with(files: &[(&str, &str, &[&str])]) -> (tempfile::TempDir, IndexDb) {
-        let dir = tempfile::tempdir().unwrap();
-        let db = IndexDb::open(dir.path()).unwrap();
-        let pass = db.begin_bm25_pass().unwrap();
-        for (path, hash, terms) in files {
-            upsert(&db, path, hash, terms);
-        }
-        pass.finish().unwrap();
-        (dir, db)
-    }
-
-    /// M1: a read error partway through a file's forward rows must not leave a delta for deletes
-    /// that were never staged, and must make the pass fall back to the exact recompute and sweep.
-    #[test]
-    fn a_forward_read_error_mid_prefix_forces_the_fallback() {
-        let mut two_chunks = postings("a1", &["alpha"]);
-        two_chunks.push(ChunkPosting {
-            chunk_id: "a1:1".to_string(),
-            doclen: 1,
-            terms: vec![("beta".to_string(), 1)],
-        });
-        let dir = tempfile::tempdir().unwrap();
-        let db = IndexDb::open(dir.path()).unwrap();
-        let pass = db.begin_bm25_pass().unwrap();
-        upsert(&db, "src/b.rs", "b1", &["gamma"]);
-        let mut writer = db.writer();
-        writer
-            .upsert_bm25_file(
-                &RelPath::from("src/a.rs"),
-                &keys::bm25_content_key("a1", "rust", "d"),
-                &two_chunks,
-            )
-            .unwrap();
-        writer.commit().unwrap();
-        pass.finish().unwrap();
-        let orphan = plant_orphan(&db);
-
-        let pass = db.begin_bm25_pass().unwrap();
-        let mut writer = db.writer();
-        writer.fail_forward_read_after = Some(1);
-        assert!(
-            writer
-                .upsert_bm25_file(
-                    &RelPath::from("src/a.rs"),
-                    &keys::bm25_content_key("a2", "rust", "d"),
-                    &postings("a2", &["delta"])
-                )
-                .is_err()
-        );
-        writer.fail_forward_read_after = None;
-        writer
-            .upsert_bm25_file(
-                &RelPath::from("src/c.rs"),
-                &keys::bm25_content_key("c1", "rust", "d"),
-                &postings("c1", &["eps"]),
-            )
-            .unwrap();
-        writer.commit().unwrap();
-        pass.finish().unwrap();
-
-        let stamped = db.view().bm25_stats();
-        assert!(
-            db.code_bm25_postings.get(&orphan).unwrap().is_none(),
-            "a pass that saw a staging error sweeps"
-        );
-        assert_eq!(swept(&db).1, stamped, "the stamped stats equal a recompute");
-    }
-
-    /// M1: a forward row that does not decode is deleted and leaves `N`, but the ledger cannot
-    /// count it, so the pass must recompute rather than stamp a stale `N`.
-    #[test]
-    fn an_undecodable_forward_row_forces_the_recompute() {
-        let (_dir, db) = exact_db_with(&[("src/a.rs", "a1", &["alpha"])]);
-        let corrupt = keys::code_bm25_by_path(
-            &RelPath::from("src/c.rs"),
-            &keys::bm25_content_key("c1", "rust", "d"),
-            0,
-        );
-        db.code_bm25_by_path.insert(&corrupt, vec![0u8]).unwrap();
-        db.recompute_bm25_stats().unwrap();
-        assert_eq!(db.view().bm25_stats().map(|(n, _)| n), Some(2));
-
-        let pass = db.begin_bm25_pass().unwrap();
-        let mut writer = db.writer();
-        writer.remove_bm25_file(&RelPath::from("src/c.rs")).unwrap();
-        writer.commit().unwrap();
-        pass.finish().unwrap();
-
-        let stamped = db.view().bm25_stats();
-        assert_eq!(
-            swept(&db).1,
-            stamped,
-            "the stamped N counts the undecodable row's removal"
-        );
-    }
-
-    /// S3: a commit that reports an error may still have reached the journal, so the pass cannot
-    /// vouch for its tally and must sweep.
-    #[test]
-    fn a_commit_error_during_a_pass_forces_the_fallback() {
-        let (_dir, db) = exact_db_with(&[("src/a.rs", "a1", &["alpha"])]);
-        let orphan = plant_orphan(&db);
-        let pass = db.begin_bm25_pass().unwrap();
-        let mut writer = db.writer();
-        writer
-            .upsert_bm25_file(
-                &RelPath::from("src/a.rs"),
-                &keys::bm25_content_key("a2", "rust", "d"),
-                &postings("a2", &["beta"]),
-            )
-            .unwrap();
-        db.fault.inject_commit_failures(1);
-        assert!(writer.commit().is_err());
-        pass.finish().unwrap();
-        assert!(
-            db.code_bm25_postings.get(&orphan).unwrap().is_none(),
-            "a pass that saw a commit error sweeps"
-        );
-    }
-
-    #[test]
-    fn a_pass_whose_retired_keys_outgrow_the_ceiling_sweeps_instead() {
-        let ledger = Bm25PassLedger::default();
-        let mut delta = Bm25Delta {
-            retired_bytes: RETIRED_KEYS_CEILING_BYTES + 1,
-            ..Bm25Delta::default()
-        };
-        delta.retired.insert([0; keys::BM25_KEY_LEN], vec![vec![1]]);
-        ledger.absorb(delta);
-        assert!(ledger.overflowed());
-        let state = ledger.reset();
-        assert!(
-            state.overflowed && state.retired.is_empty(),
-            "the keys are dropped, not kept"
-        );
-    }
-}
+#[path = "bm25_pass_tests.rs"]
+mod tests;

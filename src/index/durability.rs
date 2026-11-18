@@ -288,6 +288,11 @@ impl IndexDb {
             keyspace.clear(&self.db)?;
         }
         self.bm25_live.invalidate();
+        // The view's forward rows went without the writer; the shared postings they named stay. ~keep
+        #[cfg(feature = "code-search")]
+        if shared {
+            self.mark_bm25_sweep_owed()?;
+        }
         if !shared {
             self.meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
         }

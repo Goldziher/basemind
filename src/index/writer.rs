@@ -24,7 +24,8 @@ pub struct IndexWriter {
     /// same way. Callers batch against [`Self::staged_bytes`]; see
     /// `scanner_index_batch::WorkerIndexBatch`.
     staged_bytes: u64,
-    /// The batch inserts BM25 postings, so its commit holds the group's BM25 gate shared.
+    /// The batch inserts BM25 postings or owes the group a sweep, so its commit holds the group's
+    /// BM25 gate shared.
     writes_postings: bool,
     /// The batch changes this view's BM25 forward rows, so its commit invalidates the live-key cache.
     changes_bm25_forward: bool,
@@ -34,6 +35,9 @@ pub struct IndexWriter {
     /// The batch already stages the drop of the exact-BM25 marker.
     #[cfg(feature = "code-search")]
     bm25_exact_dropped: bool,
+    /// The batch already stages the group's owed sweep.
+    #[cfg(feature = "code-search")]
+    bm25_sweep_owed: bool,
     /// Test-only fault seam: make the next [`Self::upsert_file`] (or `upsert_bm25_file`) stage its
     /// deletes and inserts and *then* fail. The real failures have exactly that shape — a fjall read
     /// error inside `stage_deletes_for`, an `rmp_serde` encode error inside `stage_inserts_for` — and
@@ -129,6 +133,8 @@ impl IndexWriter {
             bm25_delta: super::bm25_pass::Bm25Delta::default(),
             #[cfg(feature = "code-search")]
             bm25_exact_dropped: false,
+            #[cfg(feature = "code-search")]
+            bm25_sweep_owed: false,
             #[cfg(test)]
             fail_after_staging: false,
             #[cfg(all(test, feature = "code-search"))]
@@ -538,14 +544,34 @@ impl IndexWriter {
                 .map(|key| key.map(|key| key.to_vec()))
                 .collect::<Result<_, _>>()?
         };
-        self.changes_bm25_forward |= !keys.is_empty();
+        let deleted = !keys.is_empty();
+        self.changes_bm25_forward |= deleted;
         for key in keys {
             stage_remove(batch, staged_bytes, &db.code_bm25_by_path, key);
         }
         if self.changes_bm25_forward {
             self.drop_bm25_exact_outside_pass();
         }
+        if deleted {
+            self.owe_bm25_sweep_outside_pass();
+        }
         Ok(())
+    }
+
+    /// A forward-row delete outside an open pass leaves its postings for no retirement: stage the
+    /// group's owed sweep into the same batch, once, and hold the posting gate for the commit so a
+    /// sweep that is clearing the debt cannot miss it.
+    #[cfg(feature = "code-search")]
+    fn owe_bm25_sweep_outside_pass(&mut self) {
+        if self.bm25_sweep_owed || self.db.bm25_pass.is_open() {
+            return;
+        }
+        let token = super::bm25_pass::fresh_token().to_be_bytes();
+        let key = super::bm25_pass::META_BM25_SWEEP_OWED;
+        self.batch.insert(self.db.meta.raw(), key.to_vec(), token.to_vec());
+        self.staged_bytes += staged_entry_bytes(key.len(), token.len());
+        self.writes_postings = true;
+        self.bm25_sweep_owed = true;
     }
 
     /// A forward-row write outside an open full pass makes the stored BM25 state unvouched for:
