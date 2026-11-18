@@ -10,15 +10,8 @@ use rmcp::model::{
 };
 use rmcp::tool_handler;
 
-use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolResult, JsonObject};
-use serde::de::DeserializeOwned;
-
+use super::cli_only::CLI_ONLY;
 use super::{BasemindServer, tasks};
-use crate::engine::Workspace;
-use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};
-use crate::engine::types::memory::MemoryDeleteParams;
-use crate::engine::types::search::GetChunkParams;
 
 /// SEP-2549 cache TTL advertised on `tools/list` and `prompts/list`. The advertised tool and prompt
 /// sets are fixed for the lifetime of a server process (they change only with the binary/schema, not
@@ -245,45 +238,4 @@ pub(super) fn server_config() -> ServerConfig {
          agent_inbox and agent_threads (find them by tool search) carry threads of messages; reading \
          marks read, and a subagent passes `as` to keep its own inbox. Skip them when working alone.",
     )
-}
-
-/// The CLI-only commands (`git churn`, `git by-path`, `code chunk`, `memory delete`), which ADR-0018
-/// keeps off the agent surface. A CLI session ([`BasemindServer::for_cli`]) answers them by name,
-/// off `tools/list`; any other session answers them as unknown tools.
-pub(super) const CLI_ONLY: &[&str] = &["git_churn", "git_by_path", "code_chunk", "memory_delete"];
-
-/// `arguments` as the command's params; a mismatch is a usage error, as a verb tool's is.
-fn params<P: DeserializeOwned>(name: &str, arguments: Option<JsonObject>) -> Result<P, McpError> {
-    serde_json::from_value(serde_json::Value::Object(arguments.unwrap_or_default()))
-        .map_err(|error| McpError::invalid_params(format!("`{name}`: {error}"), None))
-}
-
-impl BasemindServer {
-    /// Answer `name`, one of [`CLI_ONLY`], for a CLI session. Any other session never gets here: the
-    /// router answers it as an unknown tool.
-    pub(super) async fn cli_only_call(
-        &self,
-        name: &str,
-        arguments: Option<JsonObject>,
-    ) -> Result<CallToolResult, McpError> {
-        debug_assert!(self.cli && CLI_ONLY.contains(&name));
-        match name {
-            "git_churn" => match params::<HotFilesParams>(name, arguments) {
-                Ok(p) => self.cli_op(p, Workspace::git_churn).await,
-                Err(error) => Err(error),
-            },
-            "git_by_path" => match params::<FindCommitsByPathParams>(name, arguments) {
-                Ok(p) => self.cli_op(p, Workspace::git_by_path).await,
-                Err(error) => Err(error),
-            },
-            "code_chunk" => match params::<GetChunkParams>(name, arguments) {
-                Ok(p) => self.code_chunk_call(p).await,
-                Err(error) => Err(error),
-            },
-            _ => match params::<MemoryDeleteParams>(name, arguments) {
-                Ok(p) => self.memory_delete_call(p).await,
-                Err(error) => Err(error),
-            },
-        }
-    }
 }
