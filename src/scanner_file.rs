@@ -614,7 +614,7 @@ pub fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
 const RACY_WINDOW_NANOS: u64 = 2_000_000_000;
 
 /// The wall clock as nanoseconds since the Unix epoch, saturating like [`mtime_nanos`].
-fn now_nanos() -> i64 {
+pub(crate) fn now_nanos() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
