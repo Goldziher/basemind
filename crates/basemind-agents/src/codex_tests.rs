@@ -567,6 +567,7 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
         [
             format!("mcp_servers.basemind.command={}", toml_string(MCP_COMMAND)).as_str(),
             "mcp_servers.basemind.args=[\"serve\"]",
+            "mcp_servers.basemind.default_tools_approval_mode=\"prompt\"",
         ]
     );
     let env_vars = plan.args.iter().find(|arg| arg.contains("env_vars")).unwrap();
@@ -579,7 +580,13 @@ fn an_mcp_server_becomes_config_overrides_that_forward_the_identity() {
         assert!(plan.env.contains_key(name), "{name} is not exported to the harness");
     }
 
-    assert!(!plan.args.iter().any(|arg| arg.contains("approval")));
+    // Codex 0.169 ran the server's tools unasked under `untrusted` unless the server says
+    // `prompt`; nothing else may name an approval.
+    let approvals: Vec<_> = plan.args.iter().filter(|arg| arg.contains("approval")).collect();
+    assert_eq!(
+        approvals,
+        ["mcp_servers.basemind.default_tools_approval_mode=\"prompt\""]
+    );
     spec.mcp_server.as_mut().unwrap().allow_tools = vec!["agent_post".to_owned()];
     assert!(matches!(
         CodexAdapter.plan_spec(&spec),

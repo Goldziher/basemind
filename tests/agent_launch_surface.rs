@@ -298,13 +298,15 @@ fn the_lead_code_opens_no_listener() {
 }
 
 /// Review 9 condition 3: a lead is non-dumpable by the time it answers, so no process of the user can
-/// open its stdin through `/proc` and write the lead's requests into it. A plain `serve` is the
-/// control: its `/proc` entries are the user's.
+/// open its stdin through `/proc` and write the lead's requests into it, nor read its environment
+/// (the ptrace-mode access check that also guards `mem`). A plain `serve` is the control: the user
+/// opens both. The property is asserted directly, not through `/proc/<pid>` ownership: the kernel
+/// keeps that directory (mode 0555) owned by the task's euid whatever its dumpability
+/// (`task_dump_owner` in `fs/proc/base.c`); only the entries inside it pass to root.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_lead_is_sealed_before_it_answers_and_a_plain_serve_is_not() {
     use std::io::{BufRead as _, Write as _};
-    use std::os::unix::fs::MetadataExt as _;
 
     let layout = Layout::new();
     let sealed = |lead: bool| {
@@ -333,7 +335,7 @@ fn a_lead_is_sealed_before_it_answers_and_a_plain_serve_is_not() {
             .expect("read the answer");
         assert!(answer.contains("\"id\":1"), "{answer}");
         let pid = child.id();
-        let owner = std::fs::metadata(format!("/proc/{pid}")).expect("proc entry").uid();
+        let environ_readable = std::fs::read(format!("/proc/{pid}/environ")).is_ok();
         // Readable whatever the seal: a `serve` started below the lead finds the marker here.
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).expect("comm");
         let writable = std::fs::OpenOptions::new()
@@ -342,12 +344,16 @@ fn a_lead_is_sealed_before_it_answers_and_a_plain_serve_is_not() {
             .is_ok();
         drop(stdin);
         let _ = child.wait();
-        (owner == 0, writable, comm.trim_end() == basemind_agents::HOST_MARKER)
+        (
+            environ_readable,
+            writable,
+            comm.trim_end() == basemind_agents::HOST_MARKER,
+        )
     };
-    assert_eq!(sealed(false), (false, true, false), "the control: a plain serve");
+    assert_eq!(sealed(false), (true, true, false), "the control: a plain serve");
     assert_eq!(
         sealed(true),
-        (true, false, true),
+        (false, false, true),
         "a lead, sealed and named from its main thread"
     );
 }

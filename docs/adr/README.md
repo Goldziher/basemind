@@ -98,7 +98,7 @@ them.
 | [0012](0012-grep-content-prefilter.md) | Per-file trigram bloom prefilter for `code grep` | Accepted |
 | [0013](0013-comms-robustness-idempotency-replay.md) | Comms robustness: correlated requests, bounded waits, idempotent posts, relay replay | Accepted (amended by ADR-0021, ADR-0024, ADR-0030) |
 | [0014](0014-cli-mcp-parity-guard.md) | Executable CLI/MCP parity guard | Accepted (amended by ADR-0018, ADR-0023) |
-| [0015](0015-bounded-document-extraction.md) | Bound document extraction with a thread cap, tombstones and a phase budget | Proposed |
+| [0015](0015-bounded-document-extraction.md) | Bound document extraction with a thread cap, tombstones and a phase budget | Accepted |
 | [0016](0016-shared-base-index-and-worktree-overlays.md) | Shared base index with per-worktree overlays | Superseded by ADR-0028 |
 | [0017](0017-surface-reduction.md) | Surface reduction — remove graph, web, shell, token-saving and review queue | Accepted (amended by ADR-0022) |
 | [0018](0018-mcp-verb-tools.md) | MCP surface — verb tools with exact schemas | Accepted (amended by ADR-0020, ADR-0022, ADR-0030) |
