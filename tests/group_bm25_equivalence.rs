@@ -201,3 +201,117 @@ fn postings_are_shared_by_content_and_retired_when_no_view_holds_them() {
         "the main view no longer scores it"
     );
 }
+
+/// Replace the source files of `to` with those of `from`.
+fn mirror_sources(from: &Path, to: &Path) {
+    for entry in fs::read_dir(to).expect("read worktree") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            fs::remove_file(&path).expect("remove");
+        }
+    }
+    standalone_copy(from, to);
+}
+
+/// A new repository group whose worktrees hold the source files of `roots`, the main one first.
+fn mirror_group(roots: &[&Path], at: &Path) -> Vec<PathBuf> {
+    let main = at.join("main");
+    fs::create_dir_all(&main).expect("main");
+    git(&["init", "-q", "-b", "main"], &main);
+    git(&["config", "user.email", "t@example.com"], &main);
+    git(&["config", "user.name", "Test"], &main);
+    git(&["config", "commit.gpgsign", "false"], &main);
+    standalone_copy(roots[0], &main);
+    git(&["add", "."], &main);
+    git(&["commit", "-qm", "init"], &main);
+    let mut mirrored = vec![main.clone()];
+    for (i, root) in roots.iter().enumerate().skip(1) {
+        let dir = at.join(format!("worktree-{i}"));
+        let branch = format!("b{i}");
+        git(
+            &["worktree", "add", "-q", dir.to_str().expect("utf-8"), "-b", &branch],
+            &main,
+        );
+        mirror_sources(root, &dir);
+        mirrored.push(dir);
+    }
+    mirrored
+}
+
+fn group_rows(store: &Store) -> basemind::index::group_sweep::GroupRows {
+    store
+        .index_db
+        .as_ref()
+        .expect("a writer holds its index")
+        .group_rows()
+        .expect("read the group's rows")
+}
+
+/// The group sweep (ADR-0028 rule 10): after edits, an incremental pass and a worktree removed, a full
+/// pass leaves the group exactly the rows a group built from scratch for the remaining worktrees
+/// holds: symbols, calls, postings and blooms of the contents they name, and rows of no other view.
+#[test]
+fn after_a_full_pass_the_group_holds_exactly_the_rows_of_its_live_views() {
+    basemind::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let roots = group(tmp.path());
+    let config = config(None);
+    for root in &roots {
+        drop(scan_working(root, &config));
+    }
+
+    // Main's f2 is held by main and pruned only: dead once pruned goes. ~keep
+    fs::write(roots[0].join("f2.rs"), source(2, "edited_main")).expect("write");
+    fs::remove_file(roots[0].join("f6.rs")).expect("remove");
+    drop(scan_working(&roots[0], &config));
+    // An incremental pass leaves linked's old f1 for a full pass to collect. ~keep
+    fs::write(roots[1].join("f1.rs"), source(1, "edited_linked")).expect("write");
+    let mut linked = Store::open(&roots[1], VIEW_WORKING).expect("open");
+    basemind::scanner::scan_paths(
+        &roots[1],
+        &mut linked,
+        &config,
+        &[roots[1].join("f1.rs")],
+        EmbedMode::Inline,
+    )
+    .expect("incremental pass");
+    drop(linked);
+    // The pruned worktree is deleted and the reaper removes its workspace. ~keep
+    let pruned_cache = basemind::store_layout::workspace_cache_dir(&roots[2]);
+    git(
+        &["worktree", "remove", "--force", roots[2].to_str().expect("utf-8")],
+        &roots[0],
+    );
+    fs::remove_dir_all(&pruned_cache).expect("reap the workspace");
+
+    let unswept = group_rows(&Store::open(&roots[0], VIEW_WORKING).expect("open"));
+    let main = scan_working(&roots[0], &config);
+    let swept = group_rows(&main);
+    drop(main);
+
+    let mirrored = mirror_group(&[&roots[0], &roots[1]], &tmp.path().join("fresh"));
+    let fresh: Vec<Store> = mirrored.iter().map(|root| scan_working(root, &config)).collect();
+    let expected = group_rows(&fresh[0]);
+
+    for (name, rows) in &expected.shared {
+        let before = unswept.shared[name].len();
+        let after = swept.shared[name].len();
+        assert!(
+            swept.shared[name] == *rows,
+            "{name}: {after} rows after the sweep ({before} before), {} in a fresh group",
+            rows.len()
+        );
+    }
+    assert!(
+        unswept.shared["symbols_by_path"].len() > swept.shared["symbols_by_path"].len(),
+        "the fixture must leave dead contents for the sweep"
+    );
+    assert_eq!(swept.views_with_rows.len(), 2, "the removed worktree's rows are gone");
+    assert_eq!(expected.views_with_rows.len(), 2);
+
+    for (i, root) in roots[..2].iter().enumerate() {
+        let view = Store::open(root, VIEW_WORKING).expect("open");
+        let alone = scan_working(&standalone_copy(root, &tmp.path().join(format!("swept-{i}"))), &config);
+        assert_equivalent(&view, &alone, &format!("view {i} after the group sweep"));
+    }
+}

@@ -636,6 +636,7 @@ pub fn scan_with_observer(
     run_optional_lane(LANE_BM25_STATS, || {
         crate::scanner_flush::finish_bm25_pass(store, config, bm25_pass, true)
     });
+    run_optional_lane(crate::scanner_lanes::LANE_GROUP_SWEEP, || store.sweep_group_logged());
     run_optional_lane(crate::scanner_lanes::LANE_LANCE_MAINTENANCE, || {
         maintain_lance_if_open(store, &filters)
     });

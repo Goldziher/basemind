@@ -81,6 +81,7 @@ mod store_gc_namespaces;
 pub mod store_gc_protect;
 pub mod store_gc_workspace;
 mod store_group_live;
+mod store_group_sweep;
 mod store_hash_refs;
 pub mod store_layout;
 mod store_lock;
