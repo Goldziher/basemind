@@ -21,7 +21,7 @@ use rayon::prelude::*;
 use crate::extract::FileMapL1;
 use crate::index::IndexDb;
 use crate::intel::model::FileResolvedRefs;
-use crate::intel::module_go::GoModules;
+use crate::intel::module_go::{GoModules, is_package_file};
 use crate::intel::module_rust::RustModules;
 use crate::intel::resolver::ProbeSet;
 use crate::intel::stage_budget::BudgetedWriter;
@@ -93,6 +93,14 @@ impl ModuleResolver {
     /// Whether `language` (a TSLP pack name) has a file-level module resolver.
     pub(crate) fn supports(language: &str) -> bool {
         matches!(language, "rust" | "go")
+    }
+
+    /// Whether adding or removing the repo-relative `rel` can change a listing of the repository
+    /// root that a resolver recorded as the probe `""` (a Go package at the module root). The
+    /// ancestor walk of `IndexView::importers_probing` never reaches `""`, so the incremental pass
+    /// probes it once for a batch touching such a path instead of once for every top-level path.
+    pub(crate) fn lists_in_root(rel: &str) -> bool {
+        !rel.contains('/') && is_package_file(rel)
     }
 
     fn for_language(language: &str) -> Option<Self> {
@@ -305,5 +313,14 @@ mod tests {
         assert_eq!(strip_dir("a/b/c.rs", "a"), Some("b/c.rs"));
         assert_eq!(strip_dir("ab/c.rs", "a"), None);
         assert_eq!(strip_dir("c.rs", ""), Some("c.rs"));
+    }
+
+    #[test]
+    fn only_a_top_level_go_package_file_changes_a_root_listing() {
+        assert!(ModuleResolver::lists_in_root("app.go"));
+        assert!(!ModuleResolver::lists_in_root("app_test.go"));
+        assert!(!ModuleResolver::lists_in_root("cmd/main.go"));
+        assert!(!ModuleResolver::lists_in_root("tsconfig.json"));
+        assert!(!ModuleResolver::lists_in_root("main.rs"));
     }
 }
