@@ -265,7 +265,11 @@ config is trusted.
   Code `--allowedTools`, Codex per-tool `approval_mode = "approve"`, OpenCode `allow` permissions;
   other ACP agents refuse them). Codex and OpenCode start none of the user's own MCP servers: a
   launch lists them (`codex mcp list --json` with plugins and apps off; OpenCode's
-  `opencode.json{,c}`) and switches each off by name, or is refused. Claude Code's init frame is checked again every turn. A Codex turn notification
+  `opencode.json{,c}` of its user directory and of the working directory's ancestors and their
+  `.opencode`) and switches each off by name, or is refused. OpenCode's managed configuration and
+  its plugins are the exception (`UserMcpServers`). The user's OpenCode agents are given the
+  launch's permission rules too, since OpenCode applies an agent's own rules after the
+  top-level ones. Claude Code's init frame is checked again every turn. A Codex turn notification
   without the `threadId` its schema requires fails the session, so a sub-agent's turn can neither
   end the session's turn nor escape the turn count.
 - The harness executable and the MCP server's command resolve to absolute paths outside the root,

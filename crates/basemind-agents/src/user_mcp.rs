@@ -27,8 +27,17 @@ const MAX_BYTES: u64 = 1024 * 1024;
 /// The command OpenCode is given for each server it switches off. OpenCode 2.3.2 dropped a
 /// server entry that names `enabled` alone, so the entry is a whole one; it is never run.
 const NEVER_RUN: &str = "/usr/bin/true";
-/// The files OpenCode 2.3.2 reads from its user configuration directory, in its order.
+/// The files OpenCode 2.3.2 reads from a configuration directory and from each ancestor of its
+/// working directory (its `Sr`, checked in the 2.3.2 bundle; it reads no `config.json`).
 const OPENCODE_FILES: [&str; 2] = ["opencode.json", "opencode.jsonc"];
+/// The subdirectories of a configuration directory OpenCode 2.3.2 reads agent Markdown files
+/// from, and whether it descends into their subdirectories (`{agent,agents}/**/*.md`,
+/// `{mode,modes}/*.md`).
+const AGENT_DIRS: [(&str, bool); 4] = [("agent", true), ("agents", true), ("mode", false), ("modes", false)];
+/// How deep below an agent directory the Markdown files are looked for.
+const MAX_AGENT_DEPTH: usize = 16;
+/// How many entries the agent directories of one configuration directory may hold.
+const MAX_AGENT_FILES: usize = 4096;
 
 fn refused(harness: &'static str, reason: impl Into<String>) -> LaunchError {
     LaunchError::UserMcpServers {
@@ -138,70 +147,220 @@ fn check_name(harness: &'static str, name: &str, injected: Option<&str>) -> Resu
     }
 }
 
-/// OpenCode's user configuration directory as the child will resolve it: `$XDG_CONFIG_HOME/opencode`,
-/// else `$HOME/.config/opencode`, from the plan's environment.
-pub(crate) fn opencode_config_dir(env: &BTreeMap<String, OsString>) -> Option<PathBuf> {
-    let absolute = |name: &str| env.get(name).map(PathBuf::from).filter(|path| path.is_absolute());
-    absolute("XDG_CONFIG_HOME")
-        .or_else(|| absolute("HOME").map(|home| home.join(".config")))
+/// OpenCode's user configuration directory as the child will resolve it:
+/// `$XDG_CONFIG_HOME/opencode`, else `$HOME/.config/opencode`, from the plan's environment. An
+/// empty variable counts as unset and a relative one is taken against `cwd`, as OpenCode 2.3.2
+/// does; with neither set the launch is refused, as the user's servers could not be found.
+pub(crate) fn opencode_config_dir(env: &BTreeMap<String, OsString>, cwd: &Path) -> Result<PathBuf, LaunchError> {
+    let set = |name: &str| {
+        env.get(name)
+            .filter(|value| !value.is_empty())
+            .map(|value| cwd.join(value))
+    };
+    set("XDG_CONFIG_HOME")
+        .or_else(|| set("HOME").map(|home| home.join(".config")))
         .map(|dir| dir.join("opencode"))
+        .ok_or_else(|| {
+            refused(
+                "opencode",
+                "neither XDG_CONFIG_HOME nor HOME is set, so the user configuration cannot be read",
+            )
+        })
 }
 
-/// The `mcp` server names of OpenCode's user configuration files in `dir`. A file that cannot
-/// be read or parsed refuses the launch rather than leaving its servers on.
-pub(crate) fn opencode_servers(dir: &Path) -> Result<Vec<String>, LaunchError> {
-    let mut names = Vec::new();
-    for file in OPENCODE_FILES {
-        let path = dir.join(file);
-        let text = match std::fs::metadata(&path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => {
-                return Err(refused(
-                    "opencode",
-                    format!("cannot read the user configuration {file}"),
-                ));
-            }
-            Ok(meta) if meta.len() > MAX_BYTES => {
-                return Err(refused(
-                    "opencode",
-                    format!("the user configuration {file} is over 1 MiB"),
-                ));
-            }
-            Ok(_) => std::fs::read_to_string(&path)
-                .map_err(|_| refused("opencode", format!("cannot read the user configuration {file}")))?,
-        };
-        let document: Value = serde_json::from_str(&strip_jsonc(&text))
-            .map_err(|_| refused("opencode", format!("cannot parse the user configuration {file}")))?;
-        match &document["mcp"] {
-            Value::Null => {}
-            Value::Object(servers) => {
-                for name in servers.keys() {
-                    if !names.contains(name) {
-                        names.push(name.clone());
-                    }
-                }
-            }
-            _ => {
-                return Err(refused(
-                    "opencode",
-                    format!("`mcp` in the user configuration {file} is not an object"),
-                ));
+/// What the launch overrides in the configuration OpenCode merges for it: the user's MCP servers,
+/// each switched off, and the user's agents, each given the launch's permission rules.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct OpenCodeUser {
+    /// MCP server names, in the order first read.
+    pub(crate) servers: Vec<String>,
+    /// Agent names, from the `agent`, `mode` and `agents` keys and from agent Markdown files.
+    pub(crate) agents: Vec<String>,
+}
+
+/// The servers and agents of every configuration OpenCode 2.3.2 merges beneath an inline one:
+/// `opencode.json{,c}` and the agent Markdown files of `global` (its user directory), and of each
+/// ancestor of `cwd` its `opencode.json{,c}` and the same in its `.opencode` directory. The
+/// project-file check refuses those in every ancestor but the home directory, whose files OpenCode
+/// loads when the working directory lies under it. A file that cannot be read or parsed, or a
+/// name that OpenCode would substitute, refuses the launch rather than leaving it in effect.
+/// Managed (system, MDM preferences) and organisation (`.well-known`) configurations are merged
+/// after the inline one and are not read.
+pub(crate) fn opencode_user(global: &Path, cwd: &Path) -> Result<OpenCodeUser, LaunchError> {
+    let mut user = OpenCodeUser::default();
+    read_opencode_dir(global, "the user configuration", &mut user)?;
+    for dir in cwd.ancestors() {
+        for file in OPENCODE_FILES {
+            if let Some(document) = read_opencode_file(&dir.join(file), "an ancestor's", file)? {
+                add_document(&document, file, &mut user)?;
             }
         }
+        read_opencode_dir(&dir.join(".opencode"), "an ancestor's .opencode", &mut user)?;
     }
-    Ok(names)
+    Ok(user)
+}
+
+/// The configuration files and agent Markdown files of one OpenCode configuration directory.
+fn read_opencode_dir(dir: &Path, label: &str, user: &mut OpenCodeUser) -> Result<(), LaunchError> {
+    for file in OPENCODE_FILES {
+        if let Some(document) = read_opencode_file(&dir.join(file), label, file)? {
+            add_document(&document, file, user)?;
+        }
+    }
+    let mut files = 0;
+    for (sub, recursive) in AGENT_DIRS {
+        markdown_agents(&dir.join(sub), "", recursive, 0, &mut files, user)?;
+    }
+    Ok(())
+}
+
+/// The parsed file at `path`, or `None` when there is none.
+fn read_opencode_file(path: &Path, label: &str, file: &str) -> Result<Option<Value>, LaunchError> {
+    let text = match std::fs::metadata(path) {
+        Err(error) if absent(&error) => return Ok(None),
+        Err(_) => return Err(refused("opencode", format!("cannot read {label} {file}"))),
+        Ok(meta) if meta.len() > MAX_BYTES => {
+            return Err(refused("opencode", format!("{label} {file} is over 1 MiB")));
+        }
+        Ok(_) => {
+            std::fs::read_to_string(path).map_err(|_| refused("opencode", format!("cannot read {label} {file}")))?
+        }
+    };
+    serde_json::from_str(&strip_jsonc(&text))
+        .map(Some)
+        .map_err(|_| refused("opencode", format!("cannot parse {label} {file}")))
+}
+
+/// Whether `error` says there is nothing at the path: it, or a directory on the way to it, is
+/// missing, or that directory is a file (a `.opencode` file in an ancestor holds no configuration).
+fn absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// Adds the server and agent names of one configuration document, as OpenCode 2.3.2 normalizes
+/// it: under `mcp`, an entry with a `type` of `local` or `remote` is a server whatever its key,
+/// `servers` otherwise holds the servers by name (the canonical form), `timeout` is a setting,
+/// and an entry naming only `enabled` is dropped; agents are the keys of `agent`, `mode` and
+/// `agents`.
+fn add_document(document: &Value, file: &str, user: &mut OpenCodeUser) -> Result<(), LaunchError> {
+    let not_object = |key: &str| refused("opencode", format!("`{key}` in {file} is not an object"));
+    match &document["mcp"] {
+        Value::Null => {}
+        Value::Object(entries) => {
+            for (key, entry) in entries {
+                let server = matches!(entry["type"].as_str(), Some("local" | "remote"));
+                let enabled_only = entry.is_object() && entry.get("type").is_none() && entry["enabled"].is_boolean();
+                if enabled_only {
+                    continue;
+                }
+                if key == "servers" && !server {
+                    let servers = entry.as_object().ok_or_else(|| not_object("mcp.servers"))?;
+                    for name in servers.keys() {
+                        add_name(&mut user.servers, name)?;
+                    }
+                } else if key != "timeout" || server {
+                    add_name(&mut user.servers, key)?;
+                }
+            }
+        }
+        _ => return Err(not_object("mcp")),
+    }
+    for key in ["agent", "mode", "agents"] {
+        match &document[key] {
+            Value::Null => {}
+            Value::Object(agents) => {
+                for name in agents.keys() {
+                    add_name(&mut user.agents, name)?;
+                }
+            }
+            _ => return Err(not_object(key)),
+        }
+    }
+    Ok(())
+}
+
+/// Adds `name` once. A name holding `{env:` or `{file:` is refused: OpenCode substitutes those
+/// in the file's text before parsing it, so the name it reads is not this one, and the same text
+/// in the inline configuration would be substituted too.
+fn add_name(names: &mut Vec<String>, name: &str) -> Result<(), LaunchError> {
+    if name.contains("{env:") || name.contains("{file:") {
+        return Err(refused(
+            "opencode",
+            "the user configuration names a server or an agent through `{env:` or `{file:`",
+        ));
+    }
+    if !names.iter().any(|known| known == name) {
+        names.push(name.to_owned());
+    }
+    Ok(())
+}
+
+/// The agents of the Markdown files under `dir` (`prefix` is their path below it so far), as
+/// OpenCode 2.3.2 names them: the path below `agent/`, `agents/`, `mode/` or `modes/` without
+/// `.md`. `recursive` is false for the mode directories, whose subdirectories OpenCode skips. A
+/// directory that cannot be listed, a tree deeper than [`MAX_AGENT_DEPTH`] or more than
+/// [`MAX_AGENT_FILES`] entries refuses the launch.
+fn markdown_agents(
+    dir: &Path,
+    prefix: &str,
+    recursive: bool,
+    depth: usize,
+    files: &mut usize,
+    user: &mut OpenCodeUser,
+) -> Result<(), LaunchError> {
+    let too_many = || refused("opencode", "an agent directory is too large or too deep to read");
+    if depth > MAX_AGENT_DEPTH {
+        return Err(too_many());
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if prefix.is_empty() && absent(&error) => return Ok(()),
+        Err(_) => return Err(refused("opencode", "cannot list an agent directory")),
+    };
+    for entry in entries {
+        *files += 1;
+        if *files > MAX_AGENT_FILES {
+            return Err(too_many());
+        }
+        let entry = entry.map_err(|_| refused("opencode", "cannot list an agent directory"))?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| refused("opencode", "an agent file's name is not UTF-8"))?;
+        let path = entry.path();
+        // OpenCode follows symbolic links; `metadata` does too.
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            if recursive {
+                markdown_agents(&path, &format!("{prefix}{name}/"), true, depth + 1, files, user)?;
+            }
+        } else if let Some(stem) = name.strip_suffix(".md") {
+            add_name(&mut user.agents, &format!("{prefix}{stem}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// OpenCode's inline configuration (`OPENCODE_CONFIG_CONTENT`): every permission `ask` but the
-/// injected server's `allow` tools, and each of the user's servers switched off.
+/// injected server's `allow` tools, the same rules for each of the user's agents, and each of
+/// the user's servers switched off.
 ///
-/// OpenCode 2.3.2 names an MCP tool's permission `<server>_<tool>` and lets the last matching
-/// rule win, in the object's order; `*` sorts before every name this crate admits, so the
-/// sorted map keeps it first.
+/// OpenCode 2.3.2 turns every configuration's `permission` into rules, appends them in the order
+/// the configurations merge (the inline one after the user's and the project's) and lets the
+/// last matching rule win, so the inline `*` overrides the user's own top-level rules. An agent's
+/// own rules are appended after every configuration's top-level ones, so each of the user's
+/// agents is given the inline rules too, which come after its own. OpenCode names an MCP tool's
+/// permission `<server>_<tool>`; `*` sorts before every name this crate admits, so the sorted map
+/// keeps it first. A server's inline entry replaces the user's whole, so it is a complete one.
 pub(crate) fn opencode_content(
     allow_tools: &[String],
     injected: Option<&str>,
-    users: &[String],
+    user: &OpenCodeUser,
 ) -> Result<String, LaunchError> {
     let permission = match injected.filter(|_| !allow_tools.is_empty()) {
         None => json!("ask"),
@@ -215,10 +374,18 @@ pub(crate) fn opencode_content(
         }
     };
     let mut content = Map::new();
+    if !user.agents.is_empty() {
+        let agents = user
+            .agents
+            .iter()
+            .map(|name| (name.clone(), json!({ "permission": permission.clone() })))
+            .collect();
+        content.insert("agent".to_owned(), Value::Object(agents));
+    }
     content.insert("permission".to_owned(), permission);
-    if !users.is_empty() {
+    if !user.servers.is_empty() {
         let mut servers = Map::new();
-        for name in users {
+        for name in &user.servers {
             if injected == Some(name.as_str()) {
                 return Err(refused(
                     "opencode",

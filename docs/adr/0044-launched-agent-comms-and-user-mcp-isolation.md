@@ -50,6 +50,12 @@ Codex's read-only mode failed in the probes too: the agent's shell could not rea
    - OpenCode: `OPENCODE_CONFIG_CONTENT` carries
      `{"permission":{"*":"ask","basemind_agent_post":"allow",...}}`. OpenCode 2.3.2 names an MCP
      tool's permission `<server>_<tool>` and lets the last matching rule win, so `*` comes first.
+     It appends every configuration's top-level rules in merge order, the inline one after the
+     user's and the project's, so the inline `*` overrides theirs; but it appends an agent's own
+     rules (`agent.<name>.permission`, an agent Markdown file's `permission`) after every
+     top-level rule, so under a user's `agent.build.permission.bash = "allow"` the last rule
+     matching a shell command was that `allow` (`opencode debug agents` lists each agent's rules). The inline configuration therefore gives
+     each of the user's agents the same rules, which OpenCode appends after the agent's own.
    - Other ACP agents still refuse a non-empty `allow_tools` (`Unsupported`).
 
    Every other tool, of the injected server or of the harness, still asks and is denied.
@@ -63,20 +69,33 @@ Codex's read-only mode failed in the probes too: the agent's shell could not rea
      `mcp list` reports the merged table Codex would start (user and managed configuration). A
      listing that fails, times out (15 s), is not a JSON list, or names a server outside
      `[A-Za-z0-9_-]{1,64}` refuses the launch (`LaunchError::UserMcpServers`).
-   - OpenCode: the adapter reads the `mcp` keys of `opencode.json` and `opencode.jsonc` (JSONC
-     comments and trailing commas allowed) in the child's `$XDG_CONFIG_HOME/opencode`, else
-     `$HOME/.config/opencode`, and adds to `OPENCODE_CONFIG_CONTENT` a whole entry
-     `{"type":"local","command":["/usr/bin/true"],"enabled":false}` for each. OpenCode 2.3.2 kept a
+   - OpenCode: the adapter reads every configuration OpenCode 2.3.2 merges beneath the inline
+     one (its bundle's `ConfigDiscovery.discover` and `Config.load`; it reads no `config.json`):
+     `opencode.json` and `opencode.jsonc` (JSONC comments and trailing commas allowed) in the
+     child's `$XDG_CONFIG_HOME/opencode`, else `$HOME/.config/opencode` (an empty variable is
+     unset, a relative one is taken against the working directory, and with neither the launch
+     is refused), and in every ancestor of the working directory and its `.opencode` directory.
+     The project-file check refuses those in every ancestor but the home directory, whose
+     `opencode.json` and `.opencode/` OpenCode loads for a working directory under it. Servers are
+     the entries of `mcp` (an entry whose `type` is `local` or `remote` whatever its key, else the
+     names under `mcp.servers`, OpenCode's canonical form, with `mcp.timeout` a setting and an
+     entry naming only `enabled` none); agents are the keys of `agent`, `mode` and `agents` and
+     the Markdown files under the configuration directories' `agent/`, `agents/`, `mode/` and
+     `modes/`. The adapter adds to `OPENCODE_CONFIG_CONTENT` a whole entry
+     `{"type":"local","command":["/usr/bin/true"],"enabled":false}` for each server, which
+     replaces the user's entry whole (a remote one was not contacted). OpenCode 2.3.2 kept a
      server whose override named `enabled` alone, and dropped one given the whole entry. A file
-     that cannot be read or parsed refuses the launch.
+     that cannot be read or parsed, or a server or agent name holding `{env:` or `{file:` (which
+     OpenCode substitutes in the text before parsing it), refuses the launch.
    - Claude Code: unchanged; `--strict-mcp-config` already loads only the injected server, and the
      `system/init` check fails a session that reports any other.
    - A user server named like the injected one (`basemind`) refuses the launch for Codex and
      OpenCode: its settings would merge into the injected server's.
 
    Codex loses the `UserMcpServers` caveat. OpenCode keeps it, narrowed to what the launch cannot
-   switch off: the user's plugins (OpenCode concatenates `plugin` lists), and MCP servers of a
-   managed (system, MDM preferences) or organisation (`.well-known`) configuration.
+   switch off: the user's plugins (OpenCode concatenates `plugin` lists), and the MCP servers and
+   permission rules of a managed (system, MDM preferences) configuration, which OpenCode merges
+   after the inline one, or of an organisation (`.well-known`) one.
 
 3. **Codex's sandbox does not cover its MCP servers.** `codex app-server` starts them as its own
    children outside the sandbox it applies to the agent's commands, so the injected server reaches

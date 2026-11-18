@@ -52,9 +52,12 @@ fn flavor(spec: &LaunchSpec) -> Result<AcpFlavor, LaunchError> {
     }
 }
 
-/// The variable through which OpenCode takes an inline configuration. It takes precedence over
-/// the configuration files: OpenCode 2.3.0 asked under `{"permission":"ask"}` even with a config
-/// file allowing edits and shell commands named by `OPENCODE_CONFIG`.
+/// The variable through which OpenCode takes an inline configuration. OpenCode 2.3.2 merges it
+/// after the user's and the project's configuration files and before a managed one: its
+/// top-level permission rules come after theirs (OpenCode 2.3.0 asked under
+/// `{"permission":"ask"}` even with a config file allowing edits and shell commands named by
+/// `OPENCODE_CONFIG`), but an agent's own rules come after every top-level rule, so the user's
+/// agents are named in it too ([`crate::user_mcp::opencode_content`]).
 pub(crate) const OPENCODE_CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
 
 /// OpenCode's inline configuration without pre-approved tools or user servers: every
@@ -127,11 +130,16 @@ impl AcpAdapter {
     /// The plan and the checked spec it was built from, checked once per launch, without the
     /// user's own MCP servers, which only a launch reads.
     pub(crate) fn plan_prepared(&self, spec: &LaunchSpec) -> Result<(CommandPlan, Prepared), LaunchError> {
-        self.plan_with(spec, &[])
+        self.plan_with(spec, &crate::user_mcp::OpenCodeUser::default())
     }
 
-    /// The plan with `users`, OpenCode's user MCP servers, each switched off.
-    fn plan_with(&self, spec: &LaunchSpec, users: &[String]) -> Result<(CommandPlan, Prepared), LaunchError> {
+    /// The plan with `user`, OpenCode's user MCP servers switched off and its agents given the
+    /// launch's permission rules.
+    fn plan_with(
+        &self,
+        spec: &LaunchSpec,
+        user: &crate::user_mcp::OpenCodeUser,
+    ) -> Result<(CommandPlan, Prepared), LaunchError> {
         let flavor = flavor(spec)?;
         let prepared = spec.prepare()?;
         session_mode(spec, &prepared, flavor)?;
@@ -155,7 +163,7 @@ impl AcpAdapter {
                 // OpenCode's default edits files and runs commands unasked; it has no bypass
                 // mode here, so every launch asks, but for the pre-approved tools.
                 let injected = spec.mcp_server.as_ref().map(|server| server.name.as_str());
-                opencode_content = crate::user_mcp::opencode_content(allow_tools, injected, users)?;
+                opencode_content = crate::user_mcp::opencode_content(allow_tools, injected, user)?;
                 env.push((OPENCODE_CONFIG_CONTENT, opencode_content.as_str()));
                 vec!["acp"]
             }
@@ -191,12 +199,10 @@ impl AcpAdapter {
         let (mut plan, mut prepared) = self.plan_prepared(spec)?;
         if flavor(spec)? == AcpFlavor::OpenCode {
             // OpenCode merges the inline configuration into the user's, whose servers stay
-            // unless each is switched off by name.
-            let users = match crate::user_mcp::opencode_config_dir(&plan.env) {
-                Some(dir) => crate::user_mcp::opencode_servers(&dir)?,
-                None => Vec::new(),
-            };
-            (plan, prepared) = self.plan_with(spec, &users)?;
+            // unless each is switched off by name, and whose agents' own rules come after it.
+            let dir = crate::user_mcp::opencode_config_dir(&plan.env, &plan.cwd)?;
+            let user = crate::user_mcp::opencode_user(&dir, &plan.cwd)?;
+            (plan, prepared) = self.plan_with(spec, &user)?;
         }
         let config = Config::new(spec, &plan, &prepared)?;
         let (tx, controls) = channel(CONTROL_QUEUE);
