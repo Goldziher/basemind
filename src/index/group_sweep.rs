@@ -55,6 +55,8 @@ struct ViewPending {
     /// Each content key the view's writer staged, with the sequence number of its latest
     /// registration.
     keys: AHashMap<ContentKey, u64>,
+    /// Each content hash whose grep bloom row the view's writer staged, as `keys` holds them.
+    blooms: AHashMap<Box<str>, u64>,
     /// The sequence number of the view's latest path write.
     last_write: u64,
 }
@@ -90,6 +92,11 @@ impl PendingContents {
         self.write(view_id).keys.insert(key, seq);
     }
 
+    fn register_bloom(&mut self, view_id: u32, hash_hex: &str) {
+        let seq = self.seq + 1;
+        self.write(view_id).blooms.insert(hash_hex.into(), seq);
+    }
+
     /// The view wrote its file map: every key it staged so far is named by it, or was dropped.
     fn settle(&mut self, view_id: u32) {
         if self.sweeping {
@@ -112,6 +119,12 @@ impl PendingContents {
         self.by_view.values().any(|pending| pending.keys.contains_key(key))
     }
 
+    fn holds_bloom(&self, hash_hex: &str) -> bool {
+        self.by_view
+            .values()
+            .any(|pending| pending.blooms.contains_key(hash_hex))
+    }
+
     fn is_empty(&self) -> bool {
         self.by_view.is_empty()
     }
@@ -122,9 +135,10 @@ impl PendingContents {
             let Some(pending) = self.by_view.get_mut(&view_id) else {
                 continue;
             };
-            let before = pending.keys.len();
+            let before = pending.keys.len() + pending.blooms.len();
             pending.keys.retain(|_, seq| *seq > upto);
-            let shrank = pending.keys.len() != before;
+            pending.blooms.retain(|_, seq| *seq > upto);
+            let shrank = pending.keys.len() + pending.blooms.len() != before;
             let settled = pending.last_write <= upto;
             if settled {
                 self.by_view.remove(&view_id);
@@ -146,6 +160,17 @@ impl GroupDb {
         self.pending().register(view_id, key);
     }
 
+    /// View `view_id`'s writer staged the grep bloom row of `hash_hex`.
+    pub(crate) fn register_pending_bloom(&self, view_id: u32, hash_hex: &str) {
+        self.pending().register_bloom(view_id, hash_hex);
+    }
+
+    /// Whether a writer of the group staged the grep bloom row of `hash_hex` that no file map it
+    /// wrote names yet.
+    pub(crate) fn bloom_is_pending(&self, hash_hex: &str) -> bool {
+        self.pending().holds_bloom(hash_hex)
+    }
+
     /// View `view_id`'s writer staged a path write that stages no content (a removal).
     pub(crate) fn register_path_write(&self, view_id: u32) {
         self.pending().write(view_id);
@@ -159,7 +184,7 @@ impl GroupDb {
     /// Open the sweep window, or `None` while another sweep holds it. Pending keys of views no
     /// handle has open are dropped first: their writers are gone, and so is any file map they did
     /// not write.
-    fn begin_sweep(self: &Arc<Self>) -> Option<SweepWindow> {
+    pub(super) fn begin_sweep(self: &Arc<Self>) -> Option<SweepWindow> {
         let open = self.live_key_views();
         let mut pending = self.pending();
         if pending.sweeping {
@@ -174,7 +199,7 @@ impl GroupDb {
 }
 
 /// Ends the sweep window on drop.
-struct SweepWindow {
+pub(crate) struct SweepWindow {
     group: Arc<GroupDb>,
 }
 

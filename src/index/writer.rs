@@ -257,6 +257,12 @@ impl IndexWriter {
     /// dropped by [`IndexDb::sweep_grep_bloom`]. Counted against the staged-byte budget like every
     /// other entry.
     pub fn upsert_grep_bloom(&mut self, hash_hex: &str, row: Vec<u8>) {
+        // Pending until the view's file map names it, so a bloom sweep that read the maps first ~keep
+        // keeps it (see `IndexDb::grep_bloom_sweep_window`). ~keep
+        if let Some(own) = &self.db.group {
+            let _shared = self.db.bm25_gate.read();
+            own.group.register_pending_bloom(own.view_id, hash_hex);
+        }
         let (db, batch, staged_bytes) = (&self.db, &mut self.batch, &mut self.staged_bytes);
         stage_insert(batch, staged_bytes, &db.grep_bloom, hash_hex.as_bytes().to_vec(), row);
     }

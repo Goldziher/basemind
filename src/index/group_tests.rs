@@ -209,3 +209,36 @@ fn rows_of_another_layout_never_survive_the_rebuild() {
         );
     }
 }
+
+/// A bloom row a sibling's writer staged, which no file map names yet, survives a sweep that judged
+/// liveness by the maps; once the sibling writes its map, liveness alone decides.
+#[test]
+fn a_bloom_sweep_keeps_the_rows_a_sibling_staged_until_its_map_names_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let memory = dir.path().join("memory.fjall");
+    let group = open(&dir.path().join("group"));
+    let a = view(&group, "ws-a", "working", &memory);
+    let b = view(&group, "ws-b", "working", &memory);
+    let mut writer = b.writer();
+    writer.upsert_grep_bloom("fresh", crate::index::grep_bloom::build_row(b"fn fresh() {}"));
+    writer.commit().expect("commit");
+
+    {
+        let _window = a.grep_bloom_sweep_window().expect("no other sweep runs");
+        assert_eq!(a.sweep_grep_bloom(|_| false).expect("sweep"), 0);
+    }
+    assert!(a.grep_bloom_current("fresh"), "the sibling's staged row stays");
+    a.remove_grep_bloom_rows(["fresh"]).expect("remove");
+    assert!(
+        a.grep_bloom_current("fresh"),
+        "and stays for the incremental removal too"
+    );
+
+    b.publish_live_keys(crate::index::live_keys::LiveKeys::default());
+    assert_eq!(
+        a.sweep_grep_bloom(|_| false).expect("sweep"),
+        1,
+        "settled: the maps decide"
+    );
+    assert!(!a.grep_bloom_current("fresh"));
+}
