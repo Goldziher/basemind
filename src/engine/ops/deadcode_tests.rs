@@ -3,9 +3,8 @@
 
 use super::*;
 use crate::engine::ops::deadcode_files::{FileFacts, Judged, conventional_entry, is_test_data, unreachable};
-use crate::engine::ops::deadcode_symbols::{
-    Container, Local, attributes_for_test, container_for_test, entry_name, facts_of,
-};
+use crate::engine::ops::deadcode_rust::{Container, attributes_for_test};
+use crate::engine::ops::deadcode_symbols::{JAVA_VISIBLE, Local, PUB, container_for_test, entry_name, facts_of};
 use crate::engine::ops::graph_report::tests::{I, T, graph_of};
 use crate::extract::SymbolKind;
 
@@ -110,20 +109,82 @@ fn rust_attributes_are_read_above_the_item_across_lines_and_comments() {
     assert_eq!(attributes_for_test(inline, 8), ["test"]);
     let plain = b"fn a() {}\nfn b() {}\n";
     assert!(attributes_for_test(plain, 10).is_empty());
+    let unsafe_attr = b"#[unsafe(no_mangle)]\npub extern \"C\" fn f() {}\n";
+    assert_eq!(
+        attributes_for_test(unsafe_attr, 21),
+        ["no_mangle"],
+        "edition 2024 wraps the attribute in `unsafe(…)`"
+    );
+}
+
+#[test]
+fn test_attributes_of_any_harness_are_entry_points() {
+    use crate::engine::ops::deadcode_rust::is_entry_attribute;
+    for path in [
+        "test",
+        "tokio::test",
+        "sqlx::test",
+        "test_log::test",
+        "test_case::test_case",
+        "wasm_bindgen_test",
+        "no_mangle",
+    ] {
+        assert!(is_entry_attribute(path), "{path}");
+    }
+    for path in ["tracing::instrument", "derive", "testing", "my::tester"] {
+        assert!(!is_entry_attribute(path), "{path}");
+    }
 }
 
 #[test]
 fn names_a_runner_calls_are_entry_points() {
     use SymbolKind::{Class, Function, Method};
-    assert!(entry_name("src/a.rs", "rust", "main", Function));
-    assert!(entry_name("pkg/a_test.go", "go", "TestServe", Function));
-    assert!(!entry_name("pkg/a.go", "go", "TestServe", Function));
-    assert!(entry_name("app/m.py", "python", "__repr__", Method));
-    assert!(entry_name("app/m.py", "python", "_fields_", Function));
-    assert!(entry_name("tests/test_api.py", "python", "ApiChecks", Class));
-    assert!(entry_name("tests/test_api.py", "python", "setUpClass", Method));
-    assert!(!entry_name("app/api.py", "python", "ApiChecks", Class));
-    assert!(!entry_name("app/api.py", "python", "_private", Function));
+    assert!(entry_name("src/a.rs", "rust", "main", Function, ""));
+    assert!(entry_name("pkg/a_test.go", "go", "TestServe", Function, ""));
+    assert!(!entry_name("pkg/a.go", "go", "TestServe", Function, ""));
+    assert!(entry_name("app/m.py", "python", "__repr__", Method, ""));
+    assert!(entry_name("app/m.py", "python", "_fields_", Function, ""));
+    assert!(entry_name("tests/test_api.py", "python", "ApiChecks", Class, ""));
+    assert!(entry_name("tests/test_api.py", "python", "setUpClass", Method, ""));
+    assert!(entry_name("conftest.py", "python", "pytest_configure", Function, ""));
+    assert!(!entry_name("app/api.py", "python", "ApiChecks", Class, ""));
+    assert!(!entry_name("app/api.py", "python", "_private", Function, ""));
+    let test = "src/test/java/com/acme/OrderServiceTest.java";
+    assert!(
+        entry_name(test, "java", "OrderServiceTest", Class, "class OrderServiceTest"),
+        "a JUnit 5 class is package-private and named by nothing"
+    );
+    assert!(entry_name(
+        "svc/src/test/java/a/Helpers.java",
+        "java",
+        "Helpers",
+        Class,
+        "class Helpers"
+    ));
+    assert!(entry_name(
+        test,
+        "java",
+        "placesAnOrder",
+        Method,
+        "@Test\n    void placesAnOrder()"
+    ));
+    assert!(entry_name(
+        "src/main/java/a/A.java",
+        "java",
+        "each",
+        Method,
+        "@org.junit.jupiter.api.ParameterizedTest void each(int x)"
+    ));
+    assert!(entry_name(test, "java", "setUp", Method, "@BeforeEach void setUp()"));
+    assert!(!entry_name(
+        "src/main/java/a/Order.java",
+        "java",
+        "Order",
+        Class,
+        "class Order"
+    ));
+    assert!(!entry_name(test, "java", "helper", Method, "private void helper()"));
+    assert!(!entry_name(test, "java", "helper", Method, "@Override void helper()"));
 }
 
 #[test]
@@ -144,133 +205,159 @@ fn the_rust_block_around_an_item_is_read_from_the_text() {
     assert_eq!(container_for_test(bytes, at("fn area")), Container::Trait);
     assert_eq!(container_for_test(bytes, at("fn own")), Container::None);
     assert_eq!(container_for_test(bytes, at("fn top")), Container::None);
+    let array = "impl<const N: usize, T> Trait for [T; N] {\n    fn m(&self) {}\n}\nfn free() {}\n";
+    assert_eq!(
+        container_for_test(array.as_bytes(), array.find("fn m").unwrap()),
+        Container::TraitImpl,
+        "a `;` inside brackets does not cut the header"
+    );
+    assert_eq!(
+        container_for_test(array.as_bytes(), array.find("fn free").unwrap()),
+        Container::None
+    );
+    let strings =
+        "impl Display for X {\n    fn fmt(&self) { write!(f, \"{{\") }\n    fn other(&self) {}\n}\nfn after() {}\n";
+    assert_eq!(
+        container_for_test(strings.as_bytes(), strings.find("fn other").unwrap()),
+        Container::TraitImpl,
+        "a brace inside a string is not a block"
+    );
+    assert_eq!(
+        container_for_test(strings.as_bytes(), strings.find("fn after").unwrap()),
+        Container::None
+    );
 }
 
-fn candidate(language: &str, name: &str, kind: SymbolKind, signature: &str) -> Candidate {
+pub(super) fn candidate(language: &'static str, kind: SymbolKind, flags: u8) -> Candidate {
     Candidate {
-        path: RelPath::from("src/x"),
-        language: language.into(),
-        name: name.to_string(),
+        file: 0,
+        language,
+        name: 0,
         kind,
         start_byte: 0,
         line: 3,
-        signature: Some(signature.to_string()),
+        flags,
         decorator: None,
     }
 }
 
-/// The tier of `c` with its name spelled `[code, strings, comments]` times besides its definition.
-fn tier_of(c: &Candidate, local: &Local, others: [i64; 3], surface: bool) -> Option<Tier> {
+/// The tier of `c` named `name` with its name spelled `[code, strings, comments]` times besides its
+/// definition.
+pub(super) fn tier_of(c: &Candidate, name: &str, local: &Local, others: [i64; 3], surface: bool) -> Option<Tier> {
     let in_surface = move |_: &RelPath, _: &str| surface;
+    let no_build_output = |_: &RelPath| false;
     let j = Judge {
         surface: &in_surface,
         others: &[others],
+        surface_partial: false,
+        build_output: &no_build_output,
+        unreadable: 0,
     };
-    judge(c, local, None, 0, &j).map(|found| found.tier)
+    judge(c, &RelPath::from("src/x"), name, local, None, &j).map(|found| found.tier)
 }
 
 #[test]
 fn a_symbol_is_tiered_by_its_name_evidence_and_its_language() {
     let plain = Local::default();
-    let private = candidate("rust", "helper", SymbolKind::Function, "fn helper()");
-    assert_eq!(tier_of(&private, &plain, [0, 0, 0], true), Some(Tier::High));
+    let private = candidate("rust", SymbolKind::Function, 0);
+    assert_eq!(tier_of(&private, "helper", &plain, [0, 0, 0], true), Some(Tier::High));
     assert_eq!(
-        tier_of(&private, &plain, [0, 0, 2], true),
+        tier_of(&private, "helper", &plain, [0, 0, 2], true),
         Some(Tier::Medium),
         "comments only"
     );
     assert_eq!(
-        tier_of(&private, &plain, [0, 1, 2], true),
+        tier_of(&private, "helper", &plain, [0, 1, 2], true),
         Some(Tier::Low),
         "a string may look it up"
     );
     assert_eq!(
-        tier_of(&private, &plain, [1, 1, 2], true),
+        tier_of(&private, "helper", &plain, [1, 1, 2], true),
         None,
         "spelled in code: used"
     );
 
-    let public = candidate("rust", "api", SymbolKind::Function, "pub fn api()");
+    let public = candidate("rust", SymbolKind::Function, PUB);
     assert_eq!(
-        tier_of(&public, &plain, [0, 0, 0], true),
+        tier_of(&public, "api", &plain, [0, 0, 0], true),
         None,
         "exported from a library"
     );
     assert_eq!(
-        tier_of(&public, &plain, [0, 0, 0], false),
+        tier_of(&public, "api", &plain, [0, 0, 0], false),
         Some(Tier::High),
         "a binary's pub"
     );
-    let crate_only = candidate("rust", "inner", SymbolKind::Function, "pub(crate) fn inner()");
-    assert_eq!(tier_of(&crate_only, &plain, [0, 0, 0], true), Some(Tier::High));
 
     let test = Local {
-        attributes: vec!["test".into()],
+        entry_attribute: true,
         ..Local::default()
     };
     assert_eq!(
-        tier_of(&private, &test, [0, 0, 0], true),
+        tier_of(&private, "helper", &test, [0, 0, 0], true),
         None,
         "a test is an entry point"
     );
     let macro_attr = Local {
-        attributes: vec!["derive".into(), "tool".into()],
+        effect_attribute: Some("tool".into()),
         ..Local::default()
     };
-    assert_eq!(tier_of(&private, &macro_attr, [0, 0, 0], true), Some(Tier::Low));
+    assert_eq!(
+        tier_of(&private, "helper", &macro_attr, [0, 0, 0], true),
+        Some(Tier::Low)
+    );
     let in_trait = Local {
         container: Container::Trait,
         ..Local::default()
     };
-    assert_eq!(tier_of(&private, &in_trait, [0, 0, 0], true), Some(Tier::Low));
+    assert_eq!(tier_of(&private, "helper", &in_trait, [0, 0, 0], true), Some(Tier::Low));
     let in_trait_impl = Local {
         container: Container::TraitImpl,
         ..Local::default()
     };
     assert_eq!(
-        tier_of(&private, &in_trait_impl, [0, 0, 0], true),
+        tier_of(&private, "helper", &in_trait_impl, [0, 0, 0], true),
         None,
         "the trait requires it"
     );
 
-    let go_exported = candidate("go", "Serve", SymbolKind::Function, "func Serve()");
-    assert_eq!(tier_of(&go_exported, &plain, [0, 0, 0], true), None);
-    let go_method = candidate("go", "close", SymbolKind::Method, "func (s *S) close()");
-    assert_eq!(tier_of(&go_method, &plain, [0, 0, 0], true), Some(Tier::Low));
+    let go = candidate("go", SymbolKind::Function, 0);
+    assert_eq!(tier_of(&go, "Serve", &plain, [0, 0, 0], true), None);
+    let go_method = candidate("go", SymbolKind::Method, 0);
+    assert_eq!(tier_of(&go_method, "close", &plain, [0, 0, 0], true), Some(Tier::Low));
 
     let exported = Local {
         exported: true,
         ..Local::default()
     };
-    let js = candidate("typescript", "util", SymbolKind::Function, "function util()");
+    let js = candidate("typescript", SymbolKind::Function, 0);
     let default = Local {
         exported: true,
         default_export: true,
         ..Local::default()
     };
     assert_eq!(
-        tier_of(&js, &default, [0, 0, 0], false),
+        tier_of(&js, "util", &default, [0, 0, 0], false),
         None,
         "a default export is bound by any name"
     );
     assert_eq!(
-        tier_of(&js, &exported, [0, 0, 0], true),
+        tier_of(&js, "util", &exported, [0, 0, 0], true),
         None,
         "a package's public export"
     );
-    assert_eq!(tier_of(&js, &exported, [0, 0, 0], false), Some(Tier::Medium));
-    assert_eq!(tier_of(&js, &plain, [0, 0, 0], false), Some(Tier::High));
+    assert_eq!(tier_of(&js, "util", &exported, [0, 0, 0], false), Some(Tier::Medium));
+    assert_eq!(tier_of(&js, "util", &plain, [0, 0, 0], false), Some(Tier::High));
 
-    let py_public = candidate("python", "load", SymbolKind::Function, "def load()");
-    assert_eq!(tier_of(&py_public, &plain, [0, 0, 0], true), Some(Tier::Low));
-    let py_private = candidate("python", "_load", SymbolKind::Function, "def _load()");
-    assert_eq!(tier_of(&py_private, &plain, [0, 0, 0], true), Some(Tier::High));
+    let py = candidate("python", SymbolKind::Function, 0);
+    assert_eq!(tier_of(&py, "load", &plain, [0, 0, 0], true), Some(Tier::Low));
+    assert_eq!(tier_of(&py, "_load", &plain, [0, 0, 0], true), Some(Tier::High));
     let listed = Local {
         in_all: Some(true),
         ..Local::default()
     };
     assert_eq!(
-        tier_of(&py_public, &listed, [0, 0, 0], true),
+        tier_of(&py, "load", &listed, [0, 0, 0], true),
         None,
         "named in `__all__`"
     );
@@ -278,15 +365,20 @@ fn a_symbol_is_tiered_by_its_name_evidence_and_its_language() {
         in_all: Some(false),
         ..Local::default()
     };
-    assert_eq!(tier_of(&py_public, &unlisted, [0, 0, 0], true), Some(Tier::High));
+    assert_eq!(tier_of(&py, "load", &unlisted, [0, 0, 0], true), Some(Tier::High));
 
-    let java = candidate("java", "run", SymbolKind::Method, "public void run()");
-    assert_eq!(tier_of(&java, &plain, [0, 0, 0], true), None);
+    let java = candidate("java", SymbolKind::Method, JAVA_VISIBLE);
+    assert_eq!(tier_of(&java, "run", &plain, [0, 0, 0], true), None);
 }
 
 #[test]
 fn unresolved_imports_are_tiered_by_what_the_resolver_sees() {
     assert_eq!(import_tier("typescript", "./gone").0, Tier::High);
+    assert_eq!(
+        import_tier("typescript", "/vite.svg").0,
+        Tier::Medium,
+        "a root-relative import resolves against the bundler's root"
+    );
     assert_eq!(import_tier("typescript", "@app/gone").0, Tier::Medium);
     assert_eq!(import_tier("python", ".gone").0, Tier::Medium);
     assert_eq!(import_tier("rust", "crate::gone").0, Tier::Low);
@@ -297,15 +389,31 @@ fn a_relative_import_of_a_file_on_disk_is_not_broken() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(dir.path().join("web/src")).unwrap();
     std::fs::write(dir.path().join("web/src/a.module.css"), "").unwrap();
+    std::fs::create_dir_all(dir.path().join("web/public")).unwrap();
+    std::fs::write(dir.path().join("web/public/vite.svg"), "").unwrap();
+    std::fs::write(dir.path().join("web/src/icon.svg"), "").unwrap();
+    std::fs::write(dir.path().join("web/src/worker.ts"), "").unwrap();
+    std::fs::create_dir_all(dir.path().join("web/src/empty")).unwrap();
+    std::fs::create_dir_all(dir.path().join("web/src/styles")).unwrap();
+    std::fs::write(dir.path().join("web/src/styles/index.css"), "").unwrap();
     let importer = RelPath::from("web/src/page.tsx");
-    assert!(names_unindexed_file(dir.path(), &importer, "./a.module.css"));
-    assert!(names_unindexed_file(dir.path(), &importer, "../src/a.module.css"));
-    assert!(!names_unindexed_file(dir.path(), &importer, "./gone.css"));
+    let unindexed = |specifier: &str| names_unindexed_file(dir.path(), &importer, specifier, Some("web/"));
+    assert!(unindexed("./a.module.css"));
+    assert!(unindexed("../src/a.module.css"));
+    assert!(!unindexed("./gone.css"));
+    assert!(unindexed("/vite.svg"), "a Vite template's `/vite.svg` is in `public/`");
+    assert!(!unindexed("/gone.svg"));
+    assert!(unindexed("./icon.svg?react"), "an SVGR query names the file before it");
+    assert!(unindexed("./worker.ts?worker"));
+    assert!(unindexed("./a.module.css?raw#x"));
+    assert!(!unindexed("./gone.txt?raw"));
+    assert!(unindexed("./styles"), "a directory with an index file");
     assert!(
-        !names_unindexed_file(dir.path(), &importer, "../../../../etc/hosts"),
-        "never outside the root"
+        !unindexed("./empty"),
+        "a directory with no index file hides no broken import"
     );
-    assert!(!names_unindexed_file(dir.path(), &importer, "react"));
+    assert!(!unindexed("../../../../etc/hosts"), "never outside the root");
+    assert!(!unindexed("react"));
 }
 
 #[test]
@@ -392,17 +500,16 @@ fn configured_entry_points_match_by_glob_and_bare_name() {
         RelPath::from("plugins/a/load.ts"),
         RelPath::from("src/lib.rs"),
     ];
-    let none = configured_entries(&[], paths.iter()).expect("no globs");
+    let (none, _) = configured_entries(&[], paths.iter()).expect("no globs");
     assert!(none.is_empty());
-    let globs = ["tools/*.py".to_string(), "plugins".to_string()];
-    let mut found: Vec<String> = configured_entries(&globs, paths.iter())
-        .expect("globs")
-        .into_iter()
-        .map(ToString::to_string)
-        .collect();
+    let globs = ["tools/*.py".to_string(), "plugins".to_string(), "tool/*.py".to_string()];
+    let (found, unmatched) = configured_entries(&globs, paths.iter()).expect("globs");
+    let mut found: Vec<String> = found.into_iter().map(ToString::to_string).collect();
     found.sort();
     assert_eq!(found, ["plugins/a/load.ts", "tools/gen.py"]);
-    let bad = configured_entries(&["a[".to_string()], paths.iter());
+    assert_eq!(unmatched, ["tool/*.py"], "a pattern that matches nothing is reported");
+    let malformed = ["a[".to_string()];
+    let bad = configured_entries(&malformed, paths.iter());
     assert!(matches!(bad, Err(EngineError::InvalidArgument(_))));
 }
 
@@ -512,7 +619,8 @@ mod scanned {
                 .iter()
                 .any(|c| c.language == "rust" && c.analysed == ["files", "symbols", "imports"])
         );
-        assert!(all.entry_points >= 1);
+        assert_eq!(all.entry_points, 1, "the library root `src/lib.rs`");
+        assert!(all.incomplete.is_empty(), "{:?}", all.incomplete);
 
         let high = report(
             &ws,

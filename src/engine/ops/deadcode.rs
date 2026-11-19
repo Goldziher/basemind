@@ -3,22 +3,26 @@
 //! confidence tier and its reason, and a coverage note per language.
 //!
 //! - **Files** ([`super::deadcode_files`]): entry points are the build manifests' targets
-//!   ([`crate::engine::manifests`]) and each language's conventions; reachability follows runtime
-//!   imports and Rust `mod` declarations. Only languages with a resolver are judged.
+//!   ([`crate::engine::manifests`]), the `<script>`s of a package's `index.html`, `[analysis]
+//!   entry_points` and each language's conventions; reachability follows runtime imports and Rust
+//!   `mod` declarations. Only languages with a resolver are judged.
 //! - **Symbols** ([`super::deadcode_symbols`]): judged by name over one text pass of the indexed
 //!   code, so "unreferenced" is a lower bound on use, and the tier says how much the index can see.
 //! - **Imports**: the unresolved specifiers the file-edge rows keep (ADR-0047 decision 4).
+//!
+//! A report that could not judge a requested kind in full says why in `incomplete`, so a CI gate
+//! never passes on a report that examined nothing.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use ahash::{AHashMap, AHashSet};
 
 use super::deadcode_files::{
-    FILE_LANGUAGES, FileFacts, Judged, conventional_entry, is_test_data, manifest_entries, surface_files, unreachable,
+    FILE_LANGUAGES, FileFacts, Judged, PackageCaps, cap_by_package, conventional_entry, crate_modules, is_test_data,
+    manifest_entries, manifest_prefixes, named_by_module_string, nearest, surface_files, unreachable,
 };
-use super::deadcode_symbols::{
-    Candidate, Judge, SYMBOL_LANGUAGES, ScanFile, candidates_of, definitions, judge, text_pass,
-};
+use super::deadcode_symbols::{Candidate, Judge, Names, SYMBOL_LANGUAGES, ScanFile, candidates_of, judge, text_pass};
 use super::graph_report::{coverage, notes};
 use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Sweep};
@@ -38,6 +42,20 @@ const LIMIT_DEFAULT: u32 = 100;
 const LIMIT_MAX: u32 = 10_000;
 /// The kinds of finding, in output order.
 const KINDS: &[&str] = &["files", "symbols", "imports"];
+/// Python files a tool runs, whose names it may call by their spelling (`pytest_configure` in
+/// `conftest.py`, `application` in `wsgi.py`).
+const PYTHON_LOADER_FILES: &[&str] = &[
+    "conftest.py",
+    "conf.py",
+    "noxfile.py",
+    "fabfile.py",
+    "setup.py",
+    "manage.py",
+    "wsgi.py",
+    "asgi.py",
+];
+/// Bytes of an `index.html` read for its `<script>` entries.
+const INDEX_HTML_MAX: u64 = 1024 * 1024;
 
 /// A request's filters, checked.
 struct Request {
@@ -99,6 +117,38 @@ fn under(path: &RelPath, scope: &str) -> bool {
     path == scope || (path.starts_with(scope) && path.get(scope.len()) == Some(&b'/'))
 }
 
+/// The package directories of the manifests, as path prefixes, by what each rule reads.
+struct Packages {
+    crates: Vec<String>,
+    go_modules: Vec<String>,
+    npm: Vec<String>,
+    python_named: Vec<String>,
+    js_build_output: Vec<String>,
+    cargo_libs: Vec<String>,
+}
+
+impl Packages {
+    fn of(manifests: &[Manifest]) -> Self {
+        let all = |_: &Manifest| true;
+        Self {
+            crates: manifest_prefixes(manifests, Ecosystem::Cargo, all),
+            go_modules: manifest_prefixes(manifests, Ecosystem::Go, all),
+            npm: manifest_prefixes(manifests, Ecosystem::Npm, all),
+            python_named: manifest_prefixes(manifests, Ecosystem::Python, |m| m.name.is_some()),
+            js_build_output: manifest_prefixes(manifests, Ecosystem::Npm, |m| {
+                m.targets.iter().any(|t| {
+                    matches!(t.kind, TargetKind::Main | TargetKind::Export)
+                        && t.path.is_none()
+                        && !matches!(t.name.as_deref(), Some("types" | "typings"))
+                })
+            }),
+            cargo_libs: manifest_prefixes(manifests, Ecosystem::Cargo, |m| {
+                m.targets.iter().any(|t| t.kind == TargetKind::Lib)
+            }),
+        }
+    }
+}
+
 impl Workspace {
     /// `basemind code deadcode`: unreachable files, unreferenced symbols and unresolved imports.
     pub(crate) fn code_deadcode(&self, p: DeadcodeParams) -> Result<DeadcodeResponse, EngineError> {
@@ -115,42 +165,75 @@ impl Workspace {
                     && !crate::lang::is_non_code(&meta.language)
             })
             .collect();
+        let index_of: AHashMap<&RelPath, u32> = files
+            .iter()
+            .enumerate()
+            .map(|(at, (path, _))| (*path, u32::try_from(at).unwrap_or(u32::MAX)))
+            .collect();
         let manifests = self.manifests_of(files.iter().filter_map(|(path, _)| path.as_str()));
+        let packages = Packages::of(&manifests);
         let entries = manifest_entries(&manifests, files.iter().map(|(path, _)| *path));
         let entry_set: AHashSet<&RelPath> = entries.iter().map(|(path, _)| path).collect();
-        let configured = configured_entries(&self.config.analysis.entry_points, files.iter().map(|(path, _)| *path))?;
+        let (configured, unmatched) =
+            configured_entries(&self.config.analysis.entry_points, files.iter().map(|(path, _)| *path))?;
+        let html = html_entries(&self.root, &packages.npm, &index_of);
+        // The names a manifest target calls by spelling: `pkg.cli:run` names `run` in `pkg/cli.py`.
+        let target_symbols: AHashSet<(&RelPath, &str)> = manifests
+            .iter()
+            .flat_map(|m| &m.targets)
+            .filter_map(|t| Some((t.path.as_ref()?, t.symbol.as_deref()?)))
+            .collect();
+        let entry_files: AHashSet<&RelPath> = files
+            .iter()
+            .map(|(path, _)| *path)
+            .filter(|path| {
+                entry_set.contains(path)
+                    || configured.contains(path)
+                    || html.contains(path)
+                    || path
+                        .as_str()
+                        .is_some_and(|p| PYTHON_LOADER_FILES.contains(&p.rsplit('/').next().unwrap_or(p)))
+            })
+            .collect();
         let surfaces: Vec<RelPath> = entries
             .iter()
             .filter(|(_, surface)| *surface)
             .map(|(path, _)| path.clone())
             .collect();
         let surface = surface_files(&graph, &surfaces);
-        let cargo_libs = cargo_library_dirs(&manifests);
         let in_surface = |path: &RelPath, language: &str| {
-            surface.contains(path) || (language == "rust" && in_cargo_library(path, &cargo_libs))
+            surface.contains(path) || (language == "rust" && in_cargo_library(path, &packages.cargo_libs))
         };
         let view = self.store_read().read_index_view();
         let mut notes = notes(&graph);
+        for pattern in unmatched {
+            notes.push(format!(
+                "`[analysis] entry_points` pattern `{pattern}` matched no indexed code file"
+            ));
+        }
 
+        let mut names = Names::default();
         let mut candidates: Vec<Candidate> = Vec::new();
+        let mut ranges: AHashMap<u32, Range<usize>> = AHashMap::new();
         if request.wants("symbols") {
             cache.for_each(|path, l1| {
-                let Some(language) = cache.language_of(path) else {
+                let Some(&file) = index_of.get(path) else {
                     return;
                 };
-                if SYMBOL_LANGUAGES.contains(&language)
-                    && request.in_scope(path)
-                    && !path.is_external()
-                    && !is_test_data(path)
-                {
-                    candidates_of(path, language, l1, &mut candidates);
+                let Some(language) = SYMBOL_LANGUAGES
+                    .iter()
+                    .find(|language| **language == &*files[file as usize].1.language)
+                else {
+                    return;
+                };
+                if request.in_scope(path) && !is_test_data(path) {
+                    let start = candidates.len();
+                    candidates_of(file, &path.to_str_lossy(), language, l1, &mut names, &mut candidates);
+                    if candidates.len() > start {
+                        ranges.insert(file, start..candidates.len());
+                    }
                 }
             });
-        }
-        let mut names: AHashMap<&str, u32> = AHashMap::new();
-        for candidate in &candidates {
-            let next = u32::try_from(names.len()).unwrap_or(u32::MAX);
-            names.entry(candidate.name.as_str()).or_insert(next);
         }
         let edge_rows = if request.wants("imports") {
             view.as_ref().map(|view| view.file_edges()).unwrap_or_default()
@@ -164,45 +247,64 @@ impl Workspace {
             })
             .map(|(path, edges)| (path, edges.unresolved_specifiers.as_slice()))
             .collect();
-        let mut by_file: AHashMap<&RelPath, Vec<usize>> = AHashMap::new();
-        for (at, candidate) in candidates.iter().enumerate() {
-            by_file.entry(&candidate.path).or_default().push(at);
-        }
         // Without candidate names, only the files whose entry conventions read their text, or whose
         // unresolved imports need a line, are read.
+        let needs_facts = |language: &str| {
+            matches!(language, "go" | "python" | "java") || (language == "rust" && request.wants("files"))
+        };
         let scan_files: Vec<ScanFile<'_>> = files
             .iter()
-            .filter(|(path, meta)| {
-                !names.is_empty()
-                    || matches!(&*meta.language, "go" | "python" | "java")
-                    || specifiers.contains_key(path)
+            .enumerate()
+            .filter(|(_, (path, meta))| {
+                !names.is_empty() || needs_facts(&meta.language) || specifiers.contains_key(path)
             })
-            .map(|&(path, meta)| ScanFile {
+            .map(|(at, &(path, meta))| ScanFile {
                 path,
                 meta,
-                candidates: by_file.remove(path).unwrap_or_default(),
+                candidates: u32::try_from(at).ok().and_then(|at| ranges.remove(&at)).unwrap_or(0..0),
                 specifiers: specifiers.get(path).copied().unwrap_or_default(),
+                entry_file: entry_files.contains(path),
             })
             .collect();
         let sweep = Sweep::new(IndexedFiles::of(self));
-        let scan = text_pass(&sweep, &scan_files, &candidates, &names);
+        let outline = |path: &RelPath| cache.get(path);
+        let scan = text_pass(&sweep, &outline, &scan_files, &candidates, &names);
         drop(scan_files);
+        let mut incomplete = Vec::new();
 
         let dead_files = request.wants("files").then(|| {
+            let mut module_strings: AHashSet<&str> = AHashSet::new();
+            for facts in scan.facts.values() {
+                for string in &facts.module_strings {
+                    module_strings.insert(string);
+                    // `"app.middleware.Auth"` names a class of the module `app.middleware`.
+                    if let Some((module, _)) = string.rsplit_once('.')
+                        && module.contains('.')
+                    {
+                        module_strings.insert(module);
+                    }
+                }
+            }
             let judged: Vec<Judged<'_>> = files
                 .iter()
-                .filter(|(path, meta)| judged_language(&graph, &meta.language, path, &manifests))
+                .filter(|(path, meta)| judged_language(&graph, &meta.language, path, &packages))
                 .map(|&(path, meta)| {
-                    let facts = scan.facts.get(path);
+                    let path_str = path.to_str_lossy();
                     let entry = if entry_set.contains(path) {
                         Some("a manifest target")
                     } else if configured.contains(path) {
                         Some("listed in `[analysis] entry_points`")
+                    } else if html.contains(path) {
+                        Some("a `<script>` of its package's `index.html`")
                     } else {
-                        conventional_entry(
-                            &path.to_str_lossy(),
-                            &meta.language,
-                            facts.unwrap_or(&FileFacts::default()),
+                        let facts = scan.facts.get(path);
+                        conventional_entry(&path_str, &meta.language, facts.unwrap_or(&FileFacts::default())).or_else(
+                            || {
+                                (&*meta.language == "python" && named_by_module_string(&path_str, &module_strings))
+                                    .then_some(
+                                        "its dotted module path is spelled in a string: a framework loads it by name",
+                                    )
+                            },
                         )
                     };
                     Judged {
@@ -214,41 +316,75 @@ impl Workspace {
                 .collect();
             let mut found = unreachable(&graph, &judged);
             found.retain(|file| request.in_scope(&file.path));
+            let crate_modules = crate_modules(&packages.crates, scan.facts.iter());
+            cap_by_package(
+                &mut found,
+                &PackageCaps {
+                    crates: &packages.crates,
+                    crate_modules: &crate_modules,
+                    python_packages: &packages.python_named,
+                    js_build_output: &packages.js_build_output,
+                },
+            );
             cap_partial_graph(&mut found, graph.probes_complete());
             found
         });
 
         let dead_symbols = request.wants("symbols").then(|| {
-            let read: AHashSet<&RelPath> = scan.facts.keys().collect();
-            let defs = definitions(&cache, &read, &names);
             let others: Vec<[i64; 3]> = scan
                 .occurrences
                 .iter()
-                .zip(&defs)
+                .zip(&scan.definitions)
                 .map(|(&[code, strings, comments], &defined)| {
                     [i64::from(code) - i64::from(defined), i64::from(strings), i64::from(comments)]
                 })
                 .collect();
+            let build_output = |path: &RelPath| nearest(&path.to_str_lossy(), &packages.js_build_output).is_some();
             let judge_with = Judge {
                 surface: &in_surface,
                 others: &others,
+                surface_partial: !graph.probes_complete(),
+                build_output: &build_output,
+                unreadable: scan.unreadable,
             };
             let mut stale = 0usize;
             let found: Vec<DeadSymbol> = candidates
                 .iter()
                 .enumerate()
                 .filter_map(|(at, candidate)| {
-                    let Some(local) = scan.locals.get(&at) else {
+                    let Some(local) = scan.locals[at].as_ref() else {
                         stale += 1;
                         return None;
                     };
-                    let facts = scan.facts.get(&candidate.path);
-                    judge(candidate, local, facts, names[candidate.name.as_str()], &judge_with)
+                    let path = files[candidate.file as usize].0;
+                    let name = names.name(candidate.name);
+                    if target_symbols.contains(&(path, name)) {
+                        return None;
+                    }
+                    judge(candidate, path, name, local, scan.facts.get(path), &judge_with)
                 })
                 .collect();
             if stale > 0 {
                 notes.push(format!(
                     "{stale} definition(s) in files changed or removed since the scan were not judged: run `basemind scan`"
+                ));
+            }
+            if scan.edited > 0 {
+                notes.push(format!(
+                    "{} file(s) changed since the scan: every name they spell counts as a use, so a finding may be missing",
+                    scan.edited
+                ));
+            }
+            if scan.unreadable > 0 {
+                notes.push(format!(
+                    "{} indexed file(s) could not be read (deleted, or grown past `scan.max_file_bytes`, since the scan): symbol findings are at most `medium`",
+                    scan.unreadable
+                ));
+            }
+            if stale > 0 || scan.unreadable > 0 {
+                incomplete.push(format!(
+                    "symbols: {} file(s) changed, removed or unreadable since the scan; run `basemind scan`",
+                    scan.edited + scan.unreadable
                 ));
             }
             found
@@ -261,9 +397,35 @@ impl Workspace {
                 &files,
                 &scan.specifier_lines,
                 &request,
+                &packages.npm,
                 &mut notes,
             )
         });
+
+        let coverage_rows = language_coverage(&graph, &files);
+        let notice = self.lifecycle_notice();
+        if let Some(notice) = &notice {
+            incomplete.insert(
+                0,
+                format!("the index is not ready (`{}`): retry once it is", notice.state),
+            );
+        }
+        let graph_kinds: Vec<&str> = ["files", "imports"]
+            .into_iter()
+            .filter(|kind| request.wants(kind))
+            .collect();
+        if !graph_kinds.is_empty() {
+            let kinds = graph_kinds.join(" and ");
+            if !coverage_rows.iter().any(|row| row.analysed.contains(&"files")) {
+                incomplete.push(format!(
+                    "{kinds}: no indexed language has an import resolver in this build, so none was analysed; pass `--kind symbols` to judge symbols alone"
+                ));
+            } else if !graph.probes_complete() {
+                incomplete.push(format!(
+                    "{kinds}: the resolve pass has not covered the whole index yet; wait for it to finish (`basemind status`)"
+                ));
+            }
+        }
 
         let mut counts = BTreeMap::new();
         let mut omitted = BTreeMap::new();
@@ -297,35 +459,99 @@ impl Workspace {
                 &mut omitted,
             )
         });
+        let declared: AHashSet<&RelPath> = entry_set
+            .iter()
+            .copied()
+            .chain(configured.iter().copied())
+            .chain(html.iter().copied())
+            .collect();
         Ok(DeadcodeResponse {
             counts,
             files: files_out,
             symbols: symbols_out,
             imports: imports_out,
             omitted,
-            entry_points: entry_set.len() + configured.iter().filter(|path| !entry_set.contains(*path)).count(),
-            coverage: language_coverage(&graph, &files),
+            entry_points: declared.len(),
+            coverage: coverage_rows,
             graph: coverage(&graph),
             notes,
-            notice: self.lifecycle_notice(),
+            incomplete,
+            notice,
             elapsed_us: elapsed_us(started),
         })
     }
 }
 
-/// The files `[analysis] entry_points` names. The globs were checked when the config loaded, so a
-/// failure here is a config the loader did not validate.
-fn configured_entries<'a>(
-    globs: &[String],
+/// The files `[analysis] entry_points` names, and the patterns that matched no indexed code file.
+/// The globs were checked when the config loaded, so a failure here is a config the loader did not
+/// validate.
+fn configured_entries<'a, 'g>(
+    globs: &'g [String],
     files: impl Iterator<Item = &'a RelPath>,
-) -> Result<AHashSet<&'a RelPath>, EngineError> {
+) -> Result<(AHashSet<&'a RelPath>, Vec<&'g str>), EngineError> {
     if globs.is_empty() {
-        return Ok(AHashSet::new());
+        return Ok((AHashSet::new(), Vec::new()));
     }
-    let set = crate::config::rules::compile_patterns(globs.iter().map(String::as_str)).map_err(|error| {
-        EngineError::invalid_argument(format!("invalid glob in `[analysis] entry_points`: {error}"))
-    })?;
-    Ok(files.filter(|path| set.is_match(&*path.to_str_lossy())).collect())
+    let sets = globs
+        .iter()
+        .map(|glob| {
+            crate::config::rules::compile_patterns([glob.as_str()]).map_err(|error| {
+                EngineError::invalid_argument(format!("invalid glob in `[analysis] entry_points`: {error}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut matched = vec![false; sets.len()];
+    let mut out = AHashSet::new();
+    for path in files {
+        let text = path.to_str_lossy();
+        for (at, set) in sets.iter().enumerate() {
+            if set.is_match(&*text) {
+                matched[at] = true;
+                out.insert(path);
+            }
+        }
+    }
+    let unmatched = globs
+        .iter()
+        .zip(matched)
+        .filter(|(_, matched)| !matched)
+        .map(|(glob, _)| glob.as_str())
+        .collect();
+    Ok((out, unmatched))
+}
+
+/// The indexed files the `<script src>` tags of each package's `index.html` name (a Vite app's
+/// `/src/main.tsx`), keyed to themselves. A `/`-rooted source is relative to the package.
+fn html_entries<'a>(
+    root: &std::path::Path,
+    packages: &[String],
+    index_of: &AHashMap<&'a RelPath, u32>,
+) -> AHashSet<&'a RelPath> {
+    let mut out = AHashSet::new();
+    for prefix in packages {
+        let file = root.join(format!("{prefix}index.html"));
+        let Ok(Some(bytes)) = crate::engine::freshness::read_bounded(&file, INDEX_HTML_MAX) else {
+            continue;
+        };
+        let html = String::from_utf8_lossy(&bytes);
+        for tag in html.split("<script").skip(1) {
+            let tag = tag.split('>').next().unwrap_or_default();
+            let Some(src) = ["src=\"", "src='"].iter().find_map(|open| {
+                let at = tag.find(open)? + open.len();
+                let quote = open.as_bytes()[open.len() - 1] as char;
+                tag[at..].split(quote).next()
+            }) else {
+                continue;
+            };
+            let src = src.split(['?', '#']).next().unwrap_or_default();
+            let rel = src.trim_start_matches('/').trim_start_matches("./");
+            let path = RelPath::from(format!("{prefix}{rel}"));
+            if let Some((key, _)) = index_of.get_key_value(&path) {
+                out.insert(*key);
+            }
+        }
+    }
+    out
 }
 
 /// A missing edge reads as an unreachable file, so until the resolve pass covers the whole index a
@@ -371,7 +597,7 @@ fn finish<T>(
 
 /// Whether the reachability walk judges `path`: its language has a resolver in this build, and a
 /// Rust or Go file sits in a crate or module the resolver can place it in.
-fn judged_language(graph: &ImportGraph, language: &str, path: &RelPath, manifests: &[Manifest]) -> bool {
+fn judged_language(graph: &ImportGraph, language: &str, path: &RelPath, packages: &Packages) -> bool {
     if !FILE_LANGUAGES.contains(&language)
         || !graph
             .coverage()
@@ -381,41 +607,22 @@ fn judged_language(graph: &ImportGraph, language: &str, path: &RelPath, manifest
     {
         return false;
     }
-    let anchor = match language {
-        "rust" => Ecosystem::Cargo,
-        "go" => Ecosystem::Go,
+    let anchors = match language {
+        "rust" => &packages.crates,
+        "go" => &packages.go_modules,
         _ => return true,
     };
-    let path = path.to_str_lossy();
-    manifests.iter().any(|manifest| {
-        manifest.ecosystem == anchor && {
-            let dir = parent_dir(&manifest.path.to_str_lossy()).to_string();
-            dir.is_empty() || path.starts_with(&format!("{dir}/"))
-        }
-    })
-}
-
-/// The directories of the Cargo packages with a library target.
-fn cargo_library_dirs(manifests: &[Manifest]) -> Vec<String> {
-    manifests
-        .iter()
-        .filter(|m| m.ecosystem == Ecosystem::Cargo && m.targets.iter().any(|t| t.kind == TargetKind::Lib))
-        .map(|m| parent_dir(&m.path.to_str_lossy()).to_string())
-        .collect()
+    nearest(&path.to_str_lossy(), anchors).is_some()
 }
 
 /// Whether a Rust file is library code by Cargo's layout: under `src/` of a package with a library,
 /// and neither its binary root nor under `src/bin/`. Stands in for the module tree when no Rust
 /// resolver is compiled in.
-fn in_cargo_library(path: &RelPath, dirs: &[String]) -> bool {
+fn in_cargo_library(path: &RelPath, prefixes: &[String]) -> bool {
     let path = path.to_str_lossy();
-    dirs.iter().any(|dir| {
-        let rest = if dir.is_empty() {
-            Some(path.as_ref())
-        } else {
-            path.strip_prefix(dir.as_str()).and_then(|rest| rest.strip_prefix('/'))
-        };
-        rest.and_then(|rest| rest.strip_prefix("src/"))
+    prefixes.iter().any(|prefix| {
+        path.strip_prefix(prefix.as_str())
+            .and_then(|rest| rest.strip_prefix("src/"))
             .is_some_and(|rest| rest != "main.rs" && !rest.starts_with("bin/"))
     })
 }
@@ -427,6 +634,7 @@ fn unresolved_imports(
     files: &[(&RelPath, &FileMeta)],
     lines: &AHashMap<RelPath, Vec<Option<u32>>>,
     request: &Request,
+    npm_packages: &[String],
     notes: &mut Vec<String>,
 ) -> Vec<DeadImport> {
     let language_of: AHashMap<&RelPath, &str> = files.iter().map(|(path, meta)| (*path, &*meta.language)).collect();
@@ -440,8 +648,9 @@ fn unresolved_imports(
         unlisted += u64::from(edges.unresolved).saturating_sub(edges.unresolved_specifiers.len() as u64);
         let language = language_of.get(path).copied().unwrap_or("");
         let file_lines = lines.get(path);
+        let package = nearest(&path.to_str_lossy(), npm_packages).map(str::to_string);
         for (at, specifier) in edges.unresolved_specifiers.iter().enumerate() {
-            if names_unindexed_file(root, path, specifier) {
+            if names_unindexed_file(root, path, specifier, package.as_deref()) {
                 unindexed += 1;
                 continue;
             }
@@ -458,7 +667,7 @@ fn unresolved_imports(
     }
     if unindexed > 0 {
         notes.push(format!(
-            "{unindexed} unresolved import(s) name a file the index does not hold (a stylesheet, an asset) and are not listed"
+            "{unindexed} unresolved import(s) name a file on disk the index does not hold (a stylesheet, an asset, a `?raw` or `?worker` import) and are not listed"
         ));
     }
     if unlisted > 0 {
@@ -470,33 +679,67 @@ fn unresolved_imports(
     out
 }
 
-/// Whether a relative `specifier` of `importer` names a file or directory on disk that the index
-/// does not hold (`./styles.module.css`): not a broken import.
-fn names_unindexed_file(root: &std::path::Path, importer: &RelPath, specifier: &str) -> bool {
+/// Index files a directory import resolves to.
+const DIRECTORY_INDEX: &[&str] = &[
+    "index.js",
+    "index.mjs",
+    "index.cjs",
+    "index.jsx",
+    "index.ts",
+    "index.tsx",
+    "index.css",
+    "package.json",
+];
+
+/// Whether `specifier` of `importer` names a file on disk that the index does not hold
+/// (`./styles.module.css`, `./icon.svg?react`, `/vite.svg` served from the package's `public/`):
+/// not a broken import. A query (`?raw`) or fragment is dropped first; a directory counts only
+/// when it holds an index file.
+fn names_unindexed_file(root: &std::path::Path, importer: &RelPath, specifier: &str, package: Option<&str>) -> bool {
+    let specifier = specifier.split(['?', '#']).next().unwrap_or_default();
+    let exists = |rel: &str| {
+        let mut parts: Vec<&str> = Vec::new();
+        for part in rel.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    parts.pop()?;
+                }
+                part => parts.push(part),
+            }
+        }
+        let target = root.join(parts.join("/"));
+        if !target.starts_with(root) {
+            return None;
+        }
+        let meta = std::fs::symlink_metadata(&target).ok()?;
+        (meta.is_file() || DIRECTORY_INDEX.iter().any(|index| target.join(index).is_file())).then_some(())
+    };
+    if let Some(rooted) = specifier.strip_prefix('/') {
+        let package = package.unwrap_or_default();
+        return [
+            rooted.to_string(),
+            format!("{package}{rooted}"),
+            format!("{package}public/{rooted}"),
+        ]
+        .iter()
+        .any(|rel| exists(rel).is_some());
+    }
     if !(specifier.starts_with("./") || specifier.starts_with("../")) {
         return false;
     }
     let importer = importer.to_str_lossy();
-    let mut parts: Vec<&str> = parent_dir(&importer).split('/').filter(|p| !p.is_empty()).collect();
-    for part in specifier.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                if parts.pop().is_none() {
-                    return false;
-                }
-            }
-            part => parts.push(part),
-        }
-    }
-    let target = root.join(parts.join("/"));
-    target.starts_with(root) && std::fs::symlink_metadata(&target).is_ok()
+    exists(&format!("{}/{specifier}", parent_dir(&importer))).is_some()
 }
 
 /// How sure an unresolved import is to be broken, by what its language's resolver can see.
 pub(super) fn import_tier(language: &str, specifier: &str) -> (Tier, &'static str) {
     match language {
-        "javascript" | "typescript" | "tsx" if specifier.starts_with('.') || specifier.starts_with('/') => {
+        "javascript" | "typescript" | "tsx" if specifier.starts_with('/') => (
+            Tier::Medium,
+            "root-relative: the bundler's root is not known, and no file of the repository or its `public/` matches it",
+        ),
+        "javascript" | "typescript" | "tsx" if specifier.starts_with('.') => {
             (Tier::High, "a relative import of a file that does not exist")
         }
         "javascript" | "typescript" | "tsx" => (Tier::Medium, "an alias or path the resolver does not know"),
@@ -556,16 +799,22 @@ fn language_note(language: &str, resolved: bool, nothing: bool) -> Option<String
     }
     let what = match language {
         "rust" => {
-            "`include!` and macro-generated modules are not followed; a `pub` item of a library crate counts as exported"
+            "`include!`, `#[cfg_attr(…, path)]` and modules declared inside a macro are not followed: a file its crate may \
+             declare that way is at most `low`; a `pub` item of a library crate counts as exported"
         }
         "go" => "build tags are ignored; a capitalised name outside `package main` counts as exported",
         "python" => {
-            "modules loaded by name are not seen; a public module-level name is at most `low` unless `__all__` leaves it out"
+            "modules loaded by name are not seen unless a string spells their dotted path; a public module of a named \
+             package and a public module-level name are at most `low` unless `__all__` leaves it out"
         }
         "javascript" | "typescript" | "tsx" => {
-            "dynamic `import()` and bundler entries are not seen; an `export` reached from a package's `main` or `exports` counts as exported"
+            "dynamic `import()` is not seen; an `export` reached from a package's `main`, `exports`, `source`, `module` or \
+             `types` counts as exported, and a package whose entry is a build output with no indexed source is at most `low`"
         }
-        "java" => "classes of one package use each other without an import, so a file finding is at most `low`",
+        "java" => {
+            "classes of one package use each other without an import, so a file finding is at most `low`; a `public` or \
+             `protected` member counts as exported, and JUnit tests are entry points"
+        }
         _ => return None,
     };
     Some(if resolved || !FILE_LANGUAGES.contains(&language) {
@@ -578,3 +827,7 @@ fn language_note(language: &str, resolved: bool, nothing: bool) -> Option<String
 #[cfg(test)]
 #[path = "deadcode_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "deadcode_lang_tests.rs"]
+mod lang_tests;

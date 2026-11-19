@@ -22,6 +22,7 @@ pub struct DeadcodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     /// The lowest confidence reported: `high`, `medium` or `low` (the default, every finding).
+    /// `--fail-on-dead-code` gates on `high` findings unless a tier is given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
     /// Findings listed per kind (default 100, at most 10,000); the counts cover the rest.
@@ -133,7 +134,9 @@ pub struct DeadcodeResponse {
     /// Findings per kind that `limit` left out.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub omitted: BTreeMap<&'static str, usize>,
-    /// Files the reachability walk started from: manifest targets and language conventions.
+    /// Files the manifests' targets, `[analysis] entry_points` and the `<script>`s of a package's
+    /// `index.html` name. The walk also starts from each language's conventional entries (tests,
+    /// examples, `__main__.py`, Go `package main`, …), which this count leaves out.
     pub entry_points: usize,
     /// Per indexed code language, what was analysed.
     pub coverage: Vec<DeadcodeCoverage>,
@@ -142,6 +145,11 @@ pub struct DeadcodeResponse {
     /// What the analysis cannot see that bears on this answer.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// Why a requested kind could not be judged in full (the index is not ready, the resolve pass
+    /// is unfinished, no resolver, unreadable files). `--fail-on-dead-code` fails on any of them
+    /// rather than pass on a report that examined nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
     pub elapsed_us: u64,

@@ -1,10 +1,13 @@
 //! The identifier lexer of `basemind code deadcode` (#123): every identifier token of a file, each
-//! classed as code, string or comment, so a name spelled only in a comment or only in a string is
-//! told apart from a use in code.
+//! classed as code, string or comment with its byte offset, so a name spelled only in a comment or
+//! only in a string is told apart from a use in code.
 //!
 //! It is a lexer for that question only: comments and string literals per language family, no
-//! grammar. A misread (a Rust raw string with an inner quote, a regex literal) moves a few tokens
-//! between classes and never drops one.
+//! grammar. A JS template literal is a string whose `${…}` holds code, and `{name}` inside a string
+//! (a Rust format argument, a Python f-string, triple-quoted or not) is code. A misread (a Rust raw
+//! string with an inner quote, a regex literal) moves a few tokens between classes and never drops
+//! one; the definition count reads the class of each definition's own token, so a misread never
+//! cancels a use elsewhere.
 
 use memchr::memmem;
 
@@ -21,12 +24,14 @@ pub(super) enum Class {
 struct Syntax {
     line_comment: &'static [u8],
     block_comments: bool,
-    /// Python: `"""` and `'''` blocks, read as documentation.
+    /// Python: `"""` and `'''` blocks, read as documentation unless `f`-prefixed.
     triple_quotes: bool,
     /// `'…'` is a string (JS, Python, Go runes, Java chars); otherwise Rust's char-or-lifetime.
     single_quote_string: bool,
-    /// Go: a backtick string. In JS a template literal stays code, since `${…}` holds code.
+    /// Go: a backtick string.
     backtick_string: bool,
+    /// JS/TS: a backtick template literal, whose `${…}` holds code.
+    template_literals: bool,
     /// A `"…"` string may span lines (Rust).
     multiline_strings: bool,
     /// Rust raw strings: `r"…"`, `r#"…"#`, `br#"…"#`.
@@ -40,6 +45,7 @@ fn syntax_of(language: &str) -> Syntax {
         triple_quotes: false,
         single_quote_string: true,
         backtick_string: false,
+        template_literals: false,
         multiline_strings: false,
         raw_strings: false,
     };
@@ -60,6 +66,10 @@ fn syntax_of(language: &str) -> Syntax {
             backtick_string: true,
             ..c_like
         },
+        "javascript" | "typescript" | "tsx" => Syntax {
+            template_literals: true,
+            ..c_like
+        },
         _ => c_like,
     }
 }
@@ -68,32 +78,53 @@ pub(super) fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
 }
 
-/// Call `f` with every identifier token of `bytes` (a `language` file) and its class.
-pub(super) fn identifiers(language: &str, bytes: &[u8], mut f: impl FnMut(&[u8], Class)) {
+/// The callback [`identifiers`] calls: the token, its class and its byte offset in the file.
+type Sink<'f> = dyn FnMut(&[u8], Class, usize) + 'f;
+
+/// Call `f` with every identifier token of `bytes` (a `language` file), its class and its offset.
+pub(super) fn identifiers(language: &str, bytes: &[u8], mut f: impl FnMut(&[u8], Class, usize)) {
     let syntax = syntax_of(language);
+    code(bytes, &syntax, 0, false, &mut f);
+}
+
+/// Lex code from `from`. Nested in a template's `${…}`, stop past the `}` that closes it and return
+/// that offset; otherwise run to the end.
+fn code(bytes: &[u8], syntax: &Syntax, from: usize, nested: bool, f: &mut Sink<'_>) -> usize {
     let n = bytes.len();
-    let mut at = 0;
+    let mut at = from;
+    let mut depth = 0usize;
     while at < n {
         let rest = &bytes[at..];
         if rest.starts_with(syntax.line_comment) {
             let end = memchr::memchr(b'\n', rest).map_or(n, |len| at + len);
-            tokens(&bytes[at..end], Class::Comment, &mut f);
+            tokens(bytes, at, end, Class::Comment, f);
             at = end;
             continue;
         }
         if syntax.block_comments && rest.starts_with(b"/*") {
             let end = memmem::find(&rest[2..], b"*/").map_or(n, |len| at + 2 + len + 2);
-            tokens(&bytes[at..end], Class::Comment, &mut f);
+            tokens(bytes, at, end, Class::Comment, f);
             at = end;
             continue;
         }
         if syntax.triple_quotes && (rest.starts_with(b"\"\"\"") || rest.starts_with(b"'''")) {
-            let end = memmem::find(&rest[3..], &rest[..3]).map_or(n, |len| at + 3 + len + 3);
-            tokens(&bytes[at..end], Class::Comment, &mut f);
+            let close = memmem::find(&rest[3..], &rest[..3]);
+            let end = close.map_or(n, |len| at + 3 + len + 3);
+            // A docstring is documentation; an f-string's `{name}` is code.
+            let class = if f_prefixed(bytes, at) {
+                Class::Str
+            } else {
+                Class::Comment
+            };
+            tokens(bytes, at + 3, close.map_or(n, |len| at + 3 + len), class, f);
             at = end;
             continue;
         }
         let b = bytes[at];
+        if b == b'`' && syntax.template_literals {
+            at = template(bytes, syntax, at + 1, f);
+            continue;
+        }
         let quote = match b {
             b'"' => Some((b'"', syntax.multiline_strings)),
             b'\'' if syntax.single_quote_string => Some((b'\'', false)),
@@ -102,13 +133,21 @@ pub(super) fn identifiers(language: &str, bytes: &[u8], mut f: impl FnMut(&[u8],
         };
         if let Some((quote, multiline)) = quote {
             let end = string_end(bytes, at + 1, quote, multiline);
-            tokens(&bytes[at + 1..end], Class::Str, &mut f);
+            tokens(bytes, at + 1, end, Class::Str, f);
             at = (end + 1).min(n);
             continue;
         }
         if b == b'\'' {
             at = after_rust_quote(bytes, at);
             continue;
+        }
+        if nested {
+            match b {
+                b'{' => depth += 1,
+                b'}' if depth == 0 => return at + 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
         }
         if is_ident_byte(b) {
             let start = at;
@@ -120,17 +159,55 @@ pub(super) fn identifiers(language: &str, bytes: &[u8], mut f: impl FnMut(&[u8],
                 && (token == b"r" || token == b"br")
                 && let Some(end) = raw_string_end(bytes, at)
             {
-                tokens(&bytes[at..end], Class::Str, &mut f);
+                tokens(bytes, at, end, Class::Str, f);
                 at = end;
                 continue;
             }
             if !bytes[start].is_ascii_digit() {
-                f(token, Class::Code);
+                f(token, Class::Code, start);
             }
             continue;
         }
         at += 1;
     }
+    n
+}
+
+/// Past a JS template literal whose text starts at `from`: the text is a string, each `${…}` is
+/// code (templates nest inside it).
+fn template(bytes: &[u8], syntax: &Syntax, from: usize, f: &mut Sink<'_>) -> usize {
+    let n = bytes.len();
+    let mut text = from;
+    let mut at = from;
+    while at < n {
+        match bytes[at] {
+            b'\\' => at += 2,
+            b'`' => {
+                tokens(bytes, text, at, Class::Str, f);
+                return at + 1;
+            }
+            b'$' if bytes.get(at + 1) == Some(&b'{') => {
+                tokens(bytes, text, at, Class::Str, f);
+                at = code(bytes, syntax, at + 2, true, f);
+                text = at;
+            }
+            _ => at += 1,
+        }
+    }
+    tokens(bytes, text.min(n), n, Class::Str, f);
+    n
+}
+
+/// Whether the triple quote at `at` carries an `f` prefix (`f"""`, `rf'''`, `Fr"""`).
+fn f_prefixed(bytes: &[u8], at: usize) -> bool {
+    let prefix_start = bytes[..at]
+        .iter()
+        .rposition(|&b| !is_ident_byte(b))
+        .map_or(0, |p| p + 1);
+    let prefix = &bytes[prefix_start..at];
+    prefix.len() <= 2
+        && prefix.iter().any(|b| b.eq_ignore_ascii_case(&b'f'))
+        && prefix.iter().all(|b| matches!(b.to_ascii_lowercase(), b'f' | b'r'))
 }
 
 /// The index of the quote closing a string opened before `from`, or the end of its line when
@@ -174,25 +251,30 @@ fn after_rust_quote(bytes: &[u8], at: usize) -> usize {
     }
 }
 
-fn tokens(region: &[u8], class: Class, f: &mut impl FnMut(&[u8], Class)) {
-    let mut at = 0;
-    while at < region.len() {
-        if !is_ident_byte(region[at]) {
+/// The identifier tokens of `bytes[from..to]`, each of `class` (a captured `{name}` in a string is
+/// code).
+fn tokens(bytes: &[u8], from: usize, to: usize, class: Class, f: &mut Sink<'_>) {
+    let to = to.min(bytes.len());
+    let mut at = from;
+    while at < to {
+        if !is_ident_byte(bytes[at]) {
             at += 1;
             continue;
         }
         let start = at;
-        while at < region.len() && is_ident_byte(region[at]) {
+        while at < to && is_ident_byte(bytes[at]) {
             at += 1;
         }
-        if region[start].is_ascii_digit() {
+        if bytes[start].is_ascii_digit() {
             continue;
         }
         // `{name}` in a string is a captured format argument (Rust `format!`, a Python f-string):
         // code, not text. `{{` is an escaped brace.
-        let captured =
-            class == Class::Str && start > 0 && region[start - 1] == b'{' && (start < 2 || region[start - 2] != b'{');
-        f(&region[start..at], if captured { Class::Code } else { class });
+        let captured = class == Class::Str
+            && start > from
+            && bytes[start - 1] == b'{'
+            && (start < from + 2 || bytes[start - 2] != b'{');
+        f(&bytes[start..at], if captured { Class::Code } else { class }, start);
     }
 }
 
@@ -202,7 +284,12 @@ mod tests {
 
     fn classes(language: &str, text: &str) -> Vec<(String, Class)> {
         let mut out = Vec::new();
-        identifiers(language, text.as_bytes(), |token, class| {
+        identifiers(language, text.as_bytes(), |token, class, at| {
+            assert_eq!(
+                &text.as_bytes()[at..at + token.len()],
+                token,
+                "the offset points at the token"
+            );
             out.push((String::from_utf8_lossy(token).into_owned(), class));
         });
         out
@@ -269,10 +356,44 @@ mod tests {
     }
 
     #[test]
-    fn a_js_template_literal_stays_code_and_a_go_backtick_is_a_string() {
+    fn a_python_triple_quoted_f_string_captures_its_arguments() {
+        let found = classes(
+            "python",
+            "msg = f\"\"\"Hello {user}\nbye\"\"\"\nraw = rf'''{path} x'''\ndoc = \"\"\"{plain}\"\"\"\n",
+        );
+        assert_eq!(of(&found, "user"), [Class::Code], "an f-string argument is code");
+        assert_eq!(of(&found, "bye"), [Class::Str]);
+        assert_eq!(of(&found, "path"), [Class::Code], "`rf` is an f-string too");
+        assert_eq!(of(&found, "plain"), [Class::Comment], "a docstring stays documentation");
+    }
+
+    #[test]
+    fn a_js_template_literal_is_a_string_whose_substitutions_are_code() {
         let js = classes("typescript", "const a = `x ${run()} y`; // tail\n");
         assert_eq!(of(&js, "run"), [Class::Code]);
+        assert_eq!(of(&js, "x"), [Class::Str]);
         assert_eq!(of(&js, "tail"), [Class::Comment]);
+        let url = classes(
+            "typescript",
+            "fetch(`https://api/${buildPath(id)}`);\nconst g = glob(`src/**/*.ts`);\nfunction helper() {}\n/** doc */\nlater();\n",
+        );
+        assert_eq!(
+            of(&url, "buildPath"),
+            [Class::Code],
+            "`//` in a template opens no comment"
+        );
+        assert_eq!(of(&url, "https"), [Class::Str]);
+        assert_eq!(of(&url, "helper"), [Class::Code], "`/*` in a template opens no comment");
+        assert_eq!(of(&url, "later"), [Class::Code]);
+        let nested = classes("javascript", "t = `a ${f({k: `in ${deep}`})} b`; after();\n");
+        assert_eq!(
+            of(&nested, "deep"),
+            [Class::Code],
+            "a template nested in a substitution"
+        );
+        assert_eq!(of(&nested, "k"), [Class::Code], "braces in a substitution are balanced");
+        assert_eq!(of(&nested, "b"), [Class::Str]);
+        assert_eq!(of(&nested, "after"), [Class::Code]);
         let go = classes("go", "var s = `raw text`\nvar r = 'x'\n");
         assert_eq!(of(&go, "raw"), [Class::Str]);
         assert_eq!(of(&go, "x"), [Class::Str]);

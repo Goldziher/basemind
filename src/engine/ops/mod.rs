@@ -16,6 +16,7 @@ mod cycles;
 mod deadcode;
 mod deadcode_files;
 mod deadcode_lex;
+mod deadcode_rust;
 mod deadcode_symbols;
 mod docs_search;
 pub(crate) mod find_files;
