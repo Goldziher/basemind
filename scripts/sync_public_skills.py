@@ -8,6 +8,51 @@ import sys
 from pathlib import Path
 
 MANIFEST_NAME = ".ai-rulez-public-skills.json"
+SKILL_SOURCES = "plugin/.ai-rulez/skills"
+MANUAL_SECTION = re.compile(r"<!-- manual:([a-z0-9-]+) -->\n(.*?)<!-- /manual:\1 -->", re.DOTALL)
+
+
+def manual_section(root: Path, topic: str) -> str:
+    """Render docs/manual/<topic>.md as `basemind::cli::manual::spliced` does: untitled, headings one deeper."""
+    page = root / "docs/manual" / f"{topic}.md"
+    if not page.is_file():
+        raise ValueError(f"Unknown manual topic: {topic}")
+    text = page.read_text()
+    if text.startswith("# "):
+        text = text.partition("\n")[2].removeprefix("\n")
+    lines, fenced = [], False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("#"):
+            line = "#" + line
+        lines.append(line + "\n")
+    return "".join(lines)
+
+
+def splice_manual(root: Path, content: str) -> str:
+    """Replace every manual section with its page, so a skill and the manual cannot drift."""
+    return MANUAL_SECTION.sub(
+        lambda match: f"<!-- manual:{match[1]} -->\n{manual_section(root, match[1])}<!-- /manual:{match[1]} -->",
+        content,
+    )
+
+
+def splice_sources(root: Path, *, check: bool) -> int:
+    """Check or rewrite the manual sections of the ai-rulez skill sources; return how many there are."""
+    sections = 0
+    for skill in sorted((root / SKILL_SOURCES).glob("*/SKILL.md")):
+        if skill.is_symlink():
+            raise ValueError(f"Symlink in skill tree: {skill}")
+        content = skill.read_text()
+        sections += len(MANUAL_SECTION.findall(content))
+        spliced = splice_manual(root, content)
+        if spliced == content:
+            continue
+        if check:
+            raise ValueError(f"Manual section differs from docs/manual: {skill}; run {Path(__file__).name} --manual")
+        skill.write_text(spliced)
+    return sections
 
 
 def reject_symlinks(directory: Path) -> None:
@@ -47,6 +92,8 @@ def validate_skills(root: Path, files: dict[str, bytes]) -> None:
         if Path(path).name != "SKILL.md":
             continue
         content = data.decode("utf-8")
+        if splice_manual(root, content) != content:
+            raise ValueError(f"Manual section differs from docs/manual: {path}; regenerate the plugin")
         match = re.search(r"^name:\s+([^\n]+)", content, re.MULTILINE)
         name = match[1].strip("\"'") if match else ""
         if name != Path(path).parent.name or not (name == product or name.startswith(product + "-")):
@@ -115,9 +162,15 @@ def main() -> int:
     """Report nonempty verified skill and resource counts for local and CI use."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--manual", action="store_true", help="only splice docs/manual into the skill sources")
     arguments = parser.parse_args()
+    root = Path(__file__).resolve().parents[1]
     try:
-        skills, files = synchronize(Path(__file__).resolve().parents[1], check=arguments.check)
+        sections = splice_sources(root, check=arguments.check)
+        if arguments.manual:
+            sys.stdout.write(f"Manual sections: {sections} (spliced)\n")
+            return 0
+        skills, files = synchronize(root, check=arguments.check)
     except (OSError, ValueError, KeyError, TypeError) as error:
         sys.stderr.write(f"Public skills export failed: {error}\n")
         return 1

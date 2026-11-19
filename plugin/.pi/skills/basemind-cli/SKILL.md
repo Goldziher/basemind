@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:ed5599c40ea53bb910c53c62978f94bc8f1cfc40acd884ae3bd2a6966b8dcad2
-Source-Hash: blake3:e9ce4c3282c460bc11b11666bc7a7c2a9337b6c57ccb90f607c6ab77e97ab9ba
+Content-Hash: blake3:19b1590d920b8fc6ae68e995b1ea25cbb5f720090c06e2d7989122a27d8797f8
+Source-Hash: blake3:8eae7d45979b1a1e9f665057714de14acca426bd066bbb0634e37832591b687f
 Schema-Version: v1
 -->
 
@@ -181,9 +181,21 @@ basemind cache clear --component blobs --yes
 
 ## Exit codes
 
-`0` ok, `1` error, `2` usage (bad flag, or a destructive command without `--yes`), `3` busy (another
-process holds the workspace writer lock; retry), `4` daemon unreachable, `130` interrupted. Ctrl-C
-stops a scan cleanly: work already committed is kept.
+<!-- manual:exit-codes -->
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Runtime error. `basemind doctor` also exits 1 when a check fails. |
+| `2` | Usage error: an unknown flag or argument, an invalid `rescan` path, or a destructive command without `--yes`. |
+| `3` | Busy: another process holds the workspace writer lock, or the daemon a scan was forwarded to is stopping. Retry later. |
+| `4` | A required daemon is unreachable. |
+| `130` | Interrupted by Ctrl-C. Work already committed is kept and the index stays consistent. |
+
+A failed command prints `Error:` and the cause chain on stderr. An MCP tool never exits: a failure
+the caller can fix is a tool result with `isError` whose text names the fix.
+<!-- /manual:exit-codes -->
+
+`basemind manual` prints the full offline manual; `basemind manual <topic>` one page of it.
 
 ## Notes
 

@@ -33,6 +33,7 @@ pub mod init_rules;
 pub mod init_settings;
 pub mod init_verb;
 pub mod interrupt;
+pub mod manual;
 pub mod memory;
 pub mod overview;
 #[cfg(all(feature = "comms", any(unix, windows)))]

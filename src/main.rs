@@ -56,8 +56,8 @@ struct Cli {
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
     /// subcommands (code / git / memory / admin / status / cache), the
     /// coordination groups (agent / workspace / comms / daemon), doctor and sessions. It is ignored, with a
-    /// warning, on init / scan / rescan / watch / hook / lang / completions / man / statusline /
-    /// serve.
+    /// warning, on init / scan / rescan / watch / hook / lang / completions / man / manual /
+    /// statusline / serve.
     #[arg(long, global = true)]
     json: bool,
 
@@ -116,6 +116,8 @@ enum Cmd {
     },
     /// Print the man page (roff) to stdout (`basemind man > basemind.1`).
     Man,
+    /// Print the offline manual: the overview and topic list, or one topic's page. Needs no index.
+    Manual(basemind::cli::manual::ManualArgs),
     /// Manage downloaded tree-sitter grammars.
     Lang {
         #[command(subcommand)]
@@ -408,6 +410,7 @@ fn run() -> Result<()> {
         Cmd::Man => clap_mangen::Man::new(Cli::command())
             .render(&mut std::io::stdout())
             .map_err(Into::into),
+        Cmd::Manual(args) => basemind::cli::manual::run(&args),
         Cmd::Lang { action } => match action {
             LangCmd::List => lang_cli::cmd_lang_list(no_color),
             LangCmd::Install => lang_cli::cmd_lang_install(&root, verbosity, no_color),

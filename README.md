@@ -1285,6 +1285,7 @@ checkout's principal.
 | `overview [--sections a,b] [--limit N]` | The repository's shape: languages with file and line counts, top-level directories, build manifests (`Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`, `pom.xml`, `build.gradle`) and the entry points they declare, the largest and most-imported files, HTTP routes, naming conventions per language, the latest commits. CLI only; answered by the daemon when one runs. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |
 | `completions <shell>` / `man` | Print a shell completion script (`bash`, `zsh`, `fish`, `elvish`, `powershell`) / the man page (roff) to stdout. |
+| `manual [topic]` | Print the offline manual (an index, or one topic: `code`, `resolution`, `git`, `documents`, `memory`, `agents`, `indexing`, `paging`, `setup`, `exit-codes`, `environment`, `troubleshooting`). Needs no index. |
 | `watch` | Keep the index fresh as files change (no server). |
 | `serve` | Stdio MCP entry point: ensures the daemon and relays to it (needs `--features comms`). The daemon keeps the index fresh by default. |
 | `daemon ensure` | Ensure the daemon and its HTTP transport are up and print the MCP URL (needs `--features comms`). |

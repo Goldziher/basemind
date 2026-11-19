@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacement; the report gives remaining lines per rule and file, the share migrated, files holding
   both forms and failed presence assertions, and each run is appended to a history in the workspace
   cache dir. `--fail-on-remaining` exits 1; `--ranges` adds read ranges.
+- `basemind manual [topic]` prints an offline manual compiled into the binary: an index and pages
+  on code navigation, resolution, git, documents, memory, agent messaging, indexing, paging, setup,
+  exit codes, environment variables and troubleshooting. It needs no index or daemon. The pages in
+  `docs/manual/` are also the source of the skills' manual sections, spliced in by
+  `scripts/sync_public_skills.py --manual` and checked for drift by `plugin_manifest_smoke` (#133).
 - `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so
