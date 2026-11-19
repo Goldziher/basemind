@@ -3271,3 +3271,151 @@ async fn large_files_are_listed_by_size_and_counted_on_status() {
     );
     service.cancel().await.expect("shut down");
 }
+
+/// The files of a `code_grep` answer, sorted.
+fn grep_files(body: &Value) -> Vec<String> {
+    let mut files: Vec<String> = hit_rows(body)
+        .iter()
+        .map(|row| row["path"].as_str().expect("a path").to_string())
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// #122: `changed` scopes `code_grep`, `code_symbols` and `find_files` to the files a change touched
+/// (a revision against the working tree, or `A..B`), and says how many files the scope holds, so a
+/// change that touched nothing (`scope_files: 0`) is told apart from one without a hit. An unknown
+/// revision is refused naming it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_scopes_queries_to_the_files_a_change_touched() {
+    let dir = build_repo();
+    let root = dir.path();
+    // `HEAD~1..HEAD` touched `a.rs`; the working tree changes `c.rs` and adds `f.rs`. `alpha` is
+    // called from `c.rs` too, and `zed` is defined in `e.rs` too: both lie outside each scope.
+    std::fs::write(root.join("c.rs"), b"pub fn zed() {}\npub fn caller() { alpha(); }\n").unwrap();
+    std::fs::write(root.join("f.rs"), b"pub fn fresh() { alpha(); }\n").unwrap();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+    let call = |tool: &'static str, args: Value| {
+        let service = &service;
+        async move {
+            let result = service
+                .call_tool(call_params(tool, args.clone()))
+                .await
+                .unwrap_or_else(|error| panic!("{tool} {args}: {error}"));
+            assert_ne!(result.is_error, Some(true), "{tool} {args}: {result:?}");
+            decode_text(&result)
+        }
+    };
+
+    let body = call("code_grep", json!({ "pattern": "alpha", "changed": "HEAD" })).await;
+    assert_eq!(grep_files(&body), ["c.rs", "f.rs"], "{body}");
+    assert_eq!(body["scope_files"], 2, "{body}");
+    let body = call("code_grep", json!({ "pattern": "alpha", "changed": "HEAD~1..HEAD" })).await;
+    assert_eq!(grep_files(&body), ["a.rs"], "{body}");
+    assert_eq!(body["scope_files"], 1, "{body}");
+    let body = call("code_grep", json!({ "pattern": "alpha" })).await;
+    assert!(
+        body.get("scope_files").is_none(),
+        "no `changed`, no `scope_files`: {body}"
+    );
+
+    let body = call("code_symbols", json!({ "name": "zed", "changed": "HEAD" })).await;
+    let paths: Vec<&str> = body["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .map(|row| row["path"].as_str().expect("a path"))
+        .collect();
+    assert_eq!(paths, ["c.rs"], "{body}");
+    assert_eq!(body["scope_files"], 2, "{body}");
+
+    let body = call("find_files", json!({ "changed": "HEAD" })).await;
+    assert_eq!(body["files"], json!(["c.rs", "f.rs"]), "{body}");
+    assert_eq!(body["scope_files"], 2, "{body}");
+    let body = call("find_files", json!({ "query": "rs", "changed": "HEAD~1..HEAD" })).await;
+    assert_eq!(body["files"], json!(["a.rs"]), "{body}");
+    let body = call("find_files", json!({ "min_lines": 1, "changed": "HEAD~1.." })).await;
+    assert_eq!(body["files"][0]["path"], "a.rs", "{body}");
+    assert_eq!(body["total"], 1, "{body}");
+
+    // A range that changed nothing is an empty scope, not an error.
+    let body = call("code_grep", json!({ "pattern": "alpha", "changed": "HEAD..HEAD" })).await;
+    assert_eq!(
+        (body["total"].clone(), body["scope_files"].clone()),
+        (json!(0), json!(0)),
+        "{body}"
+    );
+    let body = call("find_files", json!({ "changed": "HEAD..HEAD" })).await;
+    assert_eq!(body["files"], json!([]), "{body}");
+    assert_eq!(body["scope_files"], 0, "{body}");
+
+    let message = refused(
+        &service,
+        "code_grep",
+        json!({ "pattern": "alpha", "changed": "no-such-rev" }),
+    )
+    .await;
+    assert!(
+        message.starts_with("`code_grep`: `changed`: `no-such-rev` does not name a revision"),
+        "an unknown revision must be refused naming it: {message}"
+    );
+    let message = refused(
+        &service,
+        "code_symbols",
+        json!({ "name": "zed", "changed": "HEAD...HEAD~1" }),
+    )
+    .await;
+    assert!(
+        message.contains("three-dot form"),
+        "the three-dot form must be refused: {message}"
+    );
+    service.cancel().await.expect("shut down");
+}
+
+/// #122: `+importers` adds the files importing a changed file directly; a file importing nothing
+/// changed stays out.
+#[cfg(feature = "code-intel-js")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_with_importers_adds_the_files_importing_the_change() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("lib.ts"), b"export function shared() { return 1; }\n").unwrap();
+    std::fs::write(root.join("app.ts"), b"import { shared } from './lib';\nshared();\n").unwrap();
+    std::fs::write(root.join("deep.ts"), b"import './app';\n").unwrap();
+    std::fs::write(root.join("alone.ts"), b"export const alone = 1;\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "init"]);
+    std::fs::write(root.join("lib.ts"), b"export function shared() { return 2; }\n").unwrap();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+
+    let result = service
+        .call_tool(call_params("find_files", json!({ "changed": "HEAD+importers" })))
+        .await
+        .expect("find_files");
+    let body = decode_text(&result);
+    assert_ne!(result.is_error, Some(true), "{body}");
+    assert_eq!(body["files"], json!(["app.ts", "lib.ts"]), "depth 1 only: {body}");
+    assert_eq!(body["scope_files"], 2, "{body}");
+    service.cancel().await.expect("shut down");
+}
+
+/// #122: without an import resolver in the build, `+importers` is refused rather than answered as if
+/// nothing imported the change.
+#[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_with_importers_is_refused_without_a_resolver() {
+    let dir = build_repo();
+    let root = dir.path();
+    std::fs::write(root.join("f.rs"), b"pub fn fresh() {}\n").unwrap();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+    let message = refused(&service, "find_files", json!({ "changed": "HEAD+importers" })).await;
+    assert!(message.contains("`+importers` needs import resolution"), "{message}");
+    service.cancel().await.expect("shut down");
+}

@@ -12,9 +12,11 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 use crate::engine::MapCache;
 use crate::engine::budget::{apply_budget, budget};
+use crate::engine::changed::admits;
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::filters::{Filters, PathFilter, Tally, grep_selects_no_file, language_of_doc, selects_no_file};
+use crate::engine::scope::ChangeScope;
 use crate::engine::types::files::{
     FileHit, FilesResponse, FindFilesParams, FindFilesToolParams, ListFilesParams, SizedFile,
 };
@@ -38,14 +40,21 @@ fn effective_list_limit(requested: Option<u32>) -> (usize, bool) {
 impl Workspace {
     /// `find_files`: a fuzzy file-name search, or a listing without `query`; code and documents.
     pub(crate) fn find_files(&self, p: FindFilesToolParams) -> Result<FilesResponse, EngineError> {
-        match p.min_lines {
-            Some(0) => {
-                return Err(EngineError::invalid_argument(
-                    "`find_files`: `min_lines` must be at least 1; omit it to list files of any size.",
-                ));
-            }
-            Some(min_lines) => return run_large_files(self, p, min_lines),
-            None => {}
+        if p.min_lines == Some(0) {
+            return Err(EngineError::invalid_argument(
+                "`find_files`: `min_lines` must be at least 1; omit it to list files of any size.",
+            ));
+        }
+        let scope = crate::engine::changed::resolve(self, "find_files", p.changed.as_deref())?;
+        let mut response = self.find_files_in(p, scope.as_ref())?;
+        response.scope_files = scope.map(|scope| scope.len());
+        Ok(response)
+    }
+
+    /// [`find_files`](Self::find_files) over the files `scope` admits.
+    fn find_files_in(&self, p: FindFilesToolParams, scope: Option<&ChangeScope>) -> Result<FilesResponse, EngineError> {
+        if let Some(min_lines) = p.min_lines {
+            return run_large_files(self, p, min_lines, scope);
         }
         match p.query.filter(|query| !query.trim().is_empty()) {
             Some(query) => run_find_files(
@@ -58,6 +67,7 @@ impl Workspace {
                     max_tokens: budget(p.max_tokens),
                     cursor: p.cursor,
                 },
+                scope,
             ),
             None => run_list_files(
                 self,
@@ -69,6 +79,7 @@ impl Workspace {
                     max_tokens: budget(p.max_tokens),
                     cursor: p.cursor,
                 },
+                scope,
             ),
         }
     }
@@ -83,6 +94,7 @@ fn invalidated(ws: &Workspace, limit_clamped: bool) -> Result<FilesResponse, Eng
         files: Vec::new(),
         next_cursor: None,
         cursor_invalidated: true,
+        scope_files: None,
         notice: ws.lifecycle_notice(),
     })
 }
@@ -147,7 +159,11 @@ fn snapshot(generation: u32, stamp: u32) -> u32 {
 /// Body of `find_files` without a query: enumerate the workspace's files with optional substring
 /// (`path_contains`), prefix and `language` filters, then paginate. A file git tracks that is not
 /// indexed has no language, so a `language` filter leaves it out.
-fn run_list_files(ws: &Workspace, params: ListFilesParams) -> Result<FilesResponse, EngineError> {
+fn run_list_files(
+    ws: &Workspace,
+    params: ListFilesParams,
+    scope: Option<&ChangeScope>,
+) -> Result<FilesResponse, EngineError> {
     ws.wait_map_ready();
     let (limit, limit_clamped) = effective_list_limit(params.limit);
     let lang_filter = params.language.as_deref();
@@ -195,7 +211,7 @@ fn run_list_files(ws: &Workspace, params: ListFilesParams) -> Result<FilesRespon
         let path_ok = path_finder.as_ref().is_none_or(|f| f.find(p.as_bytes()).is_some())
             && prefix_filter.is_none_or(|prefix| p.as_bytes().starts_with(prefix));
         let lang_ok = lang_filter.is_none_or(|l| language.as_deref() == Some(l));
-        if !(path_ok && lang_ok) {
+        if !(path_ok && lang_ok && admits(scope, p)) {
             continue;
         }
         if seen < skip {
@@ -251,6 +267,7 @@ fn respond(
         files,
         next_cursor,
         cursor_invalidated: false,
+        scope_files: None,
         notice: ws.lifecycle_notice(),
     })
 }
@@ -263,7 +280,11 @@ fn respond(
 /// Sourced from the `MapCache` file view (already sorted, in-RAM, no store lock needed) — the
 /// `wait_map_ready()` call above guarantees it is populated before this runs. Paths that
 /// aren't valid UTF-8 are skipped — `nucleo-matcher` scores `str`, not raw bytes.
-fn run_find_files(ws: &Workspace, params: FindFilesParams) -> Result<FilesResponse, EngineError> {
+fn run_find_files(
+    ws: &Workspace,
+    params: FindFilesParams,
+    scope: Option<&ChangeScope>,
+) -> Result<FilesResponse, EngineError> {
     ws.wait_map_ready();
     let (limit, limit_clamped) = effective_list_limit(params.limit);
     let prefix_filter = params.path_prefix.as_deref();
@@ -304,8 +325,11 @@ fn run_find_files(ws: &Workspace, params: FindFilesParams) -> Result<FilesRespon
         })
         .map(|(p, _)| p)
         .collect();
+    // The filters are refused on their own; a scope that admits none of their files is an answer.
+    let none_passed = candidates.is_empty();
+    let candidates: Vec<&RelPath> = candidates.into_iter().filter(|p| admits(scope, p)).collect();
 
-    if candidates.is_empty() {
+    if none_passed {
         let filters = Filters {
             tool: "find_files",
             path: prefix_filter.map(PathFilter::Prefix),
@@ -344,7 +368,12 @@ fn run_find_files(ws: &Workspace, params: FindFilesParams) -> Result<FilesRespon
 /// Body of `find_files` with `min_lines`: the code files of at least `min_lines` lines that pass the
 /// `path_prefix`, `language` and (fuzzy) `query` filters, largest first, each with its line and byte
 /// count. Only the code map knows a file's lines, so documents and unindexed files are left out.
-fn run_large_files(ws: &Workspace, p: FindFilesToolParams, min_lines: u32) -> Result<FilesResponse, EngineError> {
+fn run_large_files(
+    ws: &Workspace,
+    p: FindFilesToolParams,
+    min_lines: u32,
+    scope: Option<&ChangeScope>,
+) -> Result<FilesResponse, EngineError> {
     ws.wait_map_ready();
     let (limit, limit_clamped) = effective_list_limit(p.limit);
     let cache = ws.cache.load_full();
@@ -368,7 +397,7 @@ fn run_large_files(ws: &Workspace, p: FindFilesToolParams, min_lines: u32) -> Re
             let passes = lang_filter.is_none_or(|l| &*meta.language == l)
                 && prefix_filter.is_none_or(|pre| path.as_bytes().starts_with(pre.as_bytes()));
             selected |= passes;
-            passes && meta.lines >= min_lines
+            passes && meta.lines >= min_lines && admits(scope, path)
         })
         .map(|(path, meta)| (path, meta.lines, meta.size_bytes))
         .collect();

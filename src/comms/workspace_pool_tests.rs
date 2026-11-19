@@ -627,6 +627,7 @@ async fn code_response(shared: &crate::mcp::ServedWorkspace, query: CodeQuery) -
                     limit: None,
                     cursor: None,
                     max_tokens: None,
+                    changed: None,
                 })
                 .await
         }
@@ -642,6 +643,7 @@ async fn code_response(shared: &crate::mcp::ServedWorkspace, query: CodeQuery) -
                     limit: None,
                     cursor: None,
                     max_tokens: None,
+                    changed: None,
                 })
                 .await
         }

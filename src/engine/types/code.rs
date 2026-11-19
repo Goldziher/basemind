@@ -302,6 +302,9 @@ pub struct CodeSymbolsParams {
     /// Token budget (default 6000).
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.
+    #[serde(default)]
+    pub changed: Option<String>,
 }
 
 /// The `code_symbols` sweep's own arguments, filled from [`CodeSymbolsParams`].
@@ -368,6 +371,10 @@ pub(crate) struct SearchResponse {
     pub cursor_invalidated: bool,
     /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    /// Files the `changed` scope holds, when one was passed: `0` is a change that touched nothing, told
+    /// apart from a change with no hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_files: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
 }

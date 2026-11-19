@@ -23,6 +23,7 @@ async fn symbols(shared: &crate::mcp::ServedWorkspace, name: &str) -> serde_json
             limit: None,
             cursor: None,
             max_tokens: None,
+            changed: None,
         })
         .await
         .expect("code_symbols answers");

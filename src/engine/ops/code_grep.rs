@@ -60,7 +60,8 @@ impl Workspace {
             ));
         }
         self.wait_map_ready();
-        workspace_grep(
+        let scope = crate::engine::changed::resolve(self, "code_grep", p.changed.as_deref())?;
+        let mut response = workspace_grep(
             self,
             WorkspaceGrepParams {
                 pattern: p.pattern,
@@ -73,8 +74,11 @@ impl Workspace {
                 literal: !p.regex.unwrap_or(false),
                 cursor: p.cursor,
             },
+            scope.as_ref(),
             cancelled,
-        )
+        )?;
+        response.scope_files = scope.map(|scope| scope.len());
+        Ok(response)
     }
 }
 
@@ -89,6 +93,7 @@ impl Workspace {
 fn workspace_grep(
     ws: &Workspace,
     params: WorkspaceGrepParams,
+    scope: Option<&crate::engine::scope::ChangeScope>,
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<WorkspaceGrepResponse, EngineError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
@@ -107,6 +112,7 @@ fn workspace_grep(
                     next_cursor: None,
                     skipped_files: 0,
                     cursor_invalidated: true,
+                    scope_files: None,
                     notice: ws.lifecycle_notice(),
                 });
             }
@@ -148,6 +154,7 @@ fn workspace_grep(
     let selected = |path: &RelPath, language: &str| {
         filters.path.as_ref().is_none_or(|f| f.matches(path.as_bytes()))
             && filters.language.is_none_or(|l| language == l)
+            && crate::engine::changed::admits(scope, path)
     };
     let documents = crate::engine::grep_text::text_documents(ws, &cache, &selected);
     // Grep needs only path, language and indexed size — every one of them in the symbol-free file
@@ -271,6 +278,7 @@ fn workspace_grep(
         next_cursor,
         skipped_files,
         cursor_invalidated: false,
+        scope_files: None,
         notice: ws.lifecycle_notice(),
     })
 }

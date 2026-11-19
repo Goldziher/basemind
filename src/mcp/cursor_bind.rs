@@ -192,6 +192,7 @@ mod tests {
             limit: None,
             cursor: None,
             max_tokens: None,
+            changed: None,
         }
     }
 
