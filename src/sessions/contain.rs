@@ -40,6 +40,8 @@ pub fn open_root(path: &Path) -> RootState {
 #[derive(Debug, Default)]
 pub struct Found {
     pub files: Vec<PathBuf>,
+    /// Subagent transcripts, each with the id of the session the host filed it under.
+    pub subagents: Vec<(PathBuf, String)>,
     /// Symlinks, and files that resolve outside their root.
     pub refused: u64,
 }

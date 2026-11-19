@@ -2,10 +2,12 @@
 //! session transcripts (issue #128, ADR-0049).
 //!
 //! Each host has a [`TranscriptParser`]: [`claude::Claude`] reads `~/.claude/projects/<slug>/*.jsonl`
-//! and [`codex::Codex`] reads `~/.codex/sessions/**/*.jsonl`. A transcript counts only when its
-//! recorded working directory is inside this repository's main checkout or one of its worktrees. The
-//! roots are fixed and derived from the home directory alone ([`SessionRoots`]); [`contain`] holds
-//! the walk, which follows no symlink and only reads.
+//! and the subagent transcripts filed under each session, and [`codex::Codex`] reads
+//! `~/.codex/sessions/**/*.jsonl`. A
+//! transcript counts only when its recorded working directory is inside this repository's main
+//! checkout or one of its worktrees. A subagent is reported on its own and attributed to its parent
+//! session. The roots are fixed and derived from the home directory alone ([`SessionRoots`]);
+//! [`contain`] holds the walk, which follows no symlink and only reads.
 //!
 //! Nothing here echoes transcript text: a parser keeps tool names, file paths named as arguments,
 //! error flags, timestamps and token counts, and the report carries counts and repository-relative
@@ -179,6 +181,11 @@ pub enum Outcome {
 /// A transcript of this repository, parsed.
 pub struct Parsed {
     pub checkout: String,
+    /// The id the host gives this conversation when it differs from the file name, so a subagent
+    /// can name it as its parent.
+    pub thread: Option<String>,
+    /// The session this one is a subagent of, when the transcript records it.
+    pub parent: Option<String>,
     pub format_version: Option<String>,
     pub started: Option<String>,
     pub ended: Option<String>,
@@ -208,6 +215,28 @@ pub struct SessionReport {
     pub adoption: Option<f64>,
     pub counts: Counts,
     pub repeated_reads: Vec<RepeatedRead>,
+    /// The subagents attributed to this session; absent on a subagent and on a session without any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<SubagentTotals>,
+}
+
+/// What the subagents of one session did, summed. The session's own `counts` leave them out.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SubagentTotals {
+    pub transcripts: u64,
+    pub adoption: Option<f64>,
+    pub counts: Counts,
+}
+
+/// One subagent transcript in the report.
+#[derive(Debug, Clone, Serialize)]
+pub struct SubagentReport {
+    /// The parent session's `id` when it is in the report, else the id the transcript names.
+    pub parent: String,
+    /// Whether the parent session is in the report and counts this subagent in its `subagents`.
+    pub attributed: bool,
+    #[serde(flatten)]
+    pub session: SessionReport,
 }
 
 /// A transcript of this repository whose format is not supported.
@@ -226,10 +255,11 @@ pub struct RootReport {
     pub state: String,
 }
 
-/// The sum over every reported session.
+/// The sum over every reported session and subagent.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Aggregate {
     pub sessions: u64,
+    pub subagents: u64,
     pub adoption: Option<f64>,
     pub counts: Counts,
 }
@@ -239,6 +269,7 @@ pub struct Aggregate {
 pub struct Report {
     pub roots: Vec<RootReport>,
     pub sessions: Vec<SessionReport>,
+    pub subagents: Vec<SubagentReport>,
     pub aggregate: Aggregate,
     pub unsupported: Vec<UnsupportedReport>,
     /// Unsupported transcripts whose working directory could not be read.
@@ -251,11 +282,13 @@ pub struct Report {
     pub unreadable: u64,
 }
 
-/// Collect the report for `scope` from `roots`. `since` (`YYYY-MM-DD`) keeps the sessions active
-/// on or after that day; a session with no timestamp is kept.
+/// Collect the report for `scope` from `roots`. `since` (`YYYY-MM-DD`) keeps the sessions and
+/// subagents active on or after that day; one with no timestamp is kept.
 pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Report {
     let parsers: [&dyn TranscriptParser; 2] = [&claude::Claude, &codex::Codex];
     let mut report = Report::default();
+    // The thread id of each reported session, by host, for attributing subagents.
+    let mut threads: Vec<(Host, String)> = Vec::new();
     for parser in parsers {
         let host = parser.host();
         let root = match contain::open_root(roots.root(host)) {
@@ -282,9 +315,15 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
         let mut found = Found::default();
         parser.transcripts(&root, scope, &mut found);
         report.refused += found.refused;
-        found.files.sort();
-        for file in &found.files {
-            let Ok(handle) = contain::open(file) else {
+        let mut transcripts: Vec<(PathBuf, Option<String>)> = found
+            .files
+            .into_iter()
+            .map(|file| (file, None))
+            .chain(found.subagents.into_iter().map(|(file, parent)| (file, Some(parent))))
+            .collect();
+        transcripts.sort();
+        for (file, filed_under) in transcripts {
+            let Ok(handle) = contain::open(&file) else {
                 report.unreadable += 1;
                 continue;
             };
@@ -300,10 +339,11 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
                     {
                         continue;
                     }
+                    let parsed = *parsed;
                     let (counts, repeated_reads) = parsed.tally.finish();
-                    report.sessions.push(SessionReport {
+                    let session = SessionReport {
                         host,
-                        id,
+                        id: id.clone(),
                         checkout: parsed.checkout,
                         format_version: parsed.format_version,
                         started: parsed.started,
@@ -311,7 +351,19 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
                         adoption: counts.adoption(),
                         counts,
                         repeated_reads,
-                    });
+                        subagents: None,
+                    };
+                    match filed_under.or(parsed.parent) {
+                        Some(parent) => report.subagents.push(SubagentReport {
+                            parent,
+                            attributed: false,
+                            session,
+                        }),
+                        None => {
+                            threads.push((host, parsed.thread.unwrap_or(id)));
+                            report.sessions.push(session);
+                        }
+                    }
                 }
                 Outcome::OtherDirectory => report.other_directories += 1,
                 Outcome::Empty => report.empty += 1,
@@ -325,15 +377,47 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
             }
         }
     }
+    attribute(&mut report, &threads);
     report
         .sessions
         .sort_by(|a, b| a.started.cmp(&b.started).then_with(|| a.id.cmp(&b.id)));
+    report.subagents.sort_by(|a, b| {
+        a.parent
+            .cmp(&b.parent)
+            .then_with(|| a.session.started.cmp(&b.session.started))
+            .then_with(|| a.session.id.cmp(&b.session.id))
+    });
     for session in &report.sessions {
         report.aggregate.counts.add(&session.counts);
     }
+    for subagent in &report.subagents {
+        report.aggregate.counts.add(&subagent.session.counts);
+    }
     report.aggregate.sessions = report.sessions.len() as u64;
+    report.aggregate.subagents = report.subagents.len() as u64;
     report.aggregate.adoption = report.aggregate.counts.adoption();
     report
+}
+
+/// Attribute each subagent to the reported session of its host whose thread id it names, and add
+/// its counts to that session's `subagents`. `threads[i]` is the thread id of `report.sessions[i]`.
+fn attribute(report: &mut Report, threads: &[(Host, String)]) {
+    for subagent in &mut report.subagents {
+        let host = subagent.session.host;
+        let Some(index) = threads
+            .iter()
+            .position(|(h, thread)| *h == host && *thread == subagent.parent)
+        else {
+            continue;
+        };
+        let parent = &mut report.sessions[index];
+        let totals = parent.subagents.get_or_insert_with(SubagentTotals::default);
+        totals.transcripts += 1;
+        totals.counts.add(&subagent.session.counts);
+        totals.adoption = totals.counts.adoption();
+        subagent.parent = parent.id.clone();
+        subagent.attributed = true;
+    }
 }
 
 /// A basemind MCP tool name: `mcp__<server>__<tool>` (Claude Code) or `<server>__<tool>` (Codex)

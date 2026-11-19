@@ -1,6 +1,9 @@
 //! Claude Code transcripts: `~/.claude/projects/<slug>/<session>.jsonl`, where `<slug>` is the
 //! session's working directory with every character outside `[A-Za-z0-9]` replaced by `-`. A session
 //! started in a subdirectory of a checkout has its own slug, which extends the checkout's with `-`.
+//! A subagent's transcript is filed under its session: `<slug>/<session>/subagents/agent-<id>.jsonl`,
+//! or one directory deeper for a workflow run (`subagents/workflows/<run>/agent-<id>.jsonl`). Its
+//! records have the same shape, with `isSidechain` set and `sessionId` naming the parent.
 //!
 //! Each line is a JSON record. The ones read here carry `cwd`, `version` and `timestamp`; an
 //! `assistant` record's `message` holds `tool_use` blocks (`id`, `name`, `input`) and `usage`
@@ -23,6 +26,9 @@ use super::{Outcome, Parsed, Scope, TranscriptParser, basemind_tool, major, wide
 
 /// The `version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[1, 2];
+
+/// `subagents/workflows/<run>/`: two directory levels below a session's `subagents` directory.
+const SUBAGENT_DEPTH: usize = 2;
 
 pub struct Claude;
 
@@ -102,6 +108,7 @@ impl TranscriptParser for Claude {
         for project in &projects {
             if let Some(dir) = contain::child_dir(root, project, found) {
                 contain::walk(root, &dir, 0, found);
+                subagents(root, &dir, found);
             }
         }
     }
@@ -133,6 +140,8 @@ impl TranscriptParser for Claude {
                 };
                 parsed = Some(Parsed {
                     checkout: checkout.label.clone(),
+                    thread: None,
+                    parent: None,
                     format_version: None,
                     started: None,
                     ended: None,
@@ -185,6 +194,38 @@ impl TranscriptParser for Claude {
 fn in_checkout(name: &str, slug: &str) -> bool {
     name.strip_prefix(slug)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+}
+
+/// The subagent transcripts filed under each session directory of `project`. A session directory or
+/// `subagents` directory that is a symlink is refused, as is any symlink below it.
+fn subagents(root: &Path, project: &Path, found: &mut Found) {
+    let Ok(entries) = std::fs::read_dir(project) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        // `file_type` does not follow a symlink, and the session walk already refused those.
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Ok(session) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(dir) = contain::child_dir(&entry.path(), "subagents", found) else {
+            continue;
+        };
+        let mut inner = Found::default();
+        contain::walk(root, &dir, SUBAGENT_DEPTH, &mut inner);
+        found.refused += inner.refused;
+        for file in inner.files {
+            if file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("agent-"))
+            {
+                found.subagents.push((file, session.clone()));
+            }
+        }
+    }
 }
 
 fn record_message(session: &mut Parsed, message: Message, tokens: &mut AHashMap<String, (u64, Vec<Family>)>) {

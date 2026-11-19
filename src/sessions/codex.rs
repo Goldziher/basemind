@@ -109,6 +109,8 @@ impl TranscriptParser for Codex {
         }
         let mut session = Parsed {
             checkout: checkout.label.clone(),
+            thread: None,
+            parent: None,
             format_version: Some(version),
             started: None,
             ended: None,

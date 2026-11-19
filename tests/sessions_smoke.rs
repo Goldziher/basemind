@@ -1,5 +1,6 @@
-//! `basemind sessions` over synthetic transcripts (issue #128, ADR-0049): the counts per host,
-//! sessions started in a subdirectory, the containment of the transcript roots, and that no transcript text reaches the output.
+//! `basemind sessions` over synthetic transcripts (issue #128, ADR-0049): the counts per host, the
+//! subagents and their parents, sessions started in a subdirectory, the containment of the transcript
+//! roots, and that no transcript text reaches the output.
 //!
 //! The fixtures under `tests/fixtures/sessions/` imitate the Claude Code and Codex record shapes;
 //! `{{REPO}}`, `{{WORKTREE}}` and `{{OTHER}}` are replaced with the temporary checkouts. Every
@@ -12,6 +13,11 @@ use std::process::Command;
 use basemind::sessions::claude::slug;
 use basemind::sessions::tally::{Counts, OutputTokens};
 use basemind::sessions::{Host, Report, Scope, SessionRoots, collect};
+
+/// The symlinks `setup` plants: the transcript, the day directory, and in the subagent tree a
+/// transcript, a session directory, a `subagents` directory and a workflow-run directory.
+#[cfg(unix)]
+const PLANTED_SYMLINKS: u64 = 6;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sessions");
 
@@ -112,6 +118,25 @@ fn setup() -> Env {
         "claude/other-repo.jsonl",
         &claude.join(slug(&sibling)).join("s10.jsonl"),
     );
+    // Subagents of s1, directly and in a workflow run; a journal beside them is not a transcript.
+    place(
+        &env,
+        &other,
+        "claude/subagent.jsonl",
+        &repo_dir.join("s1/subagents/agent-a1.jsonl"),
+    );
+    place(
+        &env,
+        &other,
+        "claude/subagent.jsonl",
+        &repo_dir.join("s1/subagents/workflows/wf_1/agent-a2.jsonl"),
+    );
+    place(
+        &env,
+        &other,
+        "claude/main.jsonl",
+        &repo_dir.join("s1/subagents/workflows/wf_1/journal.jsonl"),
+    );
 
     let codex = env.home.join(".codex/sessions/2026/11/18");
     place(&env, &other, "codex/main.jsonl", &codex.join("rollout-a.jsonl"));
@@ -129,10 +154,36 @@ fn setup() -> Env {
     // Escapes: a transcript symlinked to a file outside the root, and a day directory symlinked out.
     place(&env, &other, "claude/main.jsonl", &outside.join("escaped.jsonl"));
     place(&env, &other, "codex/main.jsonl", &outside.join("day/rollout-e.jsonl"));
+    // And in the subagent tree: a session directory, a `subagents` directory and a workflow run
+    // symlinked out, and a symlinked subagent transcript.
+    // Two transcripts there, so a symlinked directory that was followed would show as two refused
+    // files rather than one refused directory.
+    for name in ["agent-x.jsonl", "agent-y.jsonl"] {
+        place(
+            &env,
+            &other,
+            "claude/subagent.jsonl",
+            &outside.join("session/subagents").join(name),
+        );
+    }
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(outside.join("escaped.jsonl"), repo_dir.join("s6.jsonl")).expect("symlink");
-        std::os::unix::fs::symlink(outside.join("day"), env.home.join(".codex/sessions/2026/11/19")).expect("symlink");
+        use std::os::unix::fs::symlink;
+        symlink(outside.join("escaped.jsonl"), repo_dir.join("s6.jsonl")).expect("symlink");
+        symlink(outside.join("day"), env.home.join(".codex/sessions/2026/11/19")).expect("symlink");
+        symlink(
+            outside.join("escaped.jsonl"),
+            repo_dir.join("s1/subagents/agent-link.jsonl"),
+        )
+        .expect("symlink");
+        symlink(outside.join("session"), repo_dir.join("s9")).expect("symlink");
+        std::fs::create_dir_all(repo_dir.join("s8")).expect("mkdir");
+        symlink(outside.join("session/subagents"), repo_dir.join("s8/subagents")).expect("symlink");
+        symlink(
+            outside.join("session/subagents"),
+            repo_dir.join("s1/subagents/workflows/wf_2"),
+        )
+        .expect("symlink");
     }
     env
 }
@@ -233,7 +284,52 @@ fn counts_each_host_and_keeps_to_this_repository() {
     );
 
     assert_eq!(report.aggregate.sessions, 4);
-    assert_eq!(report.aggregate.counts.basemind, 3);
+    assert_eq!(report.aggregate.subagents, 2);
+    assert_eq!(report.aggregate.counts.basemind, 5, "sessions and subagents");
+}
+
+#[test]
+fn subagents_are_reported_and_attributed_to_their_session() {
+    let env = setup();
+    let report = report(&env, None);
+    let subagents: Vec<(Host, &str, &str, bool)> = report
+        .subagents
+        .iter()
+        .map(|s| (s.session.host, s.session.id.as_str(), s.parent.as_str(), s.attributed))
+        .collect();
+    assert_eq!(
+        subagents,
+        vec![
+            (Host::Claude, "agent-a1", "s1", true),
+            (Host::Claude, "agent-a2", "s1", true),
+        ],
+        "the journal beside agent-a2 is not a transcript"
+    );
+
+    let claude = &report.subagents[0].session;
+    assert_eq!(
+        (claude.counts.basemind, claude.counts.read_whole, claude.counts.edit),
+        (1, 1, 1)
+    );
+    assert_eq!(claude.counts.edits_without_read, 0, "the subagent's own read counts");
+
+    let s1 = report.sessions.iter().find(|s| s.id == "s1").expect("s1");
+    let totals = s1.subagents.as_ref().expect("s1 has subagents");
+    assert_eq!(totals.transcripts, 2);
+    assert_eq!(totals.counts.basemind, 2);
+    assert_eq!(
+        s1.counts.basemind, 1,
+        "the session's own counts leave its subagents out"
+    );
+    assert!(
+        report
+            .sessions
+            .iter()
+            .find(|s| s.id == "s7")
+            .expect("s7")
+            .subagents
+            .is_none()
+    );
 }
 
 #[test]
@@ -266,11 +362,12 @@ fn other_repositories_and_escapes_are_not_counted() {
     assert_eq!(report.other_directories, 4);
     #[cfg(unix)]
     {
+        assert_eq!(report.refused, PLANTED_SYMLINKS, "every planted symlink");
         assert_eq!(
-            report.refused, 2,
-            "the symlinked transcript and the symlinked day directory"
+            (report.sessions.len(), report.subagents.len()),
+            (4, 2),
+            "no escape became a session or a subagent"
         );
-        assert_eq!(report.sessions.len(), 4, "neither escape became a session");
     }
 }
 
@@ -283,6 +380,7 @@ fn a_missing_root_is_reported_and_since_filters_by_day() {
     assert_eq!(states, vec![(Host::Claude, "present"), (Host::Codex, "missing")]);
     let ids: Vec<&str> = report.sessions.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, vec!["s1", "s7"], "the worktree session ended on 2026-11-17");
+    assert_eq!(report.subagents.len(), 2, "the Claude subagents of 2026-11-18");
 }
 
 #[test]
@@ -329,8 +427,12 @@ fn the_command_prints_counts_and_never_transcript_text() {
 
     let json: serde_json::Value = serde_json::from_str(&run(true)).expect("JSON report");
     assert_eq!(json["aggregate"]["sessions"], 4);
+    assert_eq!(json["aggregate"]["subagents"], 2);
     assert_eq!(json["sessions"][2]["counts"]["edits_without_read"], 1);
     assert_eq!(json["sessions"][2]["repeated_reads"][0]["path"], "src/main.rs");
+    assert_eq!(json["sessions"][2]["subagents"]["transcripts"], 2);
+    assert_eq!(json["subagents"][0]["parent"], "s1");
+    assert_eq!(json["subagents"][0]["id"], "agent-a1");
     assert_eq!(json["unsupported"].as_array().map(Vec::len), Some(2));
 
     let text = run(false);
@@ -340,5 +442,10 @@ fn the_command_prints_counts_and_never_transcript_text() {
         text.contains("unsupported: codex rollout-d (unknown cli_version 7.1.0)"),
         "{text}"
     );
-    assert!(text.contains("skipped 2 transcripts: refused"), "{text}");
+    assert!(text.contains("subagents:"), "{text}");
+    assert!(text.contains("s1/agent-a1"), "{text}");
+    assert!(
+        text.contains(&format!("skipped {PLANTED_SYMLINKS} transcripts: refused")),
+        "{text}"
+    );
 }

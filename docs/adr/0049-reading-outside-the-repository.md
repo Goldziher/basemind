@@ -62,6 +62,9 @@ basemind already contains reads that reach outside the tree:
   worktrees, or a directory below one of them (resolved first when it holds `..`). Claude Code files
   such a session under a project directory whose slug extends the checkout's, so those are walked
   too; a sibling the lossy slug also matches is dropped by its `cwd`.
+- Subagent transcripts are read under the same rules: Claude Code's
+  `<slug>/<session>/subagents/[workflows/<run>/]agent-*.jsonl`, walked without following a
+  symlink at any level. Each is reported on its own and attributed to its parent session.
 - **Counts only.** The output is per-session and aggregate counts plus repository-relative paths.
   It never echoes message text, tool input or output, or a command line, and writes nothing but
   stdout: no cache, no telemetry, no file.

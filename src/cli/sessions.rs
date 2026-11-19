@@ -1,5 +1,5 @@
 //! `basemind sessions`: tool-use counts from the local Claude Code and Codex transcripts of this
-//! repository and its worktrees (issue #128, ADR-0049).
+//! repository and its worktrees, their subagents included (issue #128, ADR-0049).
 //!
 //! It runs in this process, never through the daemon: it reads the operator's home, so no relayed
 //! call may reach it, and it has no MCP tool. It prints counts and repository-relative paths to
@@ -64,24 +64,7 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
     if report.sessions.is_empty() {
         writeln!(out, "no sessions of this repository")?;
     } else {
-        writeln!(
-            out,
-            "{:<6} {:<40} {:<16} {:<10} {:>4} {:>5} {:>5} {:>4} {:>5} {:>6} {:>4} {:>5} {:>4} {:>8}",
-            "host",
-            "session",
-            "checkout",
-            "ended",
-            "bm",
-            "tool",
-            "shell",
-            "git",
-            "whole",
-            "ranged",
-            "edit",
-            "write",
-            "err",
-            "adoption"
-        )?;
+        header(out, "session")?;
         for session in &report.sessions {
             let ended = session.ended.as_deref().and_then(|e| e.get(..10)).unwrap_or("-");
             row(
@@ -93,11 +76,27 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
                 &session.counts,
             )?;
         }
+        if !report.subagents.is_empty() {
+            writeln!(out, "subagents:")?;
+            header(out, "parent/subagent")?;
+            for subagent in &report.subagents {
+                let session = &subagent.session;
+                let ended = session.ended.as_deref().and_then(|e| e.get(..10)).unwrap_or("-");
+                row(
+                    out,
+                    session.host.as_str(),
+                    &format!("{}/{}", subagent.parent, session.id),
+                    &session.checkout,
+                    ended,
+                    &session.counts,
+                )?;
+            }
+        }
         let aggregate = &report.aggregate;
         row(
             out,
             "all",
-            &format!("{} sessions", aggregate.sessions),
+            &format!("{} sessions, {} subagents", aggregate.sessions, aggregate.subagents),
             "",
             "",
             &aggregate.counts,
@@ -120,6 +119,7 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
         let repeated: Vec<_> = report
             .sessions
             .iter()
+            .chain(report.subagents.iter().map(|s| &s.session))
             .flat_map(|s| s.repeated_reads.iter().map(move |r| (&s.id, r)))
             .collect();
         if !repeated.is_empty() {
@@ -150,6 +150,28 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
             writeln!(out, "skipped {count} transcripts: {what}")?;
         }
     }
+    Ok(())
+}
+
+fn header(out: &mut impl Write, id: &str) -> Result<()> {
+    writeln!(
+        out,
+        "{:<6} {:<40} {:<16} {:<10} {:>4} {:>5} {:>5} {:>4} {:>5} {:>6} {:>4} {:>5} {:>4} {:>8}",
+        "host",
+        id,
+        "checkout",
+        "ended",
+        "bm",
+        "tool",
+        "shell",
+        "git",
+        "whole",
+        "ranged",
+        "edit",
+        "write",
+        "err",
+        "adoption"
+    )?;
     Ok(())
 }
 

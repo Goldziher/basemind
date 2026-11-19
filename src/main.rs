@@ -137,7 +137,8 @@ enum Cmd {
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
     Statusline,
     /// Tool-use counts from the local Claude Code and Codex transcripts of this repository and its
-    /// worktrees: basemind calls against shell searches and whole-file reads. Counts and paths only.
+    /// worktrees, subagents listed with their parent session: basemind calls against shell searches
+    /// and whole-file reads. Counts and paths only.
     Sessions(basemind::cli::sessions::SessionsArgs),
     /// Manage the machine-global caches (gc / stats / clear). Offline path.
     #[command(subcommand)]
