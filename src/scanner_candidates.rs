@@ -543,7 +543,11 @@ pub(crate) fn candidates_for_source(
         ScanSource::Rev { repo, sha } => repo.list_paths_rev(sha)?,
     };
     let mut out: Vec<String> = match source {
-        ScanSource::WorkingTree => raw,
+        ScanSource::WorkingTree => {
+            let mut walked = raw;
+            walked.extend(filters.attach_dep_docs(root, config));
+            walked
+        }
         _ => raw
             .into_iter()
             .filter(|rel| filters.allows(rel))

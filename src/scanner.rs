@@ -347,6 +347,8 @@ pub struct ScanReport {
     /// `lanes` — the document and LanceDB flushes run in `lanes`), in the order the phases ran.
     /// Process-local: not part of any wire protocol.
     pub phase_peaks: Vec<crate::scan_phase_peaks::PhasePeak>,
+    /// Dependencies `[documents.dependencies]` names whose documentation was not indexed, and why.
+    pub deps_unavailable: Vec<crate::deps_docs::DepUnavailable>,
 }
 
 /// Cooperative cancellation token for a scan.
@@ -524,6 +526,8 @@ pub fn scan_with_observer(
     }
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_PURGE, None);
+    let working = store.view == crate::store::VIEW_WORKING && matches!(source, ScanSource::WorkingTree);
+    report.deps_unavailable = crate::deps_docs::record(&store.basemind_dir, working, filters.dep_docs());
 
     // Derived AFTER the drive rather than before it: the entries the drive upserted are all in ~keep
     // `seen`, so they are excluded either way, and reading the file map here keeps the whole ~keep
@@ -763,7 +767,8 @@ fn scan_paths_inner(
     #[cfg(any(unix, windows))] // Blobs written without an fsync; free inside a hosting process. ~keep
     let _hosting = crate::scan_evidence::HostingMarker::begin();
     crate::scanner_integrity::claim_writer(store)?;
-    if crate::scanner_integrity::needs_full_rebuild(store)? {
+    // A changed manifest or lockfile re-resolves the dependency documentation, which a full pass does.
+    if crate::scanner_integrity::needs_full_rebuild(store)? || crate::deps_docs::manifest_touched(root, config, paths) {
         return scan_with_observer(root, store, config, source, embed, cancel, observer, retrieval);
     }
     store.retry_vector_store();

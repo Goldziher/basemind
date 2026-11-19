@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
+  of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
+  `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so
+  `docs_search {path: "deps/npm/react@*/**"}` filters by package and a hit carries `package` and
+  `package_version`. Roots outside the repository need `BASEMIND_ALLOW_DEPENDENCY_ROOTS`; what is not
+  indexed is listed under `deps_unavailable` in `index_status` and the scan output. A changed manifest
+  or lockfile re-resolves them. The `docs` table gains `package` and `package_version` columns, so the
+  retrieval store is rebuilt once (ADR-0049).
 - `basemind serve --lead` (Unix, `comms` builds): the lead's own `serve` hosts the
   `basemind-agents` supervisor and answers `agent_launch` / `agent_stop` on its stdio; the daemon,
   the HTTP front-end, a plain `serve` and the CLI never do. Off until the operator's user-level

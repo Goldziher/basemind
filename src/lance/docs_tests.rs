@@ -31,6 +31,7 @@ fn doc(key: &str, mime: &str, keywords: &[&str], chunks: Vec<DocChunkRow>) -> Do
         title: Some(format!("{key} title")),
         keywords: keywords.iter().map(|k| k.to_string()).collect(),
         chunks,
+        ..DocRows::default()
     }
 }
 
@@ -95,6 +96,39 @@ fn a_selective_filter_is_applied_before_the_cut() {
         ..DocPredicate::default()
     };
     assert_eq!(store.nearest(&[1.0, 0.0, 0.0, 0.0], &by_kind, 5).unwrap().len(), 1);
+}
+
+/// A rank whose exact lexical hits are few reruns fuzzy, which matches unstemmed terms and can find
+/// fewer: the exact hits must survive it.
+#[test]
+fn a_fuzzy_rerun_that_finds_less_keeps_the_exact_hits() {
+    let (_dir, store) = seeded();
+    assert!(
+        store
+            .lexical("inspected", &DocPredicate::default(), 10, true)
+            .unwrap()
+            .is_empty()
+    );
+    let request = crate::lance::docs_rank::DocsRequest {
+        query: "inspected".to_string(),
+        ..crate::lance::docs_rank::DocsRequest::default()
+    };
+    let filters = crate::lance::docs_rank::Filters::parse(&request, None).unwrap();
+    let mut live = crate::lance::docs_rank::LiveDocs::default();
+    live.by_key.insert("pdf".to_string(), vec!["manual.pdf".to_string()]);
+    let inputs = crate::lance::docs_rank::RankInputs {
+        store: Some(&store),
+        live,
+        owed: 0,
+        embed: Err("off".to_string()),
+        rerank: None,
+    };
+    let ranking = crate::lance::docs_rank::rank(&request.query, &filters, inputs).unwrap();
+    assert!(!ranking.lexical_fuzzy);
+    assert_eq!(
+        ranking.hits.iter().map(|h| (h.doc.as_str(), h.ord)).collect::<Vec<_>>(),
+        vec![("pdf", 1)]
+    );
 }
 
 #[test]

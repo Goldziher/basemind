@@ -141,7 +141,8 @@ fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::stor
 /// schema, and a memory row is checked against its note's `updated_at`. Bump it when a table's
 /// columns change; an older store is then wiped and rebuilt, a newer one refused. It starts at
 /// 1000 so every store a minor-numbered binary wrote (`schema_ver` = the minor) reads as older.
-pub const VECTOR_STORE_VER: u32 = 1000;
+/// 1001: `docs` gained the nullable `package` and `package_version` columns (ADR-0049).
+pub const VECTOR_STORE_VER: u32 = 1001;
 
 /// One row in the `memory` table. It carries the note's vector and tags, never its text: a row
 /// can outlive its note, and the text of a deleted note must not.

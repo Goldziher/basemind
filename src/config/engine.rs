@@ -48,6 +48,8 @@ pub struct EngineConfig {
     pub grep_bloom: bool,
     /// Ceilings the daemon applies to every workspace's `basemind.toml`.
     pub daemon_caps: super::daemon::DaemonCaps,
+    /// Package caches outside the repository that `[documents.dependencies]` reads from.
+    pub dependency_homes: DependencyHomes,
 }
 
 impl Default for EngineConfig {
@@ -64,8 +66,24 @@ impl Default for EngineConfig {
             index_cache_bytes: None,
             grep_bloom: true,
             daemon_caps: super::daemon::DaemonCaps::default(),
+            dependency_homes: DependencyHomes::default(),
         }
     }
+}
+
+/// The package caches outside any repository that dependency documentation is read from (ADR-0049).
+/// `None` is a cache this process does not know of; its packages are listed as not installed. Each
+/// is read only under [`TrustPolicy::dependency_roots`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DependencyHomes {
+    /// Cargo's home, holding `registry/src/*/<name>-<version>` (`CARGO_HOME`, else `~/.cargo`).
+    pub cargo_home: Option<PathBuf>,
+    /// The Go module cache, holding `<module>@<version>` (`GOMODCACHE`, else `$GOPATH/pkg/mod`,
+    /// else `~/go/pkg/mod`).
+    pub go_mod_cache: Option<PathBuf>,
+    /// The active Python virtual environment (`VIRTUAL_ENV`).
+    pub virtual_env: Option<PathBuf>,
 }
 
 /// Git resource caps and the git-history index.
@@ -150,9 +168,14 @@ pub struct TrustPolicy {
     pub allow_follow_symlinks: bool,
     /// The workspaces whose `[scan] extra_roots` are walked (`BASEMIND_ALLOW_EXTRA_ROOTS`).
     pub extra_roots: ExtraRootsGrant,
+    /// The workspaces whose `[documents.dependencies]` may read package roots outside the
+    /// repository: [`DependencyHomes`], or an in-tree root that resolves outside it
+    /// (`BASEMIND_ALLOW_DEPENDENCY_ROOTS`, same forms as `BASEMIND_ALLOW_EXTRA_ROOTS`).
+    pub dependency_roots: ExtraRootsGrant,
 }
 
-/// Which workspaces may walk the `[scan] extra_roots` their `basemind.toml` names.
+/// Which workspaces an operator grant covers: the `[scan] extra_roots` their `basemind.toml` names,
+/// or the dependency package roots outside their tree.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ExtraRootsGrant {
     /// None: the entries are ignored with a warning.

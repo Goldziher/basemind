@@ -67,6 +67,11 @@ pub struct DocHit {
     pub mime_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The dependency whose documentation this is (`path` under `deps/`), and its version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_version: Option<String>,
     pub chunk: DocChunkRef,
     pub cite: DocCite,
     /// The hit's chunks, stitched, with its context chunks around them.

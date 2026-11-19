@@ -274,6 +274,9 @@ pub(crate) struct Filters {
     /// download): the rest of the pass indexes the keyword lane only instead of retrying per file.
     #[cfg(feature = "code-search")]
     pub(crate) code_embed_failed: std::sync::atomic::AtomicBool,
+    /// The dependency documentation a full working-tree pass indexes under `deps/...` (ADR-0049),
+    /// resolved once by its candidate walk; unset on every other pass.
+    dep_docs: std::sync::OnceLock<crate::deps_docs::DepDocs>,
 }
 
 impl Filters {
@@ -347,11 +350,40 @@ impl Filters {
             vector_rows_unsure: false,
             #[cfg(feature = "code-search")]
             code_embed_failed: std::sync::atomic::AtomicBool::new(false),
+            dep_docs: std::sync::OnceLock::new(),
         })
     }
 
-    /// Classify `rel` with the `[languages]` overrides layered over built-in detection.
+    /// Resolve this pass's dependency documentation for the repository at `root` and return its
+    /// virtual paths, the candidates the walk adds. Empty when `config` does not ask for it.
+    pub(crate) fn attach_dep_docs(&self, root: &Path, config: &Config) -> Vec<String> {
+        let Some(docs) = crate::deps_docs::for_scan(root, config) else {
+            return Vec::new();
+        };
+        let paths = docs.virtual_paths();
+        let _ = self.dep_docs.set(docs);
+        paths
+    }
+
+    /// The dependency documentation this pass resolved, if it resolved any.
+    pub(crate) fn dep_docs(&self) -> Option<&crate::deps_docs::DepDocs> {
+        self.dep_docs.get()
+    }
+
+    /// The installed file behind the virtual dependency path `rel`, when this pass indexes it.
+    pub(crate) fn dep_doc(&self, rel: &str) -> Option<&crate::deps_docs::DepDocFile> {
+        if !rel.starts_with(crate::deps_docs::VIRTUAL_ROOT) {
+            return None;
+        }
+        self.dep_docs.get()?.files.get(rel)
+    }
+
+    /// Classify `rel` with the `[languages]` overrides layered over built-in detection. A
+    /// dependency's documentation is never code: it goes to the document tier whatever its name.
     pub(crate) fn detect_lang(&self, rel: &str) -> Detection {
+        if self.dep_doc(rel).is_some() {
+            return Detection::Unknown;
+        }
         self.lang.detect(Path::new(rel))
     }
 

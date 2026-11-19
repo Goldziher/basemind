@@ -740,6 +740,7 @@ mod code {
             title: None,
             keywords: Vec::new(),
             chunks: Vec::new(),
+            ..Default::default()
         }])
         .unwrap();
 

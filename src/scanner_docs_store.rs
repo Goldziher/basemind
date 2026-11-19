@@ -198,6 +198,8 @@ pub(crate) fn build_doc_rows(doc: FileMapDoc, key: String, with_vectors: bool) -
         title,
         keywords,
         chunks,
+        package: None,
+        package_version: None,
     }
 }
 
@@ -321,7 +323,12 @@ pub(crate) fn sync_document_rows(
             }
             Ok(Some(blob)) => {
                 let with_vectors = doc.want_vectors && super::doc_has_vectors_of(&blob, &preset);
-                let built = build_doc_rows(blob, key.clone(), with_vectors);
+                let mut built = build_doc_rows(blob, key.clone(), with_vectors);
+                // The rows are keyed by content: a dependency's virtual path names its package. ~keep
+                if let Some(dep) = doc.paths.iter().find_map(|path| crate::deps_docs::parse_virtual(path)) {
+                    built.package = Some(dep.name.to_string());
+                    built.package_version = Some(dep.version.to_string());
+                }
                 rows += built.chunks.len();
                 pending.push(built);
                 pending_paths.extend(doc.paths.iter().cloned());

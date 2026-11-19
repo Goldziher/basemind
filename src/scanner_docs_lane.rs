@@ -13,7 +13,7 @@ use crate::scan_retrieval::{DocumentSink, PendingDocBatch};
 use crate::scanner::{EmbedMode, FileResult, FileStatus};
 use crate::scanner_docs::{
     delete_stale_documents, doc_embed_requested, doc_entry_settled, extract_and_persist_doc, flush_document_batches,
-    purge_unembedded_documents, should_extract_document,
+    purge_unembedded_documents, should_extract_document_as,
 };
 use crate::scanner_file::read_working_tree;
 use crate::scanner_filter::Filters;
@@ -123,11 +123,19 @@ fn process_doc(
     config: &Config,
     embed: EmbedMode,
 ) -> FileResult {
-    let abs = root.join(rel);
+    // A dependency's documentation (ADR-0049) is keyed by its virtual path `rel` but read from its
+    // package directory, never through a symlink.
+    let dep = filters.dep_doc(rel);
+    let (root, file_rel) = match dep {
+        Some(file) => (file.package_dir.as_path(), file.rel.as_str()),
+        None => (root, rel),
+    };
+    let follow_symlinks = dep.is_none() && config.scan.follow_symlinks;
+    let abs = root.join(file_rel);
     if !filters.doc_allowed(rel) {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     }
-    let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
+    let Some(mime_type) = should_extract_document_as(&abs, &config.documents, dep.and_then(|file| file.mime)) else {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     };
     let embed_requested = doc_embed_requested(rel, &config.documents, embed, filters);
@@ -151,7 +159,7 @@ fn process_doc(
     // when the read raced an edit), and 0 never matches.
     if let Some(existing) = store.lookup_doc(rel)
         && existing.mtime != 0
-        && let Ok(meta) = doc_stat(&abs, config.scan.follow_symlinks)
+        && let Ok(meta) = doc_stat(&abs, follow_symlinks)
         && meta.is_file()
         && meta.len() == existing.size_bytes
         && crate::scanner_file::mtime_nanos(&meta) == existing.mtime
@@ -164,7 +172,7 @@ fn process_doc(
     // until it is handed to xberg, so the slot bounds how many are held at once. ~keep
     let _doc_slot = crate::backpressure::acquire_doc_slot(config.resources.max_concurrent_documents);
     let (bytes, size_bytes, mtime) =
-        match read_working_tree(root, rel, filters.doc_max_file_bytes, config.scan.follow_symlinks) {
+        match read_working_tree(root, file_rel, filters.doc_max_file_bytes, follow_symlinks) {
             Ok(triple) => triple,
             Err(status) => return FileResult::bare(rel.to_string(), status),
         };

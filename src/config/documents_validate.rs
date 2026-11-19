@@ -55,6 +55,15 @@ impl DocumentsConfig {
         if self.phase_budget_secs == 0 {
             return Err("[documents] phase_budget_secs must be at least 1".to_string());
         }
+        if self.dependencies.max_packages == 0 {
+            return Err("[documents.dependencies] max_packages must be at least 1".to_string());
+        }
+        if self.dependencies.max_bytes_per_package < 1024 {
+            return Err(format!(
+                "[documents.dependencies] max_bytes_per_package ({}) must be at least 1024",
+                self.dependencies.max_bytes_per_package
+            ));
+        }
         if !(1..=MAX_ABANDONED_EXTRACTIONS).contains(&self.max_abandoned_extractions) {
             return Err(format!(
                 "[documents] max_abandoned_extractions ({}) must be between 1 and {MAX_ABANDONED_EXTRACTIONS}",
