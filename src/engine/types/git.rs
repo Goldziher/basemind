@@ -177,11 +177,12 @@ pub struct BlameFileParams {
     pub line_end: Option<u32>,
     #[serde(default)]
     pub rev: Option<String>,
-    /// Cap on hunks returned per page. Default 100, max 1000.
+    /// Cap on hunks returned per page, counted after adjacent hunks of one commit merge. Default
+    /// 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Encodes the last-returned
-    /// hunk's `start_line`; on resume the helper skips hunks whose `start_line <= offset`.
+    /// hunk's `end_line`; on resume the helper skips hunks whose `start_line <= offset`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
     /// Token budget for the returned hunks; overflow is dropped and flagged `budgeted`.
@@ -267,11 +268,12 @@ pub struct BlameSymbolParams {
     pub line: Option<u32>,
     #[serde(default)]
     pub rev: Option<String>,
-    /// Cap on hunks returned per page. Default 100, max 1000.
+    /// Cap on hunks returned per page, counted after adjacent hunks of one commit merge. Default
+    /// 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Encodes the last-returned
-    /// hunk's `start_line`; on resume the helper skips hunks whose `start_line <= offset`.
+    /// hunk's `end_line`; on resume the helper skips hunks whose `start_line <= offset`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
     /// Token budget for the returned hunks; overflow is dropped and flagged `budgeted`.
@@ -602,7 +604,7 @@ pub(crate) struct BlameResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// Opaque cursor to pass back on the next call when more hunks are available. Encodes
-    /// the last-returned hunk's `start_line` so the next page resumes immediately after.
+    /// the last-returned hunk's `end_line` so the next page resumes immediately after.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
@@ -634,7 +636,7 @@ pub(crate) struct BlameSymbolResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// Opaque cursor to pass back on the next call when more hunks are available. Encodes
-    /// the last-returned hunk's `start_line` so the next page resumes immediately after.
+    /// the last-returned hunk's `end_line` so the next page resumes immediately after.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// Server-side handler latency in microseconds — the tool body's own execution (git walk /

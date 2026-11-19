@@ -17,7 +17,7 @@
 //!
 //! Blame tools reuse the in-memory encoder with `snapshot_id = 0` because blame is
 //! deterministic per `(suspect_sha, path)` — the `offset` field carries the last returned
-//! hunk's `start_line` and there is no invalidation flag.
+//! hunk's `end_line` and there is no invalidation flag.
 //!
 //! Both encodings are wrapped in a base64url-without-padding `String` so the wire shape
 //! is always a single opaque field on the response — clients never look inside.

@@ -214,24 +214,11 @@ pub(super) fn blame_hunk_view(h: &crate::git::BlameHunk) -> BlameHunkView {
     }
 }
 
-/// `hunks` with each run of adjacent hunks from one commit (and one source path) merged into one:
-/// git splits a commit's lines where they came from different places in it, which a reader of
-/// "who changed these lines" does not need.
-pub(super) fn merge_adjacent_hunks(hunks: Vec<BlameHunkView>) -> Vec<BlameHunkView> {
-    let mut merged: Vec<BlameHunkView> = Vec::with_capacity(hunks.len());
-    for hunk in hunks {
-        match merged.last_mut() {
-            Some(last)
-                if last.commit_sha == hunk.commit_sha
-                    && last.source_path == hunk.source_path
-                    && last.end_line + 1 == hunk.start_line =>
-            {
-                last.end_line = hunk.end_line;
-            }
-            _ => merged.push(hunk),
-        }
-    }
-    merged
+/// Whether `next` continues `last`: the next lines, from the same commit and source path. git
+/// splits a commit's lines where they came from different places in it, which a reader of "who
+/// changed these lines" does not need, so such a run is one hunk.
+fn continues(last: &BlameHunkView, next: &BlameHunkView) -> bool {
+    last.commit_sha == next.commit_sha && last.source_path == next.source_path && last.end_line + 1 == next.start_line
 }
 
 /// One page of blame hunks.
@@ -243,9 +230,10 @@ pub(super) struct BlamePage {
 }
 
 /// Page a run of blame hunks. Skips any hunk whose `start_line <= resume_after` (the cursor encodes
-/// the *last returned* `start_line`, so the next page picks up strictly after it), keeps at most
-/// `limit` hunks (default [`BLAME_LIMIT_DEFAULT`], max [`BLAME_LIMIT_MAX`]) and trims them to
-/// `max_tokens`. `snapshot` is stamped into the cursor so a page of another revision refuses it.
+/// the *last returned* hunk's `end_line`, so the next page picks up strictly after it), merges each
+/// run of hunks one commit wrote ([`continues`]), keeps at most `limit` merged hunks (default
+/// [`BLAME_LIMIT_DEFAULT`], max [`BLAME_LIMIT_MAX`]) and trims them to `max_tokens`. `snapshot` is
+/// stamped into the cursor so a page of another revision refuses it.
 pub(super) fn paginate_blame_hunks<'a, I>(
     iter: I,
     resume_after: u32,
@@ -263,11 +251,17 @@ where
         if h.start_line <= resume_after {
             continue;
         }
-        if out.len() >= cap {
+        let hunk = blame_hunk_view(h);
+        if let Some(last) = out.last_mut()
+            && continues(last, &hunk)
+        {
+            last.end_line = hunk.end_line;
+        } else if out.len() >= cap {
             has_more = true;
             break;
+        } else {
+            out.push(hunk);
         }
-        out.push(blame_hunk_view(h));
     }
     // A hunk costs its row, plus its commit's author and summary the first time the page names it.
     let mut named: ahash::AHashSet<String> = ahash::AHashSet::new();
@@ -280,11 +274,11 @@ where
         crate::engine::tokens::bytes_to_tokens((hunk.row().len() + 3 + commit) as u64)
     });
     let next_cursor = (has_more || budget.budgeted)
-        .then(|| budget.items.last().map(|hunk| hunk.start_line))
+        .then(|| budget.items.last().map(|hunk| hunk.end_line))
         .flatten()
         .map(|last_line| crate::engine::cursor::Cursor::encode_in_memory(u64::from(last_line), snapshot));
     BlamePage {
-        hunks: merge_adjacent_hunks(budget.items),
+        hunks: budget.items,
         next_cursor,
         budgeted: budget.budgeted,
     }
@@ -370,11 +364,13 @@ mod tests {
     const RUST: LangId = "rust";
     const PYTHON: LangId = "python";
 
-    fn hunk(sha: &str, start_line: u32, end_line: u32, source: Option<&str>) -> super::BlameHunkView {
-        super::BlameHunkView {
+    fn hunk(sha: &str, start_line: u32, end_line: u32, source: Option<&str>) -> crate::git::BlameHunk {
+        crate::git::BlameHunk {
             commit_sha: sha.repeat(40 / sha.len()),
+            short_sha: sha.repeat(7 / sha.len()),
             start_line,
-            end_line,
+            len: end_line - start_line + 1,
+            source_start_line: start_line,
             author: "a".into(),
             author_time_unix: 1,
             summary: "s".into(),
@@ -382,23 +378,48 @@ mod tests {
         }
     }
 
-    /// Adjacent lines of one commit are one hunk; a gap, another commit or another source path
-    /// starts a new one. Each commit's author, time and summary are written once.
-    #[test]
-    fn adjacent_hunks_of_one_commit_merge_and_commits_are_written_once() {
-        let merged = super::merge_adjacent_hunks(vec![
+    fn sample() -> Vec<crate::git::BlameHunk> {
+        vec![
             hunk("a", 1, 1, None),
             hunk("a", 2, 3, None),
             hunk("b", 4, 4, None),
             hunk("a", 5, 5, None),
             hunk("a", 6, 6, Some("old.rs")),
             hunk("a", 8, 8, Some("old.rs")),
-        ]);
-        let written = serde_json::to_string(&super::BlameHunks(merged)).unwrap();
+        ]
+    }
+
+    /// Adjacent lines of one commit are one hunk; a gap, another commit or another source path
+    /// starts a new one. Each commit's author, time and summary are written once.
+    #[test]
+    fn adjacent_hunks_of_one_commit_merge_and_commits_are_written_once() {
+        let page = super::paginate_blame_hunks(&sample(), 0, None, None, 0);
+        let written = serde_json::to_string(&super::BlameHunks(page.hunks)).unwrap();
         assert_eq!(
             written,
             r#"{"hunks":["1-3 aaaaaaaaaaaa","4 bbbbbbbbbbbb","5 aaaaaaaaaaaa","6 aaaaaaaaaaaa old.rs","8 aaaaaaaaaaaa old.rs"],"commits":{"aaaaaaaaaaaa":{"author":"a","time":1,"summary":"s"},"bbbbbbbbbbbb":{"author":"a","time":1,"summary":"s"}}}"#
         );
+        assert!(page.next_cursor.is_none());
+    }
+
+    /// `limit` counts the hunks as written, after merging, and the next page starts past the last
+    /// line of the last one, not inside it.
+    #[test]
+    fn limit_counts_merged_hunks_and_the_cursor_resumes_past_them() {
+        let hunks = sample();
+        let first = super::paginate_blame_hunks(&hunks, 0, Some(2), None, 0);
+        let rows: Vec<String> = first.hunks.iter().map(super::BlameHunkView::row).collect();
+        assert_eq!(rows, ["1-3 aaaaaaaaaaaa", "4 bbbbbbbbbbbb"]);
+        let (resume, _) = first.next_cursor.expect("more hunks").decode_in_memory().unwrap();
+        assert_eq!(resume, 4);
+        let second = super::paginate_blame_hunks(&hunks, resume as u32, Some(2), None, 0);
+        let rows: Vec<String> = second.hunks.iter().map(super::BlameHunkView::row).collect();
+        assert_eq!(rows, ["5 aaaaaaaaaaaa", "6 aaaaaaaaaaaa old.rs"]);
+        let (resume, _) = second.next_cursor.expect("one more").decode_in_memory().unwrap();
+        let third = super::paginate_blame_hunks(&hunks, resume as u32, Some(2), None, 0);
+        let rows: Vec<String> = third.hunks.iter().map(super::BlameHunkView::row).collect();
+        assert_eq!(rows, ["8 aaaaaaaaaaaa old.rs"]);
+        assert!(third.next_cursor.is_none());
     }
 
     #[test]
