@@ -544,7 +544,7 @@ const BLAME_SHA_ABBREV: usize = 12;
 
 /// A page of blame hunks, written as two keys of the response: `hunks`, one
 /// `"<line>[-<end_line>] <sha>[ <source_path>]"` row per hunk, and `commits`, each sha's `author`,
-/// `time` (unix seconds) and `summary` once.
+/// `time` (unix seconds) and `summary` once, left out with no hunk.
 #[derive(Debug, Default)]
 pub(crate) struct BlameHunks(pub Vec<BlameHunkView>);
 
@@ -579,9 +579,11 @@ impl Serialize for BlameHunks {
             }
         }
         let rows: Vec<String> = self.0.iter().map(BlameHunkView::row).collect();
-        let mut map = serializer.serialize_map(Some(2))?;
+        let mut map = serializer.serialize_map(Some(if rows.is_empty() { 1 } else { 2 }))?;
         map.serialize_entry("hunks", &rows)?;
-        map.serialize_entry("commits", &Commits(&self.0))?;
+        if !rows.is_empty() {
+            map.serialize_entry("commits", &Commits(&self.0))?;
+        }
         map.end()
     }
 }
@@ -661,8 +663,8 @@ pub(crate) struct FindCommitsByPathResponse {
     pub truncated_reason: Option<&'static str>,
     /// `"<sha> <summary>"` per commit, newest first.
     pub commits: Vec<CommitView>,
-    /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`.
-    #[serde(serialize_with = "files_by_commit")]
+    /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`; absent when empty.
+    #[serde(serialize_with = "files_by_commit", skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "serde_json::Value")]
     pub files: Vec<(String, Vec<CommitFileView>)>,
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
