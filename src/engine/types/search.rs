@@ -16,13 +16,13 @@ pub struct CodeSearchParams {
     #[serde(default)]
     #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
     pub lane: Option<String>,
-    /// Max hits (default 10).
+    /// Default 10.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// A prior `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000).
+    /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }
@@ -48,13 +48,13 @@ pub struct DocsSearchParams {
     /// Keep chunks naming an entity of this category, e.g. `PERSON`.
     #[serde(default)]
     pub entity: Option<String>,
-    /// Max hits (default 10).
+    /// Default 10.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// A prior `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000).
+    /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }

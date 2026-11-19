@@ -28,32 +28,32 @@ pub struct CodeRefsParams {
     /// name. `definition`: line of the reference (required).
     #[serde(default)]
     pub line: Option<u32>,
-    /// `definition` only: 1-based column (default: where `name` is).
+    /// `definition` only: 1-based column (default: where `name` occurs on the line).
     #[serde(default)]
     pub column: Option<u32>,
     /// `importers`+`path`: hops (default 1, max 5).
     #[serde(default)]
     pub depth: Option<u32>,
-    /// Name matching (default `exact`).
+    /// Name matching (default `exact`). Not with `importers` or `definition`.
     #[serde(default, rename = "match")]
     #[schemars(extend("enum" = ["exact", "substring"]))]
     pub match_mode: Option<String>,
-    /// Max hits (default 100).
+    /// Default 100. Not with `definition`.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// A prior `next_cursor`. Not with `definition`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000).
+    /// Default 6000. Not with `definition`.
     #[serde(default)]
     pub max_tokens: Option<u32>,
     /// `callers` only: keep rows of these resolutions, comma-separated.
     #[serde(default)]
     pub resolution: Option<String>,
-    /// Merged ±5-line read spans per file, for `code_read`.
+    /// `callers` only: merged ±5-line read spans per file, for `code_read`.
     #[serde(default)]
     pub ranges: Option<bool>,
-    /// Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.
+    /// `callers` only: files changed since rev (empty: HEAD) or in A..B; +importers adds importers.
     #[serde(default)]
     pub changed: Option<String>,
 }

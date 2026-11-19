@@ -33,13 +33,13 @@ pub struct GitLogParams {
     /// Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.
     #[serde(default)]
     pub rev: Option<String>,
-    /// Max commits (default 20).
+    /// Default 20.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// A prior `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000).
+    /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }
@@ -63,13 +63,13 @@ pub struct GitBlameParams {
     /// Revision to blame at (default HEAD).
     #[serde(default)]
     pub rev: Option<String>,
-    /// Max hunks (default 100).
+    /// Default 100.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// A prior `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000).
+    /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }

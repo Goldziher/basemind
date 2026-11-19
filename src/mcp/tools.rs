@@ -153,7 +153,8 @@ impl BasemindServer {
         there. Row `resolution` (omitted if `resolution_default`, else name_only): \
         same_file, imported, scope_resolved (local binding), elsewhere (binds another), name_only \
         (unchecked: `resolution_note`), external (not indexed), path_match (HTTP call to route \
-        `name`, e.g. `GET /a/:param`; literal URLs only; `ambiguous`: routes tie). `importers`+`path`, \
+        `name` like `GET /a/{id}`, or a pinned handler's routes and calls; literal URLs; \
+        `ambiguous`: routes tie; `definition` of a call: its route). `importers`+`path`, \
         no `name`: its importers `by_depth`. `cycles`: import cycles (`path`: its own). \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
