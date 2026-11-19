@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:75a5ecf7692361215be598dd320a6cd1b256ac76092df7b8fbed4b1831c4d2b1
-Source-Hash: blake3:d72794dc48a6f15c7bad130d8c6b4b046903457d135166823d90ace46e33de5a
+Content-Hash: blake3:d9399e33af18f43fd722a0b5a31f4a736ab980eadec1973e14f6ee06aa4d8222
+Source-Hash: blake3:0a6ab7c9cd207021339785c703ecf23c6ae242ff0aea1b92599c66f1990e6dc5
 Schema-Version: v1
 -->
 
@@ -106,8 +106,8 @@ code_outline {"path":"src/mcp/tools.rs"}
   file git tracks (images, fonts, data). A query no path holds as typed may be a typo: a file it
   names up to one swapped, missing, extra or wrong character comes first.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
-  subsequence matches last. `results` is `{"<path>": ["<line>: <signature>", ...]}`; a signature
-  lacking the name, or none, is written `"<line>: <kind> <name>[; <signature>]"`. `stale` lists files
+  subsequence matches last. A row is `"<path>:<line>: <signature>"`, in rank order; a signature
+  lacking the name, or none, is written `"<path>:<line>: <kind> <name>[; <signature>]"`. `stale` lists files
   edited since the scan; `total` appears only beside `next_cursor`.
 - `code_refs {"name":"bar"}` matches the identifier exactly: `Foo::bar()` and `bar()` are calls to
   `bar`, `bar_baz()` is not. `"match":"substring"` widens it. `hits` lists each file once, as
