@@ -117,6 +117,12 @@ async fn indexed_search(service: &Session, extra: Value) -> (Value, usize) {
     }
 }
 
+/// The sha of a `"<sha> <summary>"` commit row.
+fn row_sha(row: &Value) -> String {
+    let row = row.as_str().expect("a commit is a `<sha> <summary>` row");
+    row.split_once(' ').expect("a sha and a summary").0.to_string()
+}
+
 fn commits(value: &Value) -> &Vec<Value> {
     value.get("commits").and_then(Value::as_array).expect("commits array")
 }
@@ -134,13 +140,13 @@ async fn search_lists_no_commit_body() {
         "{COMMITS} hits with ~{BIG_BODY_BYTES}-byte bodies must stay small, got {size} bytes"
     );
     for hit in hits {
-        let keys: Vec<&String> = hit.as_object().expect("a commit").keys().collect();
-        assert_eq!(
-            keys,
-            ["sha", "summary", "author", "author_time_unix"],
+        let row = hit.as_str().expect("a commit is a `<sha> <summary>` row");
+        let (sha, summary) = row.split_once(' ').expect("a sha and a summary");
+        assert_eq!(sha.len(), 12, "{hit}");
+        assert!(
+            summary.len() < 200,
             "a hit names the commit and leaves its message to `rev`: {hit}"
         );
-        assert_eq!(hit["sha"].as_str().map(str::len), Some(12), "{hit}");
     }
 
     let _ = service.cancel().await;
@@ -155,7 +161,7 @@ async fn search_budget_bounds_the_response_and_pages_on() {
     let (first, _) = indexed_search(&service, json!({ "max_tokens": 1 })).await;
     assert_eq!(commits(&first).len(), 1, "{first}");
     assert_eq!(first["budgeted"], json!(true));
-    let mut seen = vec![commits(&first)[0]["sha"].as_str().expect("sha").to_string()];
+    let mut seen = vec![row_sha(&commits(&first)[0])];
     let mut cursor = first["next_cursor"].clone();
     assert!(cursor.is_string(), "a budgeted page must carry next_cursor: {first}");
 
@@ -163,7 +169,7 @@ async fn search_budget_bounds_the_response_and_pages_on() {
         let (page, _) = call(&service, json!({ "query": TOKEN, "max_tokens": 1, "cursor": cursor })).await;
         let page_commits = commits(&page);
         assert_eq!(page_commits.len(), 1, "{page}");
-        let sha = page_commits[0]["sha"].as_str().expect("sha").to_string();
+        let sha = row_sha(&page_commits[0]);
         assert!(!seen.contains(&sha), "pages must not overlap: {sha}");
         seen.push(sha);
         cursor = page.get("next_cursor").cloned().unwrap_or(Value::Null);
@@ -179,7 +185,7 @@ async fn show_returns_the_whole_message_and_files() {
     let service = spawn(dir.path()).await;
 
     let (value, _) = indexed_search(&service, json!({ "max_tokens": 1_000_000 })).await;
-    let sha = commits(&value)[0]["sha"].as_str().expect("sha").to_string();
+    let sha = row_sha(&commits(&value)[0]);
 
     let (shown, size) = call(&service, json!({ "rev": sha })).await;
     let commit = &shown["commit"];

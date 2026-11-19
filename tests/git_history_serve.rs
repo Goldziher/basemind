@@ -147,7 +147,10 @@ async fn serve_answers_git_history_from_the_index_not_the_live_walk() {
     let commits = last.get("commits").and_then(Value::as_array).expect("commits array");
     assert_eq!(commits.len(), 1, "exactly the one body-carrying commit matches: {last}");
     assert_eq!(
-        commits[0].get("summary").and_then(Value::as_str),
+        commits[0]
+            .as_str()
+            .and_then(|row| row.split_once(' '))
+            .map(|(_, summary)| summary),
         Some("add beta"),
         "the indexed hit is the commit whose BODY carries the token: {last}"
     );

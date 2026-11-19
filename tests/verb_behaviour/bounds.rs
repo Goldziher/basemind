@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use serde_json::json;
 
-use super::{call, call_err, git, names, started, started_with};
+use super::{call, call_err, commit_summaries, git, history_change, names, started, started_with};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_blame_validates_its_span_and_limit() {
@@ -69,6 +69,10 @@ async fn git_blame_honours_a_token_budget_and_pages_the_rest() {
     .await;
     assert_eq!(rest["hunks"].as_array().map(Vec::len), Some(total - 1), "{rest}");
     assert_eq!(rest["hunks"][0], whole["hunks"][1], "{rest}");
+    assert!(
+        rest["commits"].as_object().is_some_and(|commits| !commits.is_empty()),
+        "{rest}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -261,9 +265,7 @@ async fn git_log_of_a_directory_pages_past_its_window() {
     let mut arguments = json!({ "path": "src/", "limit": 100 });
     for _ in 0..10 {
         let page = call(&client, "git_log", arguments.clone()).await;
-        for commit in page["commits"].as_array().expect("commits") {
-            summaries.push(commit["summary"].as_str().unwrap().to_string());
-        }
+        summaries.extend(commit_summaries(&page["commits"]));
         match page.get("next_cursor") {
             Some(cursor) => arguments["cursor"] = cursor.clone(),
             None => break,
@@ -398,11 +400,11 @@ async fn git_log_of_a_symbol_honours_max_tokens() {
     bounded["max_tokens"] = json!(1);
     let first = call(&client, "git_log", bounded.clone()).await;
     assert_eq!(first["history"].as_array().expect("history").len(), 1, "{first}");
-    assert_eq!(first["history"][0]["summary"], "round 4", "{first}");
+    assert_eq!(history_change(&first["history"][0]).1, "round 4", "{first}");
     assert_eq!(first["budgeted"], true, "{first}");
     bounded["cursor"] = first["next_cursor"].clone();
     let second = call(&client, "git_log", bounded).await;
-    assert_eq!(second["history"][0]["summary"], "round 3", "{second}");
+    assert_eq!(history_change(&second["history"][0]).1, "round 3", "{second}");
 }
 
 /// A structural diff is asked for what changed. The unchanged symbols are a count, not a list as

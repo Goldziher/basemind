@@ -255,7 +255,16 @@ fn every_git_log_list_lists_only_its_own_page_and_caches_nothing() {
                 "{key} page {page} listed the files of {listed} commits: {body}"
             );
             for entry in body[key].as_array().expect("list") {
-                summaries.push(entry["summary"].as_str().expect("summary").to_string());
+                let (_, row) = entry
+                    .as_str()
+                    .expect("a `<sha> <summary>` row")
+                    .split_once(' ')
+                    .expect("sha");
+                let summary = row
+                    .strip_prefix("[introduced] ")
+                    .or(row.strip_prefix("[removed] "))
+                    .unwrap_or(row);
+                summaries.push(summary.to_string());
             }
             match body.get("next_cursor") {
                 Some(next) => cursor = Some(serde_json::from_value(next.clone()).expect("cursor")),

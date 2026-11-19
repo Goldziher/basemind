@@ -279,17 +279,46 @@ pub struct BlameSymbolParams {
     pub max_tokens: Option<u32>,
 }
 
-/// One commit of a `git_log` list.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+/// One commit of a `git_log` list, written as `git log --oneline` prints it: `"<sha> <summary>"`.
+/// Who wrote it and when is `git_log {rev}`'s answer.
+#[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct CommitView {
     pub sha: String,
     pub summary: String,
+    /// Not written in a list row; `code explain` reads it.
     pub author: String,
+    /// Not written in a list row; `code explain` reads it.
     pub author_time_unix: i64,
     /// The files the commit changed: each path with how (`added`, `modified`, `deleted`,
-    /// `renamed`). A merge lists only what it changed against every parent.
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "files_by_path_opt")]
+    /// `renamed`). A merge lists only what it changed against every parent. A directory's history
+    /// writes them in its response's `files`, keyed by sha; the row itself never carries them.
     pub files: Option<Vec<CommitFileView>>,
+}
+
+impl Serialize for CommitView {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("{} {}", self.sha, self.summary))
+    }
+}
+
+/// The changed files of a directory's history: `{"<sha>": {"<path>": "<change>"}}`.
+fn files_by_commit<S: serde::Serializer>(
+    commits: &[(String, Vec<CommitFileView>)],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+
+    struct Files<'a>(&'a [CommitFileView]);
+    impl Serialize for Files<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            files_by_path(self.0, serializer)
+        }
+    }
+    let mut map = serializer.serialize_map(Some(commits.len()))?;
+    for (sha, files) in commits {
+        map.serialize_entry(sha, &Files(files))?;
+    }
+    map.end()
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -308,14 +337,6 @@ fn files_by_path<S: serde::Serializer>(files: &[CommitFileView], serializer: S) 
         map.serialize_entry(&file.path.to_str_lossy(), file.change)?;
     }
     map.end()
-}
-
-/// `serialize_with` for an optional file list; `skip_serializing_if` leaves out the `None`.
-fn files_by_path_opt<S: serde::Serializer>(
-    files: &Option<Vec<CommitFileView>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    files_by_path(files.as_deref().unwrap_or_default(), serializer)
 }
 
 /// `skip_serializing_if` for a flag that is written only when false.
@@ -625,7 +646,12 @@ pub(crate) struct FindCommitsByPathResponse {
     /// `window` whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+    /// `"<sha> <summary>"` per commit, newest first.
     pub commits: Vec<CommitView>,
+    /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`.
+    #[serde(serialize_with = "files_by_commit")]
+    #[schemars(with = "serde_json::Value")]
+    pub files: Vec<(String, Vec<CommitFileView>)>,
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
     /// resumes at the first dropped one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -705,24 +731,41 @@ pub(crate) struct DiffFileResponse {
     pub hunks: Vec<HunkView>,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+/// One change of a symbol's history, written `"<sha> <summary>"`, with `[introduced]` or
+/// `[removed]` after the sha when the commit added or deleted the symbol rather than changed it.
+#[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct SymbolHistoryEntry {
     pub sha: String,
     pub summary: String,
+    /// Not written in the row; `code explain` reads it.
     pub author: String,
+    /// Not written in the row; `code explain` reads it.
     pub author_time_unix: i64,
     pub change: &'static str,
 }
 
+impl Serialize for SymbolHistoryEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let row = match self.change {
+            "modified" => format!("{} {}", self.sha, self.summary),
+            change => format!("{} [{change}] {}", self.sha, self.summary),
+        };
+        serializer.serialize_str(&row)
+    }
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct SymbolHistoryResponse {
+    /// The kind the symbol was pinned to, when `kind` was resolved; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    pub commits_inspected: u32,
+    /// Commits touching the file this page inspected; written beside a `next_cursor`, which looks
+    /// further back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commits_inspected: Option<u32>,
+    /// `"<sha> [introduced] <summary>"`, newest first; `[removed]` likewise, and a plain
+    /// `"<sha> <summary>"` for a commit that changed the symbol.
     pub history: Vec<SymbolHistoryEntry>,
-    /// Echoes the fingerprint strategy that produced this response — `"normalized"`,
-    /// `"structural"`, or `"structural_loose"`. Clients can use this to confirm the mode
-    /// they got matches the mode they asked for.
-    pub hash_mode: &'static str,
     /// Why `history` is empty so far: the working tree does not define `name` (the text lists what
     /// the file does define) and no commit inspected up to this page does either. The last page is
     /// then an error instead.

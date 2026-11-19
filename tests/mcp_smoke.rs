@@ -404,16 +404,18 @@ async fn mcp_server_exercises_representative_tools() {
     let history = body.get("history").and_then(Value::as_array).expect("history");
     let modifieds = history
         .iter()
-        .filter(|e| e.get("change").and_then(Value::as_str) == Some("modified"))
+        .filter(|row| {
+            let row = row.as_str().expect("a history row is a string");
+            !row.contains(" [introduced] ") && !row.contains(" [removed] ")
+        })
         .count();
     assert!(
         modifieds >= 1,
         "expected ≥ 1 'modified' entry for alpha after the tweak commit: {history:?}"
     );
-    assert_eq!(
-        body.get("hash_mode").and_then(Value::as_str),
-        Some("normalized"),
-        "default hash_mode echo should be normalized"
+    assert!(
+        body.get("hash_mode").is_none(),
+        "the fingerprint mode is not echoed: {body}"
     );
 
     let body = decode_text(
@@ -1611,16 +1613,7 @@ async fn wait_for_git_history(service: &rmcp::service::RunningService<rmcp::Role
 async fn git_symbol_history_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;
     wait_for_git_history(&service).await;
-    let history_shas = |body: &Value| -> Vec<String> {
-        body.get("history")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|e| e.get("sha").and_then(Value::as_str).map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
+    let history_shas = |body: &Value| -> Vec<String> { row_shas(body.get("history")) };
     let page1 = decode_text(
         &service
             .call_tool(call_params(
@@ -2619,10 +2612,10 @@ async fn latency_tools_report_microsecond_elapsed_us() {
 /// the fields it reads are still there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn older_clients_still_read_the_lean_responses() {
-    /// A verbatim copy of the pre-`elapsed_us` `code_symbols` response shape.
+    /// The part of the `code_symbols` response an older client knew that the lean rows kept: a
+    /// `results` list it walks generically, and `truncated`, left out when false.
     #[derive(serde::Deserialize)]
     struct LegacySearchResponse {
-        total: usize,
         // Left out when false since the verb tools (docs/UPGRADING.md, Response fields).
         #[serde(default)]
         truncated: bool,

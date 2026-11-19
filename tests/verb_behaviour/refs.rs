@@ -107,7 +107,7 @@ async fn a_line_picks_one_of_several_same_named_definitions() {
         json!({ "path": "src/twins.rs", "symbol": "new", "line": 13 }),
     )
     .await;
-    assert_eq!(log["history"][0]["change"], "introduced", "{log}");
+    assert_eq!(super::history_change(&log["history"][0]).0, "introduced", "{log}");
 
     let outside = call_err(
         &client,

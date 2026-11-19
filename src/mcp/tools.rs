@@ -102,9 +102,11 @@ impl BasemindServer {
         title = "Search code and text files",
         description = "Use instead of `rg`/`grep` to find exact text (a string, identifier or \
         comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is \
-        literal unless `regex` is true. `hits` maps each file to its hits: `line`, `text` and the \
-        `symbol` it sits in; a hit in a file edited since indexing has `stale` and no symbol. \
-        `skipped_files` counts unsearchable files; `total` counts hits from `cursor` on. A `path` or `language` no indexed file has is an error. \
+        literal unless `regex` is true. `hits`: file, then enclosing symbol (`\"\"`: none), to rows \
+        `\"<line>: <text>\"` (`\"<line>:<col>,<col>: ...\"`: matches sharing a line; `\"<line>- ...\"`: \
+        context). `stale`: files edited since indexing. `skipped_files` counts unsearchable files; \
+        `total` (with `next_cursor`) counts hits from `cursor` on. A `path` or `language` no indexed \
+        file has is an error. \
         Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
         annotations(
             read_only_hint = true,

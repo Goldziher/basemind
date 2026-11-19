@@ -501,9 +501,8 @@ pub(super) fn run_symbol_history(
     let invalidated = || {
         Ok(SymbolHistoryResponse {
             kind: kind.map(|k| kind_to_str(k).to_string()),
-            commits_inspected: 0,
+            commits_inspected: None,
             history: Vec::new(),
-            hash_mode: hash_mode.as_str(),
             unmatched: None,
             budgeted: false,
             truncated: false,
@@ -617,9 +616,8 @@ pub(super) fn run_symbol_history(
     };
     Ok(SymbolHistoryResponse {
         kind: kind.map(|k| kind_to_str(k).to_string()),
-        commits_inspected: u32::try_from(inspected).unwrap_or(u32::MAX),
+        commits_inspected: next_offset.map(|_| u32::try_from(inspected).unwrap_or(u32::MAX)),
         history: page,
-        hash_mode: hash_mode.as_str(),
         unmatched,
         budgeted,
         truncated: truncated_reason.is_some(),

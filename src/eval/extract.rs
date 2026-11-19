@@ -111,7 +111,15 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
         }
         EvalMode::Blame | EvalMode::BlameSymbol => array(body, "hunks")
             .iter()
-            .flat_map(|h| span(&s(h, "commit_sha").unwrap_or_default(), u(h, "line"), u(h, "end_line")))
+            .flat_map(|h| match h.as_str() {
+                Some(row) => {
+                    let (lines, rest) = row.split_once(' ').unwrap_or((row, ""));
+                    let sha = rest.split(' ').next().unwrap_or_default();
+                    let (first, last) = lines.split_once('-').unwrap_or((lines, lines));
+                    span(sha, first.parse().ok(), last.parse().ok())
+                }
+                None => span(&s(h, "commit_sha").unwrap_or_default(), u(h, "line"), u(h, "end_line")),
+            })
             .collect(),
         EvalMode::Diff => {
             let path = s(body, "path").unwrap_or_default();
@@ -275,10 +283,14 @@ pub fn annotation_accuracy(
     (!judged.is_empty()).then(|| judged.iter().filter(|ok| **ok).count() as f64 / judged.len() as f64)
 }
 
+/// The sha of each commit row: the first word of `"<sha> <summary>"`, or an object's `sha`.
 fn shas(entries: &[Value]) -> Vec<Item> {
     entries
         .iter()
-        .filter_map(|c| s(c, "sha"))
+        .filter_map(|c| match c {
+            Value::String(row) => row.split(' ').next().map(str::to_string),
+            c => s(c, "sha"),
+        })
         .map(|sha| Item { path: sha, line: None })
         .collect()
 }
@@ -401,15 +413,19 @@ mod tests {
 
     #[test]
     fn maps_git_read_and_impl_shapes() {
-        let hist = extract_items(EvalMode::GitSymbol, &Value::Null, &json!({"history":[{"sha":"s1"}]}));
-        assert_eq!(strs(&hist), vec!["s1"]);
-        let path = extract_items(EvalMode::GitPath, &Value::Null, &json!({"commits":[{"sha":"s2"}]}));
+        let hist = extract_items(
+            EvalMode::GitSymbol,
+            &Value::Null,
+            &json!({"history":["s1 [introduced] add it","s0 fix it"]}),
+        );
+        assert_eq!(strs(&hist), vec!["s1", "s0"]);
+        let path = extract_items(EvalMode::GitPath, &Value::Null, &json!({"commits":["s2 docs: a b"]}));
         assert_eq!(strs(&path), vec!["s2"]);
         let files = extract_items(
             EvalMode::GitPath,
             &Value::Null,
-            &json!({"commits":[{"sha":"0123456789ab","summary":"s","author":"a","author_time_unix":1,
-                                "files":{"src/a.rs":"modified","b.rs":"added"}}]}),
+            &json!({"commits":["0123456789ab s"],
+                    "files":{"0123456789ab":{"src/a.rs":"modified","b.rs":"added"}}}),
         );
         assert_eq!(strs(&files), vec!["0123456789ab"], "a `files` map adds no items");
         let read = extract_items(

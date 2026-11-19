@@ -26,12 +26,7 @@ fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
 }
 
 fn summaries(body: &Value) -> Vec<String> {
-    body["commits"]
-        .as_array()
-        .expect("commits")
-        .iter()
-        .map(|commit| commit["summary"].as_str().unwrap_or_default().to_string())
-        .collect()
+    commit_summaries(&body["commits"])
 }
 
 async fn assert_author_scoping(client: &Client) {
@@ -193,13 +188,13 @@ async fn git_log_of_a_symbol_does_not_call_the_edge_of_its_window_an_introductio
         json!({ "path": "src/steady.rs", "symbol": "stable", "limit": 20 }),
     )
     .await;
-    let changes: Vec<(&str, &str)> = whole["history"]
+    let changes: Vec<(String, String)> = whole["history"]
         .as_array()
         .expect("history")
         .iter()
-        .map(|entry| (entry["change"].as_str().unwrap(), entry["summary"].as_str().unwrap()))
+        .map(history_change)
         .collect();
-    assert_eq!(changes, [("introduced", "init")], "{whole}");
+    assert_eq!(changes, [("introduced".to_string(), "init".to_string())], "{whole}");
     assert!(
         whole.get("truncated").is_none(),
         "all 16 commits fit the window: {whole}"
@@ -211,8 +206,11 @@ async fn git_log_of_a_symbol_does_not_call_the_edge_of_its_window_an_introductio
         json!({ "path": "src/steady.rs", "symbol": "churn", "limit": 1 }),
     )
     .await;
-    assert_eq!(churn["history"][0]["change"], "modified", "{churn}");
-    assert_eq!(churn["history"][0]["summary"], "round 15", "{churn}");
+    assert_eq!(
+        history_change(&churn["history"][0]),
+        ("modified".to_string(), "round 15".to_string()),
+        "{churn}"
+    );
 }
 
 /// Every page of a symbol's history, following `next_cursor` until there is none.
@@ -225,10 +223,7 @@ async fn whole_symbol_history(client: &Client, arguments: Value) -> (Vec<(String
         assert!(pages < 50, "the cursor must make progress");
         let page = call(client, "git_log", arguments.clone()).await;
         for entry in page["history"].as_array().expect("history") {
-            changes.push((
-                entry["change"].as_str().unwrap().to_string(),
-                entry["summary"].as_str().unwrap().to_string(),
-            ));
+            changes.push(history_change(entry));
         }
         match page.get("next_cursor") {
             Some(cursor) => {

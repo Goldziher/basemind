@@ -27,16 +27,6 @@ pub(super) enum HashMode {
     StructuralLoose,
 }
 
-impl HashMode {
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            HashMode::Normalized => "normalized",
-            HashMode::Structural => "structural",
-            HashMode::StructuralLoose => "structural_loose",
-        }
-    }
-}
-
 pub(super) fn parse_hash_mode(s: &str) -> Result<HashMode, EngineError> {
     Ok(match s.to_ascii_lowercase().as_str() {
         "normalized" => HashMode::Normalized,
