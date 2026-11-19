@@ -24,6 +24,13 @@ fn use_trees_expand_to_leaf_paths() {
     assert_eq!(paths("pub use r#async::run;"), ["async::run"]);
     assert_eq!(paths("use a::b as _;"), ["a::b"]);
     assert!(paths("extern crate foo;").is_empty());
+
+    let binds = |raw: &str| -> Vec<Option<String>> { use_leaves(raw).into_iter().map(|leaf| leaf.binds).collect() };
+    assert_eq!(
+        binds("use crate::a::{self, b::C as D, e::*, f as _};"),
+        [Some("a".to_string()), Some("D".to_string()), None, None]
+    );
+    assert_eq!(binds("use std::io::{self as stdio};"), [Some("stdio".to_string())]);
 }
 
 #[test]
@@ -67,8 +74,8 @@ fn symbol(name: &str, kind: SymbolKind, start: usize, end: usize) -> Symbol {
     }
 }
 
-/// An outline of `source` with its `mod` items and `use`/`extern crate` declarations, found by
-/// line, as the L1 extractor records them.
+/// An outline of `source` with its `mod` and `enum` items and `use`/`extern crate` declarations,
+/// found by line, as the L1 extractor records them.
 fn outline(source: &str) -> (Vec<Symbol>, Vec<Import>) {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
@@ -84,6 +91,9 @@ fn outline(source: &str) -> (Vec<Symbol>, Vec<Import>) {
             } else {
                 open.push((name, start));
             }
+        } else if let Some(rest) = text.strip_prefix("enum ") {
+            let name = rest.split([' ', '{']).next().unwrap().to_string();
+            symbols.push(symbol(&name, SymbolKind::Enum, start, start + text.len()));
         } else if text == "}" {
             let (name, start) = open.pop().unwrap();
             symbols.push(symbol(
@@ -152,7 +162,7 @@ fn files(rels: &[&str]) -> ModuleTarget {
     ModuleTarget::Files(rels.iter().map(|rel| (*rel).to_string()).collect())
 }
 
-const MANIFEST: &str = "[package]\nname = \"demo\"\n";
+const MANIFEST: &str = "[package]\nname = \"demo\"\n\n[dependencies]\nserde = \"1\"\n";
 
 #[test]
 fn mod_declarations_load_sibling_and_nested_module_files() {
@@ -435,4 +445,127 @@ fn a_module_declaration_is_its_own_kind_and_a_use_an_import() {
         .map(|import| (import.specifier.as_str(), import.kind))
         .collect();
     assert_eq!(kinds, [("mod a", EdgeKinds::MODULE_DECL), ("a::X", EdgeKinds::IMPORT)]);
+}
+
+/// A path starting at a crate name: the standard library and declared dependencies are external,
+/// a path through a name the file binds is no edge, and an undeclared name is unresolved.
+#[test]
+fn crate_paths_classify_as_std_dependency_in_scope_or_unresolved() {
+    let manifest = "[package]\nname = \"demo\"\n\n[dependencies]\nserde = \"1\"\nfancy-regex = \"0.1\"\n\n\
+                    [dev-dependencies]\nproptest = \"1\"\n";
+    let lib = "use std::fmt;\nuse core::mem;\nuse alloc::vec::Vec;\nuse ::proc_macro::TokenStream;\n\
+               use serde::Serialize;\nuse fancy_regex::Regex;\nuse proptest::prelude::Strategy;\nuse std::io;\n\
+               use io::Write;\nuse Kind::A;\nuse Kind as K;\nuse undeclared::Thing;\nuse ::nowhere::X;\nextern crate test;\n\
+               extern crate gone;\nenum Kind {}\n";
+    let (resolved, probes) = resolve(&[("Cargo.toml", manifest), ("src/lib.rs", lib)], "src/lib.rs");
+    assert_eq!(
+        resolved,
+        [
+            ("std::fmt".to_string(), ModuleTarget::External),
+            ("core::mem".to_string(), ModuleTarget::External),
+            ("alloc::vec::Vec".to_string(), ModuleTarget::External),
+            ("::proc_macro::TokenStream".to_string(), ModuleTarget::External),
+            ("serde::Serialize".to_string(), ModuleTarget::External),
+            ("fancy_regex::Regex".to_string(), ModuleTarget::External),
+            ("proptest::prelude::Strategy".to_string(), ModuleTarget::External),
+            ("std::io".to_string(), ModuleTarget::External),
+            ("io::Write".to_string(), ModuleTarget::InScope),
+            ("Kind::A".to_string(), ModuleTarget::InScope),
+            ("Kind".to_string(), ModuleTarget::InScope),
+            ("undeclared::Thing".to_string(), ModuleTarget::Unresolved),
+            ("::nowhere::X".to_string(), ModuleTarget::Unresolved),
+            ("extern crate test".to_string(), ModuleTarget::External),
+            ("extern crate gone".to_string(), ModuleTarget::Unresolved),
+        ]
+    );
+    assert!(probes.contains("Cargo.toml"));
+
+    let (resolved, _) = resolve(
+        &[
+            ("Cargo.toml", manifest),
+            ("src/lib.rs", "mod m;\n"),
+            ("src/m.rs", "pub enum Fate {}\n"),
+            ("src/user.rs", "use crate::m::*;\nuse Fate::Live;\n"),
+        ],
+        "src/user.rs",
+    );
+    assert_eq!(
+        resolved,
+        [
+            ("crate::m".to_string(), files(&["src/m.rs"])),
+            ("Fate::Live".to_string(), ModuleTarget::InScope),
+        ],
+        "a glob `use` may have brought the name in"
+    );
+
+    // With no `Cargo.toml` nothing says which crates exist.
+    let (resolved, _) = resolve(&[("loose/x.rs", "use undeclared::Thing;\n")], "loose/x.rs");
+    assert_eq!(resolved, [("undeclared::Thing".to_string(), ModuleTarget::External)]);
+}
+
+/// A crate of the workspace, named through a path dependency, a `workspace = true` dependency or
+/// the package's own library from its tests, resolves into that crate's module files.
+#[test]
+fn workspace_crate_paths_resolve_into_the_member_crate() {
+    let root = "[package]\nname = \"app\"\n\n[dependencies]\n\
+                agents = { package = \"app-agents\", path = \"crates/agents\" }\nshared.workspace = true\n\n\
+                [workspace]\nmembers = [\"crates/*\"]\n\n\
+                [workspace.dependencies]\nshared = { path = \"crates/shared\" }\n";
+    let main = "use agents::session::Session;\nuse agents::Root;\nuse shared::Thing;\nuse agents::gone::X;\n";
+    let repo = [
+        ("Cargo.toml", root),
+        ("src/main.rs", main),
+        ("src/lib.rs", "pub mod engine;\n"),
+        ("src/engine.rs", ""),
+        ("tests/it.rs", "use app::engine::run;\nuse app::Top;\n"),
+        ("crates/agents/Cargo.toml", "[package]\nname = \"app-agents\"\n"),
+        ("crates/agents/src/lib.rs", "pub mod session;\n"),
+        ("crates/agents/src/session.rs", ""),
+        (
+            "crates/shared/Cargo.toml",
+            "[package]\nname = \"shared\"\n\n[lib]\npath = \"lib.rs\"\n",
+        ),
+        ("crates/shared/lib.rs", ""),
+    ];
+    let (resolved, probes) = resolve(&repo, "src/main.rs");
+    assert_eq!(
+        resolved,
+        [
+            (
+                "agents::session::Session".to_string(),
+                files(&["crates/agents/src/session.rs"])
+            ),
+            ("agents::Root".to_string(), files(&["crates/agents/src/lib.rs"])),
+            ("shared::Thing".to_string(), files(&["crates/shared/lib.rs"])),
+            ("agents::gone::X".to_string(), files(&["crates/agents/src/lib.rs"])),
+        ]
+    );
+    assert!(
+        probes.contains("crates/agents/Cargo.toml") && probes.contains("crates/shared/Cargo.toml"),
+        "a member's manifest decides its library root"
+    );
+    let (resolved, _) = resolve(&repo, "tests/it.rs");
+    assert_eq!(
+        resolved,
+        [
+            ("app::engine::run".to_string(), files(&["src/engine.rs"])),
+            ("app::Top".to_string(), files(&["src/lib.rs"])),
+        ]
+    );
+
+    let (resolved, _) = resolve(
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\n\n[dependencies]\nlost = { path = \"crates/lost\" }\n",
+            ),
+            ("src/lib.rs", "use lost::X;\n"),
+        ],
+        "src/lib.rs",
+    );
+    assert_eq!(
+        resolved,
+        [("lost::X".to_string(), ModuleTarget::Unresolved)],
+        "a path dependency with no indexed library root"
+    );
 }

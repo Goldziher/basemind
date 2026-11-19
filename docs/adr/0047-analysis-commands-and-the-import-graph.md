@@ -119,7 +119,17 @@ these arguments and fields:
   `src/intel/resolve_pass.rs`:
   - Rust: `mod x;` maps to `x.rs` or `x/mod.rs` beside the importer; `use crate::…` to the longest
     existing module file under the crate root of the nearest `Cargo.toml`; `super::` and `self::`
-    are relative; anything else is external.
+    are relative.
+  - Rust paths that start at a crate name are classified by the package's `Cargo.toml`:
+    `std`, `core`, `alloc`, `proc_macro`, `test` and registry dependencies (all dependency
+    tables, by their code name) are external. The package's own library (from its tests,
+    binaries, examples), a path dependency inside the repository, a `workspace = true` dependency
+    whose `[workspace.dependencies]` entry has a path and a dependency the workspace `[patch]`es to
+    a path are crates of the repository: the path resolves like `crate::…` in that crate, so a
+    workspace member is an internal edge, not a separate bucket. A path through a name the file
+    binds (its own item, or a name another `use` brought in) is no edge and is not counted. Any
+    other name is unresolved: it is no crate the manifest declares, so the resolver failed to
+    place it. Without a `Cargo.toml` such a path is external.
   - Go: an import path under the `go.mod` module prefix maps to the package directory, one edge per
     non-test `.go` file in it. Build tags are ignored and the coverage note says so.
 - **Two tiers are left out by default.** Type-only imports and Rust `mod` declarations are excluded
@@ -217,3 +227,5 @@ these arguments and fields:
 - **One kind per edge instead of a bit set** — rejected: a parent that declares a module and also
   `use`s it, or a JS file importing one target both at runtime and by type, would lose the
   weaker kind; the set keeps both and the tier test stays one mask.
+- **A separate `workspace` count for Rust workspace crates** — rejected: they are files of the
+  repository, so resolving them to the member crate's module files gives real edges.

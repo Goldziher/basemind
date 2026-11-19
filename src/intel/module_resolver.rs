@@ -48,6 +48,9 @@ pub(crate) enum ModuleTarget {
     Unresolved,
     /// The importer itself, as a Rust path into one of its own inline modules. Not an edge.
     SelfFile,
+    /// A Rust path through a name the importer binds itself (an item it defines, or a name another
+    /// `use` brought in, which that `use` already counts). Not an edge and not counted.
+    InScope,
 }
 
 /// One import of an importer and its resolution.
@@ -235,7 +238,7 @@ fn file_edges(importer: &str, imports: Vec<ModuleImport>) -> FileEdgesBuilder {
             }
             ModuleTarget::External => edges.external(),
             ModuleTarget::Unresolved => edges.unresolved(&import.specifier),
-            ModuleTarget::SelfFile => {}
+            ModuleTarget::SelfFile | ModuleTarget::InScope => {}
         }
     }
     edges
@@ -319,7 +322,7 @@ mod tests {
                 declared(4, "src/a.rs"),
                 declared(10, "src/b.rs"),
                 import(30, "self::b::B", ModuleTarget::Files(vec!["src/b.rs".to_string()])),
-                import(40, "super", ModuleTarget::SelfFile),
+                import(40, "Kind::*", ModuleTarget::InScope),
             ],
         )
         .finish();
@@ -339,7 +342,7 @@ mod tests {
         assert_eq!(
             (edges.external, edges.unresolved),
             (0, 0),
-            "the importer itself is not counted"
+            "an in-scope path is not counted"
         );
     }
 

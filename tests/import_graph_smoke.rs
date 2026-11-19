@@ -190,6 +190,55 @@ mod rust {
     }
 }
 
+mod rust_workspace {
+    use super::*;
+
+    const MAIN: &str = "use agents::session::Session;\nuse serde::Serialize;\nuse std::fmt;\nuse undeclared::X;\n\
+                        pub fn run() {}\n";
+
+    /// A workspace member named through a path dependency resolves into the member crate's files;
+    /// the standard library and a registry dependency are external; an undeclared crate name is
+    /// unresolved. A parent's `mod` declaration is a `module_decl` edge, a `use` an `import` one.
+    #[test]
+    fn a_workspace_member_import_is_an_edge_into_the_member_crate() {
+        let (_dir, store) = scanned(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+                 agents = { package = \"app-agents\", path = \"crates/agents\" }\nserde = \"1\"\n\n\
+                 [workspace]\nmembers = [\"crates/agents\"]\n",
+            ),
+            ("src/lib.rs", "pub mod engine;\n"),
+            ("src/engine.rs", MAIN),
+            (
+                "crates/agents/Cargo.toml",
+                "[package]\nname = \"app-agents\"\nversion = \"0.1.0\"\n",
+            ),
+            ("crates/agents/src/lib.rs", "pub mod session;\n"),
+            ("crates/agents/src/session.rs", "pub struct Session;\n"),
+            ("tests/it.rs", "use app::engine::run;\n"),
+        ]);
+        if !indexed(&store, "src/engine.rs") {
+            return;
+        }
+        let rows = rows(&store);
+        assert_eq!(
+            summary(&rows, "src/engine.rs"),
+            (owned(&["crates/agents/src/session.rs"]), 2, 1)
+        );
+        assert_eq!(row(&rows, "src/engine.rs").unresolved_specifiers, ["undeclared::X"]);
+        assert_eq!(row(&rows, "src/engine.rs").edges[0].kinds, EdgeKinds::IMPORT);
+        let lib = row(&rows, "src/lib.rs");
+        assert_eq!(targets(lib), ["src/engine.rs"]);
+        assert_eq!(lib.edges[0].kinds, EdgeKinds::MODULE_DECL);
+        assert_eq!(
+            summary(&rows, "tests/it.rs"),
+            (owned(&["src/engine.rs"]), 0, 0),
+            "a test crate names its package's library"
+        );
+    }
+}
+
 mod go {
     use super::*;
 

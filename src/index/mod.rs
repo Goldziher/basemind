@@ -106,7 +106,8 @@ const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
 /// Layout revision of the probe keyspaces; bump to force one wholesale resolve pass. Revision 2 added
 /// the file-edge row ([`keys::FILE_EDGES_START`]); revision 3 added JS/TS module-only imports to it;
 /// revision 4 added the Rust and Go rows; revision 5 replaced the edge's type-only flag with its
-/// [`keys::EdgeKinds`] (module-only imports and Rust `mod` declarations become visible).
+/// [`keys::EdgeKinds`] (module-only imports and Rust `mod` declarations become visible) and placed
+/// Rust paths into workspace crates.
 const IMPORT_PROBE_VER: u8 = 5;
 
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
