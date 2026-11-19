@@ -83,6 +83,13 @@ pub(crate) struct Workspace {
         allow(dead_code, reason = "read only by the ranked tools, which this build lacks")
     )]
     pub(crate) ranked: crate::engine::ranked_cache::RankedCache,
+    /// The file-level import graph of the live view, kept for one `cache_generation`
+    /// ([`crate::engine::import_graph::import_graph`]).
+    #[cfg_attr(
+        not(all(test, any(feature = "code-intel-js", feature = "code-intel-stack"))),
+        allow(dead_code, reason = "the import graph's commands and arguments land in later waves")
+    )]
+    pub(crate) import_graph: crate::engine::import_graph::GraphCache,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)]
@@ -322,6 +329,7 @@ impl Workspace {
             cache_generation: AtomicU32::new(1),
             index_generation: AtomicU32::new(1),
             ranked: Default::default(),
+            import_graph: Default::default(),
             scope,
             #[cfg(feature = "code-search")]
             lance: Default::default(),
