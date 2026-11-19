@@ -14,6 +14,7 @@ mod code_search;
 mod code_symbols;
 mod cycles;
 mod docs_search;
+mod explain;
 pub(crate) mod find_files;
 mod graph_report;
 mod impact;
