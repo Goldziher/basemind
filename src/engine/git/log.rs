@@ -732,7 +732,16 @@ fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGi
     let has_more = hits.len() > limit;
     hits.truncate(limit);
 
-    let commits = hits.into_iter().map(|c| commit_to_view(c, false)).collect();
+    // `author` matches a substring of the name or the email, so it can select several people: each
+    // row then says whose commit it is.
+    let with_author = params.author.is_some() || scope == FtsScope::Author;
+    let commits = hits
+        .into_iter()
+        .map(|c| CommitView {
+            with_author,
+            ..commit_to_view(c, false)
+        })
+        .collect();
     let (commits, budgeted) = budget_commits(commits, params.max_tokens);
     let has_more = has_more || budgeted;
     let kept = commits.len();

@@ -118,7 +118,7 @@ async fn git_log_answers_byte_for_byte() {
         ),
         (
             json!({ "author": "t", "limit": 1 }),
-            r#"{"commits":["c48e32cbf7dd add gamma"],"next_cursor":"03020ab9.kgHOxI4yyw"}"#,
+            r#"{"commits":["c48e32cbf7dd t: add gamma"],"next_cursor":"03020ab9.kgHOxI4yyw"}"#,
         ),
         (
             json!({ "rev": "HEAD~1" }),

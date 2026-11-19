@@ -279,14 +279,18 @@ pub struct BlameSymbolParams {
     pub max_tokens: Option<u32>,
 }
 
-/// One commit of a `git_log` list, written as `git log --oneline` prints it: `"<sha> <summary>"`.
-/// Who wrote it and when is `git_log {rev}`'s answer.
+/// One commit of a `git_log` list, written as `git log --oneline` prints it: `"<sha> <summary>"`,
+/// or `"<sha> <author>: <summary>"` in a search by `author`, whose match is a substring of the name
+/// or email and so may hold several people. When it was written is `git_log {rev}`'s answer.
 #[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct CommitView {
     pub sha: String,
     pub summary: String,
-    /// Not written in a list row; `code explain` reads it.
+    /// Written in the row only when `with_author`; `code explain` reads it.
     pub author: String,
+    /// The row names the author: the list was filtered by `author`.
+    #[schemars(skip)]
+    pub with_author: bool,
     /// Not written in a list row; `code explain` reads it.
     pub author_time_unix: i64,
     /// The files the commit changed: each path with how (`added`, `modified`, `deleted`,
@@ -297,7 +301,11 @@ pub(crate) struct CommitView {
 
 impl Serialize for CommitView {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&format!("{} {}", self.sha, self.summary))
+        if self.with_author {
+            serializer.serialize_str(&format!("{} {}: {}", self.sha, self.author, self.summary))
+        } else {
+            serializer.serialize_str(&format!("{} {}", self.sha, self.summary))
+        }
     }
 }
 

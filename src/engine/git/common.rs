@@ -54,6 +54,7 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
         sha: abbreviated_sha(c.sha),
         summary: c.summary,
         author: c.author,
+        with_author: false,
         author_time_unix: c.author_time_unix,
         files,
     }

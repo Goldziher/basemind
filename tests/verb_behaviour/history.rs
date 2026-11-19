@@ -25,6 +25,7 @@ fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
     assert!(status.success(), "git commit as {name} failed");
 }
 
+/// A search by `author` writes each row `"<sha> <author>: <summary>"`; this is the part after the sha.
 fn summaries(body: &Value) -> Vec<String> {
     commit_summaries(&body["commits"])
 }
@@ -38,13 +39,13 @@ async fn assert_author_scoping(client: &Client) {
     );
 
     let hers = call(client, "git_log", json!({ "query": "parser", "author": "alice" })).await;
-    assert_eq!(summaries(&hers), ["fix the parser"], "{hers}");
+    assert_eq!(summaries(&hers), ["alice: fix the parser"], "{hers}");
 
     let by_bob = call(client, "git_log", json!({ "query": "alice", "author": "bob" })).await;
-    assert_eq!(summaries(&by_bob), ["thanks alice for the review"], "{by_bob}");
+    assert_eq!(summaries(&by_bob), ["bob: thanks alice for the review"], "{by_bob}");
 
     let author_only = call(client, "git_log", json!({ "author": "alice" })).await;
-    assert_eq!(summaries(&author_only), ["fix the parser"], "{author_only}");
+    assert_eq!(summaries(&author_only), ["alice: fix the parser"], "{author_only}");
 }
 
 /// A commit by bob whose message names alice is not a commit by alice. Checked on the live walk the
