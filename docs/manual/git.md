@@ -41,5 +41,9 @@ repository.
 `basemind git search <query>`, `basemind git show <rev>`, `basemind git symbol-history <path> <name>`,
 `basemind git blame-symbol <path> <name>` and `basemind git diff-outline <path>` each stand for one
 shape of the calls above. `basemind git churn` ranks the most frequently changed files and
-`basemind git by-path <regex>` finds commits whose changed paths match a regex; neither has an MCP
-tool.
+`basemind git by-path <regex>` finds commits whose changed paths match a regex.
+`basemind git hotspots` lists the files where change and size meet: the commits and authors in a
+window (`--since`, default `90d`), lines, symbols, the longest function and importers, keeping the
+files with two or more of these in the top 10% of the files changed in the window. It prints raw
+numbers, no score; `--path` narrows it and `--limit` caps the rows (default 20). None of the three
+has an MCP tool.

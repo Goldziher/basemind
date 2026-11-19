@@ -29,6 +29,9 @@ disagree.
 ## Where to start
 
 1. `basemind status` shows whether this workspace has an index; `basemind scan` builds one.
+   `basemind overview` then gives the repository's shape in one call: languages, top-level layout,
+   build manifests and their entry points, the largest and most-imported files, HTTP routes,
+   naming conventions and recent commits (`--sections` picks some, `--limit` sizes each list).
 2. `basemind code outline <path>` before opening a file, `basemind code symbols <name>` to find a
    definition, `basemind code refs <name>` for its call sites, `basemind git log` for history.
 3. Add `--json` to any query command for the response the MCP tool returns.
