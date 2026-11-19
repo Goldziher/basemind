@@ -277,6 +277,7 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         "code_impact",
         "code_cycles",
         "code_migration_check",
+        "code_deadcode",
         "overview",
         "git_hotspots",
         "code_explain",

@@ -138,15 +138,29 @@ fn package_json_reads_main_bin_exports_scripts_and_workspaces() {
   "name": "web",
   "version": "1.2.0",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": { "webctl": "bin/cli.js" },
-  "exports": { ".": { "import": "./src/index.mjs", "require": "./dist/index.js" }, "./feature/*": "./src/feature/*.js" },
-  "scripts": { "build": "tsc", "test": "vitest" },
+  "exports": { ".": { "import": "./src/index.mjs", "require": "./dist/index.js" }, "./feature/*": "./src/feature/*.js", "./x": "./out/x.js" },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest",
+    "postinstall": "node install.js && echo ok",
+    "gen": "node gen.js && node build.js",
+    "docs": "markdownlint README.md"
+  },
   "workspaces": { "packages": ["packages/*"] },
   "dependencies": { "react": "^18", "zod": "^3" },
   "devDependencies": { "vitest": "^1" },
   "peerDependencies": { "react-dom": "^18" }
 }"#;
-    let files = ["web/bin/cli.js", "web/src/index.mjs"];
+    let files = [
+        "web/README.md",
+        "web/bin/cli.js",
+        "web/build.js",
+        "web/gen.js",
+        "web/install.js",
+        "web/src/index.mjs",
+    ];
     let m = parse_with("web/package.json", text, &files, &BTreeMap::new());
     assert_eq!(m.name.as_deref(), Some("web"));
     assert_eq!(m.members, ["packages/*"]);
@@ -156,13 +170,19 @@ fn package_json_reads_main_bin_exports_scripts_and_workspaces() {
         targets(&m),
         [
             (TargetKind::Bin, Some("webctl"), Some("web/bin/cli.js".into())),
-            (TargetKind::Main, None, None),
+            (TargetKind::Main, None, Some("web/src/index.mjs".into())),
+            (TargetKind::Main, Some("types"), Some("web/src/index.mjs".into())),
             (TargetKind::Export, None, None),
             (TargetKind::Export, None, Some("web/src/index.mjs".into())),
             (TargetKind::Script, Some("build"), None),
+            (TargetKind::Script, Some("docs"), None),
+            (TargetKind::Script, Some("gen"), Some("web/build.js".into())),
+            (TargetKind::Script, Some("gen"), Some("web/gen.js".into())),
+            (TargetKind::Script, Some("postinstall"), Some("web/install.js".into())),
             (TargetKind::Script, Some("test"), None),
         ],
-        "an unindexed `main` (a build output) is declared but not resolved; a glob export is skipped"
+        "a build output in `dist/` maps back to its source; `out/x.js` has none and stays unresolved; a glob \
+         export is skipped; a script names every file it runs, never an argument such as `README.md`"
     );
 }
 
@@ -180,10 +200,18 @@ test = ["pytest"]
 [project.scripts]
 pkg-cli = "pkg.cli:main"
 
+[project.entry-points."pkg.plugins"]
+extra = "pkg.plugin:Loader.load"
+
 [dependency-groups]
 dev = ["ruff", "mypy"]
 "#;
-    let files = ["src/pkg/__init__.py", "src/pkg/cli.py", "src/pkg/__main__.py"];
+    let files = [
+        "src/pkg/__init__.py",
+        "src/pkg/cli.py",
+        "src/pkg/__main__.py",
+        "src/pkg/plugin.py",
+    ];
     let m = parse_with("pyproject.toml", text, &files, &BTreeMap::new());
     assert_eq!(m.dependency_names, ["click", "requests"]);
     assert_eq!(m.dependencies.dev, 3);
@@ -191,8 +219,16 @@ dev = ["ruff", "mypy"]
         targets(&m),
         [
             (TargetKind::Main, None, Some("src/pkg/__main__.py".into())),
+            (TargetKind::Script, Some("extra"), Some("src/pkg/plugin.py".into())),
             (TargetKind::Script, Some("pkg-cli"), Some("src/pkg/cli.py".into())),
-        ]
+        ],
+        "a plugin entry point is a target like a console script"
+    );
+    let symbols: Vec<Option<&str>> = m.targets.iter().map(|t| t.symbol.as_deref()).collect();
+    assert_eq!(
+        symbols,
+        [None, Some("Loader"), Some("main")],
+        "the function a script calls (the first segment of a dotted attribute)"
     );
 
     let poetry = r#"

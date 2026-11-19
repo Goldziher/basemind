@@ -951,6 +951,12 @@ preload = true
 # files (re)scanned after the change.
 precise_resolution = true
 
+[analysis]
+# Extra entry points of `basemind code deadcode` (same glob syntax as [scan] include: a bare name
+# such as "main.py" matches that name at any depth): files a tool, framework or loader runs by name
+# that no build manifest or language convention declares.
+entry_points = []
+
 [documents]
 enabled = true
 # Embed documents for semantic search (ON — embeddings pay off on real prose / OCR).
@@ -1205,6 +1211,7 @@ degrading to a truncated in-memory view.
 | `impact <path\|symbol> [--depth]` / `impact --diff <rev\|A..B>` / `impact --changed` | Files that import a file, a symbol's defining files or a change's files, transitively through the file-level import graph, each with its depth and whether it is in a cycle (CLI only). |
 | `cycles [--path --max-size]` / `cycles --check <from> <to>` | Import cycles, smallest first, each with an import chain that closes it; or whether `from` importing `to` would close one. Type-only imports and Rust `mod` declarations count only with `--include-type-imports` / `--include-module-decls` (CLI only). |
 | `explain <symbol\|path\|path:line> [--sections --limit --depth --no-code --max-tokens]` | One briefing: a symbol's definition, short body, graded callers (to depth 3 over resolved edges), callees, importers and history, or a file's outline, imports, importers, calls in and out by file, hotspot signals, recent commits and owners; each cut section names the call that continues it (CLI only). |
+| `deadcode [--path --kind --tier --limit --fail-on-dead-code]` | Files no entry point reaches through the import graph, definitions whose name nothing else spells and imports that resolve to nothing, each with a confidence tier (`high`/`medium`/`low`) and its reason, plus a coverage note per language; `--fail-on-dead-code` exits 1 for CI on a `high` finding (or one at `--tier`), and on a report that judged nothing (CLI only). |
 | `migration check [name] [--fail-on-remaining --ranges]` | Remaining uses of the old forms named in `.basemind/migrations/<name>.toml`, per rule and file, with the share migrated and the progress across runs (history kept in the cache dir). `--fail-on-remaining` exits 1 for CI (CLI only). |
 
 **Git (`basemind git`)**

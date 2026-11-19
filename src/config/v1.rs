@@ -16,6 +16,8 @@ pub struct ConfigV1 {
     #[serde(default)]
     pub code_intel: CodeIntelConfig,
     #[serde(default)]
+    pub analysis: AnalysisConfig,
+    #[serde(default)]
     pub watch: WatchConfig,
     #[serde(default)]
     pub cache: CacheConfig,
@@ -241,6 +243,22 @@ impl Default for CodeIntelConfig {
             precise_resolution: Self::default_precise_resolution(),
         }
     }
+}
+
+/// Inputs of the CLI analyses (`basemind code deadcode`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnalysisConfig {
+    /// Extra entry points of `basemind code deadcode`, as globs with the `[scan] include` syntax: a
+    /// pattern with glob characters is used as written; a bare name without a slash (`main.py`)
+    /// matches a path segment of that name at any depth and everything beneath it; a bare path
+    /// with a slash (`tools/gen.py`) is anchored to the root. These are files a tool, a framework
+    /// or a loader runs by name, which no manifest or language convention declares: the walk starts
+    /// from them, a JS export in one counts as called, and a Python top-level name in one is at
+    /// most `low`. A pattern that matches no indexed code file is reported in the notes.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub entry_points: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -480,6 +498,7 @@ impl ConfigV1 {
             schema: "v1".to_string(),
             scan: ScanConfig::default(),
             code_intel: CodeIntelConfig::default(),
+            analysis: AnalysisConfig::default(),
             watch: WatchConfig::default(),
             cache: CacheConfig::default(),
             mcp: McpConfig::default(),

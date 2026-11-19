@@ -2,6 +2,7 @@
 //! struct's field docs are its tool's schema descriptions (ADR-0018), so they move byte for byte.
 
 pub(crate) mod code;
+pub(crate) mod deadcode;
 pub(crate) mod explain;
 pub(crate) mod files;
 pub(crate) mod git;

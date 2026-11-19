@@ -40,6 +40,12 @@
         "precise_resolution": true
       }
     },
+    "analysis": {
+      "$ref": "#/$defs/AnalysisConfig",
+      "default": {
+        "entry_points": []
+      }
+    },
     "watch": {
       "$ref": "#/$defs/WatchConfig",
       "default": {
@@ -327,6 +333,22 @@
           "description": "Master switch for precise, scope- and import-aware name resolution. When `true` (default),\nlanguages with a precise engine resolve references to their true definitions — JS/TS via oxc\n(`code-intel-js`), Python/Java via the stack-graphs `.tsg` engine (`code-intel-stack`) — so\n`code_refs` (pinned callers and the `definition` relation) distinguishes a shadowed local\nfrom an import instead of matching by name. Set to `false` to fall back to fast tree-sitter `locals`\nscope binding for every language (the precise engines are skipped). Inert for languages with\nno precise engine regardless. Takes effect on files (re)analyzed after the change; run a full\n`basemind scan` to apply it to an already-indexed repo.",
           "type": "boolean",
           "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "AnalysisConfig": {
+      "description": "Inputs of the CLI analyses (`basemind code deadcode`).",
+      "type": "object",
+      "properties": {
+        "entry_points": {
+          "description": "Extra entry points of `basemind code deadcode`, as globs with the `[scan] include` syntax: a\npattern with glob characters is used as written; a bare name without a slash (`main.py`)\nmatches a path segment of that name at any depth and everything beneath it; a bare path\nwith a slash (`tools/gen.py`) is anchored to the root. These are files a tool, a framework\nor a loader runs by name, which no manifest or language convention declares: the walk starts\nfrom them, a JS export in one counts as called, and a Python top-level name in one is at\nmost `low`. A pattern that matches no indexed code file is reported in the notes.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
         }
       },
       "additionalProperties": false

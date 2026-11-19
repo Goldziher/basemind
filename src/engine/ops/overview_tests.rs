@@ -107,6 +107,7 @@ fn entry_points_count_tests_and_list_the_rest_up_to_the_limit() {
         kind,
         name: Some(name.to_owned()),
         path: None,
+        symbol: None,
     };
     let manifest = Manifest {
         path: RelPath::from("Cargo.toml"),
