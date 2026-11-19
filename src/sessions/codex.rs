@@ -25,13 +25,14 @@ use std::io::BufRead;
 use std::path::Path;
 
 use serde::Deserialize;
+use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
 use super::code_mode::{self, Arg};
-use super::contain::{self, Found};
+use super::contain::{self, Found, Line};
 use super::shell;
 use super::tally::{Call, Family};
-use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, version_check, widen};
+use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, lenient, version_check, widen};
 
 /// The `cli_version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[0];
@@ -49,33 +50,42 @@ pub struct Codex;
 
 #[derive(Deserialize)]
 struct Envelope {
+    #[serde(default, deserialize_with = "lenient")]
     timestamp: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     ordinal: Option<u64>,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default, deserialize_with = "lenient")]
     kind: Option<String>,
     payload: Option<Payload>,
 }
 
-/// Every field a payload kind this parser reads may carry. Loosely typed fields are `Value`, so a
-/// record whose other fields changed type still parses.
+/// Every field a payload kind this parser reads may carry. Loosely typed fields are `Value` or
+/// lenient (absent when of another type), so a record whose other fields changed type still parses.
 #[derive(Deserialize)]
 struct Payload {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default, deserialize_with = "lenient")]
     kind: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     cwd: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     cli_version: Option<String>,
     id: Option<Value>,
     session_id: Option<Value>,
     parent_thread_id: Option<Value>,
     source: Option<Value>,
     thread_source: Option<Value>,
+    #[serde(default, deserialize_with = "lenient")]
     subagent_history_start_ordinal: Option<u64>,
+    #[serde(default, deserialize_with = "lenient")]
     name: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     namespace: Option<String>,
     arguments: Option<Value>,
     input: Option<Value>,
+    #[serde(default, deserialize_with = "lenient")]
     call_id: Option<String>,
-    output: Option<Value>,
+    /// Read for its failure flag only; the output text is never held as a value.
+    output: Option<Failed>,
     action: Option<Value>,
     info: Option<Value>,
 }
@@ -90,16 +100,16 @@ impl TranscriptParser for Codex {
     }
 
     fn parse(&self, reader: &mut dyn BufRead, scope: &Scope, seen: &mut Seen) -> Outcome {
-        let mut line = String::new();
+        let mut line = Vec::new();
         let mut first: Option<Envelope> = None;
         while first.is_none() {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => return Outcome::Empty,
-                Ok(_) if line.trim().is_empty() => continue,
-                Ok(_) => {}
+            match contain::next_line(reader, &mut line) {
+                Line::End => return Outcome::Empty,
+                Line::Blank => continue,
+                Line::TooLong => return unattributed("not JSON lines"),
+                Line::Read => {}
             }
-            match serde_json::from_str::<Envelope>(&line) {
+            match serde_json::from_slice::<Envelope>(&line) {
                 Ok(envelope) => first = Some(envelope),
                 Err(_) => return unattributed("not JSON lines"),
             }
@@ -133,6 +143,7 @@ impl TranscriptParser for Codex {
             started: None,
             ended: None,
             tally: scope.tally_for(&located),
+            skipped_lines: 0,
         };
         if let Some(timestamp) = &first.timestamp {
             widen(&mut session.started, &mut session.ended, timestamp);
@@ -147,13 +158,18 @@ impl TranscriptParser for Codex {
         // ordinals, and its inherited prefix is then the lines before the start ordinal.
         let mut position: u64 = 0;
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) if line.trim().is_empty() => continue,
-                Ok(_) => position += 1,
+            match contain::next_line(reader, &mut line) {
+                Line::End => break,
+                Line::Blank => continue,
+                Line::TooLong => {
+                    position += 1;
+                    session.skipped_lines += 1;
+                    continue;
+                }
+                Line::Read => position += 1,
             }
-            let Ok(envelope) = serde_json::from_str::<Envelope>(&line) else {
+            let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) else {
+                session.skipped_lines += 1;
                 continue;
             };
             if own_start.is_some_and(|start| envelope.ordinal.unwrap_or(position) < start) {
@@ -320,7 +336,7 @@ fn record(session: &mut Parsed, kind: Option<&str>, payload: Payload, state: &mu
             if let Some(id) = &payload.call_id
                 && state.seen.first_result(id)
             {
-                session.tally.result(id, payload.output.as_ref().is_some_and(failed));
+                session.tally.result(id, payload.output.is_some_and(|f| f.0));
             }
             return;
         }
@@ -424,30 +440,97 @@ fn script(argv: &[String]) -> String {
     argv.join(" ")
 }
 
-/// A tool output that reports failure. The output is a string, or content items whose first text
-/// is the header. A failure is a header line `Exit code: N` (shell), `Process exited with code N`
-/// (`exec_command`) with N non-zero, or `Script failed` (code mode); in older rollouts, a JSON
-/// object with `success: false` or a non-zero `metadata.exit_code`. Only the header is inspected.
-fn failed(output: &Value) -> bool {
-    match output {
-        Value::Object(map) => {
-            map.get("success").and_then(Value::as_bool) == Some(false)
-                || map
-                    .get("metadata")
-                    .and_then(|m| m.get("exit_code"))
-                    .and_then(Value::as_i64)
-                    .is_some_and(|code| code != 0)
+/// Whether a tool output reports failure. The output is a string, or content items whose first
+/// text is the header. A failure is a header line `Exit code: N` (shell), `Process exited with code
+/// N` (`exec_command`) with N non-zero, or `Script failed` (code mode); in older rollouts, a JSON
+/// object (or a string holding one) with `success: false` or a non-zero `metadata.exit_code`. Only
+/// the header is inspected, and only it is held: every other item is skipped unparsed.
+struct Failed(bool);
+
+/// The object an older rollout's output was.
+#[derive(Deserialize)]
+struct ObjectOutput {
+    #[serde(default, deserialize_with = "lenient")]
+    success: Option<bool>,
+    #[serde(default, deserialize_with = "lenient")]
+    metadata: Option<Value>,
+}
+
+impl ObjectOutput {
+    fn failed(&self) -> bool {
+        self.success == Some(false)
+            || self
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("exit_code"))
+                .and_then(Value::as_i64)
+                .is_some_and(|code| code != 0)
+    }
+}
+
+/// The first content item, for its `text`.
+#[derive(Deserialize)]
+struct Item {
+    #[serde(default, deserialize_with = "lenient")]
+    text: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Failed {
+    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FailedVisitor;
+
+        impl<'de> Visitor<'de> for FailedVisitor {
+            type Value = Failed;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a tool output")
+            }
+
+            fn visit_str<E: de::Error>(self, text: &str) -> Result<Failed, E> {
+                let failed = match serde_json::from_str::<ObjectOutput>(text) {
+                    Ok(object) if text.trim_start().starts_with('{') => object.failed(),
+                    _ => header_failed(text),
+                };
+                Ok(Failed(failed))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Failed, A::Error> {
+                let object = ObjectOutput::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(Failed(object.failed()))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Failed, A::Error> {
+                // An item of another shape is not a header.
+                let first = seq.next_element::<Value>()?;
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                let text = first
+                    .and_then(|item| Item::deserialize(item).ok())
+                    .and_then(|item| item.text);
+                Ok(Failed(text.as_deref().is_some_and(header_failed)))
+            }
+
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Failed, E> {
+                Ok(Failed(false))
+            }
+
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Failed, E> {
+                Ok(Failed(false))
+            }
+
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Failed, E> {
+                Ok(Failed(false))
+            }
+
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Failed, E> {
+                Ok(Failed(false))
+            }
+
+            fn visit_unit<E: de::Error>(self) -> Result<Failed, E> {
+                Ok(Failed(false))
+            }
         }
-        Value::String(text) => match serde_json::from_str::<Value>(text) {
-            Ok(inner @ Value::Object(_)) => failed(&inner),
-            _ => header_failed(text),
-        },
-        Value::Array(items) => items
-            .first()
-            .and_then(|item| item.get("text"))
-            .and_then(Value::as_str)
-            .is_some_and(header_failed),
-        _ => false,
+
+        deserializer.deserialize_any(FailedVisitor)
     }
 }
 
@@ -544,28 +627,36 @@ mod tests {
         assert_eq!(parent(&root), None);
     }
 
+    fn failed(output: Value) -> bool {
+        serde_json::from_value::<Failed>(output).expect("an output").0
+    }
+
     #[test]
     fn failures_are_read_from_the_output_shape() {
-        assert!(failed(&Value::String(
+        assert!(failed(Value::String(
             r#"{"output":"x","metadata":{"exit_code":1}}"#.into()
         )));
-        assert!(!failed(&Value::String(
+        assert!(!failed(Value::String(
             r#"{"output":"x","metadata":{"exit_code":0}}"#.into()
         )));
-        assert!(failed(&Value::String("Exit code: 2\nWall time: 1s".into())));
-        assert!(failed(&Value::String(
+        assert!(failed(Value::String("Exit code: 2\nWall time: 1s".into())));
+        assert!(failed(Value::String(
             "Chunk ID: 1\nWall time: 0.1 seconds\nProcess exited with code 1\nOutput:\nx".into()
         )));
-        assert!(!failed(&Value::String(
+        assert!(!failed(Value::String(
             "Wall time: 0.1 seconds\nProcess exited with code 0\nOutput:\nExit code: 1".into()
         )));
-        assert!(failed(&serde_json::json!([
-            {"type": "input_text", "text": "Script failed\nWall time 0.1 seconds\nOutput:\n"}
+        assert!(failed(serde_json::json!([
+            {"type": "input_text", "text": "Script failed\nWall time 0.1 seconds\nOutput:\n"},
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
         ])));
-        assert!(!failed(&serde_json::json!([
+        assert!(!failed(serde_json::json!([
             {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"}
         ])));
-        assert!(failed(&serde_json::json!({"content": "x", "success": false})));
-        assert!(!failed(&Value::String("plain output\nExit code: 1".into())));
+        assert!(!failed(serde_json::json!(["Exit code: 1"])), "an item of another shape");
+        assert!(failed(serde_json::json!({"content": "x", "success": false})));
+        assert!(!failed(Value::String("plain output\nExit code: 1".into())));
+        assert!(!failed(serde_json::json!(7)));
+        assert!(!failed(Value::String("[1, 2]".into())));
     }
 }

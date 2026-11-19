@@ -22,10 +22,10 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::Value;
 
-use super::contain::{self, Found};
+use super::contain::{self, Found, Line};
 use super::shell;
 use super::tally::{Call, Family};
-use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, version_check, widen};
+use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, lenient, version_check, widen};
 
 /// The `version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[1, 2];
@@ -43,22 +43,30 @@ pub fn slug(path: &Path) -> String {
         .collect()
 }
 
+/// The scalar fields are lenient: one of another type is absent, and the record still counts.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Record {
+    #[serde(default, deserialize_with = "lenient")]
     session_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     is_sidechain: Option<bool>,
+    #[serde(default, deserialize_with = "lenient")]
     cwd: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     version: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     timestamp: Option<String>,
     message: Option<Message>,
 }
 
 #[derive(Deserialize)]
 struct Message {
+    #[serde(default, deserialize_with = "lenient")]
     id: Option<String>,
     #[serde(default)]
     content: Content,
+    #[serde(default, deserialize_with = "lenient")]
     usage: Option<Usage>,
 }
 
@@ -73,17 +81,22 @@ enum Content {
 
 #[derive(Deserialize)]
 struct Block {
-    #[serde(rename = "type")]
-    kind: String,
+    #[serde(rename = "type", default, deserialize_with = "lenient")]
+    kind: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     id: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     name: Option<String>,
     input: Option<Value>,
+    #[serde(default, deserialize_with = "lenient")]
     tool_use_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
     is_error: Option<bool>,
 }
 
 #[derive(Deserialize)]
 struct Usage {
+    #[serde(default, deserialize_with = "lenient")]
     output_tokens: Option<u64>,
 }
 
@@ -132,17 +145,20 @@ impl TranscriptParser for Claude {
         let mut tokens: AHashMap<String, (u64, Vec<Family>)> = AHashMap::new();
         let mut checkout_path: Option<std::path::PathBuf> = None;
         let mut sidechain_of: Option<Option<String>> = None;
-        let mut line = String::new();
+        let mut skipped_lines = 0u64;
+        let mut line = Vec::new();
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
+            match contain::next_line(reader, &mut line) {
+                Line::End => break,
+                Line::Blank => continue,
+                Line::TooLong => {
+                    skipped_lines += 1;
+                    continue;
+                }
+                Line::Read => {}
             }
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(record) = serde_json::from_str::<Record>(&line) else {
+            let Ok(record) = serde_json::from_slice::<Record>(&line) else {
+                skipped_lines += 1;
                 continue;
             };
             json_seen = true;
@@ -172,6 +188,7 @@ impl TranscriptParser for Claude {
                         started: None,
                         ended: None,
                         tally: scope.tally_for(&located),
+                        skipped_lines: 0,
                     });
                 }
             }
@@ -204,6 +221,7 @@ impl TranscriptParser for Claude {
             },
             Some(mut session) => {
                 session.parent = sidechain_of.flatten();
+                session.skipped_lines = skipped_lines;
                 for (id, (output, families)) in tokens {
                     if seen.first_response(&id) {
                         session.tally.tokens(output, &families);
@@ -271,7 +289,7 @@ fn record_message(
     };
     let mut families = Vec::new();
     for block in blocks {
-        match block.kind.as_str() {
+        match block.kind.as_deref().unwrap_or_default() {
             "tool_use" => {
                 let name = block.name.as_deref().unwrap_or_default();
                 let call = classify(name, block.input.as_ref().unwrap_or(&Value::Null));

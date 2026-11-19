@@ -150,6 +150,14 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
             writeln!(out, "skipped {count} transcripts: {what}")?;
         }
     }
+    if report.skipped_lines > 0 {
+        writeln!(
+            out,
+            "skipped {} lines: not JSON of a known shape, or over {} MiB",
+            report.skipped_lines,
+            crate::sessions::contain::LINE_MAX >> 20
+        )?;
+    }
     Ok(())
 }
 

@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use ahash::{AHashMap, AHashSet};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use contain::{Found, RootState};
 use tally::{Counts, RepeatedRead, Tally};
@@ -215,6 +215,8 @@ pub struct Parsed {
     pub started: Option<String>,
     pub ended: Option<String>,
     pub tally: Tally,
+    /// Lines that were not JSON of a known shape, or longer than [`contain::LINE_MAX`].
+    pub skipped_lines: u64,
 }
 
 /// What one host's transcripts have already counted, by the ids the host gives them. A fork, a
@@ -344,6 +346,9 @@ pub struct Report {
     /// Symlinks and escaping files the walk refused.
     pub refused: u64,
     pub unreadable: u64,
+    /// Lines of the reported transcripts that were skipped: not JSON of a known shape, or longer
+    /// than [`contain::LINE_MAX`].
+    pub skipped_lines: u64,
 }
 
 /// A transcript of this repository, parsed, before the report.
@@ -437,6 +442,7 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
         {
             continue;
         }
+        report.skipped_lines += parsed.skipped_lines;
         let (counts, repeated_reads) = parsed.tally.finish();
         let session = SessionReport {
             host,
@@ -506,6 +512,7 @@ fn merge_threads(entries: Vec<Entry>) -> Vec<Entry> {
             for timestamp in [&entry.parsed.started, &entry.parsed.ended].into_iter().flatten() {
                 widen(&mut into.started, &mut into.ended, timestamp);
             }
+            into.skipped_lines += entry.parsed.skipped_lines;
             into.tally.absorb(entry.parsed.tally);
             continue;
         }
@@ -575,6 +582,17 @@ fn attribute(report: &mut Report, threads: &[(Host, String)], subagent_threads: 
 fn basemind_tool(name: &str) -> bool {
     name.rsplit_once("__")
         .is_some_and(|(server, _)| server.contains("basemind"))
+}
+
+/// A field that is `None` when it is absent or of another type, so one changed field never drops
+/// the whole record.
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(T::deserialize(value).ok())
 }
 
 /// The longest version string printed.

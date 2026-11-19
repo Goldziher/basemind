@@ -1,0 +1,6 @@
+{"timestamp":"2026-11-20T11:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"loose","id":"loose","cwd":"{{REPO}}","cli_version":"0.169.0","source":"cli","base_instructions":{"text":"SECRET-LOOSE-INSTRUCTIONS"}}}
+{"timestamp":"2026-11-20T11:00:01.000Z","ordinal":1,"type":"turn_context","payload":{"cwd":5,"model":"x","user_instructions":"SECRET-LOOSE-USER"}}
+{"timestamp":"2026-11-20T11:00:02.000Z","ordinal":2,"type":"response_item","payload":{"type":"function_call","name":"exec_command","namespace":3,"arguments":"{\"cmd\":\"rg -n SECRET-LOOSE src\"}","call_id":"lo1"}}
+{"timestamp":"2026-11-20T11:00:03.000Z","ordinal":3,"type":"response_item","payload":{"type":"function_call_output","call_id":"lo1","output":[{"type":"input_text","text":"Wall time: 0.1 seconds\nProcess exited with code 2\nOutput:\n"},{"type":"input_image","image_url":"data:image/png;base64,SECRET-IMAGE"}]}}
+SECRET-NOT-JSON
+{"timestamp":"2026-11-20T11:00:04.000Z","ordinal":5,"type":"response_item","payload":{"type":"function_call","name":"code_read","namespace":"mcp__basemind","arguments":"{\"path\":\"src/lib.rs\"}","call_id":"lo2","status":{"SECRET":"an object where a string was"}}}

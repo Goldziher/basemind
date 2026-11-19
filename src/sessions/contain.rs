@@ -120,6 +120,60 @@ pub fn open(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// The longest transcript line parsed. A longer one (a corrupt file, an inlined image) is skipped
+/// without being held in memory, and counted.
+pub const LINE_MAX: usize = 32 << 20;
+
+/// One line of a transcript.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Line {
+    /// The line's bytes are in the buffer, without the newline.
+    Read,
+    /// Blank.
+    Blank,
+    /// Longer than [`LINE_MAX`]: skipped.
+    TooLong,
+    /// The end of the transcript, or a read error.
+    End,
+}
+
+/// Read the next line into `buf`, holding at most [`LINE_MAX`] bytes of it.
+pub fn next_line(reader: &mut dyn BufRead, buf: &mut Vec<u8>) -> Line {
+    buf.clear();
+    let mut too_long = false;
+    let mut any = false;
+    loop {
+        let chunk = match reader.fill_buf() {
+            Ok([]) => break,
+            Ok(chunk) => chunk,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Line::End,
+        };
+        any = true;
+        let (take, done) = match memchr::memchr(b'\n', chunk) {
+            Some(at) => (at, at + 1),
+            None => (chunk.len(), chunk.len()),
+        };
+        if !too_long && buf.len() + take <= LINE_MAX {
+            buf.extend_from_slice(&chunk[..take]);
+        } else {
+            too_long = true;
+            buf.clear();
+        }
+        let ended = take < done;
+        reader.consume(done);
+        if ended {
+            break;
+        }
+    }
+    match (any, too_long) {
+        (false, _) => Line::End,
+        (true, true) => Line::TooLong,
+        (true, false) if buf.iter().all(u8::is_ascii_whitespace) => Line::Blank,
+        (true, false) => Line::Read,
+    }
+}
+
 /// Open a transcript ([`open`]) for reading lines, decompressing a `*.jsonl.zst` one. A compressed
 /// transcript that does not decode is an error here, not an empty transcript.
 pub fn reader(path: &Path) -> io::Result<Box<dyn BufRead>> {
@@ -135,6 +189,32 @@ pub fn reader(path: &Path) -> io::Result<Box<dyn BufRead>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_over_the_cap_is_skipped_and_the_next_one_read() {
+        let mut text = b"{}\n\n".to_vec();
+        text.extend(std::iter::repeat_n(b'x', LINE_MAX + 1));
+        text.extend_from_slice(b"\n{\"a\":1}");
+        let mut reader = io::BufReader::with_capacity(4096, text.as_slice());
+        let mut buf = Vec::new();
+        let mut lines = Vec::new();
+        loop {
+            let line = next_line(&mut reader, &mut buf);
+            if line == Line::End {
+                break;
+            }
+            lines.push((line, String::from_utf8_lossy(&buf).into_owned()));
+        }
+        assert_eq!(
+            lines,
+            vec![
+                (Line::Read, "{}".to_owned()),
+                (Line::Blank, String::new()),
+                (Line::TooLong, String::new()),
+                (Line::Read, r#"{"a":1}"#.to_owned()),
+            ]
+        );
+    }
 
     #[test]
     fn a_filesystem_root_is_refused_and_a_missing_root_is_missing() {

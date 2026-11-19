@@ -437,6 +437,21 @@ fn a_compressed_codex_rollout_is_read() {
 }
 
 #[test]
+fn a_field_of_another_type_drops_the_field_not_the_record() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(&env, &env.repo, "codex/loose.jsonl", &day.join("rollout-loose.jsonl"));
+    let report = report(&env, None);
+    let loose = session(&report, "rollout-loose");
+    assert_eq!(
+        (loose.counts.shell_search, loose.counts.basemind, loose.counts.errors),
+        (1, 1, 1),
+        "the call with a numeric namespace, and its failure read from the header item"
+    );
+    assert_eq!(report.skipped_lines, 1, "the line that is not JSON");
+}
+
+#[test]
 fn a_fork_counts_only_what_it_did_after_the_fork() {
     let env = setup();
     let day = env.home.join(".codex/sessions/2026/11/20");
