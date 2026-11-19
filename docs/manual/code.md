@@ -37,7 +37,8 @@ symbol or span you need. Paths are repository-relative with forward slashes.
 - `code_grep` matches `pattern` literally unless `regex` is true; a regex anchors `^` and `$` at
   every line. `path` is a literal substring of the path, never a glob. A `path` or `language` that
   no indexed file has is an error, not an empty result. Each hit is its line `text` plus the
-  enclosing `symbol`.
+  enclosing `symbol`. `context: N` (0-10) adds the N lines before and after each hit as rows
+  `"<line>- <text>"`, overlapping windows written once, as `rg -C N` prints them.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies. It reports the
   lanes that ran and `lanes_unavailable` for the ones that did not. It needs a build with the
   `code-search` feature; without it the call is an error naming the feature.

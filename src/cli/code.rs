@@ -91,9 +91,9 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
-        /// Add one line before and after each match.
-        #[arg(long)]
-        context: bool,
+        /// Lines to show before and after each match (0-10).
+        #[arg(long, value_name = "N")]
+        context: Option<u32>,
         /// Per file, the matches widened by 5 lines and merged into spans for `code read --ranges`.
         #[arg(long)]
         ranges: bool,
@@ -382,7 +382,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         regex: regex.then_some(true),
                         path,
                         language,
-                        context: context.then_some(true),
+                        context,
                         ranges: ranges.then_some(true),
                         limit,
                         cursor: cursor.map(Cursor),

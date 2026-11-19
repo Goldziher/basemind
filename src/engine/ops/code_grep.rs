@@ -16,7 +16,7 @@ use crate::engine::files::{IndexedFiles, Sweep};
 use crate::engine::filters::{Filters, PathFilter};
 use crate::engine::grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
 use crate::engine::types::grep::{
-    CodeGrepParams, GrepHit, GrepHits, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse,
+    CodeGrepParams, GREP_CONTEXT_MAX, GrepHit, GrepHits, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse,
 };
 use crate::engine::workspace::Workspace;
 use crate::index::grep_bloom::GrepEntry;
@@ -53,10 +53,17 @@ impl Workspace {
             ));
         }
         let ranges = p.ranges.unwrap_or(false);
-        if ranges && p.context.unwrap_or(false) {
+        let context = p.context.unwrap_or(0);
+        if context > GREP_CONTEXT_MAX {
+            return Err(EngineError::invalid_argument(format!(
+                "`code_grep`: `context` is at most {GREP_CONTEXT_MAX} lines (got {context}); read a longer span \
+                 with `code_read`."
+            )));
+        }
+        if ranges && context > 0 {
             return Err(EngineError::invalid_argument(
                 "`code_grep`: `ranges` already widens each hit by 5 lines; drop `context`, or drop `ranges` \
-                 for hit lines with one line of context.",
+                 for hit lines with `context` lines around each.",
             ));
         }
         self.wait_map_ready();
@@ -69,7 +76,7 @@ impl Workspace {
                 path_contains: p.path,
                 limit: p.limit,
                 max_tokens: budget(p.max_tokens),
-                include_context: p.context.unwrap_or(false),
+                context,
                 ranges,
                 literal: !p.regex.unwrap_or(false),
                 cursor: p.cursor,
@@ -224,15 +231,7 @@ fn workspace_grep(
         let meta = scanned[file_idx].1;
         meta.hash_hex.is_empty() || crate::engine::freshness::matches_index(meta.into(), file, bytes)
     };
-    let (mut hits, hit_cursors) = materialize(
-        files,
-        &paths,
-        &selected,
-        &is_fresh,
-        &re,
-        params.include_context,
-        skip_files,
-    );
+    let (mut hits, hit_cursors) = materialize(files, &paths, &selected, &is_fresh, &re, params.context, skip_files);
     if params.ranges {
         // A range answer writes no line text or symbol, so the budget costs each hit without them.
         for hit in &mut hits {
@@ -591,7 +590,7 @@ fn materialize(
     selected: &[Selection],
     is_fresh: &(dyn Fn(usize, &std::path::Path, &[u8]) -> bool + Sync),
     re: &LineRegex,
-    include_context: bool,
+    context: u32,
     skip_files: usize,
 ) -> (Vec<GrepHit>, Vec<u64>) {
     let per_file: Vec<Vec<(u64, GrepHit)>> = selected
@@ -604,7 +603,7 @@ fn materialize(
                     return Vec::new();
                 };
                 let fresh = file.as_deref().is_some_and(|file| is_fresh(sel.file_idx, file, bytes));
-                collect_hits(path, source, fresh, re, sel, include_context, skip_files + sel.file_idx)
+                collect_hits(path, source, fresh, re, sel, context, skip_files + sel.file_idx)
             })
             .unwrap_or_default()
         })
@@ -628,13 +627,17 @@ fn collect_hits(
     source_fresh: bool,
     re: &LineRegex,
     sel: &Selection,
-    include_context: bool,
+    context: u32,
     global_file_idx: usize,
 ) -> Vec<(u64, GrepHit)> {
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(memchr::memchr_iter(b'\n', source.as_bytes()).map(|pos| pos + 1))
         .collect();
-    let file_lines = (line_starts.len() - usize::from(source.ends_with('\n'))) as u32;
+    let line_count = line_starts.len() - usize::from(source.ends_with('\n'));
+    let file_lines = line_count as u32;
+    let context = context as usize;
+    // Lines before this index are shown by an earlier hit of the page, as its line or its context.
+    let mut shown_until = 0usize;
 
     let mut out = Vec::with_capacity(sel.take);
     let text = lines_end_at_lf(re, source);
@@ -660,10 +663,20 @@ fn collect_hits(
         let line_start_byte = line_starts[line_idx];
         let line = line_text(source, &line_starts, line_idx);
 
-        let context_before =
-            (include_context && line_idx > 0).then(|| clip_line(line_text(source, &line_starts, line_idx - 1), 0, 0));
-        let context_after = (include_context && line_idx + 1 < line_starts.len())
-            .then(|| clip_line(line_text(source, &line_starts, line_idx + 1), 0, 0));
+        // A window stops before the next hit of the page, which writes its own line and the lines
+        // after it, so each context line is carried by one hit and the budget charges it once.
+        let next_hit_line = (out.len() + 1 < sel.take)
+            .then(|| matches.peek().map(|(_, next)| line_of(next.start())))
+            .flatten();
+        let context_line = |idx: usize| clip_line(line_text(source, &line_starts, idx), 0, 0);
+        let before_from = line_idx.saturating_sub(context).max(shown_until).min(line_idx);
+        let after_to = (line_idx + 1 + context)
+            .min(line_count)
+            .min(next_hit_line.unwrap_or(usize::MAX))
+            .max(line_idx + 1);
+        let context_before: Vec<String> = (before_from..line_idx).map(context_line).collect();
+        let context_after: Vec<String> = (line_idx + 1..after_to).map(context_line).collect();
+        shown_until = shown_until.max(after_to);
 
         out.push((
             pack_cursor(global_file_idx, ordinal as u32),

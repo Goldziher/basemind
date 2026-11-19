@@ -116,7 +116,7 @@ mod reference {
         scanned: &[&RelPath],
         selected: &[Selection],
         re: &LineRegex,
-        ctx: bool,
+        ctx: u32,
         skip_files: usize,
     ) -> (Vec<GrepHit>, Vec<u64>) {
         let mut hits = Vec::new();
@@ -249,7 +249,7 @@ fn the_optimised_sweep_is_byte_identical_to_the_original_over_a_generated_corpus
 
             // Walk every page of every limit, comparing hits, cursors and resume points.
             for limit in [25usize, 1000] {
-                for ctx in [false, true] {
+                for ctx in [0, 1, 5] {
                     if skip_hits != 0 && limit != 1000 {
                         continue; // keep the paging walk affordable in debug builds
                     }
@@ -424,10 +424,10 @@ fn the_bloom_prefilter_never_changes_a_result_even_after_edits_deletes_and_new_f
                     &sel_f,
                     &|_, _, _| true,
                     &re,
-                    true,
+                    1,
                     0,
                 );
-                let hits_o = reference::materialize(dir.path(), &refs, &sel_o, &re, true, 0);
+                let hits_o = reference::materialize(dir.path(), &refs, &sel_o, &re, 1, 0);
                 assert_eq!(hits_f.1, hits_o.1);
                 assert_eq!(
                     serde_json::to_string(&hits_f.0).expect("json"),
@@ -518,6 +518,101 @@ fn a_file_over_the_size_bound_is_not_read() {
     std::fs::write(&file, b"12345").expect("write");
     assert_eq!(with_indexed_bytes(Some(file.clone()), 5, <[u8]>::len), Some(5));
     assert_eq!(with_indexed_bytes(Some(file), 4, <[u8]>::len), None);
+}
+
+/// The rows `code_grep` writes for every hit of `pattern` in `source` with `context` lines.
+fn rows_with_context(source: &str, pattern: &str, context: u32, take: usize) -> Vec<String> {
+    let path = RelPath::from("a.rs");
+    let sel = Selection {
+        file_idx: 0,
+        hit_skip: 0,
+        take,
+    };
+    let hits: Vec<GrepHit> = collect_hits(&path, source, true, &line_anchored(pattern), &sel, context, 0)
+        .into_iter()
+        .map(|(_, hit)| hit)
+        .collect();
+    let body = serde_json::to_value(GrepHits::Rows(hits)).expect("json");
+    serde_json::from_value(body["a.rs"][""].clone()).expect("rows outside every symbol")
+}
+
+/// `context: N` writes every line within N of a hit once, in line order, as `rg -C N` merges its
+/// windows: a window stops at the file's last line and before the next hit, and a line two hits
+/// share is written once.
+#[test]
+fn context_windows_merge_like_rg_and_stop_at_the_last_line() {
+    let source: String = (1..=12)
+        .map(|n| {
+            if [3, 5, 11].contains(&n) {
+                format!("hit {n}\n")
+            } else {
+                format!("l{n}\n")
+            }
+        })
+        .collect();
+    assert_eq!(
+        rows_with_context(&source, "hit", 2, 10),
+        [
+            "1- l1",
+            "2- l2",
+            "3: hit 3",
+            "4- l4",
+            "5: hit 5",
+            "6- l6",
+            "7- l7",
+            "9- l9",
+            "10- l10",
+            "11: hit 11",
+            "12- l12",
+        ],
+        "line 8 is in no window, and no row follows the last line"
+    );
+    assert_eq!(
+        rows_with_context(&source, "hit", 0, 10),
+        ["3: hit 3", "5: hit 5", "11: hit 11"]
+    );
+    assert_eq!(
+        rows_with_context(&source, "hit", 2, 1),
+        ["1- l1", "2- l2", "3: hit 3", "4- l4", "5- hit 5"],
+        "a hit the page does not hold is a context line of the one before it"
+    );
+    let unterminated = "a\nhit\nb";
+    assert_eq!(
+        rows_with_context(unterminated, "hit", 5, 10),
+        ["1- a", "2: hit", "3- b"]
+    );
+}
+
+/// The token budget charges each hit its own context rows, which are the rows written, so a page
+/// costs what it writes and a wider context costs more.
+#[test]
+fn the_budget_charges_context_rows_once() {
+    let source: String = (1..=40).map(|n| format!("hit {n}\n")).collect();
+    let path = RelPath::from("a.rs");
+    let sel = Selection {
+        file_idx: 0,
+        hit_skip: 0,
+        take: 40,
+    };
+    let charged = |context: u32| -> u64 {
+        let source = source.replace("hit 2", "x 2");
+        let hits: Vec<GrepHit> = collect_hits(&path, &source, true, &line_anchored("hit 1"), &sel, context, 0)
+            .into_iter()
+            .map(|(_, hit)| hit)
+            .collect();
+        let written: usize = hits
+            .iter()
+            .map(|hit| hit.context_before.len() + hit.context_after.len())
+            .sum();
+        let rows = serde_json::to_value(GrepHits::Rows(hits)).expect("json")["a.rs"][""]
+            .as_array()
+            .map_or(0, Vec::len);
+        let matches = 11;
+        assert_eq!(written + matches, rows, "each written row is carried by one hit");
+        written as u64
+    };
+    assert_eq!(charged(0), 0);
+    assert!(charged(3) > charged(1), "a wider window carries more rows");
 }
 
 fn line_anchored(pattern: &str) -> LineRegex {

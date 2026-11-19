@@ -86,9 +86,9 @@ pub fn cases() -> Vec<Case> {
         case("code_grep", json!({"pattern": "alpha("}), "code grep", &["alpha("]),
         case(
             "code_grep",
-            json!({"pattern": "alpha\\(\\d", "regex": true, "path": "gamma", "context": true}),
+            json!({"pattern": "alpha\\(\\d", "regex": true, "path": "gamma", "context": 2}),
             "code grep",
-            &["alpha\\(\\d", "--regex", "--path", "gamma", "--context"],
+            &["alpha\\(\\d", "--regex", "--path", "gamma", "--context", "2"],
         ),
         case("code_refs", json!({"name": "alpha"}), "code refs", &["alpha"]).after_session(),
         case(

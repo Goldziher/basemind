@@ -17,7 +17,7 @@ async fn stringified_integers_and_booleans_are_coerced() {
     let with_context = call(
         &client,
         "code_grep",
-        json!({ "pattern": "file_outline() +", "context": "true" }),
+        json!({ "pattern": "file_outline() +", "context": "1" }),
     )
     .await;
     assert_eq!(
@@ -28,7 +28,7 @@ async fn stringified_integers_and_booleans_are_coerced() {
     let without_context = call(
         &client,
         "code_grep",
-        json!({ "pattern": "file_outline() +", "context": "false" }),
+        json!({ "pattern": "file_outline() +", "context": "0" }),
     )
     .await;
     assert_eq!(

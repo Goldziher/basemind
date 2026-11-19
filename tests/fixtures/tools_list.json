@@ -22,8 +22,8 @@
           "type": "string"
         },
         "context": {
-          "description": "Add one line before and after each hit.",
-          "type": "boolean"
+          "description": "Lines before and after each hit, 0-10.",
+          "type": "integer"
         },
         "ranges": {
           "description": "Merged ±5-line read spans per file, for `code_read`.",

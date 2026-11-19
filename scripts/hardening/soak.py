@@ -279,7 +279,7 @@ class Workload:
             ("code_read", {"path": path, "symbol": sym}),
             ("code_read", {"path": path, "line": 1, "end_line": 40}),
             ("code_grep", {"pattern": sym, "limit": 50}),
-            ("code_grep", {"pattern": r"^\s*(fn|def|func) ", "regex": True, "limit": 20, "context": True}),
+            ("code_grep", {"pattern": r"^\s*(fn|def|func) ", "regex": True, "limit": 20, "context": 1}),
             ("code_refs", {"name": sym, "limit": 50}),
             ("code_refs", {"name": sym, "path": path, "limit": 20}),
             ("git_log", {"limit": 20}),

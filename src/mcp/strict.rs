@@ -566,11 +566,11 @@ mod tests {
     #[test]
     fn stringified_scalars_are_coerced_for_integer_and_boolean_fields() {
         let params =
-            parse::<CodeGrepParams>(json!({ "pattern": "x", "limit": " 10 ", "regex": "TRUE", "context": "false" }))
+            parse::<CodeGrepParams>(json!({ "pattern": "x", "limit": " 10 ", "regex": "TRUE", "context": "3" }))
                 .expect("coerced");
         assert_eq!(params.limit, Some(10));
         assert_eq!(params.regex, Some(true));
-        assert_eq!(params.context, Some(false));
+        assert_eq!(params.context, Some(3));
         let literal = parse::<CodeGrepParams>(json!({ "pattern": "10" })).expect("a string field keeps its string");
         assert_eq!(literal.pattern, "10");
     }

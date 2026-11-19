@@ -52,7 +52,9 @@ prints it; facts a row shares with its neighbours are written once.
 2. **`code_grep`.** `hits` is `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by the
    innermost enclosing symbol (`""` outside every symbol). Matches on one line are one row,
    `"<line>:<column>,<column>: <text>"`; a clipped line writes its match's column the same way. With
-   `context`, the lines around a match are rows `"<line>- <text>"`, each written once. A file
+   `context: N` (0-10), the N lines before and after a match are rows `"<line>- <text>"`, each
+   written once where windows overlap, as `rg -C N` merges them, and a window stops at the file's
+   last line. A file
    edited since the scan is listed in `stale`, and its rows carry no symbol (`""`). The token budget
    charges each symbol key once per file, as it charges each file key.
 

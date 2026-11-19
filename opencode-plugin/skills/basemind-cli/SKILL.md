@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:19b1590d920b8fc6ae68e995b1ea25cbb5f720090c06e2d7989122a27d8797f8
-Source-Hash: blake3:c45783e792bef120542273291072ff3829989489620e2924a98bd7b2ed0c7044
+Content-Hash: blake3:fe427a1bf267bc1c8811e278c57d6ec884b738c881289fa7c7892ecb530267c3
+Source-Hash: blake3:63e6311ebebd0045988e903a86467f6d690f936f114c986325c60a3b647a9f7c
 Schema-Version: v1
 -->
 
@@ -65,7 +65,7 @@ command covers the question.
 | "What's the shape of file F?" | `basemind code outline path/F` | Symbols with 1-based line spans, plus imports. |
 | "Where is X defined?" | `basemind code symbols "X" [--kind K --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
 | "One symbol's body, or a line span?" | `basemind code read path --symbol name` / `--line N --end-line M` | Alias `expand`. One form, not both. |
-| "Where does this text appear?" | `basemind code grep "pattern" [--regex --path P --language L --context]` | Literal unless `--regex`; `--path` is a substring. |
+| "Where does this text appear?" | `basemind code grep "pattern" [--regex --path P --language L --context N]` | Literal unless `--regex`; `--path` is a substring. |
 | "Find code by meaning?" | `basemind code search "query" [--lane hybrid\|semantic\|keyword]` | Alias `semantic`. Needs `code-search`. |
 | "What calls X?" (any name) | `basemind code refs "X" [--match substring]` | Alias `references`. Exact identifier match by default, no scope resolution. |
 | "What calls this specific definition?" | `basemind code callers path name` | Shorthand for `refs name --path path`. |

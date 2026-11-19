@@ -96,7 +96,7 @@ The command groups keep their names, and the old subcommands stay as shorthands 
 | `code expand <path> <name>` | `code read <path> --symbol <name>` |
 | `code grep --path-contains <p>` | `code grep --path <p>` |
 | `code grep <regex>` | `code grep <regex> --regex` (the pattern is literal by default) |
-| `code grep --no-context` | default; `--context` adds the surrounding lines |
+| `code grep --no-context` | default; `--context N` adds the N lines around each hit |
 | `code files --path-contains <p>` | `code files --path-prefix <p>` |
 | `code definition <path> <line>` | `code definition <path> <line> <name>` |
 | `git blame --line-start <n> --line-end <m>` | `git blame --line <n> --end-line <m>` |

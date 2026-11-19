@@ -2,10 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{LifecycleNotice, default_true, is_zero};
+use super::{LifecycleNotice, is_zero};
 use crate::engine::cursor::Cursor;
 use crate::engine::ranges::FileRanges;
 use crate::path::RelPath;
+
+/// Most lines of context `code_grep` writes on each side of a hit.
+pub(crate) const GREP_CONTEXT_MAX: u32 = 10;
 
 /// Arguments of `code_grep`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -22,9 +25,9 @@ pub struct CodeGrepParams {
     /// Language filter, e.g. `rust`.
     #[serde(default)]
     pub language: Option<String>,
-    /// Add one line before and after each hit.
+    /// Lines before and after each hit, 0-10.
     #[serde(default)]
-    pub context: Option<bool>,
+    pub context: Option<u32>,
     /// Merged ±5-line read spans per file, for `code_read`.
     #[serde(default)]
     pub ranges: Option<bool>,
@@ -63,9 +66,9 @@ pub struct WorkspaceGrepParams {
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Include 1 line of context before + after each hit. Default true.
-    #[serde(default = "default_true")]
-    pub include_context: bool,
+    /// Lines of context before and after each hit, at most [`GREP_CONTEXT_MAX`]; 0 for none.
+    #[serde(default)]
+    pub context: u32,
     /// Answer each file's hits as merged read ranges instead of lines.
     #[serde(default)]
     pub ranges: bool,
@@ -99,10 +102,12 @@ pub(crate) struct GrepHit {
     pub text: String,
     /// Name of the innermost symbol whose span holds the match; absent outside every symbol.
     pub symbol: Option<String>,
-    /// The line immediately before the match, when context was requested and line > 1.
-    pub context_before: Option<String>,
-    /// The line immediately after the match, when context was requested and line < EOF.
-    pub context_after: Option<String>,
+    /// The context lines before the match that no earlier hit of the page shows, ending at
+    /// `line - 1`: up to the requested `context` of them.
+    pub context_before: Vec<String>,
+    /// The context lines after the match, from `line + 1`, up to the requested `context` of them,
+    /// stopping before the file's end and before the next hit of the page.
+    pub context_after: Vec<String>,
     /// Byte offset of the match in the file; used to find `symbol`, not part of the response.
     pub start_byte: u32,
     /// The file changed since it was indexed. The hit is from the file as it is now, and `symbol`
@@ -141,14 +146,27 @@ impl crate::engine::by_path::Located for GrepHit {
             String::new()
         };
         let mut seq = serializer.serialize_seq(None)?;
-        if let Some(before) = &self.context_before {
-            seq.serialize_element(&context_row(self.line - 1, before))?;
+        for (line, text) in self.before() {
+            seq.serialize_element(&context_row(line, text))?;
         }
         seq.serialize_element(&format!("{}{columns}: {}", self.line, self.text))?;
-        if let Some(after) = &self.context_after {
-            seq.serialize_element(&context_row(self.line + 1, after))?;
+        for (line, text) in self.after() {
+            seq.serialize_element(&context_row(line, text))?;
         }
         seq.end()
+    }
+}
+
+impl GrepHit {
+    /// The context lines before the match, each with its 1-based line.
+    fn before(&self) -> impl Iterator<Item = (u32, &String)> {
+        let first = self.line - self.context_before.len() as u32;
+        (first..).zip(&self.context_before)
+    }
+
+    /// The context lines after the match, each with its 1-based line.
+    fn after(&self) -> impl Iterator<Item = (u32, &String)> {
+        (self.line + 1..).zip(&self.context_after)
     }
 }
 
@@ -169,7 +187,8 @@ impl Serialize for GrepHit {
 /// symbol), rows in the order found. Matches on one line are one row naming each 1-based column,
 /// `"<line>:<column>,<column>: <text>"` (unless the line is clipped to a window around each); a lone
 /// match writes its column when its text is clipped. A
-/// context line (`"<line>- <text>"`) is written once per file, and never for a line that matches.
+/// context line (`"<line>- <text>"`) is written once per file, and never for a line that matches:
+/// overlapping windows merge, as `rg -C` merges them.
 fn serialize_rows<S: serde::Serializer>(hits: &[GrepHit], serializer: S) -> Result<S::Ok, S::Error> {
     use serde::ser::SerializeMap;
 
@@ -208,18 +227,16 @@ fn serialize_rows<S: serde::Serializer>(hits: &[GrepHit], serializer: S) -> Resu
             }
         };
         let rows = &mut groups[group].1;
-        let mut context = |line: u32, text: &Option<String>, rows: &mut Vec<String>| {
-            if let Some(text) = text
-                && !match_lines.contains(&(&hit.path, line))
-                && context_written.insert((&hit.path, line))
-            {
-                rows.push(context_row(line, text));
+        let mut context = |lines: &mut dyn Iterator<Item = (u32, &String)>, rows: &mut Vec<String>| {
+            for (line, text) in lines {
+                if !match_lines.contains(&(&hit.path, line)) && context_written.insert((&hit.path, line)) {
+                    rows.push(context_row(line, text));
+                }
             }
         };
-        context(hit.line.saturating_sub(1), &hit.context_before, rows);
+        context(&mut hit.before(), rows);
         rows.push(format!("{}{columns}: {}", hit.line, hit.text));
-        let last = &hits[end - 1];
-        context(hit.line + 1, &last.context_after, rows);
+        context(&mut hits[end - 1].after(), rows);
         i = end;
     }
     let mut map = serializer.serialize_map(Some(files.len()))?;

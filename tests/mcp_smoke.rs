@@ -3038,7 +3038,7 @@ async fn code_and_index_tools_reject_inexact_arguments() {
     let message = refused(
         &service,
         "code_grep",
-        json!({ "pattern": "alpha", "ranges": true, "context": true }),
+        json!({ "pattern": "alpha", "ranges": true, "context": 2 }),
     )
     .await;
     assert!(

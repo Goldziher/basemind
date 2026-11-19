@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:25be92ef06e8df5c2b0ed487061d9937e57277f7e5e20811df3de81805393740
-Source-Hash: blake3:c45783e792bef120542273291072ff3829989489620e2924a98bd7b2ed0c7044
+Content-Hash: blake3:f6cb90e84144de54dabc12c9a8872ba664c4aea5a4003d6089cf62ab0e1d14ae
+Source-Hash: blake3:63e6311ebebd0045988e903a86467f6d690f936f114c986325c60a3b647a9f7c
 Schema-Version: v1
 -->
 
@@ -99,7 +99,8 @@ code_outline {"path":"src/mcp/tools.rs"}
   `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by the innermost enclosing symbol
   (`""` outside every symbol); matches sharing a line are one row `"<line>:<col>,<col>: <text>"`, and
   a clipped line (over 400 bytes, cut to a window around the match) writes its column
-  `"<line>:<col>: ..."`. `"context":true` adds rows `"<line>- <text>"`, each written once. `stale`
+  `"<line>:<col>: ..."`. `"context":N` (0-10) adds the N lines around each hit as rows
+  `"<line>- <text>"`, each written once. `stale`
   lists files edited since they were indexed (their rows sit under `""`). `total` appears only
   beside `next_cursor`.
 - `find_files` lists each file by its path alone: the code map, the documents, and every other

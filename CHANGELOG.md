@@ -161,6 +161,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   locating floor (ADR-0052). The mapping from every removed field is in
   [docs/UPGRADING.md](docs/UPGRADING.md#lean-rows).
 
+- **BREAKING:** `code_grep` `context` is a line count, 0 to 10, where it was a boolean for one line
+  (`basemind code grep --context N`). The N lines before and after each hit are rows
+  `"<line>- <text>"`; where windows overlap each line is written once, as `rg -C N` prints it, and a
+  window stops at the file's last line. The token budget charges each context row once. `context:
+  true` is refused naming the field; pass `1`.
+
 - `admin eval`'s value gate holds a locating kind to a median ratio of exactly 2/3, ADR-0031's "at
   most one and a half times the shell's", where it used 0.67 and failed an answer at exactly 1.5x
   (basemind `find`, 12 tokens against 8, read `median 0.67x < 0.67x`). A failed ratio is printed with

@@ -286,12 +286,7 @@ async fn code_grep_clips_long_lines_around_the_match() {
     let wide = format!("// {filler}\n// {filler} WIDE_NEEDLE {filler}\n// {filler}\n");
     let (_dir, client) = started_with(&[("src/wide.rs", wide.as_str())]).await;
 
-    let body = call(
-        &client,
-        "code_grep",
-        json!({ "pattern": "WIDE_NEEDLE", "context": true }),
-    )
-    .await;
+    let body = call(&client, "code_grep", json!({ "pattern": "WIDE_NEEDLE", "context": 1 })).await;
     let hit = &super::grep_hits(&body)[0];
     let text = hit["text"].as_str().expect("text");
     assert!(text.contains("WIDE_NEEDLE"), "the window holds the match: {text}");

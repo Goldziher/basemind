@@ -102,7 +102,8 @@ code_outline {"path":"src/mcp/tools.rs"}
   `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by the innermost enclosing symbol
   (`""` outside every symbol); matches sharing a line are one row `"<line>:<col>,<col>: <text>"`, and
   a clipped line (over 400 bytes, cut to a window around the match) writes its column
-  `"<line>:<col>: ..."`. `"context":true` adds rows `"<line>- <text>"`, each written once. `stale`
+  `"<line>:<col>: ..."`. `"context":N` (0-10) adds the N lines around each hit as rows
+  `"<line>- <text>"`, each written once. `stale`
   lists files edited since they were indexed (their rows sit under `""`). `total` appears only
   beside `next_cursor`.
 - `find_files` lists each file by its path alone: the code map, the documents, and every other

@@ -494,7 +494,7 @@ async fn code_grep_hits_carry_the_full_line_and_the_enclosing_symbol() {
     let with_context = call(
         &client,
         "code_grep",
-        json!({ "pattern": "file_outline() +", "context": true }),
+        json!({ "pattern": "file_outline() +", "context": 1 }),
     )
     .await;
     assert_eq!(

@@ -433,12 +433,77 @@ async fn code_grep_ranges_merges_each_files_hits_into_read_ranges() {
     let refused = super::call_err(
         &client,
         "code_grep",
-        json!({ "pattern": "file_outline_l2", "ranges": true, "context": true }),
+        json!({ "pattern": "file_outline_l2", "ranges": true, "context": 1 }),
     )
     .await;
     assert_eq!(
         refused,
         "`code_grep`: `ranges` already widens each hit by 5 lines; drop `context`, or drop `ranges` for hit \
-         lines with one line of context."
+         lines with `context` lines around each."
     );
+}
+
+/// `context: N` writes the N lines around each hit as `"<line>- <text>"` rows, each line once where
+/// windows overlap (as `rg -C N` merges them), never past the file's last line, under the hit's
+/// symbol. More than 10 lines, or a boolean, is refused naming the field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_context_writes_n_lines_around_each_hit_once() {
+    let (_dir, client) = started().await;
+
+    let around = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "-> u32 {", "path": "src/outline.rs", "context": 2 }),
+    )
+    .await;
+    let rows: Vec<&str> = around["hits"]["src/outline.rs"]
+        .as_object()
+        .expect("rows by symbol")
+        .values()
+        .flat_map(|rows| rows.as_array().expect("rows"))
+        .filter_map(|row| row.as_str())
+        .collect();
+    let lines: Vec<u32> = rows
+        .iter()
+        .map(|row| {
+            row[..row.find([':', '-']).expect("a line number")]
+                .parse()
+                .expect("a line")
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20],
+        "every line within 2 of a hit, once, in order: {around}"
+    );
+    assert_eq!(
+        around["hits"]["src/outline.rs"]["render"],
+        json!([
+            "16- ",
+            "17- impl Renderer {",
+            "18:     pub fn render(&self) -> u32 {",
+            "19-         file_outline() + file_outline_l2()",
+            "20-     }",
+        ]),
+        "{around}"
+    );
+
+    let to_the_end = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "file_outline() +", "context": 5 }),
+    )
+    .await;
+    let render = to_the_end["hits"]["src/outline.rs"]["render"].as_array().expect("rows");
+    assert_eq!(
+        render.last(),
+        Some(&json!("21- }")),
+        "the window stops at the last line, 21: {to_the_end}"
+    );
+    assert_eq!(render.len(), 8, "lines 14-21: {to_the_end}");
+
+    let wide = super::call_err(&client, "code_grep", json!({ "pattern": "x", "context": 11 })).await;
+    assert!(wide.contains("`context` is at most 10 lines (got 11)"), "{wide}");
+    let flag = super::call_err(&client, "code_grep", json!({ "pattern": "x", "context": true })).await;
+    assert!(flag.contains("`context` must be an integer"), "{flag}");
 }
