@@ -100,9 +100,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   searches, reads and edits from the local Claude Code and Codex transcripts of this repository and its
   worktrees, counts and repository paths only. Sessions started in a subdirectory count, and subagents
   (Claude Code's `subagents/` transcripts, Codex's subagent rollouts) are reported on their own and
-  attributed to their parent session. Codex rollouts are read in the current format: namespaced MCP
-  calls, code-mode `exec` scripts and their nested tool calls, exit status from the output header, and
-  a subagent's inherited history skipped.
+  attributed to their parent session. Codex rollouts are read in the current format, compressed ones
+  included: namespaced MCP calls, code-mode `exec` scripts and their nested tool calls, and exit status
+  from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
+  and relative paths are taken from the session's working directory. Sessions of a removed worktree
+  are not counted.
 
 ### Changed
 

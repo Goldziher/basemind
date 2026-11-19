@@ -59,21 +59,37 @@ basemind already contains reads that reach outside the tree:
 - Hosts: Claude Code and Codex, behind a `TranscriptParser` trait in a new `src/sessions/`
   (`mod.rs`, `claude.rs`, `codex.rs`). Others are follow-up work.
 - A transcript is read only when its recorded `cwd` is this repository's root or one of its
-  worktrees, or a directory below one of them (resolved first when it holds `..`). Claude Code files
-  such a session under a project directory whose slug extends the checkout's, so those are walked
-  too; a sibling the lossy slug also matches is dropped by its `cwd`.
-- Subagent transcripts are read under the same rules: Claude Code's
-  `<slug>/<session>/subagents/[workflows/<run>/]agent-*.jsonl`, walked without following a
-  symlink at any level, and Codex's subagent rollouts, rollouts of their own whose `session_meta`
-  marks them as a subagent's and names the root session; the parent's history a subagent inherits
-  (records before its `subagent_history_start_ordinal`) is not counted again. Each is reported on
-  its own and attributed to its parent session.
+  live worktrees, or a directory below one of them (resolved first when it holds `..`). Claude Code
+  files such a session under a project directory whose slug extends the checkout's, so those are
+  walked too; a sibling the lossy slug also matches is dropped by its `cwd`. The worktrees are the
+  ones git lists now: the sessions of a removed worktree count under `other_directories`, not as
+  this repository's.
+- A relative path a host tool, shell command or patch names is taken from the session's working
+  directory, then made repository-relative; a basemind `path` argument is already
+  repository-relative. Paths are compared as text in either platform's shape (`/`, drive and UNC
+  roots, either separator), with `..` resolved lexically.
+- Subagent transcripts are read under the same rules: Claude Code's `agent-*.jsonl` up to two
+  directories below `<slug>/<session>/subagents/` (`workflows/<run>/`), walked without following a
+  symlink at any level, or beside the sessions with its records marked as a sidechain of the
+  session they name; and Codex's subagent rollouts, rollouts of their own whose `session_meta`
+  marks them as a subagent's and names their parent. A subagent is attributed through its direct
+  parent, up through other subagents, to the session it descends from, and reported on its own.
+- Copied history is counted once. A Codex subagent skips the records before its
+  `subagent_history_start_ordinal`, by line position where a Legacy-mode rollout writes no
+  ordinals. A fork, a revert, a resumed Claude Code session and a subagent with forked context
+  copy earlier records with their ids, so tool calls, results and model responses are counted once
+  per host by id, reading transcripts oldest first; the rollouts of one reverted Codex thread are
+  one session. Codex output tokens are the rise of the cumulative total, so a repeated
+  `token_count` adds nothing.
+- Codex rollouts it has compressed (`*.jsonl.zst`) are decompressed and read. A line over 32 MiB,
+  or one that is not JSON of a known shape, is skipped and counted.
 - `src/sessions/` also holds `code_mode.rs`: Codex's code mode records one `exec` call whose input
   is a JavaScript script, and its nested tool calls are read from that script by a lexer that
   evaluates nothing.
 - **Counts only.** The output is per-session and aggregate counts plus repository-relative paths.
   It never echoes message text, tool input or output, or a command line, and writes nothing but
-  stdout: no cache, no telemetry, no file.
+  stdout: no cache, no telemetry, no file. A string taken from a transcript (a version, a thread
+  id) is printed only as a short token of `[0-9A-Za-z._+-]`, else as `unparseable`.
 - **No hook output.** No session-start or other hook prints these numbers.
 - A transcript whose format version the parser does not know is reported as `unsupported`, never
   skipped silently.

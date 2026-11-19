@@ -138,7 +138,8 @@ enum Cmd {
     Statusline,
     /// Tool-use counts from the local Claude Code and Codex transcripts of this repository and its
     /// worktrees, subagents listed with their parent session: basemind calls against shell searches
-    /// and whole-file reads. Counts and paths only.
+    /// and whole-file reads. Counts and paths only. Sessions of a worktree that has been removed
+    /// are not counted.
     Sessions(basemind::cli::sessions::SessionsArgs),
     /// Manage the machine-global caches (gc / stats / clear). Offline path.
     #[command(subcommand)]
