@@ -20,6 +20,7 @@ use rayon::prelude::*;
 
 use crate::extract::FileMapL1;
 use crate::index::IndexDb;
+use crate::index::keys::EdgeKinds;
 use crate::intel::model::FileResolvedRefs;
 use crate::intel::module_go::{GoModules, is_package_file};
 use crate::intel::module_rust::RustModules;
@@ -57,6 +58,8 @@ pub(crate) struct ModuleImport {
     /// The import as written, kept for an unresolved one.
     pub specifier: String,
     pub target: ModuleTarget,
+    /// What the import is: [`EdgeKinds::IMPORT`], or [`EdgeKinds::MODULE_DECL`] for a Rust `mod x;`.
+    pub kind: EdgeKinds,
 }
 
 /// The lookups a resolver makes for one importer. Every repo-relative path it consults is recorded
@@ -227,7 +230,7 @@ fn file_edges(importer: &str, imports: Vec<ModuleImport>) -> FileEdgesBuilder {
         match import.target {
             ModuleTarget::Files(files) => {
                 for file in files.iter().filter(|file| file.as_str() != importer) {
-                    edges.hit_at(RelPath::from(file.as_str()), import.anchor, false);
+                    edges.hit_at(RelPath::from(file.as_str()), import.anchor, import.kind);
                 }
             }
             ModuleTarget::External => edges.external(),
@@ -269,6 +272,7 @@ mod tests {
             anchor,
             specifier: specifier.to_string(),
             target,
+            kind: EdgeKinds::IMPORT,
         }
     }
 
@@ -301,6 +305,42 @@ mod tests {
         assert_eq!(targets, [("pkg/b.go", 2)]);
         assert_eq!((edges.external, edges.unresolved), (1, 1));
         assert_eq!(edges.unresolved_specifiers, ["example.com/m/gone"]);
+    }
+
+    #[test]
+    fn a_module_declaration_and_a_use_of_one_file_make_one_edge_of_both_kinds() {
+        let declared = |anchor, target: &str| ModuleImport {
+            kind: EdgeKinds::MODULE_DECL,
+            ..import(anchor, "mod a", ModuleTarget::Files(vec![target.to_string()]))
+        };
+        let edges = file_edges(
+            "src/lib.rs",
+            vec![
+                declared(4, "src/a.rs"),
+                declared(10, "src/b.rs"),
+                import(30, "self::b::B", ModuleTarget::Files(vec!["src/b.rs".to_string()])),
+                import(40, "super", ModuleTarget::SelfFile),
+            ],
+        )
+        .finish();
+        let kinds: Vec<(&str, EdgeKinds, u32)> = edges
+            .edges
+            .iter()
+            .map(|edge| (edge.target.as_str().unwrap(), edge.kinds, edge.local_start))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("src/a.rs", EdgeKinds::MODULE_DECL, 4),
+                ("src/b.rs", EdgeKinds::MODULE_DECL.union(EdgeKinds::IMPORT), 30),
+            ],
+            "the runtime import anchors the edge"
+        );
+        assert_eq!(
+            (edges.external, edges.unresolved),
+            (0, 0),
+            "the importer itself is not counted"
+        );
     }
 
     #[test]

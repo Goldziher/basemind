@@ -56,18 +56,75 @@ pub struct FileEdges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEdge {
     pub target: RelPath,
-    /// Byte offset of the first binding importing `target` (of a runtime import when there is one).
+    /// Byte offset of the first import of `target`: of a runtime import when there is one, else of a
+    /// module declaration, else of a type-only import.
     pub local_start: u32,
-    /// Every import of `target` is type-only (`import type`): erased at runtime.
-    pub type_only: bool,
+    /// Every kind of import behind the edge.
+    pub kinds: EdgeKinds,
 }
 
-/// [`FileEdge::type_only`] in the edge's flag byte.
-const EDGE_TYPE_ONLY: u8 = 1;
+impl FileEdge {
+    /// Every import of `target` is type-only (`import type`): erased at runtime.
+    pub fn type_only(&self) -> bool {
+        self.kinds == EdgeKinds::TYPE_ONLY
+    }
+}
+
+/// The kinds of import behind one [`FileEdge`], a bit set (the edge's flag byte). An edge belongs to
+/// the runtime tier when it holds [`Self::IMPORT`] or [`Self::MODULE_ONLY`]; an edge made only of
+/// [`Self::TYPE_ONLY`] or [`Self::MODULE_DECL`] imports is in that tier alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct EdgeKinds(u8);
+
+impl EdgeKinds {
+    /// An import that binds a name of the target (`import { x }`, `use crate::a::X`, a Go import).
+    pub const IMPORT: Self = Self(0b0001);
+    /// A type-only import (`import type`), erased at runtime.
+    pub const TYPE_ONLY: Self = Self(0b0010);
+    /// A runtime import that binds no export: a JS side-effect import, a namespace import or an
+    /// `export … from` re-export.
+    pub const MODULE_ONLY: Self = Self(0b0100);
+    /// A Rust `mod x;` declaration: the parent module contains the child's file. Structural
+    /// containment, not a use of it.
+    pub const MODULE_DECL: Self = Self(0b1000);
+    const ALL: u8 = 0b1111;
+
+    /// The set's flag byte.
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// The set of a flag byte; `None` for an empty set or an unknown bit.
+    pub fn from_bits(bits: u8) -> Option<Self> {
+        (bits != 0 && bits & !Self::ALL == 0).then_some(Self(bits))
+    }
+
+    /// Whether every kind of `other` is in the set.
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether the set and `other` share a kind.
+    pub fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Whether the edge exists at runtime: a binding or a module-only import.
+    pub fn runtime(self) -> bool {
+        self.intersects(Self::IMPORT.union(Self::MODULE_ONLY))
+    }
+
+    /// The set with every kind of `other` added.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
 
 /// Encode the file-edge value:
 /// `external:u32_be ‖ unresolved:u32_be ‖ edges:u32_be ‖ edge* ‖ specifier*`, an edge being
-/// `flags:u8 ‖ u16:len(target) ‖ target ‖ local_start:u32_be` and a specifier `u16:len ‖ bytes`.
+/// `kinds:u8 ‖ u16:len(target) ‖ target ‖ local_start:u32_be` (`kinds` being [`EdgeKinds::bits`])
+/// and a specifier `u16:len ‖ bytes`.
 pub fn file_edges_value(edges: &FileEdges) -> Vec<u8> {
     let mut out = Vec::with_capacity(12 + edges.edges.len() * 32);
     out.extend_from_slice(&edges.external.to_be_bytes());
@@ -75,7 +132,7 @@ pub fn file_edges_value(edges: &FileEdges) -> Vec<u8> {
     let count = u32::try_from(edges.edges.len()).unwrap_or(u32::MAX);
     out.extend_from_slice(&count.to_be_bytes());
     for edge in edges.edges.iter().take(count as usize) {
-        out.push(if edge.type_only { EDGE_TYPE_ONLY } else { 0 });
+        out.push(edge.kinds.bits());
         let _ = write_len_prefixed(&mut out, edge.target.as_bytes());
         out.extend_from_slice(&edge.local_start.to_be_bytes());
     }
@@ -98,7 +155,7 @@ pub fn parse_file_edges(key: &[u8], value: &[u8]) -> Option<(RelPath, FileEdges)
     let mut v = 12;
     let mut edges = Vec::new();
     for _ in 0..count {
-        let flags = *value.get(v)?;
+        let kinds = EdgeKinds::from_bits(*value.get(v)?)?;
         v += 1;
         let target = RelPath::from(read_len_prefixed_ref(value, &mut v)?);
         let local_start = read_u32(v)?;
@@ -106,7 +163,7 @@ pub fn parse_file_edges(key: &[u8], value: &[u8]) -> Option<(RelPath, FileEdges)
         edges.push(FileEdge {
             target,
             local_start,
-            type_only: flags & EDGE_TYPE_ONLY != 0,
+            kinds,
         });
     }
     let mut unresolved_specifiers = Vec::new();
@@ -232,12 +289,22 @@ mod tests {
                 FileEdge {
                     target: RelPath::from("src/a.ts"),
                     local_start: 9,
-                    type_only: false,
+                    kinds: EdgeKinds::IMPORT.union(EdgeKinds::MODULE_ONLY),
+                },
+                FileEdge {
+                    target: RelPath::from("src/b.rs"),
+                    local_start: 20,
+                    kinds: EdgeKinds::MODULE_DECL,
+                },
+                FileEdge {
+                    target: RelPath::from("src/c.rs"),
+                    local_start: 30,
+                    kinds: EdgeKinds::MODULE_DECL.union(EdgeKinds::IMPORT),
                 },
                 FileEdge {
                     target: RelPath::from("src/types.ts"),
                     local_start: 40,
-                    type_only: true,
+                    kinds: EdgeKinds::TYPE_ONLY,
                 },
             ],
             external: 3,
@@ -260,6 +327,53 @@ mod tests {
         assert_eq!(parse_file_edges(&binding, &value), None, "a binding row");
         let manifest = import_target(&importer, PROBE_MANIFEST_START);
         assert_eq!(parse_file_edges(&manifest, &value), None, "the manifest row");
+    }
+
+    #[test]
+    fn edge_kinds_roundtrip_through_the_flag_byte_and_name_their_tier() {
+        let kinds = [
+            EdgeKinds::IMPORT,
+            EdgeKinds::TYPE_ONLY,
+            EdgeKinds::MODULE_ONLY,
+            EdgeKinds::MODULE_DECL,
+        ];
+        let mut bits: Vec<u8> = kinds.iter().map(|kind| kind.bits()).collect();
+        bits.sort_unstable();
+        bits.dedup();
+        assert_eq!(bits.len(), kinds.len(), "each kind has its own bit");
+        for kind in kinds {
+            assert_eq!(EdgeKinds::from_bits(kind.bits()), Some(kind));
+        }
+        let all = kinds.iter().fold(EdgeKinds::default(), |set, kind| set.union(*kind));
+        assert_eq!(EdgeKinds::from_bits(all.bits()), Some(all));
+        assert_eq!(EdgeKinds::from_bits(0), None, "an empty set is malformed");
+        assert_eq!(EdgeKinds::from_bits(0x10), None, "an unknown bit is malformed");
+
+        assert!(EdgeKinds::IMPORT.runtime() && EdgeKinds::MODULE_ONLY.runtime());
+        assert!(!EdgeKinds::TYPE_ONLY.runtime() && !EdgeKinds::MODULE_DECL.runtime());
+        assert!(EdgeKinds::MODULE_DECL.union(EdgeKinds::IMPORT).runtime());
+
+        let edge = |kinds| FileEdge {
+            target: RelPath::from("x.rs"),
+            local_start: 0,
+            kinds,
+        };
+        assert!(edge(EdgeKinds::TYPE_ONLY).type_only());
+        assert!(!edge(EdgeKinds::TYPE_ONLY.union(EdgeKinds::IMPORT)).type_only());
+        assert!(!edge(EdgeKinds::MODULE_DECL).type_only());
+
+        let importer = RelPath::from("src/lib.rs");
+        let key = import_target(&importer, FILE_EDGES_START);
+        let mut value = file_edges_value(&FileEdges {
+            edges: vec![edge(EdgeKinds::MODULE_DECL)],
+            ..FileEdges::default()
+        });
+        assert_eq!(
+            parse_file_edges(&key, &value).unwrap().1.edges[0].kinds,
+            EdgeKinds::MODULE_DECL
+        );
+        value[12] = 0;
+        assert_eq!(parse_file_edges(&key, &value), None, "an edge with no kind");
     }
 
     #[test]

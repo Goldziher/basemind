@@ -5,9 +5,12 @@
 //! reached no edge for is not a node. Node ids follow path order, so every answer built from them
 //! (walk order, cycle members, the cycle list) is deterministic.
 //!
-//! Type-only imports (`import type`) are a second tier: every walk and the cycle search exclude
-//! them unless asked with [`TypeImports::Include`], because they create cycles that do not exist at
-//! run time.
+//! Each edge carries the [`EdgeKinds`] of the imports behind it, and two tiers are left out of every
+//! walk and the cycle search unless the caller's [`Tiers`] asks for them: type-only imports
+//! (`import type`), which create cycles that do not exist at run time, and Rust `mod x;`
+//! declarations, which say a parent module contains a child file, not that it uses it (with them, a
+//! child's `use crate::…` closes a cycle through every parent above it). An edge holding a runtime
+//! import is in the default tier whatever else it holds.
 //!
 //! The graph is as good as the resolvers. [`Coverage`] says, per language, how many files a
 //! resolver read and how many imports it could not place, so a caller states what the graph knows:
@@ -21,7 +24,7 @@ use parking_lot::Mutex;
 
 use crate::engine::error::EngineError;
 use crate::engine::workspace::Workspace;
-use crate::index::keys::FileEdges;
+use crate::index::keys::{EdgeKinds, FileEdges};
 use crate::index::view::IndexView;
 use crate::path::RelPath;
 
@@ -37,19 +40,33 @@ pub(crate) const NODE_CAP: usize = 5_000;
 /// A graph larger than this is built for its caller but not kept on the workspace.
 const CACHE_BYTES_MAX: usize = 128 * 1024 * 1024;
 
-/// Whether type-only imports count as edges.
+/// Which edges a graph answer follows. The default, [`Tiers::RUNTIME`], follows runtime imports
+/// only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum TypeImports {
-    /// Runtime edges only: the default of every graph answer.
-    #[default]
-    Exclude,
-    /// Type-only edges too (the CLI's `--include-type-imports`).
-    Include,
+pub(crate) struct Tiers {
+    /// Also follow type-only imports (the CLI's `--include-type-imports`).
+    pub(crate) type_imports: bool,
+    /// Also follow Rust `mod x;` declarations from a parent module to its child file (the CLI's
+    /// `--include-module-decls`).
+    pub(crate) module_decls: bool,
 }
 
-impl TypeImports {
+impl Tiers {
+    /// Runtime imports only: the default of every graph answer.
+    pub(crate) const RUNTIME: Self = Self {
+        type_imports: false,
+        module_decls: false,
+    };
+    /// Every edge.
+    pub(crate) const ALL: Self = Self {
+        type_imports: true,
+        module_decls: true,
+    };
+
     fn admits(self, edge: &Edge) -> bool {
-        self == Self::Include || !edge.type_only
+        edge.kinds.runtime()
+            || (self.type_imports && edge.kinds.contains(EdgeKinds::TYPE_ONLY))
+            || (self.module_decls && edge.kinds.contains(EdgeKinds::MODULE_DECL))
     }
 }
 
@@ -66,11 +83,11 @@ pub(crate) enum Direction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Edge {
     pub(crate) node: NodeId,
-    /// Byte offset in the importer of the first binding importing the target (of a runtime import
-    /// when there is one).
+    /// Byte offset in the importer of the first import of the target (of a runtime import when
+    /// there is one).
     pub(crate) local_start: u32,
-    /// Every import behind the edge is type-only.
-    pub(crate) type_only: bool,
+    /// Every kind of import behind the edge.
+    pub(crate) kinds: EdgeKinds,
 }
 
 /// Compressed adjacency: the edges of node `n` are `edges[offsets[n]..offsets[n + 1]]`, sorted by
@@ -110,6 +127,8 @@ pub(crate) struct LanguageCoverage {
     pub(crate) edges: u32,
     /// The part of `edges` that is type-only.
     pub(crate) type_only_edges: u32,
+    /// The part of `edges` that is only a Rust `mod` declaration.
+    pub(crate) module_decl_edges: u32,
     /// Imports naming a module outside the repository.
     pub(crate) external: u32,
     /// Imports naming a file of the repository that no indexed file matches.
@@ -237,10 +256,14 @@ impl ImportGraph {
             else {
                 continue;
             };
-            let type_only = edges.edges.iter().filter(|edge| edge.type_only).count();
+            let only = |kind: EdgeKinds| {
+                let count = edges.edges.iter().filter(|edge| edge.kinds == kind).count();
+                u32::try_from(count).unwrap_or(u32::MAX)
+            };
             coverage.importers += 1;
             coverage.edges += u32::try_from(edges.edges.len()).unwrap_or(u32::MAX);
-            coverage.type_only_edges += u32::try_from(type_only).unwrap_or(u32::MAX);
+            coverage.type_only_edges += only(EdgeKinds::TYPE_ONLY);
+            coverage.module_decl_edges += only(EdgeKinds::MODULE_DECL);
             coverage.external += edges.external;
             coverage.unresolved += edges.unresolved;
         }
@@ -270,11 +293,17 @@ impl ImportGraph {
                     .map(|edge| Edge {
                         node: id(&edge.target),
                         local_start: edge.local_start,
-                        type_only: edge.type_only,
+                        kinds: edge.kinds,
                     })
                     .collect();
                 out.sort_unstable_by_key(|edge| edge.node);
-                out.dedup_by_key(|edge| edge.node);
+                out.dedup_by(|later, kept| {
+                    let same = later.node == kept.node;
+                    if same {
+                        kept.kinds = kept.kinds.union(later.kinds);
+                    }
+                    same
+                });
                 (id(importer), out)
             })
             .collect();
@@ -345,31 +374,31 @@ impl ImportGraph {
     }
 
     /// The files `node` imports, by path.
-    pub(crate) fn dependencies(&self, node: NodeId, types: TypeImports) -> impl Iterator<Item = &Edge> {
-        self.forward.of(node).iter().filter(move |edge| types.admits(edge))
+    pub(crate) fn dependencies(&self, node: NodeId, tiers: Tiers) -> impl Iterator<Item = &Edge> {
+        self.forward.of(node).iter().filter(move |edge| tiers.admits(edge))
     }
 
     /// The files importing `node`, by path. `local_start` is the offset in the importer.
-    pub(crate) fn importers(&self, node: NodeId, types: TypeImports) -> impl Iterator<Item = &Edge> {
-        self.reverse.of(node).iter().filter(move |edge| types.admits(edge))
+    pub(crate) fn importers(&self, node: NodeId, tiers: Tiers) -> impl Iterator<Item = &Edge> {
+        self.reverse.of(node).iter().filter(move |edge| tiers.admits(edge))
     }
 
     /// Files importing `node`.
-    pub(crate) fn in_degree(&self, node: NodeId, types: TypeImports) -> usize {
-        self.importers(node, types).count()
+    pub(crate) fn in_degree(&self, node: NodeId, tiers: Tiers) -> usize {
+        self.importers(node, tiers).count()
     }
 
-    fn adjacent(&self, node: NodeId, direction: Direction, types: TypeImports) -> impl Iterator<Item = &Edge> {
+    fn adjacent(&self, node: NodeId, direction: Direction, tiers: Tiers) -> impl Iterator<Item = &Edge> {
         let csr = match direction {
             Direction::Importers => &self.reverse,
             Direction::Dependencies => &self.forward,
         };
-        csr.of(node).iter().filter(move |edge| types.admits(edge))
+        csr.of(node).iter().filter(move |edge| tiers.admits(edge))
     }
 
     /// Breadth-first walk from `starts` in `direction`, at most `limits.depth` levels deep and
     /// `limits.node_cap` files wide. A file is reported once, at its nearest depth.
-    pub(crate) fn walk(&self, starts: &[NodeId], direction: Direction, limits: WalkLimits, types: TypeImports) -> Walk {
+    pub(crate) fn walk(&self, starts: &[NodeId], direction: Direction, limits: WalkLimits, tiers: Tiers) -> Walk {
         let mut seen = vec![false; self.len()];
         let mut frontier: Vec<NodeId> = Vec::new();
         for &start in starts {
@@ -383,7 +412,7 @@ impl ImportGraph {
         for depth in 1..=limits.depth {
             let mut next: Vec<Reached> = Vec::new();
             for &from in &frontier {
-                for edge in self.adjacent(from, direction, types) {
+                for edge in self.adjacent(from, direction, tiers) {
                     let slot = &mut seen[edge.node as usize];
                     if *slot {
                         continue;
@@ -410,7 +439,7 @@ impl ImportGraph {
             }
         }
         let beyond = frontier.iter().any(|&from| {
-            self.adjacent(from, direction, types)
+            self.adjacent(from, direction, tiers)
                 .any(|edge| !seen[edge.node as usize])
         });
         if beyond {
@@ -421,7 +450,7 @@ impl ImportGraph {
 
     /// Every file reachable from `roots` in `direction`, the roots included, with no bound: a mask
     /// indexed by node.
-    pub(crate) fn reachable(&self, roots: &[NodeId], direction: Direction, types: TypeImports) -> Vec<bool> {
+    pub(crate) fn reachable(&self, roots: &[NodeId], direction: Direction, tiers: Tiers) -> Vec<bool> {
         let mut seen = vec![false; self.len()];
         let mut stack: Vec<NodeId> = Vec::new();
         for &root in roots {
@@ -431,7 +460,7 @@ impl ImportGraph {
             }
         }
         while let Some(node) = stack.pop() {
-            for edge in self.adjacent(node, direction, types) {
+            for edge in self.adjacent(node, direction, tiers) {
                 let slot = &mut seen[edge.node as usize];
                 if !*slot {
                     *slot = true;
@@ -444,10 +473,10 @@ impl ImportGraph {
 
     /// Whether a new import of `target` by `importer` would close a cycle: `target` already reaches
     /// `importer`, or they are one file.
-    pub(crate) fn would_close_cycle(&self, importer: NodeId, target: NodeId, types: TypeImports) -> bool {
+    pub(crate) fn would_close_cycle(&self, importer: NodeId, target: NodeId, tiers: Tiers) -> bool {
         importer == target
             || self
-                .reachable(&[target], Direction::Dependencies, types)
+                .reachable(&[target], Direction::Dependencies, tiers)
                 .get(importer as usize)
                 .copied()
                 .unwrap_or(false)
@@ -456,7 +485,7 @@ impl ImportGraph {
     /// The import cycles: every strongly connected component of more than one file, and every file
     /// importing itself. Members are in path order and cycles are ordered by their first member.
     /// Tarjan's algorithm, iterative, so a deep import chain cannot overflow the stack.
-    pub(crate) fn cycles(&self, types: TypeImports) -> Vec<Vec<NodeId>> {
+    pub(crate) fn cycles(&self, tiers: Tiers) -> Vec<Vec<NodeId>> {
         const UNVISITED: u32 = u32::MAX;
         let nodes = self.len();
         let mut index = vec![UNVISITED; nodes];
@@ -478,7 +507,7 @@ impl ImportGraph {
                 let node = top.0;
                 if let Some(edge) = self.forward.of(node).get(top.1) {
                     top.1 += 1;
-                    if !types.admits(edge) {
+                    if !tiers.admits(edge) {
                         continue;
                     }
                     let target = edge.node as usize;
@@ -508,7 +537,7 @@ impl ImportGraph {
                             break;
                         }
                     }
-                    let self_loop = || self.dependencies(node, types).any(|edge| edge.node == node);
+                    let self_loop = || self.dependencies(node, tiers).any(|edge| edge.node == node);
                     if component.len() > 1 || self_loop() {
                         component.sort_unstable();
                         cycles.push(component);
@@ -576,7 +605,7 @@ fn reverse_of(forward: &Csr, nodes: usize) -> Csr {
     let placeholder = Edge {
         node: 0,
         local_start: 0,
-        type_only: false,
+        kinds: EdgeKinds::IMPORT,
     };
     let mut edges = vec![placeholder; forward.edges.len()];
     for importer in 0..nodes {

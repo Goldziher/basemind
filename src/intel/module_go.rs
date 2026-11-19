@@ -14,6 +14,7 @@
 use ahash::AHashMap;
 
 use crate::extract::Import;
+use crate::index::keys::EdgeKinds;
 use crate::intel::module_resolver::{ModuleImport, ModuleTarget, Probe, join, parent_dir, strip_dir};
 
 /// Go module resolver. Caches `go.mod` module paths and package directory listings.
@@ -36,6 +37,7 @@ impl GoModules {
                     anchor: import.start_byte + offset,
                     specifier: path.to_string(),
                     target: self.resolve_path(probe, module.as_ref(), path),
+                    kind: EdgeKinds::IMPORT,
                 });
             }
         }

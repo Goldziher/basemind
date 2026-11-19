@@ -21,6 +21,7 @@
 use ahash::{AHashMap, AHashSet};
 
 use crate::extract::{Import, Symbol, SymbolKind};
+use crate::index::keys::EdgeKinds;
 use crate::intel::module_resolver::{ModuleImport, ModuleTarget, Probe, join, parent_dir, strip_dir};
 
 /// Where a crate's module tree is rooted.
@@ -159,6 +160,7 @@ impl RustModules {
                 anchor: module.start,
                 specifier: format!("mod {}", module.name),
                 target,
+                kind: EdgeKinds::MODULE_DECL,
             });
         }
         for import in imports {
@@ -172,6 +174,7 @@ impl RustModules {
                     anchor: import.start_byte,
                     specifier: format!("extern crate {name}"),
                     target,
+                    kind: EdgeKinds::IMPORT,
                 });
                 continue;
             }
@@ -191,6 +194,7 @@ impl RustModules {
                     anchor: import.start_byte,
                     specifier: path.join("::"),
                     target,
+                    kind: EdgeKinds::IMPORT,
                 });
             }
         }

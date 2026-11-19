@@ -9,7 +9,7 @@
 use std::fs;
 
 use basemind::config::ConfigV1;
-use basemind::index::keys::FileEdges;
+use basemind::index::keys::{EdgeKinds, FileEdges};
 use basemind::index::view::IndexView;
 use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
@@ -103,13 +103,22 @@ mod js {
         let rows = rows(&store);
         let app = row(&rows, "app.ts");
         assert_eq!(targets(app), ["all.ts", "named.ts", "ns.ts", "polyfill.ts", "types.ts"]);
-        let type_only: Vec<&str> = app
+        let kinds: Vec<(&str, EdgeKinds)> = app
             .edges
             .iter()
-            .filter(|edge| edge.type_only)
-            .map(|edge| edge.target.as_str().unwrap())
+            .map(|edge| (edge.target.as_str().unwrap(), edge.kinds))
             .collect();
-        assert_eq!(type_only, ["types.ts"]);
+        assert_eq!(
+            kinds,
+            [
+                ("all.ts", EdgeKinds::MODULE_ONLY),
+                ("named.ts", EdgeKinds::MODULE_ONLY),
+                ("ns.ts", EdgeKinds::MODULE_ONLY),
+                ("polyfill.ts", EdgeKinds::MODULE_ONLY),
+                ("types.ts", EdgeKinds::TYPE_ONLY),
+            ],
+            "each import binding no export is module-only; the type re-export is type-only"
+        );
         let polyfill = app
             .edges
             .iter()

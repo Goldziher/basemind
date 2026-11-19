@@ -1,6 +1,7 @@
 //! Tests of Rust file-level module resolution.
 
 use super::*;
+use crate::index::keys::EdgeKinds;
 use crate::intel::resolver::ProbeSet;
 
 fn paths(raw: &str) -> Vec<String> {
@@ -400,4 +401,38 @@ fn a_shared_test_module_resolves_against_every_test_crate_including_it() {
     );
     let (resolved, _) = resolve(&repo, "tests/x/util.rs");
     assert_eq!(resolved, [("crate::Root".to_string(), files(&["tests/x/main.rs"]))]);
+}
+
+#[test]
+fn a_module_declaration_is_its_own_kind_and_a_use_an_import() {
+    let dir = tempfile::tempdir().unwrap();
+    for (rel, body) in [
+        ("Cargo.toml", MANIFEST),
+        ("src/lib.rs", "mod a;\nuse a::X;\n"),
+        ("src/a.rs", ""),
+    ] {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    let source = "mod a;\nuse a::X;\n";
+    let (symbols, imports) = outline(source);
+    let lookup = |rel: &str| rel.ends_with(".rs");
+    let mut probes = ProbeSet::default();
+    let resolved = RustModules::default().resolve(
+        &mut Probe {
+            root: dir.path(),
+            indexed: &lookup,
+            probes: &mut probes,
+        },
+        "src/lib.rs",
+        &crate::hashing::hex(&crate::hashing::hash_bytes(source.as_bytes())),
+        &symbols,
+        &imports,
+    );
+    let kinds: Vec<(&str, EdgeKinds)> = resolved
+        .iter()
+        .map(|import| (import.specifier.as_str(), import.kind))
+        .collect();
+    assert_eq!(kinds, [("mod a", EdgeKinds::MODULE_DECL), ("a::X", EdgeKinds::IMPORT)]);
 }

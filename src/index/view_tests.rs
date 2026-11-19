@@ -194,7 +194,7 @@ fn named_reads_follow_the_data_they_derive_from() {
 #[test]
 fn file_edges_are_per_view_in_a_group() {
     use super::group::GroupDb;
-    use super::keys::{FileEdge, FileEdges};
+    use super::keys::{EdgeKinds, FileEdge, FileEdges};
     use crate::path::RelPath;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -210,7 +210,7 @@ fn file_edges_are_per_view_in_a_group() {
         edges: vec![FileEdge {
             target: RelPath::from(target),
             local_start: 0,
-            type_only: false,
+            kinds: EdgeKinds::IMPORT,
         }],
         ..FileEdges::default()
     };
