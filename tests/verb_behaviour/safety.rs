@@ -186,8 +186,8 @@ async fn code_grep_path_is_a_literal_substring_even_with_glob_characters() {
         json!({ "pattern": "bracket-needle", "path": "app/[id]/" }),
     )
     .await;
-    assert_eq!(body["total"], 1, "{body}");
-    assert!(body["hits"]["app/[id]/page.tsx"].is_array(), "{body}");
+    assert_eq!(super::grep_hits(&body).len(), 1, "{body}");
+    assert!(body["hits"]["app/[id]/page.tsx"].is_object(), "{body}");
 
     let glob = call_err(
         &client,
@@ -271,7 +271,11 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
         json!({ "pattern": "zzz_not_here", "path": "src/" }),
     )
     .await;
-    assert_eq!(none["total"], 0, "files were searched and none matched: {none}");
+    assert_eq!(
+        super::grep_hits(&none),
+        Vec::<Value>::new(),
+        "files were searched and none matched: {none}"
+    );
 
     for arguments in [
         json!({ "language": "cobol" }),

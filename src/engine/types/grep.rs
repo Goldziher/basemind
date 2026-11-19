@@ -78,7 +78,8 @@ pub struct WorkspaceGrepParams {
     pub cursor: Option<Cursor>,
 }
 
-/// One `code_grep` hit, listed under its file ([`crate::engine::by_path`] writes it).
+/// One `code_grep` hit. Written under its file and the symbol enclosing it ([`serialize_rows`]), as
+/// the line `git grep -n` prints: `"<line>: <text>"`.
 #[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct GrepHit {
     /// The file the hit is in: the key the hit is listed under, not a field of its own.
@@ -97,13 +98,10 @@ pub(crate) struct GrepHit {
     /// cut to a window around the match, `…` marking each cut side.
     pub text: String,
     /// Name of the innermost symbol whose span holds the match; absent outside every symbol.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
     /// The line immediately before the match, when context was requested and line > 1.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_before: Option<String>,
     /// The line immediately after the match, when context was requested and line < EOF.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_after: Option<String>,
     /// Byte offset of the match in the file; used to find `symbol`, not part of the response.
     pub start_byte: u32,
@@ -128,29 +126,31 @@ impl crate::engine::by_path::Located for GrepHit {
         self.line
     }
 
+    /// The row as the token budget costs it: its match row and context rows, without the symbol key
+    /// a run of rows shares.
     fn serialize_row<S: serde::Serializer>(&self, serializer: S, column: bool) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
+        use serde::ser::SerializeSeq;
 
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("line", &self.line)?;
-        if column {
-            map.serialize_entry("column", &self.column)?;
-        }
-        map.serialize_entry("text", &self.text)?;
-        if let Some(symbol) = &self.symbol {
-            map.serialize_entry("symbol", symbol)?;
-        }
+        let columns = if column {
+            format!(":{}", self.column)
+        } else {
+            String::new()
+        };
+        let mut seq = serializer.serialize_seq(None)?;
         if let Some(before) = &self.context_before {
-            map.serialize_entry("context_before", before)?;
+            seq.serialize_element(&context_row(self.line - 1, before))?;
         }
+        seq.serialize_element(&format!("{}{columns}: {}", self.line, self.text))?;
         if let Some(after) = &self.context_after {
-            map.serialize_entry("context_after", after)?;
+            seq.serialize_element(&context_row(self.line + 1, after))?;
         }
-        if self.stale {
-            map.serialize_entry("stale", &true)?;
-        }
-        map.end()
+        seq.end()
     }
+}
+
+/// A line around a match, as `grep -C` prints it: `"<line>- <text>"`.
+fn context_row(line: u32, text: &str) -> String {
+    format!("{line}- {text}")
 }
 
 /// A hit on its own, as the token budget costs it.
@@ -160,18 +160,115 @@ impl Serialize for GrepHit {
     }
 }
 
-/// The hits of a `code_grep` page: one row per hit, or with `ranges` each file's hits merged into
-/// read ranges (`{"<path>": {"ranges": [[start, end], ...], "hits": n}}`, lines 1-based inclusive).
+/// Write grep hits as `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`: files in the order of
+/// their first hit, a file's symbols in the order of their first hit (`""` for a hit outside every
+/// symbol), rows in the order found. Matches on one line are one row naming each 1-based column,
+/// `"<line>:<column>,<column>: <text>"` (unless the line is clipped to a window around each); a lone
+/// match writes its column when its text is clipped. A
+/// context line (`"<line>- <text>"`) is written once per file, and never for a line that matches.
+fn serialize_rows<S: serde::Serializer>(hits: &[GrepHit], serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+
+    type Groups<'a> = Vec<(&'a str, Vec<String>)>;
+    let mut files: Vec<(&RelPath, Groups<'_>)> = Vec::new();
+    let mut file_slot: ahash::AHashMap<&RelPath, usize> = ahash::AHashMap::new();
+    let match_lines: ahash::AHashSet<(&RelPath, u32)> = hits.iter().map(|hit| (&hit.path, hit.line)).collect();
+    let mut context_written: ahash::AHashSet<(&RelPath, u32)> = ahash::AHashSet::new();
+    let mut i = 0;
+    while i < hits.len() {
+        let hit = &hits[i];
+        let mut end = i + 1;
+        // A clipped line is a window around its own match, so only matches showing one text merge.
+        while end < hits.len() && hits[end].path == hit.path && hits[end].line == hit.line && hits[end].text == hit.text
+        {
+            end += 1;
+        }
+        let same_line = &hits[i..end];
+        let columns = if same_line.len() > 1 || hit.write_column {
+            let listed: Vec<String> = same_line.iter().map(|h| h.column.to_string()).collect();
+            format!(":{}", listed.join(","))
+        } else {
+            String::new()
+        };
+        let slot = *file_slot.entry(&hit.path).or_insert_with(|| {
+            files.push((&hit.path, Vec::new()));
+            files.len() - 1
+        });
+        let groups = &mut files[slot].1;
+        let symbol = hit.symbol.as_deref().unwrap_or("");
+        let group = match groups.iter().position(|(name, _)| *name == symbol) {
+            Some(group) => group,
+            None => {
+                groups.push((symbol, Vec::new()));
+                groups.len() - 1
+            }
+        };
+        let rows = &mut groups[group].1;
+        let mut context = |line: u32, text: &Option<String>, rows: &mut Vec<String>| {
+            if let Some(text) = text
+                && !match_lines.contains(&(&hit.path, line))
+                && context_written.insert((&hit.path, line))
+            {
+                rows.push(context_row(line, text));
+            }
+        };
+        context(hit.line.saturating_sub(1), &hit.context_before, rows);
+        rows.push(format!("{}{columns}: {}", hit.line, hit.text));
+        let last = &hits[end - 1];
+        context(hit.line + 1, &last.context_after, rows);
+        i = end;
+    }
+    let mut map = serializer.serialize_map(Some(files.len()))?;
+    for (path, groups) in &files {
+        map.serialize_entry(&path.to_str_lossy(), &GroupMap(groups))?;
+    }
+    map.end()
+}
+
+/// One file's rows by enclosing symbol.
+struct GroupMap<'a>(&'a [(&'a str, Vec<String>)]);
+
+impl Serialize for GroupMap<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (symbol, rows) in self.0 {
+            map.serialize_entry(symbol, rows)?;
+        }
+        map.end()
+    }
+}
+
+/// The hits of a `code_grep` page: one row per matching line, or with `ranges` each file's hits
+/// merged into read ranges (`{"<path>": {"ranges": [[start, end], ...], "hits": n}}`, lines 1-based
+/// inclusive).
 #[derive(Debug)]
 pub(crate) enum GrepHits {
     Rows(Vec<GrepHit>),
     Ranges(Vec<FileRanges>),
 }
 
+impl GrepHits {
+    /// The files edited since the scan whose rows were read from disk, in the order listed. Ranges
+    /// mark their own (`"stale": true` on the file).
+    pub(crate) fn stale_files(&self) -> Vec<RelPath> {
+        let mut stale: Vec<RelPath> = Vec::new();
+        if let Self::Rows(rows) = self {
+            for hit in rows.iter().filter(|hit| hit.stale) {
+                if !stale.contains(&hit.path) {
+                    stale.push(hit.path.clone());
+                }
+            }
+        }
+        stale
+    }
+}
+
 impl Serialize for GrepHits {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Rows(rows) => crate::engine::by_path::serialize(rows, serializer),
+            Self::Rows(rows) => serialize_rows(rows, serializer),
             Self::Ranges(files) => crate::engine::ranges::serialize_files(files, serializer),
         }
     }
@@ -190,9 +287,10 @@ pub(crate) enum GrepTruncation {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct WorkspaceGrepResponse {
     /// Exact hit count from the cursor position on (the whole scanned corpus on a first page), not
-    /// just the returned page. Exceeds the hits listed when `limit` or the token budget cut the
-    /// page; `next_cursor` continues.
-    pub total: u32,
+    /// just the returned page. Written only beside a `next_cursor`: a page without one lists every
+    /// hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u32>,
     /// True when files were left unread, so `total` does not cover them. Never true because
     /// `limit` cut the page or because the corpus is large: grep scans every candidate file it may
     /// read. Absent when false.
@@ -205,9 +303,13 @@ pub(crate) struct WorkspaceGrepResponse {
     /// True when a `max_tokens` budget dropped trailing hits. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
-    /// The hits under the file each is in, files in the order searched.
+    /// The hits under the file and the symbol each is in, files in the order searched.
     #[schemars(with = "serde_json::Value")]
     pub hits: GrepHits,
+    /// Files edited since the scan whose hits were read from disk as they are now; their rows are
+    /// listed under `""`, since the indexed outline no longer places them. Absent when none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<RelPath>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,

@@ -292,7 +292,7 @@ async fn code_grep_clips_long_lines_around_the_match() {
         json!({ "pattern": "WIDE_NEEDLE", "context": true }),
     )
     .await;
-    let hit = &super::rows(&body["hits"])[0];
+    let hit = &super::grep_hits(&body)[0];
     let text = hit["text"].as_str().expect("text");
     assert!(text.contains("WIDE_NEEDLE"), "the window holds the match: {text}");
     assert!(text.len() <= 420, "{} bytes", text.len());
@@ -301,9 +301,17 @@ async fn code_grep_clips_long_lines_around_the_match() {
         hit["column"], 1_505,
         "a clipped line still places its one match, counted from the start of the line"
     );
-    for key in ["context_before", "context_after"] {
-        let context = hit[key].as_str().expect("context line");
-        assert!(context.len() <= 420, "{key}: {} bytes", context.len());
+    let rows = body["hits"]["src/wide.rs"][""]
+        .as_array()
+        .expect("rows outside every symbol");
+    let context: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| row.as_str())
+        .filter(|row| row.starts_with("1- ") || row.starts_with("3- "))
+        .collect();
+    assert_eq!(context.len(), 2, "{body}");
+    for row in context {
+        assert!(row.len() <= 423, "{} bytes", row.len());
     }
 }
 
@@ -315,13 +323,14 @@ async fn code_grep_names_no_symbol_for_a_file_edited_since_the_scan() {
     let path = dir.path().join("src/outline.rs");
 
     let fresh = call(&client, "code_grep", json!({ "pattern": "file_outline() +" })).await;
-    assert_eq!(super::rows(&fresh["hits"])[0]["symbol"], "render", "{fresh}");
+    assert_eq!(super::grep_hits(&fresh)[0]["symbol"], "render", "{fresh}");
 
     let source = std::fs::read_to_string(&path).unwrap();
     std::fs::write(&path, format!("// a new first line\n// and another\n{source}")).unwrap();
 
     let edited = call(&client, "code_grep", json!({ "pattern": "file_outline() +" })).await;
-    let edited = super::rows(&edited["hits"]);
+    assert_eq!(edited["stale"], json!(["src/outline.rs"]), "{edited}");
+    let edited = super::grep_hits(&edited);
     assert_eq!(edited[0]["line"], 21, "{edited:?}");
     assert!(edited[0].get("symbol").is_none(), "{edited:?}");
 }

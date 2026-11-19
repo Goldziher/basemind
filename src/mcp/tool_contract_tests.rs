@@ -262,7 +262,7 @@ async fn grep_is_literal_unless_regex_is_set() {
             .await
             .expect("a literal `(` is not a regex error"),
     );
-    assert_eq!(hits["total"], 2, "{hits}");
+    assert_eq!(grep_rows(&hits), 2, "{hits}");
     assert!(hits.get("pattern").is_none(), "the call is not echoed back: {hits}");
 
     let as_regex: CodeGrepParams =
@@ -274,16 +274,35 @@ async fn grep_is_literal_unless_regex_is_set() {
     let regex: CodeGrepParams =
         parse_args(serde_json::json!({ "pattern": "fn c\\w+r\\b", "regex": true })).expect("valid arguments");
     let matched = json_of(&server.code_grep_call(regex).await.expect("regex grep"));
-    assert_eq!(matched["total"], 1, "{matched}");
+    assert_eq!(grep_rows(&matched), 1, "{matched}");
 
     let dotted: CodeGrepParams = parse_args(serde_json::json!({ "pattern": "c.che_root" })).expect("valid arguments");
     let none = json_of(&server.code_grep_call(dotted).await.expect("literal grep"));
-    assert_eq!(none["total"], 0, "a literal `.` must not match any character: {none}");
+    assert_eq!(
+        grep_rows(&none),
+        0,
+        "a literal `.` must not match any character: {none}"
+    );
 
     let glob: CodeGrepParams =
         parse_args(serde_json::json!({ "pattern": "cache_root", "path": "*.rs" })).expect("valid arguments");
     let not_a_glob = text_of(&into_tool_result(server.code_grep_call(glob).await));
     assert!(not_a_glob.contains("not a glob"), "{not_a_glob}");
+}
+
+/// Matching lines in a `code_grep` answer: its rows under every file and symbol, less context rows.
+fn grep_rows(body: &serde_json::Value) -> usize {
+    body["hits"]
+        .as_object()
+        .into_iter()
+        .flat_map(|files| files.values())
+        .filter_map(serde_json::Value::as_object)
+        .flat_map(|groups| groups.values())
+        .filter_map(serde_json::Value::as_array)
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|row| row.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with(':'))
+        .count()
 }
 
 #[cfg(unix)]
@@ -316,7 +335,7 @@ async fn a_followed_symlink_the_scan_indexed_is_readable_by_every_tool() {
     let grep: CodeGrepParams = parse_args(serde_json::json!({ "pattern": "linked_needle" })).expect("valid arguments");
     let hits = json_of(&server.code_grep_call(grep).await.expect("code_grep"));
     assert!(
-        hits["hits"]["linked.rs"].is_array(),
+        hits["hits"]["linked.rs"].is_object(),
         "the scan indexed the link: {hits}"
     );
 

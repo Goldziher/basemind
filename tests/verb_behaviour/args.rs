@@ -21,8 +21,7 @@ async fn stringified_integers_and_booleans_are_coerced() {
     )
     .await;
     assert_eq!(
-        super::rows(&with_context["hits"])[0]["context_before"],
-        "    pub fn render(&self) -> u32 {",
+        with_context["hits"]["src/outline.rs"]["render"][0], "18-     pub fn render(&self) -> u32 {",
         "{with_context}"
     );
 
@@ -32,8 +31,9 @@ async fn stringified_integers_and_booleans_are_coerced() {
         json!({ "pattern": "file_outline() +", "context": "false" }),
     )
     .await;
-    assert!(
-        super::rows(&without_context["hits"])[0].get("context_before").is_none(),
+    assert_eq!(
+        without_context["hits"]["src/outline.rs"]["render"],
+        json!(["19:         file_outline() + file_outline_l2()"]),
         "{without_context}"
     );
 }

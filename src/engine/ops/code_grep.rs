@@ -104,11 +104,12 @@ fn workspace_grep(
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
                 return Ok(WorkspaceGrepResponse {
-                    total: 0,
+                    total: None,
                     truncated: false,
                     truncated_reason: None,
                     budgeted: false,
                     hits: GrepHits::Rows(Vec::new()),
+                    stale: Vec::new(),
                     next_cursor: None,
                     skipped_files: 0,
                     cursor_invalidated: true,
@@ -270,10 +271,11 @@ fn workspace_grep(
     };
 
     Ok(WorkspaceGrepResponse {
-        total,
+        total: next_cursor.is_some().then_some(total),
         truncated: byte_budget_hit,
         truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
         budgeted,
+        stale: hits.stale_files(),
         hits,
         next_cursor,
         skipped_files,

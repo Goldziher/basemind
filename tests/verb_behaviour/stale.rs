@@ -62,9 +62,9 @@ async fn an_edit_that_keeps_the_size_is_seen_by_every_tool_that_uses_indexed_off
         json!({ "pattern": "    2", "path": "src/swap.rs" }),
     )
     .await;
-    assert_eq!(grep["total"], 1, "{grep}");
+    assert_eq!(super::grep_hits(&grep).len(), 1, "{grep}");
     assert!(
-        super::rows(&grep["hits"])[0].get("symbol").is_none(),
+        super::grep_hits(&grep)[0].get("symbol").is_none(),
         "the indexed spans name `b`, which the file no longer has: {grep}"
     );
 }
@@ -291,12 +291,12 @@ async fn an_edited_file_is_outlined_and_read_as_it_is_and_flagged_stale() {
     );
 
     let grep = call(&client, "code_grep", json!({ "pattern": "file_outline() +" })).await;
-    let hit = &super::rows(&grep["hits"])[0];
+    let hit = &super::grep_hits(&grep)[0];
     assert_eq!(hit["line"], 21, "{grep}");
-    assert_eq!(hit["stale"], true, "{grep}");
+    assert_eq!(grep["stale"], json!(["src/outline.rs"]), "{grep}");
     assert!(hit.get("symbol").is_none(), "{grep}");
     let fresh = call(&client, "code_grep", json!({ "pattern": "def helper" })).await;
-    assert!(super::rows(&fresh["hits"])[0].get("stale").is_none(), "{fresh}");
+    assert!(fresh.get("stale").is_none(), "{fresh}");
 }
 
 /// A file deleted after the scan is still in the index. Every tool that needs its content says so
@@ -384,8 +384,8 @@ async fn a_file_grown_past_the_scan_limit_is_not_read_whole() {
     assert_eq!(span["body"], "pub fn file_outline() -> u32 {\n    1\n}", "{span}");
     let grep = call(&client, "code_grep", json!({ "pattern": "padding to outgrow" })).await;
     assert_eq!(
-        (grep["total"].as_u64(), grep["skipped_files"].as_u64()),
-        (Some(0), Some(1)),
+        (super::grep_hits(&grep).len(), grep["skipped_files"].as_u64()),
+        (0, Some(1)),
         "{grep}"
     );
 }

@@ -55,25 +55,72 @@ fn located(entries: &[Value], line: impl Fn(&Value) -> Option<u32>) -> Vec<Item>
         .collect()
 }
 
-/// `path:line` of each row of a list grouped by file: `{"<path>": [{"line": n, ...}, ...]}`.
+/// `path:line` of each row of a list grouped by file: `{"<path>": [row, ...]}`, a row being
+/// `{"line": n, ...}` or a string `"<line>: ..."`. A file's rows may sit one level deeper, under
+/// the symbol enclosing them (`{"<path>": {"<symbol>": [row, ...]}}`, as `code_grep` writes them).
+/// A context row (`"<line>- ..."`) is not an item.
 fn grouped(body: &Value, key: &str) -> Vec<Item> {
-    body.get(key)
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .flat_map(|(path, rows)| {
-            rows.as_array().into_iter().flatten().map(move |row| Item {
+    let mut items = Vec::new();
+    for (path, rows) in body.get(key).and_then(Value::as_object).into_iter().flatten() {
+        let lists: Vec<&Value> = match rows {
+            Value::Object(by_symbol) => by_symbol.values().collect(),
+            rows => vec![rows],
+        };
+        for row in lists.into_iter().filter_map(Value::as_array).flatten() {
+            let line = match row {
+                Value::String(text) => match row_line(text) {
+                    Some(line) => Some(line),
+                    None => continue,
+                },
+                row => u(row, "line"),
+            };
+            items.push(Item {
                 path: path.clone(),
-                line: u(row, "line"),
-            })
-        })
-        .collect()
+                line,
+            });
+        }
+    }
+    items
+}
+
+/// `path:line` of a `"<path>:<line>: ..."` row, as `git grep -n` prints it: the path ends at the
+/// first `:` followed by a line number and another `:`.
+fn path_row(row: &str) -> Option<Item> {
+    let mut from = 0;
+    while let Some(at) = row[from..].find(':').map(|at| from + at) {
+        if let Some(line) = row_line(&row[at + 1..]) {
+            return Some(Item {
+                path: row[..at].to_string(),
+                line: Some(line),
+            });
+        }
+        from = at + 1;
+    }
+    None
+}
+
+/// The 1-based line a string row starts with (`"<line>: ..."` or `"<line>:<columns>: ..."`); `None`
+/// for a context row (`"<line>- ..."`) or a row without one.
+fn row_line(row: &str) -> Option<u32> {
+    let digits = row.bytes().take_while(u8::is_ascii_digit).count();
+    (row.as_bytes().get(digits) == Some(&b':'))
+        .then(|| row[..digits].parse().ok())
+        .flatten()
 }
 
 /// Items for `mode` from response `body`; `args` supplies the file for `outline`.
 pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
     match mode {
-        EvalMode::Symbols => located(array(body, "results"), |e| u(e, "line")),
+        EvalMode::Symbols => array(body, "results")
+            .iter()
+            .filter_map(|row| match row {
+                Value::String(row) => path_row(row),
+                row => Some(Item {
+                    path: s(row, "path")?,
+                    line: u(row, "line"),
+                }),
+            })
+            .collect(),
         EvalMode::Outline => {
             let path = s(body, "path").or_else(|| s(args, "path")).unwrap_or_default();
             array(body, "symbols")
@@ -264,19 +311,26 @@ pub fn grep_ranges(body: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-/// `code_grep` hits as `(path:line, enclosing symbol name)`, from hits listed under their file.
+/// `code_grep` hits as `(path:line, enclosing symbol name)`, from rows listed under their file and
+/// enclosing symbol (`{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, `""` outside every
+/// symbol). Context rows are skipped.
 pub fn grep_annotations(body: &Value) -> Vec<(String, Option<String>)> {
-    body.get("hits")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .flat_map(|(path, rows)| {
-            rows.as_array().into_iter().flatten().filter_map(move |row| {
-                let key = format!("{path}:{}", u(row, "line")?);
-                Some((key, s(row, "symbol")))
-            })
-        })
-        .collect()
+    let mut out = Vec::new();
+    for (path, groups) in body.get("hits").and_then(Value::as_object).into_iter().flatten() {
+        for (symbol, rows) in groups.as_object().into_iter().flatten() {
+            let symbol = (!symbol.is_empty()).then(|| symbol.clone());
+            for line in rows
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter_map(row_line)
+            {
+                out.push((format!("{path}:{line}"), symbol.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// Share of the annotated gold lines among `hits` whose attached symbol has the expected name;
@@ -356,7 +410,7 @@ mod tests {
         let grep = extract_items(
             EvalMode::Grep,
             &Value::Null,
-            &json!({"hits":{"x":[{"line":3},{"line":9}],"y":[{"line":1}]}}),
+            &json!({"hits":{"x":{"f":["2- ctx","3:5,9: a(); a()"],"":["9: b"]},"y":{"g":["1: c"]}}}),
         );
         assert_eq!(
             grep,

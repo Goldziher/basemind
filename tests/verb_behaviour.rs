@@ -470,22 +470,32 @@ async fn code_grep_hits_carry_the_full_line_and_the_enclosing_symbol() {
     assert_eq!(
         body,
         json!({
-            "total": 1,
             "hits": {
-                "src/outline.rs": [{
-                    "line": 19,
-                    "text": "        file_outline() + file_outline_l2()",
-                    "symbol": "render",
-                }],
+                "src/outline.rs": {
+                    "render": ["19:         file_outline() + file_outline_l2()"],
+                },
             },
         }),
-        "a hit is its 1-based line, the full line and the innermost enclosing symbol, under its file"
+        "a hit is its 1-based line and the full line, under its file and innermost enclosing symbol"
     );
 
     let outside = call(&client, "code_grep", json!({ "pattern": "outline helpers" })).await;
-    assert!(
-        rows(&outside["hits"])[0].get("symbol").is_none(),
-        "a hit outside every symbol names none: {outside}"
+    assert_eq!(
+        outside["hits"],
+        json!({ "src/outline.rs": { "": ["1: // outline helpers"] } }),
+        "a hit outside every symbol is listed under \"\": {outside}"
+    );
+
+    let twice = call(
+        &client,
+        "code_grep",
+        json!({ "pattern": "file_outline" , "path": "src/outline.rs" }),
+    )
+    .await;
+    assert_eq!(
+        twice["hits"]["src/outline.rs"]["render"],
+        json!(["19:9,26:         file_outline() + file_outline_l2()"]),
+        "two matches on a line are one row naming both columns: {twice}"
     );
 
     let with_context = call(
@@ -495,9 +505,17 @@ async fn code_grep_hits_carry_the_full_line_and_the_enclosing_symbol() {
     )
     .await;
     assert_eq!(
-        rows(&with_context["hits"])[0]["context_before"],
-        "    pub fn render(&self) -> u32 {",
-        "{with_context}"
+        with_context["hits"],
+        json!({
+            "src/outline.rs": {
+                "render": [
+                    "18-     pub fn render(&self) -> u32 {",
+                    "19:         file_outline() + file_outline_l2()",
+                    "20-     }",
+                ],
+            },
+        }),
+        "context lines are rows `<line>- <text>`, as `grep -C` prints them: {with_context}"
     );
 }
 

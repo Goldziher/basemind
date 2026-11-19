@@ -58,9 +58,9 @@ impl BasemindServer {
         title = "Find a definition",
         description = "Use for \"where is X defined\" when you know (part of) the name: finds \
         functions, types, constants and other symbols by name across the repository; a row is \
-        `path`, `line`, `kind`, `name`, `signature`. Ranked: the exact name first, then prefix, \
-        then substring, then (with `fuzzy`) fuzzy matches; `stale`: file edited since the scan, \
-        `line` is current. Definitions only: for any text use `code_grep`. \
+        `\"<path>:<line>: <signature>\"`. Ranked: the exact name first, then \
+        prefix, then substring, then (with `fuzzy`) fuzzy matches; `stale`: files edited since the \
+        scan (lines current). Definitions only: for any text use `code_grep`. \
         Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
         annotations(
             read_only_hint = true,

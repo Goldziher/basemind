@@ -162,6 +162,52 @@ fn hit_rows(body: &Value) -> Vec<Value> {
     }
 }
 
+/// The matches of one `code_grep` row, `"<line>[:<column>,...]: <text>"`; none for a context row.
+fn grep_row(path: &str, symbol: &str, row: &str) -> Vec<Value> {
+    let digits = row.bytes().take_while(u8::is_ascii_digit).count();
+    if row.as_bytes().get(digits) != Some(&b':') {
+        return Vec::new();
+    }
+    let line: u64 = row[..digits].parse().expect("a line");
+    let rest = &row[digits + 1..];
+    let (columns, text): (Vec<u64>, &str) = match rest.split_once(": ") {
+        Some((columns, text)) if !columns.is_empty() && columns.bytes().all(|b| b.is_ascii_digit() || b == b',') => {
+            (columns.split(',').map(|c| c.parse().expect("a column")).collect(), text)
+        }
+        _ => (Vec::new(), rest.strip_prefix(' ').unwrap_or(rest)),
+    };
+    let mut hit = json!({ "path": path, "line": line, "text": text });
+    if !symbol.is_empty() {
+        hit["symbol"] = json!(symbol);
+    }
+    if columns.is_empty() {
+        return vec![hit];
+    }
+    columns
+        .into_iter()
+        .map(|column| {
+            let mut hit = hit.clone();
+            hit["column"] = json!(column);
+            hit
+        })
+        .collect()
+}
+
+/// A `code_symbols` answer's rows as `(path, row)`, `row` being what follows the path
+/// (`"<line>: <signature>"`), best first.
+fn symbol_rows(body: &Value) -> Vec<(String, String)> {
+    body.get("results")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("results: {body}"))
+        .iter()
+        .map(|row| {
+            let row = row.as_str().expect("a row is a string");
+            let (path, rest) = row.split_once(':').expect("`<path>:<line>: ...`");
+            (path.to_string(), rest.to_string())
+        })
+        .collect()
+}
+
 /// `forged` in place of the tool's own cursor inside `real`, a `next_cursor` the server issued. The
 /// result is still bound to the query that issued `real`, so the tool body sees `forged`.
 fn rebound(real: &str, forged: &str) -> String {
@@ -880,7 +926,11 @@ async fn mcp_server_exercises_representative_tools() {
             .all(|h| h.get("line").and_then(Value::as_u64).unwrap_or(0) >= 1),
         "every grep hit must carry a 1-based line"
     );
-    let total_matches = body.get("total").and_then(Value::as_u64).expect("total");
+    assert!(
+        body.get("total").is_none(),
+        "a page without a cursor lists every hit: {body}"
+    );
+    let total_matches = grep_hits.len() as u64;
     assert!(
         total_matches >= 3,
         "fixture has alpha + doit + caller = 3+ 'pub fn' occurrences, got {total_matches}"
