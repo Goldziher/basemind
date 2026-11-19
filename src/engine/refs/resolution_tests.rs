@@ -19,6 +19,7 @@ fn hit(path: &str, line: u32, resolution: Resolution) -> ReferenceHit {
         elide_resolution: false,
         shared_line: false,
         stale: false,
+        ambiguous: false,
     }
 }
 

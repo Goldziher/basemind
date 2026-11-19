@@ -90,6 +90,8 @@ pub(crate) fn run_goto_definition(
         column: column + 1,
         definition,
         resolution_note,
+        resolution: None,
+        ambiguous: Vec::new(),
     })
 }
 

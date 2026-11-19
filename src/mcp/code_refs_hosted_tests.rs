@@ -26,6 +26,8 @@ fn goto(ws: &Workspace) -> serde_json::Value {
         cursor: None,
         max_tokens: None,
         resolution: None,
+        ranges: None,
+        changed: None,
     };
     serde_json::to_value(ws.code_refs(params).expect("goto")).expect("the answer serializes")
 }

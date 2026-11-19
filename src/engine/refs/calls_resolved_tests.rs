@@ -20,6 +20,7 @@ fn page_of(paths: &[&str]) -> CallScanPage {
                 elide_resolution: false,
                 shared_line: false,
                 stale: false,
+                ambiguous: false,
             })
             .collect(),
         next_cursor: None,

@@ -83,6 +83,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 max_tokens: None,
                 cursor: None,
                 resolution: None,
+                scope: None,
             },
             || None,
             |_| {},
@@ -111,6 +112,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 max_tokens: None,
                 cursor: None,
                 resolution: None,
+                scope: None,
             },
             || None,
         )
@@ -195,6 +197,7 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
                 max_tokens: None,
                 cursor: None,
                 resolution: None,
+                scope: None,
             },
             || None,
         )
@@ -301,6 +304,7 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
                 max_tokens: None,
                 cursor: None,
                 resolution: None,
+                scope: None,
             },
             || None,
         )
@@ -375,6 +379,7 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
         elide_resolution: false,
         shared_line: false,
         stale: false,
+        ambiguous: false,
     };
     let scan = super::CallScanPage::finish(0, false, Vec::new(), Vec::new(), Vec::new(), false, None);
     let page = super::CallScanPage {
@@ -436,6 +441,7 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
                     max_tokens: None,
                     cursor: None,
                     resolution: None,
+                    scope: None,
                 },
                 || None,
             )
@@ -480,6 +486,7 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
                 max_tokens: None,
                 cursor,
                 resolution: None,
+                scope: None,
             },
             || None,
             |_| {},

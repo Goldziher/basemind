@@ -161,9 +161,17 @@ pub enum CodeCmd {
         #[arg(long)]
         max_tokens: Option<u32>,
         /// Call sites only: keep rows of these resolutions, comma-separated (`same_file`,
-        /// `imported`, `scope_resolved`, `elsewhere`, `name_only`, `external`).
+        /// `imported`, `scope_resolved`, `elsewhere`, `name_only`, `external`, `path_match`).
         #[arg(long)]
         resolution: Option<String>,
+        /// Call sites only: per file, the sites widened by 5 lines and merged into spans for
+        /// `code read --ranges`.
+        #[arg(long)]
+        ranges: bool,
+        /// Call sites only: only files changed since this revision (`HEAD`: the uncommitted
+        /// changes) or in `A..B`; append `+importers` to add the files importing them.
+        #[arg(long)]
+        changed: Option<String>,
     },
     /// Callers of the definition of `name` in `path`. Shorthand for `refs <name> --path <path>`.
     Callers {
@@ -419,6 +427,8 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             cursor,
             max_tokens,
             resolution,
+            ranges,
+            changed,
         } => {
             let refs = CodeRefsParams {
                 name,
@@ -432,6 +442,8 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                 cursor: cursor.map(Cursor),
                 max_tokens,
                 resolution,
+                ranges: ranges.then_some(true),
+                changed,
             };
             (
                 "code_refs",
@@ -620,5 +632,7 @@ fn refs(name: String, relation: RefsRelation) -> CodeRefsParams {
         cursor: None,
         max_tokens: None,
         resolution: None,
+        ranges: None,
+        changed: None,
     }
 }

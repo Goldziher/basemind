@@ -8,7 +8,7 @@ pub mod doc_fallback;
 pub mod doc_guard;
 #[cfg(feature = "documents")]
 pub mod doc_tiers;
-mod http;
+pub(crate) mod http;
 #[cfg(test)]
 mod java_parity_tests;
 pub mod l1;

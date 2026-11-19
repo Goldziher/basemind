@@ -574,6 +574,8 @@ async fn a_hosted_read_answers_from_the_index_while_a_scan_holds_the_writer() {
         cursor: None,
         max_tokens: None,
         resolution: None,
+        ranges: None,
+        changed: None,
     };
     let answered = tokio::time::timeout(Duration::from_secs(10), server.code_refs_call(refs)).await;
     release_tx.send(()).expect("release the writer store");

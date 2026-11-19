@@ -5,6 +5,7 @@
 use super::calls_scan::{CallRef, CallScanPage, calls_in_files, content_keys, mark_shared_lines, scan_calls};
 use super::matching::Matching;
 use super::resolution::{UseSources, classify_references, confirm_elsewhere, finish_page};
+use super::routes::{Endpoint, scan_route_calls};
 use crate::engine::MapCache;
 use crate::engine::cursor::{Cursor, stale_cursor};
 use crate::engine::error::EngineError;
@@ -13,8 +14,8 @@ use crate::engine::freshness;
 use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use crate::engine::types::code::{kind_to_str, parse_kind};
 use crate::engine::types::refs::{
-    DefinitionView, FindCallersParams, FindCallersResponse, FindReferencesParams, FindReferencesResponse, ReferenceHit,
-    Resolution,
+    DefinitionView, FindCallersParams, FindCallersResponse, FindReferencesParams, FindReferencesResponse, RefHits,
+    ReferenceHit, Resolution,
 };
 use crate::engine::types::{LifecycleNotice, SCAN_CAP};
 use crate::index::view::IndexView;
@@ -72,7 +73,8 @@ pub(crate) fn resolve_call_line_col(
 
 /// Call sites of a name (`code_refs` without `path`): the `calls_by_callee` scan over `idx`, each
 /// hit graded by how it resolves ([`classify_references`]) against `cache`'s outlines and the
-/// indexed bytes of `files`.
+/// indexed bytes of `files`. An exact `METHOD /path` name lists the HTTP calls linked to that route
+/// by path instead ([`scan_route_calls`]), each graded `path_match`.
 pub(crate) fn run_find_references(
     idx: &dyn IndexView,
     files: IndexedFiles<'_>,
@@ -84,18 +86,28 @@ pub(crate) fn run_find_references(
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
-    let (mut scan, generation) = scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref())?;
+    let route = Some(matching)
+        .filter(|matching| *matching == Matching::Exact)
+        .and_then(|_| Endpoint::parse(&params.name));
+    let scope = params.scope.as_ref();
+    let (mut scan, generation) = match &route {
+        Some(target) => scan_route_calls(idx, cache, target, limit, cursor_bytes.as_deref(), scope)?,
+        None => scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref(), scope)?,
+    };
     refuse_stale(stamped, generation)?;
-    classify_references(
-        idx,
-        &mut UseSources::new(files, cache),
-        &mut scan.hits,
-        &scan.hit_starts,
-    );
+    if route.is_none() {
+        classify_references(
+            idx,
+            &mut UseSources::new(files, cache),
+            &mut scan.hits,
+            &scan.hit_starts,
+        );
+    }
     mark_shared_lines(idx, &mut scan.hits, &scan.hit_keys);
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
-    let mut finished = finish_page(scan, params.resolution, &params.name, params.max_tokens);
+    let name = route.as_ref().map_or_else(|| params.name.clone(), Endpoint::name);
+    let mut finished = finish_page(scan, params.resolution, &name, params.max_tokens);
     flag_stale(&mut finished.page.hits);
     Ok(FindReferencesResponse {
         resolution_default: finished.default,
@@ -104,7 +116,8 @@ pub(crate) fn run_find_references(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: finished.page.budgeted,
-        hits: finished.page.hits,
+        hits: RefHits::Rows(finished.page.hits),
+        scope_files: None,
         next_cursor: stamp(finished.page.next_cursor, generation),
         notice: notice(),
     })
@@ -135,6 +148,9 @@ pub(crate) fn run_find_references(
 ///
 /// Holds the store read guard for the call (like `goto_definition`): the resolution layer reads the
 /// concurrently-readable `.rref` blobs plus the Fjall index `idx`, which the scan reads too.
+///
+/// A `Route` definition has no call sites by name: its callers are the HTTP calls linked to it by
+/// path ([`scan_route_calls`]), graded `path_match`, and resolution does not run.
 pub(crate) fn run_find_callers(
     store: &crate::store::Store,
     idx: &dyn IndexView,
@@ -178,20 +194,28 @@ pub(crate) fn run_find_callers(
 
     let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
-    let (scan, generation) = scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref())?;
+    let route = Some(symbol)
+        .filter(|symbol| symbol.kind == crate::extract::SymbolKind::Route)
+        .and_then(|symbol| Endpoint::parse(&symbol.name));
+    let scope = params.scope.as_ref();
+    let (scan, generation) = match &route {
+        Some(target) => scan_route_calls(idx, cache, target, limit, cursor_bytes.as_deref(), scope)?,
+        None => scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref(), scope)?,
+    };
     refuse_stale(stamped, generation)?;
 
     // Resolution facts are a per-file blob the scan writes only for a file that produced some. No
     // blob is not `resolved_total: 0`: the language has no resolution engine, the resolve pass did
     // not finish, or this file bound nothing; `resolution` says which (`intel::resolution_gap`).
-    let resolution_ran = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten().is_some();
+    let resolution_ran = route.is_none() && store.read_resolved_by_hex(&entry.hash_hex).ok().flatten().is_some();
     let resolved = if resolution_ran {
         resolved_callers(store, idx, &params.path, &source, symbol, &params.name, limit)
+            .map(|resolved| resolved.within(scope))
     } else {
         None
     };
     let resolved_total = resolved.as_ref().map(|r| r.total);
-    let resolution_note = if resolved.is_some() {
+    let resolution_note = if resolved.is_some() || route.is_some() {
         None
     } else if resolution_ran {
         Some(super::intel::NO_DEFINITION_FACTS.to_string())
@@ -212,7 +236,8 @@ pub(crate) fn run_find_callers(
     mark_shared_lines(idx, &mut page.hits, &page.hit_keys);
     let total = page.total;
     let total_is_partial = page.total_is_partial;
-    let finished = finish_page(page, params.resolution, &params.name, params.max_tokens);
+    let name = route.as_ref().map_or_else(|| params.name.clone(), Endpoint::name);
+    let finished = finish_page(page, params.resolution, &name, params.max_tokens);
     Ok(FindCallersResponse {
         definition,
         resolution_note,
@@ -223,7 +248,8 @@ pub(crate) fn run_find_callers(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: finished.page.budgeted,
-        hits: finished.page.hits,
+        hits: RefHits::Rows(finished.page.hits),
+        scope_files: None,
         next_cursor: stamp(finished.page.next_cursor, generation),
         notice: notice(),
     })
@@ -288,6 +314,21 @@ pub(crate) struct ResolvedCallers {
     aliased: Vec<(Vec<u8>, ReferenceHit)>,
     /// Total proven call sites, repo-wide and page-independent.
     total: u32,
+}
+
+impl ResolvedCallers {
+    /// The refinement cut to the files of a `changed` scope: the name scan lists no call site
+    /// elsewhere, so neither the aliased sites nor `resolved_total` count one.
+    fn within(mut self, scope: Option<&crate::engine::scope::ChangeScope>) -> Self {
+        let Some(scope) = scope else {
+            return self;
+        };
+        self.sites.retain(|path, _| scope.contains(path));
+        self.unprobed.retain(|path| scope.contains(path));
+        self.aliased.retain(|(_, hit)| scope.contains(&hit.path));
+        self.total = self.sites.values().map(|starts| starts.len() as u32).sum();
+        self
+    }
 }
 
 /// A call site exactly as the index records it.
@@ -440,6 +481,7 @@ fn resolved_callers(
                             elide_resolution: false,
                             shared_line: false,
                             stale: false,
+                            ambiguous: false,
                         },
                     ));
                 }

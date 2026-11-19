@@ -370,3 +370,80 @@ async fn code_refs_pages_split_on_a_shared_line_keep_their_columns() {
         "{seen:?}"
     );
 }
+
+const ROUTES_RS: &str = "\
+pub fn app() -> Router {
+    Router::new()
+        .route(\"/users/{id}\", get(show_user))
+        .route(\"/users/me\", get(me))
+}
+";
+
+const REQUESTS_RS: &str = "\
+pub async fn call(client: &reqwest::Client) {
+    reqwest::get(\"https://api.example.com/users/42\").await;
+    reqwest::get(\"https://api.example.com/users/me\").await;
+    client.get(\"https://api.example.com/v2/users/7\").send().await;
+}
+";
+
+/// A route's callers are the HTTP calls whose method and path it matches best (ADR-0048): exact
+/// before suffix, a literal segment before a parameter. They are graded `path_match` once, as the
+/// page's default, and `ranges` merges them into read spans.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_route_is_called_by_the_http_requests_its_path_matches() {
+    let (_dir, client) = started_with(&[("src/routes.rs", ROUTES_RS), ("src/requests.rs", REQUESTS_RS)]).await;
+
+    let callers = call(&client, "code_refs", json!({ "name": "GET /users/:param" })).await;
+    assert_eq!(
+        callers,
+        json!({
+            "resolution_default": "path_match",
+            "total": 2,
+            "hits": { "src/requests.rs": [
+                { "line": 2, "callee": "GET /users/42" },
+                { "line": 4, "callee": "GET /v2/users/7" }
+            ] }
+        })
+    );
+
+    let pinned = call(
+        &client,
+        "code_refs",
+        json!({ "name": "GET /users/me", "path": "src/routes.rs" }),
+    )
+    .await;
+    assert_eq!(
+        pinned["hits"],
+        json!({ "src/requests.rs": [{ "line": 3 }] }),
+        "the literal route takes `/users/me`: {pinned}"
+    );
+
+    let ranged = call(
+        &client,
+        "code_refs",
+        json!({ "name": "GET /users/:param", "ranges": true }),
+    )
+    .await;
+    assert_eq!(
+        ranged["hits"],
+        json!({ "src/requests.rs": { "ranges": [[1, 5]], "hits": 2 } })
+    );
+
+    let definition = call(
+        &client,
+        "code_refs",
+        json!({ "name": "GET /v2/users/7", "relation": "definition", "path": "src/requests.rs", "line": 4 }),
+    )
+    .await;
+    assert_eq!(
+        definition,
+        json!({
+            "path": "src/requests.rs",
+            "line": 4,
+            "column": 5,
+            "definition": { "path": "src/routes.rs", "line": 3, "column": 10, "name": "GET /users/:param" },
+            "resolution": "path_match"
+        })
+    );
+}

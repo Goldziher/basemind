@@ -9,7 +9,8 @@ use super::calls::resolve_call_line_col;
 use super::matching::Matching;
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
-use crate::engine::types::refs::ReferenceHit;
+use crate::engine::scope::ChangeScope;
+use crate::engine::types::refs::{ReferenceHit, Resolution};
 use crate::index::keys::ContentKey;
 use crate::index::view::IndexView;
 use crate::path::RelPath;
@@ -29,16 +30,46 @@ pub(crate) struct CallRef {
 /// key order it was cut in: the fingerprint of the view's live keys. A `references` / `callers`
 /// cursor carries it, and is refused as stale once it changes, since an edit moves the edited
 /// file's hits in that order.
+/// Call sites in files outside `scope` are not matches: they neither count nor list.
 pub(crate) fn scan_calls(
     idx: &dyn IndexView,
     name: &str,
     matching: Matching,
     limit: usize,
     cursor_after: Option<&[u8]>,
+    scope: Option<&ChangeScope>,
 ) -> Result<(CallScanPage, u64), EngineError> {
     let generation = idx.live_keys().fingerprint();
-    let page = scan_calls_by_name(idx, name, matching, limit, cursor_after)?;
+    let finder = memchr::memmem::Finder::new(name.as_bytes());
+    let page = scan_calls_where(
+        idx,
+        name,
+        limit,
+        cursor_after,
+        SCAN_KEYS_EXAMINED_MAX,
+        |callee, path| {
+            (finder.find(callee.as_bytes()).is_some()
+                && matching.accepts_callee(callee, name)
+                && crate::engine::changed::admits(scope, path))
+            .then_some(Kept::NAME_ONLY)
+        },
+    )?;
     Ok((page, generation))
+}
+
+/// How a scan lists a call site it keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Kept {
+    pub(crate) resolution: Resolution,
+    pub(crate) ambiguous: bool,
+}
+
+impl Kept {
+    /// A site matched by name, before any resolution grades it.
+    pub(crate) const NAME_ONLY: Self = Self {
+        resolution: Resolution::NameOnly,
+        ambiguous: false,
+    };
 }
 
 /// One file's call sites with the content key they were read under.
@@ -236,6 +267,7 @@ pub(crate) fn mark_shared_lines(idx: &dyn IndexView, hits: &mut [ReferenceHit], 
 /// When `cursor_after` is `Some`, the scan resumes from the key immediately following
 /// the cursor (exclusive). The cursor returned in [`CallScanPage::next_cursor`] is the
 /// last key emitted on this page — pass it back on the next call to advance.
+#[cfg(test)]
 pub(crate) fn scan_calls_by_name(
     idx: &dyn crate::index::view::IndexView,
     name: &str,
@@ -247,6 +279,7 @@ pub(crate) fn scan_calls_by_name(
 }
 
 /// [`scan_calls_by_name`] with the examined-keys cap as an argument, so a test can reach it.
+#[cfg(test)]
 pub(crate) fn scan_calls_examining(
     idx: &dyn crate::index::view::IndexView,
     name: &str,
@@ -255,9 +288,25 @@ pub(crate) fn scan_calls_examining(
     cursor_after: Option<&[u8]>,
     examine_cap: usize,
 ) -> Result<CallScanPage, EngineError> {
+    let finder = memchr::memmem::Finder::new(name.as_bytes());
+    scan_calls_where(idx, name, limit, cursor_after, examine_cap, |callee, _| {
+        (finder.find(callee.as_bytes()).is_some() && matching.accepts_callee(callee, name)).then_some(Kept::NAME_ONLY)
+    })
+}
+
+/// The scan behind [`scan_calls_examining`], over the callees that may contain `needle`: `keep`
+/// decides from a callee and its file whether the site is a match and how it is listed. A site it
+/// refuses costs no position lookup and does not count toward the scan cap.
+pub(crate) fn scan_calls_where(
+    idx: &dyn crate::index::view::IndexView,
+    needle: &str,
+    limit: usize,
+    cursor_after: Option<&[u8]>,
+    examine_cap: usize,
+    mut keep: impl FnMut(&str, &RelPath) -> Option<Kept>,
+) -> Result<CallScanPage, EngineError> {
     // A page that examined nothing has no key to resume from.
     let examine_cap = examine_cap.max(1);
-    let finder = memchr::memmem::Finder::new(name.as_bytes());
 
     let lower: Bound<Vec<u8>> = match cursor_after {
         Some(k) => Bound::Excluded(k.to_vec()),
@@ -273,7 +322,7 @@ pub(crate) fn scan_calls_examining(
     let mut matched: usize = 0;
     let mut last_examined: Option<crate::index::view::IndexBytes> = None;
     let mut stopped_after: Option<Vec<u8>> = None;
-    for (examined, guard) in idx.callee_keys_matching(name, cursor_after, lower).enumerate() {
+    for (examined, guard) in idx.callee_keys_matching(needle, cursor_after, lower).enumerate() {
         let (k, _) = guard.map_err(|e| EngineError::internal(format!("index iter: {e}")))?;
         // Checked on the key that follows the cap, so a scan that ends exactly there is complete.
         if examined >= examine_cap {
@@ -285,10 +334,10 @@ pub(crate) fn scan_calls_examining(
             last_examined = Some(k);
             continue;
         };
-        if finder.find(callee.as_bytes()).is_none() || !matching.accepts_callee(&callee, name) {
+        let Some(kept) = keep(&callee, &rel) else {
             last_examined = Some(k);
             continue;
-        }
+        };
         total += 1;
         matched += 1;
         if hits.len() < limit {
@@ -299,10 +348,11 @@ pub(crate) fn scan_calls_examining(
                 line,
                 column,
                 callee,
-                resolution: crate::engine::types::refs::Resolution::NameOnly,
+                resolution: kept.resolution,
                 elide_resolution: false,
                 shared_line: false,
                 stale: false,
+                ambiguous: kept.ambiguous,
             });
             hit_keys.push(k.to_vec());
             hit_starts.push(start);
