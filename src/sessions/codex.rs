@@ -32,7 +32,9 @@ use super::code_mode::{self, Arg};
 use super::contain::{self, Found, Line};
 use super::shell;
 use super::tally::{Call, Family};
-use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, lenient, version_check, widen};
+use super::{
+    Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_reads_path, basemind_tool, lenient, version_check, widen,
+};
 
 /// The `cli_version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[0];
@@ -379,7 +381,7 @@ pub fn classify_function(namespace: Option<&str>, name: &str, arguments: &str) -
         _ => None,
     };
     if mcp_basemind(namespace, name) {
-        return basemind_call(&lookup);
+        return basemind_call(name, &lookup);
     }
     if namespace.is_some() {
         return Call::of(Family::Other);
@@ -391,7 +393,7 @@ pub fn classify_function(namespace: Option<&str>, name: &str, arguments: &str) -
 /// is the freeform input.
 fn classify_tool(name: &str, args: &dyn Fn(&str) -> Option<Arg>) -> Call {
     if basemind_tool(name) {
-        return basemind_call(args);
+        return basemind_call(name, args);
     }
     let command = |key: &str| match args(key)? {
         Arg::Text(script) => Some(script),
@@ -409,11 +411,12 @@ fn classify_tool(name: &str, args: &dyn Fn(&str) -> Option<Arg>) -> Call {
     script.map_or_else(|| Call::of(Family::Other), |s| shell::classify(&s))
 }
 
-fn basemind_call(args: &dyn Fn(&str) -> Option<Arg>) -> Call {
-    let path = match args("path") {
-        Some(Arg::Text(path)) => Some(path),
+fn basemind_call(name: &str, args: &dyn Fn(&str) -> Option<Arg>) -> Call {
+    let text = |key: &str| match args(key) {
+        Some(Arg::Text(text)) => Some(text),
         _ => None,
     };
+    let path = text("path").filter(|_| basemind_reads_path(name, text("mode").as_deref()));
     Call {
         read: path.into_iter().collect(),
         repo_relative: true,
@@ -582,6 +585,8 @@ mod tests {
             (namespaced.family, namespaced.read),
             (Family::Basemind, vec!["src/a.rs".to_owned()])
         );
+        let grep = classify_function(Some("mcp__basemind"), "code_grep", r#"{"pattern":"x","path":"src/"}"#);
+        assert!(grep.read.is_empty(), "code_grep's path is a filter");
         let plugin = classify_function(Some("mcp__plugin_basemind_basemind"), "code", "{}");
         assert_eq!(plugin.family, Family::Basemind);
         // A namespaced tool that shares a built-in's name is not that built-in.

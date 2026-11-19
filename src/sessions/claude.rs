@@ -25,7 +25,9 @@ use serde_json::Value;
 use super::contain::{self, Found, Line};
 use super::shell;
 use super::tally::{Call, Family};
-use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, lenient, version_check, widen};
+use super::{
+    Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_reads_path, basemind_tool, lenient, version_check, widen,
+};
 
 /// The `version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[1, 2];
@@ -325,8 +327,9 @@ fn record_message(
 pub fn classify(name: &str, input: &Value) -> Call {
     let field = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_owned);
     if basemind_tool(name) {
+        let reads = basemind_reads_path(name, field("mode").as_deref());
         return Call {
-            read: field("path").into_iter().collect(),
+            read: field("path").filter(|_| reads).into_iter().collect(),
             repo_relative: true,
             ..Call::of(Family::Basemind)
         };
@@ -398,6 +401,14 @@ mod tests {
             Family::Basemind
         );
         assert_eq!(classify("mcp__other__code", &input).family, Family::Other);
+        let path = serde_json::json!({"path": "src/a.rs", "pattern": "x"});
+        assert_eq!(classify("mcp__basemind__code_read", &path).read, vec!["src/a.rs"]);
+        assert!(classify("mcp__basemind__code_grep", &path).read.is_empty(), "a filter");
+        let mode = serde_json::json!({"mode": "outline", "path": "src/a.rs"});
+        assert_eq!(
+            classify("mcp__plugin_basemind_basemind__code", &mode).read,
+            vec!["src/a.rs"]
+        );
         assert_eq!(classify("Glob", &input).family, Family::SearchTool);
         assert_eq!(
             classify("Bash", &serde_json::json!({"command": "git blame src/a.rs"})).family,

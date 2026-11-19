@@ -624,6 +624,20 @@ fn version_check(version: &str, supported: &[u64], field: &str) -> Result<Option
     })
 }
 
+/// Whether the `path` argument of the basemind tool `name` names a file it reads: `code_read`,
+/// `code_outline` and `git_blame`, or the `outline` / `read` and `blame` / `blame_symbol` modes of an
+/// older server's `code` and `git` tools. Elsewhere `path` is a filter (`code_grep` takes a
+/// substring), so it is no read.
+fn basemind_reads_path(name: &str, mode: Option<&str>) -> bool {
+    let tool = name.rsplit("__").next().unwrap_or(name);
+    match tool {
+        "code_read" | "code_outline" | "git_blame" => true,
+        "code" => matches!(mode, Some("outline" | "read")),
+        "git" => matches!(mode, Some("blame" | "blame_symbol")),
+        _ => false,
+    }
+}
+
 /// The leading integer of a version string (`2.1.3` → 2).
 fn major(version: &str) -> Option<u64> {
     version.split('.').next()?.trim().parse().ok()
