@@ -3,12 +3,10 @@
 //! `log.rs` for the 1000-line per-file cap.
 
 use super::common::{commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id, require_git_repo};
-use super::show::GIT_BUDGET_DEFAULT_TOKENS;
-use crate::engine::budget::keep_prefix;
+use super::show::budget_commits_with_files;
 use crate::engine::cursor::reject_zero_limit;
 use crate::engine::error::EngineError;
-use crate::engine::tokens::bytes_to_tokens;
-use crate::engine::types::git::{CommitFileView, CommitView, FindCommitsByPathParams, FindCommitsByPathResponse};
+use crate::engine::types::git::{CommitView, FindCommitsByPathParams, FindCommitsByPathResponse};
 use crate::engine::workspace::Workspace;
 
 /// Set in a paged window's cursor offset when a commit on an earlier page matched.
@@ -129,25 +127,7 @@ pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParam
         hits.push(commit_to_view(c.clone(), true));
     }
     let matched = matched_earlier || !offsets.is_empty();
-    // A row is written without its files, which go to `files`: cost both.
-    let budget = keep_prefix(
-        hits,
-        Some(params.max_tokens.unwrap_or(GIT_BUDGET_DEFAULT_TOKENS)),
-        |commit| {
-            let files = commit.files.as_deref().map_or(0, |files| {
-                files
-                    .iter()
-                    .map(|file| file.path.as_bytes().len() as u64 + 16)
-                    .sum::<u64>()
-            });
-            bytes_to_tokens(commit.sha.len() as u64 + commit.summary.len() as u64 + 8 + files).max(1)
-        },
-    );
-    let (mut hits, budgeted) = (budget.items, budget.budgeted);
-    let files: Vec<(String, Vec<CommitFileView>)> = hits
-        .iter_mut()
-        .map(|commit| (commit.sha.clone(), commit.files.take().unwrap_or_default()))
-        .collect();
+    let (hits, files, budgeted) = budget_commits_with_files(hits, params.max_tokens);
     // The next page starts at the first hit this one left out, or past the window when the window
     // held no more hits and the history goes on.
     let next_offset = offsets

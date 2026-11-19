@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:3e78337549eef1a7dc65d4bb92151af1f8373a2f89ce39ff6ad35c1f05157ff9
-Source-Hash: blake3:0a6ab7c9cd207021339785c703ecf23c6ae242ff0aea1b92599c66f1990e6dc5
+Content-Hash: blake3:057a665d3d1ebd64158f1b9db9c59234d2b8ba899fde6f266ebf341341b7157c
+Source-Hash: blake3:66691182e583645b10c005157bd90106686d9a14eac0deb0d0e10e6971bc83be
 Schema-Version: v1
 -->
 
@@ -73,8 +73,8 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
 - History queries are indexed: commits touching a path resolve in tens of microseconds vs a live
   walk. The index auto-builds on first use and is a fraction of the size of `.git`.
 - A `git_log` list commit is the string `"<sha12> <summary>"` (the sha's first 12 hex digits, which
-  every tool taking a revision resolves), with no author or time. A directory list puts the files in
-  a top-level `files: {"<sha>": {"<path>": "<change>"}}`, where a merge lists only what it changed
+  every tool taking a revision resolves), with no author or time. The recent list (no arguments)
+  and a directory list put the files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`, where a merge lists only what it changed
   against every parent. `rev` shows one commit with its full `sha`, `author`, `author_email`, time,
   message `body` and `files`.
 - `git_log` with no arguments is a recency window; use `query` or `author` to find a commit

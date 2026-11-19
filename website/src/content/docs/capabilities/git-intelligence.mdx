@@ -24,7 +24,8 @@ Three MCP tools cover git: `git_log`, `git_blame` and `git_diff`. The CLI comman
 ### `git_log`
 
 Use it instead of `git log` / `git show`. With no arguments it lists recent commits, newest first,
-with the paths each one touched, the author and the message.
+each as `"<sha> <summary>"`, with the paths each one touched in a top-level `files` map keyed by
+sha. `rev` shows one commit's author, time and whole message.
 
 ```json
 {}

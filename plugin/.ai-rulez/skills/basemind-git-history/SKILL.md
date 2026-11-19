@@ -76,8 +76,8 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
 - History queries are indexed: commits touching a path resolve in tens of microseconds vs a live
   walk. The index auto-builds on first use and is a fraction of the size of `.git`.
 - A `git_log` list commit is the string `"<sha12> <summary>"` (the sha's first 12 hex digits, which
-  every tool taking a revision resolves), with no author or time. A directory list puts the files in
-  a top-level `files: {"<sha>": {"<path>": "<change>"}}`, where a merge lists only what it changed
+  every tool taking a revision resolves), with no author or time. The recent list (no arguments)
+  and a directory list put the files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`, where a merge lists only what it changed
   against every parent. `rev` shows one commit with its full `sha`, `author`, `author_email`, time,
   message `body` and `files`.
 - `git_log` with no arguments is a recency window; use `query` or `author` to find a commit

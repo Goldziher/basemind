@@ -53,8 +53,9 @@ prints it; facts a row shares with its neighbours are written once.
    (`index_status` keeps it for the largest files).
 4. **`git_log` lists.** A commit is `"<sha> <summary>"`, the sha still 12 hex digits. Author and
    time are left out: `git_log {rev}` shows them with the whole message. A symbol's history marks
-   `[introduced]` and `[removed]` after the sha; a directory's history keeps each commit's files in
-   `files: {"<sha>": {"<path>": "<change>"}}`. `hash_mode` (an echo) is dropped, `kind` is written
+   `[introduced]` and `[removed]` after the sha; the recent list and a directory's history keep each
+   commit's files in `files: {"<sha>": {"<path>": "<change>"}}`, what changed being the point of
+   both. `hash_mode` (an echo) is dropped, `kind` is written
    only when set and `commits_inspected` only beside a `next_cursor`.
 5. **`git_blame`.** `hunks` is `["<line>[-<end_line>] <sha>[ <source_path>]", ...]`, adjacent lines
    of one commit (and one source path) merged into one hunk; `commits` maps each sha to `author`,

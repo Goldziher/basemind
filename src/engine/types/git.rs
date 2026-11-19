@@ -290,8 +290,8 @@ pub(crate) struct CommitView {
     /// Not written in a list row; `code explain` reads it.
     pub author_time_unix: i64,
     /// The files the commit changed: each path with how (`added`, `modified`, `deleted`,
-    /// `renamed`). A merge lists only what it changed against every parent. A directory's history
-    /// writes them in its response's `files`, keyed by sha; the row itself never carries them.
+    /// `renamed`). A merge lists only what it changed against every parent. The recent list and a
+    /// directory's history write them in the response's `files`, keyed by sha; the row never does.
     pub files: Option<Vec<CommitFileView>>,
 }
 
@@ -429,7 +429,12 @@ pub(crate) struct WorkingTreeStatusView {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct RecentChangesResponse {
+    /// `"<sha> <summary>"` per commit, newest first.
     pub commits: Vec<CommitView>,
+    /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`; absent when empty.
+    #[serde(serialize_with = "files_by_commit", skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "serde_json::Value")]
+    pub files: Vec<(String, Vec<CommitFileView>)>,
     /// `true` when the walk may have stopped early (today: shallow clone). Agents should
     /// treat the absence of an expected commit as inconclusive when this is set.
     #[serde(skip_serializing_if = "std::ops::Not::not")]

@@ -11,7 +11,7 @@ use super::common::{
     LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id,
     require_git_repo,
 };
-use super::show::{budget_commits, run_show};
+use super::show::{budget_commits, budget_commits_with_files, run_show};
 use crate::engine::budget::budget;
 use crate::engine::error::EngineError;
 use crate::engine::timing::elapsed_us;
@@ -471,6 +471,7 @@ fn run_recent(ws: &Workspace, params: RecentChangesParams) -> Result<RecentChang
     let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
         return Ok(RecentChangesResponse {
             commits: Vec::new(),
+            files: Vec::new(),
             truncated: false,
             truncated_reason: None,
             next_cursor: None,
@@ -499,12 +500,13 @@ fn run_recent(ws: &Workspace, params: RecentChangesParams) -> Result<RecentChang
         .take(limit)
         .map(|c| commit_to_view(c, params.include_files))
         .collect();
-    let (page, budgeted) = budget_commits(page, params.max_tokens);
+    let (page, files, budgeted) = budget_commits_with_files(page, params.max_tokens);
     let next_cursor = (more || budgeted)
         .then(|| crate::engine::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
     Ok(RecentChangesResponse {
         commits: page,
+        files,
         budgeted,
         truncated,
         truncated_reason: truncated.then_some("shallow_clone"),

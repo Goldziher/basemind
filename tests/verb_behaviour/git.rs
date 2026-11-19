@@ -106,7 +106,7 @@ async fn git_log_answers_byte_for_byte() {
     let cases = [
         (
             json!({}),
-            r#"{"commits":["c48e32cbf7dd add gamma","0c2fe19c38a2 tune alpha","3f38556b6d45 init"]}"#,
+            r#"{"commits":["c48e32cbf7dd add gamma","0c2fe19c38a2 tune alpha","3f38556b6d45 init"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
         ),
         (
             json!({ "path": "src/lib.rs" }),
@@ -138,7 +138,7 @@ async fn git_log_answers_byte_for_byte() {
         ),
         (
             json!({ "limit": 1 }),
-            r#"{"commits":["c48e32cbf7dd add gamma"],"next_cursor":"fc82f23e.kgHOxI4yyg"}"#,
+            r#"{"commits":["c48e32cbf7dd add gamma"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"}},"next_cursor":"fc82f23e.kgHOxI4yyg"}"#,
         ),
     ];
     let mut rows = Vec::new();

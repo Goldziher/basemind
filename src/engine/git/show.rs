@@ -8,9 +8,10 @@
 use serde::Serialize;
 
 use super::common::require_git_repo;
-use crate::engine::budget::apply_budget;
+use crate::engine::budget::{apply_budget, keep_prefix};
 use crate::engine::error::EngineError;
-use crate::engine::types::git::{CommitFileView, GitCommitHit, GitShowResponse};
+use crate::engine::tokens::bytes_to_tokens;
+use crate::engine::types::git::{CommitFileView, CommitView, GitCommitHit, GitShowResponse};
 use crate::engine::workspace::Workspace;
 
 /// Token budget applied to a commit list when the caller passes no `max_tokens`.
@@ -23,6 +24,34 @@ pub(super) const GIT_BUDGET_DEFAULT_TOKENS: u32 = 20_000;
 pub(super) fn budget_commits<T: Serialize>(commits: Vec<T>, max_tokens: Option<u32>) -> (Vec<T>, bool) {
     let budget = apply_budget(commits, Some(max_tokens.unwrap_or(GIT_BUDGET_DEFAULT_TOKENS)));
     (budget.items, budget.budgeted)
+}
+
+/// A commit list whose rows are written without their files, which go to the response's top-level
+/// `files: {"<sha>": {"<path>": "<change>"}}`: keep the leading commits whose row and files fit
+/// `max_tokens` (default [`GIT_BUDGET_DEFAULT_TOKENS`]), and move each kept commit's files out.
+pub(super) fn budget_commits_with_files(
+    commits: Vec<CommitView>,
+    max_tokens: Option<u32>,
+) -> (Vec<CommitView>, Vec<(String, Vec<CommitFileView>)>, bool) {
+    let budget = keep_prefix(
+        commits,
+        Some(max_tokens.unwrap_or(GIT_BUDGET_DEFAULT_TOKENS)),
+        |commit| {
+            let files = commit.files.as_deref().map_or(0, |files| {
+                files
+                    .iter()
+                    .map(|file| file.path.as_bytes().len() as u64 + 16)
+                    .sum::<u64>()
+            });
+            bytes_to_tokens(commit.sha.len() as u64 + commit.summary.len() as u64 + 8 + files).max(1)
+        },
+    );
+    let (mut commits, budgeted) = (budget.items, budget.budgeted);
+    let files = commits
+        .iter_mut()
+        .map(|commit| (commit.sha.clone(), commit.files.take().unwrap_or_default()))
+        .collect();
+    (commits, files, budgeted)
 }
 
 /// The `show` operation: one commit by sha or revision, with its whole message and its
