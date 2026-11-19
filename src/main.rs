@@ -722,6 +722,11 @@ fn cmd_scan(
     }
     render::render_summary(&mut out, &report.stats, verbosity);
     render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
+    // This process exits next: flushed, the rows open as tables instead of a journal the next
+    // writer (usually the daemon) replays into memtables and holds in its heap until they fill.
+    if let Some(db) = store.index_db.as_ref() {
+        db.reclaim_journal();
+    }
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())

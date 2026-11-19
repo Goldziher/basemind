@@ -35,6 +35,22 @@ pub(crate) const DISCARD_PREFIX: &str = "index.fjall.discard-";
 /// keyspace one straggler keeps each sealed journal (64 MiB preallocated) alive for good.
 const RECLAIM_SEALED_JOURNALS: usize = 1;
 
+/// Unflushed memtable bytes an index may keep once a pass has ended. fjall flushes a memtable only
+/// when it reaches its keyspace's `max_memtable_size` (4 to 16 MiB, `KEYSPACE_MEMTABLE_BYTES`),
+/// so a daemon whose rescans keep rewriting a small repository's rows holds every keyspace's
+/// memtable growing toward its own ceiling, over 100 MiB of heap in all, for as long as it runs.
+/// A soak of the daemon grew its heap by about 2.7 MiB/min in memtable entries this way.
+const SETTLED_WRITE_BUFFER_BYTES: u64 = 8 * 1_024 * 1_024;
+
+/// On-disk size up to which a keyspace [`IndexDb::settle_write_buffer`] flushed is compacted back
+/// into one table. Each flush adds a level-0 table, and leveled compaction merges them only at four,
+/// so a small keyspace flushed every few minutes would hold several tables, each an open descriptor
+/// and a set of cached blocks; at this size the rewrite costs less than the flush that preceded it.
+const SMALL_KEYSPACE_BYTES: u64 = 16 * 1_024 * 1_024;
+
+/// How long [`IndexDb::settle_write_buffer`] waits for its flushes before it leaves them running.
+const SETTLE_FLUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Flush the active memtable of each of `keyspaces` to disk and wait for it. Stops at the first
 /// error. A journal is deleted once every keyspace it covers has flushed past it, so this releases
 /// the sealed ones.
@@ -252,6 +268,62 @@ impl IndexDb {
     /// costs nothing; a flush of a small index would only add segments and delay the scan.
     pub fn reclaim_journal_if_grown(&self) -> bool {
         self.db.journal_count() > RECLAIM_SEALED_JOURNALS && self.reclaim_journal()
+    }
+
+    /// Once more than [`SETTLED_WRITE_BUFFER_BYTES`] sit unflushed, flush the largest memtables
+    /// until at most half of it is left, compact each flushed keyspace still under
+    /// [`SMALL_KEYSPACE_BYTES`] into one table, and return how many were flushed. Call at the end of
+    /// a pass: the rows are durable in the journal, and flushing only the big memtables keeps the
+    /// tables (and their open descriptors) few. A failure only logs, since the rows stay in the
+    /// memtable and the journal.
+    pub fn settle_write_buffer(&self) -> usize {
+        use fjall::AbstractTree;
+        let mut unflushed = self.db.write_buffer_size();
+        if unflushed <= SETTLED_WRITE_BUFFER_BYTES {
+            return 0;
+        }
+        let mut sized: Vec<(&Keyspace, u64)> = Part::ALL
+            .into_iter()
+            .map(|part| self.keyspace(part).raw())
+            .chain(std::iter::once(&self.embeddings))
+            .map(|keyspace| (keyspace, keyspace.tree.active_memtable().size()))
+            .collect();
+        sized.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
+        let mut flushed = Vec::new();
+        for (keyspace, size) in sized {
+            if unflushed <= SETTLED_WRITE_BUFFER_BYTES / 2 || size == 0 {
+                break;
+            }
+            match keyspace.rotate_memtable() {
+                Ok(true) => {
+                    flushed.push(keyspace);
+                    unflushed = unflushed.saturating_sub(size);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "index memtable flush failed; the rows stay in memory until the next pass");
+                    break;
+                }
+            }
+        }
+        // Wait for these flushes only, not every flush queued on the shared group database, and not
+        // past a failing flush: the compaction then waits for the next pass.
+        let deadline = std::time::Instant::now() + SETTLE_FLUSH_WAIT;
+        while flushed.iter().any(|keyspace| keyspace.sealed_memtable_count() > 0) {
+            if std::time::Instant::now() >= deadline {
+                return flushed.len();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        for keyspace in &flushed {
+            if keyspace.table_count() > 1
+                && keyspace.disk_space() <= SMALL_KEYSPACE_BYTES
+                && let Err(error) = keyspace.major_compact()
+            {
+                tracing::warn!(%error, "index keyspace compaction failed; its tables merge at the next compaction");
+            }
+        }
+        flushed.len()
     }
 
     /// Whether no other clone of this handle is alive, so dropping it releases fjall's lock.
@@ -586,6 +658,69 @@ mod tests {
         let reopened = IndexDb::open(dir.path()).expect("reopen");
         assert_eq!(reopened.keyspace(Part::SymbolsByPath).iter().count(), 70);
         assert_eq!(reopened.scan_generation().expect("read"), 0);
+    }
+
+    /// Writes `mib` MiB of incompressible rows into `part`, below its memtable ceiling, so fjall
+    /// keeps them unflushed.
+    fn buffer_rows(db: &IndexDb, part: Part, mib: u32, seed: u64) {
+        let rows = db.keyspace(part).raw();
+        let mut state = seed;
+        for row in 0..mib * 16 {
+            let value: Vec<u8> = (0..64 * 1_024)
+                .map(|_| {
+                    state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                    (state >> 56) as u8
+                })
+                .collect();
+            rows.insert(row.to_be_bytes(), &value).expect("insert");
+        }
+    }
+
+    /// Waits until fjall's worker has flushed the write buffer down to `bytes`.
+    fn await_write_buffer_at_most(db: &IndexDb, bytes: u64) {
+        let deadline = std::time::Instant::now() + WORKER_SETTLE;
+        while db.unflushed_bytes() > bytes {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} bytes still unflushed, wanted at most {bytes}",
+                db.unflushed_bytes()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Past the budget the largest memtable is flushed until half the budget is left; the smaller
+    /// one stays in memory, a buffer within the budget is left alone, and a small keyspace flushed
+    /// twice keeps one table.
+    #[test]
+    fn settle_write_buffer_flushes_the_largest_memtables_down_to_half_the_budget() {
+        use fjall::AbstractTree;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = IndexDb::open(dir.path()).expect("open");
+        buffer_rows(&db, Part::SymbolsByPath, 6, 1);
+        buffer_rows(&db, Part::SymbolsByName, 3, 2);
+        assert!(
+            db.unflushed_bytes() > SETTLED_WRITE_BUFFER_BYTES,
+            "the fixture must exceed the budget: {}",
+            db.unflushed_bytes()
+        );
+
+        assert_eq!(db.settle_write_buffer(), 1, "one flush brings the buffer under half");
+        await_write_buffer_at_most(&db, SETTLED_WRITE_BUFFER_BYTES / 2);
+        let left = |part: Part| db.keyspace(part).raw().tree.active_memtable().size();
+        assert_eq!(left(Part::SymbolsByPath), 0, "the largest memtable was flushed");
+        assert!(left(Part::SymbolsByName) > 0, "the smaller one stays in memory");
+        assert_eq!(db.settle_write_buffer(), 0, "within the budget nothing is flushed");
+
+        buffer_rows(&db, Part::SymbolsByPath, 6, 3);
+        assert_eq!(db.settle_write_buffer(), 1);
+        let rows = db.keyspace(Part::SymbolsByPath).raw();
+        assert_eq!(
+            rows.table_count(),
+            1,
+            "the second flush was compacted into the first table"
+        );
+        assert_eq!(rows.iter().count(), 6 * 16, "the rewrite kept every row");
     }
 
     #[test]
