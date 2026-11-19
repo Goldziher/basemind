@@ -1202,6 +1202,8 @@ degrading to a truncated in-memory view.
 | `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition`: the definition a reference binds to. |
 | `find [query] [--path-prefix --language --min-lines]` / `files [--path-prefix --language]` | Locate a file by a fuzzy fragment of its name or path, or list indexed files (`find_files`); `--min-lines N` lists code files of at least N lines, largest first, with line and byte counts. |
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (CLI only). |
+| `impact <path\|symbol> [--depth]` / `impact --diff <rev\|A..B>` / `impact --changed` | Files that import a file, a symbol's defining files or a change's files, transitively through the file-level import graph, each with its depth and whether it is in a cycle (CLI only). |
+| `cycles [--path --max-size]` / `cycles --check <from> <to>` | Import cycles, smallest first, each with an import chain that closes it; or whether `from` importing `to` would close one. Type-only imports and Rust `mod` declarations count only with `--include-type-imports` / `--include-module-decls` (CLI only). |
 
 **Git (`basemind git`)**
 

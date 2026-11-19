@@ -4,6 +4,7 @@
 pub(crate) mod code;
 pub(crate) mod files;
 pub(crate) mod git;
+pub(crate) mod graph;
 pub(crate) mod grep;
 pub(crate) mod index;
 pub(crate) mod memory;
