@@ -39,45 +39,56 @@ millions of chunks, and the design is sized for that.
 
 1. **Scope.** By default only document types are chunked and embedded. JSON, YAML, TOML, CSV and
    logs are left to `code_grep`.
+
 2. **Store.** One LanceDB directory per repository group and embedding model, at
    `cache/groups/<group>/lance/<model>-<dim>-<hash>/` (ADR-0028). It holds `doc_chunks`, one
    immutable row per `(doc_key, chunk_ord)`, and `docs`, one row per `doc_key`; code-chunk rows
    keyed by `cck` live beside them. Rows carry no path and no scope. `doc_key` is the 16-byte
    blake3 of content hash and document extraction digest, recorded in the file map entry by the
    scan that wrote the rows.
+
 3. **Liveness** comes from ADR-0028's live-key map, built from the view's file map. It is a
    pre-filter, `doc_key IN (live keys)`, intersected in memory with the `path` and `keywords`
    selections, while the list holds at most 20,000 keys. Above that it is applied after ranking
    with a bounded widening (3x, doubling, cap 4096), and a search that reaches the cap says so.
+
 4. **Two lanes, fused.** A vector lane and a LanceDB full-text lane (BM25, lower-case, ASCII
    folding, English stemming) run under the same predicate, 200 candidates each. They are fused by
    reciprocal rank, `k = 60`, equal weights, on `(doc_key, chunk_ord)`, and cut at 101 for paging.
    A lexical lane that returns less than a page is rerun once with edit distance 1.
+
 5. **Filters run before ranking.** `mime_type`, `kind`, `entity`, `keywords` and `path` are one
    predicate, backed by scalar indexes. `entity` filters chunks; `keywords` selects documents by
    whole keyword. The `scope` parameter is removed.
+
 6. **Exact first.** The vector lane scans exactly whenever the pre-filtered row count is at most
    50,000. A vector index is built only for a store above that, and only when the benchmark shows
    exact search over its latency budget at that size.
+
 7. **Rerank reorders, it does not cut.** The reranker scores the first 50 fused hits; the rest
    follow in fused order. A reranker failure is reported on a successful response.
+
 8. **Answers carry context and a citation.** After the page is cut, adjacent hits of one document
    are merged, each hit is extended by one chunk on either side while the token budget allows, and
    the same content at several paths is one hit listing the other paths. A hit cites path, page
    range, section path, line range and byte range; a field the format lacks is null.
+
 9. **The response says what ran:** the lanes that ran and those that could not, with a reason;
    exact or approximate; fuzzy or not; reranked or not. No lane able to run is an error. A degraded
    answer is not cached.
+
 10. **Chunking keeps what xberg reports.** Page range, heading path and chunk kind are stored per
     chunk; tables repeat their header; the fixed-size chunker starts at a line or word boundary;
     the heading breadcrumb goes into the embedded text only. HTML entities are decoded once,
     outside code, if the stage-0 probe finds them in chunks and no extractor setting removes them.
     The embedding preset decides chunk size for documents xberg chunks.
+
 11. **Store class (ADR-0025).** Derived, class (a): version is the release minor in `meta.json`
     with model and dimension; older is wiped, newer refused. It is rebuilt from document blobs. A
     scan first asks the store which of its keys are absent and reads blobs only for those. Only
     the group lock holder writes. Dead rows are deleted by ADR-0028's sweep, which hands this
     store the live keys; the store lists no file maps itself.
+
 12. **Backend.** LanceDB stays, with scalar and full-text indexes on, if it meets every row below
     on the reference machine, against the harness's own brute-force result with the filter applied
     first, at 1%, 10% and 100% filter selectivity and with 50% and 90% of rows live:
@@ -97,6 +108,7 @@ millions of chunks, and the design is sized for that.
     LanceDB fails a row, the Fjall arm below is built and measured; if that passes where LanceDB
     failed, a new ADR replaces this clause. Otherwise LanceDB stays and the largest passing tier
     is the documented limit.
+
 13. **Order and format.** The store needs ADR-0028's group directory, lock and live-key map, so it
     lands after the group database, beside the re-keying of the index, and before the group
     sweep. It has no format bump of its own: its version is the release minor, and the new chunk

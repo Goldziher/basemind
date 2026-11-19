@@ -62,6 +62,7 @@ ADR-0023 stands except where this record changes it.
 
    An injected validator now would change `config::load`'s signature and leave a core-only caller
    unvalidated, for a crate boundary that does not exist yet.
+
 3. **Known violations.** `KNOWN_VIOLATIONS` lists the edges that are still open. The test passes
    only on an exact match. When each edge disappears:
 
@@ -77,6 +78,7 @@ ADR-0023 stands except where this record changes it.
      handle through `Store`. They change, along with their callers in `scanner_flush.rs`, when the
      handle moves.
    - Extraction (ADR-0023 rule 6) cannot start while any of the three edges remains.
+
 4. **The test follows re-exports and exported macros.**
    - A path continues through `pub use` items, named or glob, and every module on the chain is an
      edge.
@@ -84,6 +86,7 @@ ADR-0023 stands except where this record changes it.
      defines the macro.
    - A `cfg_attr(test, ..)` argument and a `#[cfg(test)]` trait or impl method count as test code.
    - Each of these shapes is proved by the test's fixture crate.
+
 5. **Public API moves.** These land without shims (ADR-0023 rule 5):
    - `extract::doc_guard::{DocPhase, PhaseSpent}` moved to `backpressure`.
    - `Store::write_doc` and `Store::read_doc_by_hex` are now `extract::doc::DocBlobs` methods. Under

@@ -184,6 +184,7 @@ Both are real costs, accepted rather than solved, because MCP allows exactly one
   11, `web`: 3, `agents`: 16, `shell`: 6, `workspace`: 3 shapes across its five modes — `workspaces`,
   `worktrees`, and `branches` list, `claim` and `release` return the same acknowledgement shape). The
   per-mode shapes are documented in the description instead.
+
 - **Annotations coarsen to the union of the domain's modes**, and the union resolves toward the side
   effect: if any mode writes, a client that auto-approves read-only tools must not be able to trigger
   it, so the whole tool is labelled by its least-safe mode.

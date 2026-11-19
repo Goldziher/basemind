@@ -34,10 +34,15 @@ Nygard/MADR shape:
   | `amends` | on an amending record, a list of the numbers it amends: `["0018"]` |
 
 - **Title** — `# ADR-NNNN: <decision>`
+
 - **Deciders**, **Related** — a bullet each under the title
+
 - **Context** — the forces at play: the problem, constraints, and what exists today
+
 - **Decision** — what we will do (active voice, present tense)
+
 - **Consequences** — what becomes easier and harder as a result; follow-on work
+
 - **Alternatives considered** — the options we rejected and why
 
 ADRs 0000–0020 predate the front matter and also carry `- **Status:**` and `- **Date:**` bullets

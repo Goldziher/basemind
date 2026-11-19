@@ -39,13 +39,16 @@ tested:
 1. **Memory.** The agent-facing memory surface is `memory_save` and `memory_search`
    (`memory_search` also serves the lookup-by-key and list-by-prefix shapes). Deleting shared memory
    is a CLI command only, `basemind memory delete`.
+
 2. **Publishing blockers.** The second blocker is the `xberg` dependency, the only git dependency
    left in the manifest. `Cargo.toml` gives it both a `rev` and `version = "1.4.0"`, and Cargo
    publishes against the registry version when both are present. Publishing is therefore blocked
    only if `xberg` 1.4.0 is not on crates.io, which was not checked.
+
 3. **Scope.** Git history and shared memory stay in the product. This is the owner's decision about
    scope. It is not a measured one: ADR-0018's transcripts show zero `git` calls, and no measurement
    of memory use was taken.
+
 4. **Tool table.** The surface is the fifteen verb tools below plus the three agent tools, which
    ADR-0021 owns. `agent_launch` and `agent_stop` remain reserved names with no design.
 

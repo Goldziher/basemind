@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:f7680692895035abd9d4c9ebfb25d675d32d848d713e059aa5ce0355a5bcaf30
-Source-Hash: blake3:8cd5c10f2fdff8441678d5c446180c8a0ddb1cc4537eb3570350f03f5c3ea14d
+Content-Hash: blake3:b905b3219fdcef28a70eadb00998025895c89c0ea380dd77cc4a3d67de8917de
+Source-Hash: blake3:3b73eaebda113e9d9f8dc8e606e0f599ca2bba06372eedbae4940c9d7186aa79
 Schema-Version: v1
 -->
 
@@ -31,6 +31,7 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 
 1. Run `basemind admin telemetry --window today --json` (`today` is the default). If the
    user asks for a specific range, map it to one of `today`, `1h`, `24h`, `all`.
+
 2. Render a markdown block in this shape:
 
    ```text
@@ -42,6 +43,7 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 
 3. If `total_calls` is 0, say so plainly ("no basemind activity in the window yet").
    Don't pretend to have data.
+
 4. **Always disclose the savings model.** Add one sentence at the end:
 
    > Savings are heuristics. Tools with no realistic baseline (memory, document

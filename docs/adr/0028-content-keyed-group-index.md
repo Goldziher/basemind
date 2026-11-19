@@ -47,6 +47,7 @@ cross-file rows.
    `index.fjall`, `index.lock`, `group.json` and `lance/` (ADR-0029). `cache/repos/<group>/` keeps
    the memory notes and their vectors and stays outside every collector. The registry's `RepoId`
    is not the key: it differs between worktrees of a clone without a remote.
+
 2. **Row keys.** A row is keyed by a 16-byte blake3 of the content hash and everything else that
    determines the row:
 
@@ -58,43 +59,53 @@ cross-file rows.
    | grep bloom | content hash | unchanged |
 
    A posting key becomes `term ‖ cck ‖ ordinal`, 18 bytes in place of a 67-byte chunk id.
+
 3. **File map.** It stays at `workspaces/<ws>/views/<view>/index.msgpack` and gains the group
    index incarnation, the view id, the view's seal generation, its BM25 totals, and per entry the
    keys its rows were written under. Liveness and collection read keys from file maps. They never
    recompute them from configuration, which may have changed or be gone.
+
 4. **Content rows.** A `contents` keyspace holds one marker per key and row family, committed in
    the batch that completes that family's rows. A scan that finds the marker writes only the file
    map entry.
+
 5. **Cross-file rows.** Cross-file reference edges, `import_targets` and `importers_by_probe` keep
    path keys under a 4-byte view id. A view id is allocated with a synced commit, is never
    reused, and its record names the workspace and view.
+
 6. **Dropped keyspaces.** `imports_by_module`, `imports_by_path` and `embeddings` have no reader.
    `symbols_by_path`, `implementations_by_path` and `code_bm25_by_path` served per-path deletes,
    which content rows do not need; the "index is empty" test moves to `contents`.
+
 7. **Reads.** `IndexView` takes and returns paths. Its one implementation filters content rows
    through an in-memory map of the view's live keys and expands a row to every live path holding
    that content. Name scans order hits by name, key, offset, path; the cursor is the row key plus
    the path. BM25 uses the view's own document count and total length and counts only live
    postings, so scores equal those of a standalone index.
+
 8. **Lock.** `index.lock` is the group lock. Only its holder opens `index.fjall` or writes the
    group's vector store, and it keeps one handle shared by every pooled workspace of the group.
    A process that cannot take the lock answers from blobs and does not open the database at all.
    ADR-0024 rule 5 becomes "one writer per group index, enforced by the group lock".
+
 9. **Durability.** Each view has its own seal generation in the group index. A scan writes rows,
    commits the view's next generation with a sync, then writes the file map carrying it. A file map
    ahead of its view's seal, naming another incarnation, or carrying a view id the index does not
    hold for it, is emptied and its view rows are cleared. The group index and every other file map
    stay. This replaces "discarded together with that index" in ADR-0025 clause (d).
+
 10. **Collection.** One group sweep, run by the lock holder under a per-group gate that excludes
     that group's scans, takes the union of keys named by every file map of the group, found
     through the view records. It deletes the markers of keys dead for longer than the blob grace
     period, then every content row whose key has no marker, then the rows of views whose file map
     is gone, and it hands the live document and chunk keys to the vector store (ADR-0029). An
     unreadable file map that is not provably of another schema aborts the sweep.
+
 11. **Migration.** Nothing is converted. A workspace's per-view `index.fjall` and `lance/` are
     deleted when this binary first scans it; where no such scan happens, the orphan reaper removes
     them once their lock has been free and they have been unused for 30 days. An older binary
     refuses a migrated workspace by its file map, which stays at the same path.
+
 12. **Rollout.** The work lands behind `[index] group`, default off, in this order: live-key map
     and row keys; the group database and lock; then the re-keying of row families and ADR-0029's
     document store, side by side; the group sweep; the default. `INDEX_PARTITION_REVISION` is

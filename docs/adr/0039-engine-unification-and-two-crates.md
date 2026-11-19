@@ -44,6 +44,7 @@ ADR-0023 and ADR-0032 stand except where this record changes them.
    The core, retrieval and engine layers stay as layers inside `basemind-engine`, enforced by
    `tests/layering.rs` exactly as today. This replaces ADR-0023's four-crate table and its rule 4
    publish order: the vendored forks, then `basemind-engine`, then `basemind`.
+
 2. **Engine unification comes before extraction.** The read model moves out of `src/mcp` into
    `src/engine` while it is still one crate, one scripted step at a time, each with no behaviour
    change:
@@ -66,6 +67,7 @@ ADR-0023 and ADR-0032 stand except where this record changes them.
    - Processes that do not own the index then forward whole tool calls, so the in-process
      forwarding seams (`HostBackend`, `HistoryHost`, `IndexRoute` and its in-RAM fallback) are
      deleted rather than moved.
+
 3. **`src/engine` names no rmcp, clap or tokio type.** `tests/layering.rs` places `engine` in the
    engine layer and forbids those crates there. Edges the unification has not cut yet are listed
    exactly in `KNOWN_VIOLATIONS`, each with the step that removes it (ADR-0032 rule 3 extended):
@@ -78,6 +80,7 @@ ADR-0023 and ADR-0032 stand except where this record changes them.
    | `src/engine/workspace.rs -> mcp::helpers_files` (`TrackedCache`) | the `find_files` operation step |
 
    Extraction cannot start while any of these remains, in addition to ADR-0032's three edges.
+
 4. **A CLI command forwards its whole call to the daemon.** With the daemon up, a tool command on
    the working view opens no store. It opens one relay session, sends `tools/call {name, arguments}`
    and renders the `CallToolResult` the daemon's own tool body answered:

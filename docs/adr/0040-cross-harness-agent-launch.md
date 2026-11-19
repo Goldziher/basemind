@@ -44,9 +44,11 @@ id that fails the grammar stops the launch.
    follow-up, stop). It is synchronous: threads and channels, errors as a `thiserror` enum. It
    depends on none of basemind's crates, so in ADR-0023's layering it sits beside `basemind-core`
    and is owned by `basemind-engine`.
+
 2. **ACP goes through the `agent-client-protocol` crate.** The crate owns framing, request ids and
    the typed messages. `basemind-agents` owns the process, and runs the connection on
    `futures::executor::block_on` inside the session's thread. No async type is public.
+
 3. **Lifted from monocode, because no maintained crate exists:** the Claude Code `stream-json`
    state machine, the Codex `app-server` state machine, process-group handling (spawn as a group
    leader, retire without cutting off a credential write, terminate the group) and the event and
@@ -54,6 +56,7 @@ id that fails the grammar stops the launch.
    Hermes and OpenCode mode names). Each derived file names its source and commit;
    `ATTRIBUTIONS.md` records what was dropped and changed. monocode's hand-written ACP client is
    not taken.
+
 4. **Identity bridge.** The launcher exports `BASEMIND_AGENT_ID` (the principal) and
    `BASEMIND_HOST` (the harness) to the launched agent, and, when the `Supervisor` launched it,
    `BASEMIND_AGENT_DEPTH` and `BASEMIND_LAUNCH_TOKEN` (decision 6), and injects `basemind serve` as an MCP
@@ -64,6 +67,7 @@ id that fails the grammar stops the launch.
    **An id that fails the grammar fails the launch.** ADR-0021 rule 1 would fall through to a
    derived id, and the agent would then post as someone its launcher did not announce. The id is
    self-asserted: see Consequences.
+
 5. **Safety model.** The crate enforces the first group against hostile model-chosen fields (the
    request) and a hostile child. It trusts the config. The second group, the launch policy, is
    also in the crate, in its `Supervisor` (decision 6). The third is basemind's wiring, `serve
@@ -416,11 +420,14 @@ is unchanged.
 ## Consequences
 
 - A host agent can delegate to another harness and coordinate with it over the existing threads.
+
 - New dependencies: `agent-client-protocol` and its schema crate (Apache-2.0), and `futures` with
   its executor. No tokio, no rmcp, no clap in the new crate.
+
 - basemind now carries two protocol adapters that track upstream CLIs with no stability promise.
   They will break when Claude Code or Codex change their wire format. The recorded-transcript tests
   show what the adapters expect, not what the CLIs currently send.
+
 - Verified on 2026-11-16 against Claude Code 2.1.325, Codex 0.169.0 and OpenCode 2.3.0, in a
   throwaway repository through the crate's opt-in `live_probe` example and raw captures; the
   crate README lists what each showed, and the redacted frames are test fixtures. A Claude Code
@@ -430,6 +437,7 @@ is unchanged.
   legacy `applyPatchApproval` (its `fileChanges` comes from Codex's generated schema), and Claude
   Code's managed settings and user `CLAUDE.md`. A Claude Code version whose init frame lacks the
   mode or the servers still fails every launch.
+
 - **User-level configuration still applies** to every harness but Claude Code: the child inherits
   `HOME` and `XDG_*`, so `~/.codex/config.toml` (and `~/.codex/.env`, which Codex 0.169 reads),
   OpenCode's global configuration (whose MCP servers and plugins started although `session/new`
@@ -440,23 +448,28 @@ is unchanged.
   its user MCP servers and plugins still load. A launcher-owned config home per harness would
   close this; it is not done because none of those homes was verified to keep sign-in working.
   Claude Code may still read managed (policy) settings and `~/.claude.json`.
+
 - **Default modes that do not ask.** ACP agents other than OpenCode run in modes nobody here
   verified, under an explicit opt-in. Codex `ReadOnly` uses approval policy `never` with a
   read-only sandbox: nothing is asked, whatever the sandbox blocks fails, and an MCP tool call
   fails rather than runs (Codex 0.169). Claude Code's default mode ran `Read`, a read-only `Bash`
   command and `ToolSearch` unasked inside the working directory; `ls /usr` asked (2.1.326).
+
 - **PATH and executables.** The harness's own lookups (`#!/usr/bin/env node`, helper binaries)
   search the child's `PATH`, which keeps the launcher's absolute entries; a directory on it that
   the agent can write is outside what the crate checks.
+
 - **Account routing.** The config's credential and the provider settings it may add
   (`AWS_REGION`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, ...) choose which account the
   harness bills and where its requests go; they are trusted config values, never request fields.
   An environment addition cannot name an endpoint (`*_BASE_URL`); a deployment that needs one sets
   it in the harness's own user configuration.
+
 - **An ACP grant is the agent's own description.** The approval shows the tool call the agent
   described in `session/request_permission`; nothing ties that description to what the agent then
   runs. ACP requests never carry `ApprovalKind::McpTool`, since ACP does not say which tool calls
   are MCP calls.
+
 - **`BASEMIND_AGENT_ID` is self-asserted.** A launched agent with a shell can export any id, or
   read its launcher's, and post as it over comms. The supervisor takes neither the id, nor a
   principal, nor a token on its word: depth, fan-out, ownership and audit rest on its own
@@ -495,6 +508,7 @@ is unchanged.
   itself with its bypass flag, edit basemind's configuration, or stop and replace the daemon
   (ADR-0024 lets any client). The supervisor bounds two things: the MCP path, for agents whose
   harness gates code execution, and the audit's attribution. It does not contain an escapee.
+
 - **What `serve --lead` does and does not bound, same user.** The lead's tool calls are trusted
   because they arrive on its stdio, and `max_depth = 1` holds because no socket reaches the
   supervisor and its stdin cannot be reopened through `/proc` once sealed. Left open:
@@ -515,35 +529,42 @@ is unchanged.
 
   Containing an escaped agent needs a kernel boundary (a separate uid, or a sandbox that denies
   `connect` to the comms socket and access to `/proc/<lead>`), which this ADR does not add.
+
 - **Budgets are per lead process.** `max_launches` (and the unused `max_allows`) live in the
   supervisor, so a lead `serve` that is killed and restarted starts with a fresh budget. Persisting
   them would bound nothing a same-user process cannot already undo: one that can kill the lead
   can edit the operator's file or run a harness itself. A restart is visible as a new audit file,
   which names the process. `max_concurrent` still holds, since the sessions of a killed lead die
   with it (the keeper process in each harness group).
+
 - **Advisory, not enforced:** `BASEMIND_AGENT_ID` and the comms identity of a launched agent;
   that a launched agent stays in its worktree (it is not sandboxed to it); that the lead creates a
   real git worktree for `working_dir` rather than any directory; `UserMcpServers`.
+
 - **Project files race the check.** The project-file check is a snapshot at plan time: a file
   written between the plan and the harness reading its configuration, or during the session, is
   only seen by the next launch, which it then refuses. This repository has a `.codex/`, so Codex
   refuses to launch in it.
+
 - **Per-session memory.** Bounded, but not small: two queued frames and the one being read (each
   up to 16 MiB and 256 Ki JSON values, a few tens of MiB once parsed), 16 MiB of queued events,
   16 pending requests of up to 1 MiB, 16 Codex file changes of up to 1 MiB, 64 tracked tool calls
   of up to about 192 KiB and 8 MiB of text de-duplication: on the order of 200 MiB in the worst
   case. The policy's `max_concurrent` caps the sessions of one supervisor (at most 32), and
   each lead's `serve` hosts one supervisor.
+
 - **Host preconditions.** The launcher must not ignore SIGCHLD or set `SA_NOCLDWAIT` (a launch is
   refused then), and must not reap children it did not start (`waitpid(-1)` elsewhere in the
   process): a leader reaped behind the session's back is never signalled again, and its group is
   left alone. SIGPIPE must be ignored, as Rust binaries do by default, or a write to an exited
   harness kills the launcher.
+
 - Launching is Unix-only: the crate refuses to start a harness on Windows until its process tree
   is contained by a Job Object, which is not implemented. A Windows plan still refuses a batch file (`claude.cmd`, run
   through `cmd.exe`, which looks for `node` in the working directory first) and sets
   `NoDefaultCurrentDirectoryInExePath=1`, so a bare name the harness runs (`git`, `rg`) is not
   taken from the agent's working directory; neither was run on Windows.
+
 - A descendant that leaves the process group (a helper that daemonizes) survives a `Session`. The
   session still ends on time and stops reading its pipes; containing such a process needs a cgroup
   or a job object. `opencode acp` 2.3.0 does this by design: it runs its server (`opencode serve
@@ -557,9 +578,12 @@ is unchanged.
   signalled, but a group id freed and reused in that instant would be signalled (a single process
   is signalled through a pidfd on Linux 5.3 and later, which closes that gap). A launcher that dies
   outright leaves them to exit on their own once their input closes.
+
 - A follow-up starts a new turn; mid-turn steering, which monocode supports, is not offered.
+
 - The project files of Grok, Hermes and a generic ACP agent are not known, so they are not
   checked.
+
 - The environment allow-list means a harness that reads an API key from the environment gets it
   only when the configuration names it. Harnesses that sign in through a keychain or a config file
   in `HOME` work unchanged.

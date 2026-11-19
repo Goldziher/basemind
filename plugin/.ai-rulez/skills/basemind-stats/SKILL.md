@@ -34,6 +34,7 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 
 1. Run `basemind admin telemetry --window today --json` (`today` is the default). If the
    user asks for a specific range, map it to one of `today`, `1h`, `24h`, `all`.
+
 2. Render a markdown block in this shape:
 
    ```text
@@ -45,6 +46,7 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 
 3. If `total_calls` is 0, say so plainly ("no basemind activity in the window yet").
    Don't pretend to have data.
+
 4. **Always disclose the savings model.** Add one sentence at the end:
 
    > Savings are heuristics. Tools with no realistic baseline (memory, document
