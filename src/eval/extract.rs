@@ -16,7 +16,7 @@
 //! | blame, blame_symbol | `sha:line` for every line of each hunk |
 //! | diff | `+path:line` per added line, `-path:line` per removed line |
 //! | diff_structural | `+name` per added symbol, `-name` per removed one |
-//! | impact | `path` of each importer (`paths`, or `hits` as rows or grouped by file) |
+//! | impact | `path` of each importer (`by_depth`: `{"<depth>": [path, ...]}`) |
 //! | cycles | `path` of each file of each cycle (`cycles[].files`) |
 //! | grep_changed | `path:line` of each match (listed under its file) |
 //! | find_large | `path` of each file (`files`, as strings or `{path, lines}` rows) |
@@ -144,7 +144,7 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
             v.extend(named("removed", '-'));
             v
         }
-        EvalMode::Impact => file_rows(body),
+        EvalMode::Impact => by_depth(body),
         EvalMode::Cycles => array(body, "cycles")
             .iter()
             .flat_map(|c| array(c, "files"))
@@ -204,19 +204,25 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
     }
 }
 
-/// `path` of every row of a file list: `paths` as strings, or `hits` as `{path, ...}` rows or an
-/// object keyed by path.
-fn file_rows(body: &Value) -> Vec<Item> {
-    let mut paths: Vec<String> = array(body, "paths")
-        .iter()
-        .filter_map(|p| p.as_str().map(str::to_string))
+/// `path` of each importer of a `code_refs` `importers` answer over the import graph, nearest
+/// depth first: `{"by_depth": {"<depth>": [path, ...]}}`.
+fn by_depth(body: &Value) -> Vec<Item> {
+    let mut levels: Vec<(u64, &Vec<Value>)> = body
+        .get("by_depth")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(depth, paths)| Some((depth.parse().ok()?, paths.as_array()?)))
         .collect();
-    match body.get("hits") {
-        Some(Value::Array(rows)) => paths.extend(rows.iter().filter_map(|r| s(r, "path"))),
-        Some(Value::Object(by_path)) => paths.extend(by_path.keys().cloned()),
-        _ => {}
-    }
-    paths.into_iter().map(|path| Item { path, line: None }).collect()
+    levels.sort_by_key(|(depth, _)| *depth);
+    levels
+        .into_iter()
+        .flat_map(|(_, paths)| paths.iter().filter_map(Value::as_str))
+        .map(|path| Item {
+            path: path.to_string(),
+            line: None,
+        })
+        .collect()
 }
 
 /// `(path, "a-b,c-d")` per file of a `code_grep` answer with `ranges`
@@ -444,18 +450,16 @@ mod tests {
         let impact = extract_items(
             EvalMode::Impact,
             &Value::Null,
-            &json!({"hits":[{"path":"a.rs","depth":1},{"path":"b.rs","depth":2,"in_cycle":true}]}),
+            &json!({"total":3,"by_depth":{"2":["c.rs"],"1":["a.rs","b.rs"]},"in_cycle":["b.rs"]}),
         );
-        assert_eq!(strs(&impact), vec!["a.rs", "b.rs"]);
-        let grouped_impact = extract_items(EvalMode::Impact, &Value::Null, &json!({"hits":{"c.rs":{"depth":1}}}));
-        assert_eq!(strs(&grouped_impact), vec!["c.rs"]);
-        let listed = extract_items(EvalMode::Impact, &Value::Null, &json!({"paths":["d.rs"]}));
-        assert_eq!(strs(&listed), vec!["d.rs"]);
+        assert_eq!(strs(&impact), vec!["a.rs", "b.rs", "c.rs"]);
+        let none = extract_items(EvalMode::Impact, &Value::Null, &json!({"total":0,"by_depth":{}}));
+        assert!(none.is_empty());
 
         let cycles = extract_items(
             EvalMode::Cycles,
             &Value::Null,
-            &json!({"cycles":[{"files":["a.rs","b.rs"],"chain":"a.rs:1 -> b.rs:2 -> a.rs"},
+            &json!({"cycles":[{"files":["a.rs","b.rs"]},
                               {"files":[{"path":"c.rs"},{"path":"d.rs"}]}]}),
         );
         assert_eq!(strs(&cycles), vec!["a.rs", "b.rs", "c.rs", "d.rs"]);
