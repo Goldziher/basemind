@@ -38,6 +38,8 @@ exclude = [
   "tests/fixtures/tools_list.json",
   # The lead tools' snapshot `tests/lead_tools_surface.rs` compares byte for byte.
   "tests/fixtures/lead_tools_list.json",
+  # `tests/migration_smoke.rs` counts two old-form calls on one line of this fixture.
+  "tests/fixtures/migration/src/app.rs",
   # Written by benchmarks/eval/docs/gen_corpus.py; the eval scans these exact bytes.
   "benchmarks/eval/docs/corpus/**",
   "crates/*-ffi/include/*.h",
