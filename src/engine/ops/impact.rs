@@ -12,7 +12,7 @@ use crate::engine::types::graph::{ImpactDefinition, ImpactHit, ImpactParams, Imp
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
-use super::graph_report::{coverage, notes, tiers};
+use super::graph_report::{coverage, index_not_ready, notes, tiers};
 
 /// Definitions of one name a symbol target reads.
 const SYMBOL_DEFINITIONS_MAX: usize = 256;
@@ -81,9 +81,12 @@ fn file_target(ws: &Workspace, path: RelPath) -> Result<Targets, EngineError> {
 /// Every file defining `name`, exactly.
 fn symbol_target(ws: &Workspace, name: &str) -> Result<Targets, EngineError> {
     let store = ws.store_read();
-    let view = store.read_index_view().ok_or_else(|| {
-        EngineError::busy("the symbol lookup needs the index, which another basemind process holds: retry")
-    })?;
+    let Some(view) = store.read_index_view() else {
+        drop(store);
+        return Err(index_not_ready(ws, "code impact").unwrap_or_else(|| {
+            EngineError::busy("the symbol lookup needs the index, which another basemind process holds: retry")
+        }));
+    };
     let mut definitions: Vec<ImpactDefinition> = view
         .symbols_by_name_lookup(name, SYMBOL_DEFINITIONS_MAX)
         .into_iter()
@@ -94,6 +97,11 @@ fn symbol_target(ws: &Workspace, name: &str) -> Result<Targets, EngineError> {
         })
         .collect();
     if definitions.is_empty() {
+        drop(view);
+        drop(store);
+        if let Some(refusal) = index_not_ready(ws, "code impact") {
+            return Err(refusal);
+        }
         return Err(EngineError::invalid_argument(format!(
             "`code impact`: no definition named `{name}` is indexed; find the exact name with `basemind code \
              symbols {name} --fuzzy`, or pass a file path"
