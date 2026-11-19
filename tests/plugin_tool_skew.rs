@@ -79,10 +79,6 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
         "omitted_bytes",
         "code_read / code_outline cut bodies (src/mcp/types_code.rs)",
     ),
-    (
-        "byte_budget",
-        "code_grep truncated_reason GrepTruncation::ByteBudget (src/engine/ops/code_grep.rs)",
-    ),
     ("chunk_idx", "docs_search hits (src/mcp/types_documents.rs)"),
     ("lanes_ran", "code_search (src/mcp/types_code.rs)"),
 ];
@@ -99,7 +95,6 @@ const NOT_TOOL_VOCABULARY: &[&str] = &[
     "open_store",
     "parse_config",
     "process_file",
-    "scan_cap",
 ];
 
 /// Top-level CLI groups an older binary had; a reference to one is a CLI reference, not prose.
