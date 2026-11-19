@@ -40,6 +40,7 @@ choice_enum! {
         Implementations => "implementations",
         Importers => "importers",
         Definition => "definition",
+        Cycles => "cycles",
     }
 }
 

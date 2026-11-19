@@ -15,11 +15,12 @@ const B_SRC: &str = "import { helper } from './a';\nexport function run() {\n  r
 /// `code_refs` relation `definition` for the use of `helper` in `b.ts`.
 fn goto(ws: &Workspace) -> serde_json::Value {
     let params = CodeRefsParams {
-        name: "helper".to_string(),
+        name: Some("helper".to_string()),
         relation: Some("definition".to_string()),
         path: Some(RelPath::from("b.ts")),
         line: Some(3),
         column: None,
+        depth: None,
         match_mode: None,
         limit: None,
         cursor: None,

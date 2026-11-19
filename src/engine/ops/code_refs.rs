@@ -1,6 +1,7 @@
-//! Body of `code_refs`: the usages of a name. Each relation is a read of the index
+//! Body of `code_refs`: the usages of a name or a file. Each relation is a read of the index
 //! (`crate::engine::refs`): call sites of a name, the callers of one definition, implementations,
-//! importers, or the definition a reference binds to.
+//! importers (of a module name, or of a file through the import graph), the definition a reference
+//! binds to, or the import cycles.
 
 use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use crate::engine::budget::{apply_budget, budget};
@@ -8,6 +9,7 @@ use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::IndexedFiles;
 use crate::engine::refs::calls::{index_for_refs, run_find_callers, run_find_references};
+use crate::engine::refs::graph::{GraphPage, run_cycles, run_graph_importers};
 use crate::engine::refs::impls::run_find_implementations;
 use crate::engine::refs::intel::run_goto_definition;
 use crate::engine::refs::matching::Matching;
@@ -25,6 +27,7 @@ enum Relation {
     Implementations,
     Importers,
     Definition,
+    Cycles,
 }
 
 impl Relation {
@@ -34,10 +37,21 @@ impl Relation {
             "implementations" => Ok(Self::Implementations),
             "importers" => Ok(Self::Importers),
             "definition" => Ok(Self::Definition),
+            "cycles" => Ok(Self::Cycles),
             other => Err(EngineError::invalid_argument(format!(
                 "`code_refs`: unknown relation `{other}`; expected `callers`, `implementations`, \
-                 `importers` or `definition`"
+                 `importers`, `definition` or `cycles`"
             ))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Callers => "callers",
+            Self::Implementations => "implementations",
+            Self::Importers => "importers",
+            Self::Definition => "definition",
+            Self::Cycles => "cycles",
         }
     }
 }
@@ -45,12 +59,13 @@ impl Relation {
 /// The argument shapes `code_refs` accepts, quoted in every shape error.
 const REFS_SHAPES: &str = "accepted shapes: {name} (call sites of a name), {name, path} (callers of the definition in \
      that file; add `line` when several there share the name), {name, relation:\"implementations\"}, \
-     {name, relation:\"importers\"}, {name, relation:\"definition\", path, line} (the definition a reference \
-     binds to)";
+     {name, relation:\"importers\"} (files whose imports name it), {path, relation:\"importers\", depth?} (files \
+     importing that file, `depth` hops deep), {name, relation:\"definition\", path, line} (the definition a \
+     reference binds to), {relation:\"cycles\", path?} (import cycles, or the one holding that file)";
 
 impl Workspace {
     /// `code_refs`: usages of a name: call sites, implementations, importers, or the definition a
-    /// reference binds to.
+    /// reference binds to; or a file's importers and the import cycles.
     pub(crate) fn code_refs(&self, p: CodeRefsParams) -> Result<CodeRefsResult, EngineError> {
         code_refs(self, p)
     }
@@ -63,7 +78,15 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
     if relation != Relation::Definition && p.column.is_some() {
         return Err(shape_error("`column` applies only to relation `definition`"));
     }
-    if p.line.is_some() && (matches!(relation, Relation::Implementations | Relation::Importers) || p.path.is_none()) {
+    if p.depth.is_some() && !(relation == Relation::Importers && p.path.is_some()) {
+        return Err(shape_error("`depth` applies only to relation `importers` with `path`"));
+    }
+    if p.line.is_some()
+        && (matches!(
+            relation,
+            Relation::Implementations | Relation::Importers | Relation::Cycles
+        ) || p.path.is_none())
+    {
         return Err(shape_error(
             "`line` needs `path`: it picks one of several same-named definitions, or locates the reference \
              for relation `definition`",
@@ -80,12 +103,40 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
         .map(ResolutionFilter::parse)
         .transpose()
         .map_err(|problem| EngineError::invalid_argument(format!("`code_refs`: {problem}")))?;
+    let page = |p: &CodeRefsParams| GraphPage {
+        limit: p.limit,
+        cursor: p.cursor.clone(),
+        max_tokens: budget(p.max_tokens),
+    };
+    match (relation, &p.path) {
+        (Relation::Cycles, path) => {
+            if p.name.is_some() || p.match_mode.is_some() {
+                return Err(shape_error(
+                    "relation `cycles` takes no `name` or `match`; `path` narrows it to one file's cycle",
+                ));
+            }
+            return run_cycles(ws, path.as_ref(), page(&p)).map(CodeRefsResult::Cycles);
+        }
+        (Relation::Importers, Some(path)) => {
+            if p.name.is_some() || p.match_mode.is_some() {
+                return Err(shape_error(
+                    "relation `importers` takes `name` (matched against import text) or `path` (a file, \
+                     through the import graph), not both, and no `match`",
+                ));
+            }
+            return run_graph_importers(ws, path, p.depth, page(&p)).map(CodeRefsResult::GraphImporters);
+        }
+        _ => {}
+    }
+    let Some(name) = p.name else {
+        return Err(shape_error(&format!("relation `{}` needs `name`", relation.as_str())));
+    };
     match relation {
         Relation::Callers => match p.path {
             Some(path) => {
                 let callers = FindCallersParams {
                     path,
-                    name: p.name,
+                    name,
                     substring,
                     kind: None,
                     line: p.line,
@@ -105,7 +156,7 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
                     IndexedFiles::of(ws),
                     &cache,
                     FindReferencesParams {
-                        name: p.name,
+                        name,
                         substring,
                         limit: p.limit,
                         max_tokens: budget(p.max_tokens),
@@ -128,7 +179,7 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
             run_find_implementations(
                 &*idx,
                 FindImplementationsParams {
-                    trait_name: p.name,
+                    trait_name: name,
                     substring,
                     language: None,
                     limit: p.limit,
@@ -144,15 +195,12 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
             })
         }
         Relation::Importers => {
-            if p.path.is_some() {
-                return Err(shape_error("`path` does not apply to relation `importers`"));
-            }
             if p.match_mode.is_some() {
                 return Err(shape_error(
                     "relation `importers` matches `name` against import paths and takes no `match`",
                 ));
             }
-            run_dependents(ws, p.name, p.limit, p.cursor, budget(p.max_tokens)).map(CodeRefsResult::Importers)
+            run_dependents(ws, name, p.limit, p.cursor, budget(p.max_tokens)).map(CodeRefsResult::Importers)
         }
         Relation::Definition => {
             let (Some(path), Some(line)) = (p.path, p.line) else {
@@ -173,10 +221,11 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
                 path,
                 line,
                 column,
-                name: p.name,
+                name,
             };
             run_goto_definition(ws, reference).map(CodeRefsResult::Definition)
         }
+        Relation::Cycles => unreachable!("answered above"),
     }
 }
 

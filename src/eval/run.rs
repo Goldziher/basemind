@@ -28,8 +28,6 @@ pub const MAX_PAGES: u32 = 50;
 /// removes its arm here.
 pub fn unavailable(mode: EvalMode) -> Option<&'static str> {
     match mode {
-        EvalMode::Impact => Some("not implemented: `code_refs` `importers` with `path` and `depth` (#121)"),
-        EvalMode::Cycles => Some("not implemented: `code_refs` relation `cycles` (#135)"),
         EvalMode::GrepChanged => Some("not implemented: `code_grep` `changed` (#122)"),
         EvalMode::Explain => Some("not implemented: the `code explain` engine op (#120)"),
         _ => None,
@@ -284,12 +282,7 @@ mod tests {
     use super::*;
     use crate::eval::task::parse_tasks;
 
-    const ANALYSIS: [EvalMode; 4] = [
-        EvalMode::Impact,
-        EvalMode::Cycles,
-        EvalMode::GrepChanged,
-        EvalMode::Explain,
-    ];
+    const ANALYSIS: [EvalMode; 2] = [EvalMode::GrepChanged, EvalMode::Explain];
 
     #[test]
     fn skips_exactly_the_kinds_whose_op_has_not_landed() {
@@ -298,6 +291,8 @@ mod tests {
             assert!(reason.starts_with("not implemented"), "{reason}");
         }
         assert!(unavailable(EvalMode::Grep).is_none());
+        assert!(unavailable(EvalMode::Impact).is_none());
+        assert!(unavailable(EvalMode::Cycles).is_none());
         assert!(unavailable(EvalMode::ReadAround).is_none());
         assert!(unavailable(EvalMode::DiffStructural).is_none());
         assert!(unavailable(EvalMode::FindLarge).is_none());
@@ -323,7 +318,7 @@ mod tests {
 
     #[test]
     fn scores_impact_as_the_set_of_importing_files() {
-        let body = json!({"hits":[{"path":"a.rs","depth":1},{"path":"b.rs","depth":2},{"path":"x.rs","depth":1}]});
+        let body = json!({"total":3,"by_depth":{"1":["a.rs","x.rs"],"2":["b.rs"]}});
         let (p, r) = scored(EvalMode::Impact, &Value::Null, &body, &["a.rs", "b.rs", "c.rs", "d.rs"]);
         assert_eq!((p, r), (2.0 / 3.0, 0.5));
     }

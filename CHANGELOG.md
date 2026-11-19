@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
+  lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
+  in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import
+  cycles smallest first, or with `path` the one holding that file. Both follow runtime imports only,
+  and a `coverage` note names a language this build has no import resolver for. `name` is optional
+  for these two relations and still required for the others (`basemind code refs` likewise).
 - `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so

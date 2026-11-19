@@ -427,6 +427,20 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             )
             .await;
         }
+        call(
+            svc,
+            &mut records,
+            "code_refs",
+            json!({ "relation": "importers", "path": &sample.path, "depth": 2 }),
+        )
+        .await;
+        call(
+            svc,
+            &mut records,
+            "code_refs",
+            json!({ "relation": "cycles", "limit": 20 }),
+        )
+        .await;
 
         call(svc, &mut records, "git_diff", json!({})).await;
         call(svc, &mut records, "git_log", json!({ "limit": 20 })).await;
@@ -553,6 +567,18 @@ fn precise_resolution_expected() -> bool {
                     .map(str::trim)
                     .any(|f| matches!(f, "full" | "code-intel" | "code-intel-stack"))
         }
+    }
+}
+
+/// Whether the spawned binary resolves Rust imports into the file-level import graph: a
+/// code-intel feature is compiled in (see [`precise_resolution_expected`] for the derivation).
+fn import_graph_expected() -> bool {
+    match std::env::var("BASEMIND_HARDEN_FEATURES") {
+        Err(_) => true,
+        Ok(features) => features
+            .split([',', ' '])
+            .map(str::trim)
+            .any(|f| matches!(f, "full" | "code-intel" | "code-intel-js" | "code-intel-stack")),
     }
 }
 
@@ -699,6 +725,17 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
             if future_hits < 20 {
                 failures.push(format!(
                     "tokio canary: code_refs(\"Future\", implementations) returned {future_hits} hits (expected ≥ 20)"
+                ));
+            }
+            let runtime_importers = repo_record
+                .canaries
+                .get("runtime_importers_depth2")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if import_graph_expected() && runtime_importers < 20 {
+                failures.push(format!(
+                    "tokio canary: code_refs(importers, path=tokio/src/runtime/mod.rs, depth=2) returned \
+                     {runtime_importers} files (expected ≥ 20)"
                 ));
             }
             if cfg!(feature = "code-search")
@@ -923,6 +960,17 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             {
                 let hits = body.get("total").and_then(Value::as_u64).unwrap_or(0);
                 record.canaries.insert("grep_fn_spawn_hits".into(), json!(hits));
+            }
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "code_refs",
+                    &json!({ "relation": "importers", "path": "tokio/src/runtime/mod.rs", "depth": 2 }),
+                ))
+                .await
+                && let Some(body) = canary_body(&out)
+            {
+                let files = body.get("total").and_then(Value::as_u64).unwrap_or(0);
+                record.canaries.insert("runtime_importers_depth2".into(), json!(files));
             }
             #[cfg(feature = "code-search")]
             if let Ok(out) = svc

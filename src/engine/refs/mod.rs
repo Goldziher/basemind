@@ -1,10 +1,12 @@
 //! The reads behind `code_refs`: call sites and the callers of one definition (`calls`, over the
 //! name scan in `calls_scan`), implementations (`impls`), the definition a reference binds to
-//! (`intel`), what an exact name match is (`matching`), and how each call site was resolved
-//! (`resolution`). Each reads the index alone.
+//! (`intel`), what an exact name match is (`matching`), how each call site was resolved
+//! (`resolution`), and a file's importers and the import cycles over the import graph (`graph`).
+//! Each reads the index alone.
 
 pub(crate) mod calls;
 pub(crate) mod calls_scan;
+pub(crate) mod graph;
 pub(crate) mod impls;
 pub(crate) mod intel;
 pub(crate) mod matching;

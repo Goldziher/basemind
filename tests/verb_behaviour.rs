@@ -23,6 +23,8 @@ mod cursors;
 mod files;
 #[path = "verb_behaviour/git.rs"]
 mod git;
+#[path = "verb_behaviour/graph.rs"]
+mod graph;
 #[path = "verb_behaviour/grep.rs"]
 mod grep;
 #[path = "verb_behaviour/history.rs"]

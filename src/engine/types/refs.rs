@@ -12,13 +12,14 @@ use crate::path::RelPath;
 #[serde(deny_unknown_fields)]
 pub struct CodeRefsParams {
     /// Name called, implemented or defined; for `importers`, whole segments of the import path.
-    pub name: String,
+    #[serde(default)]
+    pub name: Option<String>,
     /// What to list (default `callers`).
     #[serde(default)]
-    #[schemars(extend("enum" = ["callers", "implementations", "importers", "definition"]))]
+    #[schemars(extend("enum" = ["callers", "implementations", "importers", "definition", "cycles"]))]
     pub relation: Option<String>,
     /// `callers`: file defining `name`, pinning that definition. `definition`: file holding the
-    /// reference (required). Not with `implementations` or `importers`.
+    /// reference (required). `importers`/`cycles`: that file (no `name`).
     #[serde(default)]
     pub path: Option<RelPath>,
     /// Needs `path`. `callers`: 1-based line inside the definition meant, when several share the
@@ -28,6 +29,9 @@ pub struct CodeRefsParams {
     /// `definition` only: 1-based column (default: where `name` occurs on the line).
     #[serde(default)]
     pub column: Option<u32>,
+    /// `importers`+`path`: hops (default 1, max 5).
+    #[serde(default)]
+    pub depth: Option<u32>,
     /// Name matching (default `exact`). Not with `importers` or `definition`.
     #[serde(default, rename = "match")]
     #[schemars(extend("enum" = ["exact", "substring"]))]
@@ -130,6 +134,69 @@ pub(crate) struct DependentsResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     pub paths: Vec<RelPath>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
+}
+
+/// Answer of `code_refs` `importers` with `path`: the files that reach it over the resolved
+/// file-level import graph (ADR-0047 decision 5), nearest first.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct GraphImportersResponse {
+    /// Importing files within `depth`, across every page.
+    pub total: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
+    /// This page's importers by their import distance from the file (`"1"`: direct importers),
+    /// each list in path order.
+    pub by_depth: std::collections::BTreeMap<u8, Vec<RelPath>>,
+    /// The importers on this page that the file also reaches: they share an import cycle with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub in_cycle: Vec<RelPath>,
+    /// Files lie beyond the walk: deeper than `depth`, or past the node cap.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    /// `depth` or `scan_cap` whenever `truncated` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
+    /// What the graph cannot see: a language with no import resolver, or a resolve pass still
+    /// running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
+}
+
+/// One import cycle of `code_refs` `cycles`: a strongly connected component of the import graph.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct ImportCycle {
+    /// Every file of the cycle. Listed along the loop (each imports the next, the last the first)
+    /// when one shortest loop runs through all of them, else in path order.
+    pub files: Vec<RelPath>,
+    /// One shortest loop from the first file, set only when it leaves some of `files` out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain: Vec<RelPath>,
+}
+
+/// Answer of `code_refs` `cycles`: the import cycles, smallest first, or with `path` the one
+/// holding that file.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct CyclesResponse {
+    /// Cycles across every page.
+    pub total: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
+    pub cycles: Vec<ImportCycle>,
+    /// What a cycle of a language means, for each language a listed cycle has.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<&'static str>,
+    /// What the graph cannot see: languages with no import resolver, or a resolve pass still
+    /// running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -547,6 +614,8 @@ pub(crate) enum CodeRefsResult {
     Callers(FindCallersResponse),
     Implementations(FindImplementationsResponse),
     Importers(DependentsResponse),
+    GraphImporters(GraphImportersResponse),
+    Cycles(CyclesResponse),
     Definition(GotoDefinitionResponse),
 }
 

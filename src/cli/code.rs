@@ -119,10 +119,11 @@ pub enum CodeCmd {
         max_tokens: Option<u32>,
     },
     /// Usages of a name: call sites (default), implementations, importers, or the definition a
-    /// reference binds to.
+    /// reference binds to; or a file's importers (`--relation importers --path`) and the import
+    /// cycles (`--relation cycles`), which take no name.
     #[command(alias = "references")]
     Refs {
-        name: String,
+        name: Option<String>,
         /// What to list (default callers).
         #[arg(long, value_enum)]
         relation: Option<RefsRelation>,
@@ -137,6 +138,9 @@ pub enum CodeCmd {
         /// `definition` only: 1-based column (default: where the name occurs on the line).
         #[arg(long)]
         column: Option<u32>,
+        /// `importers` with `--path`: import hops to follow (default 1, max 5).
+        #[arg(long)]
+        depth: Option<u32>,
         /// Name matching (default exact).
         #[arg(long = "match", value_enum)]
         match_mode: Option<RefsMatch>,
@@ -392,6 +396,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             path,
             line,
             column,
+            depth,
             match_mode,
             limit,
             cursor,
@@ -404,6 +409,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                 path: path.map(|path| resolve_path(tools, &path)),
                 line,
                 column,
+                depth,
                 match_mode: match_mode.map(|matching| matching.as_str().to_string()),
                 limit,
                 cursor: cursor.map(Cursor),
@@ -579,11 +585,12 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
 /// A `code_refs` call for `name` with only its relation set.
 fn refs(name: String, relation: RefsRelation) -> CodeRefsParams {
     CodeRefsParams {
-        name,
+        name: Some(name),
         relation: Some(relation.as_str().to_string()),
         path: None,
         line: None,
         column: None,
+        depth: None,
         match_mode: None,
         limit: None,
         cursor: None,
