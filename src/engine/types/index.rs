@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::LifecycleNotice;
+use super::files::SizedFile;
 use crate::path::RelPath;
 
 /// Arguments of `index_status`: none.
@@ -85,6 +86,9 @@ pub(crate) struct StatusResponse {
     pub notice: Option<LifecycleNotice>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
+    /// Code files too long to read whole. Absent while a writer holds the store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large_files: Option<LargeFiles>,
     /// basemind's cache directory for this workspace: its index views, git cache and telemetry.
     pub cache_dir: String,
     /// The tree-sitter grammar cache, which the language pack owns and other tools share.
@@ -116,6 +120,16 @@ pub(crate) struct StatusResponse {
     pub head_short_sha: Option<String>,
     #[serde(default)]
     pub elapsed_us: u64,
+}
+
+/// The code files of at least `threshold_lines` lines: how many there are and the largest of them.
+/// `find_files` with `min_lines` lists them all.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct LargeFiles {
+    pub threshold_lines: u32,
+    pub count: usize,
+    /// The longest few, largest first (ties by path).
+    pub largest: Vec<SizedFile>,
 }
 
 /// Response of `index_rescan`.

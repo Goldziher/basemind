@@ -14,8 +14,10 @@ use crate::engine::MapCache;
 use crate::engine::budget::{apply_budget, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
-use crate::engine::filters::{Filters, PathFilter, Tally, language_of_doc, selects_no_file};
-use crate::engine::types::files::{FilesResponse, FindFilesParams, FindFilesToolParams, ListFilesParams};
+use crate::engine::filters::{Filters, PathFilter, Tally, grep_selects_no_file, language_of_doc, selects_no_file};
+use crate::engine::types::files::{
+    FileHit, FilesResponse, FindFilesParams, FindFilesToolParams, ListFilesParams, SizedFile,
+};
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
@@ -36,6 +38,15 @@ fn effective_list_limit(requested: Option<u32>) -> (usize, bool) {
 impl Workspace {
     /// `find_files`: a fuzzy file-name search, or a listing without `query`; code and documents.
     pub(crate) fn find_files(&self, p: FindFilesToolParams) -> Result<FilesResponse, EngineError> {
+        match p.min_lines {
+            Some(0) => {
+                return Err(EngineError::invalid_argument(
+                    "`find_files`: `min_lines` must be at least 1; omit it to list files of any size.",
+                ));
+            }
+            Some(min_lines) => return run_large_files(self, p, min_lines),
+            None => {}
+        }
         match p.query.filter(|query| !query.trim().is_empty()) {
             Some(query) => run_find_files(
                 self,
@@ -177,7 +188,7 @@ fn run_list_files(ws: &Workspace, params: ListFilesParams) -> Result<FilesRespon
     let docs = doc_paths.iter().map(|p| (p, Some(language_of_doc(p))));
     let others = tracked.iter().map(|p| (p, None));
 
-    let mut files: Vec<RelPath> = Vec::with_capacity(limit.min(256));
+    let mut files: Vec<FileHit> = Vec::with_capacity(limit.min(256));
     let mut total: usize = 0;
     let mut seen: usize = 0;
     for (p, language) in code.chain(docs).chain(others) {
@@ -194,7 +205,7 @@ fn run_list_files(ws: &Workspace, params: ListFilesParams) -> Result<FilesRespon
         seen += 1;
         total += 1;
         if files.len() < limit {
-            files.push(p.clone());
+            files.push(FileHit::Path(p.clone()));
         }
     }
     if total == 0 && skip == 0 {
@@ -223,7 +234,7 @@ fn run_list_files(ws: &Workspace, params: ListFilesParams) -> Result<FilesRespon
 /// The page of `files` (`total` of them from `skip` on), held to `max_tokens`.
 fn respond(
     ws: &Workspace,
-    files: Vec<RelPath>,
+    files: Vec<FileHit>,
     total: usize,
     skip: usize,
     limit_clamped: bool,
@@ -321,13 +332,78 @@ fn run_find_files(ws: &Workspace, params: FindFilesParams) -> Result<FilesRespon
     // ~keep: (not the grand total across all pages), so `total > limit` / `total > files.len()`
     // ~keep: read the same way.
     let total = scored.len().saturating_sub(skip);
-    let page: Vec<RelPath> = scored
+    let page: Vec<FileHit> = scored
         .into_iter()
         .skip(skip)
         .take(limit)
-        .map(|(_, path)| path.clone())
+        .map(|(_, path)| FileHit::Path(path.clone()))
         .collect();
     respond(ws, page, total, skip, limit_clamped, generation, params.max_tokens)
+}
+
+/// Body of `find_files` with `min_lines`: the code files of at least `min_lines` lines that pass the
+/// `path_prefix`, `language` and (fuzzy) `query` filters, largest first, each with its line and byte
+/// count. Only the code map knows a file's lines, so documents and unindexed files are left out.
+fn run_large_files(ws: &Workspace, p: FindFilesToolParams, min_lines: u32) -> Result<FilesResponse, EngineError> {
+    ws.wait_map_ready();
+    let (limit, limit_clamped) = effective_list_limit(p.limit);
+    let cache = ws.cache.load_full();
+    let generation = ws.cache_generation.load(Ordering::Relaxed);
+    let skip = match p.cursor.as_ref() {
+        Some(c) => {
+            let (offset, snapshot_id) = c.decode_in_memory()?;
+            if snapshot_id != generation {
+                return invalidated(ws, limit_clamped);
+            }
+            offset as usize
+        }
+        None => 0,
+    };
+    let prefix_filter = p.path_prefix.as_deref();
+    let lang_filter = p.language.as_deref();
+    let mut selected = false;
+    let mut rows: Vec<(&RelPath, u32, u64)> = cache
+        .file_metas()
+        .filter(|(path, meta)| {
+            let passes = lang_filter.is_none_or(|l| &*meta.language == l)
+                && prefix_filter.is_none_or(|pre| path.as_bytes().starts_with(pre.as_bytes()));
+            selected |= passes;
+            passes && meta.lines >= min_lines
+        })
+        .map(|(path, meta)| (path, meta.lines, meta.size_bytes))
+        .collect();
+    if !selected {
+        let filters = Filters {
+            tool: "find_files",
+            path: prefix_filter.map(PathFilter::Prefix),
+            language: lang_filter,
+        };
+        if let Some(refusal) = grep_selects_no_file(ws, &cache, &filters) {
+            return Err(refusal);
+        }
+    }
+    if let Some(query) = p.query.as_deref().filter(|query| !query.trim().is_empty()) {
+        let paths: Vec<&RelPath> = rows.iter().map(|(path, ..)| *path).collect();
+        let mut scored = score(query, &paths);
+        rank_and_cut(&mut scored);
+        let kept: ahash::AHashSet<&RelPath> = scored.into_iter().map(|(_, path)| path).collect();
+        rows.retain(|(path, ..)| kept.contains(path));
+    }
+    rows.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let total = rows.len().saturating_sub(skip);
+    let page: Vec<FileHit> = rows
+        .into_iter()
+        .skip(skip)
+        .take(limit)
+        .map(|(path, lines, bytes)| {
+            FileHit::Sized(SizedFile {
+                path: path.clone(),
+                lines,
+                bytes,
+            })
+        })
+        .collect();
+    respond(ws, page, total, skip, limit_clamped, generation, budget(p.max_tokens))
 }
 
 /// Every candidate `query` matches, with its score. A fuzzy subsequence match scores what nucleo

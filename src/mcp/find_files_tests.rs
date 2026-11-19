@@ -76,6 +76,7 @@ fn listing(query: Option<&str>, language: Option<&str>) -> FindFilesToolParams {
         limit: None,
         cursor: None,
         max_tokens: None,
+        min_lines: None,
     }
 }
 

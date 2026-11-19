@@ -6,7 +6,8 @@ use std::sync::atomic::Ordering;
 
 use crate::engine::error::EngineError;
 use crate::engine::timing::elapsed_us;
-use crate::engine::types::index::{IndexRescanParams, IndexStatusParams, RescanResponse, StatusResponse};
+use crate::engine::types::files::SizedFile;
+use crate::engine::types::index::{IndexRescanParams, IndexStatusParams, LargeFiles, RescanResponse, StatusResponse};
 use crate::engine::workspace::Workspace;
 use crate::scanner::{EmbedMode, ScanStats};
 
@@ -40,6 +41,41 @@ impl From<&ScanStats> for RescanStats {
             skipped_no_lang: stats.skipped_no_lang,
             extract_failed: stats.extract_failed,
         }
+    }
+}
+
+/// Lines from which `index_status` counts a code file as too long to read whole: past a few
+/// thousand lines one read spends most of an agent's context, so `code_outline` and a line range
+/// serve better (#127).
+pub(crate) const LARGE_FILE_LINES: u32 = 2000;
+
+/// Large files `index_status` names; `find_files` with `min_lines` lists the rest.
+const LARGE_FILES_LISTED: usize = 5;
+
+/// The code files of at least [`LARGE_FILE_LINES`] lines: their count and the
+/// [`LARGE_FILES_LISTED`] longest, largest first and ties by path.
+fn large_files<'a>(
+    files: impl IntoIterator<Item = (&'a crate::path::RelPath, &'a crate::store::FileEntry)>,
+) -> LargeFiles {
+    let mut large: Vec<(&crate::path::RelPath, &crate::store::FileEntry)> = files
+        .into_iter()
+        .filter(|(_, entry)| entry.lines >= LARGE_FILE_LINES)
+        .collect();
+    let count = large.len();
+    large.sort_unstable_by(|a, b| b.1.lines.cmp(&a.1.lines).then_with(|| a.0.cmp(b.0)));
+    let largest = large
+        .into_iter()
+        .take(LARGE_FILES_LISTED)
+        .map(|(path, entry)| SizedFile {
+            path: path.clone(),
+            lines: entry.lines,
+            bytes: entry.size_bytes,
+        })
+        .collect();
+    LargeFiles {
+        threshold_lines: LARGE_FILE_LINES,
+        count,
+        largest,
     }
 }
 
@@ -95,6 +131,7 @@ impl Workspace {
                 notice,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
+                large_files: None,
                 cache_dir: self.cache_dir(),
                 grammar_dir: grammar_dir(),
                 schema_version: crate::extract::SCHEMA_VER,
@@ -113,6 +150,7 @@ impl Workspace {
             *by_lang_ref.entry(entry.language.as_str()).or_insert(0) += 1;
             total_size = total_size.saturating_add(entry.size_bytes);
         }
+        let large_files = large_files(&store.index.files);
         let by_lang: BTreeMap<String, usize> = by_lang_ref.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         let file_count = store.index.files.len();
         let blob_count = count_fm_blobs();
@@ -137,6 +175,7 @@ impl Workspace {
             notice,
             total_size_bytes: total_size,
             languages: by_lang,
+            large_files: Some(large_files),
             cache_dir: self.cache_dir(),
             grammar_dir: grammar_dir(),
             schema_version: crate::extract::SCHEMA_VER,
@@ -308,5 +347,53 @@ mod tests {
         let note = note.unwrap();
         assert!(note.contains("7 blob file"), "note reports the blob count");
         assert!(note.contains("scan"), "note suggests a rescan");
+    }
+
+    fn entry(lines: u32, bytes: u64) -> crate::store::FileEntry {
+        crate::store::FileEntry {
+            hash_hex: String::new(),
+            language: "rust".to_string(),
+            size_bytes: bytes,
+            mtime: 0,
+            extract_epoch: 0,
+            content_key: None,
+            lines,
+        }
+    }
+
+    #[test]
+    fn large_files_counts_from_the_threshold_and_names_the_longest_first() {
+        let sizes = [
+            ("a.rs", 1999),
+            ("b.rs", 2000),
+            ("c.rs", 9000),
+            ("d.rs", 3000),
+            ("e.rs", 3000),
+            ("f.rs", 2500),
+            ("g.rs", 2100),
+            ("h.rs", 2050),
+        ];
+        let files: Vec<(crate::path::RelPath, crate::store::FileEntry)> = sizes
+            .iter()
+            .map(|(path, lines)| (crate::path::RelPath::from(*path), entry(*lines, u64::from(*lines) * 10)))
+            .collect();
+        let large = large_files(files.iter().map(|(path, entry)| (path, entry)));
+        assert_eq!(large.threshold_lines, 2000);
+        assert_eq!(large.count, 7, "1999 lines is under the threshold, 2000 is at it");
+        let named: Vec<(String, u32, u64)> = large
+            .largest
+            .iter()
+            .map(|file| (file.path.to_string(), file.lines, file.bytes))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("c.rs".to_string(), 9000, 90_000),
+                ("d.rs".to_string(), 3000, 30_000),
+                ("e.rs".to_string(), 3000, 30_000),
+                ("f.rs".to_string(), 2500, 25_000),
+                ("g.rs".to_string(), 2100, 21_000),
+            ]
+        );
     }
 }
