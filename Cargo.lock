@@ -801,6 +801,7 @@ dependencies = [
  "clap_mangen",
  "criterion",
  "directories",
+ "dunce",
  "fjall",
  "form_urlencoded",
  "fs2",

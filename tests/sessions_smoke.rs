@@ -53,20 +53,98 @@ fn git(dir: &Path, args: &[&str]) {
 fn place(env: &Env, other: &Path, name: &str, dest: &Path) {
     let text = std::fs::read_to_string(Path::new(FIXTURES).join(name)).expect("read fixture");
     let stem = dest.file_stem().expect("file stem").to_string_lossy();
-    let text = text
-        .replace("{{N}}", &stem)
-        .replace("{{REPO}}", &env.repo.to_string_lossy())
-        .replace("{{WORKTREE}}", &env.worktree.to_string_lossy())
-        .replace("{{OTHER}}", &other.to_string_lossy());
+    let text = fill(
+        &text,
+        &stem,
+        &[
+            ("{{REPO}}", &env.repo),
+            ("{{WORKTREE}}", &env.worktree),
+            ("{{OTHER}}", other),
+        ],
+    );
     std::fs::create_dir_all(dest.parent().expect("parent")).expect("mkdir");
     std::fs::write(dest, text).expect("write fixture");
+}
+
+/// A JSON string's contents for `text`, without the quotes.
+fn json_escaped(text: &str) -> String {
+    let quoted = serde_json::to_string(text).expect("encode a string");
+    quoted[1..quoted.len() - 1].to_owned()
+}
+
+/// `text` with `{{N}}` replaced by `stem` and each placeholder by its path, escaped for the JSON
+/// string it lands in: a Windows path's `\` is an escape, and inside a JSON-encoded string (a Codex
+/// call's `arguments`, where the placeholder follows `\"`) it is escaped twice.
+fn fill(text: &str, stem: &str, paths: &[(&str, &Path)]) -> String {
+    let mut text = text.replace("{{N}}", stem);
+    for (placeholder, path) in paths {
+        let once = json_escaped(&path.to_string_lossy());
+        let twice = json_escaped(&once);
+        text = text
+            .replace(&format!("\\\"{placeholder}"), &format!("\\\"{twice}"))
+            .replace(placeholder, &once);
+    }
+    text
+}
+
+/// On Windows the checkouts are `C:\…` paths: every fixture line that is JSON, the JSON-encoded call
+/// arguments inside one included, stays JSON once they are filled in, whatever the platform running
+/// this. (Some lines are deliberately not JSON.)
+#[test]
+fn fixtures_filled_with_windows_paths_stay_valid_json() {
+    let repo = Path::new(r"C:\Users\a\repo");
+    let paths = [
+        ("{{REPO}}", repo),
+        ("{{WORKTREE}}", Path::new(r"C:\Users\a\wt-feature")),
+        ("{{OTHER}}", Path::new(r"C:\Users\a\other")),
+    ];
+    let mut fixtures = Vec::new();
+    for host in ["claude", "codex"] {
+        for entry in std::fs::read_dir(Path::new(FIXTURES).join(host)).expect("read fixtures") {
+            let path = entry.expect("entry").path();
+            if path.extension().is_some_and(|ext| ext == "jsonl") {
+                fixtures.push(path);
+            }
+        }
+    }
+    let (mut checked, mut named) = (0, 0);
+    for fixture in &fixtures {
+        let text = std::fs::read_to_string(fixture).expect("read fixture");
+        for raw in text.lines() {
+            if serde_json::from_str::<serde_json::Value>(raw).is_err() {
+                continue;
+            }
+            let line = fill(raw, "s", &paths);
+            let record: serde_json::Value =
+                serde_json::from_str(&line).unwrap_or_else(|e| panic!("{}: {e}\n{line}", fixture.display()));
+            checked += 1;
+            let arguments = record["payload"]["arguments"].as_str();
+            if let Some(arguments) = arguments.filter(|a| a.contains("workdir")) {
+                let arguments: serde_json::Value = serde_json::from_str(arguments)
+                    .unwrap_or_else(|e| panic!("{} arguments: {e}\n{arguments}", fixture.display()));
+                assert_eq!(arguments["workdir"], repo.to_string_lossy().as_ref());
+                named += 1;
+            }
+        }
+    }
+    assert!(
+        checked >= 60,
+        "checked only {checked} JSON lines in {} fixtures",
+        fixtures.len()
+    );
+    assert!(
+        named >= 1,
+        "no fixture placed a checkout inside JSON-encoded call arguments"
+    );
 }
 
 /// A repository with one linked worktree, another repository, and a home holding transcripts of
 /// all three plus the escape attempts.
 fn setup() -> Env {
     let dir = tempfile::tempdir().expect("tempdir");
-    let base = dir.path().canonicalize().expect("canonical tempdir");
+    // `std` canonicalizes a Windows path to its verbatim `\\?\` form, under which git cannot create
+    // the worktree; `dunce` leaves the prefix off.
+    let base = dunce::canonicalize(dir.path()).expect("canonical tempdir");
     let repo = base.join("repo");
     let other = base.join("other");
     let worktree = base.join("wt-feature");
