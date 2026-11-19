@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Retrieval modes (ADR-0022 "task kinds") the harness can drive. Each maps onto one MCP tool;
-/// several share `code_refs`, `git_log`, `git_blame` or `git_diff`. The analysis kinds of 0.34
-/// (`impact` .. `explain`, ADR-0047) are skipped by the runner until their engine op lands.
+/// several share `code_refs`, `git_log`, `git_blame` or `git_diff`; the analysis kinds of 0.34
+/// (`impact` .. `explain`, ADR-0047) drive the engine op of their command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalMode {
