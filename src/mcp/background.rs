@@ -13,6 +13,7 @@ use std::time::Duration;
 use super::{MapCache, ServerState};
 use crate::engine::{EngineError, Workspace};
 use crate::scanner::EmbedMode;
+use crate::watcher::BatchKind;
 
 /// Run `work` on the runtime's blocking pool, logging `panicked` if it panics.
 fn spawn_logged(panicked: &'static str, work: impl FnOnce() + Send + 'static) {
@@ -99,17 +100,20 @@ impl Writer {
         false
     }
 
-    /// The catch-up pass ([`spawn_catch_up`]): a whole-tree pass without embedding, reported as
-    /// [`scan`](Self::scan) reports, or `None` when it was cancelled. A hosted stack then takes the
-    /// pool's file map only when it differs from the one it serves
-    /// ([`Workspace::publish_store_if_changed`]): a publish bumps the generations every cursor is
-    /// bound to, and an unchanged tree must not cut a session's paging short. The comparison is with
-    /// the map, not the pass's counts, so a write another path made since the stack opened is taken.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    fn catch_up(&self) -> Result<Option<(usize, usize, usize)>, EngineError> {
+    /// A whole-tree pass that judges every file by its stat and hash, as `index_rescan {}` does:
+    /// the boot catch-up ([`spawn_catch_up`], without embedding) and the serve watcher's answer to
+    /// events the OS dropped. Reported as [`scan`](Self::scan) reports, or `None` when it was
+    /// cancelled. A hosted stack then takes the pool's file map only when it differs from the one it
+    /// serves ([`Workspace::publish_store_if_changed`]): a publish bumps the generations every cursor
+    /// is bound to, and an unchanged tree must not cut a session's paging short. The comparison is
+    /// with the map, not the pass's counts, so a write another path made since the stack opened is
+    /// taken.
+    fn tree_pass(&self, embed: EmbedMode) -> Result<Option<(usize, usize, usize)>, EngineError> {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
         if let Some(pool) = &self.pool {
+            let embed = matches!(embed, EmbedMode::Inline);
             let (stats, cancelled) = pool
-                .hosted_rescan(&self.ws.root, None, false, false, false)
+                .hosted_rescan(&self.ws.root, None, false, embed, false)
                 .map_err(|error| EngineError::internal(format!("host rescan: {error}")))?;
             if cancelled {
                 return Ok(None);
@@ -122,7 +126,7 @@ impl Writer {
             }
             return Ok(Some((stats.scanned, stats.updated, stats.removed)));
         }
-        self.scan(None, EmbedMode::Deferred).map(Some)
+        self.scan(None, embed).map(Some)
     }
 }
 
@@ -219,7 +223,7 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
             return;
         }
         let started = std::time::Instant::now();
-        let outcome = writer.catch_up();
+        let outcome = writer.tree_pass(EmbedMode::Deferred);
         drop(rescanning);
         let changed = match outcome {
             Ok(None) => {
@@ -344,12 +348,16 @@ fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync:
         .spawn(move || {
             let _runtime = handle.enter();
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
-            let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
+            let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, kind| {
                 let rescanning = writer.ws.mark_rescan();
-                let outcome = writer.scan(Some(paths), EmbedMode::Inline);
+                let outcome = match kind {
+                    BatchKind::FullRescan => writer.tree_pass(EmbedMode::Inline),
+                    _ => writer.scan(Some(paths), EmbedMode::Inline).map(Some),
+                };
                 drop(rescanning);
                 match outcome {
-                    Ok((scanned, updated, removed)) => {
+                    Ok(None) => tracing::debug!("serve watcher: whole-tree rescan cancelled: the daemon is draining"),
+                    Ok(Some((scanned, updated, removed))) => {
                         tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")
                     }
                     Err(error) => tracing::warn!(
