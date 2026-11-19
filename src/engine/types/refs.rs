@@ -676,6 +676,22 @@ pub(crate) enum RefHits {
 
 impl RefHits {
     /// The rows, or none once they are ranges.
+    pub(crate) fn rows(&self) -> &[ReferenceHit] {
+        match self {
+            Self::Rows(rows) => rows,
+            Self::Ranges(_) => &[],
+        }
+    }
+
+    /// The rows, or none once they are ranges.
+    pub(crate) fn into_rows(self) -> Vec<ReferenceHit> {
+        match self {
+            Self::Rows(rows) => rows,
+            Self::Ranges(_) => Vec::new(),
+        }
+    }
+
+    /// The rows, or none once they are ranges.
     pub(crate) fn rows_mut(&mut self) -> &mut [ReferenceHit] {
         match self {
             Self::Rows(rows) => rows,
