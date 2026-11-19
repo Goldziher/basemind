@@ -9,6 +9,7 @@ cache on first use (set `BASEMIND_EVAL_RUST_GOLD` to reuse a binary).
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
 import _edges as e  # noqa: E402
-from gen_read_around import merged_ranges  # noqa: E402
+from gen_read_around import context_items, merged_ranges  # noqa: E402
 
 # Runtime import graph (ADR-0047 decision 4: `mod x;` is containment, not an edge): a <-> b;
 # a/inner -> c; c -> c/extra (`use d::D` through the `#[path]` module d); c/extra -> a/inner;
@@ -113,7 +114,10 @@ class AnalysisGenerators(unittest.TestCase):
         cmds = task["baseline"]["grep"]
         out = ""
         for cmd in cmds if isinstance(cmds, list) else [cmds]:
-            proc = subprocess.run(["sh", "-c", cmd], cwd=self.repo, capture_output=True, text=True, check=False)
+            # stdin closed, as the harness runs it: rg reads a piped stdin instead of the directory.
+            proc = subprocess.run(
+                ["sh", "-c", cmd], cwd=self.repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
+            )
             self.assertIn(proc.returncode, (0, 1), f"{cmd}: {proc.stderr}")
             out += proc.stdout
         return out
@@ -279,19 +283,27 @@ class AnalysisGenerators(unittest.TestCase):
         spin = next(t for t in tasks if t["args"]["pattern"] == "spin_wheel")
         self.assertEqual(spin["args"]["ranges"], True)
         self.assertEqual(spin["gold"], [f"src/widget.rs:{n}" for n in range(1, 14)])
-        # The agent without `ranges` reads +/-5 lines around each hit (lines 4 and 8), one read per
-        # hit, so the overlap 3..9 is read twice; each line comes back as `path:line:text`.
-        self.assertEqual(spin["baseline"]["items"], "grep_lines")
-        self.assertEqual(len(spin["baseline"]["grep"]), 3, "the grep, then one read per hit")
-        reads = self.baseline_output({"baseline": {"grep": spin["baseline"]["grep"][1:]}}).splitlines()
-        self.assertEqual(len(reads), 9 + 11)
-        self.assertEqual(reads[0], "src/widget.rs:1:pub struct Wheel;")
-        printed = self.baseline_output(spin).splitlines()
-        self.assertEqual(
-            sorted({":".join(r.split(":")[:2]) for r in printed}, key=lambda g: int(g.split(":")[1])),
-            spin["gold"],
-            "the baseline reads exactly the gold lines",
+        self.assertEqual(spin["baseline"], {"grep": "rg -n -C5 -F -e 'spin_wheel' -g '*.rs'", "items": "grep_context"})
+
+    def test_context_items_split_at_the_earliest_separator_naming_a_file(self) -> None:
+        out = (
+            "src/widget.rs-3-x\nsrc/widget.rs:4:    pub fn spin_wheel(&self) {}\n--\n"
+            'src/b.rs-9-let s = "src/widget.rs:4:";\nsrc/b.rs:10-1-mixed\nnope.rs:1:x\n'
         )
+        self.assertEqual(context_items(out, str(self.repo)), ["src/widget.rs:3", "src/widget.rs:4", "src/b.rs:9"])
+
+    @unittest.skipUnless(shutil.which("rg"), "rg is not on PATH")
+    def test_read_around_baseline_is_what_rg_prints(self) -> None:
+        tasks = self.gen("gen_read_around.py", "--n", "500")
+        self.assertTrue(tasks)
+        separated = 0
+        for t in tasks:
+            out = self.baseline_output(t)
+            separated += "--" in out.splitlines()
+            # rg merges overlapping and adjacent windows itself: every gold line exactly once. Sorted,
+            # because rg searches files in parallel and their order is not fixed.
+            self.assertEqual(sorted(context_items(out, str(self.repo))), sorted(t["gold"]), t["args"]["pattern"])
+        self.assertGreater(separated, 0, "some task spans two groups, so the `--` rows were read")
 
     def test_explain_gold_is_definition_call_sites_and_callees(self) -> None:
         tasks = self.gen("gen_explain.py", "--n", "50")

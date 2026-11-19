@@ -6,7 +6,9 @@
 #     benchmarks/eval/run_gate.sh BASEMIND_BIN CORPUS_DIR [RESULTS_DIR]
 #
 # BASEMIND_BIN must be built with the `tokenizer` feature (o200k counts; ADR-0022 rejects bytes/4) and
-# `code-intel` (the Rust import resolver the `impact` and `cycles` kinds need).
+# `code-intel` (the Rust import resolver the `impact` and `cycles` kinds need). The `read_around`
+# baseline is what `rg` prints, so `rg` must be on PATH (it is not pinned by the mise toolchain);
+# its version goes into `run.tsv`.
 # Both cache directories must be set, exist and be empty: a run against the default cache could
 # take over a live daemon and index. RESULTS_DIR defaults to `benchmarks/eval/results`.
 set -euo pipefail
@@ -50,12 +52,25 @@ if ! printf 'hello world' | "${bin}" admin tokens --stdin >/dev/null 2>&1; then
   exit 2
 fi
 
+# The `read_around` baseline runs `rg`; without it every such baseline fails instead of measuring.
+rg_version="none"
+while IFS=$'\t' read -r name _; do
+  case "${name}" in '' | '#'*) continue ;; esac
+  if grep -q -E '"mode": *"read_around"' "${here}/tasks/${name}.jsonl"; then
+    if ! command -v rg >/dev/null 2>&1; then
+      echo "refusing to run: tasks/${name}.jsonl has read_around tasks, whose baseline is rg output; install rg" >&2
+      exit 2
+    fi
+    rg_version="$(rg --version | head -n 1)"
+  fi
+done <"${here}/corpus.tsv"
+
 "${here}/fetch_corpus.sh" "${corpus}"
 corpus="$(cd "${corpus}" && pwd -P)"
 mkdir -p "${results}"
 version="$("${bin}" --version)"
 run_log="${results}/run.tsv"
-printf 'corpus\tcommit\ttasks\tscan_s\teval_s\tload_before\tload_after\tbinary\n' >"${run_log}"
+printf 'corpus\tcommit\ttasks\tscan_s\teval_s\tload_before\tload_after\tbinary\trg\n' >"${run_log}"
 
 while IFS=$'\t' read -r name _ commit _; do
   case "${name}" in '' | '#'*) continue ;; esac
@@ -90,8 +105,8 @@ for f in map(Path, files):
     f.write_text(f.read_text().replace(corpus.rstrip("/") + "/", "$CORPUS/").replace(here + "/", "benchmarks/eval/"))
 PY
   load_after="$(uptime | sed 's/.*load averages*: *//')"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${name}" "${commit}" "$(grep -vc '^#' "${tasks}")" \
-    "$((t1 - t0))" "$((t2 - t1))" "${load_before}" "${load_after}" "${version}" >>"${run_log}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${name}" "${commit}" "$(grep -vc '^#' "${tasks}")" \
+    "$((t1 - t0))" "$((t2 - t1))" "${load_before}" "${load_after}" "${version}" "${rg_version}" >>"${run_log}"
   echo "${name}: scan $((t1 - t0))s, eval $((t2 - t1))s (load ${load_before} -> ${load_after})"
 done <"${here}/corpus.tsv"
 

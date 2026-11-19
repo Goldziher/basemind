@@ -163,6 +163,9 @@ pub enum BaselineItems {
     Read,
     /// `wc -l`-style `<count> <path>` lines: `path`. A `total` row is not a file.
     CountedPaths,
+    /// `rg -n -C` / `grep -n -C` context output: `path:line:text` for a match, `path-line-text` for
+    /// a context line, `--` between groups: `path:line` for both.
+    GrepContext,
 }
 
 /// What an agent would do without basemind: shell command(s) run in the workspace root plus whole
@@ -295,5 +298,8 @@ mod tests {
         let t =
             parse_tasks("{\"id\":\"a\",\"mode\":\"find_large\",\"baseline\":{\"items\":\"counted_paths\"}}").unwrap();
         assert_eq!(t[0].baseline.as_ref().unwrap().items, Some(BaselineItems::CountedPaths));
+        let t =
+            parse_tasks("{\"id\":\"a\",\"mode\":\"read_around\",\"baseline\":{\"items\":\"grep_context\"}}").unwrap();
+        assert_eq!(t[0].baseline.as_ref().unwrap().items, Some(BaselineItems::GrepContext));
     }
 }

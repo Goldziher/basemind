@@ -2,6 +2,7 @@
 //! held to one gold. Each reader is the agent's reading of the output, not a fuzzy match: a line
 //! the reader cannot place contributes nothing, which lowers the baseline's recall.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -35,6 +36,7 @@ pub fn baseline_items(kind: BaselineItems, root: &Path, output: &str, files: &[(
                 .collect()
         }
         BaselineItems::CountedPaths => counted_paths(output),
+        BaselineItems::GrepContext => grep_context(root, output),
         BaselineItems::Blame => blame(root, output),
         BaselineItems::Diff => diff_lines(output),
         BaselineItems::DiffSymbols => diff_symbols(output),
@@ -84,6 +86,34 @@ fn grep_lines(output: &str) -> Vec<Item> {
                 }
                 Some(Item {
                     path: l[..i].to_string(),
+                    line: rest[..digits].parse().ok(),
+                })
+            })
+        })
+        .collect()
+}
+
+/// `rg -n -C` / `grep -n -C` output: `path:N:text` (a match) or `path-N-text` (a context line), `--`
+/// between groups. A path may hold `-` (`tokio-util/src/x.rs`) and text may hold `:N:`, so the row
+/// splits at the earliest `<sep><digits><sep>` (`sep` `:` or `-`, the same on both sides) whose
+/// prefix is a file under `root`.
+fn grep_context(root: &Path, output: &str) -> Vec<Item> {
+    let mut is_file: BTreeMap<&str, bool> = BTreeMap::new();
+    output
+        .lines()
+        .filter(|l| *l != "--")
+        .filter_map(|l| {
+            let bytes = l.as_bytes();
+            l.match_indices([':', '-']).find_map(|(i, sep)| {
+                let rest = &l[i + 1..];
+                let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+                if i == 0 || digits == 0 || bytes.get(i + 1 + digits) != Some(&sep.as_bytes()[0]) {
+                    return None;
+                }
+                let path = &l[..i];
+                let exists = *is_file.entry(path).or_insert_with(|| root.join(path).is_file());
+                exists.then(|| Item {
+                    path: path.to_string(),
                     line: rest[..digits].parse().ok(),
                 })
             })
@@ -269,6 +299,38 @@ mod tests {
         assert_eq!(got, vec![it("src/a.rs:12"), it("src/b:c.rs:3")]);
         let paths = baseline_items(BaselineItems::Paths, Path::new("."), "a/b.rs\n\n c.md \n", &[]);
         assert_eq!(paths, vec![it("a/b.rs"), it("c.md")]);
+    }
+
+    #[test]
+    fn grep_context_reads_match_and_context_lines_of_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::create_dir_all(d.join("tokio-util/src")).unwrap();
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::write(d.join("tokio-util/src/codec.rs"), "").unwrap();
+        std::fs::write(d.join("src/a.rs"), "").unwrap();
+        let out = "\
+tokio-util/src/codec.rs-3-    let x = 1;
+tokio-util/src/codec.rs:4:fn frame() {}
+tokio-util/src/codec.rs-5-
+--
+src/a.rs-9-    m.insert(\"k:12:v\", 1);
+src/a.rs:10:let s = \"tokio-util/src/codec.rs:4:\";
+src/a.rs:11-1-x
+missing.rs:2:text
+";
+        let got = baseline_items(BaselineItems::GrepContext, d, out, &[]);
+        assert_eq!(
+            got,
+            vec![
+                it("tokio-util/src/codec.rs:3"),
+                it("tokio-util/src/codec.rs:4"),
+                it("tokio-util/src/codec.rs:5"),
+                it("src/a.rs:9"),
+                it("src/a.rs:10"),
+            ],
+            "mixed separators and a path that is no file place nothing"
+        );
     }
 
     #[test]

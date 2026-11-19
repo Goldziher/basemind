@@ -59,7 +59,7 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_
 | `gen_graph.py` | `impact`, `cycles` | file-level runtime import edges from `use` resolved through each package's `Cargo.toml` (Rust, `rust_gold`; `mod` declarations are not edges, ADR-0047 decision 4) or `import` (Python, `ast`), see `_edges.py`: importers within a depth, files of each import cycle |
 | `gen_changed.py` | `grep_changed` | the lines of the files changed since `HEAD~k` that hold a literal |
 | `gen_large.py` | `find_large` | files with at least N lines, counted as the scanner counts them (a final unterminated line counts) |
-| `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges; the baseline reads +/-5 lines per hit |
+| `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges; the baseline is what `rg -n -C5` prints |
 | `gen_explain.py` | `explain` | a Rust fn's definition, call sites and `->callee` names, from `rust_gold` |
 
 The last five cover the 0.34 analysis kinds (ADR-0047). Until the engine op or argument each one drives lands,
@@ -101,9 +101,11 @@ One JSON object per line (blank lines and `#` lines are skipped; ids are unique)
 - `baseline` (optional): what an agent would do without basemind. `grep` is one shell command or a list, run with `sh -c`
   in the workspace root (exit 0 or 1 are fine; anything else fails the baseline); `read` lists files read whole.
   `items` names how the output is read as items, so the baseline is scored against the same gold: `grep_lines`
-  (`path:line:` prefixes), `paths`, `shas` (first token of each line, abbreviations resolved with `git rev-parse`),
-  `blame` (`git blame` default output), `diff` (a unified diff's added/removed lines), `diff_symbols` (definition names
-  on added/removed lines), `read` (every line of the files read). Without `items` the baseline is charged for tokens only.
+  (`path:line:` prefixes), `grep_context` (`rg -n -C` / `grep -n -C` output: `path:N:` match and `path-N-` context
+  rows, split at the earliest separator whose prefix is a file), `paths`, `shas` (first token of each line,
+  abbreviations resolved with `git rev-parse`), `blame` (`git blame` default output), `diff` (a unified diff's
+  added/removed lines), `diff_symbols` (definition names on added/removed lines), `read` (every line of the files read).
+  Without `items` the baseline is charged for tokens only.
 - `annotations` (`grep`, optional): `path:line` -> the definition that line sits in; scored as the share of returned
   gold hits whose attached `symbol` has that name (`annotation_accuracy`, not part of the gate).
 - Unknown fields (for example `meta`) are ignored.
@@ -208,7 +210,8 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   a pin moves. Gold never comes from basemind: Rust structure from `rust_gold` (syn), git, grep and find gold from git's
   own output on the pinned commit.
 - `run_gate.sh` refuses to start unless `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` are set to existing, empty
-  directories outside the default cache, refuses a binary without the `tokenizer` feature, scans each repository,
+  directories outside the default cache, refuses a binary without the `tokenizer` feature, refuses to run `read_around`
+  tasks without `rg` on PATH (its version goes into `run.tsv`), scans each repository,
   runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
 - `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
 
@@ -233,7 +236,8 @@ tokio (credited 0.68); `git_blame` fails `blame_symbol` on tokio (1.11x); `git_d
 
 The baseline is the cheapest shell command a competent agent would run to get the same items, scored against the same
 gold. `fd` is not installed and `rg` is not pinned by the repository's mise toolchain, so `git grep -n` (the output shape
-of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a targeted `git grep` too.
+of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a targeted `git grep` too. `read_around` is the
+exception, below.
 
 | kind | baseline |
 |---|---|
@@ -253,8 +257,16 @@ of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a target
 | `cycles` | every import line of the language, `git grep -n` (tokens only) |
 | `grep_changed` | `git diff --name-only REV \| xargs git grep -n -F PATTERN` |
 | `find_large` | `git ls-files \| xargs awk ...` printing `<lines> <path>` (the `wc -l` listing with an unterminated last line counted) `\| sort -rn \| awk '$1>=N'` |
-| `read_around` | `git grep -n -F`, then one read of +/-5 lines per hit printed as `path:line:text` (unmerged, so overlapping windows are read twice) |
+| `read_around` | `rg -n -C5 -F -e PATTERN -g '*.EXT'`, its literal output (`grep_context`) |
 | `explain` | the file's definition lines, `git grep -n -w NAME`, and `sed -n` over the body (tokens only) |
+
+`read_around` runs `rg` itself: the baseline is the literal output of the command an agent runs for "the lines
+around each hit", not a format built for the comparison. rg merges overlapping and adjacent context windows and
+prints the path on every row (`path:N:text` for a match, `path-N-text` for context, `--` between groups) because
+that is what it prints without a tty, as the harness runs it. `-g '*.EXT'` keeps the gold's file set; rg skips
+hidden and ignored files `git grep` would search, which counts against the baseline's recall. Because rg is not
+pinned by the mise toolchain, `run_gate.sh` refuses to run this kind without it and records `rg --version` in
+`run.tsv`.
 
 ### What the gold cannot cover
 
