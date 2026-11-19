@@ -8,6 +8,7 @@ use anyhow::{Result, anyhow};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
+use crate::engine::Workspace;
 use crate::mcp::BasemindServer;
 use crate::mcp::params::parse_args;
 use crate::mcp::savings::estimate_from_text;
@@ -22,16 +23,6 @@ use super::task::{EvalMode, Scoring, Task};
 /// Most pages a set-scored task follows `next_cursor` through. An agent that wants every call
 /// site or every commit has to page (ADR-0022 contract rule 5), and pays for every page.
 pub const MAX_PAGES: u32 = 50;
-
-/// Why every task of `mode` is skipped: the engine op or tool argument it drives has not landed
-/// (ADR-0047). A skipped task is reported, never run, scored or failed; the change that lands the op
-/// removes its arm here.
-pub fn unavailable(mode: EvalMode) -> Option<&'static str> {
-    match mode {
-        EvalMode::Explain => Some("not implemented: the `code explain` engine op (#120)"),
-        _ => None,
-    }
-}
 
 /// Call the tool behind `mode` with `args`, which are that tool's own arguments. Returns the raw
 /// response text, or a tool/argument error message. `read_around` names its second call, the
@@ -56,7 +47,10 @@ async fn call(server: &BasemindServer, mode: EvalMode, args: Value) -> Result<St
         | EvalMode::Cycles => server.code_refs_call(parse_args(args).map_err(bad_args)?).await,
         EvalMode::Grep | EvalMode::GrepChanged => server.code_grep_call(parse_args(args).map_err(bad_args)?).await,
         EvalMode::Find | EvalMode::FindLarge => server.find_files_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Explain => return Err(anyhow!("`code explain` has no engine op to call")),
+        EvalMode::Explain => {
+            let p = serde_json::from_value(args).map_err(|e| bad_args(e.to_string()))?;
+            server.cli_op(p, Workspace::code_explain).await
+        }
     }
     .map_err(|e| anyhow!("{}: {e}", mode.tool_key()))?;
 
@@ -179,33 +173,8 @@ async fn answer_read_around(server: &BasemindServer, task: &Task) -> Result<Answ
     Ok(out)
 }
 
-/// The row of a task [`unavailable`] skips: not run, not scored, not an error.
-fn skipped(task: &Task, reason: &str) -> TaskResult {
-    TaskResult {
-        id: task.id.clone(),
-        mode: task.mode,
-        ok: true,
-        error: None,
-        skipped: Some(reason.to_string()),
-        elapsed_us: 0,
-        tokens: 0,
-        pages: 0,
-        pages_cut: false,
-        annotation_accuracy: None,
-        score: super::score::Score::default(),
-        ranked: task.scoring == Scoring::Ranked,
-        returned: Vec::new(),
-        savings: None,
-        baseline_score: None,
-        baseline_error: None,
-    }
-}
-
 /// Run `task`, scoring the answer and (when the task has a baseline) running and scoring that too.
 pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_recall: f64) -> TaskResult {
-    if let Some(reason) = unavailable(task.mode) {
-        return skipped(task, reason);
-    }
     let started = Instant::now();
     let outcome = answer(server, task).await;
     let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -225,6 +194,9 @@ pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_rec
         (Some(spec), None) => match run_baseline(root, spec, count_tokens) {
             Ok(b) => {
                 let model = estimate_from_text(task.mode.tool_key(), 0, &ans.text);
+                // A tool `savings.rs` has no model for (a CLI-only op such as `code_explain`) gets no
+                // model column rather than the 1x fallback, which would read as a measured claim.
+                let modelled = model.baseline != "unclassified";
                 let has_answer = tokens > 0;
                 let baseline_score = b.items.as_ref().map(|items| score(items, &gold, task.line_slack, k));
                 (
@@ -234,8 +206,13 @@ pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_rec
                         ratio: has_answer.then(|| b.tokens as f64 / tokens as f64),
                         saved_tokens: b.tokens as i64 - tokens as i64,
                         credited: sc.recall >= min_recall && !gold.is_empty(),
-                        model_ratio: has_answer.then(|| model.baseline_tokens as f64 / model.actual_tokens as f64),
-                        model_label: model.baseline.to_string(),
+                        model_ratio: (has_answer && modelled)
+                            .then(|| model.baseline_tokens as f64 / model.actual_tokens as f64),
+                        model_label: if modelled {
+                            model.baseline.to_string()
+                        } else {
+                            String::new()
+                        },
                     }),
                     baseline_score,
                     None,
@@ -251,7 +228,6 @@ pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_rec
         mode: task.mode,
         ok: error.is_none(),
         error,
-        skipped: None,
         elapsed_us,
         tokens,
         pages: ans.pages,
@@ -279,35 +255,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::eval::task::parse_tasks;
-
-    const ANALYSIS: [EvalMode; 1] = [EvalMode::Explain];
-
-    #[test]
-    fn skips_exactly_the_kinds_whose_op_has_not_landed() {
-        for mode in ANALYSIS {
-            let reason = unavailable(mode).unwrap_or_else(|| panic!("{mode:?} has an op"));
-            assert!(reason.starts_with("not implemented"), "{reason}");
-        }
-        assert!(unavailable(EvalMode::Grep).is_none());
-        assert!(unavailable(EvalMode::Impact).is_none());
-        assert!(unavailable(EvalMode::Cycles).is_none());
-        assert!(unavailable(EvalMode::ReadAround).is_none());
-        assert!(unavailable(EvalMode::DiffStructural).is_none());
-        assert!(unavailable(EvalMode::FindLarge).is_none());
-        assert!(unavailable(EvalMode::GrepChanged).is_none());
-    }
-
-    #[test]
-    fn a_skipped_task_is_neither_an_error_nor_scored() {
-        let task =
-            &parse_tasks("{\"id\":\"i\",\"mode\":\"impact\",\"gold\":[\"a.rs\"],\"scoring\":\"set\"}").unwrap()[0];
-        let r = skipped(task, "not implemented: x");
-        assert!(r.ok && r.error.is_none());
-        assert_eq!(r.skipped.as_deref(), Some("not implemented: x"));
-        assert_eq!((r.tokens, r.pages, r.score.gold), (0, 0, 0));
-        assert!(r.savings.is_none());
-    }
 
     fn scored(mode: EvalMode, args: &Value, body: &Value, gold: &[&str]) -> (f64, f64) {
         let got = extract_items(mode, args, body);

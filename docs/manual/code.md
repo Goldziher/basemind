@@ -75,6 +75,20 @@ These read the index (the daemon answers them when one runs) and have no MCP too
   `basemind code cycles --check <from> <to>` says whether `from` importing `to` would close a cycle.
   Both commands take `--include-type-imports` and `--include-module-decls` to follow type-only
   imports and Rust `mod` declarations too.
+- `basemind code explain <target>` briefs one symbol, file or `path:line` (the innermost definition
+  holding that line) in one answer. A symbol gets its definition (line span, signature, the doc
+  comment above it, across attributes and decorators), its body when it has 60 lines or fewer, its
+  callers with their resolution, the names its body calls (macro invocations are not calls), the
+  files importing its file and the last 5 commits that changed it. `--depth 2` or `3` adds the
+  callers of those callers, following only call sites proven to bind (`same_file` / `imported`), so
+  a language without resolution facts gets none. A file gets its outline, the files it imports and
+  that import it, the calls into and out of it grouped by file, its hotspot row and rank, its last 5
+  commits and the authors of its last 20. The outline, callers, callees, importers, imports, calls
+  and `also_defined` lists hold `--limit` rows (default 20). The answer stays within `--max-tokens`
+  (default 6000): the body, then the longest lists, then the doc, signature, hotspot and notes are
+  cut, and a briefing that still does not fit is refused with the smallest budget that does. Every
+  cut section is listed in `truncated_sections` with the call that continues it. `--sections` picks
+  sections and `--no-code` leaves the body out.
 - `basemind code migration check [name]` counts the remaining uses of the old forms each rule of
   `.basemind/migrations/<name>.toml` names (a `call`, `import`, `identifier` or `text` pattern),
   per rule and file, with the share migrated and the progress across runs; the history is kept in

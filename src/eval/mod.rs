@@ -131,9 +131,6 @@ pub async fn run(server: &BasemindServer, args: &EvalArgs, out: &mut impl Write)
     for r in results.iter().filter(|r| !r.ok) {
         eprintln!("task {} failed: {}", r.id, r.error.as_deref().unwrap_or("?"));
     }
-    for (mode, k) in &rep.skipped {
-        eprintln!("{} task(s) of kind {} skipped: {}", k.tasks, mode.as_str(), k.reason);
-    }
 
     if let Some(path) = &args.baseline {
         let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;

@@ -18,6 +18,17 @@ pub(super) const PROBES_INCOMPLETE: &str =
 /// The note of a Go graph (ADR-0047 decision 4).
 const GO_BUILD_TAGS: &str = "go: build tags are ignored, so every non-test file of a package is an edge target";
 
+/// The refusal of a symbol lookup the index cannot answer yet (warming up, building, empty), naming
+/// the state and what to do; `None` when the index is ready. Call it without the store lock held.
+pub(super) fn index_not_ready(ws: &Workspace, command: &str) -> Option<crate::engine::error::EngineError> {
+    ws.lifecycle_notice().map(|notice| {
+        crate::engine::error::EngineError::busy(format!(
+            "`{command}`: the index is not ready ({}): {}",
+            notice.state, notice.message
+        ))
+    })
+}
+
 /// The tiers a request's flags name.
 pub(super) fn tiers(type_imports: bool, module_decls: bool) -> Tiers {
     Tiers {

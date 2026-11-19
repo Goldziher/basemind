@@ -46,7 +46,18 @@ impl Workspace {
     /// `basemind git hotspots`: files where two or more change and size signals are in their top
     /// slice.
     pub(crate) fn git_hotspots(&self, p: HotspotsParams) -> Result<HotspotsResponse, EngineError> {
-        run_hotspots(self, p)
+        run_hotspots(self, p, false)
+    }
+
+    /// `git hotspots` over the default window with every ranked row, not the first `limit`: a
+    /// lookup of one file's row (`code explain`), which must not mistake a low rank for none.
+    pub(crate) fn git_hotspots_all(&self) -> Result<HotspotsResponse, EngineError> {
+        let p = HotspotsParams {
+            since: None,
+            path: None,
+            limit: None,
+        };
+        run_hotspots(self, p, true)
     }
 }
 
@@ -305,7 +316,7 @@ struct Candidate {
     )>,
 }
 
-fn run_hotspots(ws: &Workspace, p: HotspotsParams) -> Result<HotspotsResponse, EngineError> {
+fn run_hotspots(ws: &Workspace, p: HotspotsParams, every_row: bool) -> Result<HotspotsResponse, EngineError> {
     let started = std::time::Instant::now();
     let since = p.since.unwrap_or_else(|| SINCE_DEFAULT.to_string());
     let span = parse_since(&since)?;
@@ -421,7 +432,9 @@ fn run_hotspots(ws: &Workspace, p: HotspotsParams) -> Result<HotspotsResponse, E
     let files_considered = files.len() as u32;
     let (thresholds, mut rows) = rank(files, SLICE_PERCENT);
     let total = rows.len() as u32;
-    rows.truncate(limit);
+    if !every_row {
+        rows.truncate(limit);
+    }
     Ok(HotspotsResponse {
         since,
         window_start: window.start,

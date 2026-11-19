@@ -279,6 +279,7 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         "code_migration_check",
         "overview",
         "git_hotspots",
+        "code_explain",
         "agent_launch",
         "agent_stop",
     ]

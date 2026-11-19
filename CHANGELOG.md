@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the window touched where two or more of commits, distinct authors, lines, symbols, the longest
   function and importers are in their top 10%, as raw numbers with no score. The window ends at
   HEAD's author time.
+- `basemind code explain <symbol|path|path:line>` (CLI only, #120): one briefing composed from the
+  outline, `code_refs`, the import graph and git history. A symbol gets its definition (line span,
+  signature, doc comment, read across attributes and decorators), its body when it has 60 lines or
+  fewer, its callers with their resolution (`--depth 2|3` adds the callers of those over call sites
+  proven to bind), the names its body calls (macros excluded), the files importing its file and the
+  last 5 commits that changed it. A file gets its outline, imports, importers, the calls into and out
+  of it grouped by file, its `git hotspots` row and rank, its last 5 commits and the authors of its
+  last 20. List sections hold `--limit` rows; the whole answer stays within `--max-tokens`, or is
+  refused with the smallest budget that fits; `truncated_sections` names every cut section with the
+  call that continues it. `--sections` and `--no-code` narrow it. The `explain` eval kind runs
+  against it, and `admin eval` no longer has a skip path for kinds without an op (ADR-0047).
 - `basemind code migration check [<name>]` (CLI only, #130): rules in `.basemind/migrations/<name>.toml`
   name old forms (`call`, `import`, `identifier` or `text`, literal or regex) and optionally their
   replacement; the report gives remaining lines per rule and file, the share migrated, files holding

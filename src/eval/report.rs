@@ -41,10 +41,6 @@ pub struct TaskResult {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Why the task was not run (its engine op has not landed); a skipped task is left out of every
-    /// aggregate and of the gate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skipped: Option<String>,
     pub elapsed_us: u64,
     /// Tokens of the response text an agent would receive, summed over every page read.
     pub tokens: u64,
@@ -140,16 +136,6 @@ pub struct Report {
     /// ADR-0022 verdict per task kind.
     #[serde(default)]
     pub gate: BTreeMap<EvalMode, GateVerdict>,
-    /// Task kinds with skipped tasks: how many, and why.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub skipped: BTreeMap<EvalMode, SkippedKind>,
-}
-
-/// The tasks of one kind that were not run.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
-pub struct SkippedKind {
-    pub tasks: usize,
-    pub reason: String,
 }
 
 /// Nearest-rank percentile of an ascending slice (`p` in 0..=100); 0 for an empty slice.
@@ -253,20 +239,10 @@ fn mode_report(results: &[&TaskResult], min_recall: f64) -> ModeReport {
 
 pub fn aggregate(results: &[TaskResult], tokenizer: &str, root: &str, tasks_file: &str, min_recall: f64) -> Report {
     let mut by_mode: BTreeMap<EvalMode, Vec<&TaskResult>> = BTreeMap::new();
-    let mut skipped: BTreeMap<EvalMode, SkippedKind> = BTreeMap::new();
     for r in results {
-        match &r.skipped {
-            Some(reason) => {
-                let kind = skipped.entry(r.mode).or_default();
-                kind.tasks += 1;
-                if kind.reason.is_empty() {
-                    kind.reason.clone_from(reason);
-                }
-            }
-            None => by_mode.entry(r.mode).or_default().push(r),
-        }
+        by_mode.entry(r.mode).or_default().push(r);
     }
-    let all: Vec<&TaskResult> = results.iter().filter(|r| r.skipped.is_none()).collect();
+    let all: Vec<&TaskResult> = results.iter().collect();
     Report {
         version: 2,
         tokenizer: tokenizer.to_string(),
@@ -276,7 +252,6 @@ pub fn aggregate(results: &[TaskResult], tokenizer: &str, root: &str, tasks_file
         modes: by_mode.iter().map(|(m, v)| (*m, mode_report(v, min_recall))).collect(),
         overall: mode_report(&all, min_recall),
         gate: by_mode.iter().map(|(m, v)| (*m, verdict(v, tokenizer))).collect(),
-        skipped,
     }
 }
 
@@ -287,14 +262,6 @@ fn pct(v: Option<f64>) -> String {
 pub fn markdown(r: &Report) -> String {
     let mut s = markdown_tables(r);
     s.push_str(&super::gate::gate_markdown(r));
-    if !r.skipped.is_empty() {
-        let _ = writeln!(s, "\n## Skipped\n");
-        let _ = writeln!(s, "| kind | tasks | reason |");
-        let _ = writeln!(s, "|---|---|---|");
-        for (mode, k) in &r.skipped {
-            let _ = writeln!(s, "| {} | {} | {} |", mode.as_str(), k.tasks, k.reason);
-        }
-    }
     s
 }
 
@@ -461,7 +428,6 @@ mod tests {
             mode,
             ok: true,
             error: None,
-            skipped: None,
             elapsed_us: us,
             tokens,
             score: Score {
@@ -601,32 +567,27 @@ mod tests {
     }
 
     #[test]
-    fn skipped_tasks_stay_out_of_every_aggregate_and_the_gate() {
-        let mut skip = result("s", EvalMode::Impact, 0.0, false, 0, 0);
-        skip.skipped = Some("not implemented: impact".into());
-        let mut skip2 = skip.clone();
-        skip2.id = "s2".into();
-        let rs = vec![result("a", EvalMode::Symbols, 1.0, false, 10, 10), skip, skip2];
-        let rep = aggregate(&rs, "o200k", "/r", "t", 0.8);
-        assert!(!rep.modes.contains_key(&EvalMode::Impact));
-        assert!(!rep.gate.contains_key(&EvalMode::Impact));
-        assert_eq!(rep.overall.tasks, 1);
-        assert_eq!(rep.overall.errors, 0);
-        assert_eq!(
-            rep.skipped[&EvalMode::Impact],
-            SkippedKind {
-                tasks: 2,
-                reason: "not implemented: impact".into()
-            }
+    fn a_kind_that_appears_is_no_regression_and_one_that_disappears_is() {
+        let before = aggregate(
+            &[result("a", EvalMode::Symbols, 1.0, false, 10, 10)],
+            "o",
+            "/",
+            "t",
+            0.8,
         );
-        let md = markdown(&rep);
-        assert!(md.contains("| impact | 2 | not implemented: impact |"), "{md}");
-        // A kind that was skipped before and runs now is not a regression; one that ran and is
-        // skipped now is.
-        let ran = aggregate(&[result("i", EvalMode::Impact, 1.0, false, 10, 10)], "o", "/", "t", 0.8);
-        assert!(compare(&rep, &ran, 0.02, 0.25).iter().all(|r| r.mode != "impact"));
+        let after = aggregate(
+            &[
+                result("a", EvalMode::Symbols, 1.0, false, 10, 10),
+                result("i", EvalMode::Impact, 1.0, false, 10, 10),
+            ],
+            "o",
+            "/",
+            "t",
+            0.8,
+        );
+        assert!(compare(&before, &after, 0.02, 0.25).iter().all(|r| r.mode != "impact"));
         assert!(
-            compare(&ran, &rep, 0.02, 0.25)
+            compare(&after, &before, 0.02, 0.25)
                 .iter()
                 .any(|r| r.mode == "impact" && r.metric == "tasks")
         );
