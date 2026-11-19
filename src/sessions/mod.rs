@@ -3,7 +3,7 @@
 //!
 //! Each host has a [`TranscriptParser`]: [`claude::Claude`] reads `~/.claude/projects/<slug>/*.jsonl`
 //! and the subagent transcripts filed under each session, and [`codex::Codex`] reads
-//! `~/.codex/sessions/**/*.jsonl`. A
+//! `~/.codex/sessions/**/*.jsonl`, where a subagent is a rollout of its own naming its parent. A
 //! transcript counts only when its recorded working directory is inside this repository's main
 //! checkout or one of its worktrees. A subagent is reported on its own and attributed to its parent
 //! session. The roots are fixed and derived from the home directory alone ([`SessionRoots`]);
@@ -15,6 +15,7 @@
 //! process only; the daemon and the MCP surface never reach it.
 
 pub mod claude;
+pub mod code_mode;
 pub mod codex;
 pub mod contain;
 pub mod shell;
@@ -420,11 +421,11 @@ fn attribute(report: &mut Report, threads: &[(Host, String)]) {
     }
 }
 
-/// A basemind MCP tool name: `mcp__<server>__<tool>` (Claude Code) or `<server>__<tool>` (Codex)
-/// whose server name contains `basemind`.
+/// A basemind MCP tool name: `mcp__<server>__<tool>` (Claude Code), `<server>__<tool>` (older
+/// Codex) or `mcp__<environment hash>__<server>__<tool>` (Codex with a remote environment), whose
+/// server name contains `basemind`.
 fn basemind_tool(name: &str) -> bool {
-    let rest = name.strip_prefix("mcp__").unwrap_or(name);
-    rest.split_once("__")
+    name.rsplit_once("__")
         .is_some_and(|(server, _)| server.contains("basemind"))
 }
 
@@ -471,5 +472,14 @@ mod tests {
         );
         assert_eq!(label(&main.join("../other")), None, "`..` is resolved first");
         assert_eq!(label(Path::new("repo/src")), None, "a relative cwd is in no checkout");
+    }
+
+    #[test]
+    fn basemind_tools_are_named_by_their_server() {
+        assert!(basemind_tool("mcp__plugin_basemind_basemind__code"));
+        assert!(basemind_tool("basemind__code_outline"));
+        assert!(basemind_tool("mcp__0123456789ab__basemind__code_outline"));
+        assert!(!basemind_tool("code_outline"));
+        assert!(!basemind_tool("mcp__other__basemind_like_tool"));
     }
 }

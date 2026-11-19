@@ -2,7 +2,9 @@
 //! subagents and their parents, sessions started in a subdirectory, the containment of the transcript
 //! roots, and that no transcript text reaches the output.
 //!
-//! The fixtures under `tests/fixtures/sessions/` imitate the Claude Code and Codex record shapes;
+//! The fixtures under `tests/fixtures/sessions/` imitate the Claude Code and Codex record shapes
+//! (`codex/main.jsonl` the 0.58-era shapes, `codex/current.jsonl` and `codex/subagent.jsonl` those
+//! of the `openai/codex` sources of November 2026);
 //! `{{REPO}}`, `{{WORKTREE}}` and `{{OTHER}}` are replaced with the temporary checkouts. Every
 //! secret-bearing field holds a `SECRET-` marker, so any echo of transcript text fails the test.
 //! The transcript roots always point into a temporary home, never the real one.
@@ -143,6 +145,8 @@ fn setup() -> Env {
     place(&env, &other, "codex/other-repo.jsonl", &codex.join("rollout-b.jsonl"));
     place(&env, &other, "codex/pre-envelope.jsonl", &codex.join("rollout-c.jsonl"));
     place(&env, &other, "codex/unsupported.jsonl", &codex.join("rollout-d.jsonl"));
+    place(&env, &other, "codex/current.jsonl", &codex.join("rollout-f.jsonl"));
+    place(&env, &other, "codex/subagent.jsonl", &codex.join("rollout-g.jsonl"));
     // A cwd that names the checkout lexically but resolves elsewhere.
     place(
         &env,
@@ -206,12 +210,13 @@ fn counts_each_host_and_keeps_to_this_repository() {
         vec![
             (Host::Claude, "s2", "wt-feature"),
             (Host::Codex, "rollout-a", "main"),
+            (Host::Codex, "rollout-f", "main"),
             (Host::Claude, "s1", "main"),
             (Host::Claude, "s7", "main"),
         ]
     );
 
-    let claude = &report.sessions[2];
+    let claude = &report.sessions[3];
     assert_eq!(
         claude.counts,
         Counts {
@@ -279,13 +284,53 @@ fn counts_each_host_and_keeps_to_this_repository() {
     assert_eq!(codex.format_version.as_deref(), Some("0.58.0"));
 
     assert_eq!(
-        report.sessions[3].counts.search_tool, 1,
+        report.sessions[4].counts.search_tool, 1,
         "the session started in crates/core"
     );
 
-    assert_eq!(report.aggregate.sessions, 4);
-    assert_eq!(report.aggregate.subagents, 2);
-    assert_eq!(report.aggregate.counts.basemind, 5, "sessions and subagents");
+    assert_eq!(report.aggregate.sessions, 5);
+    assert_eq!(report.aggregate.subagents, 3);
+    assert_eq!(report.aggregate.counts.basemind, 7, "sessions and subagents");
+}
+
+#[test]
+fn the_current_codex_shapes_are_counted() {
+    let env = setup();
+    let report = report(&env, None);
+    let current = report
+        .sessions
+        .iter()
+        .find(|s| s.id == "rollout-f")
+        .expect("the current-format rollout, recorded in crates/core");
+    assert_eq!(current.format_version.as_deref(), Some("0.169.0"));
+    assert_eq!(
+        current.counts,
+        Counts {
+            basemind: 2,
+            search_tool: 0,
+            shell_search: 2,
+            shell_git: 0,
+            read_whole: 1,
+            read_range: 0,
+            edit: 1,
+            write: 0,
+            other: 2,
+            errors: 2,
+            basemind_errors: 0,
+            edits_without_read: 0,
+            writes_without_search: 0,
+            files_read_repeatedly: 0,
+            outside_paths: 0,
+            output_tokens: OutputTokens {
+                read_search: 40,
+                edit: 25,
+                other: 0
+            },
+        },
+        "the code-mode script's exec_command and basemind calls, the namespaced MCP call, \
+         exec_command, apply_patch, the collaboration tool, the tool search and the built-in in \
+         the default namespace; the script and exec_command failures from their headers"
+    );
 }
 
 #[test]
@@ -300,18 +345,25 @@ fn subagents_are_reported_and_attributed_to_their_session() {
     assert_eq!(
         subagents,
         vec![
+            (Host::Codex, "rollout-g", "rollout-f", true),
             (Host::Claude, "agent-a1", "s1", true),
             (Host::Claude, "agent-a2", "s1", true),
         ],
         "the journal beside agent-a2 is not a transcript"
     );
 
-    let claude = &report.subagents[0].session;
+    let claude = &report.subagents[1].session;
     assert_eq!(
         (claude.counts.basemind, claude.counts.read_whole, claude.counts.edit),
         (1, 1, 1)
     );
     assert_eq!(claude.counts.edits_without_read, 0, "the subagent's own read counts");
+
+    // The forked Codex subagent counts only what it did after its start ordinal.
+    let codex = &report.subagents[0].session;
+    assert_eq!((codex.counts.shell_search, codex.counts.edit), (1, 0));
+    assert_eq!(codex.counts.output_tokens.read_search, 7);
+    assert_eq!(codex.started.as_deref(), Some("2026-11-18T09:40:00.000Z"));
 
     let s1 = report.sessions.iter().find(|s| s.id == "s1").expect("s1");
     let totals = s1.subagents.as_ref().expect("s1 has subagents");
@@ -321,6 +373,8 @@ fn subagents_are_reported_and_attributed_to_their_session() {
         s1.counts.basemind, 1,
         "the session's own counts leave its subagents out"
     );
+    let f = report.sessions.iter().find(|s| s.id == "rollout-f").expect("rollout-f");
+    assert_eq!(f.subagents.as_ref().map(|t| t.transcripts), Some(1));
     assert!(
         report
             .sessions
@@ -365,7 +419,7 @@ fn other_repositories_and_escapes_are_not_counted() {
         assert_eq!(report.refused, PLANTED_SYMLINKS, "every planted symlink");
         assert_eq!(
             (report.sessions.len(), report.subagents.len()),
-            (4, 2),
+            (5, 3),
             "no escape became a session or a subagent"
         );
     }
@@ -393,7 +447,7 @@ fn a_repository_configuration_cannot_move_the_roots() {
     .expect("write config");
     let report = report(&env, None);
     assert!(report.roots.iter().all(|r| r.state == "present"));
-    assert_eq!(report.sessions.len(), 4);
+    assert_eq!(report.sessions.len(), 5);
 }
 
 #[cfg(unix)]
@@ -426,13 +480,13 @@ fn the_command_prints_counts_and_never_transcript_text() {
     };
 
     let json: serde_json::Value = serde_json::from_str(&run(true)).expect("JSON report");
-    assert_eq!(json["aggregate"]["sessions"], 4);
-    assert_eq!(json["aggregate"]["subagents"], 2);
-    assert_eq!(json["sessions"][2]["counts"]["edits_without_read"], 1);
-    assert_eq!(json["sessions"][2]["repeated_reads"][0]["path"], "src/main.rs");
-    assert_eq!(json["sessions"][2]["subagents"]["transcripts"], 2);
-    assert_eq!(json["subagents"][0]["parent"], "s1");
-    assert_eq!(json["subagents"][0]["id"], "agent-a1");
+    assert_eq!(json["aggregate"]["sessions"], 5);
+    assert_eq!(json["aggregate"]["subagents"], 3);
+    assert_eq!(json["sessions"][3]["counts"]["edits_without_read"], 1);
+    assert_eq!(json["sessions"][3]["repeated_reads"][0]["path"], "src/main.rs");
+    assert_eq!(json["sessions"][3]["subagents"]["transcripts"], 2);
+    assert_eq!(json["subagents"][1]["parent"], "s1");
+    assert_eq!(json["subagents"][1]["id"], "agent-a1");
     assert_eq!(json["unsupported"].as_array().map(Vec::len), Some(2));
 
     let text = run(false);

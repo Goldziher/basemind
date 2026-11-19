@@ -64,7 +64,13 @@ basemind already contains reads that reach outside the tree:
   too; a sibling the lossy slug also matches is dropped by its `cwd`.
 - Subagent transcripts are read under the same rules: Claude Code's
   `<slug>/<session>/subagents/[workflows/<run>/]agent-*.jsonl`, walked without following a
-  symlink at any level. Each is reported on its own and attributed to its parent session.
+  symlink at any level, and Codex's subagent rollouts, rollouts of their own whose `session_meta`
+  marks them as a subagent's and names the root session; the parent's history a subagent inherits
+  (records before its `subagent_history_start_ordinal`) is not counted again. Each is reported on
+  its own and attributed to its parent session.
+- `src/sessions/` also holds `code_mode.rs`: Codex's code mode records one `exec` call whose input
+  is a JavaScript script, and its nested tool calls are read from that script by a lexer that
+  evaluates nothing.
 - **Counts only.** The output is per-session and aggregate counts plus repository-relative paths.
   It never echoes message text, tool input or output, or a command line, and writes nothing but
   stdout: no cache, no telemetry, no file.
