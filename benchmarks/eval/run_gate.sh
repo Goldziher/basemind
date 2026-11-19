@@ -5,7 +5,8 @@
 #   BASEMIND_DATA_HOME=$(mktemp -d) BASEMIND_COMMS_DIR=$(mktemp -d) \
 #     benchmarks/eval/run_gate.sh BASEMIND_BIN CORPUS_DIR [RESULTS_DIR]
 #
-# BASEMIND_BIN must be built with the `tokenizer` feature (o200k counts; ADR-0022 rejects bytes/4).
+# BASEMIND_BIN must be built with the `tokenizer` feature (o200k counts; ADR-0022 rejects bytes/4) and
+# `code-intel` (the Rust import resolver the `impact` and `cycles` kinds need).
 # Both cache directories must be set, exist and be empty: a run against the default cache could
 # take over a live daemon and index. RESULTS_DIR defaults to `benchmarks/eval/results`.
 set -euo pipefail
@@ -64,6 +65,17 @@ while IFS=$'\t' read -r name _ commit _; do
   t0="$(date +%s)"
   "${bin}" --root "${repo}" -q scan >/dev/null
   t1="$(date +%s)"
+  # Without a Rust import resolver (`code-intel`) the graph is empty and every `impact` / `cycles`
+  # task scores 0 as if the tool were wrong; refuse instead of reporting that as a verdict.
+  if grep -q -E '"mode": *"(impact|cycles)"' "${tasks}"; then
+    coverage="$("${bin}" --root "${repo}" code refs --relation cycles --json 2>/dev/null || true)"
+    case "${coverage}" in
+    *"this build"*)
+      echo "refusing to run: ${bin} resolves no ${name} imports (build it with --features tokenizer,code-intel)" >&2
+      exit 2
+      ;;
+    esac
+  fi
   "${bin}" --root "${repo}" admin eval --tasks "${tasks}" --min-recall 0.8 \
     --out "${results}/${name}.ndjson" --report "${results}/${name}.report.json" \
     --markdown "${results}/${name}.md" 2>"${results}/${name}.stderr"

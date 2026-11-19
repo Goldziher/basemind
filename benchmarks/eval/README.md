@@ -190,7 +190,8 @@ the credited tasks is at least 1.5, counted with o200k; a tool passes when every
 ### Reproduce
 
 ```sh
-cargo build --release --features tokenizer --bin basemind     # o200k counts; bytes/4 gives no verdict
+# tokenizer: o200k counts (bytes/4 gives no verdict); code-intel: the Rust import resolver (impact, cycles)
+cargo build --release --features tokenizer,code-intel --bin basemind
 corpus=/path/outside/the/repo/eval-corpus
 benchmarks/eval/fetch_corpus.sh "$corpus"                     # clone, check out and verify every pin
 benchmarks/eval/gen_tasks.sh "$corpus" /tmp/tasks && diff -r /tmp/tasks benchmarks/eval/tasks   # optional: the
