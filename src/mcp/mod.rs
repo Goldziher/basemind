@@ -172,7 +172,7 @@ pub mod params {
     pub use rmcp::handler::server::wrapper::Parameters;
 
     pub(crate) use super::strict::parse as parse_args;
-    pub use super::types::{FindCommitsByPathParams, HotFilesParams, TelemetrySummaryParams};
+    pub use super::types::{FindCommitsByPathParams, HotFilesParams, HotspotsParams, TelemetrySummaryParams};
     #[cfg(feature = "test-support")]
     pub use super::types_tools::check_arguments;
     pub use super::types_tools::{

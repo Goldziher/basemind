@@ -221,6 +221,10 @@ pub fn table() -> Vec<Row> {
             "churn ranking measured no use over MCP and was left off the verb surface (ADR-0018)",
         ),
         cli_only(
+            "git hotspots",
+            "a whole-repository ranking with no verb tool until an eval kind promotes it (ADR-0047)",
+        ),
+        cli_only(
             "git by-path",
             "arbitrary path-regex commit log; `git_log` covers a file or directory `path`",
         ),

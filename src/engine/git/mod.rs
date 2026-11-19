@@ -5,11 +5,13 @@
 //! `log.rs` holds the three tool bodies and the commit-log family (`status`, `recent`, `touching`,
 //! `churn`, `search`); `file.rs` the operations scoped to one path (`diff`, `diff_outline`, `blame`,
 //! `blame_symbol`, `symbol_history`); `by_path.rs` the windowed pickaxe; `show.rs` one commit in
-//! full and the commit-list budget; `fingerprint.rs` the symbol-body hashes symbol history compares.
+//! full and the commit-list budget; `fingerprint.rs` the symbol-body hashes symbol history compares;
+//! `hotspots.rs` the CLI-only `git hotspots` ranking.
 
 mod by_path;
 mod common;
 mod file;
 mod fingerprint;
+mod hotspots;
 mod log;
 mod show;

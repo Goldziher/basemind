@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 
 use super::BasemindServer;
 use crate::engine::Workspace;
-use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};
+use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams, HotspotsParams};
 use crate::engine::types::graph::{CyclesParams, ImpactParams};
 use crate::engine::types::memory::MemoryDeleteParams;
 use crate::engine::types::overview::OverviewParams;
@@ -26,6 +26,7 @@ pub(super) const CLI_ONLY: &[&str] = &[
     "code_impact",
     "code_cycles",
     "overview",
+    "git_hotspots",
 ];
 
 /// `arguments` as the command's params; a mismatch is a usage error, as a verb tool's is.
@@ -70,6 +71,10 @@ impl BasemindServer {
             },
             "overview" => match params::<OverviewParams>(name, arguments) {
                 Ok(p) => self.cli_op(p, Workspace::overview).await,
+                Err(error) => Err(error),
+            },
+            "git_hotspots" => match params::<HotspotsParams>(name, arguments) {
+                Ok(p) => self.cli_op(p, Workspace::git_hotspots).await,
                 Err(error) => Err(error),
             },
             _ => Err(McpError::invalid_params(

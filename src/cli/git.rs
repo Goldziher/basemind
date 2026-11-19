@@ -3,7 +3,7 @@
 //! `log`, `blame` and `diff` run the identical bodies as the MCP tools `git_log`, `git_blame` and
 //! `git_diff`, which is what `tests/cli_parity/` asserts. `status`, `recent`, `touching`,
 //! `search`, `show`, `symbol-history`, `blame-symbol` and `diff-outline` are shorthands for one
-//! shape of those three; `churn` and `by-path` have no MCP tool.
+//! shape of those three; `churn`, `hotspots` and `by-path` have no MCP tool.
 
 use std::io::Write;
 
@@ -28,6 +28,7 @@ pub(crate) fn reads_only_the_repository(cmd: &GitCmd) -> bool {
             | GitCmd::SymbolHistory { .. }
             | GitCmd::Diff { structural: true, .. }
             | GitCmd::DiffOutline { .. }
+            | GitCmd::Hotspots { .. }
     )
 }
 
@@ -186,6 +187,21 @@ pub enum GitCmd {
         window: Option<u32>,
         #[arg(long)]
         top_k: Option<u32>,
+    },
+    /// Files where change and size meet: commits and authors in a window, lines, symbols, the
+    /// longest function and importers, listing files with two or more signals in the top 10% of
+    /// the files changed in the window. Raw numbers, no score; branch and nesting counts are not
+    /// measured (CLI only).
+    Hotspots {
+        /// Window ending at HEAD's author time: `<N>d`, `<N>w` or `<N>y` (default `90d`).
+        #[arg(long)]
+        since: Option<String>,
+        /// Only files at this path or under this directory.
+        #[arg(long)]
+        path: Option<String>,
+        /// Rows to print (default 20, at most 200).
+        #[arg(long)]
+        limit: Option<u32>,
     },
     /// Commits whose changed paths match a regex (CLI only).
     ByPath {
@@ -452,6 +468,21 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
                 })
                 .await,
         ),
+        GitCmd::Hotspots { since, path, limit } => {
+            let p = HotspotsParams {
+                since,
+                path: path.map(|path| resolve_path(tools, &path)),
+                limit,
+            };
+            (
+                "git_hotspots",
+                tools
+                    .call("git_hotspots", p, async |s, p| {
+                        s.cli_op(p, Workspace::git_hotspots).await
+                    })
+                    .await,
+            )
+        }
         GitCmd::ByPath {
             pattern,
             window,

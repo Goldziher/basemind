@@ -1217,6 +1217,7 @@ degrading to a truncated in-memory view.
 | `symbol-history <path> <name>` / `blame-symbol <path> <name> [--rev]` / `diff-outline <path> [--rev]` | Shorthands for `log --path --symbol`, `blame --symbol` and `diff --structural`. |
 | `churn [--window --top-k]` | The most frequently changed files (CLI only). |
 | `by-path <regex> [--window]` | Commits whose changed paths match a regex (CLI only). |
+| `hotspots [--since 90d --path --limit]` | Files with two or more of commits, authors, lines, symbols, longest function and importers in their top 10% (CLI only). |
 **Memory (`basemind memory`)**
 
 | Command | Purpose |
