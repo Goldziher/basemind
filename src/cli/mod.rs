@@ -15,6 +15,7 @@
 pub mod admin;
 pub mod agent;
 pub mod analysis;
+mod analysis_migration;
 pub mod choices;
 pub mod code;
 #[cfg(all(feature = "comms", any(unix, windows)))]

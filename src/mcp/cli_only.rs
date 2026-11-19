@@ -11,6 +11,7 @@ use crate::engine::Workspace;
 use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams, HotspotsParams};
 use crate::engine::types::graph::{CyclesParams, ImpactParams};
 use crate::engine::types::memory::MemoryDeleteParams;
+use crate::engine::types::migration::MigrationCheckParams;
 use crate::engine::types::overview::OverviewParams;
 use crate::engine::types::search::GetChunkParams;
 
@@ -27,6 +28,7 @@ pub(super) const CLI_ONLY: &[&str] = &[
     "code_cycles",
     "overview",
     "git_hotspots",
+    "code_migration_check",
 ];
 
 /// `arguments` as the command's params; a mismatch is a usage error, as a verb tool's is.
@@ -75,6 +77,10 @@ impl BasemindServer {
             },
             "git_hotspots" => match params::<HotspotsParams>(name, arguments) {
                 Ok(p) => self.cli_op(p, Workspace::git_hotspots).await,
+                Err(error) => Err(error),
+            },
+            "code_migration_check" => match params::<MigrationCheckParams>(name, arguments) {
+                Ok(p) => self.cli_op(p, Workspace::code_migration_check).await,
                 Err(error) => Err(error),
             },
             _ => Err(McpError::invalid_params(

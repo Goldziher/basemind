@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the window touched where two or more of commits, distinct authors, lines, symbols, the longest
   function and importers are in their top 10%, as raw numbers with no score. The window ends at
   HEAD's author time.
+- `basemind code migration check [<name>]` (CLI only, #130): rules in `.basemind/migrations/<name>.toml`
+  name old forms (`call`, `import`, `identifier` or `text`, literal or regex) and optionally their
+  replacement; the report gives remaining lines per rule and file, the share migrated, files holding
+  both forms and failed presence assertions, and each run is appended to a history in the workspace
+  cache dir. `--fail-on-remaining` exits 1; `--ranges` adds read ranges.
 - `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so

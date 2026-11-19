@@ -194,7 +194,7 @@ async fn live_serve_sessions(root: &Path) -> u64 {
 }
 
 /// The CLI-only commands, which ADR-0018 and ADR-0047 keep off the agent surface.
-const CLI_ONLY: [(&str, &str); 7] = [
+const CLI_ONLY: [(&str, &str); 9] = [
     ("memory_delete", r#"{"key":"k"}"#),
     ("git_churn", "{}"),
     ("git_by_path", r#"{"pattern":"a"}"#),
@@ -202,6 +202,8 @@ const CLI_ONLY: [(&str, &str); 7] = [
     ("code_impact", r#"{"path":"a.rs"}"#),
     ("code_cycles", "{}"),
     ("overview", "{}"),
+    ("git_hotspots", "{}"),
+    ("code_migration_check", "{}"),
 ];
 
 /// A relay session is an agent's unless its hello says it is a CLI command's. An agent session (a
@@ -292,6 +294,12 @@ async fn only_a_cli_session_reaches_the_cli_only_commands() {
         .expect("a CLI session runs `overview`");
     assert_ne!(overview.is_error, Some(true), "{overview:?}");
     assert!(decode_text(&overview).get("languages").is_some(), "{overview:?}");
+
+    let no_rules = cli
+        .call_tool(call_params("code_migration_check", serde_json::json!({})))
+        .await
+        .expect_err("a repository without rule files has no migration to check");
+    assert!(no_rules.to_string().contains("no rule file"), "{no_rules}");
 
     let refused = cli
         .call_tool(call_params("code_outline", serde_json::json!({ "path": "missing.rs" })))

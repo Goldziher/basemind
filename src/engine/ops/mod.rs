@@ -20,3 +20,4 @@ mod impact;
 pub(crate) mod index;
 mod memory;
 pub(crate) mod overview;
+mod migration;

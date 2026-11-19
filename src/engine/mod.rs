@@ -27,6 +27,8 @@ pub(crate) mod manifests;
 pub(crate) mod map_cache;
 #[cfg(feature = "memory")]
 pub(crate) mod memory;
+pub(crate) mod migration_history;
+pub(crate) mod migration_rules;
 pub(crate) mod ops;
 pub(crate) mod outline_cache;
 pub(crate) mod pick;
