@@ -641,6 +641,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A call site is recorded at its callee name, not where its call expression starts. In a method chain
+  written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
+  `code migration check` reported the receiver's line, up to several lines above the method name a
+  text search finds; a path call (`LocalSet::new()`) and every call in Java now carry the name's
+  column too. Affected Rust, JavaScript, TypeScript, TSX, Python, Go and Java, plus HTTP client calls.
+  Method calls now also start at the byte a resolver records the use at, so they can be graded by
+  resolution. `EXTRACT_EPOCH` is 5: the next scan re-extracts every file once.
+- A Rust trait impl whose self type is not a path or generic type (`impl Kill for &mut T`,
+  `impl ToSocketAddrs for (Ipv4Addr, u16)`, `impl FromStreamPriv<()> for ()`, a slice, array, pointer
+  or `str`) is an implementation: `code_refs` with `relation: "implementations"` lists it, its
+  `impl_type` the type as written on one line. They were missing. `EXTRACT_EPOCH` is 6.
 - The watcher no longer discards the OS's "events were dropped" signal (FSEvents `MustScanSubDirs`,
   inotify queue overflow). A signal naming a subdirectory rescans that subtree; one naming the root,
   or none, runs the whole-tree stat-and-hash pass of `index_rescan {}`; a burst of signals is one

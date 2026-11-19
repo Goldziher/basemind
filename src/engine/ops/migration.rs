@@ -306,7 +306,7 @@ fn call_lines<'f>(pattern: &'f Pattern, facts: &'f FileFacts) -> impl Iterator<I
             let source = facts
                 .text
                 .as_deref()
-                .and_then(|text| text.get(call.start_byte as usize..));
+                .and_then(|text| text.get(migration_rules::qualified_start(text, call.start_byte as usize)..));
             pattern.matches_call(&call.callee, source)
         })
         .map(|call| call.line)

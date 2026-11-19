@@ -441,7 +441,7 @@ async fn a_route_is_called_by_the_http_requests_its_path_matches() {
         json!({
             "path": "src/requests.rs",
             "line": 4,
-            "column": 5,
+            "column": 12,
             "definition": { "path": "src/routes.rs", "line": 3, "column": 10, "name": "GET /users/:param" },
             "resolution": "path_match"
         })

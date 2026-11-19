@@ -457,9 +457,7 @@ fn build_implementation(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Impl
                 trait_name = cap.node.utf8_text(source).ok().map(|s| s.to_string());
                 trait_node = Some(cap.node);
             }
-            "impl.implementor" => {
-                impl_type = cap.node.utf8_text(source).ok().map(|s| s.to_string());
-            }
+            "impl.implementor" => impl_type = implementor_name(cap.node, source),
             "impl.range" => {
                 range_node = Some(cap.node);
             }
@@ -484,6 +482,29 @@ fn build_implementation(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Impl
         start_row: p.row as u32,
         start_col: p.column as u32,
     })
+}
+
+/// The name an implementing type is indexed under. A path or generic type is named by its last
+/// segment (`Pipe` of `c::Pipe<T>`), as an inherent impl's symbol is; any other type (a reference,
+/// tuple, unit, array, slice, pointer or primitive self type of a Rust impl) by its text as written
+/// on one line: each whitespace run is one space, or none inside a bracket or before a separator,
+/// so `&mut T`, `(IpAddr, u16)`, `()` and `&[SocketAddr]` read the same however they are wrapped.
+fn implementor_name(node: Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "scoped_type_identifier" => implementor_name(node.child_by_field_name("name")?, source),
+        "generic_type" => implementor_name(node.child_by_field_name("type")?, source),
+        _ => {
+            let mut name = String::with_capacity(node.byte_range().len());
+            for word in node.utf8_text(source).ok()?.split_ascii_whitespace() {
+                if !name.is_empty() && !name.ends_with(['(', '[', '<']) && !word.starts_with([')', ']', '>', ',', ';'])
+                {
+                    name.push(' ');
+                }
+                name.push_str(word);
+            }
+            (!name.is_empty()).then_some(name)
+        }
+    }
 }
 
 /// Walk up the tree from `node` to find the nearest named ancestor that has an
