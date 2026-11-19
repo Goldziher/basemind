@@ -42,10 +42,22 @@ pub struct Claude;
 pub fn slug(path: &Path) -> String {
     let text = path.to_string_lossy();
     let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
-    text.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+    let mut slug = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else {
+            // Claude Code replaces UTF-16 code units, so a character outside the BMP is two `-`.
+            slug.extend(std::iter::repeat_n('-', c.len_utf16()));
+        }
+    }
+    slug
 }
+
+/// The slug length past which Claude Code cuts the name and appends a hash of the whole path
+/// (inferred from its `sanitizePath`, not checked against a source in this repository): a project
+/// directory of a longer slug is matched by this prefix, and its transcripts by their `cwd`.
+const SLUG_MAX: usize = 200;
 
 /// The scalar fields are lenient: one of another type is absent, and the record still counts.
 #[derive(Deserialize)]
@@ -246,6 +258,9 @@ impl TranscriptParser for Claude {
 /// checkout itself or a directory below it. The slug is lossy (`a-b` and `a/b` share one), so a
 /// sibling such as `repo-old` passes too; its transcripts are dropped by their recorded `cwd`.
 fn in_checkout(name: &str, slug: &str) -> bool {
+    if slug.len() >= SLUG_MAX {
+        return slug.get(..SLUG_MAX).is_some_and(|prefix| name.starts_with(prefix));
+    }
     name.strip_prefix(slug)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
 }
@@ -376,6 +391,7 @@ mod tests {
             "-Users-a--worktrees-basemind-feat-x"
         );
         assert_eq!(slug(Path::new(r"\\?\C:\Users\a\repo")), "C--Users-a-repo");
+        assert_eq!(slug(Path::new("/w/a\u{1F600}é")), "-w-a---", "UTF-16 code units");
     }
 
     #[test]
@@ -385,6 +401,12 @@ mod tests {
         assert!(in_checkout("-w-repo-crates-core", &checkout));
         assert!(!in_checkout("-w-repository", &checkout));
         assert!(!in_checkout("-w", &checkout));
+        let long = format!("/w/{}", "d".repeat(250));
+        let long = slug(Path::new(&long));
+        assert!(
+            in_checkout(&format!("{}-1a2b3c", &long[..SLUG_MAX]), &long),
+            "cut and hashed"
+        );
     }
 
     #[test]
