@@ -58,4 +58,4 @@ pub(super) struct RecentCallView {
     pub est_tokens_saved: u64,
 }
 
-pub use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};
+pub use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams, HotspotsParams};
