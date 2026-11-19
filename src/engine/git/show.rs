@@ -11,7 +11,7 @@ use super::common::require_git_repo;
 use crate::engine::budget::{apply_budget, keep_prefix};
 use crate::engine::error::EngineError;
 use crate::engine::tokens::bytes_to_tokens;
-use crate::engine::types::git::{CommitFileView, CommitView, GitCommitHit, GitShowResponse};
+use crate::engine::types::git::{CommitFileView, CommitView, FilesByCommit, GitCommitHit, GitShowResponse};
 use crate::engine::workspace::Workspace;
 
 /// Token budget applied to a commit list when the caller passes no `max_tokens`.
@@ -32,7 +32,7 @@ pub(super) fn budget_commits<T: Serialize>(commits: Vec<T>, max_tokens: Option<u
 pub(super) fn budget_commits_with_files(
     commits: Vec<CommitView>,
     max_tokens: Option<u32>,
-) -> (Vec<CommitView>, Vec<(String, Vec<CommitFileView>)>, bool) {
+) -> (Vec<CommitView>, FilesByCommit, bool) {
     let budget = keep_prefix(
         commits,
         Some(max_tokens.unwrap_or(GIT_BUDGET_DEFAULT_TOKENS)),

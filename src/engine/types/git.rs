@@ -331,6 +331,9 @@ fn files_by_commit<S: serde::Serializer>(
     map.end()
 }
 
+/// Each listed commit's changed files, keyed by its sha: a list response's top-level `files`.
+pub(crate) type FilesByCommit = Vec<(String, Vec<CommitFileView>)>;
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct CommitFileView {
     pub path: RelPath,
@@ -444,7 +447,7 @@ pub(crate) struct RecentChangesResponse {
     /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`; absent when empty.
     #[serde(serialize_with = "files_by_commit", skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "serde_json::Value")]
-    pub files: Vec<(String, Vec<CommitFileView>)>,
+    pub files: FilesByCommit,
     /// `true` when the walk may have stopped early (today: shallow clone). Agents should
     /// treat the absence of an expected commit as inconclusive when this is set.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -668,7 +671,7 @@ pub(crate) struct FindCommitsByPathResponse {
     /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`; absent when empty.
     #[serde(serialize_with = "files_by_commit", skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "serde_json::Value")]
-    pub files: Vec<(String, Vec<CommitFileView>)>,
+    pub files: FilesByCommit,
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
     /// resumes at the first dropped one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
